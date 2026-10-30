@@ -451,6 +451,12 @@ async def start_restore(
             "id-based read while looking healthy on list surfaces."
         ),
     ),
+    drop_unresolved_edges: bool = Form(
+        False,
+        description=(
+            "Drop edge documents (templates with usage 'relationship') whose source_ref or target_ref points at a document that is neither in the archive nor on this install. They are not restored, with all their versions, and the job result and the restore provenance list each one. Without it they are restored with the archived id. Plain reference fields always keep their value; references that do not resolve are listed either way. A merge refuses unresolved references, so for a merge this is what lets such edges be left out."
+        ),
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
     """Upload an archive and restore it into ``namespace``.
@@ -627,6 +633,7 @@ async def start_restore(
         "dry_run": dry_run,
         "drop_stale_reporting": drop_stale_reporting,
         "allow_missing_identity": allow_missing_identity,
+        "drop_unresolved_edges": drop_unresolved_edges,
     }
 
     # A fresh restore WRITES to the resolved targets, not to the archive's
@@ -1105,6 +1112,7 @@ async def restore_from_job(
         "skip_files": request.skip_files,
         "batch_size": request.batch_size,
         "dry_run": request.dry_run,
+        "drop_unresolved_edges": request.drop_unresolved_edges,
         "restored_from_job": src.job_id,
     }
 

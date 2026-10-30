@@ -628,6 +628,7 @@ def make_direct_restore_runner(
                 skip_files=opts.get("skip_files", False),
                 batch_size=opts.get("batch_size", 500),
                 dry_run=opts.get("dry_run", False),
+                drop_unresolved_edges=opts.get("drop_unresolved_edges", False),
             )
             return
         if opts.get("mode") == "merge":
@@ -642,6 +643,7 @@ def make_direct_restore_runner(
                 skip_files=opts.get("skip_files", False),
                 batch_size=opts.get("batch_size", 500),
                 dry_run=opts.get("dry_run", False),
+                drop_unresolved_edges=opts.get("drop_unresolved_edges", False),
             )
             return
         await engine.run_restore(
@@ -653,6 +655,7 @@ def make_direct_restore_runner(
             drop_stale_reporting=opts.get("drop_stale_reporting", False),
             dry_run=opts.get("dry_run", False),
             allow_missing_identity=opts.get("allow_missing_identity", False),
+            drop_unresolved_edges=opts.get("drop_unresolved_edges", False),
         )
 
     return runner

@@ -22,7 +22,7 @@ import socket
 from collections.abc import Callable, Iterator
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeVar, cast
+from typing import Any, NamedTuple, TypeVar, cast
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from wip_archive.archive import ArchiveReader, ArchiveWriter
@@ -170,6 +170,148 @@ _REFERENT_LOOKUP_BATCH = 1000
 # Unresolved referents named individually on a restore job; the rest are
 # counted in one more warning.
 _REFERENT_WARNING_CAP = 20
+# Referencing (document, field) pairs kept per unresolved referent.
+_REFERENCE_SAMPLE_CAP = 20
+_EDGE_ENDPOINT_FIELDS = ("source_ref", "target_ref")
+
+
+class _UnresolvedReferent(NamedTuple):
+    """A referent the target install could not identify."""
+
+    entity_type: str
+    description: str
+
+
+def _unresolved_hits(
+    row: dict[str, Any], unresolved: dict[str, _UnresolvedReferent]
+) -> Iterator[tuple[str, str]]:
+    """(field_path, referent id) for every reference of one archived document
+    row that points at an unresolved referent."""
+    for ref in row.get("references") or []:
+        resolved = ref.get("resolved") or {}
+        for key in ("document_id", "term_id", "template_id", "terminology_id"):
+            target = resolved.get(key)
+            if target and target in unresolved:
+                yield str(ref.get("field_path") or ""), str(target)
+    for kind, key in (("term_references", "term_id"), ("file_references", "file_id")):
+        for ref in row.get(kind) or []:
+            target = ref.get(key)
+            if target and target in unresolved:
+                yield str(ref.get("field_path") or ""), str(target)
+
+
+def _dropped_row(entity_type: str, row: dict[str, Any], dropped: set[str]) -> bool:
+    """Whether this archived row belongs to a dropped edge: one of its
+    document versions, or its registry entry."""
+    if entity_type == "documents":
+        return row.get("document_id") in dropped
+    if entity_type == "registry_entries":
+        return row.get("entry_id") in dropped
+    return False
+
+
+def _drop_from_remap_source(source: RemapSource, dropped: set[str]) -> None:
+    """Take dropped edges out of a fresh restore's plan inputs: their key
+    rows (or rows), and the chains streamed when documents are written."""
+    rows = source.entities_by_type.get("documents")
+    if rows is not None:
+        source.entities_by_type["documents"] = [
+            row for row in rows if row.get("document_id") not in dropped
+        ]
+    chains = source.document_chains
+    if chains is not None:
+        def kept() -> Iterator[list[dict[str, Any]]]:
+            for chain in chains():
+                if chain[0].get("document_id") not in dropped:
+                    yield chain
+        source.document_chains = kept
+
+
+def _referents_for(referents: dict[str, Any], source: str) -> dict[str, Any]:
+    """The referent outcome a restore records for one archived namespace:
+    the run's counts, and the references and dropped edges of that
+    namespace's documents."""
+    out = {k: v for k, v in referents.items()
+           if k not in ("unresolved_references", "dropped_edges")}
+    if "unresolved_references" in referents:
+        out["unresolved_references"] = [
+            r for r in referents["unresolved_references"] if r["namespace"] == source
+        ]
+    if "dropped_edges" in referents:
+        out["dropped_edges"] = [
+            e for e in referents["dropped_edges"] if e["namespace"] == source
+        ]
+    return out
+
+
+def _scan_unresolved_references(
+    reader: ArchiveReader,
+    sources: list[str],
+    unresolved: dict[str, _UnresolvedReferent],
+    edge_templates: set[str],
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
+    """One pass over the archived documents of ``sources``: who references
+    each unresolved referent, and which edges to drop.
+
+    An edge is dropped as a whole document, every version: its versions
+    share the identity its endpoints form, and half an edge history would be
+    a fork nobody asked for. ``edge_templates`` is empty when edges are kept.
+    References from a dropped edge are reported as the drop, not again as
+    unresolved references.
+    """
+    # (namespace, referent) -> {document_id: field paths}
+    referrers: dict[tuple[str, str], dict[str, set[str]]] = {}
+    dropped: dict[str, dict[str, Any]] = {}
+    for src in sources:
+        for row in reader.read_entities("documents", namespace=src):
+            hits = list(_unresolved_hits(row, unresolved))
+            if not hits:
+                continue
+            doc_id = str(row.get("document_id") or "")
+            endpoints = [
+                target for field_path, target in hits
+                if field_path in _EDGE_ENDPOINT_FIELDS
+                and unresolved[target].entity_type == "documents"
+            ]
+            if endpoints and row.get("template_id") in edge_templates:
+                entry = dropped.setdefault(doc_id, {
+                    "namespace": src,
+                    "document_id": doc_id,
+                    "template_id": row.get("template_id"),
+                    "source_ref": None,
+                    "target_ref": None,
+                    "unresolved_endpoints": [],
+                })
+                for ref in row.get("references") or []:
+                    field_path = ref.get("field_path")
+                    if field_path in _EDGE_ENDPOINT_FIELDS and entry[field_path] is None:
+                        entry[field_path] = (ref.get("resolved") or {}).get("document_id")
+                entry["unresolved_endpoints"] = sorted(
+                    set(entry["unresolved_endpoints"]) | set(endpoints)
+                )
+                continue
+            for field_path, target in hits:
+                referrers.setdefault((src, target), {}).setdefault(doc_id, set()).add(field_path)
+
+    references: list[dict[str, Any]] = []
+    for (src, target), by_document in sorted(referrers.items()):
+        by_document = {d: f for d, f in by_document.items() if d not in dropped}
+        if not by_document:
+            continue
+        samples = [
+            {"document_id": doc_id, "field_path": field_path}
+            for doc_id in sorted(by_document)
+            for field_path in sorted(by_document[doc_id])
+        ][:_REFERENCE_SAMPLE_CAP]
+        references.append({
+            "referent": target,
+            "entity_type": unresolved[target].entity_type,
+            "description": unresolved[target].description,
+            "namespace": src,
+            "documents": len(by_document),
+            "samples": samples,
+        })
+    return references, dropped
 
 
 class _StreamedDocuments:
@@ -802,6 +944,7 @@ class DirectRestoreEngine:
         self._actor = actor
         # The archive file's digest, computed once per run on first use.
         self._archive_sha256: str | None = None
+        self._unresolved_referents: dict[str, _UnresolvedReferent] = {}
         # Structured outcome for a caller that was not watching the event
         # stream. Progress events overwrite each other on the job record, so a
         # dry run's per-type counts — the whole reason to ask — are gone by the
@@ -840,6 +983,7 @@ class DirectRestoreEngine:
         drop_stale_reporting: bool = False,
         dry_run: bool = False,
         allow_missing_identity: bool = False,
+        drop_unresolved_edges: bool = False,
     ) -> None:
         """Run the full restore pipeline over every namespace in the archive.
 
@@ -934,9 +1078,13 @@ class DirectRestoreEngine:
             # install the archive came from every referent resolves to
             # itself, nothing is mapped, and rows are written as archived.
             remapper = IDRemapper()
+            label = ", ".join(tgt for _src, tgt in targets)
             referents = await self._map_external_referents(
-                reader, manifest, remapper,
-                ", ".join(tgt for _src, tgt in targets),
+                reader, manifest, remapper, label,
+            )
+            dropped = await self._report_unresolved_references(
+                reader, [src for src, _tgt in targets], remapper, referents, label,
+                drop_edges=drop_unresolved_edges,
                 unresolved_hint=(
                     " — if it lives in a namespace restored separately, restore "
                     "that namespace first, then this one"
@@ -1021,6 +1169,8 @@ class DirectRestoreEngine:
 
                     for entity in reader.read_entities(entity_type, namespace=src):
                         entity.pop("_id", None)  # Strip MongoDB internal ID
+                        if dropped and _dropped_row(entity_type, entity, dropped):
+                            continue
                         if repoint is not None:
                             entity = repoint.rewrite(entity_type, entity, self)
                         batch.append(entity)
@@ -1075,6 +1225,7 @@ class DirectRestoreEngine:
                 await self._write_restore_provenance(
                     archive_path, manifest, raw_manifest,
                     source=src, target=tgt, mode="restore",
+                    referents=_referents_for(referents, src),
                 )
 
             # Blobs are flat (namespace-agnostic, globally-unique file_ids) — restore
@@ -1113,6 +1264,7 @@ class DirectRestoreEngine:
         skip_files: bool = False,
         batch_size: int = 500,
         dry_run: bool = False,
+        drop_unresolved_edges: bool = False,
     ) -> None:
         """Restore an archive's content as brand-new entities.
 
@@ -1263,6 +1415,13 @@ class DirectRestoreEngine:
             referents = await self._map_external_referents(
                 reader, manifest, remapper, ", ".join(targets)
             )
+            dropped = await self._report_unresolved_references(
+                reader, list(mapping), remapper, referents, ", ".join(targets),
+                drop_edges=drop_unresolved_edges,
+            )
+            if dropped:
+                for rs in remap_sources:
+                    _drop_from_remap_source(rs, dropped)
             provision_for = (
                 self._dry_run_provisioner() if dry_run
                 else self._registry_provisioner
@@ -1372,6 +1531,7 @@ class DirectRestoreEngine:
                 await self._write_restore_provenance(
                     archive_path, manifest, raw_manifest,
                     source=src, target=target, mode="remap",
+                    referents=_referents_for(referents, src),
                 )
 
         # A fresh restore does not wait on the reporting layer: its sync is
@@ -1556,8 +1716,11 @@ class DirectRestoreEngine:
         are rewritten by the same passes as references to archived entities.
         An id the remapper already maps (an archived entity, or a merge
         definition matched by content) is left to that mapping. Returns the
-        summary for the job result.
+        summary for the job result. The referents it could not identify are
+        left in ``self._unresolved_referents`` for
+        ``_report_unresolved_references``, which warns about them.
         """
+        self._unresolved_referents = {}
         if manifest.referents is None:
             # A progress message, not a job warning: most restores of an
             # older archive need no repair (a same-install merge, a namespace
@@ -1590,7 +1753,10 @@ class DirectRestoreEngine:
         snapshots = await self._document_snapshots(
             list(resolution.mapping.get("documents", {}).values())
         )
-        problems = [u.describe() for u in resolution.unresolved]
+        unresolved: dict[str, _UnresolvedReferent] = {
+            u.entry_id: _UnresolvedReferent(u.entity_type, u.describe())
+            for u in resolution.unresolved
+        }
         mapped = 0
         for entity_type, mapping in resolution.mapping.items():
             existing = maps.get(entity_type)
@@ -1602,9 +1768,10 @@ class DirectRestoreEngine:
                 if entity_type == "documents":
                     snapshot = snapshots.get(new_id)
                     if snapshot is None:
-                        problems.append(
+                        unresolved[old_id] = _UnresolvedReferent(
+                            "documents",
                             f"documents {old_id} resolves to {new_id}, which "
-                            "this install's document store does not hold"
+                            "this install's document store does not hold",
                         )
                         continue
                     remapper.add_external_document_mapping(old_id, new_id, snapshot)
@@ -1617,10 +1784,65 @@ class DirectRestoreEngine:
             f"[{label}] {mapped} of {len(rows)} referenced entit(ies) outside "
             "the archive identified on this install",
         )
-        for problem in problems[:_REFERENT_WARNING_CAP]:
+        self._unresolved_referents = unresolved
+        return {
+            "recorded": True,
+            "total": len(rows),
+            "resolved": mapped,
+            "unresolved": len(unresolved),
+        }
+
+    async def _report_unresolved_references(
+        self,
+        reader: ArchiveReader,
+        sources: list[str],
+        remapper: IDRemapper,
+        referents: dict[str, Any],
+        label: str,
+        *,
+        drop_edges: bool,
+        unresolved_hint: str = "",
+    ) -> set[str]:
+        """Say which archived documents point at the referents
+        ``_map_external_referents`` could not identify, and drop the edges
+        among them when asked.
+
+        Each unresolved referent gets one warning naming how many documents
+        reference it, and ``referents`` gains ``unresolved_references``: per
+        referent and referencing namespace, the count of documents and up to
+        _REFERENCE_SAMPLE_CAP (document_id, field_path) samples. A plain
+        reference keeps its archived value, so the document is restored as
+        archived.
+
+        With ``drop_edges``, an edge document (its template's usage is
+        relationship) whose source_ref or target_ref points at an unresolved
+        document is not restored, with all its versions and its registry
+        entry. Every dropped edge is listed in ``referents['dropped_edges']``,
+        in full: a drop removes archived data, so it is recorded, not sampled.
+        Returns the dropped document ids.
+        """
+        unresolved = self._unresolved_referents
+        if not unresolved:
+            return set()
+        edge_templates = (
+            await self._edge_template_ids(reader, sources, remapper)
+            if drop_edges else set()
+        )
+        references, dropped = await self._off_loop(
+            _scan_unresolved_references, reader, sources, unresolved, edge_templates,
+        )
+        documents_by_referent: dict[str, int] = {}
+        for entry in references:
+            documents_by_referent[entry["referent"]] = (
+                documents_by_referent.get(entry["referent"], 0) + entry["documents"]
+            )
+        problems = list(unresolved.items())
+        for entry_id, referent in problems[:_REFERENT_WARNING_CAP]:
+            count = documents_by_referent.get(entry_id, 0)
             self._emit(
                 "warning",
-                f"[{label}] referenced {problem}; references to it keep the "
+                f"[{label}] referenced {referent.description}; "
+                f"{count} archived document(s) reference it and keep the "
                 f"archived id{unresolved_hint}",
             )
         hidden = len(problems) - _REFERENT_WARNING_CAP
@@ -1630,12 +1852,41 @@ class DirectRestoreEngine:
                 f"[{label}] … and {hidden} more referenced entit(ies) not "
                 "identified on this install",
             )
-        return {
-            "recorded": True,
-            "total": len(rows),
-            "resolved": mapped,
-            "unresolved": len(problems),
+        if dropped:
+            self._emit(
+                "warning",
+                f"[{label}] {len(dropped)} edge document(s) not restored: an "
+                "endpoint is not on this install (drop_unresolved_edges). "
+                "The job result and the restore provenance list each one.",
+            )
+        referents["unresolved_references"] = references
+        if drop_edges:
+            referents["dropped_edges"] = list(dropped.values())
+        return set(dropped)
+
+    async def _edge_template_ids(
+        self, reader: ArchiveReader, sources: list[str], remapper: IDRemapper
+    ) -> set[str]:
+        """Template ids, as archived rows name them, of edge types: the
+        archive's own relationship templates, and this install's, under the
+        archived id a referent mapping gives them."""
+        ids = {
+            str(row["template_id"])
+            for src in sources
+            for row in reader.read_entities("templates", namespace=src)
+            if row.get("usage") == "relationship" and row.get("template_id")
         }
+        db_name, coll_name = COLLECTION_MAP["templates"]
+        here = {
+            str(tid)
+            for tid in await self._mongo[db_name][coll_name].distinct(
+                "template_id", {"usage": "relationship"}
+            )
+            if tid
+        }
+        ids |= here
+        ids |= {old for old, new in remapper.template_map.items() if new in here}
+        return ids
 
     async def _document_snapshots(
         self, document_ids: list[str]
@@ -2168,6 +2419,7 @@ class DirectRestoreEngine:
         target: str,
         mode: str,
         merge: dict[str, Any] | None = None,
+        referents: dict[str, Any] | None = None,
     ) -> None:
         """Record that this run restored ``source`` into ``target``.
 
@@ -2212,6 +2464,7 @@ class DirectRestoreEngine:
                 raw_manifest.get("derived_from") if isinstance(raw_manifest, dict) else None
             ),
             "merge": merge,
+            "referents": referents,
             "validation_job_id": None,
             "inherited": False,
         }
@@ -2314,6 +2567,7 @@ class DirectRestoreEngine:
         skip_files: bool = False,
         batch_size: int = 500,
         dry_run: bool = False,
+        drop_unresolved_edges: bool = False,
     ) -> None:
         """Merge an archive into an existing, possibly non-empty namespace.
 
@@ -2430,6 +2684,22 @@ class DirectRestoreEngine:
                 referents = await self._map_external_referents(
                     reader, manifest, remapper, tgt
                 )
+                dropped = await self._report_unresolved_references(
+                    reader, [src], remapper, referents, tgt,
+                    drop_edges=drop_unresolved_edges,
+                )
+                if dropped:
+                    for entity_type in ("documents", "registry_entries"):
+                        if entity_type in archive_entities:
+                            archive_entities[entity_type] = [
+                                row for row in archive_entities[entity_type]
+                                if not _dropped_row(entity_type, row, dropped)
+                            ]
+                    if doc_groups is not None:
+                        doc_groups = {
+                            doc_id: rows for doc_id, rows in doc_groups.items()
+                            if doc_id not in dropped
+                        }
 
                 # ---- Pass 2: everything else ---------------------------
                 planner = MergePlanner(self._mongo, COLLECTION_MAP)
@@ -2577,6 +2847,7 @@ class DirectRestoreEngine:
                 await self._write_restore_provenance(
                     archive_path, manifest, reader.read_manifest_raw(),
                     source=src, target=tgt, mode="merge",
+                    referents=planned.get("referents"),
                     merge={
                         "on_clash": on_clash,
                         "older_versions": older_versions,

@@ -1692,6 +1692,9 @@ class TestMapExternalReferents:
             summary = await engine._map_external_referents(
                 reader, reader.read_manifest(), remapper, "dst"
             )
+            await engine._report_unresolved_references(
+                reader, ["src"], remapper, summary, "dst", drop_edges=False,
+            )
         return summary, remapper, [e.message for e in events if e.phase == "warning"]
 
     @pytest.mark.asyncio

@@ -379,6 +379,12 @@ class RestoreFromJobRequest(StrictModel):
             "writing anything."
         ),
     )
+    drop_unresolved_edges: bool = Field(
+        False,
+        description=(
+            "Drop edge documents (templates with usage 'relationship') whose source_ref or target_ref points at a document that is neither in the archive nor on this install. They are not restored, with all their versions, and the job result and the restore provenance list each one. Without it they are restored with the archived id. Plain reference fields always keep their value; references that do not resolve are listed either way. A merge refuses unresolved references, so for a merge this is what lets such edges be left out."
+        ),
+    )
 
 
 class BackupJobSnapshot(BaseModel):

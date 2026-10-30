@@ -66,6 +66,18 @@ class RestoreProvenance(BeanieDocument):
             "merge plan's per-entity-type summary"
         ),
     )
+    referents: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "References to entities the archive does not carry: total, "
+            "resolved and unresolved counts; unresolved_references (per "
+            "referent, how many of this namespace's documents keep its "
+            "archived id, with samples); dropped_edges (every edge document "
+            "not restored because an endpoint is not on this install, when "
+            "drop_unresolved_edges was set). Absent on records written "
+            "before restores recorded it."
+        ),
+    )
     validation_job_id: str | None = Field(
         None,
         description="The validation job this restore started for this namespace",
@@ -103,6 +115,7 @@ class RestoreProvenanceItem(BaseModel):
     source: dict[str, Any] = Field(default_factory=dict)
     derived_from: list[dict[str, Any]] = Field(default_factory=list)
     merge: dict[str, Any] | None = None
+    referents: dict[str, Any] | None = None
     validation_job_id: str | None = None
     inherited: bool = False
 

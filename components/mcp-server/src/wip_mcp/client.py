@@ -1675,6 +1675,7 @@ class WipClient:
         batch_size: int = 500,
         dry_run: bool = False,
         drop_stale_reporting: bool = False,
+        drop_unresolved_edges: bool = False,
     ) -> dict:
         """Upload a local archive file and start a restore job. Streams from disk.
 
@@ -1703,6 +1704,7 @@ class WipClient:
             "batch_size": str(batch_size),
             "dry_run": str(dry_run).lower(),
             "drop_stale_reporting": str(drop_stale_reporting).lower(),
+            "drop_unresolved_edges": str(drop_unresolved_edges).lower(),
         }
         if not target_namespace:
             # The endpoint derives the target from the archive manifest for

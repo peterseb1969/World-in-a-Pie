@@ -4640,6 +4640,7 @@ async def start_restore(
     batch_size: int = 500,
     dry_run: bool = False,
     drop_stale_reporting: bool = False,
+    drop_unresolved_edges: bool = False,
 ) -> str:
     """Restore from a local archive file. Returns the initial BackupJobSnapshot.
 
@@ -4738,6 +4739,11 @@ async def start_restore(
         dry_run: Report what would happen without writing anything.
         drop_stale_reporting: Drop a stale reporting schema before restoring
             instead of refusing. A dry run reports the would-drop only.
+        drop_unresolved_edges: Leave out edge documents whose source_ref or
+            target_ref points at a document neither in the archive nor on this
+            install; the job result and the restore provenance list each one.
+            Plain reference fields keep their value either way, and the result's
+            referents.unresolved_references lists the documents that keep one.
     """
     try:
         data = await get_client().start_restore(
@@ -4755,6 +4761,7 @@ async def start_restore(
             batch_size=batch_size,
             dry_run=dry_run,
             drop_stale_reporting=drop_stale_reporting,
+            drop_unresolved_edges=drop_unresolved_edges,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

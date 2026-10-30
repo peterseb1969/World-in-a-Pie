@@ -104,6 +104,34 @@ used to succeed. Delete the referencing namespace first, or pass
 `force=true` once the dry run shows the breakage is intended.
 `@wip/client`'s `deleteNamespace` sends no `force`, so it gets the 400.
 
+### Hard-deleting a document that other documents reference needs `force`
+
+In a namespace with `deletion_mode: "full"`, `hard_delete=true` removed a
+document even while other documents referenced it, in any namespace and
+whatever their own `deletion_mode`. Their references then pointed at nothing.
+
+- A hard delete now first looks for other documents referencing it, of any
+  namespace, version or status. If there are any, the item fails with
+  `error_code: invalid_state`, `details.rule: "referenced"`, and
+  `details.referrers` lists one entry per namespace and template with a
+  count of documents. Up to five sample ids are given, only for namespaces
+  the caller can read.
+- Documents hard-deleted whole in the same request do not count, so a
+  document and its edges can be deleted together.
+- Hard-deleting one version of several is refused only by `pinned`
+  references recorded against that version; deleting the last remaining
+  version counts as deleting the document.
+- `force=true` together with `hard_delete=true` deletes anyway. The item
+  carries a warning and `details.broken_references`. `force` without
+  `hard_delete` is still refused with `force_unsupported`.
+- The MCP `delete_document` and `delete_documents_bulk` tools take `force`.
+
+**Action:** a script or app that hard-deletes documents may now get a
+per-item `invalid_state` error where it used to succeed. Delete the
+referrers in the same request, or pass `force=true` once the referrers are
+known. `@wip/client`'s `deleteDocument` and `deleteDocuments` send no
+`force` yet.
+
 ### A `prefixed` ID prefix must be unique on the install
 
 The Registry minted `prefixed` IDs from a counter per (namespace, entity type,
@@ -1406,6 +1434,32 @@ it.
 
 **Action:** none; a validation result may now report errors it missed
 before. Apps using the typed client re-vendor `wip-client-0.67.0.tgz`.
+
+### Restores list the documents that reference what they could not find, and can leave such edges out
+
+A restore that could not find a referenced entity on this install said
+which entity it was, but not which documents pointed at it, and the restore
+provenance did not record it at all.
+
+- The job result's `referents` gains `unresolved_references`. For each
+  unresolved referent and referencing namespace, it gives the number of
+  documents that keep its archived id and up to 20 (document_id,
+  field_path) samples. Each referent's warning now says how many documents
+  reference it. A dry run reports the same.
+- New restore option `drop_unresolved_edges`, for every mode (upload
+  restore, restore from a job, MCP `start_restore`). With it, an edge
+  document whose `source_ref` or `target_ref` points at a document that is
+  neither in the archive nor on this install is not restored, with all its
+  versions and its registry entry. `referents.dropped_edges` lists every
+  dropped edge in full. Plain reference fields always keep their value.
+- A merge still refuses any reference that resolves to nothing. With
+  `drop_unresolved_edges`, edges to a missing document no longer cause the
+  refusal; a plain reference to one still does.
+- Each restore provenance record gains `referents`: the counts, and the
+  unresolved references and dropped edges of that namespace's documents.
+
+**Action:** none. Without the option, restores write what they wrote before.
+`@wip/client`'s restore options do not carry `drop_unresolved_edges` yet.
 
 ### A plain restore onto another install points references outside the archive at that install
 
