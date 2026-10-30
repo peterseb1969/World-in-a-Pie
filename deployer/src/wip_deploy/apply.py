@@ -1862,15 +1862,16 @@ def read_live_secrets(ns: str) -> dict[str, str] | None:
 # ────────────────────────────────────────────────────────────────────
 
 
-def _workload_hashes(files: dict[Path, str], target: str) -> dict[str, str]:
-    """Service name -> config hash, read from rendered files.
+def _workload_definitions(files: dict[Path, str], target: str) -> dict[str, str]:
+    """Service name -> its rendered definition, canonicalised, read from
+    rendered files.
 
-    compose and dev stamp the hash as a service label in
-    docker-compose.yaml; k8s stamps it on the pod template of the workload
-    in services/<name>.yaml or infrastructure/<name>.yaml.
+    compose and dev: the service's block in docker-compose.yaml. k8s: the
+    pod template of the workload in services/<name>.yaml or
+    infrastructure/<name>.yaml — what a rollout restarts on. Either includes
+    the config-hash label or annotation, which carries what the definition
+    cannot: the values of the secrets the service reads (config_hash).
     """
-    from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY
-
     out: dict[str, str] = {}
     if target == "k8s":
         for path, content in files.items():
@@ -1881,21 +1882,15 @@ def _workload_hashes(files: dict[Path, str], target: str) -> dict[str, str]:
                     "Deployment", "StatefulSet",
                 ):
                     continue
-                annotations = (
-                    doc.get("spec", {}).get("template", {}).get("metadata", {})
-                    .get("annotations") or {}
-                )
-                if CONFIG_HASH_KEY in annotations:
-                    out[path.stem] = annotations[CONFIG_HASH_KEY]
+                template = (doc.get("spec") or {}).get("template") or {}
+                out[path.stem] = json.dumps(template, sort_keys=True, default=str)
         return out
     compose = files.get(Path("docker-compose.yaml"))
     if compose is None:
         return out
     services = (yaml.safe_load(compose) or {}).get("services") or {}
     for name, block in services.items():
-        labels = block.get("labels") or {}
-        if isinstance(labels, dict) and CONFIG_HASH_KEY in labels:
-            out[name] = labels[CONFIG_HASH_KEY]
+        out[name] = json.dumps(block, sort_keys=True, default=str)
     return out
 
 
@@ -1904,12 +1899,16 @@ def changed_outside_scope(
 ) -> list[str]:
     """Services outside `scope` whose configuration this render changes.
 
-    Compares each workload's config hash in the previous render, still on
-    disk, with the new tree. A scoped apply that skipped them would leave
-    them running the old configuration (secrets, key file, the router's
-    routes, MongoDB's user set) until something else restarts them.
+    Compares each workload's rendered definition in the previous render,
+    still on disk, with the new tree: env (literal values and secret
+    references), image, ports, mounts, and the config hash that stands for
+    the secret values and mounted files it reads. A scoped apply that
+    skipped them would leave them running the old configuration (a switched
+    API key, a secret, the router's routes, MongoDB's user set) until
+    something else restarts them. A service new to this render is not
+    named: the apply creates it either way.
     """
-    new = _workload_hashes(
+    new = _workload_definitions(
         {p: e.content for p, e in tree.files.items()}, target,
     )
     old_files: dict[Path, str] = {}
@@ -1917,7 +1916,7 @@ def changed_outside_scope(
         on_disk = Path(install_dir) / path
         if on_disk.is_file():
             old_files[path] = on_disk.read_text()
-    old = _workload_hashes(old_files, target)
+    old = _workload_definitions(old_files, target)
     in_scope = set(scope)
     return sorted(
         name for name, h in new.items()

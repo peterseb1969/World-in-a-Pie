@@ -45,7 +45,7 @@ from wip_deploy.config_gen.api_keys import (
     generate_api_keys_json,
     mounts_auth_config_dir,
 )
-from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY
+from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
 from wip_deploy.config_gen.mongodb import (
@@ -283,6 +283,7 @@ def render_dev_simple(
             build_context_paths=build_context_paths,
             app_sources=dev_plat.app_sources,
             dex_conf=dex_conf,
+            secrets=secrets,
         ),
     )
 
@@ -352,9 +353,15 @@ def _render_dev_compose_yaml(
     build_context_paths: dict[str, str],
     app_sources: dict[str, Path],
     dex_conf: str | None,
+    secrets: ResolvedSecrets,
 ) -> str:
     """Same shape as compose's _render_compose_yaml but with build: blocks,
-    source mounts, and uvicorn --reload."""
+    source mounts, and uvicorn --reload.
+
+    Every service carries compose's config-hash label too: a secret's value
+    is not in the definition (env references `${VAR}`), so the hash is what
+    tells a scoped apply that a service reading a rotated secret must be
+    recreated (apply.changed_outside_scope)."""
     services: dict[str, Any] = {}
     volumes: dict[str, Any] = {}
 
@@ -405,6 +412,10 @@ def _render_dev_compose_yaml(
             services[c.metadata.name]["labels"] = {
                 CONFIG_HASH_KEY: dex_config_hash(dex_conf),
             }
+        if "labels" not in services[c.metadata.name]:
+            _stamp_config_hash(services[c.metadata.name], config_hash(
+                c, deployment, resolved_env[c.metadata.name], secrets,
+            ))
 
     for a in apps:
         if a.metadata.name not in enabled_app_names:
@@ -417,6 +428,9 @@ def _render_dev_compose_yaml(
             build_context_paths=build_context_paths,
             app_sources=app_sources,
         )
+        _stamp_config_hash(services[a.metadata.name], config_hash(
+            a, deployment, resolved_env[a.metadata.name], secrets,
+        ))
         _collect_volumes(a, volumes)
         # CASE-55: declare named volume for node_modules shadow so it
         # persists across --force-recreate and is shared with `run`
@@ -435,6 +449,11 @@ def _render_dev_compose_yaml(
         top["volumes"] = volumes
 
     return yaml.safe_dump(top, sort_keys=False, default_flow_style=False)
+
+
+def _stamp_config_hash(block: dict[str, Any], workload_hash: str | None) -> None:
+    if workload_hash is not None:
+        block["labels"] = {CONFIG_HASH_KEY: workload_hash}
 
 
 def _dev_service_block(

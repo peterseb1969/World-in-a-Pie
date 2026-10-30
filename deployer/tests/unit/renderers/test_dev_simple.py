@@ -894,7 +894,7 @@ class TestBuildArgs:
         yaml_text = _render_dev_compose_yaml(
             d, disc.components, disc.apps, resolved_env, REPO_ROOT,
             source_mount=False, build_context_paths={}, app_sources={},
-            dex_conf=None,
+            dex_conf=None, secrets=s,
         )
         reg = yaml.safe_load(yaml_text)["services"]["registry"]
         # Reached branch 3: context from _resolve_build_context, not a

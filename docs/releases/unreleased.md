@@ -7,6 +7,22 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Scoped applies restart every service whose rendered definition changed
+
+A verb that applies with a narrow scope (`app-namespace`, `group-map`,
+`connector`, `remove-app`, a scoped `redeploy`, …) used to widen it only to
+services whose config hash changed: the values of secrets they read and files
+mounted for them. A changed literal env value, image, port or mount left the
+service running its old definition on every target, and on a dev install no
+backend service or app carried a hash at all, so even a switched API key went
+unnoticed. Widening now compares each service's whole rendered definition
+(the compose / dev service block, the k8s pod template), and dev renders
+carry the config hash on every service like compose.
+**Action:** expect the first scoped apply after upgrading a dev install to
+recreate most services once: the previous render has no hash labels, so
+every definition differs. Run a plain `wip-deploy redeploy` at a convenient
+time to take that hit deliberately.
+
 ### Operators add namespaces to an app per install: `wip-deploy app-namespace`
 
 `wip-deploy app-namespace add <app> <namespace>` gives an app another
