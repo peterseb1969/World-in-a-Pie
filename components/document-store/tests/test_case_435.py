@@ -6,7 +6,8 @@ identity-value string (its synonym flattens into search_values), so the string
 fallback was unreachable for correctly-registered docs and only resolved values
 the Registry doesn't know (a bypass). It is removed; the Registry is the only
 resolver for string refs (a miss is logged). The dict / composite business-key
-path keeps `_lookup_by_business_key` — it has no Registry equivalent.
+path resolves through the Registry too, by the referenced document's primary
+key (`_resolve_business_key_reference`).
 """
 
 from unittest.mock import AsyncMock
@@ -33,8 +34,8 @@ class TestStringRefNoMongoFallback:
         vs = get_document_service().validation_service
         # Registry misses; the business-key lookup is a spy that must NOT be called.
         monkeypatch.setattr(vs, "_resolve_via_registry", AsyncMock(return_value=None))
-        spy = AsyncMock(return_value="SHOULD_NOT_BE_CALLED")
-        monkeypatch.setattr(vs, "_lookup_by_business_key", spy)
+        spy = AsyncMock(return_value=("SHOULD_NOT_BE_CALLED", None))
+        monkeypatch.setattr(vs, "_resolve_business_key_reference", spy)
 
         result = _Result()
         doc = await vs._resolve_document_reference(
@@ -49,12 +50,12 @@ class TestStringRefNoMongoFallback:
         assert doc is None
         assert any(e.get("code") == "reference_not_found" for e in result.errors)
 
-    async def test_dict_ref_still_uses_business_key(
+    async def test_dict_ref_uses_business_key_resolution(
         self, client: AsyncClient, auth_headers: dict, monkeypatch
     ):
         vs = get_document_service().validation_service
-        spy = AsyncMock(return_value=None)
-        monkeypatch.setattr(vs, "_lookup_by_business_key", spy)
+        spy = AsyncMock(return_value=(None, None))
+        monkeypatch.setattr(vs, "_resolve_business_key_reference", spy)
 
         result = _Result()
         await vs._resolve_document_reference(
@@ -65,4 +66,4 @@ class TestStringRefNoMongoFallback:
             namespace="wip",
         )
 
-        spy.assert_awaited_once()  # composite-key path preserved
+        spy.assert_awaited_once()  # the dict path takes the business-key resolver

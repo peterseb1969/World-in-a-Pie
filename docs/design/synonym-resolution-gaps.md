@@ -28,9 +28,10 @@
 > **Residual, still-accurate gaps** (the only ones live as of 2026-06-01):
 > - **CASE-432** — two service-local lookups that bypass the Registry entirely:
 >   template-store `create_template`/version resolves `extends` via MongoDB-direct
->   (`template_service.py:276-283`, `:997-1000`); document-store validation's
->   `_lookup_by_business_key` fallback queries `data.<identity_field>` directly
->   (`validation_service.py:1628-1672`).
+>   (`template_service.py:276-283`, `:997-1000`). The document-store half is
+>   closed (2026-10-30): a dict business-key reference no longer queries
+>   `data.<identity_field>` directly; it resolves through the Registry by the
+>   referenced document's primary key (`_resolve_business_key_reference`).
 > - **CASE-433** — *resolved 2026-06-11*: the def-store/template-store
 >   `/lookup/by-key` wrappers were dead code (zero callers) and were deleted;
 >   the one live lookup, `resolve_identifier` (`/lookup/by-id`), moved to

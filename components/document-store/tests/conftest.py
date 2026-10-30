@@ -377,6 +377,36 @@ _TEMPLATE_DEFS = [
         ],
         "rules": [],
     },
+    # Business-key (dict) references: one field whose two target templates
+    # share an identity field, and one whose target's identity is a term.
+    {
+        "legacy_key": "TPL-HOLDER-TWO-Q",
+        "value": "HOLDER_TWO_Q",
+        "label": "Holder of chapter or scene",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["name"],
+        "fields": [
+            {"name": "name", "label": "Name", "type": "string", "mandatory": True},
+            {"name": "ref", "label": "Ref", "type": "reference", "reference_type": "document",
+             "target_templates": ["TPL-CHAPTER-Q", "TPL-SCENE-Q"]},
+        ],
+        "rules": [],
+    },
+    {
+        "legacy_key": "TPL-HOLDER-TERM-Q",
+        "value": "HOLDER_TERM_Q",
+        "label": "Holder of a term-identity document",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["name"],
+        "fields": [
+            {"name": "name", "label": "Name", "type": "string", "mandatory": True},
+            {"name": "ref", "label": "Ref", "type": "reference", "reference_type": "document",
+             "target_templates": ["0190c000-0000-7000-0000-00000000084a"]},
+        ],
+        "rules": [],
+    },
     # --- CASE-343 relationship-edge fixture for CASE_RECORD ---
     # An edge connecting two CASE_RECORD docs so the peer-projection path
     # is exercised against the CASE-343 fixture.

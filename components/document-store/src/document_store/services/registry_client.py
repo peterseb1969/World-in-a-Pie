@@ -177,6 +177,38 @@ class RegistryClient(RegistryClientBase):
             data = response.json()
             return cast(list[dict[str, Any]], data["results"])
 
+    async def lookup_document_by_primary_key(
+        self, namespace: str, template_id: str, identity_hash: str,
+    ) -> str | None:
+        """The document_id whose primary key is (namespace, template_id,
+        identity_hash), or None.
+
+        The key a document write registers (generate_document_id): synonyms
+        are not searched, so only the document whose identity this IS can
+        match, never one that merely carries the values as a synonym.
+        """
+        async with self._make_client() as client:
+            response = await client.post(
+                f"{self.base_url}/api/registry/entries/lookup/by-key",
+                headers=self._get_headers(),
+                json=[{
+                    "namespace": namespace,
+                    "entity_type": "documents",
+                    "composite_key": {
+                        "ns": namespace,
+                        "template_id": template_id,
+                        "identity_hash": identity_hash,
+                    },
+                    "search_synonyms": False,
+                }],
+            )
+        if response.status_code != 200:
+            raise RegistryError(
+                f"Failed to look up document key: {response.status_code} - {response.text}"
+            )
+        result = response.json()["results"][0]
+        return cast(str, result["entry_id"]) if result.get("status") == "found" else None
+
     async def get_entry_synonyms(
         self, entry_ids: list[str], namespace: str,
     ) -> dict[str, list[dict[str, Any]]]:

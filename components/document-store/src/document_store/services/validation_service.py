@@ -1777,8 +1777,14 @@ class ValidationService:
                         value, field_path, namespace,
                     )
         elif isinstance(value, dict):
-            # Composite business key
-            doc = await self._lookup_by_business_key(value, target_templates)
+            # Composite business key: the referenced document's identity,
+            # resolved through the Registry like every other identifier.
+            doc, error = await self._resolve_business_key_reference(
+                value, target_templates, namespace, doc_ref_cache,
+            )
+            if error is not None:
+                result.add_error(field=field_path, **error)
+                return None
         else:
             result.add_error(
                 code="invalid_reference_value",
@@ -1878,51 +1884,113 @@ class ValidationService:
             "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
         }
 
-    async def _lookup_by_business_key(
+    async def _resolve_business_key_reference(
         self,
-        value: Any,
-        target_templates: list[str]
-    ) -> Any | None:
-        """Look up a document by business key value(s)."""
+        value: dict[str, Any],
+        target_templates: list[str],
+        namespace: str,
+        doc_ref_cache: dict | None,
+    ) -> tuple[Any | None, dict[str, Any] | None]:
+        """Resolve a dict reference to the one document whose identity it is.
+
+        The dict must name exactly the identity fields of a target template.
+        For each such template its values are resolved and hashed by the same
+        stages a document write runs (term and reference identity fields feed
+        their referent's canonical ID, so an alias or a renamed term finds the
+        document), and the document is looked up by its Registry primary key
+        (namespace, template_id, identity_hash) in the referencing document's
+        namespace. Returns (document, None), (None, None) when nothing
+        matches, or (None, error) for a key that names no target template's
+        identity or that matches documents under several templates.
+        """
+        from wip_auth.composite_key import compute_composite_key_hash
+
         from ..models.document import Document, DocumentStatus
+        from .registry_client import RegistryError, get_registry_client
 
-        # For each target template, try to find a matching document
+        if not target_templates:
+            return None, {
+                "code": "invalid_reference_value",
+                "message": (
+                    "A business-key reference needs the field's target_templates: "
+                    "they say whose identity fields the key names"
+                ),
+                "details": {"value": value},
+            }
+
         client = get_template_store_client()
-
-        for tpl_ref in target_templates:
+        registry = get_registry_client()
+        identities: dict[str, list[str]] = {}
+        matches: list[tuple[str, str]] = []
+        for template_id in sorted(await self._allowed_template_ids(target_templates, namespace)):
             try:
-                template = await client.get_template(template_id=tpl_ref)
-                if not template:
-                    continue
-
-                identity_fields = template.get("identity_fields", [])
-                if not identity_fields:
-                    continue
-
-                # Build query based on identity fields
-                if isinstance(value, str) and len(identity_fields) == 1:
-                    # Single identity field - value is the direct value
-                    query = {
-                        f"data.{identity_fields[0]}": value,
-                        "status": DocumentStatus.ACTIVE
-                    }
-                elif isinstance(value, dict):
-                    # Composite identity - value is a dict
-                    query = {"status": DocumentStatus.ACTIVE}
-                    for field_name in identity_fields:
-                        if field_name in value:
-                            query[f"data.{field_name}"] = value[field_name]
-                else:
-                    continue
-
-                doc = await Document.find_one(query)
-                if doc:
-                    return doc
-
+                template = await client.get_template(template_id)
             except TemplateStoreError:
                 continue
+            if not template:
+                continue
+            identity_fields = list(template.get("identity_fields") or [])
+            identities[template.get("value") or template_id] = identity_fields
+            if not identity_fields or set(value) != set(identity_fields):
+                continue
 
-        return None
+            identity_template = {
+                **template,
+                "fields": [
+                    f for f in template.get("fields", []) if f.get("name") in identity_fields
+                ],
+            }
+            scratch = ValidationResult()
+            await self._validate_terms(value, identity_template, scratch, namespace=namespace)
+            if scratch.valid:
+                await self._validate_references(
+                    value, identity_template, scratch, namespace=namespace,
+                    doc_ref_cache=doc_ref_cache,
+                )
+            if scratch.valid:
+                self._compute_identity(value, identity_template, scratch)
+            if not scratch.valid or not scratch.identity_values:
+                # A value that does not resolve names no document here.
+                continue
+
+            try:
+                document_id = await registry.lookup_document_by_primary_key(
+                    namespace, template_id,
+                    compute_composite_key_hash(scratch.identity_values),
+                )
+            except RegistryError:
+                document_id = None
+            if document_id:
+                matches.append((document_id, template.get("value") or template_id))
+
+        if not any(set(value) == set(fields) for fields in identities.values() if fields):
+            return None, {
+                "code": "invalid_reference_value",
+                "message": (
+                    f"Business key {sorted(value)} does not name the identity fields "
+                    "of any target template"
+                ),
+                "details": {"value": value, "identity_fields": identities},
+            }
+        if len(matches) > 1:
+            return None, {
+                "code": "ambiguous_reference",
+                "message": "Business key matches documents under several target templates",
+                "details": {
+                    "value": value,
+                    "candidates": [
+                        {"document_id": d, "template_value": t} for d, t in matches
+                    ],
+                },
+            }
+        if not matches:
+            return None, None
+
+        document_id = matches[0][0]
+        doc = await Document.find_one(
+            {"document_id": document_id, "status": DocumentStatus.ACTIVE}
+        )
+        return doc or await Document.find_one({"document_id": document_id}), None
 
     async def _allowed_template_ids(
         self, target_templates: list[str], namespace: str | None,
