@@ -234,8 +234,42 @@ async def test_expected_counts_each_document_once():
     client.__aexit__ = AsyncMock(return_value=False)
 
     with patch("reporting_sync.parity.httpx.AsyncClient", return_value=client):
-        assert await parity._expected_document_total("tpl-1") == 3
+        assert await parity._expected_document_total("tpl-1", "parityns") == 3
 
     params = client.get.call_args.kwargs["params"]
     assert params["latest_only"] == "true"
     assert params["status"] == "active"
+    assert params["namespace"] == "parityns"
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_documents_of_another_namespace_are_not_expected_here(pg_pool):
+    """A template's documents created by another namespace live in that
+    namespace's schema. The expected count asks only for the checked
+    namespace's documents, so their absence here is not a gap."""
+    async with pg_pool.acquire() as conn:
+        await conn.execute("""
+            CREATE TABLE _wip_schema_migrations (
+                namespace VARCHAR(255) NOT NULL DEFAULT 'wip',
+                template_value TEXT NOT NULL,
+                template_version INTEGER NOT NULL,
+                migration_sql TEXT NOT NULL,
+                PRIMARY KEY (namespace, template_value, template_version)
+            )
+        """)
+    sm = SchemaManager(pg_pool)
+    fields = SchemaManager.parse_template_fields(TEMPLATE["fields"])
+    await sm.create_table("parityns", "PARITY_T", 1, fields, ReportingConfig())
+
+    # document-store: 2 live documents of the template, both in "otherns"
+    async def total(template_id, namespace):
+        return 2 if namespace == "otherns" else 0
+
+    p_t, p_d = _patch_http([TEMPLATE])
+    with p_t, p_d, patch("reporting_sync.parity._expected_document_total", new=total):
+        result = await check_namespace_parity(pg_pool, "parityns", include_counts=True)
+
+    row = result.templates[0]
+    assert (row.expected_documents, row.actual_rows, row.counts_match) == (0, 0, True)
+    assert result.ok is True

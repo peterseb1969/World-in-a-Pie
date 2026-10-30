@@ -633,6 +633,11 @@ Both sides now count live documents: documents whose latest version is active
 (the `latest_only=true` count), against reporting rows that are not `deleted`.
 `all_versions` templates are still not compared.
 
+The expected side also counts only the checked namespace's documents. A
+template's documents created by another namespace (a cross-namespace template
+reference) live in that namespace's reporting schema, so counting them here
+reported a gap that no sync could close.
+
 ### Reporting parity covers term tables and registered views, and repairs gaps by itself
 
 The parity check only looked at document tables. A namespace whose

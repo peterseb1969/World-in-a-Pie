@@ -170,20 +170,26 @@ async def _fetch_namespace_templates(namespace: str) -> list[dict[str, Any]]:
             page += 1
 
 
-async def _expected_document_total(template_id: str) -> int:
-    """How many documents of the template are live: those whose LATEST
-    version is active, one per document.
+async def _expected_document_total(template_id: str, namespace: str) -> int:
+    """How many of the namespace's documents of the template are live: those
+    whose LATEST version is active, one per document.
 
     That is what a latest_only reporting table holds a live row for. Counting
     active version rows instead would count a document twice when several of
     its versions are active (a merge with older_versions=keep leaves that),
     and the comparison would fail on correct data.
+
+    Only the namespace's own documents: a document lives in its own
+    namespace's reporting schema, so documents another namespace created on
+    this template are never rows here, and counting them would report a gap
+    no sync can close.
     """
     async with httpx.AsyncClient() as client:
         response = await client.get(
             f"{settings.document_store_url}/api/document-store/documents",
-            params={"template_id": template_id, "status": "active",
-                    "latest_only": "true", "page": 1, "page_size": 1},
+            params={"template_id": template_id, "namespace": namespace,
+                    "status": "active", "latest_only": "true",
+                    "page": 1, "page_size": 1},
             headers={"X-API-Key": settings.api_key},
             timeout=30.0,
         )
@@ -486,7 +492,8 @@ async def check_namespace_parity(
                     row.counts_comparable = False
                 else:
                     row.expected_documents = await _expected_document_total(
-                        template.get("id") or template.get("template_id") or template_value
+                        template.get("id") or template.get("template_id") or template_value,
+                        namespace,
                     )
                     # A document lives in exactly one version table under
                     # latest_only — the entity count is the sum across them.
