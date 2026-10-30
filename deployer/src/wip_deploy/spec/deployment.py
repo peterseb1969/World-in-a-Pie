@@ -18,6 +18,7 @@ from typing import Any, Literal
 from pydantic import Field, field_validator, model_validator
 
 from wip_deploy.spec._base import WIPModel
+from wip_deploy.spec.component import NamespaceAccess, NamespaceSettings
 
 # ────────────────────────────────────────────────────────────────────
 # Top-level ids
@@ -75,12 +76,41 @@ class ModulesSpec(WIPModel):
         return out
 
 
+class AddedNamespace(WIPModel):
+    """A namespace the operator gives an app on this install only, beyond
+    what its manifest declares (`wip-deploy app-namespace add`). Reserved for
+    the app with these settings; the app's key holds `admin` on it."""
+
+    name: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
+    settings: NamespaceSettings = Field(default_factory=NamespaceSettings)
+
+    @field_validator("name")
+    @classmethod
+    def not_wip(cls, v: str) -> str:
+        if v == "wip":
+            raise ValueError("the 'wip' namespace belongs to the platform")
+        return v
+
+
 class AppRef(WIPModel):
     """Reference to an app by name. The app's manifest is resolved from
-    `apps/<name>/wip-app.yaml` at discovery time."""
+    `apps/<name>/wip-app.yaml` at discovery time.
+
+    `namespaces` and `namespace_access` are this install's additions to what
+    the manifest declares: an operator decision for one install, made with
+    `wip-deploy app-namespace`, never written into the shared manifest."""
 
     name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
     enabled: bool = True
+    namespaces: list[AddedNamespace] = Field(default_factory=list)
+    namespace_access: list[NamespaceAccess] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def each_namespace_once(self) -> AppRef:
+        names = [n.name for n in self.namespaces] + [a.namespace for a in self.namespace_access]
+        if len(names) != len(set(names)):
+            raise ValueError(f"app {self.name!r}: a namespace is added twice: {names}")
+        return self
 
 
 # ────────────────────────────────────────────────────────────────────

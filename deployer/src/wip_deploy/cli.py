@@ -59,8 +59,9 @@ from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
-from wip_deploy.spec.component import Component
+from wip_deploy.spec.component import Component, NamespaceAccess, NamespaceSettings
 from wip_deploy.spec.deployment import (
+    AddedNamespace,
     AppRef,
     AuthSpec,
     DexConnector,
@@ -4415,6 +4416,200 @@ def group_map_list(
     for m in mappings:
         match = f"email={m.email}" if m.email else f"email_domain={m.email_domain}"
         typer.echo(f"{match}  ->  {m.group}")
+
+
+app_namespace_app = typer.Typer(no_args_is_help=True)
+app.add_typer(
+    app_namespace_app,
+    name="app-namespace",
+    help=(
+        "Give an app another namespace on this install only: owned (reserved "
+        "for it, its key holds admin) or used (--access read|write). Applies "
+        "without restarting anything; the services re-read the key file."
+    ),
+)
+
+
+def _app_ref_or_exit(deployment: Deployment, apps_list: list[App], app_name: str) -> AppRef:
+    ref = next((r for r in deployment.spec.apps if r.name == app_name), None)
+    if ref is None or not ref.enabled:
+        typer.echo(f"error: app {app_name!r} is not enabled on this install", err=True)
+        raise typer.Exit(2)
+    if not any(a.metadata.name == app_name for a in apps_list):
+        typer.echo(f"error: no manifest found for app {app_name!r}", err=True)
+        raise typer.Exit(2)
+    return ref
+
+
+def _namespace_settings(description: str | None, settings: list[str]) -> NamespaceSettings:
+    """`--setting K=V` pairs (plus --description) as reservation settings.
+    Lists are comma-separated; id_config is JSON."""
+    raw: dict[str, Any] = {}
+    if description is not None:
+        raw["description"] = description
+    for item in settings:
+        key, sep, value = item.partition("=")
+        if not sep:
+            typer.echo(f"error: --setting {item!r}: expected KEY=VALUE", err=True)
+            raise typer.Exit(2)
+        if key == "allowed_external_refs":
+            raw[key] = [v for v in value.split(",") if v]
+        elif key == "id_config":
+            try:
+                raw[key] = json.loads(value)
+            except json.JSONDecodeError as e:
+                typer.echo(f"error: --setting id_config: not JSON ({e})", err=True)
+                raise typer.Exit(2) from e
+        else:
+            raw[key] = value
+    try:
+        return NamespaceSettings.model_validate(raw)
+    except ValidationError as e:
+        typer.echo(f"error: namespace settings: {e}", err=True)
+        raise typer.Exit(2) from e
+
+
+@app_namespace_app.command("add")
+def app_namespace_add(
+    app_name: Annotated[str, typer.Argument(help="An app enabled on this install.")],
+    namespace: Annotated[str, typer.Argument(help="The namespace to give it.")],
+    access: Annotated[
+        str | None,
+        typer.Option(
+            "--access",
+            help="read | write: let the app USE a namespace it does not own. "
+            "Without it the app owns the namespace: reserved for it, admin on it.",
+        ),
+    ] = None,
+    description: Annotated[
+        str | None, typer.Option("--description", help="Owned only: the reserved description.")
+    ] = None,
+    setting: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--setting",
+            help="Owned only, repeatable: a reserved setting as KEY=VALUE "
+            "(isolation_mode, deletion_mode, inbound_references, "
+            "allowed_external_refs=a,b, id_config=<json>).",
+        ),
+    ] = None,
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Give an app another namespace on this install, and apply.
+
+    An owned namespace is reserved for the app, so its own key can create it
+    (with the reserved settings) and holds admin on it. The app's manifest
+    and other installs are untouched; the app keeps its key, whose scope
+    widens within the services' key-file reload interval.
+
+    Examples:
+
+      wip-deploy app-namespace add wip-kb kb-research --description "Research corpus"
+      wip-deploy app-namespace add dev-kb library --access write
+    """
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    ref = _app_ref_or_exit(deployment, apps_list, app_name)
+    if namespace in {n.name for n in ref.namespaces} | {a.namespace for a in ref.namespace_access}:
+        typer.echo(f"error: {namespace!r} is already added to {app_name!r}", err=True)
+        raise typer.Exit(2)
+    try:
+        if access is not None:
+            if description is not None or setting:
+                typer.echo("error: --description / --setting apply to an owned namespace only", err=True)
+                raise typer.Exit(2)
+            entry = NamespaceAccess.model_validate({"namespace": namespace, "permission": access})
+            ref.namespace_access = [*ref.namespace_access, entry]
+            what = f"{access} access to {namespace!r}"
+        else:
+            added = AddedNamespace(name=namespace, settings=_namespace_settings(description, setting or []))
+            ref.namespaces = [*ref.namespaces, added]
+            what = f"namespace {namespace!r}"
+    except ValidationError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Gave app {app_name!r} {what} on {resolved_name}",
+        repo_root=repo_root,
+        # Config only: the services re-read the key file, the Registry the
+        # reservations file.
+        services_scope=[],
+    )
+
+
+@app_namespace_app.command("remove")
+def app_namespace_remove(
+    app_name: Annotated[str, typer.Argument(help="An app enabled on this install.")],
+    namespace: Annotated[str, typer.Argument(help="A namespace added with app-namespace add.")],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Take a namespace added on this install away from an app, and apply.
+
+    The app's key loses it at once, even while the namespace holds the app's
+    data; the namespace and its data stay. Deleting them is a separate
+    platform-admin action. Namespaces the app's manifest declares cannot be
+    removed here.
+    """
+    resolved_name, target_dir, deployment, components, apps_list, repo_root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    ref = _app_ref_or_exit(deployment, apps_list, app_name)
+    owned = [n for n in ref.namespaces if n.name != namespace]
+    used = [a for a in ref.namespace_access if a.namespace != namespace]
+    if len(owned) == len(ref.namespaces) and len(used) == len(ref.namespace_access):
+        typer.echo(
+            f"error: {namespace!r} was not added to {app_name!r} on this install "
+            "(see wip-deploy app-namespace list)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    ref.namespaces = owned
+    ref.namespace_access = used
+    _apply_and_persist_mutation(
+        deployment,
+        components,
+        apps_list,
+        target_dir,
+        f"Took namespace {namespace!r} away from app {app_name!r} on {resolved_name}",
+        repo_root=repo_root,
+        services_scope=[],
+    )
+
+
+@app_namespace_app.command("list")
+def app_namespace_list(
+    app_name: Annotated[str, typer.Argument(help="An app enabled on this install.")],
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[Path | None, _install_dir_opt()] = None,
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """The namespaces an app's key reaches: its manifest's and this install's."""
+    _resolved, _target, deployment, _components, apps_list, _root = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
+    )
+    ref = _app_ref_or_exit(deployment, apps_list, app_name)
+    app_manifest = next(a for a in apps_list if a.metadata.name == app_name)
+    if app_manifest.spec.privileged_key:
+        typer.echo(f"{app_name} holds the master key (privileged_key): every namespace.")
+        return
+    rows = [
+        *((n.name, "admin", "manifest") for n in app_manifest.spec.namespaces),
+        *((a.namespace, a.permission, "manifest") for a in app_manifest.spec.namespace_access),
+        *((n.name, "admin", "this install") for n in ref.namespaces),
+        *((a.namespace, a.permission, "this install") for a in ref.namespace_access),
+        ("wip", "read", "platform"),
+    ]
+    for ns, permission, source in rows:
+        typer.echo(f"{ns:<32} {permission:<6} {source}")
 
 
 @app.command("add-module")

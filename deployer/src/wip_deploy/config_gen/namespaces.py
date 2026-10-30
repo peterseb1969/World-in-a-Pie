@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from wip_deploy.spec import App, Deployment
+from wip_deploy.spec import App, AppRef, Deployment
 from wip_deploy.spec.component import EnvSource, EnvVar
 
 RESERVATIONS_FILENAME = "namespace-reservations.json"
@@ -39,17 +39,28 @@ def _enabled_apps(deployment: Deployment, apps: list[App]) -> list[App]:
     )
 
 
+def owned_namespaces(app: App, ref: AppRef | None) -> list[tuple[str, dict[str, Any]]]:
+    """(name, declared settings) of every namespace the app owns: its
+    manifest's, then those the operator added on this install."""
+    added = ref.namespaces if ref is not None else []
+    return [
+        *((n.name, n.settings.model_dump(exclude_none=True)) for n in app.spec.namespaces),
+        *((n.name, n.settings.model_dump(exclude_none=True)) for n in added),
+    ]
+
+
+def _refs(deployment: Deployment) -> dict[str, AppRef]:
+    return {r.name: r for r in deployment.spec.apps}
+
+
 def namespace_reservations_json(deployment: Deployment, apps: list[App]) -> str:
     """The WIP_NAMESPACE_RESERVATIONS_FILE document. Deterministic: sorted by
     app, declaration order within an app."""
+    refs = _refs(deployment)
     reservations = [
-        {
-            "prefix": ns.name,
-            "app": app.metadata.name,
-            "settings": ns.settings.model_dump(exclude_none=True),
-        }
+        {"prefix": name, "app": app.metadata.name, "settings": settings}
         for app in _enabled_apps(deployment, apps)
-        for ns in app.spec.namespaces
+        for name, settings in owned_namespaces(app, refs.get(app.metadata.name))
     ]
     if not reservations:
         return ""
@@ -88,17 +99,19 @@ def reservation_conflicts(deployment: Deployment, apps: list[App]) -> list[str]:
     errors: list[str] = []
     owners: dict[str, str] = {}
     prefixes: dict[str, str] = {}
+    refs = _refs(deployment)
     for app in _enabled_apps(deployment, apps):
-        for ns in app.spec.namespaces:
-            owner = owners.setdefault(ns.name, app.metadata.name)
+        ref = refs.get(app.metadata.name)
+        errors.extend(_addition_errors(app, ref))
+        for name, settings in owned_namespaces(app, ref):
+            owner = owners.setdefault(name, app.metadata.name)
             if owner != app.metadata.name:
                 errors.append(
-                    f"namespace {ns.name!r} is reserved by both app {owner!r} and "
+                    f"namespace {name!r} is reserved by both app {owner!r} and "
                     f"app {app.metadata.name!r}; a namespace has one owning app"
                 )
-            settings = ns.settings.model_dump(exclude_none=True)
             for entity_type, prefix in sorted(_prefixed_ids(settings).items()):
-                where = f"{ns.name}.{entity_type} (app {app.metadata.name!r})"
+                where = f"{name}.{entity_type} (app {app.metadata.name!r})"
                 if prefix in prefixes:
                     errors.append(
                         f"ID prefix {prefix!r} is reserved twice: {prefixes[prefix]} "
@@ -107,3 +120,27 @@ def reservation_conflicts(deployment: Deployment, apps: list[App]) -> list[str]:
                 else:
                     prefixes[prefix] = where
     return errors
+
+
+def _addition_errors(app: App, ref: AppRef | None) -> list[str]:
+    """What an install's additions to an app contradict: a privileged app
+    holds the master key (nothing to scope), and a namespace the manifest
+    already declares needs no addition (two sources would disagree)."""
+    if ref is None or not (ref.namespaces or ref.namespace_access):
+        return []
+    name = app.metadata.name
+    if app.spec.privileged_key:
+        return [
+            f"app {name!r} holds the master key (privileged_key); namespaces "
+            "added to it on this install would scope a key it does not use"
+        ]
+    declared = {n.name for n in app.spec.namespaces} | {
+        a.namespace for a in app.spec.namespace_access
+    }
+    added = [n.name for n in ref.namespaces] + [a.namespace for a in ref.namespace_access]
+    return [
+        f"app {name!r}: namespace {ns!r} is already declared in its manifest; "
+        "remove it from this install's additions"
+        for ns in added
+        if ns in declared
+    ]

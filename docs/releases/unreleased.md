@@ -7,6 +7,22 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Operators add namespaces to an app per install: `wip-deploy app-namespace`
+
+`wip-deploy app-namespace add <app> <namespace>` gives an app another
+namespace on one install: owned (reserved for it with the given settings, its
+key holds `admin`) or, with `--access read|write`, used. `remove` takes it
+away; `list` shows the manifest's and the install's entries. The addition is
+kept in the install's saved spec; the apply changes only the key and
+reservations files, so nothing restarts. Apps never create unreserved
+namespaces themselves.
+
+The namespace upsert no longer refuses an app key's `description` on a
+reserved namespace: a create stores the description sent, and an existing
+namespace keeps its own. Every other setting must still match the
+reservation.
+**Action:** none.
+
 ### Edges may cross namespaces; relationship reads follow the reader
 
 - **Writing.** An edge lives in its source's namespace: `source_ref` must be

@@ -19,7 +19,7 @@ import json
 from typing import Literal
 
 from wip_deploy.secrets_backend.base import ResolvedSecrets
-from wip_deploy.spec import App, Component, Deployment
+from wip_deploy.spec import App, AppRef, Component, Deployment
 from wip_deploy.spec.deployment import CANARY_KEY_NAME, SpecAPIKey
 
 # Where the rendered file appears inside service containers; injected
@@ -67,7 +67,7 @@ CANARY_KEY = SpecAPIKey(name=CANARY_KEY_NAME, namespaces=[CANARY_NAMESPACE])
 APP_KEY_PREFIX = "app-"
 
 
-def app_api_key(app: App) -> SpecAPIKey | None:
+def app_api_key(app: App, ref: AppRef | None = None) -> SpecAPIKey | None:
     """The key an app runs with, derived from its manifest; None for the
     app that declares `privileged_key` (it holds the master key instead).
 
@@ -76,12 +76,18 @@ def app_api_key(app: App) -> SpecAPIKey | None:
     views. `read` or `write` on each `spec.namespace_access` entry. `read`
     on the platform's `wip` namespace, whose vocabularies every app may
     browse. Nothing else: no admin group, no other namespace.
+
+    `ref` is the app's entry in this install's spec: namespaces the operator
+    added on this install (`wip-deploy app-namespace`) count like the
+    manifest's own.
     """
     if app.spec.privileged_key:
         return None
-    owned = [n.name for n in app.spec.namespaces]
+    added = ref.namespaces if ref is not None else []
+    added_access = ref.namespace_access if ref is not None else []
+    owned = [n.name for n in app.spec.namespaces] + [n.name for n in added]
     grants: dict[str, Literal["read", "write", "admin"]] = dict.fromkeys(owned, "admin")
-    for access in app.spec.namespace_access:
+    for access in [*app.spec.namespace_access, *added_access]:
         grants[access.namespace] = access.permission
     scope = list(dict.fromkeys([*grants, "wip"]))
     return SpecAPIKey(
@@ -94,8 +100,8 @@ def app_api_key(app: App) -> SpecAPIKey | None:
 
 def app_api_keys(deployment: Deployment, apps: list[App]) -> list[SpecAPIKey]:
     """The derived keys of the install's enabled apps."""
-    enabled = {a.name for a in deployment.spec.apps if a.enabled}
-    keys = (app_api_key(a) for a in apps if a.metadata.name in enabled)
+    refs = {r.name: r for r in deployment.spec.apps if r.enabled}
+    keys = (app_api_key(a, refs[a.metadata.name]) for a in apps if a.metadata.name in refs)
     return [k for k in keys if k is not None]
 
 

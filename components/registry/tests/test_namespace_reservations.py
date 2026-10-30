@@ -257,3 +257,34 @@ async def test_reservations_file_rules(
     _reserve(monkeypatch, tmp_path, *reservations)
     resp = await client.put(f"{BASE}/res-any", headers=auth_headers, json={})
     assert resp.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_description_is_free_on_create_and_ignored_after(
+    client: AsyncClient, app_key, monkeypatch, tmp_path
+):
+    """The description governs nothing, so it never refuses an app's upsert:
+    a create stores the one sent, an existing namespace keeps its own."""
+    headers, prefix = app_key
+    _reserve(monkeypatch, tmp_path, {"prefix": prefix, "app": "kb", "settings": RESERVED_SETTINGS})
+
+    created = await client.put(
+        f"{BASE}/{prefix}", headers=headers, json={"description": "my corpus"}
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["description"] == "my corpus"
+    assert created.json()["isolation_mode"] == "strict"  # the rest as reserved
+
+    again = await client.put(
+        f"{BASE}/{prefix}", headers=headers, json={"description": "renamed"}
+    )
+    assert again.status_code == 200, again.text
+    assert again.json()["description"] == "my corpus"
+    assert (await Namespace.find_one({"prefix": prefix})).description == "my corpus"
+
+    # Every other setting still binds.
+    refused = await client.put(
+        f"{BASE}/{prefix}", headers=headers,
+        json={"description": "x", "deletion_mode": "retain"},
+    )
+    assert refused.status_code == 403

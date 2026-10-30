@@ -238,7 +238,7 @@ One **non-guarantee** belongs in the same list, because apps have assumed its op
 
 - `read` on `wip`, the platform's shared vocabularies.
 
-Nothing else: no namespace you have not declared, no platform-admin route. Free-form SQL (`POST /api/reporting-sync/query`, the MCP `run_report_query` tool) and creating namespaces outside your reservations need a platform admin key, so an app cannot use them. Calls through the platform MCP server act with your key too. Only an admin console declaring `privileged_key: true` (React Console) holds the master key. The key rotates with `wip-deploy rotate-key app-<name>`.
+Nothing else: no namespace you have not declared, no platform-admin route. Free-form SQL (`POST /api/reporting-sync/query`, the MCP `run_report_query` tool) and creating namespaces outside your reservations need a platform admin key, so an app cannot use them. Calls through the platform MCP server act with your key too. Only an admin console declaring `privileged_key: true` (React Console) holds the master key. Your app never creates a namespace that is not reserved for it; when an install needs it to own or use another one (a new corpus, a shared library), the operator adds it with `wip-deploy app-namespace add`, and your key reaches it within seconds, without a restart. On create, the namespace upsert accepts any `description` you send; every other setting must match the reservation. The key rotates with `wip-deploy rotate-key app-<name>`.
 
 The app also owns its **namespace settings**, and declares them in its manifest, not in its seeds:
 

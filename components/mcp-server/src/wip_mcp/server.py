@@ -141,8 +141,10 @@ Who may call it: a platform admin key, or a key holding `admin` on a namespace
 the install reserves for an app (the app manifest's spec.namespaces). The
 latter is how an app bootstraps without an admin key: upsert with NO settings
 and the namespace is created exactly as reserved. Any setting it sends must
-equal the reservation's (403 naming the field), and it never changes a
-namespace that already exists.
+equal the reservation's (403 naming the field), except the description, which
+a create stores as sent; it never changes a namespace that already exists.
+An operator adds namespaces to one app on one install with
+`wip-deploy app-namespace add`.
 
 Safety guards on `deletion_mode`:
 - The 'wip' default namespace cannot be flipped to `full` — 400.

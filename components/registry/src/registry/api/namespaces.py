@@ -130,8 +130,10 @@ async def _check_reserved_upsert(
 
     Such a caller needs a reservation of the prefix and `admin` on it, and
     may only send settings equal to the reservation's and, when the
-    namespace exists, to its live values. A reservation changed after the
-    namespace was created is never applied through this path.
+    namespace exists, to its live values. The description is the exception:
+    it governs nothing, so a create stores the one sent and an existing
+    namespace ignores it. A reservation changed after the namespace was
+    created is never applied through this path.
     """
     if reserved is None:
         raise HTTPException(
@@ -148,7 +150,7 @@ async def _check_reserved_upsert(
         )
     for field in SETTING_FIELDS:
         value = update_data.get(field)
-        if value is None:
+        if value is None or field == "description":
             continue
         if value != reserved[field]:
             raise HTTPException(
@@ -350,7 +352,9 @@ async def upsert_namespace(
     and re-run the upsert, but every setting it sends must equal the
     reservation's (403 naming the field otherwise) and, once the namespace
     exists, its live value: an app's key never changes a namespace's
-    settings. Send no settings to create the namespace as reserved.
+    settings. The description alone is free: a create stores the one sent,
+    and an existing namespace keeps its own. Send no settings to create the
+    namespace as reserved.
 
     Safety guards on `deletion_mode` mirror the narrow PATCH route:
     the `wip` default namespace cannot be flipped to `full`, and

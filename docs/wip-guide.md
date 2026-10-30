@@ -329,6 +329,21 @@ API keys carry a `namespaces` field that scopes their access. The rule is:
 - **Every other key** must declare `namespaces` explicitly. Non-privileged keys without a namespace scope receive 403 on every request.
 - **Single-namespace keys** get a convenience: omit the `namespace` query parameter and the server derives it from the key's scope. Multi-namespace keys must always pass `namespace` explicitly.
 
+**Giving an app another namespace on one install.** Each app runs with a key of its own, scoped to the namespaces its manifest declares (`spec.namespaces`, `spec.namespace_access`). Adding a namespace to that scope is an operator decision for one install, not a manifest edit:
+
+```bash
+wip-deploy app-namespace add wip-kb kb-research --description "Research corpus"   # owned: reserved for the app, admin on it
+wip-deploy app-namespace add dev-kb library --access write                       # used: read or write on a namespace it does not own
+wip-deploy app-namespace list wip-kb                                               # manifest + this install + wip
+wip-deploy app-namespace remove wip-kb kb-research
+```
+
+- The addition is kept in the install's saved spec, so `redeploy` keeps it. Other installs and the app's manifest are untouched.
+- Nothing restarts: the app keeps its key, and its scope changes in the key file, which every service re-reads within about 10 seconds (about a minute on k8s, while the Secret propagates). The Registry reads the reservation on the next upsert.
+- An owned namespace may be created by the app's own key, with the settings given here (`--setting deletion_mode=full`, `--setting isolation_mode=strict`, `--setting allowed_external_refs=a,b`, `--setting id_config=<json>`). The app may send its own description; any other setting must match. Or create it yourself with the master key and let the app use it.
+- `remove` takes the namespace away from the app at once, even while it holds the app's data. The namespace and its data stay; deleting them is a separate admin action.
+- An app holding the master key (`privileged_key`) takes no additions, and a namespace its manifest already declares cannot be added again.
+
 ### 4.6 External identity providers (Google, Okta, …)
 
 Dex federates logins from external providers through its *connectors*. They
