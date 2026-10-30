@@ -43,6 +43,8 @@ from .conftest import setup_registry_and_app
 
 SOURCE = "remap-src-ns"
 TARGET = "remap-live-ns"
+# A namespace the archive does not carry, living on the target install.
+OTHER = "remap-other-ns"
 
 
 @pytest_asyncio.fixture
@@ -60,19 +62,25 @@ async def live_registry():
     yield mongo_client
 
     for db_name, coll_name in COLLECTION_MAP.values():
-        await mongo_client[db_name][coll_name].delete_many({"namespace": TARGET})
-    await RegistryEntry.find({"namespace": TARGET}).delete()
+        await mongo_client[db_name][coll_name].delete_many(
+            {"namespace": {"$in": [TARGET, OTHER]}}
+        )
+    await RegistryEntry.find({"namespace": {"$in": [TARGET, OTHER]}}).delete()
     await Namespace.find({"prefix": TARGET}).delete()
 
 
-def _archive(entities):
+def _archive(entities, referents=None):
     reader = MagicMock()
     reader.read_manifest = MagicMock(return_value=Manifest(
         format_version="3.0",
         namespace=SOURCE,
         namespace_config=NamespaceConfig(prefix=SOURCE, isolation_mode="open"),
         counts=EntityCounts(),
+        referents=None if referents is None else len(referents),
     ))
+    reader.read_referents = MagicMock(
+        side_effect=lambda: [dict(r) for r in referents or []]
+    )
     reader.list_namespaces = MagicMock(return_value=[SOURCE])
     reader.list_blobs = MagicMock(return_value=[])
     reader.read_entities = MagicMock(
@@ -85,7 +93,7 @@ def _archive(entities):
     return reader
 
 
-async def _run_remap(mongo, entities, events=None):
+async def _run_remap(mongo, entities, events=None, referents=None):
     """Run a remap whose Registry calls reach the mounted Registry app."""
     transport = ASGITransport(app=registry_app)
     # Captured before patching: the factory below replaces this very symbol,
@@ -106,7 +114,7 @@ async def _run_remap(mongo, entities, events=None):
     engine = DirectRestoreEngine(mongo, None, callback)
     with patch(
         "document_store.services.backup_engine.ArchiveReader",
-        return_value=_archive(entities),
+        return_value=_archive(entities, referents),
     ), patch("httpx.AsyncClient", _client):
         await engine.run_remap(MagicMock(), TARGET)
 
@@ -540,3 +548,107 @@ class TestRemapAgainstARealRegistry:
         result = resp.json()["results"][0]
         assert result["status"] == "found"
         assert result["entry_id"] == new_id
+
+
+_BOSS_KEY = {"@template": "BOSS", "code": "B-1"}
+
+
+class TestOutOfArchiveReferents:
+    """Matrix cell R-17: references to entities the archive does not carry
+    are resolved on the target through the referent table's keys.
+
+    The archive below comes from ANOTHER install: its referent's id and its
+    primary key (which embeds the source's template id) mean nothing here.
+    Only the referent's identity synonym is portable, and the restore must
+    find the live document through it.
+    """
+
+    async def _live_boss(self, mongo):
+        """The target install's own copy of the boss document."""
+        from registry.models.entry import Synonym
+        from registry.services.hash import HashService
+
+        await RegistryEntry(
+            entry_id="LIVE-BOSS", namespace=OTHER, entity_type="documents",
+            primary_composite_key={"ns": OTHER, "template_id": "LIVE-TPL",
+                                   "identity_hash": "live-h"},
+            primary_composite_key_hash=HashService.compute_composite_key_hash(
+                {"ns": OTHER, "template_id": "LIVE-TPL", "identity_hash": "live-h"}
+            ),
+            synonyms=[Synonym(
+                namespace=OTHER, entity_type="documents",
+                composite_key=_BOSS_KEY,
+                composite_key_hash=HashService.compute_composite_key_hash(_BOSS_KEY),
+            )],
+            status="active",
+        ).insert()
+        db_name, coll_name = COLLECTION_MAP["documents"]
+        await mongo[db_name][coll_name].insert_one({
+            "document_id": "LIVE-BOSS", "namespace": OTHER, "version": 1,
+            "template_id": "LIVE-TPL", "identity_hash": "live-h",
+        })
+
+    def _entities(self):
+        return {
+            "templates": [
+                {"template_id": "OLD-TPL", "namespace": SOURCE,
+                 "value": "PERSON", "version": 1, "identity_fields": []},
+            ],
+            "documents": [
+                {"document_id": "OLD-DOC", "namespace": SOURCE,
+                 "template_id": "OLD-TPL", "template_version": 1,
+                 "identity_hash": "", "version": 1, "data": {"boss": "other:B-1"},
+                 "references": [{
+                     "field_path": "boss", "reference_type": "document",
+                     "lookup_value": "other:B-1",
+                     "resolved": {"document_id": "SRC-BOSS", "namespace": OTHER,
+                                  "template_id": "SRC-TPL", "identity_hash": "src-h"},
+                 }]},
+            ],
+        }
+
+    def _referent(self, synonym_key):
+        return {
+            "entry_id": "SRC-BOSS", "namespace": OTHER, "entity_type": "documents",
+            "primary_composite_key": {"ns": OTHER, "template_id": "SRC-TPL",
+                                      "identity_hash": "src-h"},
+            "synonyms": [{"namespace": OTHER, "entity_type": "documents",
+                          "composite_key": synonym_key}],
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_reference_follows_the_referents_identity_to_the_live_document(
+        self, live_registry
+    ):
+        await self._live_boss(live_registry)
+        events: list[ProgressEvent] = []
+        await _run_remap(
+            live_registry, self._entities(), events,
+            referents=[self._referent(_BOSS_KEY)],
+        )
+
+        (document,) = await _rows(live_registry, "documents")
+        (ref,) = document["references"]
+        # Every half describes the document that exists here.
+        assert ref["resolved"] == {
+            "document_id": "LIVE-BOSS", "namespace": OTHER,
+            "template_id": "LIVE-TPL", "identity_hash": "live-h",
+        }
+        # No referent warning. (The harness has no namespace record for the
+        # provenance write, which warns separately.)
+        assert not [e.message for e in events
+                    if e.phase == "warning" and "referenced" in e.message]
+
+    @pytest.mark.asyncio
+    async def test_an_unidentifiable_referent_keeps_its_id_and_warns(self, live_registry):
+        await self._live_boss(live_registry)
+        events: list[ProgressEvent] = []
+        await _run_remap(
+            live_registry, self._entities(), events,
+            referents=[self._referent({"@template": "BOSS", "code": "NOBODY"})],
+        )
+
+        (document,) = await _rows(live_registry, "documents")
+        assert document["references"][0]["resolved"]["document_id"] == "SRC-BOSS"
+        warnings = [e.message for e in events if e.phase == "warning"]
+        assert any("SRC-BOSS" in w and "NOBODY" in w for w in warnings)

@@ -102,7 +102,11 @@ auto-synonyms) · E11 a namespace with PREFIXED sequential `id_config` ·
 E12 inactive entities of each type · E13 `full_text_indexed` string field
 (reporting FTS) · E14 `metadata.custom` payloads · E15 namespace-config
 variants: `isolation_mode: strict` + `allowed_external_refs`,
-`deletion_mode: full`.
+`deletion_mode: full`. E16 out-of-archive referents: a template field
+drawing on a `wip` terminology, a document reference into a namespace the
+archive does not carry, and (via a filtered archive) a reference to a
+same-namespace document the archive dropped; the archive's
+`referents.jsonl` records each one's Registry entry.
 
 ## 3. What the test data must contain (Peter's decision input)
 
@@ -190,6 +194,9 @@ dry-run assert is ever wanted on the P-CLI side.
 | R-14 | L | E9 blobs through R-ID and R-FR1 with `include_files`; `skip_files` leaves references resolvable-but-blobless, LOUD in job warnings | PL-FILE, PL-JOB |
 | R-15 | C | E11 prefixed id_config through R-FR1: re-minted ids follow the TARGET's config; next live mint continues without collision | PL-REG |
 | R-16 | L | E13 FTS + PL-REP full pass after R-FR1: reporting search returns restored docs | PL-REP |
+| R-17 | C | E16 through R-FR1 from a FOREIGN archive (referent's id and primary key unknown here, identity synonym live): the reference points at the live document with ITS namespace, template id and identity hash; an unidentifiable referent keeps its id and is a job warning naming its key (`test_remap_integration::TestOutOfArchiveReferents`) | PL-DATA, PL-JOB |
+| R-18 | L | E16 through R-FR1 and R-MRG on the SAME instance: every referent resolves to itself, the filter-dropped same-namespace target is named in its real namespace (never new-namespace + old id), job `result.referents` all resolved, PL-AUTO validation healthy. Then the same archive with its referent table stripped (`referents: None`): restore completes with `recorded: false`, and validation reports the affected references with their lookup hints | PL-DATA, PL-JOB, PL-AUTO |
+| R-19 | L | E16 through R-ID-X (cross-instance DR). **Expected behaviour undecided:** a plain restore preserves ids and does NOT consult the referent table, so references into the DR target's own `wip` (minted at its bootstrap, not the source's) keep the source install's ids. The cell first records what happens; the fix is a CASE-837 follow-up | PL-DATA, PL-AUTO |
 
 ### 5.3 Refusals & failure injection
 
