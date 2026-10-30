@@ -8,7 +8,7 @@ You build this app ON TOP of World In a Pie (WIP). This file is short on purpose
 ## Every wake
 
 Read `docs/cards/core.md` on every `/wip-setup` and `/wip-wake`. It holds the rules that prevent a
-wrong action: what an app on WIP is, the model rule, the approval gate, the eight PoNIFs.
+wrong action: what an app on WIP is, the model rule, the approval gate, the nine PoNIFs.
 
 ## Dev Namespace
 

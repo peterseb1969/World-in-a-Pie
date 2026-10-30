@@ -4,6 +4,8 @@ export interface Namespace {
   prefix: string
   description: string
   isolation_mode: 'open' | 'strict'
+  /** Who may reference this namespace from another one: 'closed' only writers who can read it. */
+  inbound_references: 'closed' | 'open'
   deletion_mode: 'retain' | 'full'
   allowed_external_refs: string[]
   id_config: Record<string, IdAlgorithmConfig>
@@ -18,6 +20,7 @@ export interface NamespaceStats {
   prefix: string
   description: string
   isolation_mode: string
+  inbound_references: string
   deletion_mode: string
   status: string
   entity_counts: Record<string, number>
@@ -35,6 +38,7 @@ export interface CreateNamespaceRequest {
   prefix: string
   description?: string
   isolation_mode?: 'open' | 'strict'
+  inbound_references?: 'closed' | 'open'
   deletion_mode?: 'retain' | 'full'
   allowed_external_refs?: string[]
   id_config?: Record<string, IdAlgorithmConfig>
@@ -44,6 +48,7 @@ export interface CreateNamespaceRequest {
 export interface UpdateNamespaceRequest {
   description?: string
   isolation_mode?: 'open' | 'strict'
+  inbound_references?: 'closed' | 'open'
   deletion_mode?: 'retain' | 'full'
   allowed_external_refs?: string[]
   id_config?: Record<string, IdAlgorithmConfig>

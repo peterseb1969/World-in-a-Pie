@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "wip-archive"
-version = "0.5.0"
+version = "0.6.0"
 description = "WIP backup archive format contract and fresh-restore id remapping"
 readme = "README.md"
 requires-python = ">=3.11"

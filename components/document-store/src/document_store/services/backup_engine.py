@@ -538,6 +538,8 @@ class DirectBackupEngine:
             id_config=ns_doc.get("id_config"),
             allowed_external_refs=ns_doc.get("allowed_external_refs"),
             deletion_mode=ns_doc.get("deletion_mode"),
+            # Stored before the setting existed means closed, the default.
+            inbound_references=ns_doc.get("inbound_references", "closed"),
         )
 
     def _emit(
@@ -3591,6 +3593,7 @@ class DirectRestoreEngine:
             ("id_config", ns_config.id_config),
             ("allowed_external_refs", ns_config.allowed_external_refs),
             ("deletion_mode", ns_config.deletion_mode),
+            ("inbound_references", ns_config.inbound_references),
         ):
             if archived is None:
                 continue
@@ -4151,6 +4154,8 @@ class DirectRestoreEngine:
                 body["allowed_external_refs"] = ns_config.allowed_external_refs
             if ns_config.deletion_mode is not None:
                 body["deletion_mode"] = ns_config.deletion_mode
+            if ns_config.inbound_references is not None:
+                body["inbound_references"] = ns_config.inbound_references
 
         url = f"{self._registry_url}/api/registry/namespaces/{namespace}"
         headers = {
