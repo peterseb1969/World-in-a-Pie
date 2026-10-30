@@ -113,6 +113,8 @@ export interface NamespaceIntegritySummary {
   orphaned_term_refs: number
   inactive_template_refs: number
   orphaned_document_refs: number
+  /** References whose held document id lives in another namespace than the reference names. */
+  misplaced_document_refs: number
   orphaned_file_refs: number
   identity_hash_mismatches: number
 }

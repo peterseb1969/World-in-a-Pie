@@ -1239,6 +1239,29 @@ migrated"; read `registry_failed` too. If an earlier apply reported any
 `registry_status` starting with `error`, run the apply again. Apps using the
 typed client re-vendor `wip-client-0.66.0.tgz`.
 
+### Namespace validation checks a reference's namespace and names what its lookup resolves to; `@wip/client` 0.67.0
+
+The namespace validation job (`POST /api/document-store/backup/namespaces/{namespace}/validate`,
+and the job every fresh or merge restore starts) checked only that a
+document reference's held id exists. A fresh restore maps a reference's
+recorded namespace to the new one even when its target was not in the
+archive and so kept its old id. The result names the new namespace and an
+old id, and on the source install that id still exists, so the check passed
+it.
+
+- A held id that lives in a different namespace than the reference records
+  is a new error, `misplaced_document_ref`. The summary gains
+  `misplaced_document_refs`.
+- An orphaned or misplaced reference whose `lookup_value` differs from the
+  held id now says what that lookup resolves to on this install, or that it
+  could not be resolved there. That is the identifier the reference was
+  written with, and the one a repair would use.
+- `@wip/client` 0.67.0 types `misplaced_document_refs` on
+  `NamespaceIntegritySummary`.
+
+**Action:** none; a validation result may now report errors it missed
+before. Apps using the typed client re-vendor `wip-client-0.67.0.tgz`.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per

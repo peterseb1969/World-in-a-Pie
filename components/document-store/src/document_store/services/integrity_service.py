@@ -43,6 +43,7 @@ from wip_auth.document_identity import (
     referent_identity_fields,
     substitute_resolved_referents,
 )
+from wip_auth.resolve import EntityNotFoundError, resolve_entity_id
 
 from ..models.document import Document
 from ..models.file import File
@@ -60,7 +61,8 @@ class IntegrityIssue(BaseModel):
         ...,
         description=(
             "Issue type: orphaned_template_ref, inactive_template_ref, "
-            "orphaned_term_ref, orphaned_document_ref, orphaned_file_ref, "
+            "orphaned_term_ref, orphaned_document_ref, "
+            "misplaced_document_ref, orphaned_file_ref, "
             "identity_hash_mismatch, identity_field_missing, "
             "identity_resolution_missing"
         )
@@ -90,6 +92,7 @@ class IntegritySummary(BaseModel):
     orphaned_term_refs: int = 0
     inactive_template_refs: int = 0
     orphaned_document_refs: int = 0
+    misplaced_document_refs: int = 0
     orphaned_file_refs: int = 0
     identity_hash_mismatches: int = 0
 
@@ -248,15 +251,64 @@ def extract_term_ids(term_references: list[dict[str, Any]]) -> list[tuple[str, s
     return results
 
 
-def _extract_document_refs(document: Document) -> list[tuple[str, str]]:
-    """(field_path, document_id) for every resolved document reference."""
-    refs: list[tuple[str, str]] = []
+class _DocumentRef(BaseModel):
+    """One resolved document reference, as a document holds it."""
+
+    field_path: str
+    target: str
+    claimed_namespace: str | None
+    lookup_value: str | None
+
+
+def _extract_document_refs(document: Document) -> list[_DocumentRef]:
+    """Every resolved document reference, with the namespace it claims and
+    the lookup half it was resolved from."""
+    refs: list[_DocumentRef] = []
     for ref in document.references or []:
         resolved = ref.get("resolved") or {}
         target = resolved.get("document_id")
         if target:
-            refs.append((ref.get("field_path", ""), target))
+            lookup = ref.get("lookup_value")
+            refs.append(_DocumentRef(
+                field_path=ref.get("field_path", ""),
+                target=target,
+                claimed_namespace=resolved.get("namespace"),
+                lookup_value=lookup if isinstance(lookup, str) else None,
+            ))
     return refs
+
+
+async def _lookup_hint(
+    ref: _DocumentRef,
+    namespace: str,
+    hints: dict[tuple[str, str], str],
+) -> str:
+    """What the reference's lookup half resolves to on this install, as a
+    message suffix.
+
+    A reference carries two halves: the identifier it was written with and
+    the document id that identifier resolved to. A restore that re-mints ids
+    carries the second half over as it was, so for a target the archive did
+    not hold, the id can name another install's document, or this install's
+    document under the wrong namespace. The lookup half is what says which
+    document was meant. Naming its resolution here points the reader at the
+    repair. A lookup that is the held id itself adds nothing and gets no
+    hint. Read path: the resolver's cache is fine. The lookup resolves in
+    the referencing document's namespace, as it did when it was written.
+    """
+    lookup = ref.lookup_value
+    if not lookup or lookup == ref.target:
+        return ""
+    key = (lookup, namespace)
+    if key not in hints:
+        try:
+            resolved = await resolve_entity_id(lookup, "document", namespace)
+            hints[key] = f"; its lookup value '{lookup}' resolves to '{resolved}' here"
+        except EntityNotFoundError:
+            # Not found, ambiguous and Registry-unreachable all land here;
+            # the wording claims no more than that.
+            hints[key] = f"; its lookup value '{lookup}' could not be resolved here"
+    return hints[key]
 
 
 def _extract_file_refs(document: Document) -> list[tuple[str, str]]:
@@ -277,34 +329,58 @@ async def check_batch_references(
     batched ``$in`` query rather than a per-reference service call. References
     may point across namespaces — a document referencing one in the shared
     ``wip`` namespace is legitimate — so the probe is not namespace-scoped.
+
+    Existence alone is not enough, though. A reference also records the
+    namespace its target lives in, and the held id must be a document of
+    that namespace. A fresh restore maps the recorded namespace to the new
+    one even when the id itself was not re-minted (its target was not in the
+    archive), producing a reference that names the new namespace and an old
+    id. On the source install that id still exists, so an existence check
+    passes it while the reference silently points across namespaces.
     """
-    wanted_docs: dict[str, list[tuple[Document, str]]] = {}
+    wanted_docs: dict[str, list[tuple[Document, _DocumentRef]]] = {}
     wanted_files: dict[str, list[tuple[Document, str]]] = {}
     for document in documents:
-        for field_path, target in _extract_document_refs(document):
-            wanted_docs.setdefault(target, []).append((document, field_path))
+        for ref in _extract_document_refs(document):
+            wanted_docs.setdefault(ref.target, []).append((document, ref))
         for field_path, file_id in _extract_file_refs(document):
             wanted_files.setdefault(file_id, []).append((document, field_path))
 
     if wanted_docs:
-        found = set(
-            await Document.get_motor_collection().distinct(
-                "document_id", {"document_id": {"$in": list(wanted_docs)}}
-            )
-        )
+        # Every version of a document shares its namespace, so one row per
+        # document_id is the whole answer.
+        homes: dict[str, str] = {
+            row["_id"]: row["namespace"]
+            async for row in Document.get_motor_collection().aggregate([
+                {"$match": {"document_id": {"$in": list(wanted_docs)}}},
+                {"$group": {"_id": "$document_id", "namespace": {"$first": "$namespace"}}},
+            ])
+        }
+        hints: dict[tuple[str, str], str] = {}
         for target, holders in wanted_docs.items():
-            if target in found:
-                continue
-            for document, field_path in holders:
+            home = homes.get(target)
+            for document, ref in holders:
+                if home is None:
+                    issue_type = "orphaned_document_ref"
+                    message = f"Referenced document '{target}' not found"
+                elif ref.claimed_namespace and ref.claimed_namespace != home:
+                    issue_type = "misplaced_document_ref"
+                    message = (
+                        f"Reference names namespace '{ref.claimed_namespace}' "
+                        f"but document '{target}' lives in '{home}'"
+                    )
+                else:
+                    continue
+                message += await _lookup_hint(ref, document.namespace, hints)
                 issues.append(IntegrityIssue(
-                    type="orphaned_document_ref",
+                    type=issue_type,
                     severity="error",
                     document_id=document.document_id,
                     template_id=document.template_id,
                     version=document.version,
-                    field_path=field_path,
+                    field_path=ref.field_path,
                     reference=target,
-                    message=f"Referenced document '{target}' not found",
+                    message=message,
                 ))
 
     if wanted_files:
@@ -313,10 +389,10 @@ async def check_batch_references(
                 "file_id", {"file_id": {"$in": list(wanted_files)}}
             )
         )
-        for file_id, holders in wanted_files.items():
+        for file_id, file_holders in wanted_files.items():
             if file_id in found:
                 continue
-            for document, field_path in holders:
+            for document, field_path in file_holders:
                 issues.append(IntegrityIssue(
                     type="orphaned_file_ref",
                     severity="error",
@@ -592,6 +668,9 @@ async def check_all_documents(
         ),
         orphaned_document_refs=sum(
             1 for i in all_issues if i.type == "orphaned_document_ref"
+        ),
+        misplaced_document_refs=sum(
+            1 for i in all_issues if i.type == "misplaced_document_ref"
         ),
         orphaned_file_refs=sum(
             1 for i in all_issues if i.type == "orphaned_file_ref"

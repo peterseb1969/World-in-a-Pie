@@ -26,6 +26,7 @@ from document_store.services.integrity_service import (
     clear_integrity_cache,
 )
 from wip_auth.document_identity import compute_hash
+from wip_auth.resolve import EntityNotFoundError
 
 from .conftest import setup_registry_and_app
 
@@ -272,6 +273,128 @@ class TestReferences:
         result = await check_all_documents(namespace=NAMESPACE)
 
         assert "orphaned_term_ref" in _types(result)
+
+
+def _doc_ref(target, *, namespace=None, lookup=None, field_path="supervisor"):
+    resolved = {"document_id": target}
+    if namespace is not None:
+        resolved["namespace"] = namespace
+    ref = {"field_path": field_path, "reference_type": "document", "resolved": resolved}
+    if lookup is not None:
+        ref["lookup_value"] = lookup
+    return ref
+
+
+class TestReferenceHalves:
+    """A reference holds the id it resolved to, the namespace that id lives
+    in, and the identifier it was written with. A fresh restore re-mints the
+    ids it carried and passes the rest through, so a check that asks only
+    "does the id exist" misses a reference whose halves disagree."""
+
+    @pytest_asyncio.fixture
+    async def resolver(self, db, monkeypatch):
+        resolve = AsyncMock(side_effect=EntityNotFoundError("x", "document"))
+        monkeypatch.setattr(integrity_service, "resolve_entity_id", resolve)
+        return resolve
+
+    @pytest.mark.asyncio
+    async def test_an_id_living_in_another_namespace_than_claimed_is_an_error(
+        self, resolver
+    ):
+        # A fresh restore into a new namespace maps the recorded namespace
+        # even when the id was not re-minted: new namespace, old id. On the
+        # source install the old id exists, so existence alone passes it.
+        await _document("OLD-ID", namespace=OTHER_NAMESPACE)
+        await _document("D1", references=[_doc_ref("OLD-ID", namespace=NAMESPACE)])
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.status == "error"
+        assert _types(result) == ["misplaced_document_ref"]
+        assert result.summary.misplaced_document_refs == 1
+        assert result.summary.orphaned_document_refs == 0
+        assert result.issues[0].message == (
+            f"Reference names namespace '{NAMESPACE}' but document 'OLD-ID' "
+            f"lives in '{OTHER_NAMESPACE}'"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_cross_namespace_reference_that_says_so_is_healthy(self, resolver):
+        await _document("TARGET", namespace=OTHER_NAMESPACE)
+        await _document("D1", references=[_doc_ref("TARGET", namespace=OTHER_NAMESPACE)])
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.status == "healthy"
+
+    @pytest.mark.asyncio
+    async def test_an_orphan_names_what_its_lookup_resolves_to_here(self, resolver):
+        resolver.side_effect = None
+        resolver.return_value = "NEW-ID"
+        await _document("D1", references=[
+            _doc_ref("OLD-ID", namespace=NAMESPACE, lookup="other:P-7"),
+        ])
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert _types(result) == ["orphaned_document_ref"]
+        assert result.issues[0].message == (
+            "Referenced document 'OLD-ID' not found; its lookup value "
+            "'other:P-7' resolves to 'NEW-ID' here"
+        )
+        # Resolved where the reference was written: the holder's namespace.
+        resolver.assert_awaited_once_with("other:P-7", "document", NAMESPACE)
+
+    @pytest.mark.asyncio
+    async def test_a_misplaced_reference_names_its_lookup_too(self, resolver):
+        resolver.side_effect = None
+        resolver.return_value = "NEW-ID"
+        await _document("OLD-ID", namespace=OTHER_NAMESPACE)
+        await _document("D1", references=[
+            _doc_ref("OLD-ID", namespace=NAMESPACE, lookup="P-7"),
+        ])
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.issues[0].message.endswith(
+            "; its lookup value 'P-7' resolves to 'NEW-ID' here"
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_unresolvable_lookup_says_so(self, resolver):
+        await _document("D1", references=[
+            _doc_ref("OLD-ID", namespace=NAMESPACE, lookup="P-7"),
+        ])
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.issues[0].message == (
+            "Referenced document 'OLD-ID' not found; its lookup value "
+            "'P-7' could not be resolved here"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_that_is_the_held_id_adds_nothing(self, resolver):
+        await _document("D1", references=[
+            _doc_ref("OLD-ID", namespace=NAMESPACE, lookup="OLD-ID"),
+        ])
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.issues[0].message == "Referenced document 'OLD-ID' not found"
+        resolver.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_is_resolved_once_per_batch(self, resolver):
+        for doc_id in ("D1", "D2", "D3"):
+            await _document(doc_id, data={"patient_id": doc_id}, references=[
+                _doc_ref("OLD-ID", namespace=NAMESPACE, lookup="P-7"),
+            ])
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.summary.orphaned_document_refs == 3
+        assert resolver.await_count == 1
 
 
 # ---------------------------------------------------------------------------
