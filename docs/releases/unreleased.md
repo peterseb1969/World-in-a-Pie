@@ -1339,6 +1339,33 @@ it.
 **Action:** none; a validation result may now report errors it missed
 before. Apps using the typed client re-vendor `wip-client-0.67.0.tgz`.
 
+### A plain restore onto another install points references outside the archive at that install
+
+A plain (id-preserving) restore did not read the archive's referent table.
+Restored onto another install, the disaster-recovery case, every reference
+to an entity the archive does not carry kept the source install's id. That
+includes every reference into the `wip` namespace, whose vocabularies each
+install mints at its own bootstrap: template fields drawing on them, and
+documents' `term_references` and `references`.
+
+- The restore now resolves the referents as fresh and merge do, and rewrites
+  only those references. The archive's own ids are kept, as before.
+- A document whose identity field is such a term or reference is rehashed,
+  and its Registry row and uniqueness claim are re-keyed to the new hash, so
+  the next write of that identity versions it instead of creating a second
+  document.
+- On the install the archive came from, every referent resolves to itself
+  and every row is written exactly as archived.
+- The job result gains `referents`, `repointed_referents` and
+  `rehashed_documents`; a dry run reports the first two.
+- An unresolved referent keeps its id, and its warning says to restore the
+  namespace holding it first. Namespaces backed up separately must be
+  restored in dependency order: a reference into a namespace restored
+  later is not revisited.
+
+**Action:** none. Archives taken before the referent table existed restore
+as before, and say so.
+
 ### Fresh and merge restores point references outside the archive at this install's entities; `wip-archive` 0.5.0
 
 A fresh or merge restore rewrote references to the entities it carried, and

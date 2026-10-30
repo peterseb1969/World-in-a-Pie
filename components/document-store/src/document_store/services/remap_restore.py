@@ -460,41 +460,59 @@ class RemapRestore:
 
     def _rehash(self, row: dict[str, Any]) -> bool:
         """Recompute one remapped row's identity hash; True if it changed."""
-        from wip_auth.document_identity import (
-            build_referent_resolutions,
-            compute_hash,
-            extract_identity_values,
-            referent_identity_fields,
-            substitute_resolved_referents,
+        template_value = row.get("template_value") or ""
+        return rehash_document_row(
+            row,
+            self._identity_fields.get(template_value) or [],
+            self._template_fields.get(template_value) or [],
         )
 
-        template_value = row.get("template_value") or ""
-        identity_fields = self._identity_fields.get(template_value)
-        if not identity_fields:
-            return False
-        try:
-            values = extract_identity_values(row.get("data") or {}, identity_fields)
-            values = substitute_resolved_referents(
-                values,
-                referent_identity_fields(
-                    identity_fields,
-                    self._template_fields.get(template_value) or [],
-                ),
-                build_referent_resolutions(
-                    row.get("term_references"), row.get("references")
-                ),
-            )
-        except ValueError as exc:
-            logger.warning(
-                "Document %s cannot be rehashed (%s); leaving its hash "
-                "as archived", row.get("document_id"), exc,
-            )
-            return False
-        recomputed = compute_hash(values)
-        if recomputed != row.get("identity_hash"):
-            row["identity_hash"] = recomputed
-            return True
+
+def rehash_document_row(
+    row: dict[str, Any],
+    identity_fields: list[str],
+    template_fields: list[dict[str, Any]],
+) -> bool:
+    """Recompute a rewritten document row's identity hash in place; True if
+    it changed.
+
+    The feed is the one a write produces: the identity values, with a term-
+    or reference-typed identity field contributing the canonical id its
+    stored resolution names (term_references / references). A restore that
+    rewrote those resolutions must recompute, or the row carries a hash that
+    no longer describes its own feed and the next write of that identity
+    lands somewhere else. A row whose values cannot be read keeps its hash.
+    """
+    from wip_auth.document_identity import (
+        build_referent_resolutions,
+        compute_hash,
+        extract_identity_values,
+        referent_identity_fields,
+        substitute_resolved_referents,
+    )
+
+    if not identity_fields:
         return False
+    try:
+        values = extract_identity_values(row.get("data") or {}, identity_fields)
+        values = substitute_resolved_referents(
+            values,
+            referent_identity_fields(identity_fields, template_fields),
+            build_referent_resolutions(
+                row.get("term_references"), row.get("references")
+            ),
+        )
+    except ValueError as exc:
+        logger.warning(
+            "Document %s cannot be rehashed (%s); leaving its hash "
+            "as archived", row.get("document_id"), exc,
+        )
+        return False
+    recomputed = compute_hash(values)
+    if recomputed != row.get("identity_hash"):
+        row["identity_hash"] = recomputed
+        return True
+    return False
 
 
 async def plan_multi(

@@ -59,6 +59,7 @@ from .remap_restore import (
     RemapPlan,
     RemapSource,
     plan_multi,
+    rehash_document_row,
 )
 from .reporting_client import ReportingSyncClient
 from .synonym_migration import requalify_identity_synonyms
@@ -666,6 +667,103 @@ def _parity_gaps(parity: dict[str, Any]) -> list[dict[str, Any]]:
     return gaps
 
 
+def _drop_unchanged_mappings(remapper: IDRemapper) -> None:
+    """Forget referents that resolved to the id they already carry.
+
+    On the install an archive came from, every referent outside it resolves
+    to itself. Such a mapping changes nothing; dropping it lets a plain
+    restore see that nothing needs rewriting and write the rows as archived.
+    """
+    for id_map in (
+        remapper.terminology_map, remapper.term_map, remapper.template_map,
+        remapper.document_map, remapper.file_map,
+    ):
+        for old_id in [k for k, v in id_map.items() if k == v]:
+            del id_map[old_id]
+            remapper.external_documents.pop(old_id, None)
+
+
+class _PlainRestoreRewrite:
+    """Repoint a plain restore's references to entities outside the archive.
+
+    Only ids in the remapper's maps change, and those are all referents the
+    archive does not carry; the archive's own ids pass through every rewrite.
+
+    A rewritten reference can change a document's identity: a term- or
+    reference-typed identity field hashes the canonical id it resolves to.
+    Such a document is rehashed, and its Registry row (restored after the
+    documents) is re-keyed to the new hash, so the key it claims is the one
+    the next write of that identity computes.
+    """
+
+    def __init__(self, remapper: IDRemapper, reader: Any, sources: list[str]):
+        self.remapper = remapper
+        # Identity fields and field definitions per template version, from
+        # every archived template: the documents of one namespace may use a
+        # template of another namespace in the same archive.
+        self._templates: dict[tuple[str, int], dict[str, Any]] = {}
+        for src in sources:
+            for template in reader.read_entities("templates", namespace=src):
+                template_id = template.get("template_id")
+                if template_id:
+                    self._templates[(template_id, int(template.get("version") or 1))] = {
+                        "identity_fields": list(template.get("identity_fields") or []),
+                        "fields": list(template.get("fields") or []),
+                    }
+        self._new_hash: dict[str, str] = {}
+
+    @property
+    def rehashed_documents(self) -> int:
+        return len(self._new_hash)
+
+    def rewrite(
+        self, entity_type: str, entity: dict[str, Any], engine: DirectRestoreEngine
+    ) -> dict[str, Any]:
+        remap = {
+            "terms": self.remapper.remap_term,
+            "term_relations": self.remapper.remap_term_relation,
+            "templates": self.remapper.remap_template,
+        }.get(entity_type)
+        if remap is not None:
+            return cast(dict[str, Any], remap(entity))
+        if entity_type == "documents":
+            return self._rewrite_document(entity)
+        if entity_type == "registry_entries":
+            return self._rewrite_entry(entity, engine)
+        return entity
+
+    def _rewrite_document(self, entity: dict[str, Any]) -> dict[str, Any]:
+        row = cast(dict[str, Any], self.remapper.remap_document(entity))
+        if row == entity:
+            return row
+        # The template is the archive's own (its id passes through) or one
+        # outside the archive, whose definition this restore does not hold;
+        # the latter keeps its hash, as a fresh restore does.
+        template = self._templates.get(
+            (str(row.get("template_id")), int(row.get("template_version") or 1))
+        )
+        if template and rehash_document_row(
+            row, template["identity_fields"], template["fields"]
+        ):
+            self._new_hash[str(row.get("document_id"))] = row["identity_hash"]
+        return row
+
+    def _rewrite_entry(
+        self, entry: dict[str, Any], engine: DirectRestoreEngine
+    ) -> dict[str, Any]:
+        result = engine._rewrite_registry_entry(entry, self.remapper)
+        new_hash = (
+            self._new_hash.get(str(entry.get("entry_id")))
+            if entry.get("entity_type") == "documents" else None
+        )
+        key = result.get("primary_composite_key")
+        if new_hash and isinstance(key, dict) and key.get("identity_hash") != new_hash:
+            key = {**key, "identity_hash": new_hash}
+            result["primary_composite_key"] = key
+            result["primary_composite_key_hash"] = compute_composite_key_hash(key)
+        return result
+
+
 def _describe_gap(gap: dict[str, Any]) -> str:
     if gap["kind"] == "view":
         return f"view {gap['name']} missing"
@@ -826,6 +924,28 @@ class DirectRestoreEngine:
                             "allow_missing_identity=true to restore anyway."
                         )
 
+            # The archive's own ids are preserved — that is this mode's
+            # contract. References to entities it does NOT carry (the wip
+            # namespace's vocabularies, sibling namespaces) name the source
+            # install's ids, which on another install differ or do not
+            # exist; they are pointed at this install's entities. On the
+            # install the archive came from every referent resolves to
+            # itself, nothing is mapped, and rows are written as archived.
+            remapper = IDRemapper()
+            referents = await self._map_external_referents(
+                reader, manifest, remapper,
+                ", ".join(tgt for _src, tgt in targets),
+                unresolved_hint=(
+                    " — if it lives in a namespace restored separately, restore "
+                    "that namespace first, then this one"
+                ),
+            )
+            _drop_unchanged_mappings(remapper)
+            repoint = (
+                _PlainRestoreRewrite(remapper, reader, [src for src, _tgt in targets])
+                if remapper.total_mappings else None
+            )
+
             entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
             restore_order = [
                 "terminologies",
@@ -841,6 +961,8 @@ class DirectRestoreEngine:
                 self.result = {
                     "mode": "restore",
                     "dry_run": True,
+                    "referents": referents,
+                    "repointed_referents": remapper.total_mappings,
                     "namespaces": {
                         tgt: {
                             entity_type: (
@@ -897,6 +1019,8 @@ class DirectRestoreEngine:
 
                     for entity in reader.read_entities(entity_type, namespace=src):
                         entity.pop("_id", None)  # Strip MongoDB internal ID
+                        if repoint is not None:
+                            entity = repoint.rewrite(entity_type, entity, self)
                         batch.append(entity)
 
                         if len(batch) >= batch_size:
@@ -956,6 +1080,9 @@ class DirectRestoreEngine:
             if not skip_files and self._storage:
                 await self._restore_blobs(reader, targets[0][1])
 
+        self.result["referents"] = referents
+        self.result["repointed_referents"] = remapper.total_mappings
+        self.result["rehashed_documents"] = repoint.rehashed_documents if repoint else 0
         self.result["reporting_synced"] = list(self._reporting_synced)
         self._finish_reporting_verification(
             [tgt for _, tgt in targets], "reporting was not verified for this namespace"
@@ -1418,6 +1545,7 @@ class DirectRestoreEngine:
         manifest: Manifest,
         remapper: IDRemapper,
         label: str,
+        unresolved_hint: str = "",
     ) -> dict[str, Any]:
         """Point references to entities outside the archive at this install's
         entities (see referent_resolution).
@@ -1491,7 +1619,7 @@ class DirectRestoreEngine:
             self._emit(
                 "warning",
                 f"[{label}] referenced {problem}; references to it keep the "
-                "archived id",
+                f"archived id{unresolved_hint}",
             )
         hidden = len(problems) - _REFERENT_WARNING_CAP
         if hidden > 0:
