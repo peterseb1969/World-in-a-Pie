@@ -2822,18 +2822,26 @@ async def register_view(
         # admits exactly one SQL command — a ';'-separated second statement
         # fails at parse instead of executing — and the subselect wrap plus
         # the read-only transaction keep planning side-effect-free.
-        # Planned as the reader role: a definition may only reference what
-        # the read path can see.
+        # Planned on the caller's own connection, which a namespace-scoped
+        # key's is limited to its namespaces: planning EVALUATES stable
+        # functions while estimating (table_to_xml reads a table), and the
+        # error returned below would carry what they read.
         if not state.read_pool:
             raise HTTPException(status_code=503, detail="PostgreSQL not connected")
         try:
-            async with state.read_pool.acquire() as read_conn, read_conn.transaction(
+            async with _caller_read_connection(identity) as read_conn, read_conn.transaction(
                 readonly=True
             ):
                 await read_conn.execute(f'SET LOCAL search_path = "{schema}", public')
                 await read_conn.fetch(
-                    f"EXPLAIN SELECT * FROM ({view_sql}) _wip_view_check"  # nosec B608  # privileged caller SQL, run read-only as the reader role
+                    f"EXPLAIN SELECT * FROM ({view_sql}) _wip_view_check"  # nosec B608  # caller SQL, planned read-only as a role limited to what the caller may read
                 )
+        except asyncpg.InsufficientPrivilegeError as e:
+            # The same refusal the dependency check below gives, earlier.
+            raise HTTPException(
+                status_code=403,
+                detail=f"View references relations this key cannot read ({e}).",
+            ) from e
         except asyncpg.PostgresError as e:
             raise HTTPException(
                 status_code=400, detail=f"View SQL is invalid: {e}"

@@ -164,6 +164,22 @@ async def test_a_view_cannot_smuggle_a_read_through_a_function(scoped):
 
 
 @pytest.mark.asyncio
+async def test_view_validation_cannot_read_another_namespace_while_planning(scoped):
+    """Planning evaluates stable functions while estimating selectivity, so
+    an EXPLAIN alone runs table_to_xml; a failing cast then puts what it read
+    into the error. Registration must plan on the caller's own connection."""
+    sql = (
+        "SELECT 1 AS n FROM doc_probe__v1 WHERE length(title) = "
+        f"(table_to_xml('{SECRET}'::regclass, true, false, ''))::text::int"
+    )
+    async with _client(NSADMIN) as c:
+        r = await c.post(f"{P}/namespace/ns-a/views", json={"name": "v_explain", "sql": sql})
+    assert "SECRET-1" not in r.text
+    assert r.status_code == 403, r.text
+    assert "permission denied" in r.text
+
+
+@pytest.mark.asyncio
 async def test_registered_views_read_with_the_readers_privileges(scoped):
     """A view a privileged key registered over another namespace reads, for a
     scoped key's own SQL, only what that key could read directly."""
