@@ -4,6 +4,7 @@ This module handles user-facing namespaces (e.g., "wip", "dev", "prod").
 Each namespace has configurable ID algorithms per entity type.
 """
 
+import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -11,7 +12,9 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse
+from pydantic import ValidationError
 from pymongo.errors import DuplicateKeyError
 
 from wip_auth import UserIdentity
@@ -25,7 +28,7 @@ from ..models.api_models import (
     NamespaceUpdate,
 )
 from ..models.entry import RegistryEntry
-from ..models.id_algorithm import VALID_ENTITY_TYPES
+from ..models.id_algorithm import VALID_ENTITY_TYPES, validate_id_config_write
 from ..models.namespace import Namespace
 from ..services.auth import require_admin_key, require_api_key
 from ..services.id_prefixes import (
@@ -37,6 +40,25 @@ from ..services.id_prefixes import (
 from .grants import _resolve_permission
 
 router = APIRouter()
+logger = logging.getLogger("registry.namespaces")
+
+
+def id_config_view(ns: Namespace) -> dict[str, Any]:
+    """The namespace's id_config per entity type, defaults merged in.
+
+    A stored entry that cannot be read (written before namespace writes
+    were validated) is served as {"invalid": <reason>} rather than raised:
+    one bad namespace must not fail every namespace listing on the install.
+    Minting for that entity type still fails, with the same reason.
+    """
+    id_config: dict[str, Any] = {}
+    for entity_type in sorted(VALID_ENTITY_TYPES):
+        try:
+            id_config[entity_type] = ns.get_id_algorithm(entity_type).model_dump()
+        except ValueError as e:
+            logger.warning("namespace %s: unreadable id_config[%s]: %s", ns.prefix, entity_type, e)
+            id_config[entity_type] = {"invalid": str(e)}
+    return id_config
 
 
 @contextmanager
@@ -59,11 +81,7 @@ def _id_prefix_errors(namespace: str) -> Iterator[None]:
 
 def namespace_to_response(ns: Namespace) -> NamespaceResponse:
     """Convert a Namespace document to a response model."""
-    # Build id_config for response, merging defaults
-    id_config: dict[str, Any] = {}
-    for entity_type in VALID_ENTITY_TYPES:
-        config = ns.get_id_algorithm(entity_type)
-        id_config[entity_type] = config.model_dump()
+    id_config = id_config_view(ns)
 
     return NamespaceResponse(
         prefix=ns.prefix,
@@ -184,12 +202,7 @@ async def get_namespace_id_config(
     if perm == "none":
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
-    config = {}
-    for entity_type in VALID_ENTITY_TYPES:
-        algo = ns.get_id_algorithm(entity_type)
-        config[entity_type] = algo.model_dump()
-
-    return config
+    return id_config_view(ns)
 
 
 @router.post(
@@ -213,7 +226,7 @@ async def create_namespace(
             detail=f"Namespace already exists: {request.prefix}"
         )
 
-    id_config = request.id_config or {}
+    id_config = request.model_dump(exclude_unset=True).get("id_config") or {}
     with _id_prefix_errors(request.prefix):
         id_prefixes = await claim_for_write(request.prefix, id_config)
         ns = Namespace(
@@ -260,6 +273,15 @@ async def upsert_namespace(
     """
     ns = await Namespace.find_one({"prefix": prefix})
     update_data = request.model_dump(exclude_unset=True)
+    if update_data.get("id_config") is not None:
+        try:
+            update_data["id_config"] = validate_id_config_write(
+                update_data["id_config"], ns.id_config if ns is not None else None
+            )
+        except ValidationError as e:
+            raise RequestValidationError(
+                [{**err, "loc": ("body", "id_config", *err["loc"])} for err in e.errors()]
+            ) from e
     actor = request.updated_by
 
     new_deletion_mode = update_data.get("deletion_mode")

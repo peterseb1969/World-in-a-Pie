@@ -14,8 +14,9 @@ import secrets
 import string
 import uuid
 from datetime import UTC, datetime
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, model_validator
 
 
 class IdAlgorithmConfig(BaseModel):
@@ -53,6 +54,66 @@ DEFAULT_ID_CONFIG: dict[str, IdAlgorithmConfig] = {
 }
 
 VALID_ENTITY_TYPES = {"terminologies", "terms", "templates", "documents", "files"}
+
+IdEntityType = Literal["terminologies", "terms", "templates", "documents", "files"]
+
+
+class IdAlgorithmWrite(BaseModel):
+    """An id_config entry as a namespace write accepts it.
+
+    Strict where IdAlgorithmConfig is lenient. IdAlgorithmConfig reads what is
+    already stored, and must keep reading legacy values instead of failing on
+    them. A write must refuse anything that would be stored and then ignored
+    or misapplied: an unknown field is dropped on read, an unknown algorithm
+    fails every later mint, and a prefixed config without a prefix mints bare
+    numbers that collide across entity types.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    algorithm: Literal["uuid7", "uuid4", "prefixed", "nanoid", "pattern", "any"] = "uuid7"
+    prefix: str | None = None
+    pad: int = Field(default=6, ge=0)
+    length: int = Field(default=21, ge=1)
+    pattern: str | None = None
+
+    @model_validator(mode="after")
+    def algorithm_fields_present(self) -> "IdAlgorithmWrite":
+        if self.algorithm == "prefixed" and not self.prefix:
+            raise ValueError("algorithm 'prefixed' needs a non-empty prefix")
+        if self.algorithm == "pattern":
+            if not self.pattern:
+                raise ValueError("algorithm 'pattern' needs a pattern")
+            try:
+                re.compile(self.pattern)
+            except re.error as e:
+                raise ValueError(f"pattern is not a valid regular expression: {e}") from e
+        return self
+
+
+# What a namespace write accepts as id_config: only the five entity types.
+IdConfigWrite = dict[IdEntityType, IdAlgorithmWrite]
+_ID_CONFIG_WRITE: TypeAdapter[IdConfigWrite] = TypeAdapter(IdConfigWrite)
+
+
+def validate_id_config_write(
+    submitted: dict[str, Any], stored: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """The id_config to store for a namespace write, or pydantic.ValidationError.
+
+    A config re-sent exactly as stored (a bootstrap resume, a same-name
+    restore) is returned unchanged, even if it predates this validation:
+    refusing it would break those writes for a namespace that already
+    holds the value. The same rule grandfathers the prefix-uniqueness
+    check (services/id_prefixes.claim_for_write). Anything else is
+    validated, and returned with only the keys it was submitted with.
+    """
+    if stored is not None and submitted == stored:
+        return submitted
+    validated: dict[str, Any] = _ID_CONFIG_WRITE.dump_python(
+        _ID_CONFIG_WRITE.validate_python(submitted), exclude_unset=True
+    )
+    return validated
 
 
 class IdFormatValidator:

@@ -14,7 +14,9 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 import httpx
+from pydantic import ValidationError
 
+from ..models.id_algorithm import validate_id_config_write
 from ..models.namespace import Namespace
 from .id_prefixes import claim_for_write
 
@@ -88,6 +90,20 @@ class ImportService:
 
             if mode == "create" and existing_ns:
                 raise ValueError(f"Namespace '{prefix}' already exists. Use mode='merge' or 'replace'.")
+
+            # The manifest's id_config is stored as-is below (create, replace),
+            # so it gets the same validation as a namespace write, before
+            # anything is written. Replacing a namespace with the config it
+            # already holds is grandfathered, like an upsert re-sending its
+            # stored value; a merge into an existing namespace stores none.
+            if not (existing_ns and mode == "merge"):
+                try:
+                    manifest["id_config"] = validate_id_config_write(
+                        manifest.get("id_config") or {},
+                        existing_ns.id_config if existing_ns else None,
+                    )
+                except ValidationError as e:
+                    raise ValueError(f"Invalid export archive: manifest id_config: {e}") from e
 
             # Create or update namespace based on mode (CASE-344).
             #

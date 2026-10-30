@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field
 
 from .entry import SourceInfo, Synonym
+from .id_algorithm import IdConfigWrite
 
 # Per-item results keep their reason statuses (already_exists, not_found,
 # forbidden, ...) — callers branch on them by value. An item whose status is
@@ -44,7 +45,7 @@ class NamespaceCreate(StrictModel):
         default_factory=list,
         description="For open mode, optional allowlist of external namespace prefixes"
     )
-    id_config: dict[str, Any] | None = Field(
+    id_config: IdConfigWrite | None = Field(
         default=None,
         description="Per-entity-type ID algorithm config. Defaults to UUID7 for all."
     )
@@ -61,6 +62,8 @@ class NamespaceUpdate(StrictModel):
     description: str | None = None
     isolation_mode: str | None = None
     allowed_external_refs: list[str] | None = None
+    # Validated in the handler, not here: a value re-sent exactly as stored
+    # is accepted even if it predates validation (validate_id_config_write).
     id_config: dict[str, Any] | None = None
     deletion_mode: str | None = Field(
         default=None,
