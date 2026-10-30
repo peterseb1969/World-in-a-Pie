@@ -8,7 +8,7 @@ libs/wip-proxy/README.md sha256:35e6262638a97d55 reviewed:a66e110f
 docs/wip-deployable-app-contract.md sha256:d4c260180420c3ac reviewed:9f8f08fb
 docs/playbooks/app-builder/build-app.md sha256:732acb6b731e64ca reviewed:fe514f02
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
-scaffold/templates/claude-md/app.md sha256:4152760bea0a71ec reviewed:9f8f08fb
+scaffold/templates/claude-md/app.md sha256:ce6f1c0aa58c6a8b reviewed:70de3aa3
 -->
 # WIP build card — Phase 4: writing the app
 
@@ -36,7 +36,7 @@ scaffold/templates/claude-md/app.md sha256:4152760bea0a71ec reviewed:9f8f08fb
 </QueryClientProvider>
 ```
 - `QueryClientProvider` outermost, `WipProvider` inside. Both are required; `useWipClient()` throws outside `WipProvider`.
-- Create the client once at the root. Behind the proxy pass **no `auth`** — the proxy injects the key.
+- Create the client once at the root. Behind the proxy pass **no `auth`**: the proxy injects the key.
 
 ## `baseUrl` rules
 - Browser, behind your `@wip/proxy` mount: `` `${import.meta.env.BASE_URL}wip` `` (`'/wip'` is only correct when the app is served at `/`).
@@ -48,14 +48,15 @@ scaffold/templates/claude-md/app.md sha256:4152760bea0a71ec reviewed:9f8f08fb
 ```ts
 router.use('/wip', wipProxy({
   baseUrl: process.env.WIP_BASE_URL!,
+  apiKey: process.env.WIP_API_KEY,
   apiKeyFile: process.env.WIP_API_KEY_FILE,
   defaultNamespace: process.env.WIP_NAMESPACE,
 }))
 router.use(express.json())   // body parsers AFTER the proxy
 ```
-- The proxy streams the raw request body. If a body parser such as `express.json()` runs before it, the body is drained and an empty one is forwarded. Mount the proxy above every parser, including an app-level `app.use(express.json())`.
-- Use `apiKeyFile` (it reads the wip-deploy secrets file, so a rotated key is picked up on restart) instead of a baked `apiKey`.
-- Your key spans several namespaces. Set `defaultNamespace` and/or pass `namespace` explicitly, or value-form template queries return 422.
+- The proxy streams the raw body: a parser such as `express.json()` before it drains the body and an empty one is forwarded. Mount the proxy above every parser, app-level ones included.
+- Deployed, the app's own key comes as `WIP_API_KEY`; run locally, `.env`'s `WIP_API_KEY_FILE` wins. Point it at `app-<name>-api-key` once the app is installed.
+- Your key spans several namespaces: set `defaultNamespace` or pass `namespace`, or value-form template queries return 422.
 - File downloads: `GET <mount>/files/:fileId/content` through the proxy. Internal storage URLs never reach the browser.
 - All routes live on an `express.Router()` mounted under `APP_BASE_PATH`.
 

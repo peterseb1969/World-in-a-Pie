@@ -70,6 +70,6 @@ red at 300k tokens used. From 300k on, start no new work: finish or park the cur
 | A PoNIF in depth | `docs/WIP_PoNIFs.md` |
 | Why WIP is this way | `docs/Vision.md` |
 | Client libraries | `libs/wip-client-README.md`, `libs/wip-react-README.md`, `libs/wip-proxy-README.md` |
-| The app's runtime key | `WIP_API_KEY_FILE` in `.env` (the wip-deploy secrets file) |
+| The app's runtime key | its own `app-<name>` key, derived from `wip-app.yaml` and injected by the deployer; outside the deployer, `WIP_API_KEY_FILE` in `.env` — repoint it at `app-<name>-api-key` once the app is in the install |
 
 Open a depth document only when a card does not answer the question.

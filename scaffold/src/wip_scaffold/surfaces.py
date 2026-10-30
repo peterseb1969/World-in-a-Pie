@@ -261,16 +261,14 @@ def env_surface(key_file: str) -> Surface:
     """Create-time .env pointing the runtime at the live secrets FILE, not a
     baked plaintext key — a baked key strands the fleet the moment the
     deploy key rotates; a file path makes rotation a restart-only event.
-    The emitted text reproduces the legacy script byte-for-byte
-    (golden-pinned output, citation predates the no-citations rule)."""
-    body = f"""# Runtime key SOURCE — the live wip-deploy secrets file (CASE-495).
-# Resolved at app startup (like the MCP server's WIP_API_KEY_FILE), so a key
-# rotation or target-redeploy is picked up on restart rather than baked stale
-# here. This is the deployment's admin/proxy key and spans all namespaces — a
-# cross-namespace console uses it as-is. A data-model app that wants a
-# least-privilege, namespace-scoped key can provision one (POST
-# /api/registry/api-keys with "namespaces" + "grant_permission") and repoint
-# WIP_API_KEY_FILE below at its own secrets file.
+    The emitted text is golden-pinned."""
+    body = f"""# Runtime key SOURCE when the app runs outside the deployer: a key file,
+# resolved at app startup (like the MCP server's WIP_API_KEY_FILE), so a key
+# rotation or redeploy is picked up on restart rather than baked stale here.
+# It starts at the install's master key. Once the app is part of the install
+# (wip-deploy add-app), point it at the app's own key, app-<name>-api-key in
+# the same directory: under the deployer the app runs with that key, and
+# developing with the master key hides every call it will refuse.
 WIP_API_KEY_FILE={key_file}
 """
     return Surface(

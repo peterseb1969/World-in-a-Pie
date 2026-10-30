@@ -33,31 +33,32 @@ Your app's namespace is `__APP_NAMESPACE__`. It is the same name on every instal
 
 **Iterating on the model.** Your development install is yours: create, change and delete terminologies, templates and test documents in `__APP_NAMESPACE__` freely while the model settles. To start over, delete the namespace (`mcp__wip__delete_namespace(prefix="__APP_NAMESPACE__")`, or `DELETE /api/registry/namespaces/__APP_NAMESPACE__`; the API honours the namespace's deletion mode) and bootstrap again. A throwaway namespace for an experiment is an ordinary namespace you name and delete yourself.
 
-**Important:** MCP tool calls use the privileged admin key, so always pass `namespace=__APP_NAMESPACE__` explicitly when modeling. Your app's runtime key comes from `WIP_API_KEY_FILE` in `.env` (the wip-deploy secrets file) — see **API Key** below.
+**Important:** MCP tool calls use the privileged admin key, so always pass `namespace=__APP_NAMESPACE__` explicitly when modeling. Your app runs with a key of its own — see **API Key** below.
 
 ## API Key
 
 The MCP server resolves its key from `WIP_API_KEY_FILE` (the live wip-deploy secrets file) — see `.mcp.json`. This is fine for data modeling via MCP tools.
 
-**For your app's runtime API calls**, `.env` carries `WIP_API_KEY_FILE` pointing at that same live file. Resolve the key from the file at startup — the `@wip/proxy` `apiKeyFile` option does this for you, mirroring the MCP server — rather than baking a plaintext key. A key rotation or target-redeploy is then picked up on restart instead of stranding a stale `.env`. This is the deployment's admin/proxy key and spans all namespaces, which a cross-namespace console needs as-is.
-`.env` was written with `WIP_API_KEY_FILE=__WIP_API_KEY_FILE__` — no plaintext key is baked in. The runtime reads the file at startup, so rotating the deploy key or redeploying the target needs no edit here.
+**Your app's runtime key** is its own, not the install's. When the app runs under `wip-deploy`, the deployer derives a key named `app-<name>` (`<name>` is `metadata.name` in `apps/<name>/wip-app.yaml`) from the manifest and injects it as `WIP_API_KEY`: `admin` on the namespaces in `spec.namespaces`, `read` or `write` on those in `spec.namespace_access`, `read` on `wip`, nothing else. Only an app declaring `privileged_key: true` (an admin console) gets the install's master key instead. With `admin` on its namespaces the app's own key runs the bootstrap: the Registry lets it create a namespace the install reserves for it, with exactly the reserved settings, and register that namespace's reporting views.
+
+When you run the app outside the deployer, `.env` names the key file instead. Resolve the key from the file at startup — the `@wip/proxy` `apiKeyFile` option does this for you, mirroring the MCP server — rather than baking a plaintext key, so a key rotation or redeploy is picked up on restart.
 
 ```bash
 # .env (already created)
 WIP_API_KEY_FILE=__WIP_API_KEY_FILE__
 ```
 
-**Least-privilege (optional).** The deploy key is admin-scoped. If this app owns a single namespace and you want a least-privilege key, provision one and repoint `WIP_API_KEY_FILE` at its own secrets file:
+It starts out pointing at the install's master key, because the app's own key exists only once the app is part of the install. Once it is (`wip-deploy add-app`), repoint it at the app's key, in the same secrets directory:
+
 ```bash
-curl -k -X POST https://localhost:8443/api/registry/api-keys \
-  -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \
-  -d '{"name": "__APP_SLUG__", "namespaces": ["__APP_NAMESPACE__"], "grant_permission": "write"}'
+WIP_API_KEY_FILE=<that directory>/app-<name>-api-key
 ```
-Run the **bootstrap** with the deploy key, not this one: no namespace-scoped key can create or update a namespace. If the app re-registers reporting views at startup (`server/seed/views/`), the runtime key needs `"grant_permission": "admin"` — view registration requires namespace admin, and `write` is not enough.
 
-**Multi-namespace key → pass `namespace` explicitly.** The deploy admin/proxy key spans all namespaces, so WIP cannot derive one for you — pass `namespace=__APP_NAMESPACE__` on API calls that need scoping, or set `defaultNamespace` on `@wip/proxy` to scope reads. A single-namespace key (the least-privilege opt-in above) gets automatic derivation instead.
+Do this as early as you can. Under the master key every call is allowed, so a call the app's own key will be refused — a namespace not in the manifest, a write where it has only `read` — passes in development and fails only when deployed.
 
-**Grants:** writes need an explicit namespace grant. If you provision a least-privilege key, pass `grant_permission` on `create_api_key` / `POST /api/registry/api-keys`, or add a grant afterwards (`create_grant` MCP tool, `registry.createGrants` in @wip/client, or `POST /api/registry/namespaces/<ns>/grants`). Grant subject for api keys is the bare key name.
+**Multi-namespace key → pass `namespace` explicitly.** The app's key spans at least two namespaces (its own and `wip`), and the master key spans all, so WIP cannot derive one for you — pass `namespace=__APP_NAMESPACE__` on API calls that need scoping, or set `defaultNamespace` on `@wip/proxy` to scope reads.
+
+**Another namespace** is a manifest change (`spec.namespaces` to own it, `spec.namespace_access` to read or write it), or, on one install only, an operator's `wip-deploy app-namespace add`. Do not hand-provision keys or grants for the app: the deployer re-derives its key on every apply.
 
 **Key management:** Runtime keys can be listed, updated, and revoked via the Registry API. See WIP's `docs/api-key-management.md` for details.
 
