@@ -2,13 +2,13 @@
 docs/technology-stack.md sha256:35a66855d47b3bc4 reviewed:ea985986
 docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
 docs/WIP_DevGuardrails.md sha256:30130d07053d7ac5 reviewed:fe514f02
-libs/wip-client/README.md sha256:b24b17a0eb14e1ce reviewed:a66e110f
+libs/wip-client/README.md sha256:7f5f9fd97bb1fe1d reviewed:57d02741
 libs/wip-react/README.md sha256:9e71f0ba4a17d97a reviewed:a66e110f
 libs/wip-proxy/README.md sha256:35e6262638a97d55 reviewed:a66e110f
-docs/wip-deployable-app-contract.md sha256:22fdb5b3d6fb0ce9 reviewed:fe514f02
+docs/wip-deployable-app-contract.md sha256:afb09245c3260780 reviewed:57d02741
 docs/playbooks/app-builder/build-app.md sha256:732acb6b731e64ca reviewed:fe514f02
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
-scaffold/templates/claude-md/app.md sha256:85a39791287532bb reviewed:108302b4
+scaffold/templates/claude-md/app.md sha256:2d778e237d5848ea reviewed:57d02741
 -->
 # WIP build card — Phase 4: writing the app
 
@@ -80,8 +80,9 @@ router.use(express.json())   // body parsers AFTER the proxy
 - Namespace exists → use it as-is: no schema reconciliation, no "templates differ" check, no merge.
 - Exists but no `<NS_PREFIX>_BOOTSTRAP_RECORD` and **no documents** → `incomplete`: offer to resume. Has documents → `resume_blocked`: show namespace and doc count, offer nothing.
 - The bootstrap writes the namespace-prefixed record (e.g. `KB_BOOTSTRAP_RECORD`) **last**; the legacy literal `BOOTSTRAP_RECORD` is still accepted.
-- Build from `templates/bootstrap/*.template` (their header comments are the depth: `checkStatus`/`runBootstrap`, `GET /server-api/bootstrap/status`, `POST /server-api/bootstrap/run` SSE, `BootstrapGate.tsx`), then delete `templates/bootstrap/`.
-- Seeds: `server/seed/terminologies/<VALUE>.json`, `server/seed/templates/<NN>_<VALUE>.json` (include the record template). Read from `SEED_DIR`, default `<cwd>/server/seed`. Ship them in the runtime image.
+- Build from `templates/bootstrap/*.template` (their header comments are the depth), then delete `templates/bootstrap/`.
+- Seeds: `server/seed/terminologies/<VALUE>.json`, `server/seed/templates/<NN>_<VALUE>.json` (include the record template). Read from `SEED_DIR`, default `<cwd>/server/seed`.
+- Run the bootstrap with the deploy key; scoped keys cannot create namespaces. A runtime key re-registering `server/seed/views/` needs namespace `admin`.
 - No restore UI in the app; restore is console-initiated.
 
 ## DevGuardrails essentials (Guides 1–7)
