@@ -17,7 +17,12 @@ spec:
       name: kb
       env: WIP_NAMESPACE
       settings: {description: "kb app data (bootstrap created)"}
-    - {role: library, name: library, env: KB_LIBRARY_NAMESPACE}
+    # The bootstrap builds this create body in code (server/lib/bootstrap.ts),
+    # not from a seed file: the library may reference the corpus namespace.
+    - role: library
+      name: library
+      env: KB_LIBRARY_NAMESPACE
+      settings: {isolation_mode: open, allowed_external_refs: [kb], deletion_mode: retain}
   image:
     name: wip-kb
     # App lives in its own repo (WIP-KB).
