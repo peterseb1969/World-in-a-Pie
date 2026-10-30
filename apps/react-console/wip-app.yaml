@@ -9,6 +9,9 @@ metadata:
     auth-gateway via X-WIP-User headers; no per-app OIDC client.
 
 spec:
+  # The admin console manages namespaces, grants, keys and backups across the
+  # install, so it is the one app that holds the master key (api-key).
+  privileged_key: true
   image:
     name: react-console
     # App lives in its own repo (WIP-ReactConsole).

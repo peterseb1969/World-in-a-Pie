@@ -5,7 +5,7 @@ docs/WIP_DevGuardrails.md sha256:30130d07053d7ac5 reviewed:fe514f02
 libs/wip-client/README.md sha256:7f5f9fd97bb1fe1d reviewed:57d02741
 libs/wip-react/README.md sha256:9e71f0ba4a17d97a reviewed:a66e110f
 libs/wip-proxy/README.md sha256:35e6262638a97d55 reviewed:a66e110f
-docs/wip-deployable-app-contract.md sha256:d766449a1b8632d2 reviewed:d1653035
+docs/wip-deployable-app-contract.md sha256:aa1802ff3acd6a11 reviewed:e93ded7b
 docs/playbooks/app-builder/build-app.md sha256:732acb6b731e64ca reviewed:fe514f02
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
 scaffold/templates/claude-md/app.md sha256:0bb5acc49a2e3f43 reviewed:a7c74e27
@@ -55,7 +55,7 @@ router.use(express.json())   // body parsers AFTER the proxy
 ```
 - The proxy streams the raw request body. If a body parser such as `express.json()` runs before it, the body is drained and an empty one is forwarded. Mount the proxy above every parser, including an app-level `app.use(express.json())`.
 - Use `apiKeyFile` (it reads the wip-deploy secrets file, so a rotated key is picked up on restart) instead of a baked `apiKey`.
-- The deploy key spans all namespaces. Set `defaultNamespace` and/or pass `namespace` explicitly, or value-form template queries return 422.
+- Your key spans several namespaces. Set `defaultNamespace` and/or pass `namespace` explicitly, or value-form template queries return 422.
 - File downloads: `GET <mount>/files/:fileId/content` through the proxy. Internal storage URLs never reach the browser.
 - All routes live on an `express.Router()` mounted under `APP_BASE_PATH`.
 

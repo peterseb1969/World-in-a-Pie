@@ -217,7 +217,7 @@ def collect_required_secrets(
     # plaintext, generated on first apply and stable thereafter — the
     # config-file key survives Mongo rebuilds because its material
     # lives here, not in the registry's api_keys collection.
-    names.update(api_key_secret_names(deployment))
+    names.update(api_key_secret_names(deployment, apps))
 
     # Garage object storage (CASE-864): its secrets live in the rendered
     # garage.toml and in document-store's env, not in garage's own env

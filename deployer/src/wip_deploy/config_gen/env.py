@@ -22,6 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal as TypingLiteral
 
+from wip_deploy.config_gen.api_keys import app_api_key
 from wip_deploy.config_gen.mongodb import (
     MONGODB_COMPONENT,
     ROOT_PASSWORD_ENV,
@@ -347,6 +348,18 @@ def _mongo_env(
     return []
 
 
+def _app_key_env(owner: Component | App) -> list[EnvVar]:
+    """WIP_API_KEY for an app: its own derived key (config_gen/api_keys.py),
+    never the master key. Nothing for components or a privileged_key app,
+    which declare their key themselves."""
+    if not isinstance(owner, App):
+        return []
+    key = app_api_key(owner)
+    if key is None:
+        return []
+    return [EnvVar(name="WIP_API_KEY", source=EnvSource(from_secret=key.secret_name))]
+
+
 def resolve_component_env(
     component: Component | App,
     deployment: Deployment,
@@ -412,6 +425,7 @@ def resolve_component_env(
     required_vars += _nats_env(component, deployment, components, apps)
     required_vars += _mongo_env(component, deployment, components, apps)
     required_vars += namespace_env(component)
+    required_vars += _app_key_env(component)
 
     return ResolvedEnv(
         required=_resolve(required_vars, skip_inactive=False),

@@ -12,6 +12,18 @@ metadata:
     to keep /apps/kb on the canonical instance.
 
 spec:
+  # Namespaces this app owns. The install reserves them, and the app's own key
+  # (admin on them) creates them exactly as reserved. Settings mirror what the
+  # app's bootstrap sends on create, which must equal the reservation.
+  namespaces:
+    - role: main
+      name: kb-libdev
+      env: WIP_NAMESPACE
+      settings: {description: "kb-libdev app data (bootstrap created)"}
+  # The library namespace belongs to wip-kb; this parallel instance shares it.
+  # Write access is assumed from the shared-library design, not checked.
+  namespace_access:
+    - {namespace: library, permission: write}
   image:
     name: dev-kb
     # Distinct image/container name (wip-dev-kb) so it never clobbers the
@@ -29,7 +41,6 @@ spec:
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: WIP_API_KEY, source: {from_secret: api-key}}
       - {name: PORT, source: {literal: "3012"}}
       - {name: APP_BASE_PATH, source: {literal: /apps/dev-kb}}
       - {name: NODE_ENV, source: {literal: production}}
@@ -38,7 +49,6 @@ spec:
       # own data, not the canonical kb namespace. KB_LIBRARY_NAMESPACE is
       # bootstrap-only (seeds the library on a fresh deploy); a running deploy is
       # unaffected since the namespaces already exist.
-      - {name: WIP_NAMESPACE, source: {literal: kb-libdev}}
       - {name: KB_LIBRARY_NAMESPACE, source: {literal: library}}
       - {name: VITE_KB_NAMESPACE, source: {literal: kb-libdev}}
       - {name: VITE_LIBRARY_NAMESPACE, source: {literal: library}}

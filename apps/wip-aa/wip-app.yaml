@@ -10,6 +10,16 @@ metadata:
     per CASE-376; mirrors apps/wip-kb/wip-app.yaml.
 
 spec:
+  # Namespaces this app owns. The install reserves them, and the app's own key
+  # (admin on them) creates them exactly as reserved. Settings mirror what the
+  # app's bootstrap sends on create, which must equal the reservation.
+  namespaces:
+    - role: main
+      name: aa
+      env: WIP_NAMESPACE
+      settings:
+        description: "AuthorAssist app data (bootstrap created)"
+        deletion_mode: full
   image:
     name: wip-aa
     # App lives in its own repo (WIP-AA). No containerized build has been
@@ -30,11 +40,9 @@ spec:
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: WIP_API_KEY, source: {from_secret: api-key}}
       - {name: PORT, source: {literal: "3014"}}
       - {name: APP_BASE_PATH, source: {literal: /apps/aa}}
       - {name: NODE_ENV, source: {literal: production}}
-      - {name: WIP_NAMESPACE, source: {literal: "aa"}}
     optional:
       # AskBar NL-query + AI manuscript import use Anthropic. Both
       # degrade gracefully when the key is unset.

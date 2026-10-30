@@ -531,6 +531,15 @@ class AppNamespace(WIPModel):
         return v
 
 
+class NamespaceAccess(WIPModel):
+    """Access an app's key needs to a namespace it does not own (one another
+    app owns, or a shared one). Its own namespaces (`namespaces`) get
+    `admin`; the platform's `wip` namespace gets `read` without asking."""
+
+    namespace: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
+    permission: Literal["read", "write"] = "read"
+
+
 class ComponentMetadata(WIPModel):
     name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
     category: Literal["core", "optional", "infrastructure"]
@@ -557,8 +566,12 @@ class ComponentSpec(WIPModel):
     # image's default CMD is wrong (e.g., mismatched port) or when the
     # service uses a non-uvicorn entry point (e.g., `python -m wip_mcp`).
     command: list[str] | None = None
-    # Apps only (see App): the namespaces the app owns on the install.
+    # Apps only (see App): the namespaces the app owns on the install, the
+    # other namespaces its key may use, and whether it is the rare app that
+    # holds the install's master key instead of a key of its own.
     namespaces: list[AppNamespace] = Field(default_factory=list)
+    namespace_access: list[NamespaceAccess] = Field(default_factory=list)
+    privileged_key: bool = False
 
     @model_validator(mode="after")
     def namespaces_well_formed(self) -> ComponentSpec:
@@ -625,9 +638,9 @@ class Component(WIPModel):
 
     @model_validator(mode="after")
     def no_namespaces(self) -> Component:
-        if self.spec.namespaces:
+        if self.spec.namespaces or self.spec.namespace_access or self.spec.privileged_key:
             raise ValueError(
-                f"component {self.metadata.name!r}: namespaces are declared by apps, "
-                "not platform components"
+                f"component {self.metadata.name!r}: namespaces, namespace_access and "
+                "privileged_key are declared by apps, not platform components"
             )
         return self

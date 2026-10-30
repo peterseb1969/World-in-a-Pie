@@ -16,6 +16,7 @@ k8s mounts it from a Secret. Renderers only serialize.
 from __future__ import annotations
 
 import json
+from typing import Literal
 
 from wip_deploy.secrets_backend.base import ResolvedSecrets
 from wip_deploy.spec import App, Component, Deployment
@@ -62,14 +63,53 @@ CANARY_NAMESPACE = "wip-canary-unassigned"
 CANARY_KEY = SpecAPIKey(name=CANARY_KEY_NAME, namespaces=[CANARY_NAMESPACE])
 
 
-def effective_api_keys(deployment: Deployment) -> list[SpecAPIKey]:
-    """The config-file keys an install carries: its spec's, plus the canary."""
-    return [*deployment.spec.auth.api_keys, CANARY_KEY]
+# An app's own key is named after the app, so `rotate-key app-<name>` names it.
+APP_KEY_PREFIX = "app-"
 
 
-def api_key_secret_names(deployment: Deployment) -> list[str]:
+def app_api_key(app: App) -> SpecAPIKey | None:
+    """The key an app runs with, derived from its manifest; None for the
+    app that declares `privileged_key` (it holds the master key instead).
+
+    `admin` on every namespace the app owns (`spec.namespaces`): its
+    bootstrap creates them through their reservation and registers their
+    views. `read` or `write` on each `spec.namespace_access` entry. `read`
+    on the platform's `wip` namespace, whose vocabularies every app may
+    browse. Nothing else: no admin group, no other namespace.
+    """
+    if app.spec.privileged_key:
+        return None
+    owned = [n.name for n in app.spec.namespaces]
+    grants: dict[str, Literal["read", "write", "admin"]] = dict.fromkeys(owned, "admin")
+    for access in app.spec.namespace_access:
+        grants[access.namespace] = access.permission
+    scope = list(dict.fromkeys([*grants, "wip"]))
+    return SpecAPIKey(
+        name=f"{APP_KEY_PREFIX}{app.metadata.name}",
+        namespaces=scope,
+        grants={ns: perm for ns, perm in grants.items() if perm != "read"},
+        owner=f"app:{app.metadata.name}",
+    )
+
+
+def app_api_keys(deployment: Deployment, apps: list[App]) -> list[SpecAPIKey]:
+    """The derived keys of the install's enabled apps."""
+    enabled = {a.name for a in deployment.spec.apps if a.enabled}
+    keys = (app_api_key(a) for a in apps if a.metadata.name in enabled)
+    return [k for k in keys if k is not None]
+
+
+def effective_api_keys(
+    deployment: Deployment, apps: list[App] | None = None
+) -> list[SpecAPIKey]:
+    """The config-file keys an install carries: its spec's, one per enabled
+    app (derived, never stored in the spec), plus the canary."""
+    return [*deployment.spec.auth.api_keys, *app_api_keys(deployment, apps or []), CANARY_KEY]
+
+
+def api_key_secret_names(deployment: Deployment, apps: list[App] | None = None) -> list[str]:
     """Secret-backend names backing the config-file keys."""
-    return [k.secret_name for k in effective_api_keys(deployment)]
+    return [k.secret_name for k in effective_api_keys(deployment, apps)]
 
 
 def declares_api_keys_file(owner: Component | App) -> bool:
@@ -101,7 +141,7 @@ def mounts_auth_config_dir(owner: Component | App) -> bool:
 
 
 def generate_api_keys_json(
-    deployment: Deployment, secrets: ResolvedSecrets
+    deployment: Deployment, secrets: ResolvedSecrets, apps: list[App] | None = None
 ) -> str:
     """The WIP_AUTH_API_KEYS_FILE document. Every install has one: the
     canary is always in it.
@@ -112,7 +152,7 @@ def generate_api_keys_json(
     render and false drift in `status --diff`.
     """
     entries = []
-    for k in effective_api_keys(deployment):
+    for k in effective_api_keys(deployment, apps):
         entries.append(
             {
                 "name": k.name,
@@ -125,6 +165,9 @@ def generate_api_keys_json(
                     "Canary — authenticates, authorized for nothing; used by "
                     "wip-deploy verify --security --live"
                     if k.name == CANARY_KEY_NAME
+                    else f"App key for {k.owner.removeprefix('app:')} — derived from "
+                    "its manifest (spec.namespaces, spec.namespace_access)"
+                    if k.owner.startswith("app:")
                     else "Spec-declared key (wip-deploy auth.api_keys) — "
                     "scope and grants resolve locally in wip-auth"
                 ),

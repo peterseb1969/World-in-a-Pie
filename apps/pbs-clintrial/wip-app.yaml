@@ -11,6 +11,14 @@ metadata:
     (registered views + recursive CTEs over term_relations).
 
 spec:
+  # Namespaces this app owns. The install reserves them, and the app's own key
+  # (admin on them) creates them exactly as reserved. Settings mirror what the
+  # app's bootstrap sends on create, which must equal the reservation.
+  # Not checked against the app's source (not on the platform host): the
+  # namespace is taken from this manifest's own env/comments.
+  namespaces:
+    - {role: main, name: pbs-clintrial, env: WIP_NAMESPACE}
+    - {role: ref, name: pbs-clintrial-ref, env: WIP_REF_NAMESPACE}
   image:
     name: pbs-clintrial
     # App lives in its own repo (../pbs-clintrial). No published image
@@ -37,12 +45,9 @@ spec:
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: WIP_API_KEY, source: {from_secret: api-key}}
       - {name: PORT, source: {literal: "3014"}}
       - {name: APP_BASE_PATH, source: {literal: /apps/pbs-clintrial}}
       - {name: NODE_ENV, source: {literal: production}}
-      - {name: WIP_NAMESPACE, source: {literal: pbs-clintrial}}
-      - {name: WIP_REF_NAMESPACE, source: {literal: pbs-clintrial-ref}}
     optional:
       - {name: MCP_URL, source: {literal: "http://wip-router:8080/mcp"}}
       - {name: ANTHROPIC_API_KEY_FILE, source: {literal: /data/anthropic-key}}

@@ -50,3 +50,43 @@ class App(WIPModel):
                 "(read-all), not databases — apps never write to MongoDB"
             )
         return self
+
+    @model_validator(mode="after")
+    def own_key_unless_privileged(self) -> App:
+        """Every app gets a key of its own, scoped to its namespaces, and the
+        deployer sets WIP_API_KEY from it. Only an app that declares
+        `privileged_key: true` (an admin console) may receive the install's
+        master key (`api-key`)."""
+        name = self.metadata.name
+        env = [*self.spec.env.required, *self.spec.env.optional]
+        if self.spec.privileged_key:
+            if self.spec.namespaces or self.spec.namespace_access:
+                raise ValueError(
+                    f"app {name!r}: a privileged_key app holds the master key; "
+                    "namespaces / namespace_access would scope a key it never gets"
+                )
+            return self
+        master = [e.name for e in env if e.source.from_secret == "api-key"]
+        if master:
+            raise ValueError(
+                f"app {name!r}: {', '.join(master)} reads the install's master key "
+                "(from_secret: api-key). Apps get a key of their own, scoped by "
+                "spec.namespaces and spec.namespace_access; only an app declaring "
+                "privileged_key: true may hold the master key"
+            )
+        if any(e.name == "WIP_API_KEY" for e in env):
+            raise ValueError(
+                f"app {name!r}: WIP_API_KEY is set by the deployer from the app's "
+                "own key; remove it from env"
+            )
+        owned = {n.name for n in self.spec.namespaces}
+        accessed = [a.namespace for a in self.spec.namespace_access]
+        both = sorted(owned & set(accessed))
+        if both:
+            raise ValueError(
+                f"app {name!r}: {', '.join(both)} is both owned (namespaces) and "
+                "listed in namespace_access; an owned namespace already gets admin"
+            )
+        if len(accessed) != len(set(accessed)):
+            raise ValueError(f"app {name!r}: namespace_access lists a namespace twice")
+        return self

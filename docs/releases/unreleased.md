@@ -7,6 +7,31 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Apps run with a key of their own, not the master key
+
+The deployer now derives one config-file key per enabled app, `app-<name>`
+(secret `app-<name>-api-key`), and sets the app's `WIP_API_KEY` from it. The
+key holds `admin` on the namespaces the app owns (`spec.namespaces`), `read`
+or `write` on those it lists under the new `spec.namespace_access`, and `read`
+on `wip`; no admin group. An app manifest naming `from_secret: api-key` is
+refused unless it declares `privileged_key: true` (React Console only), and
+`WIP_API_KEY` may not be declared by hand. All ten shipped app manifests are
+migrated.
+
+What an app can no longer do with its key: free-form SQL
+(`POST /api/reporting-sync/query`, the MCP `run_report_query` tool), creating
+a namespace that is not reserved for it, and reading any namespace it has not
+declared. Known effects on the shipped apps:
+- WIP-AA and WIP-Cooking: the agent's `run_report_query` tool is refused.
+- WIP-KB: corpora a user creates at runtime cannot be created or browsed
+  with the app's key, and its UI's SQL and search reads are refused.
+- clintrial, pbs-clintrial, dnd, song, wip-val, dev-kb: their namespaces
+  are taken from their manifests, not checked against their source;
+  clintrial declares none.
+**Action:** after upgrading, check each app's namespaces and access in its
+manifest; an app that needs another namespace lists it under
+`spec.namespace_access`. Apply with `wip-deploy redeploy`, which recreates
+every app with its new key.
 ### Reads no longer show another namespace's data to a caller who cannot read it
 
 These read paths showed data from namespaces the caller had no read on:
@@ -33,6 +58,7 @@ These read paths showed data from namespaces the caller had no read on:
 namespace (give the key read on it), and integrity views run with a key that
 cannot read every referenced namespace (references there now show as broken).
 Admin and service keys see everything, as before.
+
 
 ### The MCP server acts with each caller's key
 

@@ -9,6 +9,13 @@ metadata:
     natural-language queries via Anthropic's API.
 
 spec:
+  # Namespaces this app owns. The install reserves them, and the app's own key
+  # (admin on them) creates them exactly as reserved. Settings mirror what the
+  # app's bootstrap sends on create, which must equal the reservation.
+  # Not checked against the app's source (not on the platform host): the
+  # namespace is taken from this manifest's own env/comments.
+  namespaces:
+    - {role: main, name: dnd, env: WIP_NAMESPACE}
   image:
     name: dnd-compendium
 
@@ -24,10 +31,8 @@ spec:
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: WIP_API_KEY, source: {from_secret: api-key}}
       - {name: APP_BASE_PATH, source: {literal: /apps/dnd}}
       - {name: PORT, source: {literal: "3012"}}
-      - {name: WIP_NAMESPACE, source: {literal: dnd}}
       - {name: NODE_ENV, source: {literal: production}}
     optional:
       # MCP is a soft dep — dnd works without it, just no NL query.

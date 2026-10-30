@@ -22,6 +22,7 @@ from typing import Any
 import pytest
 import yaml
 
+from wip_deploy.config_gen.api_keys import app_api_key
 from wip_deploy.config_gen.mongodb import password_secret as mongo_password_secret
 from wip_deploy.config_gen.nats import password_secret
 from wip_deploy.discovery import Discovery, discover
@@ -30,6 +31,7 @@ from wip_deploy.renderers.compose import _secret_to_env_var
 from wip_deploy.secrets import ensure_secrets
 from wip_deploy.secrets_backend import FileSecretBackend, ResolvedSecrets
 from wip_deploy.spec import (
+    App,
     AppRef,
     AuthSpec,
     ComposePlatform,
@@ -104,6 +106,9 @@ def _declared_secret_vars(owner: Any, discovery: Discovery) -> set[str]:
         for v in [*owner.spec.env.required, *owner.spec.env.optional]
         if v.source.from_secret
     }
+    # An app's own key, derived from its manifest (spec.namespaces).
+    if isinstance(owner, App) and (key := app_api_key(owner)) is not None:
+        declared.add(_secret_to_env_var(key.secret_name))
     if owner.spec.nats_client is not None:
         declared.add(_secret_to_env_var(password_secret(owner.metadata.name)))
     if owner.spec.mongo_client is not None:
@@ -160,14 +165,17 @@ class TestOnlyDeclaredSecrets:
     def test_app_and_mcp_server_see_only_their_key(
         self, target: str, tmp_path: Path, discovery: Discovery
     ) -> None:
-        """The two containers observed holding every secret on wip-local."""
+        """The two containers observed holding every secret on wip-local. The
+        app now holds only its own key, not even the master key."""
         doc, _, _ = _render(target, tmp_path, discovery)
-        for name in ("wip-kb", "mcp-server"):
+        expected = {"wip-kb": "APP_WIP_KB_API_KEY", "mcp-server": "API_KEY"}
+        for name, key_var in expected.items():
             refs = _referenced_vars(doc["services"][name])
-            assert "API_KEY" in refs, name
+            assert key_var in refs, name
             assert not refs & {
                 "POSTGRES_PASSWORD", "MINIO_PASSWORD", "GATEWAY_SESSION_SECRET",
             }, name
+        assert "API_KEY" not in _referenced_vars(doc["services"]["wip-kb"])
 
     def test_dotenv_still_holds_every_secret(
         self, target: str, tmp_path: Path, discovery: Discovery

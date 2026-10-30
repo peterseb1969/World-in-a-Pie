@@ -3080,7 +3080,7 @@ def rotate_key(
         secret_name = secret
         label = f"install secret {secret!r}"
     else:
-        keys = effective_api_keys(deployment)
+        keys = effective_api_keys(deployment, apps_list)
         match = next((k for k in keys if k.name == key_name), None)
         if match is None:
             declared = ", ".join(sorted(k.name for k in keys)) or "(none)"

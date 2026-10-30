@@ -133,7 +133,7 @@ def render_k8s(
         "api-keys-secret.yaml",
         _render_api_keys_secret(
             ns,
-            generate_api_keys_json(deployment, secrets),
+            generate_api_keys_json(deployment, secrets, apps),
             federated_groups_policy(deployment),
             namespace_reservations_json(deployment, apps),
         ),

@@ -278,6 +278,24 @@ def _validate_namespace_reservations(
     return [ValidationError(e) for e in reservation_conflicts(deployment, apps)]
 
 
+def _validate_app_key_names(
+    deployment: Deployment, apps: list[App]
+) -> list[ValidationError]:
+    """A spec-declared key must not take the name of an app's derived key:
+    one name would stand for two keys."""
+    from wip_deploy.config_gen.api_keys import app_api_keys
+
+    derived = {k.name: k.owner for k in app_api_keys(deployment, apps)}
+    return [
+        ValidationError(
+            f"auth.api_keys declares {k.name!r}, the name of the key derived for "
+            f"{derived[k.name].removeprefix('app:')}; rename the declared key"
+        )
+        for k in deployment.spec.auth.api_keys
+        if k.name in derived
+    ]
+
+
 def validate_all(
     deployment: Deployment,
     components: list[Component],
@@ -298,4 +316,5 @@ def validate_all(
     )
     report.errors.extend(_validate_images_resolvable(deployment, components, apps))
     report.errors.extend(_validate_namespace_reservations(deployment, apps))
+    report.errors.extend(_validate_app_key_names(deployment, apps))
     return report

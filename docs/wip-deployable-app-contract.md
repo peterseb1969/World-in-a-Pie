@@ -46,13 +46,14 @@ The contract has two halves — what the **source repo** must look like, and wha
 
 ```yaml
 spec:
+  namespaces:                              # the namespaces your app owns (see below)
+    - {role: main, name: <your-namespace>, env: WIP_NAMESPACE}
   ports:
     - {name: http, container_port: <your-express-port>}
     - {name: dev,  container_port: <your-vite-port>}   # Vite, used with --app-source
   env:
     required:
       - {name: WIP_BASE_URL,   source: {from_component: router}}
-      - {name: WIP_API_KEY,    source: {from_secret: api-key}}
       - {name: PORT,           source: {literal: "<your-express-port>"}}
       - {name: APP_BASE_PATH,  source: {literal: "/apps/<name>"}}
       - {name: NODE_ENV,       source: {literal: "production"}}
@@ -223,6 +224,21 @@ One **non-guarantee** belongs in the same list, because apps have assumed its op
 
 - **Registered reporting views are not archived — apps own them.** WIP backup/restore carries MongoDB state only; registered SQL views (`POST /api/reporting-sync/namespace/{ns}/views`) live in PostgreSQL bookkeeping and come back **missing after every restore, by design**. An app that queries a registered view must tolerate its absence and re-register it idempotently (re-registering an existing name replaces the definition): at bootstrap, at startup, and again when a query fails on a missing relation. Registration validates the SQL against real reporting tables, which exist only after reporting-sync has synced the namespace — so a failure right after bootstrap or restore is a retry, not an error. The bootstrap scaffold ships this pattern as `server/seed/views/` + `ensureRegisteredViews()` / `ensureRegisteredViewsWithRetry()` in `bootstrap.server.ts.template`. Views registered by hand outside any app bootstrap are ephemeral: nothing recreates them after a restore.
   The scaffold seeds an inert example, `templates/bootstrap/seed/views/_00_example.json` (`_`-prefixed files are skipped): write its SQL against the unqualified entity view `doc_<template_value>`, because it runs in the namespace's own schema and the namespace name differs between dev and deployed installs. Registering needs namespace **admin** on the app's namespace, or a `wip-admins` / `wip-services` key; the deployment's key qualifies, a `write`-granted runtime key does not.
+
+**Your app runs with a key of its own, never the install's master key.** The deployer derives one config-file key per enabled app from its manifest and sets `WIP_API_KEY` from it; do not declare `WIP_API_KEY` yourself, and a manifest naming `from_secret: api-key` is refused. The key holds:
+
+- `admin` on every namespace in `spec.namespaces` (your bootstrap creates them and registers their views);
+- `read` or `write` on each namespace you list under `spec.namespace_access`, for namespaces another app owns or a shared one:
+
+  ```yaml
+  spec:
+    namespace_access:
+      - {namespace: library, permission: write}   # read is the default
+  ```
+
+- `read` on `wip`, the platform's shared vocabularies.
+
+Nothing else: no namespace you have not declared, no platform-admin route. Free-form SQL (`POST /api/reporting-sync/query`, the MCP `run_report_query` tool) and creating namespaces outside your reservations need a platform admin key, so an app cannot use them. Calls through the platform MCP server act with your key too. Only an admin console declaring `privileged_key: true` (React Console) holds the master key. The key rotates with `wip-deploy rotate-key app-<name>`.
 
 The app also owns its **namespace settings**, and declares them in its manifest, not in its seeds:
 

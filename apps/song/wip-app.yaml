@@ -10,6 +10,13 @@ metadata:
     lesson progress. App source lives in its own repo (WIP-Song).
 
 spec:
+  # Namespaces this app owns. The install reserves them, and the app's own key
+  # (admin on them) creates them exactly as reserved. Settings mirror what the
+  # app's bootstrap sends on create, which must equal the reservation.
+  # Not checked against the app's source (not on the platform host): the
+  # namespace is taken from this manifest's own env/comments.
+  namespaces:
+    - {role: main, name: dev-wip-song, env: WIP_NAMESPACE}
   image:
     name: wip-song
     tag: dev
@@ -23,12 +30,10 @@ spec:
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: WIP_API_KEY, source: {from_secret: api-key}}
       - {name: APP_BASE_PATH, source: {literal: /apps/song}}
       - {name: VITE_BASE_PATH, source: {literal: /apps/song}}
       - {name: PORT, source: {literal: "3016"}}
       - {name: NODE_ENV, source: {literal: production}}
-      - {name: WIP_NAMESPACE, source: {literal: dev-wip-song}}
     optional:
       # AskBar agent (scaffold feature); app degrades gracefully without it.
       - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}

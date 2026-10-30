@@ -624,6 +624,9 @@ metadata:
   category: optional
 
 spec:
+  # The admin console is the one app holding the master key; every other app
+  # gets a key of its own (spec.namespaces / spec.namespace_access).
+  privileged_key: true
   image:
     name: react-console
     tag: v1.2.2
@@ -764,7 +767,7 @@ Do **not** rely on Caddy stripping the prefix. Do **not** hardcode paths.
 | `VITE_BASE_PATH` | Build time | `--build-arg` in Dockerfile |
 | `APP_BASE_PATH` | Runtime | env from manifest |
 | `WIP_BASE_URL` | Runtime | env from manifest (`from_component: router`) |
-| `WIP_API_KEY` | Runtime | env from manifest (`from_secret: api-key`) |
+| `WIP_API_KEY` | Runtime | set by the deployer from the app's own key (`app-<name>`, scoped by `spec.namespaces` / `spec.namespace_access`); only a `privileged_key` app declares `from_secret: api-key` |
 | `OIDC_ISSUER` | Runtime | env (the *external* URL — `https://<hostname>:8443/dex`) |
 
 ### 6.4 Common app failures

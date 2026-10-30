@@ -160,6 +160,9 @@ def test_declaration_rules(discovery: Discovery, namespaces, message: str) -> No
 def test_env_var_set_by_hand_and_by_declaration_is_refused(discovery: Discovery) -> None:
     base = next(a for a in discovery.apps if a.metadata.name == "wip-cooking")
     raw = base.model_dump()
+    raw["spec"]["env"]["required"].append(
+        {"name": "WIP_NAMESPACE", "source": {"literal": "x"}}
+    )
     raw["spec"]["namespaces"] = [{"role": "main", "name": "x", "env": "WIP_NAMESPACE"}]
     with pytest.raises(PydanticValidationError, match="WIP_NAMESPACE is set from the namespace"):
         App.model_validate(raw)

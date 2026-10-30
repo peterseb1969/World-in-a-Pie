@@ -118,7 +118,6 @@ def _make_manifest(tmp_path: Path, *, name: str, http_port: int, dev_port: int |
             "ports": ports,
             "env": {
                 "required": [
-                    {"name": "WIP_API_KEY", "source": {"from_secret": "api-key"}},
                     {"name": "PORT", "source": {"literal": str(http_port)}},
                     {"name": "APP_BASE_PATH", "source": {"literal": f"/apps/{name}"}},
                     {"name": "NODE_ENV", "source": {"literal": "production"}},

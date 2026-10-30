@@ -1,6 +1,6 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-docs/wip-deployable-app-contract.md sha256:d766449a1b8632d2 reviewed:d1653035
-deployer/src/wip_deploy/spec/app.py sha256:5ec003a03c1552e0 reviewed:a66e110f
+docs/wip-deployable-app-contract.md sha256:aa1802ff3acd6a11 reviewed:e93ded7b
+deployer/src/wip_deploy/spec/app.py sha256:adcaec9fb6dc6dca reviewed:e93ded7b
 -->
 # WIP ship card — making the app deployable
 
@@ -15,7 +15,7 @@ Before features: healthy under `wip-deploy` on the first try, SPA at `/apps/<nam
 - [ ] `requireAuth()` passes through when `OIDC_ISSUER` is unset (`if (!process.env.OIDC_ISSUER) return next()`).
 - [ ] `/api/me` reads gateway headers `X-WIP-User` / `X-WIP-Groups` first, then OIDC session, then anonymous.
 - [ ] `NODE_ENV=production`: serve `dist/` with SPA fallback; unmatched `/api`, `/auth`, `/wip`, `/server-api`, `/mcp` (+ yours) return 404 JSON, any method, never `index.html`.
-- [ ] `GET ${APP_BASE_PATH}/api/app-config` returns allowlisted JSON with at least `{"namespace": <WIP_NAMESPACE or null>}`; no secrets/env dump; `Cache-Control: no-store`. The SPA reads every per-deployment value from it at boot; never bake such values into `VITE_*` (only `VITE_BASE_PATH` is baked).
+- [ ] `GET ${APP_BASE_PATH}/api/app-config` returns allowlisted JSON, at least `{"namespace": <WIP_NAMESPACE or null>}`; no secrets/env dump; `Cache-Control: no-store`. The SPA reads every per-deployment value from it at boot; never bake them into `VITE_*` (only `VITE_BASE_PATH`).
 - [ ] Every client fetch prefixed with `import.meta.env.BASE_URL`; never bare `/api/...` or `/wip/...`.
 - [ ] `wipProxy` (`@wip/proxy` >= 0.5.0) mounted BEFORE `express.json()` or any body parser on the same paths.
 - [ ] `Dockerfile` (prod): multi-stage; build stage takes `VITE_BASE_PATH` as ARG; serves `${APP_BASE_PATH}/api/health`.
@@ -26,7 +26,7 @@ Before features: healthy under `wip-deploy` on the first try, SPA at `/apps/<nam
 
 ## Manifest (`apps/<name>/wip-app.yaml` in the WIP repo)
 - [ ] `spec.ports`: `{name: http, container_port: <express>}` and `{name: dev, container_port: <vite>}`; pick ports no other `apps/*` manifest uses.
-- [ ] `spec.env.required`: `WIP_BASE_URL` `{from_component: router}`; `WIP_API_KEY` `{from_secret: api-key}`; `PORT`, `APP_BASE_PATH` (`/apps/<name>`), `NODE_ENV` (`production`) as `{literal: ...}`.
+- [ ] `spec.env.required`: `WIP_BASE_URL` `{from_component: router}`; `PORT`, `APP_BASE_PATH` (`/apps/<name>`), `NODE_ENV` (`production`) as `{literal: ...}`. No `WIP_API_KEY`: own key, scoped by `spec.namespaces` + `spec.namespace_access`.
 - [ ] Uses MCP: optional `MCP_URL` `{literal: "http://wip-router:8080/mcp"}`.
 - [ ] Outside-service key: OPTIONAL var, `{from_secret: <name>, supplied_by: operator}`; operator places `~/.wip-deploy/<install>/secrets/<name>`.
 - [ ] `spec.routes`: `{path: /apps/<name>, auth_required: true}`; restrict users with `allowed_groups: [...]` on the route, not in-app `ALLOWED_GROUPS`.
@@ -37,7 +37,7 @@ Before features: healthy under `wip-deploy` on the first try, SPA at `/apps/<nam
 ## Verify
 - [ ] `wip-deploy check-app-deployability <app-dir>` (`--manifest <path>` if not auto-found): all checks pass.
 - [ ] `wip-deploy install --target dev --app <name> --app-source <name>=<app-dir>`; SPA loads at `https://localhost:8443/apps/<name>/`.
-- [ ] `curl -sk` `.../apps/<name>/api/health` gives `{"status":"ok",...}`; `.../api/app-config` has a `namespace` key; `.../apps/<name>/wip/api/registry/namespaces` lists namespaces; container healthy within 30 s.
+- [ ] `curl -sk` `.../apps/<name>/api/health` gives `{"status":"ok",...}`; `.../api/app-config` has a `namespace` key; `.../wip/api/registry/namespaces` lists its own; container healthy within 30 s.
 
 ## What breaks (symptom → skipped item)
 - Healthy container, 404 on SPA root, `NODE_ENV=development` with prod entry-point → no `Dockerfile.dev`.

@@ -296,7 +296,7 @@ def render_dev_simple(
     # Config-file API keys (the spec's plus the canary) — same render + posture as the
     # compose target (0644 inside the 0700 install directory, mounted
     # where the manifest declares the env).
-    tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets))
+    tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets, apps))
     tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment))
     tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps))
 

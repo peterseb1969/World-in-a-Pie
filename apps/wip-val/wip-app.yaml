@@ -11,6 +11,13 @@ metadata:
     auth-gateway via X-WIP-User headers; no per-app OIDC client.
 
 spec:
+  # Namespaces this app owns. The install reserves them, and the app's own key
+  # (admin on them) creates them exactly as reserved. Settings mirror what the
+  # app's bootstrap sends on create, which must equal the reservation.
+  # Not checked against the app's source (not on the platform host): the
+  # namespace is taken from this manifest's own env/comments.
+  namespaces:
+    - {role: main, name: wip-val}
   image:
     name: wip-val
     # App lives in its own repo (WIP-VAL). First containerized build.
@@ -26,7 +33,6 @@ spec:
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: WIP_API_KEY, source: {from_secret: api-key}}
       - {name: PORT, source: {literal: "3015"}}
       - {name: APP_BASE_PATH, source: {literal: /apps/wip-val}}
       - {name: NODE_ENV, source: {literal: production}}
