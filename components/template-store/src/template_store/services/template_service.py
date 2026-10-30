@@ -3,8 +3,9 @@
 import contextlib
 import logging
 from datetime import UTC, datetime
-from typing import ClassVar
+from typing import Any, ClassVar
 
+import httpx
 from beanie.odm.enums import SortDirection
 
 from wip_auth.resolve import (
@@ -43,6 +44,7 @@ from .errors import TemplateError, error_fields
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
 from .reference_validator import (
+    InboundReferenceRefused,
     ReferenceValidationError,
     RegistryUnavailableError,
     get_reference_validator,
@@ -1471,6 +1473,7 @@ class TemplateService:
             template_ids=updated_template_ids,
             terminology_ids=updated_terminology_ids,
             extends_template_id=extends_value,
+            previous=original,
         )
 
         # CASE-493: enforce mandatory, pinned versions on the merged schema
@@ -3163,11 +3166,15 @@ class TemplateService:
                 # same-namespace by construction and pass trivially; external
                 # refs are checked. (Reserved-status externals are invisible
                 # to the namespace lookup and thus skipped — active-only route.)
+                previous = await Template.find(
+                    {"template_id": t.template_id, "version": {"$ne": t.version}},
+                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 await TemplateService._check_reference_isolation(
                     namespace,
                     template_ids=act_template_ids,
                     terminology_ids=act_terminology_ids,
                     extends_template_id=t.extends,
+                    previous=previous[0] if previous else None,
                 )
         except EntityNotFoundError as e:
             raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
@@ -3529,31 +3536,70 @@ class TemplateService:
         return sorted(applied_template_ids), sorted(applied_terminology_ids)
 
     @staticmethod
+    def _stored_reference_ids(template: Any) -> set[str]:
+        """Every template and terminology id a stored template references."""
+        ids: set[str] = set()
+        for field in template.fields or []:
+            ids.update(field.target_templates or [])
+            ids.update(field.target_terminologies or [])
+            for ref in (
+                field.template_ref, field.array_template_ref,
+                field.terminology_ref, field.array_terminology_ref,
+            ):
+                if ref:
+                    ids.add(ref)
+        if template.extends:
+            ids.add(template.extends)
+        return ids
+
+    @staticmethod
     async def _check_reference_isolation(
         namespace: str,
         template_ids: list[str],
         terminology_ids: list[str],
         extends_namespace: str | None = None,
         extends_template_id: str | None = None,
+        previous: Any | None = None,
     ) -> None:
-        """Enforce namespace isolation over ALL resolved schema references.
+        """Apply the cross-namespace reference gates to a template's references.
 
         Fetches each referenced entity's owning namespace in one bulk Registry
-        lookup, then runs the strict/open + allowed_external_refs rules. Pass
+        lookup, then applies the outbound (isolation_mode) and inbound
+        (inbound_references) rules of wip_auth.reference_policy. Pass
         extends_namespace when the caller already knows it (single create),
         or extends_template_id to have it looked up with the rest (update /
         activation). IDs the lookup can't see (inactive/reserved) are skipped —
         the lookup route filters to active entries.
 
-        Raises ValueError (API-boundary convention) on a violation.
+        References the template's ``previous`` version already held are not
+        re-checked, so a template stays updatable after its writer loses read
+        on a namespace it already references.
+
+        Raises TemplateError on a violation.
         """
+        carried = (
+            TemplateService._stored_reference_ids(previous) if previous is not None else set()
+        )
+        template_ids = [i for i in template_ids if i not in carried]
+        terminology_ids = [i for i in terminology_ids if i not in carried]
+        if extends_template_id in carried:
+            extends_template_id = None
+            extends_namespace = None
         ids = set(template_ids) | set(terminology_ids)
         if extends_namespace is None and extends_template_id:
             ids.add(extends_template_id)
-        ns_map = (
-            await get_registry_client().lookup_entry_namespaces(sorted(ids))
-            if ids else {}
-        )
+        try:
+            ns_map = (
+                await get_registry_client().lookup_entry_namespaces(
+                    sorted(ids), raise_on_error=True,
+                )
+                if ids else {}
+            )
+        except (RegistryError, httpx.HTTPError) as e:
+            raise TemplateError(
+                f"Cannot check the namespaces of the template's references: {e}",
+                "registry_error", rule="unreachable",
+            ) from e
         if extends_namespace is None and extends_template_id:
             extends_namespace = ns_map.get(extends_template_id)
         try:
@@ -3566,6 +3612,11 @@ class TemplateService:
             )
         except ReferenceValidationError as e:
             raise TemplateError(f"Cross-namespace reference violation: {e.violations}", "cross_namespace_reference") from e
+        except InboundReferenceRefused as e:
+            # The same error as a reference that does not resolve: a closed
+            # namespace does not confirm its entities to a writer who cannot
+            # read it.
+            raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
         except RegistryUnavailableError as e:
             # Isolation cannot be checked, so the write is refused rather
             # than let through unchecked.

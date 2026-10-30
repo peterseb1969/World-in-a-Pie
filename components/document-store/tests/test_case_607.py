@@ -88,8 +88,12 @@ async def test_allow_list_change_takes_effect_after_ttl():
         "reference_type": "document",
         "resolved": {"document_id": "x", "namespace": "otherns"},
     }
-    _seed(v, "appns", {"isolation_mode": "open", "allowed_external_refs": []}, age_offset=_STALE)
-    updated = {"isolation_mode": "open", "allowed_external_refs": ["otherns"]}
+    _seed(v, "appns", {"isolation_mode": "strict", "allowed_external_refs": []}, age_offset=_STALE)
+    # The same fake answers for the target, which accepts any writer.
+    updated = {
+        "isolation_mode": "strict", "allowed_external_refs": ["otherns"],
+        "inbound_references": "open",
+    }
     factory = _FakeClientFactory(_FakeResponse(200, updated))
     with patch("httpx.AsyncClient", factory):
         await v.validate_document_references(

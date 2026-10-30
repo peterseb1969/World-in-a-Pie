@@ -42,6 +42,7 @@ from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
 from .nats_client import EventType, publish_document_event
 from .reference_validator import (
+    InboundReferenceRefused,
     ReferenceValidationError,
     RegistryUnavailableError,
     get_reference_validator,
@@ -255,6 +256,59 @@ class DocumentService:
     # PHASE 2 — RELATIONSHIP-TEMPLATE WRITE-TIME VALIDATION
     # =========================================================================
 
+    async def _check_new_references(
+        self, namespace: str, template_id: str, vr: Any,
+    ) -> None:
+        """Apply the cross-namespace reference gates to a create or upsert.
+
+        Only references the document's previous version did not already hold
+        are checked. The previous version is looked up only when the first
+        check refuses something: most writes reference nothing outside their
+        namespace, or only what they may, and pay nothing extra. The lookup
+        is the Registry's read-only primary-key lookup, the key the write is
+        about to register, so a refused write leaves nothing behind.
+        """
+        kwargs = {
+            "document_namespace": namespace,
+            "template_namespace": vr.template_namespace or namespace,
+            "term_references": vr.term_references,
+            "file_references": vr.file_references,
+            "document_references": vr.references,
+        }
+        validator = get_reference_validator()
+        try:
+            await validator.validate_document_references(**kwargs)
+            return
+        except (ReferenceValidationError, InboundReferenceRefused):
+            if not vr.identity_values:
+                raise
+            previous = await self._latest_version_by_identity(
+                namespace, template_id, vr.identity_values,
+            )
+            if previous is None:
+                raise
+        await validator.validate_document_references(**kwargs, previous=previous)
+
+    async def _latest_version_by_identity(
+        self, namespace: str, template_id: str, identity_values: dict[str, Any],
+    ) -> Document | None:
+        """The latest stored version of the document with this identity, if any."""
+        from wip_auth.composite_key import compute_composite_key_hash
+
+        try:
+            document_id = await get_registry_client().lookup_document_by_primary_key(
+                namespace, template_id, compute_composite_key_hash(identity_values),
+            )
+        except RegistryError as e:
+            raise RegistryUnavailableError(
+                f"Cannot look up the document this write replaces: {e}"
+            ) from e
+        if not document_id:
+            return None
+        return await Document.find_one(
+            {"document_id": document_id}, sort=[("version", SortDirection.DESCENDING)],
+        )
+
     async def _validate_relationship_constraints(
         self,
         template: dict[str, Any],
@@ -432,15 +486,10 @@ class DocumentService:
         # whole life. Falls back to the document's namespace (= skip the
         # template branch) when the template dict carries no namespace.
         try:
-            validator = get_reference_validator()
-            await validator.validate_document_references(
-                document_namespace=namespace,
-                template_namespace=validation_result.template_namespace or namespace,
-                term_references=validation_result.term_references,
-                file_references=validation_result.file_references,
-                document_references=validation_result.references,
+            await self._check_new_references(
+                namespace, request.template_id, validation_result,
             )
-        except ReferenceValidationError as e:
+        except (ReferenceValidationError, InboundReferenceRefused) as e:
             return None, error_fields(e)
         except RegistryUnavailableError as e:
             # Isolation cannot be checked, so the write is refused rather
@@ -2814,14 +2863,10 @@ class DocumentService:
             # writes and not for batches. The validator caches each
             # namespace's settings, so a batch costs one lookup per namespace.
             try:
-                await get_reference_validator().validate_document_references(
-                    document_namespace=namespace,
-                    template_namespace=vr.template_namespace or namespace,
-                    term_references=vr.term_references,
-                    file_references=vr.file_references,
-                    document_references=vr.references,
-                )
-            except (ReferenceValidationError, RegistryUnavailableError) as e:
+                await self._check_new_references(namespace, req.template_id, vr)
+            except (
+                ReferenceValidationError, InboundReferenceRefused, RegistryUnavailableError,
+            ) as e:
                 # RegistryUnavailableError: isolation cannot be checked, so the
                 # item is refused rather than written unchecked.
                 failed += 1
@@ -3749,13 +3794,11 @@ class DocumentService:
                     warnings=validation_result.warnings,
                 )
 
-            # 8. Cross-namespace reference validation (matches POST flow,
-            #    including the armed template-isolation branch: a PATCH is a
-            #    new write, so it follows the same rules — warn-only here
-            #    would leave the contract unenforced on half the surface. An
-            #    out-of-policy grandfathered document becomes un-PATCHable
-            #    until its template's namespace is allow-listed; the
-            #    remediation is one namespace-config PUT, not data surgery.
+            # 8. Cross-namespace reference validation, the same gates as the
+            #    POST flow. A PATCH is a new write, so a reference it adds is
+            #    checked; references the current version already holds carry
+            #    over unchecked, so a document whose references a namespace
+            #    setting or a revoked grant would now refuse stays patchable.
             try:
                 validator = get_reference_validator()
                 await validator.validate_document_references(
@@ -3765,12 +3808,16 @@ class DocumentService:
                     term_references=validation_result.term_references,
                     file_references=validation_result.file_references,
                     document_references=validation_result.references,
+                    previous=current,
                 )
             except ReferenceValidationError as exc:
                 raise PatchError(
                     "reference_violation",
                     f"Cross-namespace reference violation: {exc.violations}",
                 ) from exc
+            except InboundReferenceRefused as exc:
+                # Reported as a target that does not resolve (see errors.py).
+                raise PatchError("validation_failed", str(exc)) from exc
             except RegistryUnavailableError as exc:
                 raise PatchError("registry_error", str(exc)) from exc
 

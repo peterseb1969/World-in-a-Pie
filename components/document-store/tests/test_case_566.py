@@ -15,12 +15,26 @@ import time
 import pytest
 
 from document_store.services.reference_validator import (
+    InboundReferenceRefused,
     ReferenceValidationError,
     ReferenceValidator,
 )
 
 
-def _validator(namespace: str, isolation_mode: str, allowed: list[str] | None = None):
+class _Placer:
+    """Stands in for the Registry's entry-namespace lookup."""
+
+    def __init__(self, placed: dict[str, str]):
+        self.placed = placed
+
+    async def lookup_entry_namespaces(self, ids, raise_on_error=False):
+        return {i: self.placed[i] for i in ids if i in self.placed}
+
+
+def _validator(
+    namespace: str, isolation_mode: str, allowed: list[str] | None = None,
+    open_targets: tuple[str, ...] = (), placed: dict[str, str] | None = None,
+):
     v = ReferenceValidator(registry_url="http://unused.invalid", api_key="test")
     v._namespace_cache[namespace] = (
         time.monotonic(),
@@ -29,6 +43,10 @@ def _validator(namespace: str, isolation_mode: str, allowed: list[str] | None = 
             "allowed_external_refs": allowed or [],
         },
     )
+    for target in open_targets:
+        v._namespace_cache[target] = (time.monotonic(), {"inbound_references": "open"})
+    if placed is not None:
+        v._registry = _Placer(placed)
     return v
 
 
@@ -68,7 +86,7 @@ async def test_strict_mode_rejects_undeclared_foreign_document_ref():
 
 @pytest.mark.asyncio
 async def test_strict_mode_allows_declared_external_document_ref():
-    v = _validator("appns", "strict", allowed=["otherns"])
+    v = _validator("appns", "strict", allowed=["otherns"], open_targets=("otherns",))
     await v.validate_document_references(
         document_namespace="appns",
         template_namespace="appns",
@@ -77,15 +95,44 @@ async def test_strict_mode_allows_declared_external_document_ref():
 
 
 @pytest.mark.asyncio
-async def test_open_mode_rejects_undeclared_foreign_document_ref():
+async def test_open_mode_reaches_a_closed_namespace_only_with_read():
+    # Open mode may reference any namespace; the closed target refuses a
+    # writer who cannot read it (no identity here), as a reference not found.
     v = _validator("appns", "open")
-    with pytest.raises(ReferenceValidationError) as exc_info:
+    v._namespace_cache["otherns"] = (time.monotonic(), {"inbound_references": "closed"})
+    with pytest.raises(InboundReferenceRefused) as exc_info:
         await v.validate_document_references(
             document_namespace="appns",
             template_namespace="appns",
             document_references=[_doc_ref("otherns")],
         )
-    assert exc_info.value.violations[0]["type"] == "document"
+    assert exc_info.value.errors == [{
+        "code": "reference_not_found",
+        "field": "supervisor",
+        "message": "Referenced document not found for field 'supervisor'",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_open_mode_reaches_an_open_namespace():
+    v = _validator("appns", "open", open_targets=("otherns",))
+    await v.validate_document_references(
+        document_namespace="appns",
+        template_namespace="appns",
+        document_references=[_doc_ref("otherns")],
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_reference_the_previous_version_held_is_not_rechecked():
+    v = _validator("appns", "strict")
+    previous = {"references": [_doc_ref("otherns")]}
+    await v.validate_document_references(
+        document_namespace="appns",
+        template_namespace="appns",
+        document_references=[_doc_ref("otherns")],
+        previous=previous,
+    )
 
 
 @pytest.mark.asyncio
@@ -120,22 +167,26 @@ async def test_own_namespace_document_ref_always_allowed():
 
 
 @pytest.mark.asyncio
-async def test_non_document_reference_entries_are_ignored():
-    """references also carries term/terminology/template entries — the
-    document check must not trip on their resolved namespaces."""
-    v = _validator("appns", "strict")
+async def test_term_references_are_placed_through_the_registry():
+    """A term reference carries no namespace; the Registry places it."""
+    v = _validator("appns", "strict", placed={"t-1": "otherns"})
     term_entry = {
         "field_path": "gender",
         "reference_type": "term",
         "lookup_value": "M",
         "version_strategy": "latest",
-        "resolved": {"term_id": "x", "namespace": "otherns"},
+        "resolved": {"term_id": "t-1"},
     }
-    await v.validate_document_references(
-        document_namespace="appns",
-        template_namespace="appns",
-        document_references=[term_entry],
-    )
+    with pytest.raises(ReferenceValidationError) as exc_info:
+        await v.validate_document_references(
+            document_namespace="appns",
+            template_namespace="appns",
+            document_references=[term_entry],
+        )
+    assert exc_info.value.violations[0] == {
+        "type": "term", "namespace": "otherns",
+        "message": "Term namespace 'otherns' is not accessible from 'appns' namespace",
+    }
 
 
 @pytest.mark.asyncio
@@ -162,12 +213,12 @@ async def test_omitting_document_references_keeps_prior_behaviour():
 @pytest.mark.asyncio
 async def test_mixed_kinds_aggregate_violations():
     """A foreign doc ref and a foreign term ref both surface, each typed."""
-    v = _validator("appns", "strict")
+    v = _validator("appns", "strict", placed={"t-1": "termns"})
     with pytest.raises(ReferenceValidationError) as exc_info:
         await v.validate_document_references(
             document_namespace="appns",
             template_namespace="appns",
-            term_references=[{"field_path": "gender", "namespace": "termns"}],
+            term_references=[{"field_path": "gender", "term_id": "t-1"}],
             document_references=[_doc_ref("docns")],
         )
     kinds = {(v_["type"], v_["namespace"]) for v_ in exc_info.value.violations}

@@ -1,14 +1,18 @@
 """
-Reference Validator - Validates cross-namespace references based on isolation mode.
+Reference Validator - checks a template's cross-namespace references.
 
-When a namespace has isolation_mode="strict", references to entities
-in other namespaces are not allowed. For "open" mode, references to
-own namespace and "wip" namespace are allowed.
+Two gates, decided by wip_auth.reference_policy: the template's namespace's
+isolation_mode (may it reference other namespaces?) and each target's
+inbound_references (may this writer reference it?).
 """
 
 import logging
 import time
 from typing import Any
+
+from wip_auth import UserIdentity
+from wip_auth.identity import get_identity_string
+from wip_auth.reference_policy import PermissionUnavailableError, check_reference
 
 from .registry_client import RegistryClient, RegistryError, get_registry_client
 
@@ -29,6 +33,20 @@ class ReferenceValidationError(Exception):
     def __init__(self, message: str, violations: list[dict[str, Any]]):
         super().__init__(message)
         self.violations = violations
+
+
+class InboundReferenceRefused(Exception):
+    """A new reference points into a closed namespace the writer cannot read.
+
+    Reported to the writer as an unresolved reference: a closed namespace
+    does not confirm that its entities exist to someone who cannot read it.
+    """
+
+    def __init__(self, kinds: list[str]):
+        super().__init__(
+            "Referenced " + " and ".join(kinds) + " not found"
+        )
+        self.kinds = kinds
 
 
 class RegistryUnavailableError(Exception):
@@ -75,36 +93,22 @@ class ReferenceValidator:
         self._namespace_cache[namespace] = (time.monotonic(), ns_data)
         return ns_data
 
-    def _is_allowed_reference(self, target_ns: str, source_ns_data: dict[str, Any], is_strict: bool) -> bool:
-        """
-        Check if a reference to the given namespace is allowed.
-
-        Rules:
-        - Strict mode: Only own namespace + allowed_external_refs
-        - Open mode: Own namespace + 'wip' (always) + allowed_external_refs
-        """
-        allowed = source_ns_data.get("allowed_external_refs", [])
-        if target_ns in allowed:
-            return True
-
-        if is_strict:
-            return False
-        else:
-            # POLICY RULE: open mode always permits references to the "wip"
-            # namespace. This is an intentional policy choice, not a default
-            # or fallback — "wip" is the shared platform namespace that all
-            # open-mode templates are allowed to reference.
-            return target_ns == "wip"
-
     async def validate_template_references(
         self,
         template_namespace: str,
         extends_template_namespace: str | None = None,
         terminology_namespaces: list[str] | None = None,
         template_ref_namespaces: list[str] | None = None,
+        identity: UserIdentity | None = None,
     ) -> None:
         """
-        Validate that template references comply with isolation rules.
+        Check a template's new cross-namespace references against both gates.
+
+        The template's namespace's isolation_mode decides whether it may
+        reference another namespace (outbound); each target's
+        inbound_references decides whether this writer may reference it
+        (inbound). The rules live in wip_auth.reference_policy. Callers pass
+        only references the template's previous version did not hold.
 
         Args:
             template_namespace: Namespace of the template being created/updated
@@ -112,59 +116,63 @@ class ReferenceValidator:
             terminology_namespaces: List of terminology namespaces referenced
             template_ref_namespaces: Namespaces of referenced templates
                 (template_ref / array_template_ref / target_templates)
+            identity: The writer; defaults to the request's identity
 
         Raises:
-            ReferenceValidationError: If any references violate isolation rules
-            RegistryUnavailableError: If the namespace's settings cannot be read
+            ReferenceValidationError: A reference the namespace's own setting
+                forbids
+            InboundReferenceRefused: A reference into a closed namespace the
+                writer cannot read
+            RegistryUnavailableError: If the namespace's settings or the
+                writer's permission cannot be read
         """
         ns_data = await self._get_namespace(template_namespace)
+        targets: list[tuple[str, str]] = []
+        if extends_template_namespace:
+            targets.append(("extends", extends_template_namespace))
+        targets += [("terminology", ns) for ns in sorted(set(terminology_namespaces or []))]
+        targets += [("template", ns) for ns in sorted(set(template_ref_namespaces or []))]
 
-        is_strict = ns_data.get("isolation_mode") == "strict"
         violations = []
-
-        # Check extends reference
-        if (
-            extends_template_namespace
-            and extends_template_namespace != template_namespace
-            and not self._is_allowed_reference(extends_template_namespace, ns_data, is_strict)
-        ):
-            violations.append({
-                "type": "extends",
-                "namespace": extends_template_namespace,
-                "message": f"Parent template namespace '{extends_template_namespace}' is not accessible from '{template_namespace}' namespace",
-            })
-
-        # Check terminology references
-        if terminology_namespaces:
-            for term_ns in terminology_namespaces:
-                if term_ns != template_namespace and not self._is_allowed_reference(
-                    term_ns, ns_data, is_strict
-                ):
-                    violations.append({
-                        "type": "terminology",
-                        "namespace": term_ns,
-                        "message": f"Terminology namespace '{term_ns}' is not accessible from '{template_namespace}' namespace",
-                    })
-
-        # Check template references (template_ref / array_template_ref /
-        # target_templates)
-        if template_ref_namespaces:
-            for tpl_ns in set(template_ref_namespaces):
-                if tpl_ns != template_namespace and not self._is_allowed_reference(
-                    tpl_ns, ns_data, is_strict
-                ):
-                    violations.append({
-                        "type": "template",
-                        "namespace": tpl_ns,
-                        "message": f"Template namespace '{tpl_ns}' is not accessible from '{template_namespace}' namespace",
-                    })
+        refused: list[str] = []
+        for kind, target_ns in targets:
+            if target_ns == template_namespace:
+                continue
+            try:
+                verdict = await check_reference(
+                    template_namespace, ns_data,
+                    target_ns, self._get_namespace,
+                    identity,
+                )
+            except PermissionUnavailableError as e:
+                raise RegistryUnavailableError(str(e)) from e
+            if verdict == "outbound":
+                label = "Parent template" if kind == "extends" else kind.capitalize()
+                violations.append({
+                    "type": kind,
+                    "namespace": target_ns,
+                    "message": (
+                        f"{label} namespace '{target_ns}' is not accessible from "
+                        f"'{template_namespace}' namespace"
+                    ),
+                })
+            elif verdict == "inbound":
+                refused.append(kind)
 
         if violations:
             raise ReferenceValidationError(
                 f"Template references entities outside allowed namespaces "
-                f"(isolation_mode={'strict' if is_strict else 'open'}): {len(violations)} violation(s)",
+                f"(isolation_mode={ns_data.get('isolation_mode', 'open')}): "
+                f"{len(violations)} violation(s)",
                 violations=violations,
             )
+        if refused:
+            logger.warning(
+                "Inbound reference refused: %s writing a template in '%s' cannot read %s",
+                get_identity_string(), template_namespace,
+                sorted({ns for kind, ns in targets if kind in refused} - {template_namespace}),
+            )
+            raise InboundReferenceRefused(sorted(set(refused)))
 
 
 # Singleton instance

@@ -16,23 +16,41 @@ import time
 import pytest
 
 from template_store.services.reference_validator import (
+    InboundReferenceRefused,
     ReferenceValidationError,
     ReferenceValidator,
 )
 
 
-def _validator(namespace: str, isolation_mode: str, allowed: list[str] | None = None):
+def _validator(
+    namespace: str, isolation_mode: str, allowed: list[str] | None = None,
+    open_targets: tuple[str, ...] = (),
+):
     v = ReferenceValidator(registry_url="http://unused.invalid", api_key="t")
     v._namespace_cache[namespace] = (
         time.monotonic(),
         {"isolation_mode": isolation_mode, "allowed_external_refs": allowed or []},
     )
+    for target in open_targets:
+        v._namespace_cache[target] = (time.monotonic(), {"inbound_references": "open"})
     return v
 
 
 @pytest.mark.asyncio
-async def test_undeclared_template_ref_rejected():
+async def test_open_mode_reaches_a_closed_namespace_only_with_read():
     v = _validator("appns", "open")
+    v._namespace_cache["otherns"] = (time.monotonic(), {"inbound_references": "closed"})
+    with pytest.raises(InboundReferenceRefused) as exc_info:
+        await v.validate_template_references(
+            template_namespace="appns",
+            template_ref_namespaces=["otherns"],
+        )
+    assert str(exc_info.value) == "Referenced template not found"
+
+
+@pytest.mark.asyncio
+async def test_undeclared_template_ref_rejected():
+    v = _validator("appns", "strict")
     with pytest.raises(ReferenceValidationError) as exc_info:
         await v.validate_template_references(
             template_namespace="appns",
@@ -45,7 +63,7 @@ async def test_undeclared_template_ref_rejected():
 
 @pytest.mark.asyncio
 async def test_declared_template_ref_allowed():
-    v = _validator("appns", "strict", allowed=["otherns"])
+    v = _validator("appns", "strict", allowed=["otherns"], open_targets=("otherns",))
     await v.validate_template_references(
         template_namespace="appns",
         template_ref_namespaces=["otherns"],
@@ -80,7 +98,7 @@ async def test_own_namespace_template_ref_always_allowed():
 async def test_terminology_namespaces_no_longer_dead():
     """The parameter existed pre-fix but no call site passed it — pin that
     it enforces when used (the call sites now pass it)."""
-    v = _validator("appns", "open")
+    v = _validator("appns", "strict")
     with pytest.raises(ReferenceValidationError) as exc_info:
         await v.validate_template_references(
             template_namespace="appns",

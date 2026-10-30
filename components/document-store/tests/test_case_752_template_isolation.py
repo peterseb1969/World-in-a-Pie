@@ -28,6 +28,7 @@ import pytest
 from httpx import AsyncClient
 
 from document_store.services.reference_validator import (
+    InboundReferenceRefused,
     ReferenceValidationError,
     ReferenceValidator,
     get_reference_validator,
@@ -37,7 +38,10 @@ from document_store.services.validation_service import ValidationService
 DOCS_URL = "/api/document-store/documents"
 
 
-def _validator(namespace: str, isolation_mode: str, allowed: list[str] | None = None):
+def _validator(
+    namespace: str, isolation_mode: str, allowed: list[str] | None = None,
+    open_targets: tuple[str, ...] = (),
+):
     v = ReferenceValidator(registry_url="http://unused.invalid", api_key="test")
     v._namespace_cache[namespace] = (
         time.monotonic(),
@@ -46,6 +50,8 @@ def _validator(namespace: str, isolation_mode: str, allowed: list[str] | None = 
             "allowed_external_refs": allowed or [],
         },
     )
+    for target in open_targets:
+        v._namespace_cache[target] = (time.monotonic(), {"inbound_references": "open"})
     return v
 
 
@@ -55,8 +61,23 @@ def _validator(namespace: str, isolation_mode: str, allowed: list[str] | None = 
 
 
 @pytest.mark.asyncio
-async def test_open_mode_rejects_undeclared_foreign_template():
+async def test_open_mode_reaches_a_closed_namespace_only_with_read():
+    # Open mode may reference any namespace; the closed target still refuses
+    # a writer who cannot read it (no identity here), as a reference not found.
     v = _validator("appns", "open")
+    v._namespace_cache["strangerns"] = (time.monotonic(), {"inbound_references": "closed"})
+    with pytest.raises(InboundReferenceRefused) as exc_info:
+        await v.validate_document_references(
+            document_namespace="appns",
+            template_namespace="strangerns",
+        )
+    assert exc_info.value.errors[0]["code"] == "reference_not_found"
+    assert "strangerns" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_strict_mode_rejects_undeclared_foreign_template():
+    v = _validator("appns", "strict")
     with pytest.raises(ReferenceValidationError) as exc_info:
         await v.validate_document_references(
             document_namespace="appns",
@@ -79,7 +100,7 @@ async def test_open_mode_allows_wip_template():
 
 @pytest.mark.asyncio
 async def test_open_mode_allows_declared_external_template():
-    v = _validator("appns", "open", allowed=["strangerns"])
+    v = _validator("appns", "open", allowed=["strangerns"], open_targets=("strangerns",))
     await v.validate_document_references(
         document_namespace="appns",
         template_namespace="strangerns",
@@ -99,7 +120,7 @@ async def test_strict_mode_does_not_get_implicit_wip_template():
 
 @pytest.mark.asyncio
 async def test_strict_mode_allows_declared_external_template():
-    v = _validator("appns", "strict", allowed=["strangerns"])
+    v = _validator("appns", "strict", allowed=["strangerns"], open_targets=("strangerns",))
     await v.validate_document_references(
         document_namespace="appns",
         template_namespace="strangerns",

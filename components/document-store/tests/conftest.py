@@ -86,6 +86,22 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "owner": "test-scoped",
     "groups": [],
     "namespaces": ["scoped-test-ns"],
+}, {
+    # Writers into 'wip' that differ only in whether they can read the
+    # closed namespace 'xns-closed' — the inbound-reference gate's two sides.
+    "name": "test-xns-reader",
+    "key": "test_xns_reader_key",
+    "owner": "test-xns-reader",
+    "groups": [],
+    "namespaces": ["wip", "xns-closed"],
+    "grants": {"wip": "write"},
+}, {
+    "name": "test-xns-writer",
+    "key": "test_xns_writer_key",
+    "owner": "test-xns-writer",
+    "groups": [],
+    "namespaces": ["wip"],
+    "grants": {"wip": "write"},
 }]))
 
 

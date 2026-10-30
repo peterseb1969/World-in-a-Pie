@@ -1,14 +1,26 @@
 """
-Reference Validator - Validates cross-namespace references based on isolation mode.
+Reference Validator - checks a write's cross-namespace references.
 
-When a namespace has isolation_mode="strict", references to entities
-in other namespaces are not allowed. This service validates that
-all references in a document comply with the isolation rules.
+Two gates, decided by wip_auth.reference_policy: the source namespace's
+isolation_mode (may it reference other namespaces?) and the target's
+inbound_references (may this writer reference it?). This module gathers a
+document's new references, places each in its namespace and applies the
+policy.
 """
 
 import logging
 import time
 from typing import Any
+
+import httpx
+
+from wip_auth import UserIdentity
+from wip_auth.identity import get_identity_string
+from wip_auth.reference_policy import (
+    PermissionUnavailableError,
+    check_reference,
+    outbound_allows,
+)
 
 from .registry_client import RegistryClient, RegistryError, get_registry_client
 
@@ -29,6 +41,29 @@ class ReferenceValidationError(Exception):
     def __init__(self, message: str, violations: list[dict[str, Any]]):
         super().__init__(message)
         self.violations = violations
+
+
+class InboundReferenceRefused(Exception):
+    """A new reference points into a closed namespace the writer cannot read.
+
+    Reported to the writer as not found: a closed namespace does not confirm
+    that its entities exist to someone who cannot read it.
+    """
+
+    def __init__(self, refused: list[dict[str, Any]]):
+        self.refused = refused
+        self.errors: list[dict[str, Any]] = [
+            {
+                "code": "reference_not_found",
+                "field": r.get("field"),
+                "message": (
+                    f"Referenced {r['type']} not found for field '{r['field']}'"
+                    if r.get("field") else f"Referenced {r['type']} not found"
+                ),
+            }
+            for r in refused
+        ]
+        super().__init__("; ".join(str(e["message"]) for e in self.errors))
 
 
 class RegistryUnavailableError(Exception):
@@ -82,9 +117,19 @@ class ReferenceValidator:
         term_references: list[dict[str, Any]] | None = None,
         file_references: list[dict[str, Any]] | None = None,
         document_references: list[dict[str, Any]] | None = None,
+        previous: Any | None = None,
+        identity: UserIdentity | None = None,
     ) -> None:
         """
-        Validate that all references in a document comply with isolation rules.
+        Check a document's new cross-namespace references against both gates.
+
+        The source namespace's isolation_mode decides whether it may reference
+        another namespace (outbound); the target's inbound_references decides
+        whether this writer may reference it (inbound, wip_auth.reference_policy).
+        Only references the previous version did not already hold are checked:
+        a reference carried over unchanged stays valid even after the writer
+        loses read on its target, and the document's template, fixed for the
+        document's life, is checked when the document is first written.
 
         Args:
             document_namespace: Namespace of the document being created/updated
@@ -92,93 +137,91 @@ class ReferenceValidator:
             term_references: List of term reference objects
             file_references: List of file reference objects
             document_references: List of resolved reference objects
-                (ValidationResult.references shape); entries whose
-                reference_type is "document" are checked against the
-                isolation rules via their resolved namespace (CASE-566)
+                (ValidationResult.references shape): document, term,
+                terminology and template references
+            previous: The version this write replaces (a Document or its
+                dict), or None for a new document
+            identity: The writer; defaults to the request's identity
 
         Raises:
-            ReferenceValidationError: If any references violate isolation rules
-            RegistryUnavailableError: If the namespace's settings cannot be read
+            ReferenceValidationError: A reference the source namespace's own
+                setting forbids
+            InboundReferenceRefused: A reference into a closed namespace the
+                writer cannot read
+            RegistryUnavailableError: If namespace settings, target namespaces
+                or the writer's permission cannot be read
         """
-        # Get the document's namespace info
-        namespace_info = await self._get_namespace(document_namespace)
+        carried = _referenced_ids(previous) if previous is not None else set()
+        # (type, entity id, namespace if the reference carries it, field path)
+        targets: list[tuple[str, str, str | None, str | None]] = []
+        seen: set[str] = set()
 
-        is_strict = namespace_info.get("isolation_mode") == "strict"
-        violations = []
+        def add(kind: str, entity_id: str, namespace: str | None, field: str | None) -> None:
+            if entity_id in carried or entity_id in seen:
+                return
+            seen.add(entity_id)
+            targets.append((kind, entity_id, namespace, field))
 
-        # Check template reference
-        if (
-            template_namespace != document_namespace
-            and not self._is_allowed_reference(template_namespace, namespace_info, is_strict)
-        ):
-            violations.append({
-                "type": "template",
-                "namespace": template_namespace,
-                "message": f"Template namespace '{template_namespace}' is not accessible from '{document_namespace}' namespace",
-            })
+        if previous is None and template_namespace != document_namespace:
+            targets.append(("template", "", template_namespace, None))
+        for ref in document_references or []:
+            resolved = ref.get("resolved") or {}
+            kind = ref.get("reference_type") or ""
+            entity_id = resolved.get(_RESOLVED_ID_KEYS.get(kind, ""))
+            if entity_id:
+                add(
+                    kind, entity_id,
+                    resolved.get("namespace") if kind == "document" else None,
+                    ref.get("field_path"),
+                )
+        for ref in term_references or []:
+            if ref.get("term_id"):
+                add("term", ref["term_id"], None, ref.get("field_path"))
+        for ref in file_references or []:
+            if ref.get("file_id"):
+                add("file", ref["file_id"], None, ref.get("field_path"))
+        if not targets:
+            return
 
-        # Check term references
-        if term_references:
-            term_namespaces = set()
-            for ref in term_references:
-                term_ns = ref.get("namespace")
-                if term_ns:
-                    term_namespaces.add(term_ns)
+        unplaced = sorted({eid for _, eid, ns, _ in targets if ns is None and eid})
+        placed: dict[str, str] = {}
+        if unplaced:
+            registry = self._registry or get_registry_client()
+            try:
+                placed = await registry.lookup_entry_namespaces(unplaced, raise_on_error=True)
+            except (RegistryError, httpx.HTTPError) as e:
+                raise RegistryUnavailableError(
+                    f"Cannot check the namespaces of references from '{document_namespace}': {e}"
+                ) from e
 
-            for term_ns in term_namespaces:
-                if (
-                    term_ns != document_namespace
-                    and not self._is_allowed_reference(term_ns, namespace_info, is_strict)
-                ):
-                    violations.append({
-                        "type": "term",
-                        "namespace": term_ns,
-                        "message": f"Term namespace '{term_ns}' is not accessible from '{document_namespace}' namespace",
-                    })
-
-        # Check file references
-        if file_references:
-            file_namespaces = set()
-            for ref in file_references:
-                file_ns = ref.get("namespace")
-                if file_ns:
-                    file_namespaces.add(file_ns)
-
-            for file_ns in file_namespaces:
-                if (
-                    file_ns != document_namespace
-                    and not self._is_allowed_reference(file_ns, namespace_info, is_strict)
-                ):
-                    violations.append({
-                        "type": "file",
-                        "namespace": file_ns,
-                        "message": f"File namespace '{file_ns}' is not accessible from '{document_namespace}' namespace",
-                    })
-
-        # Check document references (CASE-566). The resolution layer is
-        # deliberately namespace-unscoped for UUID-form lookups; enforcing
-        # here, post-resolution, lets the violation name the foreign
-        # namespace instead of masquerading as not_found — and keeps
-        # allowed cross-namespace references working with one lookup.
-        if document_references:
-            doc_namespaces = set()
-            for ref in document_references:
-                if ref.get("reference_type") != "document":
-                    continue
-                doc_ns = (ref.get("resolved") or {}).get("namespace")
-                if doc_ns:
-                    doc_namespaces.add(doc_ns)
-
-            for doc_ns in doc_namespaces:
-                if (
-                    doc_ns != document_namespace
-                    and not self._is_allowed_reference(doc_ns, namespace_info, is_strict)
-                ):
-                    violations.append({
-                        "type": "document",
-                        "namespace": doc_ns,
-                        "message": f"Document namespace '{doc_ns}' is not accessible from '{document_namespace}' namespace",
-                    })
+        source_config = await self._get_namespace(document_namespace)
+        violations: list[dict[str, Any]] = []
+        refused: list[dict[str, Any]] = []
+        for kind, entity_id, namespace, field in targets:
+            target_ns = namespace or placed.get(entity_id)
+            # A target the Registry cannot place is not an active entity;
+            # validation reports that, not this check.
+            if not target_ns or target_ns == document_namespace:
+                continue
+            try:
+                verdict = await check_reference(
+                    document_namespace, source_config,
+                    target_ns, self._get_namespace,
+                    identity,
+                )
+            except PermissionUnavailableError as e:
+                raise RegistryUnavailableError(str(e)) from e
+            if verdict == "outbound":
+                violations.append({
+                    "type": kind,
+                    "namespace": target_ns,
+                    "message": (
+                        f"{kind.capitalize()} namespace '{target_ns}' is not accessible "
+                        f"from '{document_namespace}' namespace"
+                    ),
+                })
+            elif verdict == "inbound":
+                refused.append({"type": kind, "field": field, "namespace": target_ns})
 
         if violations:
             raise ReferenceValidationError(
@@ -186,33 +229,19 @@ class ReferenceValidator:
                 f"(isolation_mode=strict): {len(violations)} violation(s)",
                 violations=violations,
             )
-
-    def _is_allowed_external(self, namespace: str, namespace_info: dict[str, Any]) -> bool:
-        """Check if an external namespace is in the allowed list."""
-        allowed = namespace_info.get("allowed_external_refs", [])
-        return namespace in allowed
-
-    def _is_allowed_reference(self, namespace: str, namespace_info: dict[str, Any], is_strict: bool) -> bool:
-        """
-        Check if a reference to the given namespace is allowed.
-
-        Rules:
-        - Strict mode: Only own namespace + allowed_external_refs
-        - Open mode: Own namespace + 'wip' (always) + allowed_external_refs
-        """
-        # Always allow explicitly configured external refs
-        if self._is_allowed_external(namespace, namespace_info):
-            return True
-
-        if is_strict:
-            # Strict mode: only allowed_external_refs (already checked above)
-            return False
-        else:
-            # POLICY RULE: open mode always permits references to the "wip"
-            # namespace. This is an intentional policy choice, not a default
-            # or fallback — "wip" is the shared platform namespace that all
-            # open-mode templates are allowed to reference.
-            return namespace == "wip"
+        if refused:
+            # The writer learns only that the targets were not found; the
+            # operator log says which closed namespaces refused whom.
+            logger.warning(
+                "Inbound reference refused: %s writing in '%s' cannot read %s",
+                get_identity_string(), document_namespace,
+                sorted({r["namespace"] for r in refused}),
+            )
+            # Kind and field only: the resolved id would tell the writer what a
+            # value names inside a namespace it cannot read.
+            raise InboundReferenceRefused(
+                [{"type": r["type"], "field": r["field"]} for r in refused]
+            )
 
     async def validate_template_references(
         self,
@@ -234,14 +263,13 @@ class ReferenceValidator:
         """
         namespace_info = await self._get_namespace(template_namespace)
 
-        is_strict = namespace_info.get("isolation_mode") == "strict"
         violations = []
 
         # Check extends reference
         if (
             extends_template_namespace
             and extends_template_namespace != template_namespace
-            and not self._is_allowed_reference(extends_template_namespace, namespace_info, is_strict)
+            and not outbound_allows(template_namespace, namespace_info, extends_template_namespace)
         ):
             violations.append({
                 "type": "extends",
@@ -254,7 +282,7 @@ class ReferenceValidator:
             for term_ns in terminology_namespaces:
                 if (
                     term_ns != template_namespace
-                    and not self._is_allowed_reference(term_ns, namespace_info, is_strict)
+                    and not outbound_allows(template_namespace, namespace_info, term_ns)
                 ):
                     violations.append({
                         "type": "terminology",
@@ -268,6 +296,36 @@ class ReferenceValidator:
                 f"(isolation_mode=strict): {len(violations)} violation(s)",
                 violations=violations,
             )
+
+
+# The id a resolved reference carries, per reference_type.
+_RESOLVED_ID_KEYS = {
+    "document": "document_id",
+    "term": "term_id",
+    "terminology": "terminology_id",
+    "template": "template_id",
+}
+
+
+def _referenced_ids(previous: Any) -> set[str]:
+    """Every entity id the previous version already referenced."""
+    def field(name: str) -> list[dict[str, Any]]:
+        value = previous.get(name) if isinstance(previous, dict) else getattr(previous, name, None)
+        return list(value or [])
+
+    ids: set[str] = set()
+    for ref in field("references"):
+        resolved = ref.get("resolved") or {}
+        entity_id = resolved.get(_RESOLVED_ID_KEYS.get(ref.get("reference_type") or "", ""))
+        if entity_id:
+            ids.add(entity_id)
+    for ref in field("term_references"):
+        if ref.get("term_id"):
+            ids.add(ref["term_id"])
+    for ref in field("file_references"):
+        if ref.get("file_id"):
+            ids.add(ref["file_id"])
+    return ids
 
 
 # Singleton instance

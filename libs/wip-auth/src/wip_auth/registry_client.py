@@ -466,6 +466,7 @@ class RegistryClientBase:
     async def lookup_entry_namespaces(
         self,
         entry_ids: list[str],
+        raise_on_error: bool = False,
     ) -> dict[str, str]:
         """Bulk-fetch each entry's owning namespace via
         POST /api/registry/entries/lookup/by-id.
@@ -475,6 +476,10 @@ class RegistryClientBase:
         are simply absent from the result. Used by isolation enforcement,
         which needs each resolved reference's namespace, not another
         resolution.
+
+        A failed lookup answers {} unless ``raise_on_error``: a reference
+        check must refuse when it cannot learn where a target lives, not
+        pass it as if it had none.
         """
         if not entry_ids:
             return {}
@@ -485,6 +490,10 @@ class RegistryClientBase:
                 json=[{"entry_id": eid} for eid in entry_ids],
             )
             if response.status_code != 200:
+                if raise_on_error:
+                    raise RegistryError(
+                        f"Registry entry lookup failed: HTTP {response.status_code}"
+                    )
                 return {}
             namespaces: dict[str, str] = {}
             for r in response.json().get("results", []):
