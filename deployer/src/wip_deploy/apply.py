@@ -1402,23 +1402,24 @@ def _kubectl_apply_scoped(
     set kubectl would delete every live resource not in it, so a scoped
     apply must never carry the flag. The shared files are included
     because a single-service mutation can legitimately change them
-    (adding an app extends the ingress routes and configmaps); when
+    (adding an app extends the ingress routes and configmaps, adds its
+    key to the key file and its namespaces to the reservations); when
     unchanged they are no-ops under kubectl's incremental apply. Other
     services' workload manifests are deliberately NOT applied — that
     exclusion is the scope.
+
+    Every top-level manifest is shared: the renderer puts workloads under
+    services/ and infrastructure/, and only cross-cutting files at the
+    top. They are found, not listed, so a file the renderer adds later is
+    applied too; a fixed list once left the key file behind, and every
+    app added on k8s ran with a key no service knew.
     """
     namespace_yaml = install_dir / "namespace.yaml"
     if namespace_yaml.exists():
         _kubectl_run(["apply", "-f", str(namespace_yaml)])
 
-    for rel in (
-        "secrets.yaml",
-        "configmaps.yaml",
-        "ingress.yaml",
-        "network-policies.yaml",
-    ):
-        shared = install_dir / rel
-        if shared.exists():
+    for shared in sorted(install_dir.glob("*.yaml")):
+        if shared.name != "namespace.yaml":
             _kubectl_run(["apply", "-n", ns, "-f", str(shared)])
 
     for svc in services:

@@ -44,7 +44,10 @@ from wip_deploy.spec import (
     SecretsSpec,
 )
 
-SHARED = ("secrets.yaml", "configmaps.yaml", "ingress.yaml", "network-policies.yaml")
+SHARED = (
+    "api-keys-secret.yaml", "configmaps.yaml", "ingress.yaml",
+    "network-policies.yaml", "secrets.yaml",
+)
 
 
 def _write_install_dir(tmp_path: Path, services: dict[str, str]) -> Path:
@@ -240,3 +243,20 @@ class TestScopeForwarding:
     def test_none_scope_falls_back_to_full_tree_on_k8s(self) -> None:
         mock_apply = self._run(_k8s_deployment(apps=[]), None)
         assert "services_scope" not in mock_apply.call_args.kwargs
+
+
+def test_every_top_level_manifest_is_shared(tmp_path: Path) -> None:
+    """The key file (api-keys-secret.yaml) carries a new app's key and its
+    namespace reservations; a fixed list of shared files once left it out,
+    so an app added on k8s ran with a key no service knew."""
+    _write_install_dir(tmp_path, {"wip-kb": "services"})
+    (tmp_path / "some-future-file.yaml").write_text("{}\n")
+    (tmp_path / "deployment.deployer-state").write_text("{}\n")
+    with patch("wip_deploy.apply._kubectl_run") as mock_run:
+        _kubectl_apply_scoped(tmp_path, "ns", ["wip-kb"])
+    applied = _applied_files(mock_run)
+    assert applied[0] == "namespace.yaml"
+    assert "api-keys-secret.yaml" in applied
+    assert "some-future-file.yaml" in applied
+    assert "deployment.deployer-state" not in applied
+    assert applied[-1] == "wip-kb.yaml"
