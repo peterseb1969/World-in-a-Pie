@@ -92,7 +92,7 @@ Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, rep
 | `MCP_PORT` | `8000` | Port for HTTP/SSE transports |
 | `MCP_HOST` | `0.0.0.0` | Bind address for HTTP/SSE transports |
 | `MCP_ALLOWED_HOST` | *(none)* | DNS rebinding protection — set to the hostname clients use (e.g. `wip-kubi.local`) |
-| `MCP_ALLOW_UNAUTHENTICATED` | *(unset)* | Local development only: `1` lets the HTTP/SSE transports start without a configured key (they refuse to otherwise) |
+| `MCP_ALLOW_UNAUTHENTICATED` | *(unset)* | Local development only: `1` turns off the HTTP/SSE transports' caller check; requests without a key then act with the configured key |
 
 ### WIP Service URLs
 
@@ -110,7 +110,7 @@ The MCP server can route traffic through a unified proxy (like Caddy) or connect
 
 ### API Key Resolution
 
-The server authenticates to WIP services using an API key, resolved in priority order:
+Over **stdio** (and in local tooling), the server authenticates to WIP services with its configured key, resolved in priority order:
 
 1. `WIP_API_KEY` — direct env var (set by host-spawned stdio servers / apps)
 2. `MASTER_API_KEY` — set by the deployer via the component manifest (`MASTER_API_KEY: from_secret: api-key`)
@@ -118,12 +118,19 @@ The server authenticates to WIP services using an API key, resolved in priority 
 4. `WIP_API_KEY_FILE` — path to a file containing the key. A running server re-reads it whenever the file changes, so a rotated key takes effect on the next call with no config change and no reconnect (a key set in 1–3 stays fixed for the life of the process)
 5. Fallback: `dev_master_key_for_testing` (local development only)
 
-The HTTP/SSE transports require every request (except `GET /health`) to carry
-**the same key** in an `X-API-Key` header — the key resolved by steps 1–4, so a
-caller never gets more authority than the key it presents. The fallback in
-step 5 is never accepted inbound: with no key from steps 1–4 the network
-transports refuse to start, unless `MCP_ALLOW_UNAUTHENTICATED=1` is set for
-local development. The key is not accepted as a query parameter.
+The **HTTP/SSE transports act with each caller's own key**, never with the
+configured one. Every request (except `GET /health`) must carry an
+`X-API-Key` the Registry accepts; the server asks the Registry
+(`GET /api/registry/namespaces` with that key: 200 means valid, 401/403
+means not) and remembers a valid key for 30 seconds. Every backend call a
+tool then makes carries that same key, so a namespace-scoped app key stays
+scoped through the MCP server, and the server's own key never reaches a
+network caller. A request without a key, or with one the Registry refuses,
+gets 401; if the Registry cannot be asked, 503. A backend call outside a
+request is refused rather than made with the configured key. The key is not
+accepted as a query parameter. With `MCP_ALLOW_UNAUTHENTICATED=1` (local
+development only) the check is off and a request without a key acts with the
+configured key.
 
 ### Optional
 
@@ -242,7 +249,7 @@ wip-mcp-reader:
 ## Security
 
 - **stdio transport** inherits the permissions of the parent process (the IDE). No additional auth needed.
-- **HTTP/SSE transports** require a configured key (see API Key Resolution) and refuse to start without one. Clients send it as `X-API-Key`. `MCP_ALLOW_UNAUTHENTICATED=1` overrides this for local development only — then anyone who can reach the port has full tool access.
+- **HTTP/SSE transports** act with the caller's key: each request must carry an `X-API-Key` the Registry accepts, and every tool's backend calls use that key (see API Key Resolution). A caller gets exactly its key's authority. `MCP_ALLOW_UNAUTHENTICATED=1` turns the check off for local development only — then anyone who can reach the port gets the configured key's access.
 - **Read-only mode** is structural, not a permission check — write tools are removed from the registry at startup. The AI cannot discover or invoke them.
 - **DNS rebinding protection** — set `MCP_ALLOWED_HOST` for HTTP/SSE transports.
 

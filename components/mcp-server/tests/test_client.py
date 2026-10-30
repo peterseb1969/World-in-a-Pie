@@ -117,6 +117,9 @@ async def test_upload_file_sends_multipart_content_type():
         data={"namespace": "wip"},
     )
     assert req.headers["content-type"].startswith("multipart/form-data; boundary=")
+    # The key is set at send time by the client's auth (never a client-wide
+    # header): run the configured client's own auth flow on the request.
+    next(http.auth.auth_flow(req))
     assert req.headers["x-api-key"] == "test_key"
     # json= bodies must still come out as JSON without a client-level default
     req_json = http.build_request("POST", "http://x/y", json=[{"a": 1}])

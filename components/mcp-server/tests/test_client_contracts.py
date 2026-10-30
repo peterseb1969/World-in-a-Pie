@@ -692,33 +692,165 @@ def test_explicit_key_stays_fixed(clean_api_key_env, tmp_path) -> None:
     assert client.api_key == "explicit"
 
 
+def _recording_client(client: WipClient) -> list[str]:
+    """Route the client's shared AsyncClient to a recorder of X-API-Key."""
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("X-API-Key", ""))
+        return httpx.Response(200, json={})
+
+    client._client = httpx.AsyncClient(
+        auth=client_module._ActingKeyAuth(client), transport=httpx.MockTransport(handler)
+    )
+    return seen
+
+
 @pytest.mark.asyncio
 async def test_shared_http_client_sends_the_rotated_key(clean_api_key_env, tmp_path) -> None:
     key_file = tmp_path / "api.key"
     key_file.write_text("old-key")
     clean_api_key_env.setenv("WIP_API_KEY_FILE", str(key_file))
     client = WipClient()
-    http = await client._get_client()
-    assert http.headers["X-API-Key"] == "old-key"
-
+    seen = _recording_client(client)
+    await client._get(client.registry_url, "/x")
     _rotate(key_file, "new-key")
-    assert (await client._get_client()).headers["X-API-Key"] == "new-key"
+    await client._get(client.registry_url, "/x")
+    assert seen == ["old-key", "new-key"]
     await client.close()
 
 
-def test_network_transport_accepts_the_rotated_key(clean_api_key_env, tmp_path) -> None:
-    """The key the server accepts moves with the key it acts with."""
+def _in_request(key: str | None):
+    """Run under an MCP request context whose HTTP request carries `key`."""
+    from types import SimpleNamespace
+
+    from mcp.server.lowlevel.server import request_ctx
+
+    headers = {"x-api-key": key} if key else {}
+    return request_ctx, request_ctx.set(SimpleNamespace(request=SimpleNamespace(headers=headers)))
+
+
+def test_client_acts_with_the_calling_request_key(clean_api_key_env) -> None:
+    clean_api_key_env.setenv("WIP_API_KEY", "server-key")
+    client = WipClient()
+    var, token = _in_request("app-key")
+    try:
+        assert client.api_key == "app-key"
+    finally:
+        var.reset(token)
+    assert client.api_key == "server-key"  # stdio / no request: configured key
+
+
+@pytest.mark.asyncio
+async def test_concurrent_callers_each_send_their_own_key(clean_api_key_env) -> None:
+    """One shared AsyncClient, two callers interleaved: no key crosses over."""
+    import asyncio
+
+    clean_api_key_env.setenv("WIP_API_KEY", "server-key")
+    client = WipClient()
+    seen: list[tuple[str, str]] = []
+    gate = asyncio.Event()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await gate.wait()
+        seen.append((request.url.path, request.headers["X-API-Key"]))
+        return httpx.Response(200, json={})
+
+    client._client = httpx.AsyncClient(
+        auth=client_module._ActingKeyAuth(client), transport=httpx.MockTransport(handler)
+    )
+
+    async def call(key: str) -> None:
+        var, token = _in_request(key)
+        try:
+            await client._get(client.registry_url, f"/{key}")
+        finally:
+            var.reset(token)
+
+    tasks = [asyncio.create_task(call("key-a")), asyncio.create_task(call("key-b"))]
+    await asyncio.sleep(0)
+    gate.set()
+    await asyncio.gather(*tasks)
+    assert sorted(seen) == [("/key-a", "key-a"), ("/key-b", "key-b")]
+    await client.close()
+
+
+def test_network_mode_never_falls_back_to_the_server_key(clean_api_key_env, monkeypatch) -> None:
+    clean_api_key_env.setenv("WIP_API_KEY", "server-key")
+    monkeypatch.setattr(client_module, "_caller_key_required", True)
+    client = WipClient()
+    with pytest.raises(RuntimeError, match="no caller API key"):
+        _ = client.api_key
+    var, token = _in_request(None)
+    try:
+        with pytest.raises(RuntimeError, match="no caller API key"):
+            _ = client.api_key
+    finally:
+        var.reset(token)
+
+
+@pytest.fixture
+def network_app(clean_api_key_env, monkeypatch):
+    """The SSE app with authentication on; the Registry check is replaced by
+    a set of keys it accepts."""
     from starlette.testclient import TestClient
 
-    from wip_mcp.server import build_network_app
+    monkeypatch.setattr(client_module, "_caller_key_required", False)
+    accepted = {"app-key", "server-key"}
 
-    key_file = tmp_path / "api.key"
-    key_file.write_text("old-key")
-    clean_api_key_env.setenv("WIP_API_KEY_FILE", str(key_file))
-    app = build_network_app("sse")
+    async def fake_check(key: str) -> bool:
+        if key == "registry-down":
+            raise server_module.KeyCheckUnavailable("Registry unreachable (ConnectError)")
+        return key in accepted
+
+    monkeypatch.setattr(server_module, "_key_is_valid", fake_check)
+    app = server_module.build_network_app("sse")
     with TestClient(app) as http:
-        probe = "/messages/"
-        assert http.post(probe, headers={"X-API-Key": "old-key"}).status_code != 401
-        _rotate(key_file, "new-key")
-        assert http.post(probe, headers={"X-API-Key": "old-key"}).status_code == 401
-        assert http.post(probe, headers={"X-API-Key": "new-key"}).status_code != 401
+        yield http
+    monkeypatch.setattr(client_module, "_caller_key_required", False)
+
+
+def test_network_transport_accepts_any_key_the_registry_accepts(network_app) -> None:
+    """Not only the server's own key: an app's scoped key is let in, and acts
+    as itself downstream."""
+    probe = "/messages/"
+    assert network_app.post(probe, headers={"X-API-Key": "app-key"}).status_code != 401
+    assert network_app.post(probe, headers={"X-API-Key": "server-key"}).status_code != 401
+    assert network_app.post(probe, headers={"X-API-Key": "forged"}).status_code == 401
+    assert network_app.post(probe).status_code == 401
+    assert network_app.post(probe, headers={"X-API-Key": "registry-down"}).status_code == 503
+    assert network_app.get("/health").status_code == 200
+    assert client_module._caller_key_required is True
+
+
+@pytest.mark.asyncio
+async def test_key_check_asks_the_registry_and_remembers_only_valid_keys(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers["X-API-Key"])
+        assert request.url.path == "/api/registry/namespaces"
+        return httpx.Response(200 if request.headers["X-API-Key"] == "good" else 401, json=[])
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)
+    )
+    monkeypatch.setattr(server_module, "_valid_keys", {})
+    assert await server_module._key_is_valid("good") is True
+    assert await server_module._key_is_valid("good") is True
+    assert await server_module._key_is_valid("bad") is False
+    assert await server_module._key_is_valid("bad") is False
+    assert calls == ["good", "bad", "bad"]
+
+
+@pytest.mark.asyncio
+async def test_key_check_fails_closed_on_an_unexpected_answer(monkeypatch) -> None:
+    real = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kw: real(transport=httpx.MockTransport(lambda r: httpx.Response(500)), **kw),
+    )
+    monkeypatch.setattr(server_module, "_valid_keys", {})
+    with pytest.raises(server_module.KeyCheckUnavailable):
+        await server_module._key_is_valid("any")

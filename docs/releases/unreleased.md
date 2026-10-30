@@ -7,6 +7,19 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### The MCP server acts with each caller's key
+
+The HTTP/SSE transports used to admit only the server's own key (the
+install's master key) and then call the backend with it. They now admit any
+key the Registry accepts and make every backend call with that same key:
+an app's namespace-scoped key stays scoped through the MCP server, and the
+server's own key never acts for a network caller. A valid key is
+remembered for 30 seconds; if the Registry cannot be asked the request gets
+503. The server no longer needs a configured key to start in network mode.
+**Action:** none for callers that already send the master key; their calls
+act exactly as before. A caller that relied on the server's key while
+sending a weaker one of its own now gets that key's authority.
+
 ### Namespaces refuse references from writers who cannot read them
 
 Every namespace, existing ones included, now has two reference settings:

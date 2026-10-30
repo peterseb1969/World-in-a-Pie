@@ -117,6 +117,53 @@ def _resolve_api_key() -> str:
     return configured_api_key() or "dev_master_key_for_testing"
 
 
+# Set by the network transports (server.build_network_app) when they
+# authenticate callers: every backend call must then act with the key the
+# calling request presented, never with this process's own key.
+_caller_key_required = False
+
+
+def require_caller_key() -> None:
+    """Make every backend call act with the calling request's own key.
+
+    A network transport serves many callers; acting with the server's own
+    (privileged) key would hand each of them its authority. After this, a
+    backend call made outside a request that carries `X-API-Key` raises
+    instead of falling back to the configured key.
+    """
+    global _caller_key_required
+    _caller_key_required = True
+
+
+def caller_api_key() -> str | None:
+    """The `X-API-Key` of the MCP request being handled, if any.
+
+    The MCP SDK sets a request context for each message it dispatches; on
+    the HTTP transports it carries the inbound Starlette request. stdio has
+    none.
+    """
+    from mcp.server.lowlevel.server import request_ctx
+
+    ctx = request_ctx.get(None)
+    request = getattr(ctx, "request", None) if ctx is not None else None
+    headers = getattr(request, "headers", None)
+    key = headers.get("x-api-key") if headers is not None else None
+    return key or None
+
+
+class _ActingKeyAuth(httpx.Auth):
+    """Sets `X-API-Key` on each outgoing request at send time, in the task
+    that sends it. One shared AsyncClient serves concurrent callers, so the
+    key must never be a client-wide default header."""
+
+    def __init__(self, client: "WipClient") -> None:
+        self._client = client
+
+    def auth_flow(self, request: httpx.Request):  # type: ignore[no-untyped-def]
+        request.headers["X-API-Key"] = self._client.api_key
+        yield request
+
+
 class WipClient:
     """Client for all WIP service APIs.
 
@@ -207,28 +254,30 @@ class WipClient:
 
     @property
     def api_key(self) -> str:
+        """The key a backend call acts with: the calling MCP request's own
+        key when there is one, else (stdio, local tooling) the configured
+        key. Under a network transport there is no else."""
+        caller = caller_api_key()
+        if caller:
+            return caller
+        if _caller_key_required:
+            raise RuntimeError(
+                "no caller API key: under a network transport every backend call "
+                "acts with the key its MCP request presented"
+            )
         return self._explicit_api_key or _resolve_api_key()
-
-    @property
-    def _headers(self) -> dict[str, str]:
-        # No Content-Type here: a client-level default would override the
-        # per-request value httpx derives from the body (json= → JSON,
-        # files= → multipart with boundary). A JSON default silently broke
-        # every multipart upload (CASE-449).
-        return {
-            "X-API-Key": self.api_key,
-        }
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
+            # No Content-Type default: a client-level default would override
+            # the per-request value httpx derives from the body (json= → JSON,
+            # files= → multipart with boundary). The key is set per request
+            # (_ActingKeyAuth), so a rotated key file applies on the next call.
             self._client = httpx.AsyncClient(
-                headers=self._headers,
+                auth=_ActingKeyAuth(self),
                 timeout=self.timeout,
                 verify=self._verify_tls,
             )
-        else:
-            # The key may have rotated since the client was built.
-            self._client.headers["X-API-Key"] = self.api_key
         return self._client
 
     async def close(self):

@@ -5160,35 +5160,32 @@ _apply_read_only_mode()
 def build_network_app(transport: str):
     """The Starlette app for a network transport ("streamable-http" or "sse").
 
-    Inbound requests must carry `X-API-Key` equal to the key this server acts
-    with downstream (`configured_api_key()`: WIP_API_KEY > MASTER_API_KEY >
-    API_KEY > WIP_API_KEY_FILE). Requiring the same key means a caller never
-    gains authority beyond the key it presents. Without a configured key the
-    app refuses to build — the server would otherwise serve every caller with
-    its own downstream credentials — unless MCP_ALLOW_UNAUTHENTICATED=1 is set
-    for local development. `/health` stays unauthenticated for probes.
-    """
-    import hmac
+    Every inbound request must carry an `X-API-Key` the Registry accepts, and
+    every backend call a tool makes acts with that same key, never with this
+    server's own. A caller therefore gets exactly the authority of the key it
+    presents: an app's namespace-scoped key stays scoped through the MCP
+    server. A valid key is remembered for a short time, so the Registry is
+    asked once per caller rather than per message.
 
+    MCP_ALLOW_UNAUTHENTICATED=1 (local development only) skips the check and
+    acts with the configured key (WIP_API_KEY > MASTER_API_KEY > API_KEY >
+    WIP_API_KEY_FILE) when a request presents none. `/health` stays
+    unauthenticated for probes.
+    """
     from starlette.requests import Request
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
-    from .client import configured_api_key
+    from .client import require_caller_key
 
-    api_key = configured_api_key()
-    if not api_key:
-        if os.getenv("MCP_ALLOW_UNAUTHENTICATED") != "1":
-            raise SystemExit(
-                f"error: refusing to serve the {transport} transport without an "
-                "API key. Set MASTER_API_KEY (or WIP_API_KEY / API_KEY / "
-                "WIP_API_KEY_FILE); for local development only, set "
-                "MCP_ALLOW_UNAUTHENTICATED=1."
-            )
+    authenticate = os.getenv("MCP_ALLOW_UNAUTHENTICATED") != "1"
+    if authenticate:
+        require_caller_key()
+    else:
         print(
             f"WARNING: MCP_ALLOW_UNAUTHENTICATED=1 — serving {transport} WITHOUT "
-            "authentication. Anyone who can reach this port gets full access "
-            "through the AI tools. Local development only.",
+            "authentication. Anyone who can reach this port gets the configured "
+            "key's access through the AI tools. Local development only.",
             file=sys.stderr,
         )
 
@@ -5217,25 +5214,26 @@ def build_network_app(transport: str):
 
     starlette_app.router.routes.append(Route("/health", health, methods=["GET"]))
 
-    if api_key:
+    if authenticate:
         from starlette.middleware.base import BaseHTTPMiddleware
 
         _UNAUTH_PATHS = {"/health"}
-        # Bound here: mypy does not carry the `if api_key` narrowing into the
-        # nested method below.
-        fallback_key: str = api_key
 
         class ApiKeyMiddleware(BaseHTTPMiddleware):
             # Header only: a key in the query string ends up in access and
-            # proxy logs. Constant-time comparison.
+            # proxy logs.
             async def dispatch(self, request: Request, call_next):
                 if request.url.path in _UNAUTH_PATHS:
                     return await call_next(request)
                 key = request.headers.get("x-api-key") or ""
-                # Resolved per request: the key this server accepts must move
-                # with the key it acts with, which follows a rotated key file.
-                expected = (configured_api_key() or fallback_key).encode()
-                if not hmac.compare_digest(key.encode(), expected):
+                try:
+                    valid = bool(key) and await _key_is_valid(key)
+                except KeyCheckUnavailable as e:
+                    return JSONResponse(
+                        {"error": f"Cannot check the API key right now: {e}"},
+                        status_code=503,
+                    )
+                if not valid:
                     return JSONResponse(
                         {"error": "Missing or invalid API key. Pass X-API-Key header."},
                         status_code=401,
@@ -5245,6 +5243,46 @@ def build_network_app(transport: str):
         starlette_app.add_middleware(ApiKeyMiddleware)
 
     return starlette_app
+
+
+class KeyCheckUnavailable(Exception):
+    """The Registry could not be asked whether a key is valid."""
+
+
+# sha256(key) -> monotonic expiry of a positive check. Only valid keys are
+# remembered, briefly, so a revoked key stops working within the TTL.
+_valid_keys: dict[str, float] = {}
+_VALID_KEY_TTL_SECONDS = 30.0
+
+
+async def _key_is_valid(key: str) -> bool:
+    """Does the Registry accept `key`? Any authenticated key may list the
+    namespaces it can see (possibly none), so 200 means valid and 401/403
+    means not; anything else is a failed check, never a pass."""
+    import hashlib
+    import time
+
+    import httpx
+
+    digest = hashlib.sha256(key.encode()).hexdigest()
+    now = time.monotonic()
+    if _valid_keys.get(digest, 0.0) > now:
+        return True
+    client = get_client()
+    try:
+        async with httpx.AsyncClient(timeout=10.0, verify=client._verify_tls) as http:
+            resp = await http.get(
+                f"{client.registry_url}/api/registry/namespaces",
+                headers={"X-API-Key": key},
+            )
+    except httpx.HTTPError as e:
+        raise KeyCheckUnavailable(f"Registry unreachable ({type(e).__name__})") from e
+    if resp.status_code == 200:
+        _valid_keys[digest] = now + _VALID_KEY_TTL_SECONDS
+        return True
+    if resp.status_code in (401, 403):
+        return False
+    raise KeyCheckUnavailable(f"Registry answered {resp.status_code}")
 
 
 def main():

@@ -13,7 +13,7 @@ import socket
 import subprocess
 import sys
 import time
-from contextlib import asynccontextmanager, closing
+from contextlib import asynccontextmanager, closing, contextmanager
 from pathlib import Path
 
 import pytest
@@ -61,30 +61,92 @@ _KEY_VARS = (
 )
 
 
-def _network_env(port: int, api_key: str | None, key_var: str) -> dict:
+@contextmanager
+def _fake_registry(accepted: set[str], seen: list[tuple[str, str]] | None = None):
+    """A stand-in Registry for the server's inbound key check: it lists
+    namespaces (200) for the accepted keys and answers 401 to any other.
+    `seen` records (path, X-API-Key) of every request it gets."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if seen is not None:
+                seen.append((self.path, self.headers.get("X-API-Key", "")))
+            ok = (
+                self.path.startswith("/api/registry/namespaces")
+                and self.headers.get("X-API-Key") in accepted
+            )
+            body = b"[]" if ok else b'{"detail": "Invalid API key"}'
+            self.send_response(200 if ok else 401)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+
+
+def _network_env(
+    port: int,
+    api_key: str | None,
+    key_var: str,
+    registry_url: str | None = None,
+    unauthenticated: bool | None = None,
+) -> dict:
     env = _base_env(MCP_PORT=str(port), MCP_HOST="127.0.0.1")
     for var in _KEY_VARS:
         env.pop(var, None)
+    env.pop("WIP_API_URL", None)
+    if registry_url:
+        env["REGISTRY_URL"] = registry_url
     if api_key:
         env[key_var] = api_key
-    else:
+    if unauthenticated if unauthenticated is not None else not api_key:
         # Transport tests that do not exercise auth run with the explicit
-        # local-development override; without a key the server refuses to start.
+        # local-development override.
         env["MCP_ALLOW_UNAUTHENTICATED"] = "1"
     return env
 
 
 @asynccontextmanager
 async def _network_server(
-    transport_flag: str, port: int, api_key: str | None = None, key_var: str = "API_KEY"
+    transport_flag: str,
+    port: int,
+    api_key: str | None = None,
+    key_var: str = "API_KEY",
+    accepted: set[str] | None = None,
+    seen: list[tuple[str, str]] | None = None,
 ):
     """Start the MCP server with --http or --sse on a given port, yield, then kill.
 
     `key_var` names the env var carrying the key; the deployer provides
-    MASTER_API_KEY, so tests of the deployed shape pass that.
+    MASTER_API_KEY, so tests of the deployed shape pass that. A fake Registry
+    answers the server's inbound key check, accepting `accepted` (default:
+    the configured key). Passing `accepted` runs authenticated even without
+    a configured key.
     """
-    env = _network_env(port, api_key, key_var)
+    with _fake_registry(
+        accepted if accepted is not None else {api_key} - {None}, seen
+    ) as registry:
+        env = _network_env(
+            port, api_key, key_var, registry,
+            unauthenticated=False if accepted is not None else None,
+        )
+        async with _spawned_server(transport_flag, env, port) as proc:
+            yield proc
 
+
+@asynccontextmanager
+async def _spawned_server(transport_flag: str, env: dict, port: int):
     proc = subprocess.Popen(
         [sys.executable, "-m", "wip_mcp", transport_flag],
         env=env,
@@ -290,6 +352,33 @@ async def test_http_api_key_accepted():
             assert len(tools.tools) > 50
 
 
+@pytest.mark.asyncio
+async def test_http_tool_calls_act_with_the_callers_key():
+    """A tool call reaches the backend with the key the MCP caller presented,
+    never with the server's own (privileged) key."""
+    import httpx
+    from mcp.client.session import ClientSession
+    from mcp.client.streamable_http import streamable_http_client
+
+    port = _free_port()
+    seen: list[tuple[str, str]] = []
+    async with _network_server(
+        "--http", port, api_key="server-master-key", key_var="MASTER_API_KEY",
+        accepted={"app-scoped-key"}, seen=seen,
+    ):
+        url = f"http://127.0.0.1:{port}/mcp"
+        http_client = httpx.AsyncClient(headers={"X-API-Key": "app-scoped-key"})
+        async with streamable_http_client(url, http_client=http_client) as (
+            read_stream, write_stream, _
+        ), ClientSession(read_stream, write_stream) as session:
+            await session.initialize()
+            seen.clear()  # drop the inbound key checks
+            result = await session.call_tool("list_namespaces", {})
+            assert not result.isError, result
+    assert seen, "the tool call never reached the backend"
+    assert {key for _path, key in seen} == {"app-scoped-key"}, seen
+
+
 # ---------------------------------------------------------------------------
 # SSE transport
 # ---------------------------------------------------------------------------
@@ -345,6 +434,29 @@ async def test_sse_api_key_required():
     async with _network_server("--sse", port, api_key=api_key), httpx.AsyncClient() as client:
         resp = await client.get(f"http://127.0.0.1:{port}/sse")
         assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_sse_tool_calls_act_with_the_callers_key():
+    """On SSE the key arrives on each message POST, not only on the stream."""
+    from mcp.client.session import ClientSession
+    from mcp.client.sse import sse_client
+
+    port = _free_port()
+    seen: list[tuple[str, str]] = []
+    async with _network_server(
+        "--sse", port, api_key="server-master-key", key_var="MASTER_API_KEY",
+        accepted={"app-scoped-key"}, seen=seen,
+    ):
+        url = f"http://127.0.0.1:{port}/sse"
+        async with sse_client(url, headers={"X-API-Key": "app-scoped-key"}) as (r, w), \
+                ClientSession(r, w) as session:
+            await session.initialize()
+            seen.clear()
+            result = await session.call_tool("list_namespaces", {})
+            assert not result.isError, result
+    assert seen, "the tool call never reached the backend"
+    assert {key for _path, key in seen} == {"app-scoped-key"}, seen
 
 
 # ---------------------------------------------------------------------------
@@ -451,18 +563,27 @@ async def test_http_custom_port():
         assert _wait_for_port(port, timeout=1.0)
 
 
-def test_http_without_key_refuses_to_start():
-    """No configured key and no override: the server exits instead of serving
-    every caller with its own downstream credentials."""
-    env = _network_env(_free_port(), None, "API_KEY")
-    env.pop("MCP_ALLOW_UNAUTHENTICATED")
-    proc = subprocess.run(
-        [sys.executable, "-m", "wip_mcp", "--http"],
-        env=env, capture_output=True, text=True, timeout=30,
-    )
-    assert proc.returncode != 0
-    assert "refusing to serve" in proc.stderr
-    assert "MCP_ALLOW_UNAUTHENTICATED" in proc.stderr
+@pytest.mark.asyncio
+async def test_http_serves_any_registry_accepted_key_without_its_own():
+    """The server authenticates each caller with the Registry and acts with
+    the caller's key, so it needs no key of its own: an app's scoped key is
+    let in, a key the Registry refuses is not, and an anonymous call never is."""
+    import httpx
+
+    port = _free_port()
+    async with _network_server("--http", port, api_key=None, accepted={"app-scoped-key"}):
+        url = f"http://127.0.0.1:{port}/mcp"
+        async with httpx.AsyncClient() as client:
+            ok = await client.post(
+                url, json=_INIT, headers={**_MCP_HEADERS, "X-API-Key": "app-scoped-key"}
+            )
+            assert ok.status_code == 200
+            forged = await client.post(
+                url, json=_INIT, headers={**_MCP_HEADERS, "X-API-Key": "forged"}
+            )
+            assert forged.status_code == 401
+            anonymous = await client.post(url, json=_INIT, headers=_MCP_HEADERS)
+            assert anonymous.status_code == 401
 
 
 @pytest.mark.asyncio
