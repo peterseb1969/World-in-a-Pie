@@ -338,6 +338,27 @@ export interface TemplateParity {
   legacy_table: boolean
 }
 
+/**
+ * Parity of one fixed-schema table reporting derives from def-store.
+ * `issue` is a stable code when the table does not hold what it should:
+ * `terms_mismatch`, `term_relations_mismatch`, `term_names_missing`,
+ * `term_closure_stale`, or `check_failed` (the check itself could not run;
+ * `error` says why).
+ */
+export interface DerivedTableParity {
+  table: string
+  expected_rows: number | null
+  actual_rows: number | null
+  issue: string | null
+  error: string | null
+}
+
+/** A view registered for the namespace, and whether it exists as one. */
+export interface ViewParity {
+  view_name: string
+  present: boolean
+}
+
 /** Does PostgreSQL reflect what sync should have built for a namespace? */
 export interface NamespaceParityResult {
   namespace: string
@@ -350,6 +371,11 @@ export interface NamespaceParityResult {
   templates_skipped_sync_disabled: number
   structural_issues: number
   count_mismatches: number
+  derived_tables: DerivedTableParity[]
+  views: ViewParity[]
+  /** Failing derived tables plus missing registered views; kept apart from
+   * structural_issues, which a restore's structure gate reads mid-restore. */
+  derived_issues: number
   ok: boolean
 }
 

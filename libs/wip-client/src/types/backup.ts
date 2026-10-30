@@ -77,7 +77,10 @@ export interface BackupJobSnapshot {
   archive_size: number | null
   options: Record<string, unknown>
   warnings?: string[]
-  /** Present on `validate` jobs once they complete. */
+  /**
+   * Present on `validate` jobs once they complete. A restore job carries its
+   * own result here: read it as `RestoreJobResult`.
+   */
   result?: NamespaceIntegrityResult | null
   /**
    * Validation jobs a completed restore started, one per namespace it wrote.
@@ -227,6 +230,70 @@ export interface RestoreOptions {
    * into.
    */
   drop_stale_reporting?: boolean
+  /**
+   * Leave out edge documents (templates with usage `relationship`) whose
+   * source_ref or target_ref points at a document that is neither in the
+   * archive nor on this install, with all their versions. The job result
+   * (`referents.dropped_edges`) and the restore provenance list each one.
+   * Without it they are restored with the archived id. Plain reference
+   * fields always keep their value; unresolved references are listed either
+   * way (`referents.unresolved_references`). A merge refuses unresolved
+   * references, so for a merge this is what lets such edges be left out.
+   */
+  drop_unresolved_edges?: boolean
+}
+
+/** Documents of one namespace that reference an entity the archive does not
+ * carry and this install does not hold; they keep its archived id. */
+export interface UnresolvedReference {
+  /** The archived id of the missing entity. */
+  referent: string
+  entity_type: string
+  description: string
+  /** The namespace of the referencing documents. */
+  namespace: string
+  /** How many documents reference it. */
+  documents: number
+  /** Up to a few referencing documents and the field holding the reference. */
+  samples: Array<{ document_id: string; field_path: string }>
+}
+
+/** An edge document a restore left out (`drop_unresolved_edges`) because an
+ * endpoint is not on this install. Every one is listed, never sampled. */
+export interface DroppedEdge {
+  namespace: string
+  document_id: string
+  template_id: string | null
+  source_ref: string | null
+  target_ref: string | null
+  /** The archived ids of the endpoints that could not be found. */
+  unresolved_endpoints: string[]
+}
+
+/**
+ * References to entities the archive does not carry. `recorded: false` means
+ * the archive predates the referent table; then only that flag is present.
+ */
+export interface RestoreReferents {
+  recorded: boolean
+  total?: number
+  resolved?: number
+  unresolved?: number
+  unresolved_references?: UnresolvedReference[]
+  /** Present when the restore ran with `drop_unresolved_edges`. */
+  dropped_edges?: DroppedEdge[]
+}
+
+/**
+ * The `result` of a restore job, as far as typed here: read
+ * `(job.result as RestoreJobResult | null)?.referents`. Other keys vary by
+ * mode and dry run.
+ */
+export interface RestoreJobResult {
+  mode?: RestoreMode
+  dry_run?: boolean
+  referents?: RestoreReferents | null
+  [key: string]: unknown
 }
 
 /**

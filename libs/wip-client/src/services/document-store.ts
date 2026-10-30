@@ -124,25 +124,46 @@ export class DocumentStoreService extends BaseService {
     return this.bulkWrite('/documents', items, 'PATCH')
   }
 
+  /**
+   * Delete a document: soft by default (status inactive), or permanently
+   * with `hardDelete` in a namespace whose deletion_mode is `full`.
+   *
+   * A hard delete is refused while other documents still reference the
+   * document (any namespace, any version or status): the item fails with
+   * error_code `invalid_state`, `details.rule: 'referenced'`, and
+   * `details.referrers` grouped by namespace and template. `force` deletes it
+   * anyway and lists the referrers in `details.broken_references`. `force`
+   * only applies with `hardDelete`; without it the item fails with
+   * `force_unsupported`.
+   */
   async deleteDocument(id: string, options?: {
     updatedBy?: string
     hardDelete?: boolean
     version?: number
+    force?: boolean
   }): Promise<BulkResultItem> {
     return this.bulkWriteOne('/documents', {
       id,
       updated_by: options?.updatedBy,
       hard_delete: options?.hardDelete,
       version: options?.version,
+      force: options?.force,
     }, 'DELETE')
   }
 
+  /**
+   * Delete several documents; `hardDelete` and `force` apply to every item,
+   * as on `deleteDocument`. Referrers that are themselves hard-deleted, whole,
+   * in the same call do not count against a hard delete.
+   */
   async deleteDocuments(ids: string[], options?: {
     hardDelete?: boolean
+    force?: boolean
   }): Promise<BulkResponse> {
     return this.bulkWrite('/documents', ids.map(id => ({
       id,
       hard_delete: options?.hardDelete,
+      force: options?.force,
     })), 'DELETE')
   }
 
@@ -427,6 +448,8 @@ export class DocumentStoreService extends BaseService {
       form.append('dry_run', String(options.dry_run))
     if (options.drop_stale_reporting !== undefined)
       form.append('drop_stale_reporting', String(options.drop_stale_reporting))
+    if (options.drop_unresolved_edges !== undefined)
+      form.append('drop_unresolved_edges', String(options.drop_unresolved_edges))
     return this.postFormData(`/backup/namespaces/${namespace}/restore`, form)
   }
 

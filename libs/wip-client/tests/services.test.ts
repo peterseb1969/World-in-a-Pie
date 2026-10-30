@@ -731,6 +731,42 @@ describe('Service classes via createWipClient', () => {
       expect(body).toEqual([{ id: 'D-001', hard_delete: true }])
     })
 
+    it('deleteDocument forwards force with hard_delete', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'deleted', id: 'D-001' }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+      })
+
+      await client.documents.deleteDocument('D-001', { hardDelete: true, force: true })
+
+      const [, options] = fetchMock.mock.calls[0]
+      expect(JSON.parse(options.body)).toEqual([
+        { id: 'D-001', hard_delete: true, force: true },
+      ])
+    })
+
+    it('deleteDocuments forwards force on every item', async () => {
+      mockJsonResponse({
+        results: [
+          { index: 0, status: 'deleted', id: 'D-001' },
+          { index: 1, status: 'deleted', id: 'D-002' },
+        ],
+        total: 2,
+        succeeded: 2,
+        failed: 0,
+      })
+
+      await client.documents.deleteDocuments(['D-001', 'D-002'], { hardDelete: true, force: true })
+
+      const [, options] = fetchMock.mock.calls[0]
+      expect(JSON.parse(options.body)).toEqual([
+        { id: 'D-001', hard_delete: true, force: true },
+        { id: 'D-002', hard_delete: true, force: true },
+      ])
+    })
+
     it('getTableView sends GET with params', async () => {
       mockJsonResponse({
         template_id: '0190c000-0000-7000-0000-000000000001',
@@ -1013,6 +1049,7 @@ describe('Service classes via createWipClient', () => {
           batch_size: 100,
           dry_run: true,
           drop_stale_reporting: true,
+          drop_unresolved_edges: true,
         },
         'aa-backup.zip',
       )
@@ -1028,6 +1065,7 @@ describe('Service classes via createWipClient', () => {
       expect(fd.get('batch_size')).toBe('100')
       expect(fd.get('dry_run')).toBe('true')
       expect(fd.get('drop_stale_reporting')).toBe('true')
+      expect(fd.get('drop_unresolved_edges')).toBe('true')
       // Retired toolkit-era params must never be sent — the endpoint 400s them.
       expect(fd.get('target_namespace')).toBeNull()
       expect(fd.get('register_synonyms')).toBeNull()
