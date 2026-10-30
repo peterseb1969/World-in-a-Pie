@@ -694,6 +694,65 @@ router = APIRouter(
 _PRIVILEGED = Depends(require_groups(["wip-admins", "wip-services"]))
 
 
+def _is_privileged(identity: UserIdentity) -> bool:
+    return identity.has_group("wip-admins") or identity.has_group("wip-services")
+
+
+# Every relation a view depends on outside its own schema, read from the
+# view's rewrite rule in pg_depend: exact and independent of parsing the SQL.
+# (Function dependencies are not listed: nothing a caller can reach creates
+# functions, so a view cannot smuggle cross-schema reads through one.)
+_VIEW_FOREIGN_DEPENDENCIES_SQL = """
+    SELECT DISTINCT dn.nspname AS schema, dc.relname AS relation
+    FROM pg_depend d
+    JOIN pg_rewrite r ON r.oid = d.objid
+    JOIN pg_class v ON v.oid = r.ev_class
+    JOIN pg_namespace vn ON vn.oid = v.relnamespace
+    JOIN pg_class dc ON dc.oid = d.refobjid
+    JOIN pg_namespace dn ON dn.oid = dc.relnamespace
+    WHERE d.classid = 'pg_rewrite'::regclass
+      AND d.refclassid = 'pg_class'::regclass
+      AND vn.nspname = $1 AND v.relname = $2
+      AND dc.oid <> v.oid
+      AND dn.nspname <> $1
+"""
+
+
+def _is_namespace_schema(schema: str) -> bool:
+    """A namespace's reporting schema is named after the namespace; the rest
+    (public bookkeeping, the catalogues) holds platform tables, not any
+    namespace's data."""
+    return not (
+        schema == "public" or schema == "information_schema" or schema.startswith("pg_")
+    )
+
+
+async def _unreadable_view_dependencies(
+    identity: UserIdentity, foreign: list[Any],
+) -> list[Any]:
+    """The foreign dependencies of a view this caller may not read through it.
+
+    A view reads with the reporting role, which sees every schema, so the
+    caller's own permissions must cover every namespace the view draws from:
+    read on each foreign namespace schema, and a privileged key for platform
+    tables. Raises 503 when a permission cannot be read.
+    """
+    if _is_privileged(identity):
+        return []
+    unreadable = []
+    for dep in foreign:
+        if not _is_namespace_schema(dep["schema"]):
+            unreadable.append(dep)
+            continue
+        try:
+            await check_namespace_permission(identity, dep["schema"], "read")
+        except HTTPException as e:
+            if e.status_code == 503:
+                raise
+            unreadable.append(dep)
+    return unreadable
+
+
 async def _effective_namespace(
     identity: UserIdentity, requested: str | None
 ) -> str | None:
@@ -1833,9 +1892,7 @@ async def get_entity_references(
     # The entity is fetched with the service key, so authorize on the
     # namespace it actually lives in. A caller without read on it is told
     # the entity is not found; an entity whose namespace is unknown is only
-    # shown to unrestricted callers. Its outgoing references need no
-    # separate check: the entity's own data already carries the values it
-    # submitted for them.
+    # shown to unrestricted callers.
     if result.entity is not None:
         accessible = await resolve_accessible_namespaces(identity)
         if accessible is not None:
@@ -1843,7 +1900,43 @@ async def get_entity_references(
             if owner is None:
                 raise HTTPException(status_code=404, detail="Entity not found")
             await check_namespace_permission(identity, owner, "read")
+            await _hide_unreadable_targets(result.entity, set(accessible))
     return result
+
+
+async def _hide_unreadable_targets(entity: Any, readable: set[str]) -> None:
+    """Report references into namespaces the caller cannot read as broken.
+
+    The entity's own data carries each target's id, so the id stays. Its
+    label, value and lifecycle state are read from the target and belong to
+    a namespace the caller cannot read: they are dropped and the reference
+    reads exactly like one whose target does not exist.
+    """
+    from wip_auth.registry_client import RegistryClientBase
+
+    ids = sorted({ref.ref_id for ref in entity.references})
+    if not ids:
+        return
+    try:
+        placed = await RegistryClientBase().lookup_entry_namespaces(ids, raise_on_error=True)
+    except (RegistryError, httpx.HTTPError) as e:
+        raise HTTPException(
+            status_code=503, detail=f"Cannot check where references point: {e}",
+        ) from e
+    for ref in entity.references:
+        target_ns = placed.get(ref.ref_id)
+        if not target_ns or target_ns == entity.namespace or target_ns in readable:
+            continue
+        if ref.status == "valid":
+            entity.valid_refs -= 1
+        elif ref.status == "inactive":
+            entity.inactive_refs -= 1
+        if ref.status != "broken":
+            entity.broken_refs += 1
+        ref.ref_value = None
+        ref.ref_label = None
+        ref.status = "broken"
+        ref.error = f"{ref.ref_type.capitalize()} not found"
 
 
 @router.get("/entity/{entity_type}/{entity_id}/referenced-by", response_model=ReferencedByResponse)
@@ -2562,7 +2655,7 @@ async def register_view(
     ``*__entities``, the metadata tables, ``_wip_*``) are reserved, and a
     name occupied by a relation this endpoint does not own is a 409.
     """
-    privileged = identity.has_group("wip-admins") or identity.has_group("wip-services")
+    privileged = _is_privileged(identity)
     if not privileged:
         await check_namespace_permission(identity, prefix, "admin")
 
@@ -2667,46 +2760,27 @@ async def register_view(
                     f'CREATE VIEW "{schema}"."{safe_name}" AS {view_sql}'
                 )
                 if not privileged:
-                    # Containment for namespace-admin registrations: ask
-                    # Postgres (pg_depend via the view's rewrite rule) which
-                    # relations the view it just created actually depends
-                    # on. Any dependency outside the namespace's own schema
-                    # — another namespace, public bookkeeping, pg_catalog —
-                    # rolls the whole registration back. This is exact and
-                    # privilege-independent, unlike parsing the SQL.
-                    # (Function dependencies are not checked: nothing a
-                    # caller can reach creates functions, so a view cannot
-                    # smuggle cross-schema reads through one.)
+                    # A namespace-admin registration may draw only on
+                    # namespaces its key can read: ask Postgres which
+                    # relations the view it just created depends on, and roll
+                    # the whole registration back if any lies in a namespace
+                    # the key cannot read or in platform tables.
                     foreign = await conn.fetch(
-                        """
-                        SELECT DISTINCT dn.nspname AS schema, dc.relname AS relation
-                        FROM pg_depend d
-                        JOIN pg_rewrite r ON r.oid = d.objid
-                        JOIN pg_class v ON v.oid = r.ev_class
-                        JOIN pg_namespace vn ON vn.oid = v.relnamespace
-                        JOIN pg_class dc ON dc.oid = d.refobjid
-                        JOIN pg_namespace dn ON dn.oid = dc.relnamespace
-                        WHERE d.classid = 'pg_rewrite'::regclass
-                          AND d.refclassid = 'pg_class'::regclass
-                          AND vn.nspname = $1 AND v.relname = $2
-                          AND dc.oid <> v.oid
-                          AND dn.nspname <> $1
-                        """,
-                        schema, safe_name,
+                        _VIEW_FOREIGN_DEPENDENCIES_SQL, schema, safe_name,
                     )
-                    if foreign:
+                    unreadable = await _unreadable_view_dependencies(identity, foreign)
+                    if unreadable:
                         names = ", ".join(
-                            f"{r['schema']}.{r['relation']}" for r in foreign
+                            f"{r['schema']}.{r['relation']}" for r in unreadable
                         )
                         raise HTTPException(
                             status_code=403,
                             detail=(
-                                "View references relations outside this "
-                                f"namespace's schema ({names}). A namespace-"
-                                "admin key may only register views contained "
-                                "in the namespace's own schema; cross-schema "
-                                "views require a wip-admins or wip-services "
-                                "key."
+                                "View references relations this key cannot read "
+                                f"({names}). A namespace-admin key may register "
+                                "views over its own namespace and namespaces it "
+                                "can read; views over platform tables require a "
+                                "wip-admins or wip-services key."
                             ),
                         )
                 await conn.execute(
@@ -2811,11 +2885,21 @@ async def read_view_rows(
             "SELECT TRUE FROM public._wip_views WHERE namespace = $1 AND view_name = $2",
             prefix, view_name,
         ))
+    not_found = HTTPException(
+        status_code=404,
+        detail=f"View {view_name!r} not found in namespace {prefix!r}",
+    )
     if not registered:
-        raise HTTPException(
-            status_code=404,
-            detail=f"View {view_name!r} not found in namespace {prefix!r}",
-        )
+        raise not_found
+    # The view reads with the reporting role, which sees every schema: the
+    # caller must be able to read every namespace it draws from, not only
+    # the one it is registered in. Otherwise the view stays invisible, as an
+    # unregistered one would.
+    if not _is_privileged(identity):
+        async with state.postgres_pool.acquire() as conn:
+            foreign = await conn.fetch(_VIEW_FOREIGN_DEPENDENCIES_SQL, schema, safe_name)
+        if await _unreadable_view_dependencies(identity, foreign):
+            raise not_found
 
     def _quoted(column: str) -> str:
         return '"' + column.replace('"', '""') + '"'

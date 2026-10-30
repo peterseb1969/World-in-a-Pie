@@ -43,6 +43,14 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([
     {"name": "rs-multi", "key": "rs_multi_key", "owner": "rs-multi",
      "groups": [], "namespaces": ["ns-a", "ns-c"],
      "grants": {"ns-a": "read", "ns-c": "read"}},
+    # Keys that can also read 'ns-other': a view over it is theirs to
+    # register (admin on ns-a) or read (read on both).
+    {"name": "rs-nsadmin-xread", "key": "rs_nsadmin_xread_key", "owner": "rs-nsadmin-xread",
+     "groups": [], "namespaces": ["ns-a", "ns-other"],
+     "grants": {"ns-a": "admin", "ns-other": "read"}},
+    {"name": "rs-xreader", "key": "rs_xreader_key", "owner": "rs-xreader",
+     "groups": [], "namespaces": ["ns-a", "ns-other"],
+     "grants": {"ns-a": "read", "ns-other": "read"}},
 ]))
 
 # Connection URIs for integration tests (set in CI or locally)

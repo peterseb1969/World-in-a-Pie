@@ -1080,3 +1080,30 @@ async def test_hard_delete_with_the_store_down_is_503_and_keeps_the_record(file_
     )
     assert response.status_code == 503
     assert await File.find_one({"file_id": file.file_id}) is not None
+
+
+@pytest.mark.asyncio
+async def test_get_file_documents_lists_only_readable_namespaces(
+    file_client: AsyncClient, auth_headers: dict,
+):
+    """A file in 'wip' referenced from 'wip' and from 'xns-closed': a key that
+    reads only 'wip' sees one referencing document, an admin sees both."""
+    file = await _insert_file(namespace="wip")
+    for ns in ("wip", "xns-closed"):
+        await Document(
+            namespace=ns,
+            document_id=str(uuid.uuid4()),
+            template_id="TPL-FILE-REF",
+            template_version=1,
+            template_value="FILE_REF",
+            data={},
+            file_references=[{"field_path": "attachment", "file_id": file.file_id}],
+        ).insert()
+
+    path = f"/api/document-store/files/{file.file_id}/documents"
+    as_wip_reader = await file_client.get(path, headers={"X-API-Key": "test_xns_writer_key"})
+    assert as_wip_reader.status_code == 200, as_wip_reader.text
+    assert as_wip_reader.json()["total"] == 1
+
+    as_admin = await file_client.get(path, headers=auth_headers)
+    assert as_admin.json()["total"] == 2

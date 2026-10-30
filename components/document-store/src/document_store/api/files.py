@@ -3,7 +3,7 @@
 import asyncio
 import logging
 import math
-from typing import Literal
+from typing import Any, Literal
 
 from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, UploadFile
@@ -457,11 +457,16 @@ async def get_file_documents(
 
     await check_namespace_permission(identity, file_doc.namespace, "read")
 
-    # Query documents with this file_id in file_references
-    query = {
+    # Query documents with this file_id in file_references. A document in
+    # another namespace may reference the file; list only those the caller
+    # can read.
+    query: dict[str, Any] = {
         "file_references.file_id": file_id,
         "status": "active",
     }
+    readable = await resolve_accessible_namespaces(identity)
+    if readable is not None:
+        query["namespace"] = {"$in": readable}
 
     total = await DocumentModel.find(query).count()
     skip = (page - 1) * page_size

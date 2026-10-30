@@ -305,3 +305,68 @@ async def test_entity_references_check_the_entitys_namespace(monkeypatch, owner,
     monkeypatch.setattr(state, "search_service", _FakeSearchService(owner))
     status = await _call("GET", f"{P}/entity/document/doc-1/references", key)
     assert status == expected
+
+
+# ---------------------------------------------------------------------------
+# Entity references: targets in namespaces the caller cannot read
+# ---------------------------------------------------------------------------
+
+
+class _FakeSearchServiceWithRefs:
+    """An entity in ns-a referencing a template in ns-a and a term in ns-c."""
+
+    async def get_entity_references(self, entity_type, entity_id):
+        from reporting_sync.search_service import (
+            EntityDetails,
+            EntityReference,
+            EntityReferencesResponse,
+        )
+
+        return EntityReferencesResponse(entity=EntityDetails(
+            entity_type=entity_type, entity_id=entity_id, namespace="ns-a",
+            references=[
+                EntityReference(ref_type="template", ref_id="tpl-own", ref_value="OWN",
+                                ref_label="Own", status="valid"),
+                EntityReference(ref_type="term", ref_id="term-c", ref_value="SECRET",
+                                ref_label="Secret term", field_path="kind", status="inactive",
+                                error="Term is deprecated"),
+            ],
+            valid_refs=1, inactive_refs=1,
+        ))
+
+
+async def _references(monkeypatch, key):
+    from reporting_sync.main import state
+    from wip_auth.registry_client import RegistryClientBase
+
+    async def placed(self, ids, raise_on_error=False):
+        return {"tpl-own": "ns-a", "term-c": "ns-c"}
+
+    monkeypatch.setattr(state, "search_service", _FakeSearchServiceWithRefs())
+    monkeypatch.setattr(RegistryClientBase, "lookup_entry_namespaces", placed)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test",
+                           headers={"X-API-Key": key}) as c:
+        r = await c.get(f"{P}/entity/document/doc-1/references")
+    assert r.status_code == 200, r.text
+    return r.json()["entity"]
+
+
+@pytest.mark.asyncio
+async def test_a_target_in_an_unreadable_namespace_reads_as_broken(monkeypatch):
+    entity = await _references(monkeypatch, READER)
+    own, other = entity["references"]
+    assert own["status"] == "valid" and own["ref_label"] == "Own"
+    # The id stays (it is the entity's own data); nothing read from ns-c does.
+    assert other == {
+        "ref_type": "term", "ref_id": "term-c", "ref_value": None, "ref_label": None,
+        "field_path": "kind", "status": "broken", "error": "Term not found",
+    }
+    assert (entity["valid_refs"], entity["inactive_refs"], entity["broken_refs"]) == (1, 0, 1)
+
+
+@pytest.mark.asyncio
+async def test_a_reader_of_the_target_sees_it(monkeypatch):
+    entity = await _references(monkeypatch, "rs_multi_key")  # reads ns-a and ns-c
+    other = entity["references"][1]
+    assert other["status"] == "inactive" and other["ref_label"] == "Secret term"

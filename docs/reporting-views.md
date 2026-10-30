@@ -45,12 +45,14 @@ Every reporting-sync route requires an API key. Beyond that:
 
 | Operation | Required |
 |---|---|
-| Register / replace / drop a view | ADMIN on the namespace (**contained** views only — see below), or `wip-admins` / `wip-services` (any view) |
+| Register / replace / drop a view | ADMIN on the namespace, for a view over namespaces the key can read (see below), or `wip-admins` / `wip-services` (any view) |
 | List a namespace's views | read on the namespace (an invisible namespace answers `404`) |
-| Read a view's rows (`POST …/views/{name}/rows`, structured) | read on the namespace |
+| Read a view's rows (`POST …/views/{name}/rows`, structured) | read on the namespace **and** on every other namespace the view draws from; a view over platform tables (`public`, `pg_catalog`) only `wip-admins` / `wip-services`. Otherwise the view answers `404`, as an unregistered one would |
 | `POST /api/reporting-sync/query` (raw SQL, including reading a view) | `wip-admins` or `wip-services` |
 
-A view definition is raw SQL. Schema-qualified names reach other namespaces' schemas, so namespace *write* access cannot be the boundary, and raw `/query` stays admin/service-only. The namespace-ADMIN tier exists so an app can own its views with the key it deploys with — under **containment**: after creating the view, registration asks Postgres (`pg_depend`) which relations it actually depends on, and any dependency outside the namespace's own schema — another namespace, `public` bookkeeping, `pg_catalog` — rolls the registration back with `403`. No SQL parsing. A `wip-admins` / `wip-services` key may still register uncontained (cross-schema) views: that is a deliberate decision about what the namespace exposes, and reading such a view with namespace read is the same trust model as any other relation in the schema.
+A view definition is raw SQL. Schema-qualified names reach other namespaces' schemas, so namespace *write* access cannot be the boundary, and raw `/query` stays admin/service-only. The namespace-ADMIN tier exists so an app can own its views with the key it deploys with. After creating the view, registration asks Postgres (`pg_depend`) which relations it actually depends on: a dependency in another namespace the key cannot read, or in `public` bookkeeping or `pg_catalog`, rolls the registration back with `403`. No SQL parsing. A `wip-admins` / `wip-services` key may register any view.
+
+The same dependency list gates every read. A view reads with the reporting role, which sees every schema, so reading its rows takes read on **every** namespace it draws from, not only the one it is registered in. A view never hands a namespace's rows to a caller who could not read that namespace directly, whoever registered it.
 
 An app deployed by `wip-deploy` receives the install's service key, so bootstrap registration and raw view queries work unchanged. A **namespace-scoped app key** registers contained views with namespace ADMIN and reads them through the structured rows endpoint; it still cannot run raw SQL.
 

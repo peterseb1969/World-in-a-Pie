@@ -4313,9 +4313,10 @@ async def register_reporting_view(
       least once. Bootstrap order: namespace → templates → first sync →
       views. Too early fails with 'relation "doc_x" does not exist'.
 
-    Authorization: ADMIN on the namespace registers views that depend only on
-    the namespace's own schema (anything else is rolled back with 403);
-    wip-admins / wip-services keys may register any view.
+    Authorization: ADMIN on the namespace registers views that draw only on
+    namespaces the key can read (anything else, including platform tables,
+    is rolled back with 403); wip-admins / wip-services keys may register any
+    view. Reading a view's rows takes read on every namespace it draws from.
 
     Args:
         name: View name (becomes "<namespace>"."<name>").
@@ -4365,9 +4366,11 @@ async def read_reporting_view(
 ) -> str:
     """Read a registered view's rows with structured filters — no SQL.
 
-    The read path for namespace-scoped keys: requires only READ on the
-    namespace (raw SQL via run_report_query needs an admin or service key).
-    Only registered views are readable here.
+    The read path for namespace-scoped keys: requires READ on the namespace
+    and on every other namespace the view draws from; a view over platform
+    tables reads only with an admin or service key, as does raw SQL via
+    run_report_query. Only registered views are readable here; a view the
+    caller may not read answers like an unregistered one.
 
     Args:
         name: The registered view's name.

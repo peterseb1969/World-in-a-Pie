@@ -7,6 +7,33 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Reads no longer show another namespace's data to a caller who cannot read it
+
+These read paths showed data from namespaces the caller had no read on:
+
+- **Registered views.** `POST …/namespace/{ns}/views/{name}/rows` checked read
+  on `{ns}` only, so a view a `wip-admins` / `wip-services` key had registered
+  over another namespace's schema served that schema's rows to any reader of
+  `{ns}`. Reading a view now takes read on **every** namespace it draws from
+  (read live from the view's Postgres dependencies); a view over platform
+  tables (`public`, `pg_catalog`) reads only with an admin or service key.
+  A view the caller may not read answers `404`, like an unregistered one.
+- **Registering a view** with a namespace-ADMIN key now succeeds when the view
+  draws on other namespaces the key can read (it was refused for any other
+  schema); platform tables still need an admin or service key.
+- **`GET /api/reporting-sync/entity/{type}/{id}/references`** returned each
+  referenced entity's label, value and status. A reference into a namespace the
+  caller cannot read now keeps its id but reads as `broken` ("… not found"),
+  and the counts move with it.
+- **`GET /api/document-store/files/{id}/documents`** listed every document that
+  references the file, in any namespace. It lists only documents in namespaces
+  the caller can read.
+
+**Who is affected:** apps whose namespace keys read views that draw on another
+namespace (give the key read on it), and integrity views run with a key that
+cannot read every referenced namespace (references there now show as broken).
+Admin and service keys see everything, as before.
+
 ### The MCP server acts with each caller's key
 
 The HTTP/SSE transports used to admit only the server's own key (the

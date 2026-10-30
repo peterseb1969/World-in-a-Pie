@@ -28,6 +28,8 @@ from .conftest import requires_postgres
 ADMIN = os.environ["WIP_AUTH_LEGACY_API_KEY"]
 NSADMIN = "rs_nsadmin_key"  # admin on ns-a
 READER = "rs_reader_key"  # read on ns-a
+NSADMIN_XREAD = "rs_nsadmin_xread_key"  # admin on ns-a, read on ns-other
+XREADER = "rs_xreader_key"  # read on ns-a and ns-other
 
 NS = "ns-a"
 P = f"/api/reporting-sync/namespace/{NS}"
@@ -185,14 +187,39 @@ async def test_nsadmin_view_must_stay_inside_its_schema(seeded, real_state):
     r = await _register(NSADMIN, "SELECT view_name FROM public._wip_views", name="v_leak")
     assert r.status_code == 403
 
-    # The privileged groups keep registering cross-schema views deliberately.
+    # The privileged groups keep registering cross-schema views.
     r = await _register(
         ADMIN, 'SELECT document_id FROM "ns-other".doc_secret__v1', name="v_leak",
     )
     assert r.status_code == 201, r.text
-    # …and namespace READ then reads it: the view is the namespace's
-    # deliberate exposure decision.
-    assert (await _rows(READER, name="v_leak")).status_code == 200
+    # Reading it takes read on every namespace it draws from: a reader of
+    # ns-a alone gets the view's 404, a reader of both gets its rows.
+    assert (await _rows(READER, name="v_leak")).status_code == 404
+    assert (await _rows(XREADER, name="v_leak")).status_code == 200
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_nsadmin_may_draw_on_namespaces_it_can_read(seeded):
+    r = await _register(
+        NSADMIN_XREAD, 'SELECT document_id FROM "ns-other".doc_secret__v1', name="v_x",
+    )
+    assert r.status_code == 201, r.text
+    assert (await _rows(XREADER, name="v_x")).status_code == 200
+    assert (await _rows(READER, name="v_x")).status_code == 404
+
+    # Platform tables stay out of reach of a namespace key.
+    r = await _register(NSADMIN_XREAD, "SELECT view_name FROM public._wip_views", name="v_p")
+    assert r.status_code == 403
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_view_over_platform_tables_is_read_by_privileged_keys_only(seeded):
+    r = await _register(ADMIN, "SELECT view_name FROM public._wip_views", name="v_p")
+    assert r.status_code == 201, r.text
+    assert (await _rows(READER, name="v_p")).status_code == 404
+    assert (await _rows(ADMIN, name="v_p")).status_code == 200
 
 
 @requires_postgres
