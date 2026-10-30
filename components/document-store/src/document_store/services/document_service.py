@@ -1946,9 +1946,16 @@ class DocumentService:
         hard_delete: bool = False,
         version: int | None = None,
         warnings: list[str] | None = None,
+        force: bool = False,
+        deleted_with: frozenset[str] = frozenset(),
+        broken_references: list[dict[str, Any]] | None = None,
     ) -> bool:
         """Delete a document. Soft-delete by default, hard-delete if requested
         and namespace deletion_mode is 'full'.
+
+        A hard delete is refused while other documents, in any namespace and
+        of any version or status, still reference what it removes: their
+        references would stop resolving. ``force`` deletes anyway.
 
         Args:
             document_id: Document to delete
@@ -1956,7 +1963,13 @@ class DocumentService:
             hard_delete: Permanently remove (requires namespace deletion_mode='full')
             version: Specific version to hard-delete (None = all). Ignored for soft-delete.
             warnings: When given, receives the warnings of a soft delete whose
-                retirement did not fully reach the Registry.
+                retirement did not fully reach the Registry, and of a forced
+                hard delete that broke references.
+            force: Hard-delete even while other documents reference it.
+            deleted_with: Documents hard-deleted (all versions) in the same
+                request; their references do not block this delete.
+            broken_references: When given, receives the referrers a forced
+                hard delete left without a target.
         """
         # Use authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -1975,15 +1988,41 @@ class DocumentService:
                     "invalid_state", rule="deletion_mode_retain",
                 )
 
-            from .file_service import get_file_service
-            file_service = get_file_service()
-
+            target = None
             if version is not None:
-                # Version-specific hard-delete
                 target = await Document.find_one({"document_id": document_id, "version": version})
                 if not target:
                     return False
+            # Removing the last remaining version removes the document.
+            whole = version is None or await Document.find({"document_id": document_id}).count() == 1
+            referrers = await self._hard_delete_referrers(
+                document_id, None if whole else version, deleted_with,
+            )
+            if referrers:
+                total = sum(group["documents"] for group in referrers)
+                what = "document" if whole else f"version {version} of document"
+                if not force:
+                    error = DocumentStoreError(
+                        f"Hard-delete refused: {total} other document(s) reference this "
+                        f"{what}, and their references would stop resolving. "
+                        "Pass force=true to delete anyway.",
+                        "invalid_state", rule="referenced",
+                    )
+                    error.details = {"rule": "referenced", "referrers": referrers}
+                    raise error
+                if warnings is not None:
+                    warnings.append(
+                        f"Hard-deleted with force: references from {total} other "
+                        f"document(s) to this {what} no longer resolve"
+                    )
+                if broken_references is not None:
+                    broken_references.extend(referrers)
 
+            from .file_service import get_file_service
+            file_service = get_file_service()
+
+            if target is not None:
+                # Version-specific hard-delete
                 event_payload = await self._document_to_event_payload(target)
                 event_payload["hard_delete"] = True
                 event_payload["version"] = version
@@ -2063,6 +2102,68 @@ class DocumentService:
         )
 
         return True
+
+    _REFERRER_SAMPLE = 5
+
+    async def _hard_delete_referrers(
+        self,
+        document_id: str,
+        version: int | None,
+        deleted_with: frozenset[str],
+    ) -> list[dict[str, Any]]:
+        """Other documents whose references a hard delete would break, one
+        group per (namespace, template) with a count of distinct documents.
+
+        ``version`` None means the whole document goes: every reference to it
+        breaks. With a version, other versions remain, so a ``latest``
+        reference still resolves and only a ``pinned`` reference recorded
+        against that version breaks. Every version and status of a referrer
+        counts: a retired document's references must keep resolving too.
+        Sample document ids are listed only for namespaces the caller can
+        read; elsewhere the group gives the count alone.
+        """
+        target: dict[str, Any] = {"resolved.document_id": document_id}
+        if version is not None:
+            target.update({"version_strategy": "pinned", "resolved.version": version})
+        pipeline = [
+            {"$match": {
+                "references": {"$elemMatch": target},
+                "document_id": {"$nin": [document_id, *deleted_with]},
+            }},
+            {"$group": {
+                "_id": {"namespace": "$namespace", "template_id": "$template_id"},
+                "ids": {"$addToSet": "$document_id"},
+            }},
+            {"$sort": {"_id.namespace": 1, "_id.template_id": 1}},
+        ]
+        groups = await Document.aggregate(pipeline).to_list()
+        if not groups:
+            return []
+
+        from wip_auth import get_current_identity, permission_sufficient, resolve_permission
+        identity = get_current_identity()
+        readable: dict[str, bool] = {}
+
+        async def can_read(ns: str) -> bool:
+            if identity is None:
+                return True  # internal caller, no request identity
+            if ns not in readable:
+                readable[ns] = permission_sufficient(await resolve_permission(identity, ns), "read")
+            return readable[ns]
+
+        referrers: list[dict[str, Any]] = []
+        for group in groups:
+            ns = group["_id"]["namespace"]
+            ids = sorted(group["ids"])
+            entry: dict[str, Any] = {
+                "namespace": ns,
+                "template_id": group["_id"].get("template_id"),
+                "documents": len(ids),
+            }
+            if await can_read(ns):
+                entry["sample_document_ids"] = ids[: self._REFERRER_SAMPLE]
+            referrers.append(entry)
+        return referrers
 
     async def _hard_delete_orphaned_files(self, file_references: list[dict[str, Any]], file_service) -> None:
         """Hard-delete files that have reached reference_count=0 and are inactive."""

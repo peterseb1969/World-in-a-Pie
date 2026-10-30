@@ -1,10 +1,11 @@
 """CASE-561: `DeleteItem.force` was accepted-but-ignored on document deletion.
 
-`force` is file-delete semantics (override the referenced-file guard);
-document deletion has no reference gate to override, so the field was a
-validated no-op — a guardrail that looked live but did nothing. Now the
-route rejects it per-item with error_code=force_unsupported instead of
-silently ignoring it.
+`force` overrides a reference guard. A soft delete has none (existing
+references keep resolving), so force on it would be a validated no-op — a
+guardrail that looked live but did nothing. The route rejects it per-item
+with error_code=force_unsupported instead of silently ignoring it. With
+hard_delete=true, force overrides the referenced-document guard
+(test_hard_delete_referenced.py).
 """
 
 import pytest

@@ -669,7 +669,7 @@ async def traverse_document_relationships(
     "",
     response_model=BulkResponse,
     summary="Delete documents",
-    description="Delete one or more documents. Soft-delete by default. Set hard_delete=true to permanently remove (requires namespace deletion_mode='full')."
+    description="Delete one or more documents. Soft-delete by default. Set hard_delete=true to permanently remove (requires namespace deletion_mode='full'). A hard delete is refused (error_code=invalid_state, details.rule=referenced) while other documents still reference it; details.referrers groups them by namespace and template. Documents hard-deleted in the same request do not count. force=true, with hard_delete, deletes anyway and reports the referrers as details.broken_references."
 )
 async def delete_documents(
     items: list[DeleteItem] = Body(...),
@@ -682,19 +682,22 @@ async def delete_documents(
     )
 
     service = get_document_service()
+    # Documents this request hard-deletes whole: references between them do
+    # not block, so a document and its edges can go together without force.
+    deleted_with = frozenset(
+        item.id for item in items if item.hard_delete and item.version is None
+    )
     results = []
     for i, item in enumerate(items):
         try:
-            # `force` is file-delete semantics (override the referenced-file
-            # guard). Document deletion has no reference gate to override —
-            # soft-delete keeps existing references resolving — so a caller
-            # setting it here is misinformed; reject loudly rather than
-            # silently ignoring a validated field (CASE-561).
-            if item.force:
+            # `force` overrides the hard-delete reference guard. A soft delete
+            # has no guard to override (existing references keep resolving),
+            # so force there is refused rather than silently ignored.
+            if item.force and not item.hard_delete:
                 results.append(BulkResultItem(
                     index=i, status="error", id=item.id,
-                    error="'force' is not supported on document deletion; "
-                          "it applies to file deletion only",
+                    error="'force' applies only with hard_delete=true; "
+                          "a soft delete keeps existing references resolving",
                     error_code="force_unsupported",
                 ))
                 continue
@@ -704,16 +707,23 @@ async def delete_documents(
                 continue
             await check_namespace_permission(identity, doc.namespace, "write")
             warnings: list[str] = []
+            broken: list[dict] = []
             success = await service.delete_document(
                 item.id, item.updated_by,
                 hard_delete=item.hard_delete,
                 version=item.version,
                 warnings=warnings,
+                force=item.force,
+                deleted_with=deleted_with,
+                broken_references=broken,
             )
             if not success:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
             else:
-                results.append(BulkResultItem(index=i, status="deleted", id=item.id, warnings=warnings))
+                results.append(BulkResultItem(
+                    index=i, status="deleted", id=item.id, warnings=warnings,
+                    details={"broken_references": broken} if broken else None,
+                ))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())

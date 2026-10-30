@@ -410,7 +410,7 @@ class DeleteItem(StrictModel):
 
     id: str = Field(..., description="ID of entity to delete")
     version: int | None = Field(default=None, description="Specific version to hard-delete (default: all versions). Ignored for soft-delete.")
-    force: bool = Field(default=False, description="Force deletion even if referenced (file deletion only; rejected with error_code=force_unsupported on document deletion)")
+    force: bool = Field(default=False, description="Delete even if referenced: on file deletion, and on document deletion with hard_delete=true (without hard_delete, rejected with error_code=force_unsupported)")
     hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
     updated_by: str | None = Field(default=None, description="User performing deletion")
 

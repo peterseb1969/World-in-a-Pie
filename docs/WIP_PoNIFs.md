@@ -40,7 +40,7 @@ Documentation should be explicit: *"Inactive means retired, not deleted. Retired
 
 **Default, not absolute.** "Nothing ever dies" is the platform **default** (namespace `deletion_mode: "retain"`), not a physical law. Three guarded deviations exist:
 
-- A namespace explicitly flipped to `deletion_mode: "full"` (the `wip` namespace refuses it; `retain` → `full` requires `confirm_enable_deletion=true`) accepts `hard_delete=true` on delete operations across the stores — the record is **permanently removed**, and existing references to it will **not** resolve.
+- A namespace explicitly flipped to `deletion_mode: "full"` (the `wip` namespace refuses it; `retain` → `full` requires `confirm_enable_deletion=true`) accepts `hard_delete=true` on delete operations across the stores — the record is **permanently removed**. A document that other documents still reference (in any namespace, of any version or status) is refused with `error_code: invalid_state`, `details.rule: "referenced"`, and `details.referrers` lists them; documents hard-deleted in the same request do not count. `force=true` deletes anyway, and those references then **no longer resolve**.
 - Independent of `deletion_mode`: terms in **mutable terminologies** and **binary files** are hard-deletable.
 - Privileged and internal: a trusted-service rollback primitive (wip-admins / wip-services only) can hard-delete a just-reserved, uncommitted entry, bypassing the `deletion_mode` gate — crash-recovery cleanup, not an agent-facing verb.
 

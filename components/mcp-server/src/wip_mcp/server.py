@@ -216,7 +216,10 @@ By default entities are never hard-deleted, only set to status: "inactive"
 (namespace deletion_mode: "retain"). A namespace configured with
 deletion_mode: "full" accepts hard_delete=true on delete operations for
 PERMANENT removal — see the deletion_mode safety guards in the Idempotent
-Bootstrap section above. Independent exceptions regardless of deletion_mode:
+Bootstrap section above. Hard-deleting a document that other documents still
+reference is refused (error_code invalid_state, details.rule "referenced")
+unless force=true; documents hard-deleted in the same request do not count.
+Independent exceptions regardless of deletion_mode:
 binary files (reclaim storage) and terms in mutable terminologies.
 
 Retired entities are invisible to new data but always resolve for existing data.
@@ -795,9 +798,13 @@ DEFAULT (namespace deletion_mode: "retain"), not a physical law. A
 namespace explicitly flipped to deletion_mode: "full" (guarded: the "wip"
 namespace refuses it; retain->full requires confirm_enable_deletion=true)
 accepts hard_delete=true on delete operations across the stores — the
-record is PERMANENTLY removed, and existing references to it will NOT
-resolve. Trap addendum: in a "full"-mode namespace, do not assume an old
-reference still resolves — it may be gone for real. Independent smaller
+record is PERMANENTLY removed. A document that other documents still
+reference (any namespace, any version or status) is refused with
+error_code invalid_state, details.rule "referenced", listing the referrers;
+documents hard-deleted in the same request do not count. force=true deletes
+anyway, and those references then do NOT resolve. Trap addendum: in a
+"full"-mode namespace, do not assume an old reference still resolves — a
+forced delete, or a hard-deleted term or template, may be gone for real. Independent smaller
 deviations: mutable-terminology terms and binary files are hard-deletable
 regardless of deletion_mode. One more, privileged and internal: a
 trusted-service rollback primitive (wip-admins/wip-services only) can
@@ -3550,18 +3557,25 @@ async def delete_document(
     document_id: str,
     hard_delete: bool = False,
     version: int | None = None,
+    force: bool = False,
 ) -> str:
     """Delete a document. Soft-delete (deactivate) by default.
     Set hard_delete=true to permanently remove (requires namespace deletion_mode='full').
+    A hard delete is refused (error_code invalid_state, details.rule "referenced")
+    while other documents still reference the document; details.referrers lists
+    them per namespace and template.
 
     Args:
         document_id: Document ID to delete.
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
         version: Specific version to hard-delete (default: all versions). Ignored for soft-delete.
+            Deleting one of several versions is refused only by pinned references to it.
+        force: With hard_delete, delete even while referenced; those references stop
+            resolving and are reported in details.broken_references.
     """
     try:
         data = await get_client().delete_document(
-            document_id, hard_delete=hard_delete, version=version,
+            document_id, hard_delete=hard_delete, version=version, force=force,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3573,20 +3587,28 @@ async def delete_documents_bulk(
     document_ids: list[str],
     hard_delete: bool = False,
     namespace: str | None = None,
+    force: bool = False,
 ) -> str:
     """Delete multiple documents at once. Returns per-item results.
 
     Prefer this over repeated delete_document calls when clearing many
     documents (e.g., before a re-import). Soft-delete (deactivate) by default.
+    A hard delete of a document other documents still reference is refused per
+    item (error_code invalid_state, details.rule "referenced"); referrers listed
+    in the same call do not count, so a document and its edges can go together.
 
     Args:
         document_ids: Document IDs or synonyms to delete.
         hard_delete: Permanently remove all listed documents (requires namespace
             deletion_mode='full'). Applies uniformly to every id.
         namespace: Namespace for synonym resolution. Omit to use the server default.
+        force: With hard_delete, delete even while referenced; those references
+            stop resolving and are reported in details.broken_references.
     """
     try:
         items = [{"id": did, "hard_delete": hard_delete} for did in document_ids]
+        if force:
+            items = [{**item, "force": True} for item in items]
         data = await get_client().delete_documents(items, namespace=namespace)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

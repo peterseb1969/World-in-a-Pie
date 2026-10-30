@@ -190,10 +190,10 @@ Codes defined by document-store's create, delete and file writes (`PATCH` above 
 | `validation_failed` | The document fails template validation; `details.errors` lists each field error with its own code (e.g. `identity_resolution_failed`, `ambiguous_term`) | — |
 | `reference_violation` | A reference crosses into a namespace the document's namespace may not reference (the code `PATCH` reports for the same check) | `cross_namespace` |
 | `not_found` | The document or file named by the request does not exist | — |
-| `invalid_state` | The entity's state forbids the operation | `deletion_mode_retain`, `file_deleted`, `referenced`, `not_inactive`, `storage_disabled` |
+| `invalid_state` | The entity's state forbids the operation (`referenced`: a file, or a document hard delete, still referenced by documents; a document refusal lists them in `details.referrers` per namespace and template, and `force=true` deletes anyway, reporting them as `details.broken_references`) | `deletion_mode_retain`, `file_deleted`, `referenced`, `not_inactive`, `storage_disabled` |
 | `synonym_conflict` | An inline synonym is registered to another entry (`on_synonym_conflict="fail"`) | — |
 | `registry_error` | The Registry refused, or could not be reached (to check namespace isolation, or to mint a file ID) | `registry_unavailable` |
-| `force_unsupported` | `force` sent on a document delete | — |
+| `force_unsupported` | `force` sent on a document delete without `hard_delete` | — |
 | `internal_error` | A fault on the server's side | — |
 
 Registry results keep their reason statuses (`already_exists`, `not_found`, `already_active`, …) — callers branch on them by value. An item whose status is `error` also carries a code:

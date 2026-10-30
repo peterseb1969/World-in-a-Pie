@@ -1298,12 +1298,15 @@ class WipClient:
     async def delete_document(
         self, document_id: str, hard_delete: bool = False,
         version: int | None = None, namespace: str | None = None,
+        force: bool = False,
     ) -> dict:
         item: dict[str, Any] = {"id": document_id}
         if hard_delete:
             item["hard_delete"] = True
         if version is not None:
             item["version"] = version
+        if force:
+            item["force"] = True
         resp = await self._delete(
             self.document_store_url,
             "/api/document-store/documents",
