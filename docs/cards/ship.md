@@ -1,5 +1,5 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-docs/wip-deployable-app-contract.md sha256:68345c8a7180f5e6 reviewed:a7c74e27
+docs/wip-deployable-app-contract.md sha256:d766449a1b8632d2 reviewed:d1653035
 deployer/src/wip_deploy/spec/app.py sha256:5ec003a03c1552e0 reviewed:a66e110f
 -->
 # WIP ship card — making the app deployable

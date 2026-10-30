@@ -237,7 +237,7 @@ The app also owns its **namespace settings**, and declares them in its manifest,
           id_config: {documents: {algorithm: prefixed, prefix: "DOC-", pad: 6}}
   ```
 
-  `settings` takes `description`, `isolation_mode`, `allowed_external_refs` (namespace names on the install), `id_config` and `deletion_mode`. One namespace must have role `main`, and a namespace has one owning app on an install.
+  `settings` takes `description`, `isolation_mode`, `allowed_external_refs` (namespace names on the install), `inbound_references` (`closed` by default: other namespaces' writers need read on it; `open` admits any writer), `id_config` and `deletion_mode`. One namespace must have role `main`, and a namespace has one owning app on an install.
 
   The deployer renders every enabled app's declarations as **namespace reservations** the Registry reads (it refuses two apps reserving one namespace, and two reservations claiming one ID prefix). With a reservation, a key holding `admin` on the namespace may create it through the namespace upsert, so your bootstrap does not need a platform admin key. It creates the namespace only as reserved: the bootstrap upserts with **no settings**, the reservation supplies them, and any setting it sends must equal the reservation's (403 naming the field otherwise). A namespace that already exists is never changed this way; changing a live namespace's settings is an operator action. `server/seed/namespaces.json` keeps the roles (`authored_as`, `env`) and `external`; a role that still carries `config` fails the bootstrap before its first write.
 

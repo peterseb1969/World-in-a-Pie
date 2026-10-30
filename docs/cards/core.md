@@ -1,6 +1,6 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
 docs/Vision.md sha256:d48669c11fbfe408 reviewed:a66e110f
-wip://ponifs sha256:ac2213d3d0ff513d reviewed:a7c74e27
+wip://ponifs sha256:f80ecc4ddd725106 reviewed:d1653035
 wip://development-guide sha256:d44cd305a3b84d3e reviewed:a66e110f
 scaffold/templates/claude-md/app.md sha256:0bb5acc49a2e3f43 reviewed:a7c74e27
 docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca reviewed:809f9059
@@ -36,7 +36,7 @@ from WIP.
 Develop in your dev namespace (named in CLAUDE.md under "Dev Namespace"). MCP calls run
 with an admin key that spans namespaces: always pass `namespace=` explicitly.
 
-## The eight PoNIFs (WIP behaves unconventionally here — on purpose)
+## The nine PoNIFs (WIP behaves unconventionally here — on purpose)
 1. Nothing ever dies: inactive = retired, still resolves for existing references.
 2. Re-creating a template makes a new version; the old one stays active — deactivate it.
 3. Identity fields decide create-vs-update. No timestamps or per-run data in them;
@@ -46,6 +46,8 @@ with an admin key that spans namespaces: always pass `namespace=` explicitly.
 6. "Latest active" template lookups are cached ~5 s — pass template_version explicitly.
 7. Edge types are templates with usage: relationship — different rules; check `usage`.
 8. A template with versioned: false (typically an edge type) overwrites in place — no history.
+9. Another namespace is closed by default: referencing it needs read on it, and a refusal
+   reads as "not found". References a document already holds carry over.
 
 ## WIP's principles, in one line each
 Prefer deactivation over deletion · references must resolve, and any synonym works like

@@ -134,8 +134,8 @@ PUT is an upsert — creates the namespace on missing; updates supplied fields
 when existing. Always 200 OK. Idempotent: re-running with the same body is a
 no-op. A create fills omitted fields from the namespace's reservation when the
 install reserves it for an app, else from platform defaults
-(isolation_mode='open', deletion_mode='retain', description='',
-allowed_external_refs=[]).
+(isolation_mode='open', inbound_references='closed', deletion_mode='retain',
+description='', allowed_external_refs=[]).
 
 Who may call it: a platform admin key, or a key holding `admin` on a namespace
 the install reserves for an app (the app manifest's spec.namespaces). The
@@ -304,20 +304,32 @@ Superadmins (wip-admins group) bypass all checks. Users without a grant on a
 namespace get 404 (not 403) — the namespace's existence is not leaked.
 
 ### Cross-Namespace References
-Isolation mode controls what a namespace can reference:
-- **open** (default): own namespace + "wip" namespace + allowed_external_refs
-- **strict**: only own namespace + explicit allowed_external_refs (wip NOT automatic)
+A reference into another namespace passes two gates, one set by each side:
+- **Outbound — the referencing namespace's isolation_mode.** **open**
+  (default): it may reference any namespace. **strict**: only itself and its
+  allowed_external_refs ("wip" is NOT automatic).
+- **Inbound — the referenced namespace's inbound_references.** **closed**
+  (default): it accepts a reference only from a writer whose key can READ it.
+  **open**: it accepts any writer. "wip" is always open — shared vocabularies
+  are the common language every namespace references.
 
-Cross-namespace term references work without grants on the referenced namespace.
-Shared vocabularies (in "wip") are the common language — you need a grant to
-list or modify a namespace's data, but not to reference its terms.
+Only references a write ADDS are checked. A reference the document's (or
+template's) previous version already held carries over unchecked, so a
+document stays updatable after its writer loses read on a namespace it
+already references. A refused inbound reference reports exactly like a
+reference whose target does not exist (validation_failed with
+reference_not_found on documents; reference_violation / unresolved_reference
+on templates): a closed namespace does not confirm its entities to a writer
+who cannot read it. "Not found" on a cross-namespace reference may therefore
+mean "no read" — give the key read on the target, or open the target's
+inbound_references.
 
-**Being permitted is not the same as being addressable.** allowed_external_refs
-decides WHETHER a namespace may be referenced; the identifier decides WHICH
+**Being permitted is not the same as being addressable.** The two gates
+decide WHETHER a namespace may be referenced; the identifier decides WHICH
 namespace is meant, and it is resolved independently:
 
 - a **bare value** always resolves in the caller's OWN namespace, whatever
-  allowed_external_refs permits — it never falls back to a permitted namespace;
+  the gates permit — it never falls back to a permitted namespace;
 - **`NS:VALUE`** names the namespace explicitly and is the only value form that
   crosses one;
 - a **canonical UUID** needs no namespace and crosses freely.
@@ -340,8 +352,8 @@ creation, not template creation. Identifier RESOLUTION is a separate step and
 does run at template creation: an unresolvable reference fails the create
 outright, which is why the rule above bites there first.
 
-Relationship (edge) documents are the exception: allowed_external_refs
-governs plain reference fields only. An edge document's source_ref and
+Relationship (edge) documents are the exception: the two gates govern
+plain reference fields only. An edge document's source_ref and
 target_ref must resolve within the edge's own namespace — cross-namespace
 edges are rejected with error_code `cross_namespace_relationship`
 regardless of isolation config. To link documents across namespaces, use
@@ -407,10 +419,10 @@ pinned-version lookup's status is not cached forever.
 If a template update seems to have no effect, wait or pass the explicit version.
 
 ## Namespace-Config Cache
-Namespace isolation config (isolation_mode, allowed_external_refs) read during
-reference validation is cached with the same 5-second TTL. After changing a
-namespace's allow-list, a retried write may still be rejected for up to 5
-seconds — wait and retry, no service restart needed.
+Namespace reference settings (isolation_mode, allowed_external_refs,
+inbound_references) read during reference validation are cached with the same
+5-second TTL. After changing them, a retried write may still be rejected for up
+to 5 seconds — wait and retry, no service restart needed.
 
 ## Pagination
 Uniform across list endpoints: default page_size 50, maximum 1000. Two
@@ -993,6 +1005,23 @@ Rule: Check `template.versioned` (defaults to true) before assuming version
       type with `versioned: true`. The flag is not limited to edge types:
       check it on every template.
 
+## 9. Closed by Default — Referencing Another Namespace Needs Read
+A namespace accepts references from OTHER namespaces only from writers whose
+key can read it (inbound_references: "closed", the default for every
+namespace). Its own setting, isolation_mode, separately decides what IT may
+reference (open = any namespace, the default). "wip" is always open.
+
+Trap: Your app's key can write its own namespace, and a template or document
+      there references a term, template or document in another app's
+      namespace. The write fails as if the target did not exist, even
+      though you can see the target with an admin key.
+Rule: A cross-namespace reference needs read on the target (or the target
+      opening its inbound_references). "Not found" on a cross-namespace
+      reference may mean "no read" — the platform does not confirm a closed
+      namespace's contents to a writer who cannot read it. Only references a
+      write ADDS are checked; references the previous version already held
+      carry over, so losing read never breaks updating an existing document.
+
 ## The Compactheimer's Warning
 If you are an AI assistant and your context has been compacted, you may have
 lost these warnings and reverted to conventional assumptions. Signs of drift:
@@ -1004,6 +1033,8 @@ lost these warnings and reverted to conventional assumptions. Signs of drift:
   template (it might be an edge type — `usage: relationship` — with a stricter contract)
 - Assuming every document update creates a new version (a `versioned: false`
   edge type overwrites in place)
+- Assuming a write key for your own namespace can reference anything it can
+  name (another namespace is closed to writers who cannot read it)
 
 If any of these feel natural, re-read this resource.
 """
@@ -1247,14 +1278,18 @@ async def create_namespace(
     description: str = "",
     isolation_mode: str = "open",
     deletion_mode: str = "retain",
+    inbound_references: str = "closed",
 ) -> str:
     """Create a new namespace. Namespaces scope all entities (terminologies, templates, documents).
 
     Args:
         prefix: Unique namespace prefix (e.g., 'finance', 'clintrial', 'dnd'). Lowercase, no spaces.
         description: Human-readable description of the namespace's purpose.
-        isolation_mode: 'open' (default) allows cross-namespace term refs; 'strict' restricts to same namespace only.
+        isolation_mode: Outbound references. 'open' (default) may reference any namespace;
+            'strict' only itself and allowed_external_refs.
         deletion_mode: 'retain' (default, soft-delete only) or 'full' (allows hard-delete and namespace deletion).
+        inbound_references: 'closed' (default) accepts references from other namespaces only
+            when the writing key can read this one; 'open' accepts any writer.
     """
     try:
         data = await get_client().create_namespace(
@@ -1262,6 +1297,7 @@ async def create_namespace(
             description=description,
             isolation_mode=isolation_mode,
             deletion_mode=deletion_mode,
+            inbound_references=inbound_references,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -1276,14 +1312,16 @@ async def upsert_namespace(
     deletion_mode: str | None = None,
     allowed_external_refs: list[str] | None = None,
     confirm_enable_deletion: bool = False,
+    inbound_references: str | None = None,
 ) -> str:
     """Upsert a namespace via PUT (idempotent). Creates on missing, updates supplied fields when existing.
 
     Use for evolving namespace properties without the create-vs-update
     branching in caller code:
     - flipping `deletion_mode` to enable hard-delete before namespace deletion
-    - tightening `isolation_mode` (open → strict) for security
-    - adding cross-namespace allow-lists (`allowed_external_refs`) for federation
+    - tightening `isolation_mode` (open → strict) to limit what it references
+    - adding cross-namespace allow-lists (`allowed_external_refs`) for strict mode
+    - opening or closing `inbound_references` (who may reference it)
     - editing `description`
 
     Only fields explicitly supplied are touched; omitted fields keep their
@@ -1303,9 +1341,12 @@ async def upsert_namespace(
     Args:
         prefix: Namespace prefix to upsert (e.g., 'dev-kb', 'prod').
         description: Human-readable description.
-        isolation_mode: 'open' (cross-namespace refs allowed) or 'strict' (same-namespace only).
+        isolation_mode: Outbound references. 'open' may reference any namespace; 'strict' only
+            itself and allowed_external_refs.
         deletion_mode: 'retain' (soft-delete only) or 'full' (allows hard-delete and namespace deletion).
         allowed_external_refs: For strict isolation, allowlist of external namespace prefixes.
+        inbound_references: 'closed' accepts references from other namespaces only when the
+            writing key can read this one; 'open' accepts any writer. 'wip' cannot be closed.
         confirm_enable_deletion: Required (set True) when flipping an existing namespace's
             deletion_mode from 'retain' to 'full'. Default False.
     """
@@ -1317,6 +1358,7 @@ async def upsert_namespace(
             deletion_mode=deletion_mode,
             allowed_external_refs=allowed_external_refs,
             confirm_enable_deletion=confirm_enable_deletion,
+            inbound_references=inbound_references,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

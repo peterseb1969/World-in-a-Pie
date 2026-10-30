@@ -207,6 +207,21 @@ This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does
 
 See `docs/design/document-relationships.md` §"Versioning" for the rationale and the implementation contract.
 
+### 9. Closed by Default — Referencing Another Namespace Needs Read
+
+**What it does:** A reference from one namespace into another passes two gates. The referencing namespace's `isolation_mode` decides what it may reference: `open` (the default) means any namespace, `strict` means only itself and its `allowed_external_refs`. The referenced namespace's `inbound_references` decides who may reference it: `closed` (the default for every namespace) accepts a reference only from a writer whose key can read it, and `open` accepts any writer. `wip` is always open. Only references a write adds are checked; references the previous version already held carry over.
+
+**Why it's powerful:** A namespace's data is no longer reachable merely because someone can write somewhere else. An app with a narrowly scoped key cannot point its documents at another app's entities unless it was given read on them, and a namespace that wants to be a shared library opens itself explicitly.
+
+**Why it's non-intuitive:** The same reference succeeds with one key and fails with another. And a refusal looks exactly like a reference whose target does not exist: a closed namespace does not confirm its contents to a writer who cannot read it, so the error never says "permission".
+
+**What goes wrong:**
+
+- An app developer tests with an admin key, which passes every gate, and the deployed app's scoped key then fails on every cross-namespace reference with "not found".
+- Debugging "not found" by checking that the target exists (with an admin key) finds it, and the real cause stays hidden.
+
+**Sensible default:** Develop with the same scoped key the app will run with. When a cross-namespace reference reports "not found" and the target exists, give the writing key read on the target's namespace, or open that namespace's `inbound_references` if it is meant to be a shared library.
+
 ---
 
 ## PoNIFs and AI Assistants

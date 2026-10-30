@@ -354,6 +354,7 @@ class WipClient:
         allowed_external_refs: list[str] | None = None,
         confirm_enable_deletion: bool | None = None,
         updated_by: str | None = None,
+        inbound_references: str | None = None,
     ) -> dict:
         """PUT /api/registry/namespaces/{prefix} — idempotent upsert.
 
@@ -377,6 +378,8 @@ class WipClient:
             payload["deletion_mode"] = deletion_mode
         if allowed_external_refs is not None:
             payload["allowed_external_refs"] = allowed_external_refs
+        if inbound_references is not None:
+            payload["inbound_references"] = inbound_references
         if confirm_enable_deletion is not None:
             payload["confirm_enable_deletion"] = confirm_enable_deletion
         if updated_by is not None:

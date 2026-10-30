@@ -23,8 +23,8 @@ file.
 - **One role keeps the flat seed dirs** (`server/seed/templates/…`). With
   two or more roles each role's seeds move to a role-named subdirectory.
 - **No namespace settings here.** A namespace's settings
-  (`isolation_mode`, `allowed_external_refs`, `id_config`, `deletion_mode`,
-  `description`) are declared in the app manifest, under `spec.namespaces`
+  (`isolation_mode`, `allowed_external_refs`, `inbound_references`,
+  `id_config`, `deletion_mode`, `description`) are declared in the app manifest, under `spec.namespaces`
   in `wip-app.yaml`, where the operator approves them and the install
   reserves the namespace for the app. A role that still carries `"config"`
   fails the bootstrap before its first write. The server template's header

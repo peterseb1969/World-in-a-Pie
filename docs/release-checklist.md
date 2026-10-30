@@ -87,7 +87,7 @@ done
 - [ ] `podman-compose` used everywhere (not `docker-compose`) — exception: design docs for future features
 - [ ] API field names match current code (`value`/`label`, not old `code`/`name`)
 - [ ] Tool count matches reality (verify with `grep -cE '^@mcp\.tool\(\)' components/mcp-server/src/wip_mcp/server.py` — currently 101)
-- [ ] PoNIF count matches reality (8 PoNIFs in `wip://ponifs`)
+- [ ] PoNIF count matches reality (9 PoNIFs in `wip://ponifs`)
 - [ ] Service count and port assignments consistent across all docs (Registry 8001, Def-Store 8002, Template-Store 8003, Document-Store 8004, Reporting-Sync 8005, Ingest-Gateway 8006)
 
 ### 5d. Client library READMEs

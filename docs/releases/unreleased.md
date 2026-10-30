@@ -7,6 +7,47 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Namespaces refuse references from writers who cannot read them
+
+Every namespace, existing ones included, now has two reference settings:
+
+- **Inbound — `inbound_references`** (new; default `closed`): a reference
+  from another namespace is accepted only when the writing key can read this
+  namespace. `open` accepts any writer. `wip` is always open and cannot be
+  closed.
+- **Outbound — `isolation_mode`** (existing, meaning changed): `open` (the
+  default) may now reference **any** namespace, where it was limited to its
+  own, `wip` and `allowed_external_refs`. `strict` is unchanged: only itself
+  and `allowed_external_refs`.
+
+Previously only the referencing namespace decided, and the referenced one had
+no say. A reference must now pass both gates. Only references a write ADDS are
+checked: references a document's or template's previous version already held
+carry over unchecked, so existing data stays updatable. This also applies to
+outbound: a document holding a reference its namespace's `strict` setting now
+forbids no longer becomes un-PATCHable.
+
+A refused inbound reference reports exactly like a reference whose target does
+not exist (`validation_failed` with a `reference_not_found` error on documents;
+`reference_violation` / `unresolved_reference` on templates). The namespace is
+named only in the service log (`Inbound reference refused: …`).
+
+Term and file references on documents are now checked against both gates. They
+carried no namespace before, so the outbound rule never saw them.
+
+**Who is affected:** apps and loaders that write references (terms, documents,
+templates, terminologies or files, in documents or templates) into another
+namespace with a key that cannot read it. They were accepted before and are
+refused now. Admin and service keys pass every inbound gate.
+
+**Action:** for each namespace that others must reference, either give the
+writing keys read on it, or open it (`PUT /api/registry/namespaces/{prefix}`
+with `{"inbound_references": "open"}`, MCP `upsert_namespace`). After the
+upgrade, "not found" on a cross-namespace reference whose target exists means
+the writing key lacks read on it. Namespace exports and backups carry the
+setting; restoring an archive from before it leaves the target namespace's
+own setting (`closed` for a namespace the restore creates).
+
 ### Namespace settings move from the seeds to the app manifest
 
 An app now declares the namespaces it owns, and their settings, under

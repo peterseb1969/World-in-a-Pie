@@ -1,7 +1,7 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
 wip://data-model sha256:61e12abfff2e7308 reviewed:0483875b
-wip://conventions sha256:53f0416a6253d718 reviewed:231b5604
-docs/WIP_PoNIFs.md sha256:ace44f3063a86f6a reviewed:a7c74e27
+wip://conventions sha256:f9ba5f0cba6f49a9 reviewed:d1653035
+docs/WIP_PoNIFs.md sha256:52b14c6b845fc8b0 reviewed:d1653035
 docs/design/ontology-support.md sha256:06666e3c8f3a3cc1 reviewed:ea985986
 docs/slash-commands/app-builder/wip-implement.md sha256:1afef1d1999621a1 reviewed:809f9059
 docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca reviewed:809f9059
@@ -82,7 +82,7 @@ docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca revi
 ## Addressing terms and other entities
 - A term identifier is exactly one of: the canonical UUID; `ns:terminology:value`; or the field form (a `terminology` parameter plus the raw value, never colon-parsed).
 - The 2-part `TERMINOLOGY:VALUE` shorthand is rejected (422) on every term endpoint. Prefer the field form.
-- Other entities: a bare value always resolves in your OWN namespace; `NS:VALUE` is the only value form that crosses namespaces; a UUID crosses freely. Permission (`allowed_external_refs`) does not make a bare value cross — write `"kb:KB_TOPIC"`.
+- Other entities: a bare value resolves in your OWN namespace; `NS:VALUE` is the only value form that crosses (write `"kb:KB_TOPIC"`); a UUID crosses freely. Referencing another namespace needs read on it (closed by default); a refusal reads as "not found".
 - In documents submit the term's value or name; WIP stores both value and term_id. Inactive terms are rejected in new documents.
 
 ## Bulk results — 200 OK always
