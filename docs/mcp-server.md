@@ -409,7 +409,7 @@ Named SQL views in a namespace's reporting schema, kept across reporting rebuild
 |------|-------------|
 | `register_reporting_view(name, sql, namespace?, registered_by?)` | Register, or replace by name. Returns `created` (false on replace) and `schema_qualified`. Unqualified names resolve in the namespace's schema; register after the source templates' first sync. ADMIN on the namespace may register views that depend only on its own schema; wip-admins / wip-services may register any. |
 | `list_reporting_views(namespace?)` | The namespace's registered views: name, SQL, registered_at, registered_by. READ on the namespace. |
-| `read_reporting_view(name, namespace?, filters?, sort?, limit?, offset?)` | A registered view's rows, filtered without SQL: `filters` are `{column, op, value}` with op in `eq ne lt lte gt gte like ilike in is_null not_null`. READ on the namespace — the read path for namespace-scoped keys, which cannot use `run_report_query`. |
+| `read_reporting_view(name, namespace?, filters?, sort?, limit?, offset?)` | A registered view's rows, filtered without SQL: `filters` are `{column, op, value}` with op in `eq ne lt lte gt gte like ilike in is_null not_null`. READ on the namespace — the SQL-free read path for namespace-scoped keys (`run_report_query` also works for them, over the namespaces they can read). |
 | `delete_reporting_view(name, namespace?)` | Drop a view and its registration. 409 while another registered view depends on it. Same authorization as register. |
 
 ### CSV Import (1 tool)

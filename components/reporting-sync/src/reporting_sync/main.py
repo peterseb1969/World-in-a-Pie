@@ -12,7 +12,7 @@ import dataclasses
 import io
 import logging
 import re
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -62,7 +62,13 @@ from .models import (
 from .parity import NamespaceParityResult, check_namespace_parity
 from .parity_monitor import ParityMonitor, ParityMonitorStatus
 from .pg_roles import RoleSpec, is_privileged, provision_roles
-from .schema_manager import NamespaceDeletedError, SchemaManager, registry_namespace_status
+from .schema_manager import (
+    REGISTERED_VIEW_OPTIONS,
+    NamespaceDeletedError,
+    SchemaManager,
+    registry_namespace_status,
+)
+from .scoped_reads import ScopedReads, ScopedReadsUnavailable
 from .search_service import (
     ActivityResponse,
     EntityReferencesResponse,
@@ -91,9 +97,12 @@ class AppState:
     # worker (restarting it whenever its consumer loop dies).
     bus: EventBus = EventBus(None, name="reporting-sync")
     # Owner pool: the sync pipeline, DDL and bookkeeping. Reader pool:
-    # caller-driven SQL (raw query, exports, view validation, search).
+    # caller-driven SQL from privileged keys (raw query, exports, view
+    # validation, search). Scoped reads: caller-driven SQL from every other
+    # key, on connections that can read only the caller's namespaces.
     postgres_pool: asyncpg.Pool | None = None
     read_pool: asyncpg.Pool | None = None
+    scoped_reads: ScopedReads | None = None
     sync_task: asyncio.Task | None = None
     alert_check_task: asyncio.Task | None = None
     initial_sync_task: asyncio.Task | None = None
@@ -241,6 +250,8 @@ async def connect_postgres() -> tuple[asyncpg.Pool, asyncpg.Pool]:
                 owner_password=settings.postgres_owner_password,
                 reader=settings.postgres_read_user,
                 reader_password=settings.postgres_read_password,
+                manager=settings.postgres_role_manager_user,
+                manager_password=settings.postgres_role_manager_password,
             ))
         else:
             logger.warning(
@@ -550,6 +561,24 @@ def _start_postgres_work(pool: asyncpg.Pool, read_pool: asyncpg.Pool) -> None:
     state.sync_status.connected_to_postgres = True
     state.sync_status.postgres_service_roles_ok = True
     state.search_service = SearchService(read_pool)
+    if settings.postgres_role_manager_password:
+        state.scoped_reads = ScopedReads(
+            endpoint={
+                "host": settings.postgres_host,
+                "port": settings.postgres_port,
+                "database": settings.postgres_db,
+            },
+            owner_pool=pool,
+            manager_user=settings.postgres_role_manager_user,
+            manager_password=settings.postgres_role_manager_password,
+            max_connections=settings.postgres_read_pool_max,
+        )
+    else:
+        logger.warning(
+            "POSTGRES_ROLE_MANAGER_PASSWORD is not set: SQL from non-privileged "
+            "keys (query, query export, view rows) answers 503 until the "
+            "install is re-rendered"
+        )
     logger.info("PostgreSQL connected")
 
     state.batch_sync_service = BatchSyncService(pool)
@@ -688,9 +717,9 @@ router = APIRouter(
 
 # Operator and raw-SQL routes. wip-services is listed explicitly because it is
 # not a superadmin group: service keys hold no namespace grants, so these
-# routes are gated by group, never by namespace. Raw SQL (query, query-shaped
-# export, registered-view definitions) can reach any schema when it
-# schema-qualifies a name, so no namespace check could contain it.
+# routes are gated by group, never by namespace. Raw SQL from other keys
+# (query, query-shaped export) is not gated here: it runs on a connection
+# that can read only the caller's namespaces (_caller_read_connection).
 _PRIVILEGED = Depends(require_groups(["wip-admins", "wip-services"]))
 
 
@@ -700,8 +729,10 @@ def _is_privileged(identity: UserIdentity) -> bool:
 
 # Every relation a view depends on outside its own schema, read from the
 # view's rewrite rule in pg_depend: exact and independent of parsing the SQL.
-# (Function dependencies are not listed: nothing a caller can reach creates
-# functions, so a view cannot smuggle cross-schema reads through one.)
+# It does not see what a view's functions read (query_to_xml reads whatever
+# its string names), so it is an early, readable refusal, not the boundary:
+# the boundary is that non-privileged readers read views on their own scoped
+# connection, and registered views are security_invoker.
 _VIEW_FOREIGN_DEPENDENCIES_SQL = """
     SELECT DISTINCT dn.nspname AS schema, dc.relname AS relation
     FROM pg_depend d
@@ -732,8 +763,7 @@ async def _unreadable_view_dependencies(
 ) -> list[Any]:
     """The foreign dependencies of a view this caller may not read through it.
 
-    A view reads with the reporting role, which sees every schema, so the
-    caller's own permissions must cover every namespace the view draws from:
+    The caller's own permissions must cover every namespace the view draws from:
     read on each foreign namespace schema, and a privileged key for platform
     tables. Raises 503 when a permission cannot be read.
     """
@@ -751,6 +781,45 @@ async def _unreadable_view_dependencies(
                 raise
             unreadable.append(dep)
     return unreadable
+
+
+@contextlib.asynccontextmanager
+async def _caller_read_connection(identity: UserIdentity) -> AsyncIterator[asyncpg.Connection]:
+    """The connection a caller's SQL runs on.
+
+    Privileged keys use the reader pool, which reads every schema. Every
+    other key gets a connection that logs in as a role able to read only
+    the namespaces the key can read (scoped_reads.py), so PostgreSQL itself
+    refuses anything else — including reads made by functions, which no
+    check on the SQL text can see.
+    """
+    if _is_privileged(identity):
+        if not state.read_pool:
+            raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+        async with state.read_pool.acquire() as conn:
+            yield conn
+        return
+    if state.scoped_reads is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Reporting SQL for namespace-scoped keys is not configured on this install",
+        )
+    schemas = []
+    for namespace in await resolve_accessible_namespaces(identity) or []:
+        try:
+            schemas.append(SchemaManager._safe_ident(namespace))
+        except ValueError:
+            continue
+    if not schemas:
+        raise HTTPException(status_code=403, detail="No accessible namespaces")
+    try:
+        async with state.scoped_reads.connection(schemas) as conn:
+            yield conn
+    except ScopedReadsUnavailable as e:
+        logger.error("Scoped reporting read unavailable: %s", e)
+        raise HTTPException(
+            status_code=503, detail="Reporting SQL for namespace-scoped keys is unavailable",
+        ) from e
 
 
 async def _effective_namespace(
@@ -2161,9 +2230,19 @@ _DANGEROUS_SQL_RE = re.compile(
 )
 
 
-@router.post("/query", dependencies=[_PRIVILEGED])
-async def execute_query(body: ReportQuery):
-    """Execute a read-only SQL query against the reporting database."""
+@router.post("/query")
+async def execute_query(
+    body: ReportQuery,
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Execute a read-only SQL query against the reporting database.
+
+    A wip-admins / wip-services key reads every schema. Any other key's
+    query runs as a PostgreSQL role that can read only the namespaces the
+    key can read; a relation outside them is refused by PostgreSQL.
+    """
+    if body.namespace and not _is_privileged(identity):
+        await check_namespace_permission(identity, body.namespace, "read")
     if not state.read_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -2185,7 +2264,7 @@ async def execute_query(body: ReportQuery):
             raise HTTPException(status_code=400, detail=str(e)) from e
 
     # Build wrapped query with row limit
-    wrapped_sql = f"SELECT * FROM ({body.sql}) _q LIMIT {body.max_rows + 1}"  # nosec B608  # privileged caller SQL, run read-only as the reader role
+    wrapped_sql = f"SELECT * FROM ({body.sql}) _q LIMIT {body.max_rows + 1}"  # nosec B608  # caller SQL, run read-only as a role limited to what the caller may read
 
     # Build positional parameter references
     params = body.params
@@ -2206,10 +2285,9 @@ async def execute_query(body: ReportQuery):
         return columns, list(await stmt.fetch(*params))
 
     try:
-        assert state.read_pool is not None  # narrowed above
         for attempt in (1, 2):
             try:
-                async with state.read_pool.acquire() as conn:
+                async with _caller_read_connection(identity) as conn:
                     # Set statement timeout and read-only transaction
                     await conn.execute(
                         f"SET statement_timeout = {body.timeout_seconds * 1000}"
@@ -2301,6 +2379,7 @@ def _search_path_schema(namespace: str | None) -> str | None:
 
 async def _check_export_sql(
     sql: str, search_path_schema: str | None, *, missing_relation_status: int = 400,
+    identity: UserIdentity | None = None,
 ) -> None:
     """Prepare `sql` on a short-lived connection before the response starts.
 
@@ -2310,10 +2389,17 @@ async def _check_export_sql(
     is caught here instead and becomes an HTTP error. The streaming
     connection prepares again; holding this one across into the generator
     would leak it if the client disconnects before streaming begins.
+
+    With an ``identity``, the statement is prepared on that caller's own
+    connection (``_caller_read_connection``); without one, on the reader pool.
     """
     assert state.read_pool is not None
+    connection = (
+        _caller_read_connection(identity) if identity is not None
+        else state.read_pool.acquire()
+    )
     try:
-        async with state.read_pool.acquire() as conn, conn.transaction(readonly=True):
+        async with connection as conn, conn.transaction(readonly=True):
             if search_path_schema:
                 await conn.execute(f'SET LOCAL search_path = "{search_path_schema}", public')
             await conn.prepare(sql)
@@ -2401,9 +2487,18 @@ async def export_table_csv(
     )
 
 
-@router.post("/export/csv", dependencies=[_PRIVILEGED])
-async def export_query_csv(body: CsvExportQuery):
-    """Export a SQL query result as streaming CSV."""
+@router.post("/export/csv")
+async def export_query_csv(
+    body: CsvExportQuery,
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Export a SQL query result as streaming CSV.
+
+    Scoped like POST /query: a key that is not wip-admins / wip-services
+    reads only the namespaces it can read.
+    """
+    if body.namespace and not _is_privileged(identity):
+        await check_namespace_permission(identity, body.namespace, "read")
     if not state.read_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -2415,11 +2510,10 @@ async def export_query_csv(body: CsvExportQuery):
         )
 
     search_path_schema = _search_path_schema(body.namespace)
-    await _check_export_sql(body.sql, search_path_schema)
+    await _check_export_sql(body.sql, search_path_schema, identity=identity)
 
     async def generate():
-        assert state.read_pool is not None
-        async with state.read_pool.acquire() as conn:
+        async with _caller_read_connection(identity) as conn:
             await conn.execute(
                 f"SET statement_timeout = {body.timeout_seconds * 1000}"
             )
@@ -2646,8 +2740,8 @@ async def register_view(
     The SQL runs with search_path set to this namespace's schema plus
     public, so unqualified names (``doc_<value>``, ``term_relations``, …)
     resolve here. Other reporting schemas are reachable only when
-    schema-qualified — the same posture as POST /query, the surface that
-    reads the view. The definition must be a single read-only SELECT:
+    schema-qualified. The view is created security_invoker, so it reads
+    with its reader's privileges. The definition must be a single read-only SELECT:
     write/DDL keywords are rejected, and validation EXPLAINs the statement
     as a prepared subselect inside a read-only transaction, so a second
     ';'-separated statement is a hard parse error rather than something
@@ -2757,7 +2851,8 @@ async def register_view(
                         f'DROP VIEW IF EXISTS "{schema}"."{safe_name}"'
                     )
                 await conn.execute(
-                    f'CREATE VIEW "{schema}"."{safe_name}" AS {view_sql}'
+                    f'CREATE VIEW "{schema}"."{safe_name}" '
+                    f"WITH ({REGISTERED_VIEW_OPTIONS}) AS {view_sql}"
                 )
                 if not privileged:
                     # A namespace-admin registration may draw only on
@@ -2856,12 +2951,12 @@ async def read_view_rows(
     """Read a registered view's rows with structured filters — the
     namespace-scoped read path for views.
 
-    Raw SQL (POST /query) stays wip-admins / wip-services: it can name any
-    schema. This endpoint takes no caller SQL at all — the view by name, a
-    closed operator set validated against the view's actual columns, bound
-    parameters, sort, limit and offset — so READ on the namespace is a
-    sufficient and checkable gate, and it runs on the read-only reporting
-    role. Only views registered in this namespace are readable here; the
+    This endpoint takes no caller SQL at all — the view by name, a closed
+    operator set validated against the view's actual columns, bound
+    parameters, sort, limit and offset. A non-privileged caller reads on a
+    connection that can read only its own namespaces, and the view is
+    security_invoker, so what the view's SQL reaches is limited the same
+    way. Only views registered in this namespace are readable here; the
     response matches POST /query (columns, rows as objects keyed by column,
     row_count, truncated). An empty body reads the first page unfiltered.
     """
@@ -2891,10 +2986,10 @@ async def read_view_rows(
     )
     if not registered:
         raise not_found
-    # The view reads with the reporting role, which sees every schema: the
-    # caller must be able to read every namespace it draws from, not only
-    # the one it is registered in. Otherwise the view stays invisible, as an
-    # unregistered one would.
+    # The caller must be able to read every namespace the view draws from,
+    # not only the one it is registered in. Otherwise the view stays
+    # invisible, as an unregistered one would, instead of failing on a
+    # permission error that names the other namespace.
     if not _is_privileged(identity):
         async with state.postgres_pool.acquire() as conn:
             foreign = await conn.fetch(_VIEW_FOREIGN_DEPENDENCIES_SQL, schema, safe_name)
@@ -2958,7 +3053,7 @@ async def read_view_rows(
     try:
         for attempt in (1, 2):
             try:
-                async with state.read_pool.acquire() as conn:
+                async with _caller_read_connection(identity) as conn:
                     await conn.execute(
                         f"SET statement_timeout = {body.timeout_seconds * 1000}"
                     )

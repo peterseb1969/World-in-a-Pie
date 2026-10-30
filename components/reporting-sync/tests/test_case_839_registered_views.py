@@ -181,9 +181,11 @@ async def test_register_new_view(http_client, mock_state):
     ), explain_calls
     # Name resolution pinned to the namespace schema on both paths.
     assert sum('SET LOCAL search_path = "clintrial", public' in s for s in executed) >= 2
-    # Plain CREATE (no OR REPLACE — replace is DROP+CREATE), trailing ';' stripped.
+    # Plain CREATE (no OR REPLACE — replace is DROP+CREATE), trailing ';' stripped;
+    # the view reads with its reader's privileges.
     assert any(
-        s == 'CREATE VIEW "clintrial"."v_study_search" AS SELECT 1' for s in executed
+        s == 'CREATE VIEW "clintrial"."v_study_search" WITH (security_invoker = true) AS SELECT 1'
+        for s in executed
     ), executed
     assert not any("CREATE OR REPLACE" in s for s in executed)
     # First registration of a free name never issues a DROP.

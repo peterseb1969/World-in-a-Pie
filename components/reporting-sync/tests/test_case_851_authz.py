@@ -13,6 +13,11 @@ Groups:
 - ns_admin:      view writes; ADMIN on the namespace or the privileged
                  groups (read/write grants answer 403, invisible 404).
 - authenticated: any valid key (/status, which filters what it shows).
+- scoped_sql:    caller SQL (query, query export). Any valid key; a named
+                 namespace must be readable (404). A non-privileged key's
+                 SQL then runs as a role that reads only its namespaces —
+                 that boundary is tested against PostgreSQL in
+                 test_case_996_scoped_sql.py.
 - scoped:        listings that span namespaces. They run in the caller's
                  effective namespace (C5): an explicit namespace must be
                  readable (404); a key that reads one namespace gets it
@@ -78,10 +83,10 @@ ROUTES = [
     ("GET", f"{P}/entity/{{entity_type}}/{{entity_id}}/references", "entity", None),
     ("GET", f"{P}/entity/{{entity_type}}/{{entity_id}}/referenced-by", "scoped", None),
     ("GET", f"{P}/tables", "scoped", None),
-    ("POST", f"{P}/query", "privileged", None),
+    ("POST", f"{P}/query", "scoped_sql", None),
     ("GET", f"{P}/export/csv", "ns_read",
      f"{P}/export/csv?namespace={{ns}}&table=doc_patient"),
-    ("POST", f"{P}/export/csv", "privileged", None),
+    ("POST", f"{P}/export/csv", "scoped_sql", None),
     ("DELETE", f"{P}/namespace/{{prefix}}", "privileged", None),
     ("POST", f"{P}/maintenance/orphan-schemas", "privileged", None),
     ("POST", f"{P}/namespace/{{prefix}}/views", "ns_admin", f"{P}/namespace/{{ns}}/views"),
@@ -112,12 +117,14 @@ _BODIES = {
     ("POST", f"{P}/search"): {"query": "x"},
     ("POST", f"{P}/namespace/ns-a/views"): {"name": "v_x", "sql": "SELECT 1"},
     ("POST", f"{P}/namespace/ns-b/views"): {"name": "v_x", "sql": "SELECT 1"},
+    ("POST", f"{P}/query"): {"sql": "SELECT 1"},
+    ("POST", f"{P}/export/csv"): {"sql": "SELECT 1"},
 }
 
 
-async def _call(method: str, path: str, key: str | None) -> int:
+async def _call(method: str, path: str, key: str | None, body: dict | None = None) -> int:
     headers = {"X-API-Key": key} if key else {}
-    body = _BODIES.get((method, path.split("?")[0]))
+    body = body or _BODIES.get((method, path.split("?")[0]))
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test", headers=headers) as c:
         return (await c.request(method, path, json=body)).status_code
@@ -190,6 +197,20 @@ async def test_namespace_admin_routes(method, template, group, ns_path):
     # namespace admin and the privileged groups pass the gate
     for key in (NSADMIN, SERVICE, ADMIN):
         assert await _call(method, own, key) not in (401, 403, 404), key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,template,group,_", _of("scoped_sql"))
+async def test_scoped_sql_routes(method, template, group, _):
+    path = _concrete(template)
+    assert await _call(method, path, None) == 401
+    for key in (READER, WRITER, NOTHING, MULTI, SERVICE, ADMIN):
+        assert await _call(method, path, key) not in (401, 403, 404), key
+    named = {"sql": "SELECT 1", "namespace": "ns-a"}
+    assert await _call(method, path, READER, named) not in (401, 403, 404)
+    hidden = {"sql": "SELECT 1", "namespace": "ns-b"}
+    assert await _call(method, path, READER, hidden) == 404
+    assert await _call(method, path, ADMIN, hidden) not in (401, 403, 404)
 
 
 @pytest.mark.asyncio

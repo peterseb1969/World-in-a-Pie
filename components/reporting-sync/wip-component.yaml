@@ -32,6 +32,9 @@ spec:
       # startup to provision these; requests run as these two roles.
       - {name: POSTGRES_SYNC_OWNER_PASSWORD, source: {from_secret: postgres-sync-owner-password}}
       - {name: POSTGRES_READ_PASSWORD, source: {from_secret: postgres-reporting-read-password}}
+      # The role manager creates the roles SQL from namespace-scoped keys
+      # runs as (scoped_reads.py); it never serves requests.
+      - {name: POSTGRES_ROLE_MANAGER_PASSWORD, source: {from_secret: postgres-role-manager-password}}
       - {name: DEF_STORE_URL, source: {from_component: def-store}}
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}

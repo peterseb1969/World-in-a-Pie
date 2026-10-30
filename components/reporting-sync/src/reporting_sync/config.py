@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     postgres_read_user: str = Field(default="wip_reporting_read", alias="POSTGRES_READ_USER")
     postgres_read_password: str = Field(default="", alias="POSTGRES_READ_PASSWORD")
     postgres_read_pool_max: int = Field(default=5, alias="POSTGRES_READ_POOL_MAX")
+    # The role manager (scoped_reads.py) creates the roles SQL from
+    # non-privileged keys runs as. It never serves requests. An empty
+    # password means "not configured": that SQL then answers 503, and
+    # privileged keys are unaffected.
+    postgres_role_manager_user: str = Field(default="wip_reporting_roles", alias="POSTGRES_ROLE_MANAGER_USER")
+    postgres_role_manager_password: str = Field(default="", alias="POSTGRES_ROLE_MANAGER_PASSWORD")
 
     # Template Store API (for fetching template definitions)
     template_store_url: str = Field(

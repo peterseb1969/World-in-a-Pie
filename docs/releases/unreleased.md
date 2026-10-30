@@ -23,6 +23,34 @@ recreate most services once: the previous render has no hash labels, so
 every definition differs. Run a plain `wip-deploy redeploy` at a convenient
 time to take that hit deliberately.
 
+### Namespace-scoped keys run reporting SQL over their own namespaces
+
+`POST /api/reporting-sync/query`, query-shaped `POST /export/csv` and the MCP
+`run_report_query` tool used to need an admin or service key, so apps on their
+own keys could not run SQL at all. They now accept any key:
+
+- **Admin and service keys** read every namespace, as before.
+- **Every other key's SQL** runs on a PostgreSQL connection that logs in as
+  a role able to read only the namespaces the key can read. A relation in
+  another namespace fails with `permission denied`, and so does a read made
+  through a function such as `query_to_xml`. A `namespace` the key cannot
+  read answers 404.
+- **Registered views read with their reader's privileges**
+  (`security_invoker`). Through a view, a namespace-scoped key's SQL sees
+  only what it could read directly. View rows (`/rows`) for such a key also
+  run on its scoped connection. A view whose SQL used a function to reach
+  another namespace no longer returns that namespace's rows to readers who
+  cannot read it. Existing registered views are switched over when
+  reporting-sync starts.
+
+The scoped roles are created on demand by a new role-manager login,
+`wip_reporting_roles`, whose password is a new deployment secret
+(`postgres-role-manager-password`). It is used only to create those roles and
+never serves requests. Without it, namespace-scoped SQL answers 503;
+admin and service keys are unaffected.
+**Action:** re-render the install (`wip-deploy redeploy`) so the deployer
+generates the secret, as for the other reporting-sync role passwords.
+
 ### Operators add namespaces to an app per install: `wip-deploy app-namespace`
 
 `wip-deploy app-namespace add <app> <namespace>` gives an app another

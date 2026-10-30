@@ -4227,9 +4227,10 @@ async def run_report_query(
             without namespace, an unqualified name fails with
             'relation does not exist' (the search_path is then public only).
 
-    Raw SQL requires an admin or service key; a namespace-scoped key gets 403
-    and should use read_reporting_view (for registered views) or the document
-    query tools instead. The query runs in a read-only transaction.
+    An admin or service key reads every namespace. Any other key reads only
+    the namespaces it can read: a relation, view or function reaching another
+    namespace fails with "permission denied". A named `namespace` the key
+    cannot read answers not found. The query runs in a read-only transaction.
 
     Example:
         run_report_query("SELECT name, country FROM doc_patient WHERE country = $1",
@@ -4264,7 +4265,8 @@ async def export_report_csv(
             Only doc_* tables and metadata tables are allowed. Requires
             `namespace`: each namespace is its own PostgreSQL schema.
         sql: SQL SELECT query. Must be read-only. Use for filtered/joined exports.
-            Requires an admin or service key, like run_report_query.
+            Scoped like run_report_query: a namespace-scoped key reads only
+            the namespaces it can read.
         params: Optional parameter values for $1, $2, etc. in the SQL query.
         namespace: The namespace whose schema holds the table (table mode,
             required). In query mode, sets the search_path so unqualified
@@ -4380,9 +4382,9 @@ async def read_reporting_view(
 
     The read path for namespace-scoped keys: requires READ on the namespace
     and on every other namespace the view draws from; a view over platform
-    tables reads only with an admin or service key, as does raw SQL via
-    run_report_query. Only registered views are readable here; a view the
-    caller may not read answers like an unregistered one.
+    tables reads only with an admin or service key. Only registered views are
+    readable here; a view the caller may not read answers like an
+    unregistered one.
 
     Args:
         name: The registered view's name.

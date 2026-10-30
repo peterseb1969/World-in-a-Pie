@@ -44,8 +44,9 @@ def _client(key: str) -> AsyncClient:
 
 
 @pytest_asyncio.fixture
-async def real_state(pg_pool):
-    """Point the app's global state at the real test pool."""
+async def real_state(pg_pool, scoped_reads):
+    """Point the app's global state at the real test pool; namespace-scoped
+    readers read on their own scoped connections."""
     await init_postgres_schema(pg_pool)
     original_pool, original_read = state.postgres_pool, state.read_pool
     # Role separation is not under test here: one pool serves both.

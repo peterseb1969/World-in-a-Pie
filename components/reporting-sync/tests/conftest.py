@@ -237,6 +237,59 @@ async def _clean_database(pool: asyncpg.Pool) -> None:
 
 
 @pytest_asyncio.fixture
+async def scoped_reads(pg_pool):
+    """The app's scoped reads on the test database, with a role manager.
+
+    The test login is a superuser, so the test pool plays the sync owner.
+    Roles are cluster-wide: the role manager, owner and reader are unique
+    to the test, and every scope and namespace role is dropped afterwards.
+    """
+    import uuid
+    from urllib.parse import urlsplit
+
+    from reporting_sync.main import state
+    from reporting_sync.pg_roles import RoleSpec, provision_roles
+    from reporting_sync.scoped_reads import ScopedReads
+
+    suffix = uuid.uuid4().hex[:8]
+    spec = RoleSpec(
+        owner=f"rs_owner_{suffix}", owner_password=f"o-{suffix}",
+        reader=f"rs_reader_{suffix}", reader_password=f"r-{suffix}",
+        manager=f"rs_roles_{suffix}", manager_password=f"m-{suffix}",
+    )
+    async with pg_pool.acquire() as conn:
+        await provision_roles(conn, spec)
+    parts = urlsplit(POSTGRES_TEST_URI)
+    reads = ScopedReads(
+        endpoint={
+            "host": parts.hostname or "localhost",
+            "port": parts.port or 5432,
+            "database": parts.path.lstrip("/"),
+        },
+        owner_pool=pg_pool,
+        manager_user=spec.manager,
+        manager_password=spec.manager_password,
+    )
+    saved = state.scoped_reads
+    state.scoped_reads = reads
+    yield reads
+    state.scoped_reads = saved
+    async with pg_pool.acquire() as conn:
+        # The manager granted the scope roles CONNECT; dropping its grant
+        # option with CASCADE takes those grants with it.
+        await conn.execute(f'DROP OWNED BY "{spec.manager}" CASCADE')
+        for row in await conn.fetch(
+            "SELECT rolname FROM pg_roles "
+            "WHERE rolname LIKE 'wip\\_scope\\_%' OR rolname LIKE 'wip\\_nsread\\_%'"
+        ):
+            await conn.execute(f'DROP OWNED BY "{row["rolname"]}"')
+            await conn.execute(f'DROP ROLE "{row["rolname"]}"')
+        for role in (spec.manager, spec.reader, spec.owner):
+            await conn.execute(f'DROP OWNED BY "{role}"')
+            await conn.execute(f'DROP ROLE "{role}"')
+
+
+@pytest_asyncio.fixture
 async def nats_client():
     """Create a real NATS connection for E2E tests.
 

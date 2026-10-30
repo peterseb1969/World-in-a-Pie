@@ -19,6 +19,11 @@ from .models import FieldType, FileFieldConfig, ReportingConfig, SemanticType, S
 
 logger = logging.getLogger(__name__)
 
+# Registered views read with the privileges of whoever reads them, not of
+# their owner, which owns every schema: a namespace-scoped reader sees through
+# a view only what it could read directly.
+REGISTERED_VIEW_OPTIONS = "security_invoker = true"
+
 
 class NamespaceDeletedError(Exception):
     """The namespace was deleted, so its reporting schema must not be created.
@@ -1579,6 +1584,13 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 try:
                     safe_name = self._safe_ident(name)
                     if await self.relation_kind(schema, name) == "view":
+                        # Views registered before they read with the
+                        # reader's privileges are switched over here.
+                        async with self.pool.acquire() as conn:
+                            await conn.execute(
+                                f'ALTER VIEW "{schema}"."{safe_name}" '
+                                f"SET ({REGISTERED_VIEW_OPTIONS})"
+                            )
                         present += 1
                         continue
                     async with self.pool.acquire() as conn, conn.transaction():
@@ -1586,7 +1598,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                             f'SET LOCAL search_path = "{schema}", public'
                         )
                         await conn.execute(
-                            f'CREATE VIEW "{schema}"."{safe_name}" AS {view_sql}'
+                            f'CREATE VIEW "{schema}"."{safe_name}" '
+                            f"WITH ({REGISTERED_VIEW_OPTIONS}) AS {view_sql}"
                         )
                     present += 1
                 except (asyncpg.PostgresError, ValueError) as e:

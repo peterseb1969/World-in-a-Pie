@@ -381,11 +381,12 @@ A service needs both. Authorization also needs the Registry: `REGISTRY_URL` and 
 | Operational reads (status, metrics, alerts, integrity, job listing) | authenticated; admin where they expose cross-namespace detail |
 
 **D3 — Raw SQL is admin/service-only in v1.**
-- `POST /query` and query-shaped `POST /export/csv` require `wip-admins` / `wip-services`.
+- `POST /query` and query-shaped `POST /export/csv` require `wip-admins` / `wip-services`. *(Superseded 2026-10-30, see the amendment below.)*
 - Namespace-scoped callers use the structured endpoints, which can be namespace-checked properly.
 - **Rejected alternative:** switching to a restricted role with `SET ROLE` on the service's privileged connection. Role switching is checked against the connection's login role, so SQL submitted on that connection can switch back; it is not a boundary.
 - **Rejected alternative:** SQL parsing.
 - Per-namespace SQL isolation, if a tenant ever needs it, requires a separate low-privilege *connection*. That is a future case, not part of 2b.
+- **Amended 2026-10-30 (CASE-996):** apps run on their own scoped keys (CASE-988), so that future case arrived. Raw SQL from a key outside `wip-admins` / `wip-services` runs on a connection that logs in as a scope role: `LOGIN`, a member only of per-namespace read roles (`NOLOGIN`; USAGE and SELECT on one schema, granted by the sync owner, including default privileges). The rejected `SET ROLE` design is still rejected; the probe that led here showed `set_config('role', …)` plus `query_to_xml` escaping it within one statement. Scope roles are named by a hash of the readable set. Their passwords are an HMAC of the role manager's password, so no state is stored. They are created on demand by a dedicated `CREATEROLE` login (`wip_reporting_roles`) that serves no requests. Registered views are `security_invoker`. Code: `reporting_sync/scoped_reads.py`.
 
 **D4 — No request-driven work runs as a superuser.** Two static, deployer-rendered PostgreSQL roles replace `wip` for the services:
 

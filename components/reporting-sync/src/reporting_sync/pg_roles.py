@@ -8,9 +8,13 @@ Now it runs as two ordinary roles:
 - the **sync owner** owns every reporting schema and relation and does the
   DDL the sync pipeline needs (create/drop schemas, tables, indexes, views);
 - the **reader** can only read what the owner owns, in read-only
-  transactions with a statement timeout; caller-driven SQL runs as it.
+  transactions with a statement timeout; caller-driven SQL from privileged
+  keys runs as it.
 
-Neither is a superuser, and neither can create roles or databases. The
+Neither is a superuser, and neither can create roles or databases. A third
+login, the **role manager**, creates the per-namespace and per-scope roles
+that non-privileged caller SQL runs as (``scoped_reads.py``). It holds
+CREATEROLE, so it never serves requests and is opened only to provision. The
 bootstrap login is used once, at startup, on a single connection that is
 closed before the service takes requests: it creates or normalises the two
 roles, gives the owner what the bootstrap role owned, and grants the reader
@@ -26,6 +30,7 @@ import asyncpg
 logger = logging.getLogger(__name__)
 
 _ROLE_ATTRIBUTES = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
+_MANAGER_ATTRIBUTES = "LOGIN NOSUPERUSER NOCREATEDB CREATEROLE NOREPLICATION NOBYPASSRLS"
 _SYSTEM_SCHEMA_FILTER = (
     "n.nspname NOT IN ('pg_catalog', 'information_schema') "
     "AND n.nspname NOT LIKE 'pg\\_%'"
@@ -51,6 +56,9 @@ class RoleSpec:
     reader: str
     reader_password: str
     reader_statement_timeout: str = "300s"
+    # The role manager; provisioned only when both are set.
+    manager: str = ""
+    manager_password: str = ""
 
 
 @dataclass
@@ -60,7 +68,9 @@ class ProvisionReport:
     relations_reowned: int = 0
 
 
-async def _ensure_role(conn: asyncpg.Connection, name: str, password: str) -> bool:
+async def _ensure_role(
+    conn: asyncpg.Connection, name: str, password: str, attributes: str = _ROLE_ATTRIBUTES,
+) -> bool:
     """Create the role if missing and (re)set its attributes and password.
 
     Returns True when the role was created. The password is set on every
@@ -73,11 +83,11 @@ async def _ensure_role(conn: asyncpg.Connection, name: str, password: str) -> bo
     )
     if created:
         await conn.execute(
-            await conn.fetchval(f"SELECT format('CREATE ROLE %I {_ROLE_ATTRIBUTES}', $1::text)", name)
+            await conn.fetchval(f"SELECT format('CREATE ROLE %I {attributes}', $1::text)", name)
         )
     await conn.execute(
         await conn.fetchval(
-            f"SELECT format('ALTER ROLE %I WITH {_ROLE_ATTRIBUTES} PASSWORD %L', $1::text, $2::text)",
+            f"SELECT format('ALTER ROLE %I WITH {attributes} PASSWORD %L', $1::text, $2::text)",
             name,
             password,
         )
@@ -120,6 +130,16 @@ async def provision_roles(conn: asyncpg.Connection, spec: RoleSpec) -> Provision
         await conn.execute(await _quoted(conn, "GRANT CONNECT ON DATABASE %I TO %I", database, spec.reader))
         await conn.execute(await _quoted(conn, "GRANT USAGE, CREATE ON SCHEMA public TO %I", spec.owner))
         await conn.execute(await _quoted(conn, "GRANT USAGE ON SCHEMA public TO %I", spec.reader))
+
+        if spec.manager and spec.manager_password:
+            if await _ensure_role(conn, spec.manager, spec.manager_password, _MANAGER_ATTRIBUTES):
+                report.roles_created.append(spec.manager)
+            await conn.execute(await _quoted(conn, "ALTER ROLE %I SET search_path = public", spec.manager))
+            # The grant option lets it give the scope roles it creates
+            # CONNECT, whatever PUBLIC holds on this database.
+            await conn.execute(await _quoted(
+                conn, "GRANT CONNECT ON DATABASE %I TO %I WITH GRANT OPTION", database, spec.manager,
+            ))
 
     # Re-ownership: everything the bootstrap role owns in non-system
     # schemas moves to the owner — one transaction per schema, so a large

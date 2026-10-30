@@ -118,6 +118,7 @@ class TestCollectRequiredSecrets:
         role_secrets = {
             "postgres-sync-owner-password",
             "postgres-reporting-read-password",
+            "postgres-role-manager-password",
         }
         active = collect_required_secrets(
             _compose_deployment(modules=["reporting-sync"]),

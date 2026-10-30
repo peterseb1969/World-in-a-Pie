@@ -10,9 +10,10 @@ surface instead of repeating the SQL inline.
 > from their bootstrap over HTTP (examples below) or with `@wip/client`
 > (`reporting.registerView` / `listViews` / `readViewRows` / `deleteView`).
 > Agents use the MCP tools `register_reporting_view`, `list_reporting_views`,
-> `read_reporting_view` and `delete_reporting_view`. Reading with raw SQL
-> (`run_report_query`) needs an admin or service key; namespace-scoped keys
-> read through `read_reporting_view` (the structured rows endpoint below).
+> `read_reporting_view` and `delete_reporting_view`. Raw SQL
+> (`run_report_query`) works with any key, over the namespaces that key can
+> read; `read_reporting_view` (the structured rows endpoint below) reads a
+> view without SQL.
 
 ## The API
 
@@ -48,11 +49,13 @@ Every reporting-sync route requires an API key. Beyond that:
 | Register / replace / drop a view | ADMIN on the namespace, for a view over namespaces the key can read (see below), or `wip-admins` / `wip-services` (any view) |
 | List a namespace's views | read on the namespace (an invisible namespace answers `404`) |
 | Read a view's rows (`POST …/views/{name}/rows`, structured) | read on the namespace **and** on every other namespace the view draws from; a view over platform tables (`public`, `pg_catalog`) only `wip-admins` / `wip-services`. Otherwise the view answers `404`, as an unregistered one would |
-| `POST /api/reporting-sync/query` (raw SQL, including reading a view) | `wip-admins` or `wip-services` |
+| `POST /api/reporting-sync/query` (raw SQL, including reading a view) | any key. `wip-admins` / `wip-services` read every namespace; any other key reads only the namespaces it can read (below) |
 
-A view definition is raw SQL. Schema-qualified names reach other namespaces' schemas, so namespace *write* access cannot be the boundary, and raw `/query` stays admin/service-only. The namespace-ADMIN tier exists so an app can own its views with the key it deploys with. After creating the view, registration asks Postgres (`pg_depend`) which relations it actually depends on: a dependency in another namespace the key cannot read, or in `public` bookkeeping or `pg_catalog`, rolls the registration back with `403`. No SQL parsing. A `wip-admins` / `wip-services` key may register any view.
+A view definition is raw SQL. Schema-qualified names reach other namespaces' schemas, so namespace *write* access cannot be the boundary. The namespace-ADMIN tier exists so an app can own its views with the key it deploys with. After creating the view, registration asks Postgres (`pg_depend`) which relations it actually depends on: a dependency in another namespace the key cannot read, or in `public` bookkeeping or `pg_catalog`, rolls the registration back with `403`. No SQL parsing. A `wip-admins` / `wip-services` key may register any view.
 
-The same dependency list gates every read. A view reads with the reporting role, which sees every schema, so reading its rows takes read on **every** namespace it draws from, not only the one it is registered in. A view never hands a namespace's rows to a caller who could not read that namespace directly, whoever registered it.
+The same dependency list gates every read: reading a view's rows takes read on **every** namespace it draws from, not only the one it is registered in. A view never hands a namespace's rows to a caller who could not read that namespace directly, whoever registered it.
+
+The dependency list cannot see what a view's functions read (`query_to_xml` reads whatever its string argument names), so it is not the boundary; PostgreSQL is. A key that is not `wip-admins` / `wip-services` runs its SQL, and reads view rows, on a connection that logs in as a role able to read only that key's namespaces. Registered views are `security_invoker`: they read with their reader's privileges, not their owner's. Anything outside the key's namespaces fails with `permission denied`.
 
 An app deployed by `wip-deploy` receives the install's service key, so bootstrap registration and raw view queries work unchanged. A **namespace-scoped app key** registers contained views with namespace ADMIN and reads them through the structured rows endpoint; it still cannot run raw SQL.
 
@@ -137,8 +140,8 @@ run_report_query(sql="SELECT * FROM v_study_search WHERE study_number = $1",
 ```
 
 or `POST /api/reporting-sync/query` with `{"sql": "...", "namespace": "clintrial"}`.
-`POST /query` requires a `wip-admins` or `wip-services` key (see *Who may call
-what* above).
+With a namespace-scoped key, `POST /query` reads only the namespaces that key
+can read (see *Who may call what* above).
 
 ## A complete example — hierarchy-aware search
 
