@@ -29,7 +29,7 @@ from ..models.api_models import (
 )
 from ..models.entry import RegistryEntry
 from ..models.id_algorithm import VALID_ENTITY_TYPES, validate_id_config_write
-from ..models.namespace import Namespace, id_config_view
+from ..models.namespace import WIP_NAMESPACE, Namespace, id_config_view
 from ..services.auth import require_admin_key, require_api_key
 from ..services.id_prefixes import (
     IdPrefixError,
@@ -76,6 +76,7 @@ def namespace_to_response(ns: Namespace) -> NamespaceResponse:
         description=ns.description,
         isolation_mode=ns.isolation_mode,
         allowed_external_refs=ns.allowed_external_refs,
+        inbound_references=ns.inbound_references,
         id_config=id_config,
         deletion_mode=ns.deletion_mode,
         status=ns.status,
@@ -250,6 +251,7 @@ async def get_namespace_stats(
         prefix=ns.prefix,
         description=ns.description,
         isolation_mode=ns.isolation_mode,
+        inbound_references=ns.inbound_references,
         deletion_mode=ns.deletion_mode,
         status=ns.status,
         entity_counts=entity_counts,
@@ -305,6 +307,7 @@ async def create_namespace(
             description=request.description,
             isolation_mode=request.isolation_mode,
             allowed_external_refs=request.allowed_external_refs,
+            inbound_references=request.inbound_references,
             id_config=id_config,
             id_prefixes=id_prefixes or [],
             deletion_mode=request.deletion_mode,
@@ -333,6 +336,7 @@ async def upsert_namespace(
     does not exist, create it with the supplied fields; anything omitted
     comes from the namespace's reservation when the install reserves the
     prefix for an app, else from the defaults (`isolation_mode='open'`,
+    `inbound_references='closed'`,
     `deletion_mode='retain'`, `description=''`, `allowed_external_refs=[]`,
     `id_config={}`).
 
@@ -349,7 +353,8 @@ async def upsert_namespace(
     Safety guards on `deletion_mode` mirror the narrow PATCH route:
     the `wip` default namespace cannot be flipped to `full`, and
     flipping an existing namespace from `retain` to `full` requires
-    `confirm_enable_deletion=true` in the body.
+    `confirm_enable_deletion=true` in the body. The `wip` namespace
+    cannot be closed to inbound references either.
     """
     ns = await Namespace.find_one({"prefix": prefix})
     update_data = request.model_dump(exclude_unset=True)
@@ -371,6 +376,15 @@ async def upsert_namespace(
             return namespace_to_response(ns)
 
     actor = request.updated_by
+
+    if prefix == WIP_NAMESPACE and update_data.get("inbound_references") == "closed":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "The 'wip' namespace holds the shared vocabularies every "
+                "namespace references; it cannot be closed to inbound references"
+            ),
+        )
 
     new_deletion_mode = update_data.get("deletion_mode")
     if new_deletion_mode == "full":
@@ -406,6 +420,7 @@ async def upsert_namespace(
                 description=settings["description"],
                 isolation_mode=settings["isolation_mode"],
                 allowed_external_refs=settings["allowed_external_refs"],
+                inbound_references=settings["inbound_references"],
                 id_config=id_config,
                 id_prefixes=id_prefixes or [],
                 deletion_mode=settings["deletion_mode"],

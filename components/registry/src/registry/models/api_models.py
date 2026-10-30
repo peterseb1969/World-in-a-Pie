@@ -1,7 +1,7 @@
 """API request and response models for the Registry service."""
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -37,13 +37,24 @@ class NamespaceCreate(StrictModel):
 
     prefix: str = Field(..., description="Unique prefix (e.g., 'dev', 'staging', 'prod')")
     description: str = Field(default="", description="Human-readable description")
-    isolation_mode: str = Field(
+    isolation_mode: Literal["open", "strict"] = Field(
         default="open",
-        description="'open' allows cross-namespace refs; 'strict' requires same-namespace only"
+        description=(
+            "Outbound references. 'open' may reference any namespace; "
+            "'strict' only itself and allowed_external_refs"
+        ),
     )
     allowed_external_refs: list[str] = Field(
         default_factory=list,
-        description="For open mode, optional allowlist of external namespace prefixes"
+        description="For strict mode, the other namespaces this namespace may reference"
+    )
+    inbound_references: Literal["closed", "open"] = Field(
+        default="closed",
+        description=(
+            "Inbound references. 'closed' accepts a reference from another "
+            "namespace only when the writing key can read this one; 'open' "
+            "accepts it from any writer. 'wip' is always open."
+        ),
     )
     id_config: IdConfigWrite | None = Field(
         default=None,
@@ -60,8 +71,9 @@ class NamespaceUpdate(StrictModel):
     """Request model for updating a user-facing namespace."""
 
     description: str | None = None
-    isolation_mode: str | None = None
+    isolation_mode: Literal["open", "strict"] | None = None
     allowed_external_refs: list[str] | None = None
+    inbound_references: Literal["closed", "open"] | None = None
     # Validated in the handler, not here: a value re-sent exactly as stored
     # is accepted even if it predates validation (validate_id_config_write).
     id_config: dict[str, Any] | None = None
@@ -86,6 +98,7 @@ class NamespaceResponse(BaseModel):
     description: str
     isolation_mode: str
     allowed_external_refs: list[str]
+    inbound_references: str = "closed"
     id_config: dict[str, Any]
     deletion_mode: str = "retain"
     status: str
@@ -101,6 +114,7 @@ class NamespaceStatsResponse(BaseModel):
     prefix: str
     description: str
     isolation_mode: str
+    inbound_references: str = "closed"
     deletion_mode: str = "retain"
     status: str
     entity_counts: dict[str, int] = Field(

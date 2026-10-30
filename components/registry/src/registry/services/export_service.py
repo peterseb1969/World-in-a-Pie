@@ -78,6 +78,7 @@ class ExportService:
                 "description": namespace.description,
                 "isolation_mode": namespace.isolation_mode,
                 "allowed_external_refs": namespace.allowed_external_refs,
+                "inbound_references": namespace.inbound_references,
                 "id_config": id_config,
             }
             with open(os.path.join(export_dir, "manifest.json"), "w") as f:

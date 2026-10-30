@@ -302,7 +302,7 @@ App bootstrap scripts need to provision a namespace and a set of templates again
 
 ### Namespace upsert — `PUT /api/registry/namespaces/{prefix}`
 
-`PUT` is an upsert: it creates the namespace on missing and updates it when present. Any field omitted from the body uses the platform default on create (`isolation_mode='open'`, `deletion_mode='retain'`, `description=''`, `allowed_external_refs=[]`, `id_config=null`). On update, only fields explicitly supplied are touched.
+`PUT` is an upsert: it creates the namespace on missing and updates it when present. Any field omitted from the body uses the platform default on create (`isolation_mode='open'`, `inbound_references='closed'`, `deletion_mode='retain'`, `description=''`, `allowed_external_refs=[]`, `id_config=null`). On update, only fields explicitly supplied are touched.
 
 ```python
 client.registry.upsert_namespace("my-app", {

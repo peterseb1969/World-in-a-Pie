@@ -962,11 +962,15 @@ class Namespace(BaseModel):
     description: str = Field(default="")
     isolation_mode: Literal["open", "strict"] = Field(
         default="open",
-        description="open allows cross-namespace refs; strict requires same-namespace"
+        description="Outbound: open may reference any namespace; strict only itself and allowed_external_refs"
     )
     allowed_external_refs: list[str] = Field(
         default_factory=list,
-        description="For open mode, optional allowlist of external namespaces"
+        description="For strict mode, the other namespaces this namespace may reference"
+    )
+    inbound_references: Literal["closed", "open"] = Field(
+        default="closed",
+        description="Inbound: closed accepts references from other namespaces only from writers who can read it; 'wip' is always open"
     )
     id_config: dict[str, IdAlgorithmConfig] = Field(
         default_factory=dict,

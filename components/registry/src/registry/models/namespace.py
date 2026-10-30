@@ -10,10 +10,13 @@ from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
 from beanie import Document
-from pydantic import Field
+from pydantic import Field, model_validator
 from pymongo import IndexModel
 
 from .id_algorithm import DEFAULT_ID_CONFIG, VALID_ENTITY_TYPES, IdAlgorithmConfig
+
+# The platform namespace holding shared vocabularies; always open inbound.
+WIP_NAMESPACE = "wip"
 
 # The unique index that makes a `prefixed` prefix name one ID sequence
 # install-wide (see services/id_prefixes.py).
@@ -39,11 +42,25 @@ class Namespace(Document):
     )
     isolation_mode: Literal["open", "strict"] = Field(
         default="open",
-        description="'open' allows cross-namespace refs; 'strict' requires same-namespace only"
+        description=(
+            "Outbound references. 'open' lets this namespace reference any "
+            "other namespace; 'strict' limits it to itself and "
+            "allowed_external_refs. The target's inbound_references applies "
+            "on top of either."
+        ),
     )
     allowed_external_refs: list[str] = Field(
         default_factory=list,
-        description="For open mode, optional allowlist of external namespace prefixes"
+        description="For strict mode, the other namespaces this namespace may reference"
+    )
+    inbound_references: Literal["closed", "open"] = Field(
+        default="closed",
+        description=(
+            "Inbound references. 'closed' accepts a reference from another "
+            "namespace only when the writing key can read this namespace; "
+            "'open' accepts it from any writer. The 'wip' namespace is always "
+            "open. A namespace stored before the field existed reads as closed."
+        ),
     )
     id_config: dict[str, Any] = Field(
         default_factory=dict,
@@ -91,6 +108,14 @@ class Namespace(Document):
         default=None,
         description="User who last updated this namespace"
     )
+
+    @model_validator(mode="after")
+    def _wip_is_open_inbound(self) -> "Namespace":
+        # Shared vocabularies live in 'wip'; every namespace must be able to
+        # reference them, whatever was stored or restored.
+        if self.prefix == WIP_NAMESPACE:
+            self.inbound_references = "open"
+        return self
 
     def get_id_algorithm(self, entity_type: str) -> IdAlgorithmConfig:
         """Get the ID algorithm config for a given entity type."""

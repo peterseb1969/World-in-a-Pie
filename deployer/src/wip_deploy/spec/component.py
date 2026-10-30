@@ -499,6 +499,7 @@ class NamespaceSettings(WIPModel):
     description: str | None = None
     isolation_mode: Literal["open", "strict"] | None = None
     allowed_external_refs: list[str] | None = None
+    inbound_references: Literal["closed", "open"] | None = None
     id_config: dict[str, Any] | None = None
     deletion_mode: Literal["retain", "full"] | None = None
 

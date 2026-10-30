@@ -129,6 +129,11 @@ class ImportService:
                 existing_ns.allowed_external_refs = manifest.get(
                     "allowed_external_refs", []
                 )
+                # An export from before the setting existed restores closed,
+                # the default every namespace now has.
+                existing_ns.inbound_references = manifest.get(
+                    "inbound_references", "closed"
+                )
                 existing_ns.id_config = imported_id_config
                 if id_prefixes is not None:
                     existing_ns.id_prefixes = id_prefixes
@@ -143,6 +148,7 @@ class ImportService:
                     description=manifest.get("description", f"Imported from {source_prefix}"),
                     isolation_mode=manifest.get("isolation_mode", "open"),
                     allowed_external_refs=manifest.get("allowed_external_refs", []),
+                    inbound_references=manifest.get("inbound_references", "closed"),
                     id_config=imported_id_config,
                     id_prefixes=id_prefixes or [],
                     created_by=imported_by,

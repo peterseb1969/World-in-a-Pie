@@ -108,11 +108,13 @@
  *           allowed_external_refs: [myapp-ref]
  *           id_config: { documents: { algorithm: prefixed, prefix: "DOC-", pad: 6 } }
  *           deletion_mode: retain
- *   - Keys: description, isolation_mode (open | strict),
- *     allowed_external_refs (namespace names on the install),
- *     id_config (per entity type: terminologies, terms, templates,
- *     documents, files), deletion_mode (retain | full). Omitted keys get
- *     the platform defaults: "", open, [], UUID7 everywhere, retain.
+ *   - Keys: description, isolation_mode (open | strict: what this
+ *     namespace may reference), allowed_external_refs (namespace names on
+ *     the install), inbound_references (closed | open: whether writers who
+ *     cannot read it may reference it), id_config (per entity type:
+ *     terminologies, terms, templates, documents, files), deletion_mode
+ *     (retain | full). Omitted keys get the platform defaults: "", open,
+ *     [], closed, UUID7 everywhere, retain.
  *   - The install turns these into a namespace reservation the operator
  *     approves. The bootstrap upserts each namespace with NO settings: the
  *     reservation supplies them, and the app's own key (admin on its
