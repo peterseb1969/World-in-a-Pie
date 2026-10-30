@@ -7,7 +7,7 @@ import json
 import shutil
 import tempfile
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, BinaryIO, TextIO
@@ -29,6 +29,9 @@ FILES_FILE = "files.jsonl"
 TERM_RELATIONS_FILE = "term_relations.jsonl"
 SYNONYMS_FILE = "synonyms.jsonl"
 REGISTRY_ENTRIES_FILE = "registry_entries.jsonl"
+# Archive-wide, at the root: one referent may be referenced from several of
+# the archive's namespaces. See wip_archive.referents.
+REFERENTS_FILE = "referents.jsonl"
 BLOBS_DIR = "blobs/"
 
 ENTITY_FILES = {
@@ -193,6 +196,10 @@ class ArchiveWriter:
             if synonyms_path.exists() and synonyms_path.stat().st_size > 0:
                 zf.write(synonyms_path, SYNONYMS_FILE)
 
+            referents_path = Path(self._tmp_dir) / REFERENTS_FILE
+            if referents_path.exists() and referents_path.stat().st_size > 0:
+                zf.write(referents_path, REFERENTS_FILE)
+
             # Write blobs (streamed from per-file tempfiles; flat, namespace-agnostic)
             for blob_file in sorted(self._blobs_dir.iterdir()):
                 zf.write(blob_file, f"{BLOBS_DIR}{blob_file.name}")
@@ -207,6 +214,22 @@ class ArchiveWriter:
             for syn in synonyms:
                 f.write(json.dumps(syn, default=str))
                 f.write("\n")
+
+    def write_referents_file(self, referents: Iterable[dict[str, Any]]) -> int:
+        """Write referents.jsonl to the temp directory; returns the row count.
+
+        The count belongs on the manifest (``Manifest.referents``): an empty
+        table writes no file, so the file's absence alone cannot tell "no
+        external referents" from "archive predates the table".
+        """
+        path = Path(self._tmp_dir) / REFERENTS_FILE
+        count = 0
+        with open(path, "w", encoding="utf-8") as f:
+            for row in referents:
+                f.write(json.dumps(row, default=str))
+                f.write("\n")
+                count += 1
+        return count
 
     def _cleanup(self) -> None:
         """Remove the temp directory."""
@@ -340,6 +363,23 @@ class ArchiveReader:
         """Iterate over synonyms from synonyms.jsonl (if present)."""
         try:
             handle = self._zf.open(SYNONYMS_FILE)
+        except KeyError:
+            return
+
+        with handle, io.TextIOWrapper(handle, encoding="utf-8") as text:
+            for line in text:
+                line = line.strip()
+                if line:
+                    yield json.loads(line)
+
+    def read_referents(self) -> Iterator[dict[str, Any]]:
+        """Iterate over the out-of-archive referent table (if present).
+
+        Whether the archive has a table at all is ``Manifest.referents``
+        (None = predates it); a table of zero rows has no file.
+        """
+        try:
+            handle = self._zf.open(REFERENTS_FILE)
         except KeyError:
             return
 

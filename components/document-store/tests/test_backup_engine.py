@@ -488,6 +488,87 @@ class TestRunBackupBasicFlow:
             assert call[0][0] != "documents"
 
 
+class TestRunBackupReferents:
+    """The archive records the Registry identity of everything it references
+    but does not carry, so a restore elsewhere can find out what was meant."""
+
+    @staticmethod
+    def _entry(entry_id, namespace, value):
+        return {
+            "_id": f"oid-{entry_id}",
+            "entry_id": entry_id,
+            "namespace": namespace,
+            "entity_type": "templates",
+            "primary_composite_key": {"ns": namespace, "type": "template", "value": value},
+            "synonyms": [],
+        }
+
+    async def _backup(self, tmp_path, *, documents, carried, external_rows):
+        mongo, _ = _make_mongo_mock(
+            docs_per_collection={"documents": documents},
+            counts_per_collection={e: 0 for e in BACKUP_ENTITY_ORDER},
+            namespace_config_doc={"prefix": "kb"},
+        )
+        # The Registry collection answers twice: the namespace's own entries
+        # (export), then the lookup of the external ids.
+        registry = mongo["x"]["registry_entries"]  # the mock caches by name
+        export_cursor, lookup_cursor = MagicMock(), MagicMock()
+        export_cursor.sort = MagicMock(return_value=_AsyncIter(carried))
+        lookup_cursor.sort = MagicMock(return_value=_AsyncIter(external_rows))
+        registry.find = MagicMock(side_effect=[export_cursor, lookup_cursor])
+
+        engine = DirectBackupEngine(mongo, None, _collect_progress([]))
+        archive = tmp_path / "kb.zip"
+        await engine.run_backup("kb", archive)
+        return archive, registry
+
+    @pytest.mark.asyncio
+    async def test_an_out_of_archive_referent_is_recorded(self, tmp_path):
+        from wip_archive.archive import ArchiveReader
+
+        documents = [{
+            "document_id": "D1", "namespace": "kb", "template_id": "TPL-KB",
+            "references": [{
+                "field_path": "owner", "reference_type": "document",
+                "resolved": {"document_id": "D-ELSEWHERE", "namespace": "other"},
+            }],
+        }]
+        carried = [self._entry("D1", "kb", "x"), self._entry("TPL-KB", "kb", "KB_DOC")]
+        external = [self._entry("D-ELSEWHERE", "other", "y")]
+
+        archive, registry = await self._backup(
+            tmp_path, documents=documents, carried=carried, external_rows=external
+        )
+
+        # Only the uncarried id is looked up.
+        lookup_query, projection = registry.find.call_args_list[1].args
+        assert lookup_query == {"entry_id": {"$in": ["D-ELSEWHERE"]}}
+        assert projection == {"_id": 0}
+        with ArchiveReader(archive) as reader:
+            assert reader.read_manifest().referents == 1
+            rows = list(reader.read_referents())
+        assert [r["entry_id"] for r in rows] == ["D-ELSEWHERE"]
+        assert rows[0]["primary_composite_key"]["ns"] == "other"
+
+    @pytest.mark.asyncio
+    async def test_a_self_contained_archive_records_zero_not_nothing(self, tmp_path):
+        # Zero is a statement ("nothing external"); None would mean the
+        # archive predates the table.
+        from wip_archive.archive import ArchiveReader
+
+        documents = [{"document_id": "D1", "namespace": "kb", "template_id": "TPL-KB"}]
+        carried = [self._entry("D1", "kb", "x"), self._entry("TPL-KB", "kb", "KB_DOC")]
+
+        archive, registry = await self._backup(
+            tmp_path, documents=documents, carried=carried, external_rows=[]
+        )
+
+        assert registry.find.call_count == 1  # no lookup issued
+        with ArchiveReader(archive) as reader:
+            assert reader.read_manifest().referents == 0
+            assert list(reader.read_referents()) == []
+
+
 # ---------------------------------------------------------------------------
 # DirectRestoreEngine — collaborator methods
 # ---------------------------------------------------------------------------

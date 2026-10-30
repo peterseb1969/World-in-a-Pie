@@ -109,6 +109,13 @@ class Manifest(BaseModel):
     include_all_versions: bool = False
     closure: ClosureInfo = Field(default_factory=ClosureInfo)
     counts: EntityCounts = Field(default_factory=EntityCounts)
+    # Rows in referents.jsonl: the Registry entries of entities the archive
+    # references but does not carry (wip_archive.referents). None = the
+    # archive predates the table, so a restore cannot tell "nothing
+    # external" from "not recorded" and must fall back to each reference's
+    # own lookup half. Additive, like provenance: older readers ignore it,
+    # so format_version is unchanged.
+    referents: int | None = None
 
     def namespace_prefixes(self) -> list[str]:
         """The namespaces carried by this archive.

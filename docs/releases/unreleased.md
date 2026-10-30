@@ -1285,6 +1285,32 @@ it.
 **Action:** none; a validation result may now report errors it missed
 before. Apps using the typed client re-vendor `wip-client-0.67.0.tgz`.
 
+### Backups record what they reference but do not carry; `wip-archive` 0.4.0
+
+An archived reference to an entity outside the archive stored only that
+entity's id: a template field drawing from a `wip` vocabulary, a document
+pointing into a sibling namespace, a term relation into another ontology.
+On another install that id names nothing, or the wrong thing, and nothing in
+the archive said which entity was meant.
+
+- A backup now writes `referents.jsonl` at the archive root: the Registry
+  entry of every entity the archived rows reference but the archive does not
+  carry, with its primary key and synonyms. Those are the entity's identity
+  in a form another install can resolve, for example `{ns: wip, type: term,
+  terminology: _TIME_UNITS, value: seconds}`, or a document's
+  `{@template: …, <identity field>: …}` synonym.
+- `Manifest.referents` counts the rows. `0` means the archive references
+  nothing outside itself. An archive from before this change has no key and
+  reads as `None`, so a restore can tell "nothing external" from "not
+  recorded".
+- Additive: older readers ignore the file and the key, and the archive
+  format stays 3.1.
+- Restores do not use the table yet. Repairing out-of-archive references on
+  a fresh or merge restore from it is the next step of the same work.
+
+**Action:** none. Backups taken from now on carry the table. Apps that
+vendor `wip-archive` pick up 0.4.0 on their next scaffold refresh.
+
 ### Platform-maintained term closure in reporting
 
 Each namespace schema gains a `term_closure` table: one row per

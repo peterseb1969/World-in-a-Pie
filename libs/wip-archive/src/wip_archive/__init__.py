@@ -21,6 +21,7 @@ from .model import (
     TemplateReport,
 )
 from .models import Manifest
+from .referents import ReferentCollector, referenced_ids
 from .remap import IDRemapper
 
 __all__ = [
@@ -37,5 +38,7 @@ __all__ = [
     "ManifestParseError",
     "MissingManifestError",
     "NotAnArchiveError",
+    "ReferentCollector",
     "TemplateReport",
+    "referenced_ids",
 ]

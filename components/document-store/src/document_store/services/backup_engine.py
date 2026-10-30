@@ -33,6 +33,7 @@ from wip_archive.models import (
     NamespaceEntry,
     ProgressEvent,
 )
+from wip_archive.referents import ReferentCollector
 from wip_archive.remap import IDRemapper
 
 from wip_auth.composite_key import compute_composite_key_hash
@@ -160,6 +161,9 @@ EXPORT_SORT_ORDER: dict[str, list[tuple[str, int]]] = {
 # (`composite_key_for("documents", ...)`): the planner keeps one such row per
 # document and streams the rest (CASE-959).
 _DOCUMENT_KEY_FIELDS = ("document_id", "template_id", "identity_hash", "version")
+
+# Ids per $in when reading the out-of-archive referents' Registry entries.
+_REFERENT_LOOKUP_BATCH = 1000
 
 
 class _StreamedDocuments:
@@ -310,6 +314,7 @@ class DirectBackupEngine:
         total_entities = sum(sum(c.values()) for c in per_ns_counts.values())
 
         writer = ArchiveWriter(archive_path, tmp_dir=tmp_dir)
+        referents = ReferentCollector()
         processed = 0
 
         try:
@@ -338,6 +343,7 @@ class DirectBackupEngine:
                     async for doc in cursor:
                         doc.pop("_id", None)
                         writer.add_entity(entity_type, doc, namespace=ns)
+                        referents.add(entity_type, doc)
                         count += 1
                         processed += 1
                         if count % 5000 == 0:
@@ -355,6 +361,15 @@ class DirectBackupEngine:
                 # archive's flat blobs/ dir never collides across namespaces)
                 if include_files and self._storage:
                     await self._backup_blobs(writer, ns, archive_path, processed, total_entities)
+
+            self._emit(
+                "phase_referents",
+                "Recording referenced entities the archive does not carry",
+                percent=90,
+            )
+            referent_rows = await self._read_referents(referents.external_ids())
+            writer.write_referents_file(referent_rows)
+            referent_count = len(referent_rows)
 
             # Build manifest: one entry per namespace + aggregate counts
             ns_entries: list[NamespaceEntry] = []
@@ -389,6 +404,7 @@ class DirectBackupEngine:
                 include_files=include_files,
                 include_all_versions=not latest_only,
                 counts=EntityCounts(**agg),
+                referents=referent_count,
             )
 
             self._emit("phase_finalize", "Writing archive", percent=95)
@@ -469,6 +485,25 @@ class DirectBackupEngine:
                 logger.warning("Failed to download blob for file %s", file_id, exc_info=True)
 
         logger.info("Backed up %d blobs for namespace %s", count, namespace)
+
+    async def _read_referents(self, entry_ids: list[str]) -> list[dict[str, Any]]:
+        """The Registry entries of referenced entities the archive does not
+        carry, in entry_id order (see wip_archive.referents).
+
+        A candidate with no entry is dropped: either it was a value rather
+        than an id, or its target is already gone on this install, and in
+        neither case is there an identity to record.
+        """
+        db_name, coll_name = COLLECTION_MAP["registry_entries"]
+        collection = self._mongo[db_name][coll_name]
+        rows: list[dict[str, Any]] = []
+        for start in range(0, len(entry_ids), _REFERENT_LOOKUP_BATCH):
+            chunk = entry_ids[start : start + _REFERENT_LOOKUP_BATCH]
+            cursor = collection.find(
+                {"entry_id": {"$in": chunk}}, {"_id": 0}
+            ).sort(EXPORT_SORT_ORDER["registry_entries"])
+            rows.extend([row async for row in cursor])
+        return rows
 
     async def _read_provenance(self, namespace: str) -> list[dict[str, Any]] | None:
         """The namespace's restore history, oldest first, for the manifest.
