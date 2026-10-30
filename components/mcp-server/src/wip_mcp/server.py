@@ -4865,6 +4865,10 @@ async def check_reporting_parity(
       the batch sync), check_failed (the check itself could not run; see
       error). views lists each registered view with present=false when it
       is gone — re-register it. ok is true only when all of these pass.
+      Reporting-sync also runs this check by itself on an interval and
+      repairs gaps it sees twice in a row; GET /api/reporting-sync/
+      parity/status shows its last pass and repairs, so a gap may already
+      be healing.
 
     Args:
         namespace: Namespace to verify.

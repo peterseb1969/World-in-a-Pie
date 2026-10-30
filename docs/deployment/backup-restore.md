@@ -256,6 +256,39 @@ code (`terms_mismatch`, `term_relations_mismatch`, `term_names_missing`,
 passes, so a namespace whose terms are back but whose relations or closure
 are empty no longer reads as verified.
 
+## The standing check: reporting repairs itself
+
+The restore checks parity once, within a time limit. A gap that outlives that
+window, or appears later (a missed event, views lost in a reporting rebuild),
+is caught by reporting-sync itself. Every 300 seconds it runs the parity check
+over every active namespace, and repairs what it finds with the narrowest sync
+that closes the gap:
+
+| Gap | Repair |
+|---|---|
+| a template's table missing or short | that template's batch sync |
+| `terms_mismatch`, `term_names_missing` | the namespace's term sync |
+| `term_relations_mismatch` | the namespace's term-relation sync (ends with a closure rebuild) |
+| `term_closure_stale` | a closure rebuild |
+| a registered view missing | the namespace's registered views re-applied |
+
+- A gap is repaired only when two consecutive passes see it, so the lag of
+  normal event sync is never mistaken for one.
+- A namespace with a batch sync running is skipped for that pass; the
+  running sync owns it.
+- Each gap gets at most 3 repairs. One that persists past them is logged once
+  at error level (`not healed after 3 repair(s)`) and left alone.
+- Some gaps are never repaired automatically: a legacy pre-split table,
+  old-shape bookkeeping tables, a check that could not run. They are logged
+  once at error level as needing an operator.
+
+`GET /api/reporting-sync/parity/status` (admin or service key) shows the last
+pass per namespace (its gaps, the repairs made per gap, `not_healing`) and the
+recent repairs. The interval and the repair limit are the service's
+`PARITY_CHECK_INTERVAL_SECONDS` (0 turns the check off) and
+`PARITY_REPAIR_ATTEMPTS`; wip-deploy does not set them, so every install runs
+the defaults.
+
 Interpreting it: structural issues → tables missing/mis-shaped (was the
 restore's phase-1 skipped or the sync broken?); count mismatches → sync
 behind or blocked (check `get_sync_status`, re-run the batch sync);

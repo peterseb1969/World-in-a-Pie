@@ -60,6 +60,7 @@ from .models import (
     SyncStatus,
 )
 from .parity import NamespaceParityResult, check_namespace_parity
+from .parity_monitor import ParityMonitor, ParityMonitorStatus
 from .pg_roles import RoleSpec, is_privileged, provision_roles
 from .schema_manager import NamespaceDeletedError, SchemaManager, registry_namespace_status
 from .search_service import (
@@ -98,6 +99,8 @@ class AppState:
     initial_sync_task: asyncio.Task | None = None
     postgres_task: asyncio.Task | None = None
     batch_sync_service: BatchSyncService | None = None
+    parity_monitor: ParityMonitor | None = None
+    parity_task: asyncio.Task | None = None
     search_service: SearchService | None = None
     sync_status: SyncStatus = SyncStatus(
         running=False,
@@ -557,6 +560,11 @@ def _start_postgres_work(pool: asyncpg.Pool, read_pool: asyncpg.Pool) -> None:
     )
     logger.info("Initial metadata sync scheduled (background)")
 
+    # Standing parity check: finds reporting gaps after the fact (a restore
+    # that stopped waiting, a missed event, lost views) and repairs them.
+    state.parity_monitor = ParityMonitor(pool, state.batch_sync_service)
+    state.parity_task = asyncio.create_task(state.parity_monitor.run_forever())
+
     # The bus runs the sync worker as soon as NATS is connected and restarts
     # it whenever its consumer loop dies (e.g. the stream was missing, or a
     # NATS outage outlived the subscription).
@@ -627,6 +635,11 @@ async def lifespan(app: FastAPI):
         state.postgres_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await state.postgres_task
+
+    if state.parity_task and not state.parity_task.done():
+        state.parity_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await state.parity_task
 
     # Cancel initial metadata sync task (if still running)
     if state.initial_sync_task and not state.initial_sync_task.done():
@@ -862,6 +875,26 @@ async def reporting_parity(
     return await check_namespace_parity(
         state.postgres_pool, namespace, include_counts=include_counts
     )
+
+
+@router.get("/parity/status", dependencies=[_PRIVILEGED], response_model=ParityMonitorStatus)
+async def reporting_parity_status() -> ParityMonitorStatus:
+    """The standing parity check: its last pass per namespace and its
+    recent repairs.
+
+    Every PARITY_CHECK_INTERVAL_SECONDS (0 turns it off) the service runs
+    the parity check over every active namespace. A gap seen on two
+    consecutive passes is repaired with the narrowest sync that closes it —
+    a template's batch sync, the term or term-relation sync, a closure
+    rebuild, re-applying registered views — at most PARITY_REPAIR_ATTEMPTS
+    times. A namespace with an active batch job is skipped for that pass.
+    ``not_healing`` lists gaps that outlived their repairs or have no
+    automatic repair (a legacy table, old-shape bookkeeping, a check that
+    could not run); those are also logged once at error level.
+    """
+    if not state.parity_monitor:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+    return state.parity_monitor.status()
 
 
 # =============================================================================

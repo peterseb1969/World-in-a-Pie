@@ -633,7 +633,7 @@ Both sides now count live documents: documents whose latest version is active
 (the `latest_only=true` count), against reporting rows that are not `deleted`.
 `all_versions` templates are still not compared.
 
-### Reporting parity covers term tables and registered views; batch sync restores term relations
+### Reporting parity covers term tables and registered views, and repairs gaps by itself
 
 The parity check only looked at document tables. A namespace whose
 `term_relations` and `term_closure` were empty after a restore, while its
@@ -650,6 +650,17 @@ terms were back, reported `ok: true`. Two changes:
   definitions companion synced terminologies and terms but not relations,
   which is how a restore left `term_relations` and `term_closure` empty. It
   now syncs relations after the terms, ending with a closure rebuild.
+
+**Reporting-sync now checks parity on its own and repairs gaps.** Every 300
+seconds it runs the check over every active namespace. A gap seen on two
+consecutive passes is repaired with the narrowest sync that closes it: the
+template's batch sync, the term or term-relation sync, a closure rebuild, or
+re-applying registered views. Each gap gets at most 3 repairs, and a
+namespace with a batch sync running is skipped. A gap that does not heal, or
+that has no safe repair (a legacy table, old-shape bookkeeping), is logged
+once at error level. `GET /api/reporting-sync/parity/status` (admin or
+service key) shows the last pass and the recent repairs. To turn it off, set
+`PARITY_CHECK_INTERVAL_SECONDS=0` in reporting-sync's environment.
 
 **Action:** a script that treats parity `ok` as its pass condition may now
 see `false` on a namespace that passed before. Read `derived_tables` and

@@ -53,7 +53,16 @@ class Settings(BaseSettings):
         default="http://localhost:8002", alias="DEF_STORE_URL"
     )
 
+    # Registry API (the namespace list the standing parity check walks)
+    registry_url: str = Field(default="http://localhost:8001", alias="REGISTRY_URL")
+
     api_key: str = Field(default="dev_master_key_for_testing", alias="API_KEY")
+
+    # Standing parity check: seconds between passes over every namespace
+    # (0 turns it off), and how many repairs one gap gets before it is
+    # reported as not healing.
+    parity_check_interval_seconds: int = Field(default=300, alias="PARITY_CHECK_INTERVAL_SECONDS")
+    parity_repair_attempts: int = Field(default=3, alias="PARITY_REPAIR_ATTEMPTS")
 
     # Sync configuration
     batch_size: int = Field(default=100, alias="BATCH_SIZE")

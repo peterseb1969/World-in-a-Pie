@@ -51,6 +51,7 @@ ROUTES = [
     ("GET", f"{P}/status", "authenticated", None),
     ("GET", f"{P}/health/events", "privileged", None),
     ("GET", f"{P}/parity", "ns_read", f"{P}/parity?namespace={{ns}}"),
+    ("GET", f"{P}/parity/status", "privileged", None),
     ("GET", f"{P}/metrics", "privileged", None),
     ("GET", f"{P}/metrics/consumer", "privileged", None),
     ("GET", f"{P}/alerts", "privileged", None),
