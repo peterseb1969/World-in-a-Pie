@@ -1024,6 +1024,21 @@ Entity types omitted from `id_config` automatically default to UUID7. The availa
 | `pattern` | Regex-validated external ID | (matches provided pattern) |
 | `any` | Accept any external ID | (no validation) |
 
+**A `prefixed` prefix names one ID sequence on the install.** Every `entry_id`
+is unique across the whole Registry, so a prefix may be used by only one
+(namespace, entity type). A namespace write (create, upsert, import) is refused
+before anything is stored when a prefix:
+
+- is already used by another namespace, or by another entity type of the same
+  namespace → `409`, naming the holder;
+- is empty → `422`;
+- ends in a digit → `422`. IDs are prefix + digits, so `DOC-00` and `DOC-` would
+  both mint `DOC-000010`; with this rule, exact uniqueness is enough.
+
+Re-sending a namespace's stored `id_config` unchanged is never refused, so
+configs written before the rule keep working; the Registry logs any it finds
+in conflict at startup.
+
 ### Registry Entry
 
 A registry entry stores a canonical ID with its composite key and optional synonyms.

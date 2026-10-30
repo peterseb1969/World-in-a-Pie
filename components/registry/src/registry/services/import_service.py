@@ -16,6 +16,7 @@ from typing import Any, Literal
 import httpx
 
 from ..models.namespace import Namespace
+from .id_prefixes import claim_for_write
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,14 @@ class ImportService:
             # the imported values instead of creating a new row. This preserves
             # the unique-prefix invariant while honoring the operator's intent
             # to overwrite namespace contents.
+            # The imported id_config passes the same prefix rule as every other
+            # namespace write; importing under a new name on the install that
+            # still holds the source would otherwise mint the source's IDs.
+            imported_id_config = manifest.get("id_config", {})
             if mode == "replace" and existing_ns:
+                id_prefixes = await claim_for_write(
+                    prefix, imported_id_config, existing_ns.id_config
+                )
                 existing_ns.description = manifest.get(
                     "description", f"Imported from {source_prefix}"
                 )
@@ -105,18 +113,22 @@ class ImportService:
                 existing_ns.allowed_external_refs = manifest.get(
                     "allowed_external_refs", []
                 )
-                existing_ns.id_config = manifest.get("id_config", {})
+                existing_ns.id_config = imported_id_config
+                if id_prefixes is not None:
+                    existing_ns.id_prefixes = id_prefixes
                 existing_ns.status = "active"
                 existing_ns.updated_at = datetime.now(UTC)
                 await existing_ns.save()
                 namespace = existing_ns
             elif not existing_ns:
+                id_prefixes = await claim_for_write(prefix, imported_id_config)
                 namespace = Namespace(
                     prefix=prefix,
                     description=manifest.get("description", f"Imported from {source_prefix}"),
                     isolation_mode=manifest.get("isolation_mode", "open"),
                     allowed_external_refs=manifest.get("allowed_external_refs", []),
-                    id_config=manifest.get("id_config", {}),
+                    id_config=imported_id_config,
+                    id_prefixes=id_prefixes or [],
                     created_by=imported_by,
                 )
                 await namespace.create()

@@ -14,6 +14,10 @@ from pymongo import IndexModel
 
 from .id_algorithm import DEFAULT_ID_CONFIG, IdAlgorithmConfig
 
+# The unique index that makes a `prefixed` prefix name one ID sequence
+# install-wide (see services/id_prefixes.py).
+ID_PREFIXES_INDEX = "id_prefixes_unique_idx"
+
 
 class Namespace(Document):
     """
@@ -43,6 +47,15 @@ class Namespace(Document):
     id_config: dict[str, Any] = Field(
         default_factory=dict,
         description="Per-entity-type ID algorithm config. Keys: terminologies, terms, templates, documents, files"
+    )
+    id_prefixes: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Derived from id_config: the prefixes this namespace's 'prefixed' "
+            "entity types mint with. Unique across namespaces, so two "
+            "namespaces cannot mint the same prefixed IDs. Written by the "
+            "namespace write paths, never by callers."
+        ),
     )
     deletion_mode: Literal["retain", "full"] = Field(
         default="retain",
@@ -92,4 +105,14 @@ class Namespace(Document):
         indexes: ClassVar[list[IndexModel]] = [
             IndexModel([("prefix", 1)], unique=True, name="prefix_unique_idx"),
             IndexModel([("status", 1)], name="status_idx"),
+            # Multikey: unique across namespaces, not within one (a namespace
+            # whose entity types share a prefix is refused before the write).
+            # Only string elements are indexed, so the empty default and
+            # pre-existing documents without the field never conflict.
+            IndexModel(
+                [("id_prefixes", 1)],
+                unique=True,
+                name=ID_PREFIXES_INDEX,
+                partialFilterExpression={"id_prefixes": {"$type": "string"}},
+            ),
         ]

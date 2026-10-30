@@ -116,6 +116,15 @@ async def lifespan(app: FastAPI):
     from .api.namespace_deletion import get_deletion_service
     get_deletion_service().start_recovery()
 
+    # Store each namespace's claimed `prefixed` ID prefixes and report the
+    # ones it cannot claim (a prefix two namespaces already share) — configs
+    # written before the uniqueness rule are reported, never rewritten.
+    from .services.id_prefixes import backfill_id_prefixes
+    try:
+        await backfill_id_prefixes()
+    except Exception as e:
+        print(f"WARNING: Failed to check id_config prefixes: {e}")
+
     # Resolve stale pending composite-key claims (two-phase protocol):
     # pending older than the grace window are confirmed when their entry
     # backs them (the request died between insert and flip) or deleted when

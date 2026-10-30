@@ -7,6 +7,33 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A `prefixed` ID prefix must be unique on the install
+
+The Registry minted `prefixed` IDs from a counter per (namespace, entity type,
+prefix), while every `entry_id` must be unique install-wide. Two namespaces
+using one prefix minted the same IDs, and the second one's writes failed
+intermittently with a raw MongoDB duplicate-key error.
+
+Every namespace write (`POST /api/registry/namespaces`, `PUT …/{prefix}`,
+`POST …/import`) now refuses, before storing anything, an `id_config` whose
+`prefixed` prefix:
+- another namespace or another entity type of the same namespace already
+  uses → `409`, naming the holder;
+- is empty, or ends in a digit (`DOC-00` and `DOC-` would both mint
+  `DOC-000010`) → `422`.
+
+Re-sending a namespace's stored `id_config` unchanged is never refused, so a
+bootstrap resume or a same-name restore keeps working. At startup the
+Registry records each namespace's prefixes and logs a warning for any two
+namespaces that already share one.
+**Action:** look for `id_config prefix conflict` in the Registry log after
+the upgrade; give one side of each reported pair another prefix. An import
+under a new name onto the install that still holds the source now needs its
+own prefix (it would have minted the source's IDs). Apps whose seed
+`namespaces.json` carries a prefixed `id_config` and runs on a dev and a
+deployed namespace of one install get a 409 at the second namespace — drop
+the literal prefix there.
+
 ### Upgrade by re-rendering the install, not by swapping image tags
 
 reporting-sync now serves every request through two PostgreSQL service roles

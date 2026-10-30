@@ -5,11 +5,14 @@ Each namespace has configurable ID algorithms per entity type.
 """
 
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from pymongo.errors import DuplicateKeyError
 
 from wip_auth import UserIdentity
 
@@ -25,9 +28,33 @@ from ..models.entry import RegistryEntry
 from ..models.id_algorithm import VALID_ENTITY_TYPES
 from ..models.namespace import Namespace
 from ..services.auth import require_admin_key, require_api_key
+from ..services.id_prefixes import (
+    IdPrefixError,
+    claim_for_write,
+    collision_error,
+    is_prefix_collision,
+)
 from .grants import _resolve_permission
 
 router = APIRouter()
+
+
+@contextmanager
+def _id_prefix_errors(namespace: str) -> Iterator[None]:
+    """Turn a refused id_config prefix into its HTTP error.
+
+    Covers the race too: a prefix claimed by another namespace between the
+    check and the write surfaces as a duplicate key on the id_prefixes index.
+    """
+    try:
+        yield
+    except IdPrefixError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+    except DuplicateKeyError as e:
+        if not is_prefix_collision(e):
+            raise
+        err = collision_error(namespace)
+        raise HTTPException(status_code=err.status_code, detail=err.detail) from e
 
 
 def namespace_to_response(ns: Namespace) -> NamespaceResponse:
@@ -186,16 +213,20 @@ async def create_namespace(
             detail=f"Namespace already exists: {request.prefix}"
         )
 
-    ns = Namespace(
-        prefix=request.prefix,
-        description=request.description,
-        isolation_mode=request.isolation_mode,
-        allowed_external_refs=request.allowed_external_refs,
-        id_config=request.id_config or {},
-        deletion_mode=request.deletion_mode,
-        created_by=request.created_by,
-    )
-    await ns.create()
+    id_config = request.id_config or {}
+    with _id_prefix_errors(request.prefix):
+        id_prefixes = await claim_for_write(request.prefix, id_config)
+        ns = Namespace(
+            prefix=request.prefix,
+            description=request.description,
+            isolation_mode=request.isolation_mode,
+            allowed_external_refs=request.allowed_external_refs,
+            id_config=id_config,
+            id_prefixes=id_prefixes or [],
+            deletion_mode=request.deletion_mode,
+            created_by=request.created_by,
+        )
+        await ns.create()
 
     return namespace_to_response(ns)
 
@@ -253,17 +284,30 @@ async def upsert_namespace(
 
     if ns is None:
         # Create path — use provided fields, defaults for the rest.
-        ns = Namespace(
-            prefix=prefix,
-            description=update_data.get("description", "") or "",
-            isolation_mode=update_data.get("isolation_mode") or "open",
-            allowed_external_refs=update_data.get("allowed_external_refs") or [],
-            id_config=update_data.get("id_config") or {},
-            deletion_mode=update_data.get("deletion_mode") or "retain",
-            created_by=actor,
-        )
-        await ns.create()
+        id_config = update_data.get("id_config") or {}
+        with _id_prefix_errors(prefix):
+            id_prefixes = await claim_for_write(prefix, id_config)
+            ns = Namespace(
+                prefix=prefix,
+                description=update_data.get("description", "") or "",
+                isolation_mode=update_data.get("isolation_mode") or "open",
+                allowed_external_refs=update_data.get("allowed_external_refs") or [],
+                id_config=id_config,
+                id_prefixes=id_prefixes or [],
+                deletion_mode=update_data.get("deletion_mode") or "retain",
+                created_by=actor,
+            )
+            await ns.create()
         return namespace_to_response(ns)
+
+    # A changed id_config must pass the prefix rule and claim its prefixes;
+    # re-sending the stored one (a resume, a same-name restore) never fails.
+    new_id_prefixes = None
+    if update_data.get("id_config") is not None:
+        with _id_prefix_errors(prefix):
+            new_id_prefixes = await claim_for_write(
+                prefix, update_data["id_config"], ns.id_config
+            )
 
     # Update path — only touch explicitly provided fields.
     # confirm_enable_deletion is a safety toggle, not a stored field —
@@ -273,10 +317,13 @@ async def upsert_namespace(
             continue
         if value is not None:
             setattr(ns, field, value)
+    if new_id_prefixes is not None:
+        ns.id_prefixes = new_id_prefixes
 
     ns.updated_at = datetime.now(UTC)
     ns.updated_by = actor
-    await ns.save()
+    with _id_prefix_errors(prefix):
+        await ns.save()
 
     return namespace_to_response(ns)
 
@@ -488,6 +535,8 @@ async def import_namespace(
             source_prefix=source_prefix if source_prefix != ns.prefix else None,
         )
 
+    except IdPrefixError as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:

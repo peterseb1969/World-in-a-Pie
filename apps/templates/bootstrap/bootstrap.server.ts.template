@@ -106,8 +106,9 @@
  *     the bootstrap before the first write. Omitted keys get the platform
  *     defaults: open, [], UUID7 everywhere, retain.
  *   - A prefixed id_config's prefix must be unique on the install: IDs share
- *     one space across all namespaces and entity types, so a second user of
- *     a prefix mints duplicates and its writes fail. The config is applied
+ *     one space across all namespaces and entity types, so the Registry
+ *     refuses (409) a second user of a prefix, and (422) an empty prefix or
+ *     one ending in a digit, when the namespace is written. The config is applied
  *     to every namespace this app bootstraps — a dev and a deployed
  *     namespace on one install must not share a literal prefix here.
  *   - The config is sent with the namespace upsert on every bootstrap run.
