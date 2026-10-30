@@ -7,6 +7,35 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Deleting a namespace that other namespaces reference needs `force`
+
+Namespace deletion's inbound-reference check looked at field names no
+service stores (`extends_template`, a field's `terminology_id`), so it never
+found a reference from another namespace, and a deletion never asked for
+`force`. Deleting a namespace silently broke the templates, documents and
+relations that depended on it.
+
+The dry run now reports, and a deletion without `force=true` refuses with
+400 on, any of these from another namespace:
+
+- `template_extends`: a template whose parent is here;
+- `terminology_reference`: a template field drawing on a terminology here
+  (`terminology_ref`, `array_terminology_ref`, `target_terminologies`);
+- `template_reference`: a template field or edge endpoint naming a template
+  here (`template_ref`, `array_template_ref`, `target_templates`,
+  `source_templates` / `target_templates` of an edge type);
+- `document_reference`: documents referencing documents here, one entry per
+  namespace and template with a count of document versions;
+- `term_relation`: term relations touching terms here, one entry per
+  namespace with a count.
+
+Synonym links stay low severity and do not require `force`.
+
+**Action:** a script or app that deletes namespaces may now get 400 where it
+used to succeed. Delete the referencing namespace first, or pass
+`force=true` once the dry run shows the breakage is intended.
+`@wip/client`'s `deleteNamespace` sends no `force`, so it gets the 400.
+
 ### A `prefixed` ID prefix must be unique on the install
 
 The Registry minted `prefixed` IDs from a counter per (namespace, entity type,

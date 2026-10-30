@@ -52,6 +52,26 @@ _FILE_STORAGE_STORES = ("file_storage", "minio")
 # document-store accepts at most this many keys per request.
 _STORAGE_DELETE_BATCH = 1000
 
+# Inbound references that leave another namespace's data dangling: its
+# template loses a parent, a field vocabulary or a reference target, its
+# documents point at documents that are gone, its relations at gone terms.
+# Any of these makes a deletion refuse without force. A synonym link is the
+# one low-severity kind: the external synonym stays valid on its own.
+_HIGH_SEVERITY_INBOUND = frozenset({
+    "template_extends",
+    "terminology_reference",
+    "template_reference",
+    "document_reference",
+    "term_relation",
+})
+
+# Ids per $in when matching other namespaces' rows against this one's terms.
+_INBOUND_TERM_BATCH = 1000
+
+# Template field slots, by what they point at.
+_FIELD_TERMINOLOGY_SLOTS = ("terminology_ref", "array_terminology_ref")
+_FIELD_TEMPLATE_SLOTS = ("template_ref", "array_template_ref")
+
 _SERVICE_KEY_VARS = (
     "WIP_AUTH_LEGACY_API_KEY",
     "MASTER_API_KEY",
@@ -98,6 +118,159 @@ def _registry_db_name() -> str:
     """Get the actual registry database name from Beanie config."""
     return Namespace.get_motor_collection().database.name
 
+
+async def _values_by_id(collection: Any, prefix: str, id_field: str) -> dict[str, str]:
+    """{id: value} for the namespace's entities in one collection."""
+    found: dict[str, str] = {}
+    async for row in collection.find({"namespace": prefix}, {id_field: 1, "value": 1}):
+        if row.get(id_field):
+            found[row[id_field]] = row.get("value") or row[id_field]
+    return found
+
+
+def _endpoint_id(entry: Any) -> str | None:
+    """An edge endpoint's id: the resolved half, or a legacy bare string."""
+    if isinstance(entry, dict):
+        entry = entry.get("resolved")
+    return entry if isinstance(entry, str) else None
+
+
+async def _inbound_from_templates(
+    templates: Any,
+    prefix: str,
+    our_templates: dict[str, str],
+    our_terminologies: dict[str, str],
+) -> list[InboundReference]:
+    """Templates of other namespaces pointing at templates or terminologies
+    here. Every version is checked (a document can pin any of them), and a
+    reference repeated across versions is reported once."""
+    tpl_ids, ty_ids = list(our_templates), list(our_terminologies)
+    clauses: list[dict[str, Any]] = []
+    if tpl_ids:
+        clauses += [{"extends": {"$in": tpl_ids}}]
+        clauses += [{f"fields.{s}": {"$in": tpl_ids}} for s in _FIELD_TEMPLATE_SLOTS]
+        clauses += [
+            {"fields.target_templates": {"$in": tpl_ids}},
+            {"source_templates.resolved": {"$in": tpl_ids}},
+            {"target_templates.resolved": {"$in": tpl_ids}},
+            {"source_templates": {"$in": tpl_ids}},
+            {"target_templates": {"$in": tpl_ids}},
+        ]
+    if ty_ids:
+        clauses += [{f"fields.{s}": {"$in": ty_ids}} for s in _FIELD_TERMINOLOGY_SLOTS]
+        clauses += [{"fields.target_terminologies": {"$in": ty_ids}}]
+
+    seen: dict[tuple[str, str, str, str], InboundReference] = {}
+
+    def note(kind: str, ns: str, source: str, target: str, impact: str) -> None:
+        seen.setdefault(
+            (kind, ns, source, target),
+            InboundReference(
+                type=kind, source_namespace=ns, source_entity=source,
+                target_entity=target, impact=impact,
+            ),
+        )
+
+    projection = {"namespace": 1, "value": 1, "extends": 1, "fields": 1,
+                  "source_templates": 1, "target_templates": 1}
+    async for t in templates.find(
+        {"namespace": {"$ne": prefix}, "$or": clauses}, projection
+    ):
+        ns, value = t["namespace"], t.get("value", "?")
+        parent = t.get("extends")
+        if parent in our_templates:
+            note("template_extends", ns, f"{value} (template)",
+                 f"{our_templates[parent]} (template)",
+                 "Source template loses parent schema. Field inheritance broken.")
+        for field in t.get("fields") or []:
+            source = f"{value} (template, field: {field.get('name', '?')})"
+            terminology_ids = [field.get(s) for s in _FIELD_TERMINOLOGY_SLOTS]
+            terminology_ids += field.get("target_terminologies") or []
+            for tid in terminology_ids:
+                if tid in our_terminologies:
+                    note("terminology_reference", ns, source,
+                         f"{our_terminologies[tid]} (terminology)",
+                         "Term validation will fail for this field.")
+            template_ids = [field.get(s) for s in _FIELD_TEMPLATE_SLOTS]
+            template_ids += field.get("target_templates") or []
+            for tid in template_ids:
+                if tid in our_templates:
+                    note("template_reference", ns, source,
+                         f"{our_templates[tid]} (template)",
+                         "Validation of this field fails: its template is gone.")
+        for role in ("source_templates", "target_templates"):
+            for entry in t.get(role) or []:
+                tid = _endpoint_id(entry)
+                if tid in our_templates:
+                    note("template_reference", ns, f"{value} (edge type, {role})",
+                         f"{our_templates[tid]} (template)",
+                         "Edge endpoint declaration names a template that is gone.")
+    return list(seen.values())
+
+
+async def _inbound_from_documents(
+    documents: Any, templates: Any, prefix: str
+) -> list[InboundReference]:
+    """Documents of other namespaces referencing documents here, one report
+    per (namespace, template) with a count of document versions."""
+    pipeline = [
+        {"$match": {
+            "namespace": {"$ne": prefix},
+            "references.resolved.namespace": prefix,
+        }},
+        {"$group": {
+            "_id": {"namespace": "$namespace", "template_id": "$template_id"},
+            "count": {"$sum": 1},
+        }},
+    ]
+    refs: list[InboundReference] = []
+    async for group in documents.aggregate(pipeline):
+        ns = group["_id"]["namespace"]
+        template_id = group["_id"].get("template_id")
+        tpl = await templates.find_one({"template_id": template_id}, {"value": 1})
+        label = (tpl or {}).get("value") or template_id or "?"
+        refs.append(InboundReference(
+            type="document_reference",
+            source_namespace=ns,
+            source_entity=f"{group['count']} document version(s) of {label}",
+            target_entity=f"documents in {prefix}",
+            impact="Reference fields point at documents that are gone.",
+        ))
+    return refs
+
+
+async def _inbound_from_term_relations(def_store: Any, prefix: str) -> list[InboundReference]:
+    """Term relations of other namespaces touching terms here, one report per
+    source namespace with a count."""
+    term_ids = [
+        row["term_id"]
+        async for row in def_store["terms"].find({"namespace": prefix}, {"term_id": 1})
+        if row.get("term_id")
+    ]
+    # By row id: a relation whose two terms fall in different batches is
+    # matched twice and must count once.
+    namespace_of: dict[Any, str] = {}
+    for start in range(0, len(term_ids), _INBOUND_TERM_BATCH):
+        chunk = term_ids[start : start + _INBOUND_TERM_BATCH]
+        async for row in def_store["term_relations"].find({
+            "namespace": {"$ne": prefix},
+            "$or": [{"source_term_id": {"$in": chunk}}, {"target_term_id": {"$in": chunk}}],
+        }, {"namespace": 1}):
+            namespace_of[row["_id"]] = row["namespace"]
+    counts: dict[str, int] = {}
+    for ns in namespace_of.values():
+        counts[ns] = counts.get(ns, 0) + 1
+    return [
+        InboundReference(
+            type="term_relation",
+            source_namespace=ns,
+            source_entity=f"{n} term relation(s)",
+            target_entity=f"terms in {prefix}",
+            impact="Relations point at terms that are gone; hierarchies break.",
+        )
+        for ns, n in sorted(counts.items())
+    ]
+
 # id_counters uses counter_key prefix, not a namespace field — handled separately
 
 
@@ -125,10 +298,7 @@ class NamespaceDeletionService:
         storage_keys = await self._get_storage_keys(prefix)
         inbound_refs = await self._check_inbound_references(prefix)
 
-        has_high_severity = any(
-            r.type in ("template_extends", "terminology_reference")
-            for r in inbound_refs
-        )
+        has_high_severity = any(r.type in _HIGH_SEVERITY_INBOUND for r in inbound_refs)
 
         return {
             "namespace": prefix,
@@ -170,10 +340,7 @@ class NamespaceDeletionService:
 
         # Check inbound references
         inbound_refs = await self._check_inbound_references(prefix)
-        high_severity = [
-            r for r in inbound_refs
-            if r.type in ("template_extends", "terminology_reference")
-        ]
+        high_severity = [r for r in inbound_refs if r.type in _HIGH_SEVERITY_INBOUND]
         if high_severity and not force:
             raise ValueError(
                 f"Namespace '{prefix}' has {len(high_severity)} inbound reference(s) "
@@ -324,61 +491,43 @@ class NamespaceDeletionService:
         return keys
 
     async def _check_inbound_references(self, prefix: str) -> list[InboundReference]:
-        """Find references from other namespaces into this one."""
+        """Find references from other namespaces into this one.
+
+        References are stored as canonical ids (a template's ``extends`` and
+        field references, edge endpoints' resolved half, a relation's term
+        ids), so each check matches other namespaces' rows against the ids
+        this namespace owns. A document reference also records its target's
+        namespace, which is matched directly. Term usage by documents needs
+        no document scan: a term field draws from the vocabulary its
+        template field names, so the template check covers it.
+        """
         refs: list[InboundReference] = []
         motor_client = Namespace.get_motor_collection().database.client
-
-        # 1. Template extends: templates in OTHER namespaces that extend
-        #    a template in THIS namespace
         templates_coll = motor_client["wip_template_store"]["templates"]
-        async for t in templates_coll.find({
-            "namespace": {"$ne": prefix},
-            "extends_template": {"$exists": True, "$ne": None},
-        }, {"namespace": 1, "value": 1, "extends_template": 1}):
-            # Look up the parent template to see if it's in our namespace
-            parent_value = t.get("extends_template")
-            if parent_value:
-                parent = await templates_coll.find_one({
-                    "value": parent_value,
-                    "namespace": prefix,
-                })
-                if parent:
-                    refs.append(InboundReference(
-                        type="template_extends",
-                        source_namespace=t["namespace"],
-                        source_entity=f"{t['value']} (template)",
-                        target_entity=f"{parent_value} (template)",
-                        impact="Source template loses parent schema. Field inheritance broken.",
-                    ))
 
-        # 2. Terminology references: templates in OTHER namespaces with fields
-        #    whose terminology_id references a terminology in THIS namespace
-        terminologies_coll = motor_client["wip_def_store"]["terminologies"]
-        our_terminologies = {}
-        async for term in terminologies_coll.find(
-            {"namespace": prefix},
-            {"terminology_id": 1, "value": 1},
-        ):
-            our_terminologies[term["terminology_id"]] = term.get("value", term["terminology_id"])
+        our_templates = await _values_by_id(templates_coll, prefix, "template_id")
+        our_terminologies = await _values_by_id(
+            motor_client["wip_def_store"]["terminologies"], prefix, "terminology_id"
+        )
 
-        if our_terminologies:
-            tid_set = set(our_terminologies.keys())
-            async for t in templates_coll.find({
-                "namespace": {"$ne": prefix},
-                "fields": {"$exists": True},
-            }, {"namespace": 1, "value": 1, "fields": 1}):
-                for field in t.get("fields", []):
-                    tid = field.get("terminology_id")
-                    if tid and tid in tid_set:
-                        refs.append(InboundReference(
-                            type="terminology_reference",
-                            source_namespace=t["namespace"],
-                            source_entity=f"{t['value']} (template, field: {field.get('name', '?')})",
-                            target_entity=f"{our_terminologies[tid]} (terminology)",
-                            impact="Term validation will fail for this field.",
-                        ))
+        # 1. Templates in other namespaces: parent, field vocabularies, field
+        #    and edge-endpoint template references.
+        if our_templates or our_terminologies:
+            refs.extend(await _inbound_from_templates(
+                templates_coll, prefix, our_templates, our_terminologies
+            ))
 
-        # 3. Synonym links (low severity)
+        # 2. Documents in other namespaces referencing documents here.
+        refs.extend(await _inbound_from_documents(
+            motor_client["wip_document_store"]["documents"], templates_coll, prefix
+        ))
+
+        # 3. Term relations in other namespaces touching terms here.
+        refs.extend(await _inbound_from_term_relations(
+            motor_client["wip_def_store"], prefix
+        ))
+
+        # 4. Synonym links (low severity)
         async for entry in RegistryEntry.find({
             "namespace": {"$ne": prefix},
             "synonyms.namespace": prefix,
