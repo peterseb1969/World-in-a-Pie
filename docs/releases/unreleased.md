@@ -1330,6 +1330,37 @@ it.
 **Action:** none; a validation result may now report errors it missed
 before. Apps using the typed client re-vendor `wip-client-0.67.0.tgz`.
 
+### Fresh and merge restores point references outside the archive at this install's entities; `wip-archive` 0.5.0
+
+A fresh or merge restore rewrote references to the entities it carried, and
+passed every other reference through with the source install's id. On
+another install that id named nothing or the wrong thing. On the same
+install, a reference to a same-namespace document the archive did not carry
+came out naming the new namespace beside the old id.
+
+- The restore now reads the archive's referent table (`referents.jsonl`)
+  and asks this install's Registry which entity each referent is, through
+  its own keys (primary key, then synonyms; retired entities included,
+  reserved ones not). The old id is never used to look it up, since a
+  prefixed id can name a different entity elsewhere. One entity found: every
+  reference to the referent is rewritten to it by the same passes that
+  rewrite archived entities. A dry run does the same lookup, so its preview
+  is exact.
+- A referenced document takes its namespace, template id and identity hash
+  from the document on this install, not from the archive's maps.
+- None or several found: the reference keeps its archived id, and the
+  restore job carries a warning naming the referent's key (the first 20,
+  then a count). The namespace validation job then reports each affected
+  reference.
+- The job result gains `referents`: `{recorded, total, resolved,
+  unresolved}`, per target for a merge. An archive taken before the table
+  existed reports `{recorded: false}`. Its references keep their source ids
+  as before, and the restore says so as a progress message, not a warning.
+- `wip-archive` 0.5.0: `IDRemapper.add_external_document_mapping`.
+
+**Action:** none. Restores of archives taken with the referent table repair
+these references automatically; take a new backup to get the table.
+
 ### Backups record what they reference but do not carry; `wip-archive` 0.4.0
 
 An archived reference to an entity outside the archive stored only that
@@ -1350,8 +1381,8 @@ the archive said which entity was meant.
   recorded".
 - Additive: older readers ignore the file and the key, and the archive
   format stays 3.1.
-- Restores do not use the table yet. Repairing out-of-archive references on
-  a fresh or merge restore from it is the next step of the same work.
+- Fresh and merge restores use the table to repair those references; see
+  the `wip-archive` 0.5.0 section.
 
 **Action:** none. Backups taken from now on carry the table. Apps that
 vendor `wip-archive` pick up 0.4.0 on their next scaffold refresh.

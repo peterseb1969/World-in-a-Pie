@@ -28,6 +28,15 @@ class IDRemapper:
         self.document_map: dict[str, str] = {}
         self.file_map: dict[str, str] = {}
         self.namespace_map: dict[str, str] = dict(namespace_map or {})
+        # Documents the archive does not carry, resolved on the target from
+        # the archive's referent table: new id -> the target document's own
+        # snapshot fields (namespace, template_id, identity_hash). A
+        # reference to one takes THOSE, never the archive's maps: the
+        # referent was not re-minted with the archive, so mapping its
+        # namespace or template would describe a document that does not
+        # exist (a new namespace or a re-minted template beside the id of a
+        # document living elsewhere).
+        self.external_documents: dict[str, dict[str, str]] = {}
 
     @property
     def total_mappings(self) -> int:
@@ -53,6 +62,19 @@ class IDRemapper:
 
     def add_file_mapping(self, old_id: str, new_id: str) -> None:
         self.file_map[old_id] = new_id
+
+    def add_external_document_mapping(
+        self, old_id: str, new_id: str, snapshot: dict[str, str]
+    ) -> None:
+        """Map a document the archive references but does not carry to the
+        target's document resolved from its Registry identity.
+
+        ``snapshot`` holds the target document's own ``namespace``,
+        ``template_id`` and ``identity_hash``; a reference to it is given
+        those values.
+        """
+        self.document_map[old_id] = new_id
+        self.external_documents[new_id] = dict(snapshot)
 
     def remap_template(self, template: dict[str, Any]) -> dict[str, Any]:
         """Remap all references in a template.
@@ -293,14 +315,18 @@ class IDRemapper:
                 resolved["document_id"] = self.document_map.get(
                     resolved["document_id"], resolved["document_id"]
                 )
-            if resolved.get("template_id"):
-                resolved["template_id"] = self.template_map.get(
-                    resolved["template_id"], resolved["template_id"]
-                )
-            if resolved.get("namespace"):
-                resolved["namespace"] = self.namespace_map.get(
-                    resolved["namespace"], resolved["namespace"]
-                )
+            external = self.external_documents.get(resolved.get("document_id") or "")
+            if external is not None:
+                resolved.update(external)
+            else:
+                if resolved.get("template_id"):
+                    resolved["template_id"] = self.template_map.get(
+                        resolved["template_id"], resolved["template_id"]
+                    )
+                if resolved.get("namespace"):
+                    resolved["namespace"] = self.namespace_map.get(
+                        resolved["namespace"], resolved["namespace"]
+                    )
             # identity_hash passes through unchanged
             result["resolved"] = resolved
         return result

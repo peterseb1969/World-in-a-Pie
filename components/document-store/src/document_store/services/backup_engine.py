@@ -53,6 +53,7 @@ from .merge_definitions import (
     DefinitionsPlanner,
 )
 from .merge_plan import MERGE_ENTITY_SPECS, Clash, EntityPlan, MergePlanner
+from .referent_resolution import resolve_referents
 from .remap_restore import (
     REMAP_ENTITY_ORDER,
     RemapPlan,
@@ -164,6 +165,10 @@ _DOCUMENT_KEY_FIELDS = ("document_id", "template_id", "identity_hash", "version"
 
 # Ids per $in when reading the out-of-archive referents' Registry entries.
 _REFERENT_LOOKUP_BATCH = 1000
+
+# Unresolved referents named individually on a restore job; the rest are
+# counted in one more warning.
+_REFERENT_WARNING_CAP = 20
 
 
 class _StreamedDocuments:
@@ -1076,6 +1081,9 @@ class DirectRestoreEngine:
             # (resolved.namespace) follow their entities — after a fresh
             # restore no data may point at the original namespaces.
             remapper = IDRemapper(namespace_map=dict(mapping))
+            referents = await self._map_external_referents(
+                reader, manifest, remapper, ", ".join(targets)
+            )
             provision_for = (
                 self._dry_run_provisioner() if dry_run
                 else self._registry_provisioner
@@ -1095,6 +1103,7 @@ class DirectRestoreEngine:
                 "source_namespace": next(iter(mapping)),
                 "target_namespace": mapping[next(iter(mapping))],
                 "planned": {src: plans[src].summary() for src in mapping},
+                "referents": referents,
             }
 
             if dry_run:
@@ -1345,6 +1354,152 @@ class DirectRestoreEngine:
             return ids
 
         return lambda _target: provision
+
+    async def _map_external_referents(
+        self,
+        reader: ArchiveReader,
+        manifest: Manifest,
+        remapper: IDRemapper,
+        label: str,
+    ) -> dict[str, Any]:
+        """Point references to entities outside the archive at this install's
+        entities (see referent_resolution).
+
+        Feeds the remapper before any row is rewritten, so these references
+        are rewritten by the same passes as references to archived entities.
+        An id the remapper already maps (an archived entity, or a merge
+        definition matched by content) is left to that mapping. Returns the
+        summary for the job result.
+        """
+        if manifest.referents is None:
+            # A progress message, not a job warning: most restores of an
+            # older archive need no repair (a same-install merge, a namespace
+            # with no outside references), and a warning on every one of them
+            # would teach operators to ignore restore warnings. The result
+            # records it, and validation reports any reference that fails.
+            self._emit(
+                "phase_referents",
+                f"[{label}] this archive predates the referent table: references "
+                "to entities it does not carry keep their source ids. The "
+                "namespace validation job reports any that do not hold here.",
+            )
+            return {"recorded": False}
+        rows = list(reader.read_referents())
+        if not rows:
+            return {"recorded": True, "total": 0, "resolved": 0, "unresolved": 0}
+
+        resolution = await resolve_referents(rows, self._resolve_on_registry)
+        maps = {
+            "terminologies": remapper.terminology_map,
+            "terms": remapper.term_map,
+            "templates": remapper.template_map,
+            "documents": remapper.document_map,
+            "files": remapper.file_map,
+        }
+        # A reference to a document snapshots that document's namespace,
+        # template and identity hash, so the target document's own values are
+        # read here. One the Registry knows but the store does not hold is
+        # not a document this restore can point at.
+        snapshots = await self._document_snapshots(
+            list(resolution.mapping.get("documents", {}).values())
+        )
+        problems = [u.describe() for u in resolution.unresolved]
+        mapped = 0
+        for entity_type, mapping in resolution.mapping.items():
+            existing = maps.get(entity_type)
+            if existing is None:
+                continue
+            for old_id, new_id in mapping.items():
+                if old_id in existing:
+                    continue
+                if entity_type == "documents":
+                    snapshot = snapshots.get(new_id)
+                    if snapshot is None:
+                        problems.append(
+                            f"documents {old_id} resolves to {new_id}, which "
+                            "this install's document store does not hold"
+                        )
+                        continue
+                    remapper.add_external_document_mapping(old_id, new_id, snapshot)
+                else:
+                    existing[old_id] = new_id
+                mapped += 1
+
+        self._emit(
+            "phase_referents",
+            f"[{label}] {mapped} of {len(rows)} referenced entit(ies) outside "
+            "the archive identified on this install",
+        )
+        for problem in problems[:_REFERENT_WARNING_CAP]:
+            self._emit(
+                "warning",
+                f"[{label}] referenced {problem}; references to it keep the "
+                "archived id",
+            )
+        hidden = len(problems) - _REFERENT_WARNING_CAP
+        if hidden > 0:
+            self._emit(
+                "warning",
+                f"[{label}] … and {hidden} more referenced entit(ies) not "
+                "identified on this install",
+            )
+        return {
+            "recorded": True,
+            "total": len(rows),
+            "resolved": mapped,
+            "unresolved": len(problems),
+        }
+
+    async def _document_snapshots(
+        self, document_ids: list[str]
+    ) -> dict[str, dict[str, str]]:
+        """{document_id: {namespace, template_id, identity_hash}} of the
+        target's documents, from each one's latest version."""
+        if not document_ids:
+            return {}
+        db_name, coll_name = COLLECTION_MAP["documents"]
+        cursor = self._mongo[db_name][coll_name].find(
+            {"document_id": {"$in": document_ids}},
+            {"_id": 0, "document_id": 1, "namespace": 1, "template_id": 1,
+             "identity_hash": 1, "version": 1},
+        ).sort([("document_id", 1), ("version", -1)])
+        snapshots: dict[str, dict[str, str]] = {}
+        async for row in cursor:
+            snapshots.setdefault(row["document_id"], {
+                key: row[key]
+                for key in ("namespace", "template_id", "identity_hash")
+                if row.get(key) is not None
+            })
+        return snapshots
+
+    async def _resolve_on_registry(
+        self, items: list[dict[str, Any]]
+    ) -> list[str | None]:
+        """POST resolve items to the Registry; per item, the entry_id found.
+
+        A read, so a dry run may call it: the preview then shows exactly
+        which referents the apply would map.
+        """
+        import httpx
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                f"{self._registry_url}/api/registry/entries/resolve",
+                json=items,
+                headers={
+                    "X-API-Key": self._registry_api_key,
+                    "Content-Type": "application/json",
+                },
+            )
+        if resp.status_code != 200:
+            raise RestoreEngineError(
+                f"Could not resolve {len(items)} referent key(s) on the "
+                f"Registry: {resp.status_code} — {resp.text}"
+            )
+        return [
+            r.get("entry_id") if r.get("status") == "found" else None
+            for r in resp.json()["results"]
+        ]
 
     async def _repair_endpoint_declarations(
         self,
@@ -2085,6 +2240,9 @@ class DirectRestoreEngine:
                     remapper.add_term_mapping(old_id, new_id)
                 for old_id, new_id in definitions.mapping["templates"].items():
                     remapper.add_template_mapping(old_id, new_id)
+                referents = await self._map_external_referents(
+                    reader, manifest, remapper, tgt
+                )
 
                 # ---- Pass 2: everything else ---------------------------
                 planner = MergePlanner(self._mongo, COLLECTION_MAP)
@@ -2140,6 +2298,7 @@ class DirectRestoreEngine:
                     # remap result, which already carries source/target. For a
                     # same-namespace merge source_namespace == tgt.
                     "source_namespace": src,
+                    "referents": referents,
                     "definitions": definitions.summary(),
                     "incompatibilities": len(definitions.incompatibilities),
                     "target_wins": len(definitions.target_wins),

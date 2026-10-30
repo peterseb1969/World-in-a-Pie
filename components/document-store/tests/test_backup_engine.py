@@ -1649,3 +1649,119 @@ class TestEndpointDeclarationDoorRepair:
                 {"src": "tgt"}, {"src": plan}, self._remapper({})
             )
         assert "source_templates" not in entity
+
+
+class TestMapExternalReferents:
+    """A restore points references outside the archive at this install's
+    entities, using the archive's referent table."""
+
+    @staticmethod
+    def _archive(tmp_path, rows, *, referents):
+        from wip_archive.archive import ArchiveWriter
+
+        path = tmp_path / "a.zip"
+        writer = ArchiveWriter(path, default_namespace="src")
+        if rows:
+            writer.write_referents_file(rows)
+        writer.write(Manifest(namespace="src", referents=referents))
+        return path
+
+    @staticmethod
+    def _row(entry_id, entity_type, namespace):
+        return {
+            "entry_id": entry_id, "entity_type": entity_type, "namespace": namespace,
+            "primary_composite_key": {"ns": namespace, "value": entry_id}, "synonyms": [],
+        }
+
+    async def _map(self, tmp_path, rows, answers, *, referents=None, remapper=None,
+                   snapshots=None):
+        from wip_archive.archive import ArchiveReader
+        from wip_archive.remap import IDRemapper
+
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(MagicMock(), None, _collect_progress(events))
+        engine._resolve_on_registry = AsyncMock(side_effect=lambda items: [
+            answers.get(i["composite_key"]["value"]) for i in items
+        ])
+        engine._document_snapshots = AsyncMock(return_value=snapshots or {})
+        remapper = remapper or IDRemapper({"src": "dst"})
+        archive = self._archive(
+            tmp_path, rows, referents=len(rows) if referents is None else referents
+        )
+        with ArchiveReader(archive) as reader:
+            summary = await engine._map_external_referents(
+                reader, reader.read_manifest(), remapper, "dst"
+            )
+        return summary, remapper, [e.message for e in events if e.phase == "warning"]
+
+    @pytest.mark.asyncio
+    async def test_resolved_referents_feed_the_remapper(self, tmp_path):
+        rows = [
+            self._row("TY-SRC", "terminologies", "wip"),
+            self._row("DOC-SRC", "documents", "other"),
+        ]
+        live = {"namespace": "other", "template_id": "TPL-LIVE", "identity_hash": "h"}
+        summary, remapper, warnings = await self._map(
+            tmp_path, rows, {"TY-SRC": "TY-HERE", "DOC-SRC": "DOC-HERE"},
+            snapshots={"DOC-HERE": live},
+        )
+        assert remapper.terminology_map == {"TY-SRC": "TY-HERE"}
+        assert remapper.document_map == {"DOC-SRC": "DOC-HERE"}
+        # The reference will describe the document that exists here.
+        assert remapper.external_documents == {"DOC-HERE": live}
+        assert summary == {"recorded": True, "total": 2, "resolved": 2, "unresolved": 0}
+        assert warnings == []
+
+    @pytest.mark.asyncio
+    async def test_an_unresolved_referent_is_a_job_warning(self, tmp_path):
+        summary, remapper, warnings = await self._map(
+            tmp_path, [self._row("TY-SRC", "terminologies", "wip")], {}
+        )
+        assert remapper.terminology_map == {}
+        assert summary["unresolved"] == 1
+        (warning,) = warnings
+        assert "TY-SRC" in warning and "keep the archived id" in warning
+
+    @pytest.mark.asyncio
+    async def test_a_document_the_store_does_not_hold_is_not_pointed_at(self, tmp_path):
+        summary, remapper, warnings = await self._map(
+            tmp_path, [self._row("DOC-SRC", "documents", "other")],
+            {"DOC-SRC": "DOC-REGISTRY-ONLY"}, snapshots={},
+        )
+        assert remapper.document_map == {}
+        assert summary["resolved"] == 0 and summary["unresolved"] == 1
+        (warning,) = warnings
+        assert "does not hold" in warning
+
+    @pytest.mark.asyncio
+    async def test_an_id_the_restore_already_maps_is_left_alone(self, tmp_path):
+        from wip_archive.remap import IDRemapper
+
+        remapper = IDRemapper()
+        remapper.add_template_mapping("TPL-SRC", "TPL-MATCHED")
+        _, remapper, _ = await self._map(
+            tmp_path, [self._row("TPL-SRC", "templates", "src")],
+            {"TPL-SRC": "TPL-RESOLVED"}, remapper=remapper,
+        )
+        assert remapper.template_map == {"TPL-SRC": "TPL-MATCHED"}
+
+    @pytest.mark.asyncio
+    async def test_an_archive_without_a_table_says_so(self, tmp_path):
+        from wip_archive.archive import ArchiveReader, ArchiveWriter
+        from wip_archive.remap import IDRemapper
+
+        path = tmp_path / "old.zip"
+        ArchiveWriter(path, default_namespace="src").write(Manifest(namespace="src"))
+        events: list[ProgressEvent] = []
+        engine = DirectRestoreEngine(MagicMock(), None, _collect_progress(events))
+        engine._resolve_on_registry = AsyncMock()
+        with ArchiveReader(path) as reader:
+            summary = await engine._map_external_referents(
+                reader, reader.read_manifest(), IDRemapper(), "dst"
+            )
+        assert summary == {"recorded": False}
+        engine._resolve_on_registry.assert_not_awaited()
+        # Said once, as progress: not a job warning on every older archive.
+        assert [e.phase for e in events if "predates the referent table" in e.message] == [
+            "phase_referents"
+        ]

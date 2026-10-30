@@ -542,3 +542,43 @@ class TestQualifiedReferenceStrings:
         doc = {"document_id": "X", "data": {"ref": "ns-b:ns-b-D000001"}}
         result = remapper.remap_document(doc)
         assert result["data"]["ref"] == "ns-b:ns-b-D000001"
+
+
+class TestExternalDocuments:
+    """A document the archive does not carry, resolved on the target from the
+    referent table, keeps the namespace it actually lives in."""
+
+    def _ref(self, doc_id, namespace):
+        return {
+            "field_path": "boss", "reference_type": "document", "lookup_value": "B-1",
+            "resolved": {"document_id": doc_id, "namespace": namespace},
+        }
+
+    def test_an_unresolved_out_of_archive_id_still_takes_the_mapped_namespace(self):
+        # The shape the referent table exists to fix: new namespace, old id.
+        r = IDRemapper({"src": "dst"})
+        out = r._remap_document_reference(self._ref("OLD", "src"))
+        assert out["resolved"] == {"document_id": "OLD", "namespace": "dst"}
+
+    def test_a_resolved_external_document_names_where_it_lives(self):
+        r = IDRemapper({"src": "dst"})
+        r.add_template_mapping("TPL-OLD", "TPL-REMINTED")
+        r.add_external_document_mapping(
+            "OLD", "FOUND", {"namespace": "src", "template_id": "TPL-LIVE", "identity_hash": "h2"}
+        )
+        ref = self._ref("OLD", "src")
+        ref["resolved"].update(template_id="TPL-OLD", identity_hash="h1")
+        out = r._remap_document_reference(ref)
+        # Every half describes the document that exists, not the archive's
+        # re-minted copy of its template.
+        assert out["resolved"] == {
+            "document_id": "FOUND", "namespace": "src",
+            "template_id": "TPL-LIVE", "identity_hash": "h2",
+        }
+
+    def test_an_archived_document_still_follows_the_namespace_map(self):
+        r = IDRemapper({"src": "dst"})
+        r.add_external_document_mapping("OTHER", "FOUND", {"namespace": "elsewhere"})
+        r.add_document_mapping("IN-ARCHIVE", "NEW")
+        out = r._remap_document_reference(self._ref("IN-ARCHIVE", "src"))
+        assert out["resolved"] == {"document_id": "NEW", "namespace": "dst"}
