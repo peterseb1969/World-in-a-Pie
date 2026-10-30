@@ -10,11 +10,12 @@ You build this app ON TOP of World In a Pie (WIP). This file is short on purpose
 Read `docs/cards/core.md` on every `/wip-setup` and `/wip-wake`. It holds the rules that prevent a
 wrong action: what an app on WIP is, the model rule, the approval gate, the nine PoNIFs.
 
-## Dev Namespace
+## Namespace
 
-Your development namespace is `__DEV_NAMESPACE__`. MCP calls run with an admin key that spans
-namespaces: pass `namespace="__DEV_NAMESPACE__"` on every call. A missing namespace at session start
-is normal — it is created when the model is implemented, not as a setup step.
+Your app's namespace is `__APP_NAMESPACE__`, the same name on every install, your development install
+included. MCP calls run with an admin key that spans namespaces: pass `namespace="__APP_NAMESPACE__"`
+on every call. A missing namespace at session start is normal — it is created when the model is
+implemented, not as a setup step.
 
 ## Phases and gates
 

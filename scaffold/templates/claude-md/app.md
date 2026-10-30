@@ -25,28 +25,15 @@ WIP is the backend. This app is a frontend that maps a domain onto WIP's primiti
 
 **Case numbers in code comments are provenance, never substance.** A comment must state the constraint or invariant in full prose; a `CASE-NNN` token may prefix it as history, but the comment must survive the deletion test: remove the token — does it still explain the code? "See CASE-NNN" as the whole explanation is a dead link to every reader without KB access, and case-pointer comments rot because the pointer never gets re-verified against the code around it. Anything user-facing or generated (UI copy, served API descriptions, docs your app publishes) carries no case tokens at all — those readers have no KB.
 
-## Dev Namespace
+## Namespace
 
-Your development namespace is `__DEV_NAMESPACE__`. Use it for all data modeling during development.
+Your app's namespace is `__APP_NAMESPACE__`. It is the same name on every install, your development install included: there is no separate development namespace and nothing renames the data on the way to a deployment.
 
-**A missing namespace is never a setup failure.** The namespace is created at *bootstrap* — when you actually have data to put in it — not as a setup precondition. `/wip-setup` does not check for it, and its absence at session start is expected and non-blocking. If you have no data model yet (or this app is a cross-namespace console that owns no namespace of its own), there is simply nothing to create now — do **not** treat an absent `__DEV_NAMESPACE__` as an error, fail setup over it, or go hunting for a namespace that was never provisioned.
+**A missing namespace is never a setup failure.** The namespace is created at *bootstrap* — when you actually have data to put in it — not as a setup precondition. `/wip-setup` does not check for it, and its absence at session start is expected and non-blocking. If you have no data model yet (or this app is a cross-namespace console that owns no namespace of its own), there is simply nothing to create now — do **not** treat an absent `__APP_NAMESPACE__` as an error, fail setup over it, or go hunting for a namespace that was never provisioned.
 
-**Why:** Terminologies and templates are hard to delete cleanly once documents reference them. A dev namespace lets you iterate freely — create, modify, delete, start over — without polluting production data.
+**Iterating on the model.** Your development install is yours: create, change and delete terminologies, templates and test documents in `__APP_NAMESPACE__` freely while the model settles. To start over, delete the namespace (`mcp__wip__delete_namespace(prefix="__APP_NAMESPACE__")`, or `DELETE /api/registry/namespaces/__APP_NAMESPACE__`; the API honours the namespace's deletion mode) and bootstrap again. A throwaway namespace for an experiment is an ordinary namespace you name and delete yourself.
 
-**Workflow:**
-1. Use `__DEV_NAMESPACE__` for all `/wip-design-model` and `/wip-implement` work
-2. Create terminologies, templates, and test documents in this namespace
-3. Iterate until the data model is stable
-4. When ready for production, create a new namespace (e.g., `__APP_SLUG__`) and recreate the finalized model there
-5. Retire the dev namespace via the API when the data model is finalised:
-   ```
-   mcp__wip__delete_namespace(prefix="__DEV_NAMESPACE__")
-   ```
-   (or `DELETE /api/registry/namespaces/__DEV_NAMESPACE__`). The API
-   honours each namespace's deletion mode (`retain` vs `full`) — no
-   `--force` flag needed.
-
-**Important:** MCP tool calls use the privileged admin key, so always pass `namespace=__DEV_NAMESPACE__` explicitly when modeling. Your app's runtime key comes from `WIP_API_KEY_FILE` in `.env` (the wip-deploy secrets file) — see **API Key** below.
+**Important:** MCP tool calls use the privileged admin key, so always pass `namespace=__APP_NAMESPACE__` explicitly when modeling. Your app's runtime key comes from `WIP_API_KEY_FILE` in `.env` (the wip-deploy secrets file) — see **API Key** below.
 
 ## API Key
 
@@ -64,11 +51,11 @@ WIP_API_KEY_FILE=__WIP_API_KEY_FILE__
 ```bash
 curl -k -X POST https://localhost:8443/api/registry/api-keys \
   -H 'X-API-Key: <admin-key>' -H 'Content-Type: application/json' \
-  -d '{"name": "__APP_SLUG__", "namespaces": ["__DEV_NAMESPACE__"], "grant_permission": "write"}'
+  -d '{"name": "__APP_SLUG__", "namespaces": ["__APP_NAMESPACE__"], "grant_permission": "write"}'
 ```
 Run the **bootstrap** with the deploy key, not this one: no namespace-scoped key can create or update a namespace. If the app re-registers reporting views at startup (`server/seed/views/`), the runtime key needs `"grant_permission": "admin"` — view registration requires namespace admin, and `write` is not enough.
 
-**Multi-namespace key → pass `namespace` explicitly.** The deploy admin/proxy key spans all namespaces, so WIP cannot derive one for you — pass `namespace=__DEV_NAMESPACE__` on API calls that need scoping, or set `defaultNamespace` on `@wip/proxy` to scope reads. A single-namespace key (the least-privilege opt-in above) gets automatic derivation instead.
+**Multi-namespace key → pass `namespace` explicitly.** The deploy admin/proxy key spans all namespaces, so WIP cannot derive one for you — pass `namespace=__APP_NAMESPACE__` on API calls that need scoping, or set `defaultNamespace` on `@wip/proxy` to scope reads. A single-namespace key (the least-privilege opt-in above) gets automatic derivation instead.
 
 **Grants:** writes need an explicit namespace grant. If you provision a least-privilege key, pass `grant_permission` on `create_api_key` / `POST /api/registry/api-keys`, or add a grant afterwards (`create_grant` MCP tool, `registry.createGrants` in @wip/client, or `POST /api/registry/namespaces/<ns>/grants`). Grant subject for api keys is the bare key name.
 

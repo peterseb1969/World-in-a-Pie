@@ -378,7 +378,7 @@ This means synonym resolution works without passing `namespace` on every request
 Omitting it means WIP cannot determine context for synonym resolution, and raw
 values pass through unresolved.
 
-This matters for apps: use a single-namespace key scoped to your dev namespace,
+This matters for apps: use a single-namespace key scoped to your app's namespace,
 and you can skip the `namespace` parameter on all API and MCP tool calls.
 
 ## Ontology Relations

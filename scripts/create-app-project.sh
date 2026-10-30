@@ -357,22 +357,41 @@ PYEOF
 
 # --- Resolve app metadata (CASE-418) ---
 # Set-up-in-place NEVER derives metadata from the directory name — that produced
-# 'Dev ns: dev-.' on an in-place run of '.'. Resolution order: persisted
+# a namespace of '.' on an in-place run of '.'. Resolution order: persisted
 # .claude/.app-meta -> explicit --name -> backfill from the existing
 # CLAUDE.md title -> hard error.
 
 APP_META_FILE="$APP_DIR/.claude/.app-meta"
 APP_SLUG=""
-DEV_NAMESPACE=""
+APP_NAMESPACE=""
 META_SOURCE=""
 
 meta_get() { sed -n "s/^$1=\"\(.*\)\"\$/\1/p" "$APP_META_FILE" 2>/dev/null | head -1; }
+
+# The app's namespace from an existing CLAUDE.md: the first backticked token
+# under '## Namespace', or under '## Dev Namespace' as apps scaffolded before
+# development used the real name still have it. Empty when neither parses.
+# Apps keep the namespace they were set up with, whatever its name.
+claude_md_namespace() {
+    local section
+    # shellcheck disable=SC2016  # literal backticks: extracting a `code`-formatted namespace from markdown
+    for section in '## Namespace' '## Dev Namespace'; do
+        local ns
+        ns="$(sed -n "/^${section}\$/,/^## /p" "$APP_DIR/CLAUDE.md" 2>/dev/null | grep -o '`[a-z0-9][a-z0-9_-]*`' | head -1 | tr -d '`' || true)"
+        if [ -n "$ns" ]; then
+            echo "$ns"
+            return
+        fi
+    done
+}
 
 if $REFRESH_MODE; then
     if [ -f "$APP_META_FILE" ] && [ -n "$(meta_get APP_NAME)" ]; then
         APP_NAME="$(meta_get APP_NAME)"
         APP_SLUG="$(meta_get APP_SLUG)"
-        DEV_NAMESPACE="$(meta_get DEV_NAMESPACE)"
+        # Recorded as DEV_NAMESPACE by scaffolds before the rename.
+        APP_NAMESPACE="$(meta_get APP_NAMESPACE)"
+        APP_NAMESPACE="${APP_NAMESPACE:-$(meta_get DEV_NAMESPACE)}"
         # The preset resolves like the other recorded fields: --preset wins,
         # else the recorded value, else the default. Without this a plain
         # refresh rewrote a query app's .app-meta to the default preset.
@@ -397,35 +416,28 @@ if $REFRESH_MODE; then
         fi
         META_SOURCE=".claude/.app-meta"
     elif [ -n "$APP_NAME" ]; then
+        # An existing app keeps its namespace: recover it from CLAUDE.md
+        # rather than defaulting a set-up app onto a different name.
+        APP_NAMESPACE="$(claude_md_namespace)"
         META_SOURCE="--name"
     elif [ -f "$APP_DIR/CLAUDE.md" ]; then
         # One-time backfill for pre-.app-meta clones: the title line was
-        # interpolated from APP_NAME at create time; the namespace is the
-        # first backticked token in the Dev Namespace section (apps can use
-        # namespaces that are NOT dev-<slug>, e.g. WIP-DnD's `dnd`).
+        # interpolated from APP_NAME at create time; the namespace comes from
+        # the Namespace (or older Dev Namespace) section.
         APP_NAME="$(sed -n 's/^# //p' "$APP_DIR/CLAUDE.md" | head -1)"
         if [ -z "$APP_NAME" ]; then
             echo "Error: could not derive the app name from $APP_DIR/CLAUDE.md."
             echo "       Re-run with --name \"App Name\"."
             exit 1
         fi
-        # Backfill is a fallback PARSER, not an invariant. The grep exits 1
-        # when the '## Dev Namespace' heading is absent or has drifted (long-
-        # lived clones rename it '## Namespace' etc.); under `set -euo
-        # pipefail` that 1 propagates and kills the script AT THIS ASSIGNMENT,
-        # before any output — a silent death (CASE-460). `|| true` makes the
-        # parse tolerant; the empty result is then handled loudly below.
-        # shellcheck disable=SC2016  # literal backticks: extracting a `code`-formatted namespace from markdown
-        DEV_NAMESPACE="$(sed -n '/^## Dev Namespace/,/^## /p' "$APP_DIR/CLAUDE.md" | grep -o '`[a-z0-9][a-z0-9-]*`' | head -1 | tr -d '`' || true)"
-        if [ -z "$DEV_NAMESPACE" ]; then
-            # Refuse to guess. Heading drift means this app may run on a
-            # namespace that is NOT dev-<slug> (e.g. a live one); silently
-            # defaulting would pin the wrong namespace into durable state.
-            # Fail with the same remediation as the no-CLAUDE.md path.
+        # Backfill is a fallback parser, not an invariant: a drifted heading
+        # leaves it empty, and then it refuses to guess rather than pin a
+        # default namespace into durable state.
+        APP_NAMESPACE="$(claude_md_namespace)"
+        if [ -z "$APP_NAMESPACE" ]; then
             echo "Error: found $APP_DIR/CLAUDE.md but could not parse a"
-            echo "       namespace from a '## Dev Namespace' section (the heading"
-            echo "       may have drifted, e.g. '## Namespace'). Refusing to guess —"
-            echo "       this app may use a non-dev-<slug> namespace."
+            echo "       namespace from a '## Namespace' or '## Dev Namespace'"
+            echo "       section (the heading may have drifted). Refusing to guess."
             echo "       Fix: write .claude/.app-meta with the real values, or"
             echo "       re-run with --name \"App Name\" (CASE-418/460)."
             exit 1
@@ -449,11 +461,12 @@ fi
 if [ -z "$APP_SLUG" ]; then
     APP_SLUG="$(echo "$APP_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/ /-/g')"
 fi
-if [ -z "$DEV_NAMESPACE" ]; then
-    # Create mode (or a --name refresh with no parsed namespace): dev-<slug>
-    # is the documented default. The CLAUDE.md-backfill path never reaches
-    # here empty — it fails loud above rather than guess (CASE-460).
-    DEV_NAMESPACE="dev-${APP_SLUG}"
+if [ -z "$APP_NAMESPACE" ]; then
+    # Create mode (or a --name refresh with no CLAUDE.md to read): the app's
+    # namespace is its slug, the same name on every install, development
+    # included. The CLAUDE.md-backfill path never reaches here empty — it
+    # fails loud above rather than guess.
+    APP_NAMESPACE="${APP_SLUG}"
 fi
 
 if $REFRESH_MODE; then
@@ -464,7 +477,7 @@ fi
 echo "  Directory: $APP_DIR"
 echo "  App name:  $APP_NAME"
 echo "  Slug:      $APP_SLUG"
-echo "  Dev ns:    $DEV_NAMESPACE"
+echo "  Namespace: $APP_NAMESPACE"
 if [ -n "$META_SOURCE" ]; then
     echo "  Metadata:  $META_SOURCE"
 fi
@@ -874,52 +887,12 @@ else
     STEP_OFFSET=0
 fi
 
-# --- Create dev namespace (new projects only) ---
+# --- The app's namespace ---
+# Not created here. The app's reservation on the install plus its bootstrap
+# create it, or the developer does while modelling; the scaffold never writes
+# to the live install with the master key.
 
 if ! $REFRESH_MODE; then
-    STEP_NUM=$((7 + STEP_OFFSET))
-    echo "$STEP_NUM. Creating dev namespace '$DEV_NAMESPACE'..."
-    STEP_OFFSET=$((STEP_OFFSET + 1))
-
-    # WIP_SCAFFOLD_SKIP_DEV_NAMESPACE=1 skips the upsert: for runs that must not
-    # write to the live install (the golden harness sets it). The APP-YAC then
-    # creates the namespace on first run, as when WIP is unreachable.
-    # Best-effort — WIP may not be running. Non-fatal.
-    # PUT is the platform's documented idempotent upsert: creates on
-    # missing with platform defaults, updates supplied fields when
-    # existing, always 200 — re-running a create against a half-built
-    # instance needs no exists-check dance. (The legacy POST returned
-    # non-200 on collision, hence the old 'may already exist' guesswork.)
-    # ACTIVE_KEY is the admin key content from the wip-deploy secrets
-    # file; empty/missing degrades to the non-fatal HTTP branches.
-    # Same URL and key the generated .mcp.json is written with, so the
-    # namespace lands on the instance the app will talk to — and a key that
-    # fails here will fail in the app's MCP server too.
-    if [ "${WIP_SCAFFOLD_SKIP_DEV_NAMESPACE:-}" = "1" ]; then
-        echo "   Skipped (WIP_SCAFFOLD_SKIP_DEV_NAMESPACE=1) — APP-YAC will create the namespace on first run"
-    else
-        ACTIVE_KEY=$(cat "$WIP_API_KEY_FILE" 2>/dev/null || true)
-        NS_RESPONSE=$(curl -k -s -o /dev/null -w "%{http_code}" \
-            -X PUT "${WIP_BASE_URL%/}/api/registry/namespaces/$DEV_NAMESPACE" \
-            -H "X-API-Key: $ACTIVE_KEY" \
-            -H "Content-Type: application/json" \
-            -d "{\"description\": \"$APP_NAME (dev)\"}" \
-            2>/dev/null || true)
-        # curl's -w already prints 000 when it cannot connect; an `|| echo`
-        # fallback appended a second 000, so an unreachable WIP read as an
-        # unexpected status. Default only for a missing curl / empty output.
-        NS_RESPONSE="${NS_RESPONSE:-000}"
-
-        if [ "$NS_RESPONSE" = "200" ]; then
-            echo "   Namespace upserted: $DEV_NAMESPACE on $WIP_BASE_URL"
-        elif [ "$NS_RESPONSE" = "000" ]; then
-            echo "   WIP not reachable at $WIP_BASE_URL — APP-YAC will create the namespace on first run"
-        else
-            echo "   HTTP $NS_RESPONSE from $WIP_BASE_URL — unexpected for an idempotent upsert; the generated"
-            echo "   .mcp.json uses the same URL and key, so check both (WIP_API_KEY_FILE_OVERRIDE for a non-local instance)"
-        fi
-    fi
-
     # (.env.example's WIP_NAMESPACE is substituted by the engine's
     # query-scaffold surface during the copy — no post-hoc sed.)
 
@@ -1026,7 +999,7 @@ PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     "$MCP_PYTHON" -m wip_scaffold app \
     --wip-root "$WIP_ROOT" --app-dir "$APP_DIR" \
     --app-name "$APP_NAME" --app-slug "$APP_SLUG" \
-    --dev-namespace "$DEV_NAMESPACE" --key-file "$WIP_API_KEY_FILE" \
+    --namespace "$APP_NAMESPACE" --key-file "$WIP_API_KEY_FILE" \
     --preset "$PRESET" --profile "$PROFILE" --role-prefix "$APP_PREFIX" \
     --mcp-python "$PYTHON_PATH" --mcp-base-url "$WIP_BASE_URL" \
     --mcp-key-file "$WIP_API_KEY_FILE" \
@@ -1070,9 +1043,11 @@ done
 if $REFRESH_MODE && [ -d "$APP_DIR/.git" ]; then
     _tracked="$(git -C "$APP_DIR" ls-files -- .env .mcp.json .claude/kb.json 2>/dev/null || true)"
     if [ -n "$_tracked" ]; then
-        echo "   WARNING: local config is tracked in git: $(echo $_tracked)"
+        # One line: ls-files prints a path per line (fixed, space-free names).
+        _tracked="${_tracked//$'\n'/ }"
+        echo "   WARNING: local config is tracked in git: $_tracked"
         echo "            Untrack it (the files stay on disk), then commit:"
-        echo "              git -C \"$APP_DIR\" rm --cached $(echo $_tracked)"
+        echo "              git -C \"$APP_DIR\" rm --cached $_tracked"
     fi
 fi
 

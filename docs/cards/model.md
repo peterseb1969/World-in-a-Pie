@@ -1,6 +1,6 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
 wip://data-model sha256:add49672e871c9bb reviewed:c4423374
-wip://conventions sha256:ee515c05cb4e2cb8 reviewed:a38b9c84
+wip://conventions sha256:fe50c05c4b8902e7 reviewed:9f8f08fb
 docs/WIP_PoNIFs.md sha256:52b14c6b845fc8b0 reviewed:d1653035
 docs/design/ontology-support.md sha256:06666e3c8f3a3cc1 reviewed:ea985986
 docs/slash-commands/app-builder/wip-implement.md sha256:1afef1d1999621a1 reviewed:809f9059
@@ -45,7 +45,7 @@ docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca revi
 ## Creation order
 - namespace (`create_namespace` / `upsert_namespace`) → terminologies → terms → (term relations) → templates, referenced before referencing → documents.
 - Why: a template's references (terminology_ref, target_templates, …) are resolved when the template is created — an unresolvable one fails the create. Documents are validated against active terms and existing referenced documents at write time.
-- Model in your dev namespace (named in CLAUDE.md). MCP tools run with an admin key that spans namespaces: pass `namespace=` on every call.
+- Model in your app's namespace (named in CLAUDE.md). MCP tools run with an admin key that spans namespaces: pass `namespace=` on every call.
 
 ## Draft mode and activation
 - Create templates with `status: "draft"` to skip reference validation — for circular dependencies or order-independent creation.

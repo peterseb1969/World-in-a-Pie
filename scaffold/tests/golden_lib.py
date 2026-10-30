@@ -24,9 +24,8 @@ Determinism notes:
   normalized to __KB_KEY_FILE__.
 - The scaffolds are isolated from the host's WIP install (`_run`): the API
   key path is pinned through WIP_API_KEY_FILE_OVERRIDE, so the output does
-  not depend on what the running install is called, and the app create's
-  dev-namespace upsert is switched off (WIP_SCAFFOLD_SKIP_DEV_NAMESPACE=1),
-  so no run writes to the live install.
+  not depend on what the running install is called. No scaffold run writes
+  to the live install.
 - Machine-specific values are normalized: WIP_ROOT, $HOME, the app target
   dir, and the genesis-banner SHA/date stamps.
 """
@@ -67,10 +66,9 @@ EXCLUDE_PARTS = {".git", "node_modules", ".venv", "__pycache__"}
 # Pinned rather than detected: the fixtures record this path (as
 # __HOME__/.wip-deploy/wip-local/...), and both scaffolds honour the
 # override. The file need not exist — local mode only writes the path into
-# .mcp.json / .env, and with the namespace upsert off nothing reads the key.
+# .mcp.json / .env, and nothing reads the key.
 HOST_ISOLATION_ENV = {
     "WIP_API_KEY_FILE_OVERRIDE": str(Path.home() / ".wip-deploy/wip-local/secrets/api-key"),
-    "WIP_SCAFFOLD_SKIP_DEV_NAMESPACE": "1",
 }
 
 

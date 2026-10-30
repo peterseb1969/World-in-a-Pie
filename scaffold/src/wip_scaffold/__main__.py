@@ -5,7 +5,7 @@ detection, guards, and the not-yet-migrated surfaces:
 
   python -m wip_scaffold backend --wip-root DIR [--tier3] [--dry-run]
   python -m wip_scaffold app --wip-root DIR --app-dir DIR \
-      --app-name S --app-slug S --dev-namespace S --key-file PATH \
+      --app-name S --app-slug S --namespace S --key-file PATH \
       --preset S [--role-prefix S] [--tier3] [--refresh] \
       [--force-claude-md] [--dry-run]
 
@@ -59,7 +59,8 @@ def main(argv: list[str] | None = None) -> int:
     a.add_argument("--app-dir", required=True, type=Path)
     a.add_argument("--app-name", required=True)
     a.add_argument("--app-slug", required=True)
-    a.add_argument("--dev-namespace", required=True)
+    # --dev-namespace: the name before development used the real namespace.
+    a.add_argument("--namespace", "--dev-namespace", dest="app_namespace", required=True)
     a.add_argument("--key-file", required=True)
     a.add_argument("--preset", required=True)
     a.add_argument("--profile", choices=("full", "slim"), default="full")
@@ -104,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             tokens={
                 "__APP_NAME__": args.app_name,
                 "__APP_SLUG__": args.app_slug,
-                "__DEV_NAMESPACE__": args.dev_namespace,
+                "__APP_NAMESPACE__": args.app_namespace,
                 "__WIP_API_KEY_FILE__": args.key_file,
             },
         )
@@ -112,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "APP_NAME": args.app_name,
                 "APP_SLUG": args.app_slug,
-                "DEV_NAMESPACE": args.dev_namespace,
+                "APP_NAMESPACE": args.app_namespace,
                 "PRESET": args.preset,
                 "PROFILE": args.profile,
             },
@@ -123,7 +124,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.mcp_python, args.mcp_base_url, args.mcp_key_file, args.mcp_key))
         if args.query_scaffold:
             surfaces = query_scaffold_surfaces(
-                args.app_name, args.app_slug, args.dev_namespace) + surfaces
+                args.app_name, args.app_slug, args.app_namespace) + surfaces
         for lib, path in (("client", args.lib_client), ("react", args.lib_react),
                           ("proxy", args.lib_proxy)):
             if path:

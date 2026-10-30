@@ -273,6 +273,31 @@ wildcard (`*`, `>`) or whitespace shifts or widens the token it becomes.
 gets 400. Restoring an archive of such a namespace onto an install that does
 not have it fails the same way; use a fresh restore into a valid name.
 
+### New apps develop in their real namespace; the scaffold no longer creates `dev-<slug>`
+
+An app used to be developed in `dev-<slug>` and deployed in `<slug>`, with
+mechanisms that existed only to bridge the two names. Namespace reservations
+and per-app keys work for any name, so the developer's install now uses the
+same name as every other install.
+
+- `create-app-project.sh` defaults the app's namespace to `<slug>` and no
+  longer upserts a namespace with the install's master key. The namespace is
+  created by the app's bootstrap (with its reservation) or by the developer.
+- The generated CLAUDE.md has `## Namespace` instead of `## Dev Namespace`,
+  and drops the "recreate the model in a production namespace" steps.
+  `.claude/.app-meta` records `APP_NAMESPACE` (an existing `DEV_NAMESPACE`
+  is still read), and the engine's `--dev-namespace` is now `--namespace`
+  (the old flag is still accepted).
+- A refresh keeps the namespace an app was set up with, read from
+  `.app-meta` or from the old or new CLAUDE.md heading. No existing app is
+  renamed, and no app manifest or namespace was changed.
+- `authored_as` in seed namespace roles stays: it lets one app's seeds run
+  under another name (a second copy of an app on one install).
+- The core and model cards and the conventions text no longer say "dev
+  namespace".
+
+**Action:** none for existing apps. A new app's namespace is its slug.
+
 ### Event subscriptions and MongoDB `read-all` are for privileged apps only
 
 `event-subscriber` and `replay-subscriber` receive every namespace's events,

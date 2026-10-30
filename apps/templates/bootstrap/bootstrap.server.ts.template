@@ -63,14 +63,14 @@
  *   or seed error can never leave half-built namespaces behind.
  *
  * MULTI-NAMESPACE APPS (e.g. a main namespace plus a reference-data one):
- *   Key the seed dirs by ROLE, never by namespace name — the names differ
- *   between deployments (dev-<app>-ref locally, <app>-ref deployed):
+ *   Key the seed dirs by ROLE, never by namespace name — an install may run
+ *   the app under other names (a second copy of the app beside the first):
  *     server/seed/terminologies/<role>/…   server/seed/templates/<role>/…
  *   and declare the roles in server/seed/namespaces.json:
  *     {
  *       "roles": {
- *         "ref":  { "authored_as": "dev-myapp-ref", "env": "WIP_REF_NAMESPACE" },
- *         "main": { "authored_as": "dev-myapp" }
+ *         "ref":  { "authored_as": "myapp-ref", "env": "WIP_REF_NAMESPACE" },
+ *         "main": { "authored_as": "myapp" }
  *       },
  *       "external": ["shared-vocab"]
  *     }
@@ -168,8 +168,9 @@ import { join } from 'path'
 const SEED_DIR = process.env.SEED_DIR ?? join(process.cwd(), 'server', 'seed')
 
 // TODO: set this to your app's namespace prefix — the name its seeds were
-// authored in. A deployment may run the app under another name (dev-<app>
-// locally, <app> deployed); WIP_NAMESPACE, set by the deployer, wins.
+// authored in, the same on every install. An install running a second copy
+// of the app under another name sets WIP_NAMESPACE (the deployer does, from
+// the manifest's spec.namespaces), and it wins.
 const DEFAULT_NAMESPACE = 'TODO_APP_NAMESPACE'
 const NAMESPACE = process.env.WIP_NAMESPACE || DEFAULT_NAMESPACE
 

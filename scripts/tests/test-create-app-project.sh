@@ -11,6 +11,9 @@
 #   • local config  — .env / .mcp.json / kb.json are gitignored and untracked, the
 #                     pre-commit gate is enabled, a refresh flags a tracked file
 #   • no key file   — --kb without --kb-key fails before writing kb.json
+#   • namespace     — a new app's namespace is its slug; an existing app keeps
+#                     the one it was set up with (DEV_NAMESPACE in .app-meta, an
+#                     old '## Dev Namespace' heading, a --name refresh)
 #
 # NOT isolated here: CASE-534's exact abort path (podman running but ZERO
 # wip-deploy installs) needs a host with no install — these runs have one, so the
@@ -59,6 +62,9 @@ check "local config not committed"   "[ -z \"\$(git -C '$A' ls-files -- .env .mc
 check ".mcp.json gitignored"          "grep -qx '.mcp.json' '$A/.gitignore'"
 check "pre-commit gate shipped"       "[ -x '$A/.githooks/pre-commit' ]"
 check "pre-commit gate enabled"       "[ \"\$(git -C '$A' config --local core.hooksPath)\" = .githooks ]"
+check "namespace is the slug"         "grep -qx 'APP_NAMESPACE=\"smoke-a\"' '$A/.claude/.app-meta'"
+check "CLAUDE.md names it under ## Namespace" "sed -n '/^## Namespace\$/,/^## /p' '$A/CLAUDE.md' | grep -q '\`smoke-a\`'"
+check "no namespace written to the install" "! grep -qi 'upserted' '$WORK/a.log'"
 
 # ── Scenario B: set-up-in-place auto-detect (no flag, populated dir) ────────
 echo "Scenario B — re-run the SAME populated dir with no flag"
@@ -107,6 +113,29 @@ check "no kb.json written"            "[ ! -e '$D/.claude/kb.json' ]"
 D2="$WORK/app-d2"
 run "$WORK/d2.log" "$D2" --name "Smoke D2" --prefix APP-SMK --kb 127.0.0.1:9 --kb-key "$WORK/missing-key"
 check "missing key file: exit non-zero" "[ $? -ne 0 ] && grep -q 'not readable' '$WORK/d2.log'"
+
+# ── Scenario E: an existing app keeps its namespace ────────────────────────
+echo "Scenario E — refreshes keep the namespace an app was set up with"
+E="$WORK/app-e"
+run "$WORK/e.log" "$E" --name "Smoke E" --prefix APP-SMK
+# E1: .app-meta from before the rename records DEV_NAMESPACE.
+sed -i.bak 's/^APP_NAMESPACE=.*/DEV_NAMESPACE="dev-smoke-e"/' "$E/.claude/.app-meta"
+run "$WORK/e1.log" "$E"
+check "E1 exit 0"                         "[ $? -eq 0 ]"
+check "E1 keeps dev-smoke-e"              "grep -q 'Namespace: dev-smoke-e' '$WORK/e1.log'"
+check "E1 records it as APP_NAMESPACE"    "grep -qx 'APP_NAMESPACE=\"dev-smoke-e\"' '$E/.claude/.app-meta'"
+# E2: no .app-meta, a CLAUDE.md with the old heading (backfill).
+rm "$E/.claude/.app-meta"
+# shellcheck disable=SC2016  # literal backticks: a `code`-formatted namespace in markdown
+printf '# Smoke E\n\n## Dev Namespace\n\nYour development namespace is `dev-old-e`.\n\n## Next\n' > "$E/CLAUDE.md"
+run "$WORK/e2.log" "$E"
+check "E2 exit 0"                         "[ $? -eq 0 ]"
+check "E2 backfills dev-old-e"            "grep -q 'Namespace: dev-old-e' '$WORK/e2.log'"
+# E3: a --name refresh with no .app-meta reads CLAUDE.md, never the slug default.
+rm "$E/.claude/.app-meta"
+run "$WORK/e3.log" "$E" --name "Smoke E"
+check "E3 exit 0"                         "[ $? -eq 0 ]"
+check "E3 keeps dev-old-e"                "grep -q 'Namespace: dev-old-e' '$WORK/e3.log'"
 
 # ── Summary ────────────────────────────────────────────────────────────────
 echo ""

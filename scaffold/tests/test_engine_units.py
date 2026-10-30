@@ -167,7 +167,7 @@ def test_render_refresh_missing_target_on_refresh_writes_target(tmp_path):
 # --- matrix sanity -----------------------------------------------------------
 
 def test_matrix_names_unique_and_rationale_present():
-    for surfaces in (backend_surfaces(), app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"})):
+    for surfaces in (backend_surfaces(), app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"})):
         names = [s.name for s in surfaces]
         assert len(names) == len(set(names))
         for s in surfaces:
@@ -215,7 +215,7 @@ def test_app_playbooks_never_wipe(tmp_path):
     (tmp_path / "docs/playbooks").mkdir(parents=True)
     sentinel = tmp_path / "docs/playbooks/case-workflow.md"
     sentinel.write_text("served source — do not delete")
-    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "playbooks"]
+    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "playbooks"]
     run_surfaces(surfaces, _ctx(tmp_path))
     assert sentinel.exists()
 
@@ -223,14 +223,14 @@ def test_app_playbooks_never_wipe(tmp_path):
 def test_session_role_preserved_without_prefix(tmp_path):
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude/.session-role").write_text("APP-OLD\n")
-    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "session-role"]
+    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "session-role"]
     ctx = _ctx(tmp_path, role_prefix="")
     run_surfaces(surfaces, ctx)
     assert (tmp_path / ".claude/.session-role").read_text() == "APP-OLD\n"
     assert any("Kept" in n for n in ctx.notes)
 
 
-_APP_META = {"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}
+_APP_META = {"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}
 
 
 def _app_surface(name):
@@ -265,7 +265,7 @@ def test_kb_json_example_tier3_only_and_placeholder(tmp_path):
 
 
 def test_session_role_warns_when_absent_and_no_prefix(tmp_path):
-    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "session-role"]
+    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "session-role"]
     ctx = _ctx(tmp_path, role_prefix="")
     run_surfaces(surfaces, ctx)
     assert not (tmp_path / ".claude/.session-role").exists()
@@ -580,7 +580,7 @@ def test_settings_one_baseline_both_roles(tmp_path):
     b, a = tmp_path / "b", tmp_path / "a"
     run_surfaces(backend_surfaces(), _ctx(b, tier3=True))
     run_surfaces(
-        [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "settings"],
+        [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "settings"],
         Context(wip_root=REPO_ROOT, target_root=a),
     )
     assert (b / ".claude/settings.json").read_bytes() == (a / ".claude/settings.json").read_bytes(), (
@@ -626,7 +626,7 @@ def _read(root: Path, rel: str = SETTINGS):
 def test_settings_refresh_keeps_app_added_hook(tmp_path):
     """The filer's case, through the real app settings surface."""
     settings = [s for s in app_surfaces(
-        {"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}
+        {"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}
     ) if s.name == "settings"]
     run_surfaces(settings, _ctx(tmp_path))
     doc = _read(tmp_path)
@@ -750,7 +750,7 @@ def test_toolkit_wheel_wipes_stale_versions(tmp_path):
 def test_app_meta_records_role_prefix(tmp_path):
     # .session-role is gitignored; the committed .app-meta must carry the
     # prefix or fresh checkouts dead-end at the identity pre-flight.
-    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "app-meta"]
+    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "app-meta"]
     ctx = _ctx(tmp_path, role_prefix="APP-XY")
     run_surfaces(surfaces, ctx)
     assert 'ROLE_PREFIX="APP-XY"' in (tmp_path / ".claude/.app-meta").read_text()
@@ -759,7 +759,7 @@ def test_app_meta_records_role_prefix(tmp_path):
 def test_app_meta_role_prefix_falls_back_to_local_file(tmp_path):
     (tmp_path / ".claude").mkdir()
     (tmp_path / ".claude/.session-role").write_text("APP-LOCAL\n")
-    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "DEV_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "app-meta"]
+    surfaces = [s for s in app_surfaces({"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}) if s.name == "app-meta"]
     run_surfaces(surfaces, _ctx(tmp_path, role_prefix=""))
     assert 'ROLE_PREFIX="APP-LOCAL"' in (tmp_path / ".claude/.app-meta").read_text()
 

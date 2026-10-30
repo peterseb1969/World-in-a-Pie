@@ -1,5 +1,13 @@
 # Agent Scaffold Revamp — Design
 
+> **⚠️ HISTORICAL DESIGN DOC — the engine it proposes shipped, and the
+> scaffold has moved on since.** One point below is now wrong: the app
+> scaffold no longer creates a dev namespace at all (neither by `POST` nor by
+> the `PUT` upsert proposed here). A new app's namespace is its slug, the same
+> name on every install, and the app's bootstrap or the developer creates it.
+> For current behaviour read `scripts/create-app-project.sh`, the engine in
+> `scaffold/src/wip_scaffold/` and `scaffold/templates/claude-md/app.md`.
+
 **Status:** Analysis complete; target architecture proposed; reviewed by FRanC (CASE-610) and amended per the agreed resolutions. **Implemented** — the engine (`scaffold/src/wip_scaffold/engine.py`), the surface/policy matrix and dry-run all shipped, and the setup scripts delegate to `python -m wip_scaffold`.
 **Last updated:** 2026-07-05
 **Author:** Peter + BE-YAC (BE-YAC-20260704-112016)

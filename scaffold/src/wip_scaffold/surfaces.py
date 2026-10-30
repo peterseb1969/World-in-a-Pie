@@ -295,12 +295,12 @@ QUERY_SCAFFOLD_ROOT_FILES = [
 ]
 
 
-def query_scaffold_surfaces(app_name: str, app_slug: str, dev_namespace: str) -> list[Surface]:
+def query_scaffold_surfaces(app_name: str, app_slug: str, app_namespace: str) -> list[Surface]:
     """NL-query preset starting files (create-only; the wrapper gates when).
     A curated subset is copied — package-lock.json and any future strays in
     the scaffold dir are deliberately NOT shipped. Placeholder substitution
     happens during the copy (SCAFFOLD_APP_SLUG/NAME, the WIP clone path and
-    the dev namespace in .env.example) — in-process string replacement, so
+    the app's namespace in .env.example) — in-process string replacement, so
     no sed -i flavor dependency. The dev entrypoint keeps its exec bit via
     its own surface."""
 
@@ -327,7 +327,7 @@ def query_scaffold_surfaces(app_name: str, app_slug: str, dev_namespace: str) ->
         env_example = out[".env.example"].decode()
         env_example = env_example.replace("/path/to/WorldInPie", str(ctx.wip_root))
         env_example = env_example.replace(
-            "# WIP_NAMESPACE=myapp", f"WIP_NAMESPACE={dev_namespace}")
+            "# WIP_NAMESPACE=myapp", f"WIP_NAMESPACE={app_namespace}")
         out[".env.example"] = env_example.encode()
 
         # .gitignore merge: scaffold additions append to whatever the app
@@ -684,7 +684,7 @@ def _app_playbooks(ctx: Context) -> dict[str, bytes]:
 
 
 def app_surfaces(app_meta: dict[str, str], profile: str = "full") -> list[Surface]:
-    """app_meta: APP_NAME / APP_SLUG / DEV_NAMESPACE / PRESET / PROFILE — persisted so
+    """app_meta: APP_NAME / APP_SLUG / APP_NAMESPACE / PRESET / PROFILE — persisted so
     a set-up-in-place run regenerates CLAUDE.md from recorded metadata
     instead of deriving it from the directory name."""
     slim = profile == "slim"

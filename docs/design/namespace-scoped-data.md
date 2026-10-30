@@ -1,5 +1,16 @@
 # Namespace-Scoped Data Architecture
 
+> **⚠️ HISTORICAL DESIGN DOC — do not read this as current behaviour.**
+> Namespaces shipped, but not in the shape described below. There are no
+> namespace groups and no per-entity-type namespaces (`dev-terminologies`,
+> `dev-terms`, …): a namespace is one prefix holding every entity type, and
+> its prefix is lowercase letters, digits, `-` and `_`. There is no `-dev` /
+> `-test` convention either: an app uses the same namespace name on every
+> install, development included. For current behaviour read the `wip://`
+> MCP resources (data model, conventions), `docs/wip-deployable-app-contract.md`
+> (how an app's namespaces are reserved and keyed) and
+> `docs/design/restore-modes-merge-and-new-namespace.md` (backup and restore).
+
 Design document for adding namespace support to all WIP services, enabling namespace-scoped backup/restore, data migration between instances, and dev/test workflows.
 
 ## Status: Partially Implemented (Phase 1-2 complete)
