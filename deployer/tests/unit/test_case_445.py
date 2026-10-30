@@ -424,7 +424,7 @@ class TestCli:
             app, ["verify", "--security", "--install-dir", str(tmp_path)]
         )
         assert result.exit_code == 0, result.output
-        assert "8 check(s) passed" in result.output
+        assert "9 check(s) passed" in result.output
 
     def test_failing_install_exits_1_with_hints(self, tmp_path: Path) -> None:
         _make_secrets(tmp_path, api_key="dev_master_key_for_testing")

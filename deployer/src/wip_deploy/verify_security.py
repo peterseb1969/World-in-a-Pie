@@ -773,6 +773,12 @@ class AuthzProbe:
 
     `admin_status` is what the admin key gets when it reaches the handler:
     200 for a read, 422 for a write sent with an invalid body.
+
+    `canary_body` replaces `body` for the canary on a route that checks
+    permission inside its handler: there an invalid body is answered 422
+    before any check runs, for every key, so the canary must send a valid
+    one. `written` names what such a request creates if the route wrongly
+    admits the canary.
     """
 
     component: str
@@ -780,6 +786,8 @@ class AuthzProbe:
     path: str
     admin_status: int
     body: Any = None
+    canary_body: Any = None
+    written: str | None = None
 
 
 # Not a valid body for any write route: an admin request gets 422 and
@@ -790,7 +798,12 @@ AUTHZ_PROBES: tuple[AuthzProbe, ...] = (
     # Privileged routes.
     AuthzProbe("registry", "POST", "/api/registry/entries/register", 422, _INVALID_BODY),
     AuthzProbe("registry", "POST", "/api/registry/api-keys", 422, _INVALID_BODY),
-    AuthzProbe("registry", "PUT", "/api/registry/namespaces/wip-canary-probe", 422, _INVALID_BODY),
+    # The upsert admits a key holding a namespace reservation, so it checks
+    # permission in its handler, after the body is validated.
+    AuthzProbe(
+        "registry", "PUT", "/api/registry/namespaces/wip-canary-probe", 422, _INVALID_BODY,
+        canary_body={}, written="namespace 'wip-canary-probe'",
+    ),
     AuthzProbe("def-store", "GET", "/api/def-store/health/events", 200),
     AuthzProbe("template-store", "GET", "/api/template-store/health/events", 200),
     AuthzProbe("document-store", "GET", "/api/document-store/health/events", 200),
@@ -852,7 +865,8 @@ def check_authorization_refusal(
         probed += 1
         label = f"{probe.method} {probe.path}"
         try:
-            resp = send(probe.method, probe.path, canary, probe.body)
+            canary_body = probe.body if probe.canary_body is None else probe.canary_body
+            resp = send(probe.method, probe.path, canary, canary_body)
             control = send(probe.method, probe.path, admin, probe.body)
         except Exception as e:  # any transport failure is a finding
             problems.append(f"{label}: request failed ({e})")
@@ -860,7 +874,11 @@ def check_authorization_refusal(
         if resp.status_code == 401:
             problems.append(f"{label}: 401 — the service does not recognise the canary key")
         elif not (resp.status_code in (403, 404) and _is_json(resp)):
-            problems.append(f"{label}: canary got {resp.status_code} — not a refusal")
+            hint = (
+                f"; it may have written {probe.written}, remove it"
+                if probe.written and resp.status_code < 300 else ""
+            )
+            problems.append(f"{label}: canary got {resp.status_code} — not a refusal{hint}")
         if control.status_code != probe.admin_status:
             problems.append(
                 f"{label}: admin key got {control.status_code}, expected "
@@ -920,12 +938,18 @@ def verify_live(
     admin_key: str | None,
     *,
     canary_key: str | None = None,
+    app_keys: list[Any] | None = None,
     transport: Any = None,
 ) -> list[CheckResult]:
-    """Run the live checks against the install's public base URL."""
+    """Run the live checks against the install's public base URL.
+
+    ``app_keys`` (verify_app_keys.app_keys) adds one check per enabled app:
+    its own key is refused outside its namespaces and passes inside them.
+    """
     import httpx
 
     from wip_deploy.config_gen.spec_context import _public_base
+    from wip_deploy.verify_app_keys import check_app_keys
 
     base_url = _public_base(deployment)
     # Only a letsencrypt install reliably presents a certificate this machine
@@ -941,6 +965,7 @@ def verify_live(
             check_anonymous_refusal(base_url, active, client),
             check_reporting_roles(base_url, admin_key, active, client),
             check_authorization_refusal(base_url, active, canary_key, admin_key, client),
+            *check_app_keys(base_url, app_keys or [], admin_key, active, client),
         ]
 
 

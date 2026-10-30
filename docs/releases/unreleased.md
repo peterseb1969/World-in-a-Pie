@@ -2508,6 +2508,28 @@ sync afterwards.
 
 ## Deployment changes
 
+- **Scoped applies on k8s carry the key file and the namespace
+  reservations.** `add-app`, `app-deploy` and `app-namespace` on a k8s
+  install applied a fixed list of shared manifests that did not include
+  `api-keys-secret.yaml`, so an app added that way ran with a key no service
+  knew (401 everywhere) and its namespaces were not reserved. A scoped apply
+  now sends every top-level rendered manifest. Services pick up a new key
+  once the kubelet refreshes the mounted Secret, typically within a minute or
+  two. **Action:** on a k8s install that gained an app through a scoped verb,
+  run one `wip-deploy redeploy` (or any scoped verb) with the new deployer.
+- **`verify --security --live` checks each app's own key.** For every
+  enabled app it sends the app's key across its namespace boundaries (another
+  app's documents and registry entries, a view in another namespace, a
+  namespace outside its reservations, its own namespace against the
+  reservation, a terminology in `wip`) and requires a refusal, each paired
+  with a request inside its own namespaces that must pass. A refused registry
+  entry must read exactly like a missing one. Write probes carry
+  recognisable values (`wip-verify-unreserved`, `WIP_VERIFY_PROBE`,
+  `v_wip_verify_probe`) that a failure names if one got through. A static
+  check reads the rendered install: only an app declaring `privileged_key`
+  holds the master key. The canary's namespace-upsert probe now sends a valid
+  body: the route checks permission after validating the body, so its old
+  invalid-body probe failed the check on every install.
 - **External identity providers (Dex connectors).** `wip-deploy connector
   add|set-secret|remove|list` declares Google, GitHub, a corporate OIDC or
   LDAP provider in the spec (`auth.connectors`), rendered into Dex on every

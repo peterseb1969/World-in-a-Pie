@@ -173,3 +173,34 @@ def test_the_canary_key_is_read_from_the_file_backend(tmp_path):
     (tmp_path / "secrets").mkdir()
     (tmp_path / "secrets" / CANARY_KEY.secret_name).write_text("canary\n")
     assert read_canary_key(tmp_path, d) == "canary"
+
+
+def test_the_namespace_upsert_probe_sends_the_canary_a_valid_body():
+    """The upsert checks permission inside its handler (it admits keys that
+    hold a namespace reservation), so an invalid body is answered 422 for
+    every key. The canary must send a valid one to reach the check."""
+    seen = {}
+
+    def handler(request):
+        if request.url.path == "/api/registry/namespaces/wip-canary-probe":
+            seen[request.headers.get("X-API-Key")] = request.read()
+            if request.headers.get("X-API-Key") == CANARY:
+                return _json(403) if request.read() == b"{}" else _json(422)
+        return _enforcing(request)
+
+    result = _run(handler)
+    assert result.passed, result.fix_hint
+    assert seen[CANARY] == b"{}"
+    assert seen[ADMIN] != b"{}"
+
+
+def test_an_upsert_admitting_the_canary_names_what_it_created():
+    def handler(request):
+        if (request.url.path == "/api/registry/namespaces/wip-canary-probe"
+                and request.headers.get("X-API-Key") == CANARY):
+            return _json(200, {"prefix": "wip-canary-probe"})
+        return _enforcing(request)
+
+    result = _run(handler)
+    assert not result.passed
+    assert "it may have written namespace 'wip-canary-probe', remove it" in result.fix_hint

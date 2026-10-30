@@ -1544,8 +1544,11 @@ def verify(
                 "without one; reporting-sync must run on unprivileged "
                 "PostgreSQL roles; the install's canary key (authenticates, "
                 "authorized for nothing) must be refused by each service's "
-                "privileged and namespace-scoped routes. Writes are probed "
-                "with invalid bodies, so nothing is written."
+                "privileged and namespace-scoped routes; each enabled app's "
+                "own key must be refused outside its namespaces and pass "
+                "inside them. Canary writes carry invalid bodies; app-key "
+                "writes carry recognisable values (wip-verify-*, "
+                "WIP_VERIFY_PROBE) that a failure names if one got through."
             ),
         ),
     ] = False,
@@ -1620,6 +1623,12 @@ def verify(
 
     report = verify_security(resolved_dir, previous)
 
+    from wip_deploy.verify_app_keys import app_keys, check_rendered_master_key
+
+    root = _load_state_repo_root(resolved_dir) or find_repo_root()
+    discovery = discover(root)
+    report.results.append(check_rendered_master_key(resolved_dir, previous, discovery.apps))
+
     if live:
         from wip_deploy.verify_security import (
             read_admin_key,
@@ -1627,8 +1636,6 @@ def verify(
             verify_live,
         )
 
-        root = _load_state_repo_root(resolved_dir) or find_repo_root()
-        discovery = discover(root)
         active = {
             c.metadata.name
             for c in discovery.components
@@ -1645,7 +1652,10 @@ def verify(
             else read_canary_key(resolved_dir, previous)
         )
         report.results.extend(
-            verify_live(previous, active, admin_key, canary_key=canary_key)
+            verify_live(
+                previous, active, admin_key, canary_key=canary_key,
+                app_keys=app_keys(resolved_dir, previous, discovery.apps),
+            )
         )
 
     typer.echo(f"Security verification: {resolved_dir}")
