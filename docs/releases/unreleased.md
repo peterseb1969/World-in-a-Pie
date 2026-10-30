@@ -7,6 +7,30 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Edges may cross namespaces; relationship reads follow the reader
+
+- **Writing.** An edge lives in its source's namespace: `source_ref` must be
+  in the edge's own namespace (`cross_namespace_relationship` otherwise, as
+  before). `target_ref` may now point into another namespace and passes the
+  same gates as any reference (`isolation_mode` outbound; the target's
+  `inbound_references` plus the writer's read inbound). An edge type's
+  declared `source_templates` / `target_templates` pass those gates too at
+  create, activation and `add_edge_type_endpoints`, which they never did.
+- **`GET /documents/{id}/relationships`** without `namespace` now lists the
+  edges in every namespace the caller can read (it listed only the seed's
+  namespace), so incoming edges stored in other namespaces appear. An
+  explicit `namespace` must be readable (404 otherwise; it was not checked).
+- **`include=peers`:** a peer in a namespace the caller cannot read reports
+  `peer_error_code: "not_found"` (it was `"forbidden"`, naming the namespace).
+  A call with no caller identity no longer sees every peer.
+- **`GET /documents/{id}/traverse`** without `namespace` walks edges in every
+  namespace the caller can read and stops at a document in a namespace it
+  cannot read (that document is not returned). With `namespace`, every hop
+  stays in that namespace, as before.
+
+**Action:** none for same-namespace data. Clients that branch on
+`peer_error_code == "forbidden"` should treat `"not_found"` the same way.
+
 ### Apps run with a key of their own, not the master key
 
 The deployer now derives one config-file key per enabled app, `app-<name>`

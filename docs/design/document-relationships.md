@@ -92,7 +92,7 @@ On `create_document` against an edge type:
 1. Standard template validation (all fields, reference resolution).
 2. `source_ref` must resolve to a document whose template value is in the template-level `source_templates` list. Resolution goes through Registry (`resolve_entity_ids(bypass_cache=True)` — Principle 3).
 3. `target_ref` must resolve to a document whose template value is in the template-level `target_templates` list.
-4. If the source or target is in a different namespace than the relationship document, **reject with `cross_namespace_relationship` error** — deferred to post-v2.
+4. If the source is in a different namespace than the relationship document, **reject with `cross_namespace_relationship` error**. A target in another namespace is gated like any reference (see Namespace isolation).
 5. If the target document is hard-deleted, reject — standard reference-integrity rule. A soft-deleted endpoint is accepted with a warning, as a plain reference to an inactive document is.
 
 ### Versioning
@@ -276,9 +276,13 @@ Edge types version like any other template. A v2 of EXPERIMENT_INPUT can add fie
 
 ### Namespace isolation
 
-Source and target must be in the same namespace as the relationship document. Cross-namespace relationships are rejected at write time with `cross_namespace_relationship` error (see Theme 3 in the feature seeds — out of scope for this design).
+**Decided (FIRESIDE-37, implemented with CASE-985).** An edge lives in its **source's** namespace: `source_ref` must resolve in the edge document's own namespace, or the write is refused with `cross_namespace_relationship`. `target_ref` may point into another namespace. The three questions this section used to defer are answered:
 
-**Asymmetry with plain reference fields — deliberate, and surprising if undocumented:** a namespace's `allowed_external_refs` (together with the qualified `NS:VALUE` reference form) permits cross-namespace *plain reference fields*, but has **no effect on relationship documents**. Declaring a namespace in `allowed_external_refs` does not make edges into it writable — relationships stay same-namespace regardless of isolation config until the Theme-3 design pass decides cross-namespace edge semantics (does `allowed_external_refs` gate them? how does `/traverse` behave across isolation boundaries? do the edge reporting columns cross namespaces?). Until then, a cross-namespace link is modelled as a plain document reference field on the source document — that works today, at the cost of the `/relationships` + `/traverse` endpoints and the `source_ref_id`/`target_ref_id` reporting columns that same-namespace edges get.
+- **Does `allowed_external_refs` gate edges?** Yes, the same as any reference. The edge's namespace's `isolation_mode` / `allowed_external_refs` (outbound) and the target namespace's `inbound_references` plus the writer's read (inbound) both apply to `target_ref`. An edge type's declared `source_templates` / `target_templates` pass the same gates at create, activation and `add_edge_type_endpoints`.
+- **How does `/traverse` behave across namespaces?** Each hop searches the edges in every namespace the caller can read (or only the explicit `namespace` parameter). A document in a namespace the caller cannot read is neither returned nor expanded: the walk stops there.
+- **Do the edge reporting columns cross namespaces?** They are ids (`source_ref_id` / `target_ref_id`) and need no change. A join across namespace schemas goes through a registered view, which reads only for callers who can read every namespace it draws from (CASE-986).
+
+`/relationships` lists the edges in every namespace the caller can read unless `namespace` names one (which must be readable), so a document's incoming edges from other namespaces appear. With `include=peers`, a peer in a namespace the caller cannot read reports `peer_error_code: not_found`: the edge carries the peer's id (it is the edge's own data), nothing else of that namespace is shown.
 
 ### Deletion guardrails
 
@@ -291,7 +295,6 @@ Relationship documents are documents. Existing backup/restore handles them autom
 ## What's out of scope for v2
 
 - **Meta-relationships** (relationships whose source or target is another relationship). Deferred — adds recursive complexity.
-- **Cross-namespace relationships.** Rejected at write. Theme 3 will revisit.
 - **Auto-materialized views** for common analytical patterns (usage frequency, cardinality). A future "saved reports" feature is the right home.
 - **LOV templates** (`usage: reference`). Separate theme, separate design doc.
 - **Graph DBMS integration** (Neo4j, Dgraph). MongoDB `$graphLookup` + Postgres JOINs cover the v2 traversal requirements.

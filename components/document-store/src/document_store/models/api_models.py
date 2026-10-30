@@ -219,7 +219,8 @@ class RelationshipItem(DocumentResponse):
 
     When the caller passes ?include=peers, each item carries either:
       - peer: a PeerProjection of the entity at the OTHER end of the edge
-      - peer_error_code: 'not_found' | 'forbidden' (peer is None)
+      - peer_error_code: 'not_found' (peer is None) — also for a peer in a
+        namespace the caller cannot read, which reports like a missing one
 
     Inactive peers per PoNIF #1 are NOT errors — they are returned as a
     populated peer object with status: 'inactive' so the UI can render them
@@ -229,7 +230,7 @@ class RelationshipItem(DocumentResponse):
     peer: PeerProjection | None = None
     peer_error_code: str | None = Field(
         default=None,
-        description="Set when peer is null. Enum: not_found | forbidden."
+        description="Set when peer is null: not_found (missing, or in a namespace the caller cannot read)."
     )
     peer_error: str | None = Field(
         default=None,

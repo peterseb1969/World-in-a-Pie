@@ -7,6 +7,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from wip_auth import (
     UserIdentity,
     check_namespace_permission,
+    resolve_accessible_namespaces,
     resolve_bulk_ids,
     resolve_namespace_filter,
     resolve_or_404,
@@ -570,7 +571,11 @@ async def get_document_relationships(
             "Comma-separated relationship template values to include (default: all)."
             + _EDGE_TYPE_FILTER_RESOLUTION
         )),
-    namespace: str | None = Query(None, description="Namespace; default = the document's namespace"),
+    namespace: str | None = Query(None, description=(
+        "List only the edges stored in this namespace. Default: every namespace "
+        "you can read (an edge lives in its source's namespace, so a document's "
+        "incoming edges may sit in other namespaces)."
+    )),
     active_only: bool = Query(True, description="Exclude inactive relationship docs"),
     page: int = Query(1, ge=1),
     # Deliberately below the platform-wide 1000 ceiling: with include=peers each
@@ -592,9 +597,12 @@ async def get_document_relationships(
         raise HTTPException(status_code=404, detail="Document not found")
 
     await check_namespace_permission(identity, seed.namespace, "read")
+    if namespace:
+        await check_namespace_permission(identity, namespace, "read")
 
     ns = namespace or seed.namespace
     template_ids = await _resolve_edge_type_filter(template, ns, "template")
+    allowed = None if namespace else await resolve_accessible_namespaces(identity)
     include_set = (
         {tok.strip() for tok in include.split(",") if tok.strip()} if include else set()
     )
@@ -603,12 +611,13 @@ async def get_document_relationships(
             document_id=document_id,
             direction=direction,
             template_ids=template_ids,
-            namespace=ns,
+            namespace=namespace,
             active_only=active_only,
             page=page,
             page_size=page_size,
             include_peers="peers" in include_set,
             identity=identity,
+            allowed_namespaces=allowed,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -637,7 +646,11 @@ async def traverse_document_relationships(
             + _EDGE_TYPE_FILTER_RESOLUTION
         )),
     direction: str = Query("outgoing", description="outgoing | incoming | both"),
-    namespace: str | None = Query(None, description="Namespace; default = the seed document's namespace"),
+    namespace: str | None = Query(None, description=(
+        "Walk only edges and documents in this namespace. Default: every "
+        "namespace you can read; the walk stops at a document in a namespace "
+        "you cannot read."
+    )),
     identity: UserIdentity = Depends(require_api_key),
 ):
     """Traverse relationship graph from a document."""
@@ -649,6 +662,8 @@ async def traverse_document_relationships(
         raise HTTPException(status_code=404, detail="Document not found")
 
     await check_namespace_permission(identity, seed.namespace, "read")
+    if namespace:
+        await check_namespace_permission(identity, namespace, "read")
 
     ns = namespace or seed.namespace
     type_ids = await _resolve_edge_type_filter(types, ns, "types")
@@ -659,7 +674,10 @@ async def traverse_document_relationships(
             type_ids=type_ids,
             types_filter=[t.strip() for t in types.split(",") if t.strip()] if types else None,
             direction=direction,
-            namespace=ns,
+            namespace=namespace,
+            allowed_namespaces=(
+                None if namespace else await resolve_accessible_namespaces(identity)
+            ),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e

@@ -319,12 +319,11 @@ class DocumentService:
 
         Phase 2 layer on top of the standard reference validation (which
         already verifies source_ref / target_ref resolve and point at an
-        allowed template family). For relationship templates we also
-        require:
-
-          - the referenced source/target documents are in the SAME
-            namespace as the relationship document (cross-namespace
-            relationships rejected — see design doc, deferred to v2+).
+        allowed template family). An edge lives in its source's namespace:
+        the source_ref document must be in the edge document's namespace.
+        The target_ref document may be in any namespace; the reference gates
+        that run right after (isolation_mode outbound, inbound_references
+        plus the writer's read) decide whether this writer may point there.
 
         An endpoint that is soft-deleted is accepted: reference validation
         already warns about a non-active target, the same rule a plain
@@ -355,14 +354,13 @@ class DocumentService:
             resolved = ref.get("resolved") or {}
             ref_namespace = resolved.get("namespace")
 
-            if ref_namespace and ref_namespace != namespace:
-                # Distinct error code per design doc.
+            if field == "source_ref" and ref_namespace and ref_namespace != namespace:
                 return (
                     "cross_namespace_relationship",
-                    f"cross_namespace_relationship: '{field}' points to a document in "
+                    f"cross_namespace_relationship: 'source_ref' points to a document in "
                     f"namespace '{ref_namespace}' but the relationship document is in "
-                    f"namespace '{namespace}'. Cross-namespace relationships are not "
-                    f"supported in v2."
+                    f"namespace '{namespace}'. An edge lives in its source's namespace: "
+                    f"write it in '{ref_namespace}'."
                 )
 
         return None
@@ -474,14 +472,13 @@ class DocumentService:
                 return None, {"error": message, "error_code": code}
             await self._ensure_relationship_indexes(request.template_id, namespace)
 
-        # Validate cross-namespace references (isolation mode check). Runs
-        # after the relationship constraints, so an edge whose endpoint lies in
-        # another namespace reports cross_namespace_relationship whatever the
-        # isolation config. The
+        # Validate cross-namespace references (the two gates). Runs after the
+        # relationship constraints, so an edge whose source lies in another
+        # namespace reports cross_namespace_relationship whatever the
+        # settings; its target is gated here like any reference. The
         # template's REAL namespace arms the template-isolation branch — a
         # document may be based on a shared or foreign template, and that use
-        # follows the same isolation rules as term references (own + wip +
-        # allowed_external_refs under open; own + list under strict). Passing
+        # passes the same two gates as any other reference. Passing
         # the document's namespace here made the branch constant-false for its
         # whole life. Falls back to the document's namespace (= skip the
         # template branch) when the template dict carries no namespace.
@@ -1394,6 +1391,7 @@ class DocumentService:
         page_size: int = 50,
         include_peers: bool = False,
         identity: Any = None,
+        allowed_namespaces: list[str] | None = None,
     ) -> RelationshipListResponse:
         """Return relationship documents that point at (incoming) or from
         (outgoing) the given document.
@@ -1416,6 +1414,11 @@ class DocumentService:
 
         `template_ids` are edge-type template IDs the caller already
         resolved through the Registry.
+
+        An edge lives in its source's namespace, so the edges incident to a
+        document may sit in several namespaces. ``namespace`` lists one of
+        them; without it the listing spans ``allowed_namespaces`` (the
+        namespaces the caller can read; None = unrestricted).
         """
         if direction not in ("incoming", "outgoing", "both"):
             raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
@@ -1423,6 +1426,8 @@ class DocumentService:
         query: dict[str, Any] = {}
         if namespace:
             query["namespace"] = namespace
+        elif allowed_namespaces is not None:
+            query["namespace"] = {"$in": allowed_namespaces}
         if active_only:
             query["status"] = DocumentStatus.ACTIVE.value
 
@@ -1476,9 +1481,10 @@ class DocumentService:
              namespace permission check.
 
         Permission policy: caller already has read on the seed namespace
-        (checked at API layer). Cross-namespace peers require an explicit
-        read grant on the peer namespace; missing grant -> peer_error_code=
-        forbidden, peer=None, no 403 on the whole request.
+        (checked at API layer). A peer in a namespace the caller cannot read
+        reports exactly like a missing one (peer_error_code=not_found, no
+        namespace named): the edge carries the peer's id, nothing else of a
+        namespace the caller cannot read is shown.
         """
         if not items:
             return
@@ -1517,7 +1523,7 @@ class DocumentService:
 
         async def can_read_namespace(ns: str) -> bool:
             if identity is None:
-                return True  # service called without identity context — trust caller
+                return False  # nothing vouches for the caller
             if ns not in ns_permission_cache:
                 ns_permission_cache[ns] = await resolve_permission(identity, ns)
             return permission_sufficient(ns_permission_cache[ns], "read")
@@ -1594,10 +1600,8 @@ class DocumentService:
                 continue
 
             if not await can_read_namespace(peer_doc.namespace):
-                item.peer_error_code = "forbidden"
-                item.peer_error = (
-                    f"No read access to peer namespace '{peer_doc.namespace}'"
-                )
+                item.peer_error_code = "not_found"
+                item.peer_error = f"Peer document '{peer_id}' not found"
                 continue
 
             # Template-declared projection (CASE-343).
@@ -1653,6 +1657,7 @@ class DocumentService:
         direction: str = "outgoing",
         namespace: str | None = None,
         max_nodes: int = 1000,
+        allowed_namespaces: list[str] | None = None,
     ) -> TraverseResponse:
         """N-hop BFS expansion from a seed document, walking through
         relationship documents.
@@ -1672,6 +1677,12 @@ class DocumentService:
         `type_ids` are edge-type template IDs the caller already resolved
         through the Registry; `types_filter` is the submitted spelling,
         echoed back in the response only.
+
+        Edges live in their source's namespace, so a walk may cross
+        namespaces. ``namespace`` pins every hop to one namespace; without it
+        each hop searches ``allowed_namespaces`` (the caller's readable
+        namespaces; None = unrestricted). A node in a namespace the caller
+        cannot read is neither returned nor expanded: the walk stops there.
         """
         if direction not in ("incoming", "outgoing", "both"):
             raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
@@ -1683,6 +1694,11 @@ class DocumentService:
         if seed is None:
             raise ValueError(f"Document not found: {document_id}")
         ns = namespace or seed.namespace
+
+        def readable(node_ns: str) -> bool:
+            if namespace:
+                return node_ns == namespace
+            return allowed_namespaces is None or node_ns in allowed_namespaces
 
         visited: set[str] = {document_id}
         path_by_id: dict[str, list[str]] = {document_id: []}
@@ -1696,10 +1712,11 @@ class DocumentService:
 
             # Build the per-hop query: relationship docs whose source/target
             # references one of the frontier doc_ids.
-            base: dict[str, Any] = {
-                "namespace": ns,
-                "status": DocumentStatus.ACTIVE.value,
-            }
+            base: dict[str, Any] = {"status": DocumentStatus.ACTIVE.value}
+            if namespace:
+                base["namespace"] = namespace
+            elif allowed_namespaces is not None:
+                base["namespace"] = {"$in": allowed_namespaces}
             if type_ids:
                 base["template_id"] = {"$in": type_ids}
 
@@ -1741,11 +1758,14 @@ class DocumentService:
                         truncated = True
                         break
                     visited.add(other_id)
+                    # Look up the document to get its template + namespace.
+                    other_doc = await Document.find_one({"document_id": other_id})
+                    if other_doc is not None and not readable(other_doc.namespace):
+                        # The walk stops at a namespace the caller cannot read.
+                        continue
                     new_path = [*path_by_id[parent_id], other_id]
                     path_by_id[other_id] = new_path
                     next_frontier.add(other_id)
-                    # Look up the document to get its template + namespace.
-                    other_doc = await Document.find_one({"document_id": other_id})
                     if other_doc is None:
                         # Reference pointed at something missing — record
                         # what we know and skip.
@@ -2858,7 +2878,7 @@ class DocumentService:
                 await self._ensure_relationship_indexes(req.template_id, namespace)
             # Namespace isolation, exactly as create_document checks it and in
             # the same order (after the relationship constraints, so an edge's
-            # cross-namespace endpoint reports cross_namespace_relationship).
+            # cross-namespace source reports cross_namespace_relationship).
             # Without it a strict namespace's allow-list held for one-item
             # writes and not for batches. The validator caches each
             # namespace's settings, so a batch costs one lookup per namespace.

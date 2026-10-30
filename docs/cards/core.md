@@ -1,6 +1,6 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
 docs/Vision.md sha256:d48669c11fbfe408 reviewed:a66e110f
-wip://ponifs sha256:f80ecc4ddd725106 reviewed:d1653035
+wip://ponifs sha256:ce7da4c122478465 reviewed:c4423374
 wip://development-guide sha256:d44cd305a3b84d3e reviewed:a66e110f
 scaffold/templates/claude-md/app.md sha256:0bb5acc49a2e3f43 reviewed:a7c74e27
 docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca reviewed:809f9059

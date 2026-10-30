@@ -822,8 +822,10 @@ async def setup_registry_and_app(mongo_client, document_models=None):
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
 
     # Create test namespaces. 'other-ns' exists so the cross-namespace
-    # relationship-rejection tests actually run instead of skipping (CASE-788).
-    for prefix in ("wip", "test-ns", "other-ns"):
+    # relationship-rejection tests actually run instead of skipping (CASE-788);
+    # 'xns-closed' (closed to inbound references, the default) holds the
+    # targets of the cross-namespace reference and edge tests.
+    for prefix in ("wip", "test-ns", "other-ns", "xns-closed"):
         await Namespace(prefix=prefix, description=f"Test namespace: {prefix}").insert()
 
     # Mount Registry in-process

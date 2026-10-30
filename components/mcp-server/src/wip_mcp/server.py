@@ -352,14 +352,16 @@ creation, not template creation. Identifier RESOLUTION is a separate step and
 does run at template creation: an unresolvable reference fails the create
 outright, which is why the rule above bites there first.
 
-Relationship (edge) documents are the exception: the two gates govern
-plain reference fields only. An edge document's source_ref and
-target_ref must resolve within the edge's own namespace — cross-namespace
-edges are rejected with error_code `cross_namespace_relationship`
-regardless of isolation config. To link documents across namespaces, use
-a plain document reference field instead; the trade-off is losing the
-/relationships and /traverse endpoints and the edge reporting columns
-that same-namespace edges get.
+Relationship (edge) documents may cross namespaces. An edge lives in its
+SOURCE's namespace: source_ref must resolve within the edge's own namespace
+(otherwise error_code `cross_namespace_relationship` — write the edge in the
+source's namespace). target_ref may point into another namespace and passes
+the two gates like any reference; an edge type's declared target_templates /
+source_templates pass them too, when the edge type is created, activated or
+widened. Reads follow the reader: /relationships lists the edges in every
+namespace the caller can read (so a document's incoming edges from other
+namespaces appear), a peer in a namespace the caller cannot read reports
+`not_found`, and /traverse stops at a document in such a namespace.
 
 ### API Key Namespace Scoping
 Non-privileged API keys MUST have an explicit `namespaces` list. Keys without
@@ -531,8 +533,9 @@ A template defines a document schema — like a form definition.
   an exact id use resolved and fall back to lookup_value when null. Writes
   accept plain strings; the source_ref/target_ref enforcement constraint is
   derived from the declaration when the template is served, never stored.
-  Document writes get extra validation (cross-namespace and archived
-  endpoints are rejected), and two query endpoints become available:
+  Document writes get extra validation (the source must be in the edge's
+  own namespace, the target passes the cross-namespace reference gates,
+  archived endpoints are rejected), and two query endpoints become available:
   /documents/{id}/relationships and /traverse. usage is immutable after
   creation.
 - versioned: true (default) | false. With versioned: false, document updates
@@ -958,7 +961,8 @@ WIP has two conceptually distinct schemas that share a storage representation:
 **entity templates** (the default — `usage: 'entity'`) and **edge types**
 (`usage: 'relationship'`). They live in the same `templates` collection and
 flow through the same APIs, but document-store treats edge-type writes
-differently: extra cross-namespace and not-archived validation, lazy Mongo
+differently: the source must live in the edge's own namespace (the target
+may be anywhere the reference gates allow), not-archived validation, lazy Mongo
 indexes on data.source_ref / data.target_ref, two query endpoints
 (/relationships, /traverse), and reporting-sync columns
 (source_ref_id / target_ref_id). The MCP tool `create_edge_type` exists
@@ -3393,7 +3397,11 @@ async def get_document_relationships(
         direction: 'incoming', 'outgoing', or 'both' (default 'both').
         template: Comma-separated edge type values to include
             (default: all edge types).
-        namespace: Override; defaults to the seed document's namespace.
+        namespace: List only edges stored in this namespace. Default: every
+            namespace you can read — an edge lives in its source's namespace,
+            so a document's incoming edges may sit in other namespaces.
+            With include=peers, a peer in a namespace you cannot read
+            reports peer_error_code 'not_found'.
         active_only: Exclude inactive rel docs (default True).
         page, page_size: Pagination (default 1 / 50).
 
@@ -3444,7 +3452,9 @@ async def traverse_documents(
         types: Comma-separated edge type values to constrain the
             traversal (default: all edge types).
         direction: 'outgoing', 'incoming', or 'both' (default 'outgoing').
-        namespace: Override; defaults to the seed document's namespace.
+        namespace: Walk only this namespace. Default: every namespace you can
+            read; the walk stops at (and does not return) a document in a
+            namespace you cannot read.
 
     Example:
         # Two-hop lineage of an experiment, only via EXPERIMENT_INPUT edges:

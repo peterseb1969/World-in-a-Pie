@@ -556,13 +556,17 @@ class TemplateService:
             check_existence=not is_draft,
         )
 
-        # Validate cross-namespace references (isolation mode check) over ALL
-        # resolved schema refs — extends AND field-level template/terminology
-        # refs, not just the parent — skip for drafts (re-checked at activation)
+        # Validate cross-namespace references (the two gates) over ALL
+        # resolved schema refs — extends, field-level template/terminology
+        # refs and an edge type's declared endpoints — skip for drafts
+        # (re-checked at activation)
         if not is_draft:
             await TemplateService._check_reference_isolation(
                 namespace,
-                template_ids=resolved_template_ids,
+                template_ids=[
+                    *resolved_template_ids,
+                    *TemplateService._endpoint_ids(source_entries, target_entries),
+                ],
                 terminology_ids=resolved_terminology_ids,
                 extends_namespace=parent_namespace,
             )
@@ -1848,6 +1852,15 @@ class TemplateService:
             )
         except EntityNotFoundError as e:
             raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
+
+        # Widening adds references: the endpoints not already declared pass
+        # the same two gates as any other template reference.
+        await TemplateService._check_reference_isolation(
+            ns,
+            template_ids=[*resolved_source.values(), *resolved_target.values()],
+            terminology_ids=[],
+            previous=template,
+        )
 
         # Union into the existing entry lists, order-stable, deduplicated by
         # canonical identity (CASE-515: comparing a resolved addition against
@@ -3171,7 +3184,10 @@ class TemplateService:
                 ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 await TemplateService._check_reference_isolation(
                     namespace,
-                    template_ids=act_template_ids,
+                    template_ids=[
+                        *act_template_ids,
+                        *TemplateService._endpoint_ids(t.source_templates, t.target_templates),
+                    ],
                     terminology_ids=act_terminology_ids,
                     extends_template_id=t.extends,
                     previous=previous[0] if previous else None,
@@ -3536,9 +3552,25 @@ class TemplateService:
         return sorted(applied_template_ids), sorted(applied_terminology_ids)
 
     @staticmethod
+    def _endpoint_ids(*entry_lists: list[Any] | None) -> list[str]:
+        """The resolved template ids of an edge type's endpoint declarations."""
+        return [
+            entry.resolved
+            for entries in entry_lists
+            for entry in entries or []
+            if getattr(entry, "resolved", None)
+        ]
+
+    @staticmethod
     def _stored_reference_ids(template: Any) -> set[str]:
-        """Every template and terminology id a stored template references."""
-        ids: set[str] = set()
+        """Every template and terminology id a stored template references,
+        its edge-type endpoints included."""
+        ids: set[str] = set(
+            TemplateService._endpoint_ids(
+                getattr(template, "source_templates", None),
+                getattr(template, "target_templates", None),
+            )
+        )
         for field in template.fields or []:
             ids.update(field.target_templates or [])
             ids.update(field.target_terminologies or [])
