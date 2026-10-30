@@ -15,10 +15,7 @@ from typing import Any
 import httpx
 
 from wip_auth import UserIdentity
-from wip_auth.identity import get_identity_string
 from wip_auth.reference_policy import (
-    PermissionUnavailableError,
-    check_reference,
     outbound_allows,
 )
 
@@ -41,29 +38,6 @@ class ReferenceValidationError(Exception):
     def __init__(self, message: str, violations: list[dict[str, Any]]):
         super().__init__(message)
         self.violations = violations
-
-
-class InboundReferenceRefused(Exception):
-    """A new reference points into a closed namespace the writer cannot read.
-
-    Reported to the writer as not found: a closed namespace does not confirm
-    that its entities exist to someone who cannot read it.
-    """
-
-    def __init__(self, refused: list[dict[str, Any]]):
-        self.refused = refused
-        self.errors: list[dict[str, Any]] = [
-            {
-                "code": "reference_not_found",
-                "field": r.get("field"),
-                "message": (
-                    f"Referenced {r['type']} not found for field '{r['field']}'"
-                    if r.get("field") else f"Referenced {r['type']} not found"
-                ),
-            }
-            for r in refused
-        ]
-        super().__init__("; ".join(str(e["message"]) for e in self.errors))
 
 
 class RegistryUnavailableError(Exception):
@@ -121,12 +95,15 @@ class ReferenceValidator:
         identity: UserIdentity | None = None,
     ) -> None:
         """
-        Check a document's new cross-namespace references against both gates.
+        Check a document's new cross-namespace references against the
+        outbound gate: the source namespace's isolation_mode decides whether
+        it may reference another namespace (wip_auth.reference_policy).
 
-        The source namespace's isolation_mode decides whether it may reference
-        another namespace (outbound); the target's inbound_references decides
-        whether this writer may reference it (inbound, wip_auth.reference_policy).
-        Only references the previous version did not already hold are checked:
+        The inbound gate (the target's inbound_references) is applied during
+        validation instead (inbound_gate): a refused reference must read
+        exactly like a missing one, which only the resolvers themselves can
+        report. Only references the previous version did not already hold
+        are checked:
         a reference carried over unchanged stays valid even after the writer
         loses read on its target, and the document's template, fixed for the
         document's life, is checked when the document is first written.
@@ -146,8 +123,6 @@ class ReferenceValidator:
         Raises:
             ReferenceValidationError: A reference the source namespace's own
                 setting forbids
-            InboundReferenceRefused: A reference into a closed namespace the
-                writer cannot read
             RegistryUnavailableError: If namespace settings, target namespaces
                 or the writer's permission cannot be read
         """
@@ -196,22 +171,13 @@ class ReferenceValidator:
 
         source_config = await self._get_namespace(document_namespace)
         violations: list[dict[str, Any]] = []
-        refused: list[dict[str, Any]] = []
-        for kind, entity_id, namespace, field in targets:
+        for kind, entity_id, namespace, _field in targets:
             target_ns = namespace or placed.get(entity_id)
             # A target the Registry cannot place is not an active entity;
             # validation reports that, not this check.
             if not target_ns or target_ns == document_namespace:
                 continue
-            try:
-                verdict = await check_reference(
-                    document_namespace, source_config,
-                    target_ns, self._get_namespace,
-                    identity,
-                )
-            except PermissionUnavailableError as e:
-                raise RegistryUnavailableError(str(e)) from e
-            if verdict == "outbound":
+            if not outbound_allows(document_namespace, source_config, target_ns):
                 violations.append({
                     "type": kind,
                     "namespace": target_ns,
@@ -220,27 +186,12 @@ class ReferenceValidator:
                         f"from '{document_namespace}' namespace"
                     ),
                 })
-            elif verdict == "inbound":
-                refused.append({"type": kind, "field": field, "namespace": target_ns})
 
         if violations:
             raise ReferenceValidationError(
                 f"Document references entities outside the '{document_namespace}' namespace "
                 f"(isolation_mode=strict): {len(violations)} violation(s)",
                 violations=violations,
-            )
-        if refused:
-            # The writer learns only that the targets were not found; the
-            # operator log says which closed namespaces refused whom.
-            logger.warning(
-                "Inbound reference refused: %s writing in '%s' cannot read %s",
-                get_identity_string(), document_namespace,
-                sorted({r["namespace"] for r in refused}),
-            )
-            # Kind and field only: the resolved id would tell the writer what a
-            # value names inside a namespace it cannot read.
-            raise InboundReferenceRefused(
-                [{"type": r["type"], "field": r["field"]} for r in refused]
             )
 
     async def validate_template_references(

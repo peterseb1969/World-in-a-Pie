@@ -28,7 +28,6 @@ import pytest
 from httpx import AsyncClient
 
 from document_store.services.reference_validator import (
-    InboundReferenceRefused,
     ReferenceValidationError,
     ReferenceValidator,
     get_reference_validator,
@@ -61,18 +60,16 @@ def _validator(
 
 
 @pytest.mark.asyncio
-async def test_open_mode_reaches_a_closed_namespace_only_with_read():
-    # Open mode may reference any namespace; the closed target still refuses
-    # a writer who cannot read it (no identity here), as a reference not found.
+async def test_open_mode_leaves_a_closed_template_namespace_to_validation():
+    # The inbound gate on a closed template namespace is applied while the
+    # template is resolved (inbound_gate), so its refusal reads like a missing
+    # template; this check applies the outbound gate only.
     v = _validator("appns", "open")
     v._namespace_cache["strangerns"] = (time.monotonic(), {"inbound_references": "closed"})
-    with pytest.raises(InboundReferenceRefused) as exc_info:
-        await v.validate_document_references(
-            document_namespace="appns",
-            template_namespace="strangerns",
-        )
-    assert exc_info.value.errors[0]["code"] == "reference_not_found"
-    assert "strangerns" not in str(exc_info.value)
+    await v.validate_document_references(
+        document_namespace="appns",
+        template_namespace="strangerns",
+    )
 
 
 @pytest.mark.asyncio

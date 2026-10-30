@@ -15,7 +15,6 @@ import time
 import pytest
 
 from document_store.services.reference_validator import (
-    InboundReferenceRefused,
     ReferenceValidationError,
     ReferenceValidator,
 )
@@ -95,22 +94,18 @@ async def test_strict_mode_allows_declared_external_document_ref():
 
 
 @pytest.mark.asyncio
-async def test_open_mode_reaches_a_closed_namespace_only_with_read():
-    # Open mode may reference any namespace; the closed target refuses a
-    # writer who cannot read it (no identity here), as a reference not found.
+async def test_open_mode_leaves_a_closed_namespace_to_validation():
+    # Open mode may reference any namespace. Whether this writer may name a
+    # target in a closed namespace is the inbound gate's question, answered
+    # during validation (inbound_gate), where a refusal reads exactly like a
+    # missing target; this post-validation check applies the outbound gate only.
     v = _validator("appns", "open")
     v._namespace_cache["otherns"] = (time.monotonic(), {"inbound_references": "closed"})
-    with pytest.raises(InboundReferenceRefused) as exc_info:
-        await v.validate_document_references(
-            document_namespace="appns",
-            template_namespace="appns",
-            document_references=[_doc_ref("otherns")],
-        )
-    assert exc_info.value.errors == [{
-        "code": "reference_not_found",
-        "field": "supervisor",
-        "message": "Referenced document not found for field 'supervisor'",
-    }]
+    await v.validate_document_references(
+        document_namespace="appns",
+        template_namespace="appns",
+        document_references=[_doc_ref("otherns")],
+    )
 
 
 @pytest.mark.asyncio

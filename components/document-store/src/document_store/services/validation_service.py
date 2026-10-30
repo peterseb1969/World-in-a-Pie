@@ -16,6 +16,8 @@ from wip_auth.document_identity import (
 
 from .def_store_client import DefStoreError, get_def_store_client
 from .identity_service import IdentityService
+from .inbound_gate import InboundGate, current_gate, gate_refuses, reset_gate, use_gate
+from .reference_validator import RegistryUnavailableError
 from .template_store_client import TemplateStoreError, get_template_store_client
 
 logger = logging.getLogger(__name__)
@@ -187,9 +189,14 @@ class ValidationService:
         template_version: int | None = None,
         doc_ref_cache: dict | None = None,
         template_override: dict[str, Any] | None = None,
+        inbound: InboundGate | None = None,
     ) -> ValidationResult:
         """
         Validate document data against a template.
+
+        With `inbound`, a reference whose target lies in a closed namespace
+        the writer cannot read is treated as not found, by each resolver's
+        own not-found branch (see inbound_gate).
 
         Args:
             template_id: Template ID to validate against
@@ -203,6 +210,24 @@ class ValidationService:
         Returns:
             ValidationResult with errors, warnings, identity hash, and timing
         """
+        token = use_gate(inbound)
+        try:
+            return await self._validate(
+                template_id, data, namespace, template_version,
+                doc_ref_cache, template_override,
+            )
+        finally:
+            reset_gate(token)
+
+    async def _validate(
+        self,
+        template_id: str,
+        data: dict[str, Any],
+        namespace: str,
+        template_version: int | None,
+        doc_ref_cache: dict | None,
+        template_override: dict[str, Any] | None,
+    ) -> ValidationResult:
         result = ValidationResult()
         total_start = time.perf_counter()
 
@@ -315,6 +340,10 @@ class ValidationService:
         try:
             client = get_template_store_client()
             template = await client.get_template_resolved(template_id, version=version)
+            if template is not None and await gate_refuses(
+                template.get("namespace"), template.get("template_id") or template_id,
+            ):
+                template = None
 
             if template is None:
                 result.add_error(
@@ -1209,6 +1238,13 @@ class ValidationService:
                 term_val = term_validations[i]
                 field_path = term_val["field_path"]
 
+                matched = validation_result.get("matched_term") or {}
+                if await self._term_refused(validation_result, matched.get("term_id")):
+                    # The terminology lies in a closed namespace the writer
+                    # cannot read: every value is invalid, without a
+                    # suggestion, whether the term exists or not.
+                    validation_result = {"valid": False, "suggestion": None}
+
                 if not validation_result.get("valid", False):
                     result.add_error(
                         code="invalid_term",
@@ -1505,6 +1541,10 @@ class ValidationService:
                             "resolved": resolved,
                         })
 
+            except RegistryUnavailableError:
+                # The gate could not be checked: refuse the write rather
+                # than let the reference through unchecked.
+                raise
             except Exception as e:
                 result.add_warning(f"Could not resolve reference for field '{field_path}': {e!s}")
 
@@ -1552,6 +1592,7 @@ class ValidationService:
                     file_id=file_id,
                     allowed_types=allowed_types,
                     max_size_mb=max_size_mb,
+                    is_refused=gate_refuses if current_gate() is not None else None,
                 )
 
                 if not is_valid:
@@ -1697,6 +1738,10 @@ class ValidationService:
             cache_key = f"doc:{value}|{','.join(sorted(target_templates))}"
             if cache_key in doc_ref_cache:
                 doc = doc_ref_cache[cache_key]
+                # The gate is per write, never cached: a refused target in
+                # one item may be carried in another.
+                if doc is not None and await gate_refuses(doc.namespace, doc.document_id):
+                    doc = None
                 # Jump straight to template verification (doc may be None)
                 if doc is None:
                     result.add_error(
@@ -1796,6 +1841,9 @@ class ValidationService:
         # Cache the lookup result (including None for not-found)
         if cache_key is not None and doc_ref_cache is not None:
             doc_ref_cache[cache_key] = doc
+
+        if doc and await gate_refuses(doc.namespace, doc.document_id):
+            doc = None
 
         if not doc:
             result.add_error(
@@ -2145,6 +2193,8 @@ class ValidationService:
                 )
                 if validation_result.get("valid"):
                     matched_term = validation_result.get("matched_term", {})
+                    if await self._term_refused(validation_result, matched_term.get("term_id")):
+                        continue
                     return {
                         "term_id": matched_term.get("term_id"),
                         "terminology_value": terminology_ref,
@@ -2160,6 +2210,16 @@ class ValidationService:
         )
         return None
 
+    async def _term_refused(self, validation_result: dict[str, Any], term_id: str | None) -> bool:
+        """Is a term value's terminology in a closed namespace the writer
+        cannot read? Decided by terminology, so an absent value and a present
+        one are refused alike."""
+        gate = current_gate()
+        terminology_id = validation_result.get("terminology_id")
+        if gate is None or not terminology_id:
+            return False
+        return await gate.refuses(await gate.namespace_of(terminology_id), term_id)
+
     async def _resolve_terminology_reference(
         self,
         value: str,
@@ -2173,7 +2233,9 @@ class ValidationService:
             exists = await client.terminology_exists(value)
             if exists:
                 terminology = await client.get_terminology(value)
-                if terminology:
+                if terminology and not await gate_refuses(
+                    terminology.get("namespace"), terminology.get("terminology_id"),
+                ):
                     return {
                         "terminology_id": terminology.get("terminology_id"),
                         "terminology_value": terminology.get("value"),
@@ -2202,7 +2264,9 @@ class ValidationService:
             if not template:
                 template = await client.get_template(template_value=value)
 
-            if template:
+            if template and not await gate_refuses(
+                template.get("namespace"), template.get("template_id"),
+            ):
                 return {
                     "template_id": template.get("template_id"),
                     "template_value": template.get("value"),

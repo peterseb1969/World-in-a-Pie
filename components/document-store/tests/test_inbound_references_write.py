@@ -62,10 +62,12 @@ async def _write(client: AsyncClient, headers: dict, code: str, note: str) -> di
 async def test_a_writer_who_cannot_read_the_closed_namespace_is_refused(
     client: AsyncClient, closed_namespace_template: str,
 ):
+    # The document's template lives in the closed namespace: refused, it
+    # reads exactly as a template that does not exist.
     result = await _write(client, WRITER, "NEW", "x")
     assert result["status"] == "error"
     assert result["error_code"] == "validation_failed"
-    assert result["details"]["errors"][0]["code"] == "reference_not_found"
+    assert result["details"]["errors"][0]["code"] == "template_not_found"
     # Nothing tells the writer which namespace refused it.
     assert "xns-closed" not in str(result)
 

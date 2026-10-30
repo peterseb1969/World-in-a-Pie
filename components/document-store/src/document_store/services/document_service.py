@@ -40,9 +40,9 @@ from ..models.document import Document, DocumentMetadata, DocumentStatus
 from .errors import DocumentStoreError, error_fields
 from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
+from .inbound_gate import InboundGate, carried_ids
 from .nats_client import EventType, publish_document_event
 from .reference_validator import (
-    InboundReferenceRefused,
     ReferenceValidationError,
     RegistryUnavailableError,
     get_reference_validator,
@@ -65,6 +65,9 @@ class _ItemOutcome(NamedTuple):
     result: "BulkResultItem"
     pending_event: tuple | None
     counter: str
+
+
+_UNKNOWN_PREVIOUS: Any = object()
 
 
 class PatchError(Exception):
@@ -256,6 +259,51 @@ class DocumentService:
     # PHASE 2 — RELATIONSHIP-TEMPLATE WRITE-TIME VALIDATION
     # =========================================================================
 
+    async def _validate_as_writer(
+        self,
+        template_id: str,
+        data: dict[str, Any],
+        namespace: str,
+        *,
+        template_version: int | None = None,
+        doc_ref_cache: dict | None = None,
+        template_override: dict[str, Any] | None = None,
+        previous: Any = _UNKNOWN_PREVIOUS,
+    ) -> Any:
+        """Validate a write (or a dry run of one) as the calling writer.
+
+        A reference into a closed namespace the writer cannot read is
+        reported exactly as a missing target (inbound_gate). References the
+        document's previous version already held are exempt. When the caller
+        knows that version (PATCH, migrate), one enforcing pass. Otherwise the
+        previous version is known only once validation has computed the
+        identity, so a recording pass runs first, and a second, enforcing
+        pass only when it refused something the previous version did not
+        hold.
+        """
+        def run(gate: InboundGate) -> Any:
+            return self.validation_service.validate(
+                template_id, data, namespace=namespace,
+                template_version=template_version, doc_ref_cache=doc_ref_cache,
+                template_override=template_override, inbound=gate,
+            )
+
+        if previous is not _UNKNOWN_PREVIOUS:
+            return await run(InboundGate(namespace, carried=carried_ids(previous)))
+        recording = InboundGate(namespace, enforce=False)
+        result = await run(recording)
+        if not recording.refused:
+            return result
+        carried: frozenset[str] = frozenset()
+        if result.valid and result.identity_values and template_override is None:
+            found = await self._latest_version_by_identity(
+                namespace, template_id, result.identity_values,
+            )
+            carried = carried_ids(found)
+        if recording.refused <= carried:
+            return result
+        return await run(InboundGate(namespace, carried=carried))
+
     async def _check_new_references(
         self, namespace: str, template_id: str, vr: Any,
     ) -> None:
@@ -279,7 +327,7 @@ class DocumentService:
         try:
             await validator.validate_document_references(**kwargs)
             return
-        except (ReferenceValidationError, InboundReferenceRefused):
+        except ReferenceValidationError:
             if not vr.identity_values:
                 raise
             previous = await self._latest_version_by_identity(
@@ -434,11 +482,11 @@ class DocumentService:
 
         # Validate document
         start = time.perf_counter()
-        validation_result = await self.validation_service.validate(
+        validation_result = await self._validate_as_writer(
             request.template_id,
             request.data,
+            namespace,
             template_version=request.template_version,
-            namespace=namespace
         )
         timing["1_validation"] = (time.perf_counter() - start) * 1000
 
@@ -486,7 +534,7 @@ class DocumentService:
             await self._check_new_references(
                 namespace, request.template_id, validation_result,
             )
-        except (ReferenceValidationError, InboundReferenceRefused) as e:
+        except ReferenceValidationError as e:
             return None, error_fields(e)
         except RegistryUnavailableError as e:
             # Isolation cannot be checked, so the write is refused rather
@@ -2485,12 +2533,12 @@ class DocumentService:
 
         async def _validate_one(i: int, item: DocumentCreateRequest):
             async with validation_semaphore:
-                return i, item, await self.validation_service.validate(
+                return i, item, await self._validate_as_writer(
                     item.template_id,
                     item.data,
+                    namespace,
                     template_version=getattr(item, 'template_version', None),
-                    namespace=namespace,
-                    doc_ref_cache=doc_ref_cache
+                    doc_ref_cache=doc_ref_cache,
                 )
 
         def _skipped_rows(after_index: int) -> list[BulkResultItem]:
@@ -2527,12 +2575,12 @@ class DocumentService:
             # Sequential when continue_on_error=False — stop on first failure
             for i, item in enumerate(items):
                 try:
-                    validation_result = await self.validation_service.validate(
+                    validation_result = await self._validate_as_writer(
                         item.template_id,
                         item.data,
+                        namespace,
                         template_version=getattr(item, 'template_version', None),
-                        namespace=namespace,
-                        doc_ref_cache=doc_ref_cache
+                        doc_ref_cache=doc_ref_cache,
                     )
                     if validation_result.valid:
                         validation_results.append((i, item, validation_result))
@@ -2885,7 +2933,7 @@ class DocumentService:
             try:
                 await self._check_new_references(namespace, req.template_id, vr)
             except (
-                ReferenceValidationError, InboundReferenceRefused, RegistryUnavailableError,
+                ReferenceValidationError, RegistryUnavailableError,
             ) as e:
                 # RegistryUnavailableError: isolation cannot be checked, so the
                 # item is refused rather than written unchecked.
@@ -3082,7 +3130,7 @@ class DocumentService:
         namespace: str,
     ) -> ValidationResponse:
         """Validate document without saving."""
-        result = await self.validation_service.validate(template_id, data, namespace=namespace)
+        result = await self._validate_as_writer(template_id, data, namespace)
         return self._result_to_validation_response(result)
 
     async def validate_candidate(
@@ -3136,10 +3184,10 @@ class DocumentService:
                 for new_key, old_key in renames.items():
                     if old_key in data and new_key not in data:
                         data[new_key] = data.pop(old_key)
-            result = await self.validation_service.validate(
+            result = await self._validate_as_writer(
                 "candidate",
                 data,
-                namespace=namespace,
+                namespace,
                 template_override=template_definition,
             )
             out.append((doc_id, self._result_to_validation_response(result)))
@@ -3187,10 +3235,10 @@ class DocumentService:
         responses: list[ValidationResponse] = []
         with term_resolution_batch():
             for data in items:
-                result = await self.validation_service.validate(
+                result = await self._validate_as_writer(
                     template_id,
                     data,
-                    namespace=namespace,
+                    namespace,
                     template_version=template_version,
                     doc_ref_cache=doc_ref_cache,
                 )
@@ -3553,8 +3601,8 @@ class DocumentService:
             if old_key in data and new_key not in data:
                 data[new_key] = data.pop(old_key)
 
-        vr = await self.validation_service.validate(
-            template_id, data, namespace=namespace, template_version=to_version,
+        vr = await self._validate_as_writer(
+            template_id, data, namespace, template_version=to_version, previous=doc,
         )
         if not vr.valid:
             return BulkResultItem(
@@ -3731,11 +3779,12 @@ class DocumentService:
 
             # 5. Re-validate the merged document against the SAME template
             #    version the existing document was created with (design §13).
-            validation_result = await self.validation_service.validate(
+            validation_result = await self._validate_as_writer(
                 current.template_id,
                 merged_data,
-                namespace=current.namespace,
+                current.namespace,
                 template_version=current.template_version,
+                previous=current,
             )
             if not validation_result.valid:
                 # CASE-490: a PATCH whose pinned template version is inactive
@@ -3835,9 +3884,6 @@ class DocumentService:
                     "reference_violation",
                     f"Cross-namespace reference violation: {exc.violations}",
                 ) from exc
-            except InboundReferenceRefused as exc:
-                # Reported as a target that does not resolve (see errors.py).
-                raise PatchError("validation_failed", str(exc)) from exc
             except RegistryUnavailableError as exc:
                 raise PatchError("registry_error", str(exc)) from exc
 

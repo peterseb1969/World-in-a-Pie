@@ -33,7 +33,6 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
     from .document_service import PatchError
     from .file_service import FileServiceError
     from .reference_validator import (
-        InboundReferenceRefused,
         ReferenceValidationError,
         RegistryUnavailableError,
     )
@@ -51,12 +50,6 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
         return {"error": f"Cross-namespace reference violation: {exc.violations}",
                 "error_code": "reference_violation",
                 "details": {"rule": "cross_namespace", "violations": exc.violations}}
-    if isinstance(exc, InboundReferenceRefused):
-        # The same shape as validating a reference whose target is absent: a
-        # closed namespace does not confirm its entities to a writer who
-        # cannot read it.
-        return {"error": message, "error_code": "validation_failed",
-                "details": {"errors": exc.errors}}
     if isinstance(exc, RegistryUnavailableError):
         return {"error": message, "error_code": "registry_error",
                 "details": {"rule": "registry_unavailable"}}

@@ -3,6 +3,7 @@
 import hashlib
 import math
 import re
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
@@ -592,7 +593,8 @@ class FileService:
         file_id: str,
         allowed_types: list[str],
         max_size_mb: float,
-        allowed_templates: list[str] | None = None
+        allowed_templates: list[str] | None = None,
+        is_refused: Callable[[str | None, str | None], Awaitable[bool]] | None = None,
     ) -> tuple[bool, str | None, FileReference | None]:
         """
         Validate that a file meets field constraints.
@@ -607,6 +609,11 @@ class FileService:
             Tuple of (is_valid, error_message, file_reference)
         """
         file_doc = await File.find_one({"file_id": file_id})
+        # A file in a closed namespace the writer cannot read is reported as
+        # missing, before anything that would describe it (deleted, size,
+        # type): see inbound_gate.
+        if file_doc and is_refused is not None and await is_refused(file_doc.namespace, file_id):
+            file_doc = None
         if not file_doc:
             return False, f"File not found: {file_id}", None
 
