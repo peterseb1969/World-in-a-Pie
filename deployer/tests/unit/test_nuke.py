@@ -202,7 +202,7 @@ class TestNukeInstallDirSuccess:
 
 class TestPurgeAll:
     def test_dry_run_does_not_mutate(
-        self, monkeypatch: pytest.MonkeyPatch
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Dry-run reports what would be removed but never invokes a
         destructive podman command."""
@@ -224,7 +224,7 @@ class TestPurgeAll:
         monkeypatch.setattr("wip_deploy.nuke._podman_ls_names", fake_ls_names)
         monkeypatch.setattr("wip_deploy.nuke._podman", fake_podman)
 
-        report = nuke_purge_all(remove_data=True, dry_run=True)
+        report = nuke_purge_all(remove_data=True, dry_run=True, install_root=tmp_path)
 
         # Report: containers + pods (wip-ish) + volumes (wip-ish)
         assert report.containers_removed == ["wip-mongodb", "wip-registry"]
@@ -830,3 +830,147 @@ class TestHasK8sInstall:
     def test_missing_state_file_skipped(self, tmp_path: Path) -> None:
         (tmp_path / "no-state").mkdir()
         assert has_k8s_install(tmp_path) is False
+
+
+# ────────────────────────────────────────────────────────────────────
+# Removing data also removes the saved deployment state
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestRemoveDataRemovesSavedState:
+    """`install` treats a saved deployment state as a live install and
+    refuses to reshape it. Once `--remove-data` has destroyed the install's
+    data, the state describes nothing and must go with it; without
+    `--remove-data` it stays so `redeploy` can bring the volumes back."""
+
+    @staticmethod
+    def _stub_compose(monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        monkeypatch.setattr(
+            "wip_deploy.nuke.subprocess.run",
+            lambda cmd, **kw: subprocess.CompletedProcess(
+                cmd, returncode=0, stdout="", stderr=""
+            ),
+        )
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+    @staticmethod
+    def _install_dir(root: Path, name: str, compose: bool = True) -> Path:
+        d = root / name
+        d.mkdir(parents=True)
+        if compose:
+            (d / "docker-compose.yaml").write_text("services: {}\n")
+        (d / "deployment.deployer-state").write_text("{}")
+        (d / "secrets").mkdir()
+        (d / "secrets" / "api-key").write_text("v")
+        return d
+
+    def test_scoped_remove_data_removes_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_compose(monkeypatch)
+        d = self._install_dir(tmp_path, "default")
+
+        report = nuke_install_dir(d, remove_data=True)
+
+        assert not (d / "deployment.deployer-state").exists()
+        assert report.state_files_removed == [d / "deployment.deployer-state"]
+        assert "1 saved install state(s) removed" in report.summary()
+        # Secrets are a separate opt-in.
+        assert (d / "secrets" / "api-key").exists()
+
+    def test_scoped_without_remove_data_keeps_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_compose(monkeypatch)
+        d = self._install_dir(tmp_path, "default")
+
+        report = nuke_install_dir(d)
+
+        assert (d / "deployment.deployer-state").exists()
+        assert report.state_files_removed == []
+
+    def test_scoped_remove_data_removes_legacy_state_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_compose(monkeypatch)
+        d = tmp_path / "old"
+        d.mkdir()
+        (d / "docker-compose.yaml").write_text("services: {}\n")
+        (d / "deployment.json").write_text("{}")
+
+        report = nuke_install_dir(d, remove_data=True)
+
+        assert not (d / "deployment.json").exists()
+        assert report.state_files_removed == [d / "deployment.json"]
+
+    def test_k8s_remove_data_removes_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_compose(monkeypatch)
+        d = self._install_dir(tmp_path, "kb", compose=False)
+
+        report = nuke_k8s_install_dir(d, namespace="wip-kb", remove_data=True)
+
+        assert not (d / "deployment.deployer-state").exists()
+        assert report.state_files_removed == [d / "deployment.deployer-state"]
+
+    def test_k8s_without_remove_data_keeps_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_compose(monkeypatch)
+        d = self._install_dir(tmp_path, "kb", compose=False)
+
+        nuke_k8s_install_dir(d, namespace="wip-kb")
+
+        assert (d / "deployment.deployer-state").exists()
+
+    @staticmethod
+    def _stub_podman(monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr("wip_deploy.nuke._podman_ls_names", lambda args: [])
+        monkeypatch.setattr("wip_deploy.nuke._podman", lambda args: None)
+
+    def test_purge_all_remove_data_removes_every_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_podman(monkeypatch)
+        root = tmp_path / ".wip-deploy"
+        a = self._install_dir(root, "default")
+        b = self._install_dir(root, "wip-dev-local")
+        (root / "apps").mkdir()  # not an install: no state, left alone
+
+        report = nuke_purge_all(remove_data=True, install_root=root)
+
+        assert not (a / "deployment.deployer-state").exists()
+        assert not (b / "deployment.deployer-state").exists()
+        assert sorted(report.state_files_removed) == [
+            a / "deployment.deployer-state",
+            b / "deployment.deployer-state",
+        ]
+        assert (root / "apps").is_dir()
+        assert (a / "secrets" / "api-key").exists()
+
+    def test_purge_all_without_remove_data_keeps_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_podman(monkeypatch)
+        root = tmp_path / ".wip-deploy"
+        a = self._install_dir(root, "default")
+
+        report = nuke_purge_all(install_root=root)
+
+        assert (a / "deployment.deployer-state").exists()
+        assert report.state_files_removed == []
+
+    def test_purge_all_dry_run_reports_but_keeps_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._stub_podman(monkeypatch)
+        root = tmp_path / ".wip-deploy"
+        a = self._install_dir(root, "default")
+
+        report = nuke_purge_all(remove_data=True, install_root=root, dry_run=True)
+
+        assert (a / "deployment.deployer-state").exists()
+        assert report.state_files_removed == [a / "deployment.deployer-state"]

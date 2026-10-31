@@ -4764,7 +4764,9 @@ def nuke(
         typer.Option(
             "--remove-data",
             help=(
-                "Remove named volumes (databases, file storage). Destructive."
+                "Remove named volumes (databases, file storage), and the "
+                "install's saved spec, so the next `install` starts fresh. "
+                "Destructive."
             ),
         ),
     ] = False,
@@ -4830,6 +4832,12 @@ def nuke(
     With `--purge-all`, removes every wip-* container/pod on the host; with
     `--remove-secrets` it also clears the `secrets/` dir of every install
     under `~/.wip-deploy/` (host-wide, matching purge-all's blast radius).
+
+    `--remove-data` also deletes the saved spec (`deployment.deployer-state`)
+    of every install whose data it removed: with the data gone, the next
+    `install` is a new install, not a reshape of the old one. Without
+    `--remove-data` the saved spec stays, and `redeploy` brings the install
+    back on its surviving volumes.
 
     Examples:
 
@@ -4916,6 +4924,13 @@ def nuke(
             typer.echo(typer.style("  + data volumes will be removed", fg=typer.colors.YELLOW))
         if remove_images:
             typer.echo(typer.style("  + images will be removed (next install re-pulls/builds)", fg=typer.colors.YELLOW))
+    if remove_data:
+        typer.echo(
+            typer.style(
+                "  + the saved spec will be removed — the next install starts fresh",
+                fg=typer.colors.YELLOW,
+            )
+        )
     if remove_secrets:
         typer.echo(
             typer.style(
@@ -4994,6 +5009,13 @@ def _nuke_purge_all(
                 fg=typer.colors.YELLOW,
             )
         )
+        typer.echo(
+            typer.style(
+                "  + the saved spec of every install under ~/.wip-deploy/ "
+                "will be removed — the next install starts fresh",
+                fg=typer.colors.YELLOW,
+            )
+        )
     if remove_images:
         typer.echo(
             typer.style(
@@ -5038,6 +5060,10 @@ def _nuke_purge_all(
     if report.secrets_dirs_removed:
         typer.echo(
             f"  secrets:    {', '.join(str(p) for p in report.secrets_dirs_removed)}"
+        )
+    if report.state_files_removed:
+        typer.echo(
+            f"  state:      {', '.join(str(p) for p in report.state_files_removed)}"
         )
     typer.echo(
         typer.style(

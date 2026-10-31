@@ -15,6 +15,13 @@ Two modes:
 
 Both modes honor a `keep_data` / `keep_secrets` split so the data-
 destructive step is always opt-in.
+
+Removing data also removes the saved deployment state of every install
+whose data went. `install` treats that state as a live install and refuses
+to reshape it; once the volumes are gone it describes nothing, and keeping
+it would block the next install while `redeploy` could only bring back an
+empty copy of the old spec. Without `remove_data` the state stays, so
+`redeploy` can bring the surviving volumes back.
 """
 
 from __future__ import annotations
@@ -25,6 +32,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from wip_deploy.apply import PODMAN_COMPOSE_PARALLEL
+
+# The persisted install spec, plus its pre-rename name.
+STATE_FILENAMES = ("deployment.deployer-state", "deployment.json")
 
 
 class NukeError(Exception):
@@ -42,6 +52,7 @@ class NukeReport:
     # purge-all clears secrets host-wide (one dir per install), so it needs
     # a list rather than the scoped path's single dir (CASE-387).
     secrets_dirs_removed: list[Path] = field(default_factory=list)
+    state_files_removed: list[Path] = field(default_factory=list)
     compose_down_ran: bool = False
     # CASE-362 k8s teardown.
     k8s_namespace_removed: str | None = None
@@ -69,6 +80,8 @@ class NukeReport:
             parts.append(f"secrets dir removed: {self.secrets_dir_removed}")
         if self.secrets_dirs_removed:
             parts.append(f"{len(self.secrets_dirs_removed)} secrets dir(s) removed")
+        if self.state_files_removed:
+            parts.append(f"{len(self.state_files_removed)} saved install state(s) removed")
         return "; ".join(parts) or "nothing to do"
 
 
@@ -142,6 +155,9 @@ def nuke_install_dir(
         if secrets_location.exists():
             _remove_tree(secrets_location)
             report.secrets_dir_removed = secrets_location
+
+    if remove_data:
+        report.state_files_removed = _remove_state_files(install_dir)
 
     return report
 
@@ -231,6 +247,9 @@ def nuke_k8s_install_dir(
         if secrets_location.exists():
             _remove_tree(secrets_location)
             report.secrets_dir_removed = secrets_location
+
+    if remove_data:
+        report.state_files_removed = _remove_state_files(install_dir)
 
     return report
 
@@ -396,12 +415,33 @@ def nuke_purge_all(
                         _remove_tree(secrets_dir)
                     report.secrets_dirs_removed.append(secrets_dir)
 
+    # Every wip-* volume on the host is gone, so every install's saved
+    # state is stale. purge-all refuses to run while a k8s install exists,
+    # so only compose/dev states can be here.
+    if remove_data:
+        root = install_root if install_root is not None else (Path.home() / ".wip-deploy")
+        if root.exists():
+            for child in sorted(root.iterdir()):
+                if child.is_dir():
+                    report.state_files_removed.extend(
+                        _remove_state_files(child, dry_run=dry_run)
+                    )
+
     return report
 
 
 # ────────────────────────────────────────────────────────────────────
 # Helpers
 # ────────────────────────────────────────────────────────────────────
+
+
+def _remove_state_files(install_dir: Path, *, dry_run: bool = False) -> list[Path]:
+    """Remove `install_dir`'s saved deployment state; return what went."""
+    removed = [install_dir / n for n in STATE_FILENAMES if (install_dir / n).is_file()]
+    if not dry_run:
+        for path in removed:
+            path.unlink()
+    return removed
 
 
 def _detect_compose_cmd() -> list[str]:

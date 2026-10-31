@@ -2568,6 +2568,17 @@ sync afterwards.
   holds the master key. The canary's namespace-upsert probe now sends a valid
   body: the route checks permission after validating the body, so its old
   invalid-body probe failed the check on every install.
+- **`nuke --remove-data` also removes the saved spec.** After a teardown
+  that destroyed an install's data, the next `install` was refused as a
+  reshape of an install that no longer existed: "install 'default' already
+  exists and this run would reshape it". The cause was
+  `~/.wip-deploy/<name>/deployment.deployer-state`, which no `nuke` removed.
+  Now `--remove-data` deletes it too: for the one install in the scoped
+  modes (compose and k8s), and for every install under `~/.wip-deploy/`
+  with `--purge-all`. The report and the confirmation prompt both say so.
+  Without `--remove-data` the saved spec stays, so `redeploy` brings an
+  install back on its surviving volumes. Secrets still go only with
+  `--remove-secrets`, so the next install reuses them by default.
 - **External identity providers (Dex connectors).** `wip-deploy connector
   add|set-secret|remove|list` declares Google, GitHub, a corporate OIDC or
   LDAP provider in the spec (`auth.connectors`), rendered into Dex on every
