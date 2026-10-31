@@ -43,12 +43,13 @@ from typing import Any, ClassVar
 
 from .archive import ENTITY_FILES, ArchiveReader
 from .definitions import DefinitionIndex, term_names
+from .document_check import DocumentCheck
 from .models import Manifest
 
 # Version of the machine-readable output contract (`to_dict`, and the CLI's
 # `inspect --json`). Consumers branch on it. Additive fields keep the version;
 # removing or re-typing a field is a major bump.
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 # Entity types that carry a Registry identity row. Mirrors the restore door's
 # own list: these are the rows whose absence makes a restored namespace look
@@ -479,6 +480,8 @@ class ArchiveModel:
         self.term_relation_count: int = 0
         # Full definition rows, for validation; filled from the same reads.
         self.definitions = DefinitionIndex()
+        # Filled only when load() is asked to check documents (verify).
+        self.document_check: DocumentCheck | None = None
         # namespace -> entity_type -> count, and the registry rows per namespace
         self.entity_counts: dict[str, dict[str, int]] = {}
         self.registry_ids: dict[str, set[str]] = {}
@@ -499,6 +502,7 @@ class ArchiveModel:
         reader: ArchiveReader,
         *,
         namespaces: list[str] | None = None,
+        check_documents: bool = False,
     ) -> ArchiveModel:
         """Build the model from an open archive reader.
 
@@ -525,6 +529,18 @@ class ArchiveModel:
             model._extract_reference_edges(reader, ns)
 
         model._classify_declared_references()
+        if check_documents:
+            # A third streaming pass: every document against its pinned
+            # template version (document_check.py). Opt-in, because it
+            # validates every row; inspect does not need it, verify does.
+            check = DocumentCheck(
+                model.definitions,
+                has_referents_table=model.manifest.referents is not None,
+            )
+            for ns in model.namespaces:
+                for row in reader.read_entities("documents", namespace=ns):
+                    check.observe(row)
+            model.document_check = check
         return model
 
     def _load_definitions(self, reader: ArchiveReader, ns: str) -> None:
@@ -1519,6 +1535,9 @@ class ArchiveModel:
                     )
                 )
 
+        if self.document_check is not None:
+            out.extend(Finding(**data) for data in self.document_check.findings_data())
+
         out.sort(key=lambda f: (f.rank, f.finding_class, f.subject))
         return out
 
@@ -1599,6 +1618,10 @@ class ArchiveModel:
             "identity": self.identity_coverage(),
             "counts": self.count_verification(),
             "findings": [f.to_dict() for f in self.findings()],
+            # Schema 1.1: present when the documents were checked (verify), else null.
+            "document_checks": (
+                self.document_check.to_dict() if self.document_check is not None else None
+            ),
             "deep_dive": {
                 "templates": deep_templates,
                 "terminologies": [

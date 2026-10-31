@@ -216,10 +216,13 @@ def test_offline_agrees_with_live(corpus, wip_client, name):
     assert offline.valid == live["valid"], (name, live["errors"], offline.errors)
     assert _errors(offline.errors) == _errors(live["errors"]), name
     assert not offline.unverifiable, offline.unverifiable
-    if live["valid"] and live.get("term_references") is not None:
+    # Which bearer an ambiguous name records is creation order, which the
+    # archive cannot reproduce for terms created in the same millisecond —
+    # a declared divergence (wip_archive.validation); both sides warn.
+    if live["valid"] and live.get("term_references") is not None and "ambiguous" not in name:
         assert {(r["field_path"], r["term_id"]) for r in offline.term_references} == {
             (r["field_path"], r["term_id"]) for r in live["term_references"]
-        }, name
+        }, (name, offline.term_references, live["term_references"])
     # An ambiguous non-identity name warns on both sides.
     if "warning only" in name:
         assert any("ambiguous" in w for w in live["warnings"])

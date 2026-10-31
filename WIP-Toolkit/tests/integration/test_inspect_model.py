@@ -322,3 +322,23 @@ def test_offline_identity_hash_matches_what_the_platform_stored(model):
             assert compute_composite_key_hash(values) == doc["identity_hash"], doc["document_id"]
             checked += 1
     assert checked > 0
+
+
+def test_every_document_of_a_real_engine_archive_checks_clean(model):
+    """verify's document pass finds nothing wrong with the engine's own output."""
+    assert _ENGINE_ARCHIVE is not None
+    with ArchiveReader(str(_ENGINE_ARCHIVE)) as reader:
+        checked = ArchiveModel.load(reader, check_documents=True)
+        rows = sum(1 for _ in reader.read_entities("documents", namespace=NS))
+    check = checked.document_check
+    assert check is not None
+    assert check.checked == rows > 0
+    assert check.identity_checked > 0
+    summary = check.to_dict()
+    assert summary["documents_invalid"] == 0, summary["invalid_by_template"]
+    assert summary["identity"]["mismatches"] == []
+    assert summary["missing_template_versions"] == []
+    assert summary["missing_term_references"] == 0
+    assert summary["unverifiable"] == []
+    errors = [f for f in checked.findings() if f.severity == "error"]
+    assert errors == [], errors

@@ -799,6 +799,7 @@ class TestJsonContract:
             "identity",
             "counts",
             "findings",
+            "document_checks",  # schema 1.1, null unless documents were checked
             "deep_dive",
         }
 

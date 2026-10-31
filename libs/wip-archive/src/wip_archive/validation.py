@@ -128,7 +128,7 @@ class OfflineValidator:
     # ------------------------------------------------------------------
 
     def validate(
-        self, template: dict[str, Any], data: Any, namespace: str
+        self, template: dict[str, Any], data: Any, namespace: str, *, resolve_terms: bool = True,
     ) -> ValidationOutcome:
         """Validate `data` against a resolved template dict.
 
@@ -137,6 +137,11 @@ class OfflineValidator:
         `namespace` is the document's, the context bare terminology values
         resolve in. Template status is not checked here; the caller decides
         which version a document is judged against.
+
+        `resolve_terms=False` skips the term stage: checking a STORED document
+        must not re-resolve its values as a new write would, because existing
+        data keeps resolving terms retired since (PoNIF #1). The stored
+        `term_references` are checked for existence by the archive check instead.
         """
         result = ValidationOutcome()
         if not isinstance(data, dict):
@@ -147,9 +152,10 @@ class OfflineValidator:
         self._validate_fields(data, template, result, template_ns)
         if not result.valid:
             return result
-        self._validate_terms(data, template, result, namespace, template_ns)
-        if not result.valid:
-            return result
+        if resolve_terms:
+            self._validate_terms(data, template, result, namespace, template_ns)
+            if not result.valid:
+                return result
         self._evaluate_rules(data, template, result)
         return result
 

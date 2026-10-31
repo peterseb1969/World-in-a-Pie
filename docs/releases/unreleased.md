@@ -2588,14 +2588,14 @@ re-creating it.
 
 ---
 
-### `inspect` shows term names again; `wip-archive` 0.8.0
+### `inspect` shows term names again; `wip-archive` 0.9.0
 
 `wip-toolkit inspect`'s vocabulary dive listed no aliases for any term in an
 engine backup: the archive model read an `aliases` key, while engine
 archives carry the term's `names`. It now reads `names`, and still accepts
 `aliases` from older toolkit archives.
 
-`wip-archive` 0.7.0 and 0.8.0 also add, for the coming `verify` verb
+`wip-archive` 0.7.0 to 0.9.0 also add, for the coming `verify` verb
 (CASE-827 M2):
 
 - a definition index holding every template, terminology and term row of an
@@ -2612,10 +2612,19 @@ archives carry the term's `names`. It now reads `names`, and still accepts
   quirks filed as CASE-1009, and a comparison suite in the toolkit's
   integration tests holds the two together. Reference and file checks are
   not part of it. What the archive cannot answer (a vocabulary or nested
-  template it does not carry) is reported as unverifiable, never guessed.
+  template it does not carry) is reported as unverifiable, never guessed;
+- a document check (0.9.0), opt-in on `ArchiveModel.load(check_documents=True)`:
+  every document row against its pinned template version (fields and rules,
+  without re-resolving stored terms, which existing data keeps resolving
+  after they are retired), its stored term references and its recomputed
+  identity hash. New findings: `template_version_missing` and
+  `missing_term_reference` (errors), `document_invalid`,
+  `identity_hash_mismatch` and `unverifiable_dependency` (warnings). The
+  `--json` output moves to schema 1.1, adding `document_checks` (null unless
+  the check ran); nothing is removed.
 
-**Action:** none. Apps that vendor `wip-archive` pick up 0.8.0 on their next
-scaffold refresh.
+**Action:** none. Apps that vendor `wip-archive` pick up 0.9.0 on their next
+scaffold refresh. Consumers of `inspect --json` see schema 1.1.
 
 ## What happens on first start after the upgrade
 
