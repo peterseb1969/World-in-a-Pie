@@ -259,6 +259,71 @@ in-process toolkit harness (real backup → model → assertions, and
 later transform → real engine restore); golden `--json` outputs pin
 the machine contract.
 
+### 6.1 The M2 plan (agreed 2026-10-31)
+
+**What the live platform offers.** Everything that accepts a document
+lives in document-store's `ValidationService`. Its checks are pure
+logic, but they are wrapped in async code that fetches templates over
+HTTP, resolves terms through def-store, and resolves references through
+MongoDB and the Registry; nothing imports as is. Template inheritance
+is resolved in template-store, and archives store templates
+unresolved. The identity feed (`wip_auth/document_identity.py`) is pure
+standard library, but importing it runs `wip_auth/__init__.py`, which
+pulls in FastAPI and httpx, while `wip-archive` depends only on
+pydantic. Term resolution is a short pure algorithm over a term list:
+active terms only, a term's value before any term's names, case per
+terminology, the first-created bearer on ambiguity.
+
+**Decisions (Peter, 2026-10-31).**
+
+1. **Reimplement, guarded by comparison tests.** The checks are
+   reimplemented in `wip-archive`. Comparison tests send the same
+   documents through the live validator (`POST /validation/validate`
+   in the in-process toolkit stack) and through the offline one, which
+   must agree. Extracting a shared module out of the live write path
+   stays a later option if the tests show drift.
+2. **Dependencies outside the archive are a warning.** Terminologies,
+   parent templates or documents whose content the archive does not
+   carry (only their identity rows, in `referents.jsonl`) produce an
+   `unverifiable_dependency` warning that lists them. `verify` says
+   `warn`, never a silent `pass`.
+3. **Live quirks are reproduced exactly, for now.** The offline check
+   must agree with what the server accepts. The questionable quirks are
+   filed as CASE-1009; whoever fixes one there updates the offline
+   validator too.
+4. **`verify` exits 1 on errors, 0 otherwise;** `--strict` also fails
+   on warnings.
+
+**Two checks, not one.**
+
+- **`verify` asks whether the archive is consistent and restorable.**
+  Each document is checked against the template version it pins:
+  field structure, stored term and reference ids present in the
+  archive or listed as outside it, recomputed identity hash equal to
+  the stored one, cross-field rules, plus M1's findings. It does not
+  re-resolve stored values as new writes: existing data keeps resolving
+  terms retired since (PoNIF #1).
+- **Migratability (`inspect --target-version`) asks whether a document
+  would pass as a write against version N,** as live
+  `migrate_documents` does. Before it is built, `_migrate_one` is read
+  to settle how live migration treats terms deprecated since.
+
+**Slices, one commit each.**
+
+| # | Slice |
+|---|---|
+| 0 | CASE-1008 (server): the restore door refuses a failed verdict unless the request accepts it, in all three modes. |
+| 1 | Definition index: full template rows, `extends` resolved as template-store does, term `names` read (M1 reads a nonexistent `aliases` key), `referents.jsonl` read; the identity feed copied into `wip-archive` with a byte-parity test against `wip_auth`. |
+| 2 | Validation library: term resolver, field types and constraints, semantic types, cross-field rules, live quirks included. |
+| 3 | `verify` pass in `ArchiveModel`: a third streaming pass keeping counters and capped samples only; new finding classes (`document_invalid`, `identity_hash_mismatch`, `unverifiable_dependency`, …); `--json` schema 1.1. |
+| 4 | Toolkit: the `verify` verb and `restore`'s pre-upload gate with `--force`. |
+| 5 | Migratability: `inspect --target-version`. |
+| 6 | wip-archive 0.7.0, WIP-Toolkit 0.8.0, golden re-capture, release notes. |
+
+Every slice carries hand-built-archive tests, at least one assertion
+against a real engine backup, and, from slice 2 on, comparison tests
+against the live validator.
+
 ## 7. Boundary policy (M3 preview, recorded here because inspect quantifies it)
 
 When a selection cuts document-reference edges (plain reference
