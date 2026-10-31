@@ -2554,14 +2554,15 @@ re-creating it.
 
 ---
 
-### `inspect` shows term names again; `wip-archive` 0.7.0
+### `inspect` shows term names again; `wip-archive` 0.8.0
 
 `wip-toolkit inspect`'s vocabulary dive listed no aliases for any term in an
 engine backup: the archive model read an `aliases` key, while engine
 archives carry the term's `names`. It now reads `names`, and still accepts
 `aliases` from older toolkit archives.
 
-`wip-archive` 0.7.0 also adds, for the coming `verify` verb (CASE-827 M2):
+`wip-archive` 0.7.0 and 0.8.0 also add, for the coming `verify` verb
+(CASE-827 M2):
 
 - a definition index holding every template, terminology and term row of an
   archive and the identity rows of entities it references but does not
@@ -2569,9 +2570,17 @@ archives carry the term's `names`. It now reads `names`, and still accepts
   the archive alone;
 - an offline copy of the document identity feed and hash, so a document's
   `identity_hash` can be recomputed without a running platform. A test in
-  document-store keeps it identical to `wip_auth`'s, source and output.
+  document-store keeps it identical to `wip_auth`'s, source and output;
+- an offline document validator (0.8.0) that checks a document against the
+  archive's templates and vocabularies as document-store does: field types
+  and constraints, semantic types, term resolution, cross-field rules. It
+  reproduces the live validator's current behaviour exactly, including the
+  quirks filed as CASE-1009, and a comparison suite in the toolkit's
+  integration tests holds the two together. Reference and file checks are
+  not part of it. What the archive cannot answer (a vocabulary or nested
+  template it does not carry) is reported as unverifiable, never guessed.
 
-**Action:** none. Apps that vendor `wip-archive` pick up 0.7.0 on their next
+**Action:** none. Apps that vendor `wip-archive` pick up 0.8.0 on their next
 scaffold refresh.
 
 ## What happens on first start after the upgrade
