@@ -39,7 +39,7 @@ from typing import Any, cast
 from urllib.parse import urlparse
 
 from wip_archive.definitions import DefinitionIndex, UnresolvableTemplate, term_names
-from wip_archive.identity import _get_nested_value
+from wip_archive.identity import _get_nested_value, referent_identity_fields
 
 TIME_UNITS_TERMINOLOGY = "_TIME_UNITS"
 _UUID = re.compile(
@@ -54,9 +54,23 @@ _FIELD_TYPES = frozenset({
 _SEMANTIC_TYPES = frozenset({
     "email", "url", "latitude", "longitude", "percentage", "duration", "geo_point",
 })
-_DATETIME_FORMATS = (
-    "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%fZ",
-)
+_DATETIME_FORMATS = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f")
+# An ISO 8601 UTC offset at the end of a datetime: Z or +HH:MM / -HH:MM.
+_DATETIME_OFFSET = re.compile(r"(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$")
+_ELEMENT_SUFFIX = re.compile(r"\[\d+\]$")
+
+
+def _is_iso_datetime(value: str) -> bool:
+    """Date, 'T', time with optional fraction, optional offset (Z or ±HH:MM),
+    exactly as the live validator accepts it."""
+    base = _DATETIME_OFFSET.sub("", value, count=1)
+    for fmt in _DATETIME_FORMATS:
+        try:
+            datetime.strptime(base, fmt)
+            return True
+        except ValueError:
+            continue
+    return False
 
 
 @dataclass
@@ -203,12 +217,13 @@ class OfflineValidator:
                 )
             return
 
+        errors_before = len(result.errors)
         if field_type in _FIELD_TYPES:
             getattr(self, f"_validate_{field_type}")(value, f, path, result, validation, template_ns)
 
-        # Live runs semantic checks only while the whole result is still valid.
+        # Semantic checks run unless THIS field failed its type check, as live.
         semantic = f.get("semantic_type")
-        if result.valid and semantic in _SEMANTIC_TYPES:
+        if len(result.errors) == errors_before and semantic in _SEMANTIC_TYPES:
             getattr(self, f"_semantic_{semantic}")(value, path, result)
 
     def _validate_string(self, value, f, path, result, validation, template_ns) -> None:
@@ -232,7 +247,7 @@ class OfflineValidator:
             )
         if validation.get("pattern"):
             pattern = validation["pattern"]
-            if not re.match(pattern, value):
+            if not re.fullmatch(pattern, value):
                 result.add_error(
                     code="pattern", message=f"Field '{path}' does not match required pattern",
                     field=path, details={"pattern": pattern},
@@ -244,7 +259,7 @@ class OfflineValidator:
             )
 
     def _validate_number(self, value, f, path, result, validation, template_ns) -> None:
-        if not isinstance(value, (int, float)):
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
             result.add_error(code="invalid_type", message=f"Field '{path}' must be a number", field=path)
             return
         self._numeric_constraints(value, path, validation, result)
@@ -288,13 +303,8 @@ class OfflineValidator:
     def _validate_datetime(self, value, f, path, result, validation, template_ns) -> None:
         if isinstance(value, datetime):
             return
-        if isinstance(value, str):
-            for fmt in _DATETIME_FORMATS:
-                try:
-                    datetime.strptime(value.replace("+00:00", "Z").rstrip("Z"), fmt.rstrip("Z"))
-                    return
-                except ValueError:
-                    continue
+        if isinstance(value, str) and _is_iso_datetime(value):
+            return
         result.add_error(
             code="invalid_type", message=f"Field '{path}' must be a valid datetime (ISO 8601)", field=path,
         )
@@ -401,7 +411,7 @@ class OfflineValidator:
                         field=item_path,
                     )
             elif item_type == "number":
-                if not isinstance(item, (int, float)):
+                if not isinstance(item, (int, float)) or isinstance(item, bool):
                     result.add_error(
                         code="invalid_type", message=f"Item at '{item_path}' must be a number",
                         field=item_path,
@@ -427,7 +437,17 @@ class OfflineValidator:
                         message=f"Item at '{item_path}' must be a string ({reference_type} reference)",
                         field=item_path,
                     )
-            # boolean, date, datetime and file items: not checked, as live (CASE-1009).
+            elif item_type == "boolean":
+                self._validate_boolean(item, {}, item_path, result, {}, template_ns)
+            elif item_type == "date":
+                self._validate_date(item, {}, item_path, result, {}, template_ns)
+            elif item_type == "datetime":
+                self._validate_datetime(item, {}, item_path, result, {}, template_ns)
+            elif item_type == "file" and not isinstance(item, str):
+                result.add_error(
+                    code="invalid_type", message=f"Item at '{item_path}' must be a string (file ID)",
+                    field=item_path,
+                )
 
     # ------------------------------------------------------------------
     # Semantic types
@@ -567,6 +587,9 @@ class OfflineValidator:
         namespace: str, template_ns: str,
     ) -> None:
         identity_fields = template.get("identity_fields") or []
+        # Elements (tags[0]) of a referent identity field feed the identity
+        # hash too, as live: an ambiguous name there is refused.
+        referent = referent_identity_fields(identity_fields, template.get("fields") or [])
         for path, terminology_ref, value in self._collect_term_values(
             data, template.get("fields", []), template_ns, result,
         ):
@@ -589,7 +612,8 @@ class OfflineValidator:
             if resolution.ambiguous:
                 candidates = list(resolution.candidates)
                 bearer_desc = ", ".join(f"'{c.get('value')}' ({c.get('term_id')})" for c in candidates)
-                if path in identity_fields:
+                element_of = _ELEMENT_SUFFIX.sub("", path)
+                if path in identity_fields or (element_of != path and element_of in referent):
                     result.add_error(
                         code="ambiguous_term",
                         message=(

@@ -5,9 +5,9 @@ can be checked without a running platform (CASE-827 M2). A pre-upload gate that
 disagrees with the server is worse than none, so this suite sends the same
 documents through the live `POST /validation/validate` and through the offline
 validator reading the real engine backup of the same namespace, and requires
-the same verdict and the same (field, code) errors — quirks included
-(CASE-1009). Reference and file fields are left out: the offline validator does
-not run those stages.
+the same verdict and the same (field, code) errors. Reference fields and file
+existence are left out: the offline validator does not run those stages (a
+file item's type is checked by both).
 """
 
 from __future__ import annotations
@@ -42,17 +42,26 @@ def _seed(client) -> dict:
     terms = client.post(
         "def-store", f"/terminologies/{ids['colour']}/terms",
         json=[
-            # "crimson" is borne by two terms: an ambiguous name.
             {"value": "red", "label": "Red", "aliases": ["crimson", "scarlet"]},
-            {"value": "maroon", "label": "Maroon", "aliases": ["crimson"]},
             {"value": "blue", "label": "Blue", "aliases": ["azure"]},
             {"value": "grey", "label": "Grey"},
         ],
         params={"namespace": NS},
     )
-    assert terms["succeeded"] == 4, terms
+    assert terms["succeeded"] == 3, terms
+    # "crimson" is borne by two terms: an ambiguous name. An ambiguous name
+    # resolves to the first bearer in storage order. Offline, that order is
+    # rebuilt from created_at (the archive has no insertion order), so two
+    # bearers created in one request can tie and fall to a random id tail.
+    # The second bearer is created in its own, later request.
+    maroon = client.post(
+        "def-store", f"/terminologies/{ids['colour']}/terms",
+        json=[{"value": "maroon", "label": "Maroon", "aliases": ["crimson"]}],
+        params={"namespace": NS},
+    )
+    assert maroon["succeeded"] == 1, maroon
     # A deprecated term no longer matches in new data.
-    grey = terms["results"][3]["id"]
+    grey = terms["results"][2]["id"]
     deprecated = client.post(
         "def-store", "/terms/deprecate",
         json=[{"term_id": grey, "reason": "retired"}], params={"namespace": NS},
@@ -95,6 +104,11 @@ def _seed(client) -> dict:
             {"name": "status", "label": "Status", "type": "string"},
             {"name": "note", "label": "Note", "type": "string"},
             {"name": "flags", "label": "Flags", "type": "array", "array_item_type": "boolean"},
+            {"name": "days", "label": "Days", "type": "array", "array_item_type": "date"},
+            {"name": "stamps", "label": "Stamps", "type": "array", "array_item_type": "datetime"},
+            {"name": "amounts", "label": "Amounts", "type": "array", "array_item_type": "number"},
+            {"name": "files", "label": "Files", "type": "array", "array_item_type": "file",
+             "array_file_config": {"allowed_types": ["*/*"]}},
             {"name": "home", "label": "Home", "type": "object",
              "template_ref": "ADDRESS", "template_ref_version": 1},
             {"name": "sites", "label": "Sites", "type": "array", "array_item_type": "object",
@@ -111,6 +125,16 @@ def _seed(client) -> dict:
         ],
     }]))
     ids["item"] = item["id"]
+
+    # Identity is an array of terms: each element's resolved id feeds the hash.
+    tagged = _created(client.post("template-store", "/templates", json=[{
+        "value": "TAGGED", "label": "Tagged", "namespace": NS, "identity_fields": ["tags"],
+        "fields": [
+            {"name": "tags", "label": "Tags", "type": "array", "array_item_type": "term",
+             "array_terminology_ref": "COLOUR", "mandatory": True},
+        ],
+    }]))
+    ids["tagged"] = tagged["id"]
     return ids
 
 
@@ -126,9 +150,16 @@ CASES = {
     },
     "term by alias": {"colour": "scarlet"},
     "term case-insensitively": {"colour": "RED"},
-    "pattern anchored at the start only": {"code": "ABCdef"},
+    "pattern must match the whole value": {"code": "ABCdef"},
     "datetime with +00:00": {"at": "2026-10-31T12:00:00+00:00", "when": "2026-10-31"},
-    "boolean array items unchecked": {"flags": ["yes", 3]},
+    "boolean array items checked": {"flags": ["yes", 3, True]},
+    "date array items checked": {"days": ["2026-10-31", "31.10.2026"]},
+    "datetime array items checked": {"stamps": ["2026-10-31T12:00:00-05:00", "noon"]},
+    "number array refuses booleans": {"amounts": [1, 2.5, True]},
+    "file array item not a string": {"files": [42]},
+    "number refuses a boolean": {"price": True},
+    "datetime naive": {"at": "2026-10-31T12:00:00.123", "when": "2026-10-31"},
+    "datetime with a bad offset": {"at": "2026-10-31T12:00:00+25:00", "when": "2026-10-31"},
     "missing mandatory": {"_drop": ["code"]},
     "null mandatory": {"code": None},
     "unknown field": {"nope": 1},
@@ -154,7 +185,7 @@ CASES = {
     "latitude out of range": {"lat": 91},
     "percentage out of range": {"share": 101},
     "geo_point missing key": {"where": {"latitude": 1}},
-    "semantic suppressed by an earlier error": {"count": "x", "email": "bad"},
+    "semantic checked despite an earlier error": {"count": "x", "email": "bad"},
     "nested missing mandatory": {"home": {"zip": "12345"}},
     "nested pattern miss": {"home": {"street": "Main", "zip": "1234"}},
     "array object item not an object": {"sites": ["Main"]},
@@ -229,20 +260,29 @@ def test_offline_agrees_with_live(corpus, wip_client, name):
         assert any("ambiguous" in w for w in offline.warnings)
 
 
-# What live answers for the cases that pin behaviour, quirks included
-# (CASE-1009). A fix there changes a row here, on both validators at once.
+# What live answers for the cases that pin behaviour. A behaviour change
+# changes a row here, on both validators at once.
 EXPECTED = {
     "valid full": set(),
     "term by alias": set(),
-    "pattern anchored at the start only": set(),
-    "boolean array items unchecked": set(),
+    "pattern must match the whole value": {("code", "pattern")},
+    "boolean array items checked": {("flags[0]", "invalid_type"), ("flags[1]", "invalid_type")},
+    "date array items checked": {("days[1]", "invalid_type")},
+    "datetime array items checked": {("stamps[1]", "invalid_type")},
+    "number array refuses booleans": {("amounts[2]", "invalid_type")},
+    "file array item not a string": {("files[0]", "invalid_type")},
+    "number refuses a boolean": {("price", "invalid_type")},
+    "datetime naive": set(),
+    "datetime with a bad offset": {("at", "invalid_type")},
     "ambiguous name in an array (warning only)": set(),
     "missing mandatory": {("code", "required")},
     "unknown field": {("nope", "unknown_field")},
-    "datetime with +02:00": {("at", "invalid_type")},
+    "datetime with +02:00": set(),
     "deprecated term": {("colour", "invalid_term")},
     "ambiguous name on an identity field": {("colour", "ambiguous_term")},
-    "semantic suppressed by an earlier error": {("count", "invalid_type")},
+    "semantic checked despite an earlier error": {
+        ("count", "invalid_type"), ("email", "invalid_email"),
+    },
     "nested missing mandatory": {("home.street", "required")},
     "array object item missing field": {("sites[0].street", "required")},
     "conditional_value with numeric coercion": {("level", "conditional_value")},
@@ -269,3 +309,27 @@ def test_invalid_cases_are_most_of_the_corpus(corpus, wip_client):
         for case in CASES.values()
     )
     assert invalid >= 30, invalid
+
+
+TAGGED_CASES = {
+    "unambiguous identity elements": ({"tags": ["blue", "azure"]}, set()),
+    "ambiguous identity element": ({"tags": ["blue", "crimson"]}, {("tags[1]", "ambiguous_term")}),
+}
+
+
+@pytest.mark.parametrize("name", list(TAGGED_CASES))
+def test_an_ambiguous_element_of_an_identity_array_is_refused(corpus, wip_client, name):
+    """Each element of an array-of-terms identity field feeds its resolved id
+    into the identity hash, so an ambiguous name there is refused on both
+    sides rather than resolved by storage order."""
+    data, expected = TAGGED_CASES[name]
+    live = wip_client.post(
+        "document-store", "/validation/validate",
+        json={"template_id": corpus["ids"]["tagged"], "namespace": NS, "data": data},
+    )
+    template = corpus["definitions"].resolve_template(corpus["ids"]["tagged"], 1).as_template_dict()
+    offline = OfflineValidator(corpus["definitions"]).validate(template, data, NS)
+
+    assert _errors(live["errors"]) == expected, live["errors"]
+    assert _errors(offline.errors) == expected, offline.errors
+    assert offline.valid == live["valid"]

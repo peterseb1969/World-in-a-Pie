@@ -588,6 +588,8 @@ For document references (reference_type: document), set target_templates to cons
 ### Other Field Properties
 - Use "mandatory: true" (NOT "required") for required fields
 - Validation: pattern (regex), min_length, max_length, minimum, maximum, enum
+- pattern is a Python regular expression that must match the WHOLE value:
+  "[A-Z]{3}" accepts "ABC" and refuses "ABC-1". No ^/$ anchors are needed.
 - full_text_indexed: true on a string field builds a PostgreSQL full-text
   search column (tsvector + GIN index) in the template's reporting table;
   the reporting search endpoint uses it for ranked, snippet-rich search.

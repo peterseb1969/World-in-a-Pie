@@ -7,6 +7,36 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Document validation: patterns match the whole value, and five gaps close; wip-archive 0.9.0
+
+- **`pattern` must match the whole value.** It used to match at the start
+  only, so `[A-Z]{3}` accepted `ABC-anything`. Now `[A-Z]{3}` means exactly
+  three capitals; `^`/`$` anchors are no longer needed. A template whose
+  pattern relied on prefix matching starts refusing values that match only a
+  prefix. That includes a PATCH of an existing document, which re-validates
+  the whole document. On the dev install every real pattern was already
+  `^…$`-anchored, and no stored value depends on the difference.
+- **Datetimes may carry any UTC offset.** `2026-10-31T12:00:00+02:00` was
+  refused; any `Z` or `±HH:MM` offset is accepted now. The value is stored as
+  submitted; reporting stores datetimes with their time zone. Datetimes without
+  an offset are still accepted.
+- **Array items of type `boolean`, `date` and `datetime` are validated** like
+  their scalar fields, and a non-string `file` item is refused. They were
+  accepted unchecked.
+- **`number` refuses `true` / `false`**, as a field and as an array item.
+  `integer` already did.
+- **An ambiguous term name in an array that is an identity field is refused**
+  (`ambiguous_term`) instead of resolving to the first bearer and feeding it
+  into the identity hash. Ambiguous names elsewhere still warn.
+- **A document with several bad fields reports all of them.** One field's type
+  error no longer suppresses the semantic checks (email, url, …) of the fields
+  after it.
+
+The offline validator in `wip-archive` (0.9.0) applies the same rules, so a
+pre-upload check and the server still agree.
+
+**Action:** check templates whose `pattern` relies on matching a prefix only.
+
 ### Templates that extend another are served whole, or refused
 
 Reading a template with inheritance resolved (`GET /templates/{id}`, the

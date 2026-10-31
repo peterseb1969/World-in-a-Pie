@@ -63,7 +63,7 @@ class FieldValidation(BaseModel):
 
     pattern: str | None = Field(
         default=None,
-        description="Regex pattern for string fields"
+        description="Regex pattern for string fields; must match the whole value (no ^/$ anchors needed)"
     )
     min_length: int | None = Field(
         default=None,

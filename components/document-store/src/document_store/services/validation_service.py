@@ -23,6 +23,41 @@ from .template_store_client import TemplateStoreError, get_template_store_client
 logger = logging.getLogger(__name__)
 
 
+# An ISO 8601 UTC offset at the end of a datetime: Z or +HH:MM / -HH:MM.
+_DATETIME_OFFSET = re.compile(r"(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$")
+_DATETIME_FORMATS = ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%S.%f")
+_ELEMENT_SUFFIX = re.compile(r"\[\d+\]$")
+
+
+def _is_iso_datetime(value: str) -> bool:
+    """A datetime string: date, 'T', time with optional fraction, and an
+    optional offset (Z or +HH:MM / -HH:MM). The value is stored as submitted;
+    reporting stores datetimes with their time zone."""
+    base = _DATETIME_OFFSET.sub("", value, count=1)
+    for fmt in _DATETIME_FORMATS:
+        try:
+            datetime.strptime(base, fmt)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _feeds_identity(field_path: str, template: dict[str, Any]) -> bool:
+    """Whether a resolved term at ``field_path`` feeds the identity hash, so
+    an ambiguous name there must be refused rather than resolved by storage
+    order. That is an identity field itself, or an element (``tags[0]``) of a
+    referent identity field, the same set the hash substitutes element-wise
+    (``referent_identity_fields``)."""
+    identity_fields = template.get("identity_fields") or []
+    if field_path in identity_fields:
+        return True
+    base = _ELEMENT_SUFFIX.sub("", field_path)
+    return base != field_path and base in referent_identity_fields(
+        identity_fields, template.get("fields") or []
+    )
+
+
 class ValidationResult:
     """Result of document validation."""
 
@@ -442,13 +477,16 @@ class ValidationService:
             return
 
         # Get type validator
+        errors_before = len(result.errors)
         validator_name = self.TYPE_VALIDATORS.get(field_type)
         if validator_name:
             validator = getattr(self, validator_name)
             await validator(value, field, field_path, template, result, validation)
 
-        # If base type validation passed, run semantic type validation
-        if result.valid:
+        # Semantic validation assumes the base type holds, so it is skipped
+        # when THIS field failed its type check, not when any earlier field
+        # did: every field's errors are reported.
+        if len(result.errors) == errors_before:
             semantic_type = field.get("semantic_type")
             if semantic_type:
                 semantic_validator_name = self.SEMANTIC_VALIDATORS.get(semantic_type)
@@ -493,7 +531,9 @@ class ValidationService:
         # Check pattern
         if validation.get("pattern"):
             pattern = validation["pattern"]
-            if not re.match(pattern, value):
+            # The pattern must match the whole value: "[A-Z]{3}" means
+            # "three capitals", not "starts with three capitals".
+            if not re.fullmatch(pattern, value):
                 result.add_error(
                     code="pattern",
                     message=f"Field '{field_path}' does not match required pattern",
@@ -519,7 +559,8 @@ class ValidationService:
         validation: dict[str, Any]
     ):
         """Validate number field."""
-        if not isinstance(value, (int, float)):
+        # bool is an int subclass in Python; true/false is not a number.
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
             result.add_error(
                 code="invalid_type",
                 message=f"Field '{field_path}' must be a number",
@@ -627,14 +668,8 @@ class ValidationService:
         if isinstance(value, datetime):
             return  # Already a datetime object
 
-        if isinstance(value, str):
-            # Try ISO format
-            for fmt in ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S.%fZ"]:
-                try:
-                    datetime.strptime(value.replace("+00:00", "Z").rstrip("Z"), fmt.rstrip("Z"))
-                    return
-                except ValueError:
-                    continue
+        if isinstance(value, str) and _is_iso_datetime(value):
+            return
 
         result.add_error(
             code="invalid_type",
@@ -873,7 +908,7 @@ class ValidationService:
                     )
 
             elif item_type == "number":
-                if not isinstance(item, (int, float)):
+                if not isinstance(item, (int, float)) or isinstance(item, bool):
                     result.add_error(
                         code="invalid_type",
                         message=f"Item at '{item_path}' must be a number",
@@ -885,6 +920,26 @@ class ValidationService:
                     result.add_error(
                         code="invalid_type",
                         message=f"Item at '{item_path}' must be an integer",
+                        field=item_path
+                    )
+
+            elif item_type == "boolean":
+                await self._validate_boolean(item, field, item_path, template, result, {})
+
+            elif item_type == "date":
+                await self._validate_date(item, field, item_path, template, result, {})
+
+            elif item_type == "datetime":
+                await self._validate_datetime(item, field, item_path, template, result, {})
+
+            elif item_type == "file":
+                # Existence is checked in the file stage, which collects only
+                # string items; a non-string item must be refused here or it
+                # is never checked at all.
+                if not isinstance(item, str):
+                    result.add_error(
+                        code="invalid_type",
+                        message=f"Item at '{item_path}' must be a string (file ID)",
                         field=item_path
                     )
 
@@ -1274,7 +1329,7 @@ class ValidationService:
                             f"'{c.get('value')}' ({c.get('term_id')})"
                             for c in candidates
                         )
-                        if field_path in (template.get("identity_fields") or []):
+                        if _feeds_identity(field_path, template):
                             result.add_error(
                                 code="ambiguous_term",
                                 message=(
