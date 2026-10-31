@@ -82,6 +82,8 @@
     "server/auth.ts",
     "server/config.routes.ts",
     "server/index.ts",
+    "server/lib/agent-retry.test.ts",
+    "server/lib/agent-retry.ts",
     "server/prompts/assistant.md",
     "src/App.tsx",
     "src/components/AskBar.tsx",

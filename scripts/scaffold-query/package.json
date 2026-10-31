@@ -8,7 +8,8 @@
     "dev:client": "vite",
     "dev:server": "NODE_TLS_REJECT_UNAUTHORIZED=0 tsx watch server/index.ts",
     "build": "vite build",
-    "start": "tsx server/index.ts"
+    "start": "tsx server/index.ts",
+    "test": "node --test server/lib/*.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.1",

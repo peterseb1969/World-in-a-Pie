@@ -11,7 +11,19 @@ interface KeyStatus {
   source: 'override' | 'file' | 'env' | 'none'
   last4: string | null
   agentReady: boolean
+  agentState: 'no-key' | 'connecting' | 'ready' | 'failed'
+  agentError: string | null
   persisted?: boolean
+}
+
+// The agent connects to WIP in the background; say which phase it is in.
+function agentText(s: KeyStatus): string {
+  switch (s.agentState) {
+    case 'ready': return 'ready'
+    case 'connecting': return s.agentError ? `connecting (last attempt: ${s.agentError})` : 'connecting'
+    case 'failed': return `could not connect: ${s.agentError}`
+    default: return 'no key'
+  }
 }
 
 export default function SettingsPage() {
@@ -49,7 +61,7 @@ export default function SettingsPage() {
       setKey('')
       setMsg({
         kind: 'ok',
-        text: `Key set (source: ${body.source}${body.persisted ? ', persisted to file' : ', in-memory only'}). Agent ${body.agentReady ? 'ready' : 'not initialised'}.`,
+        text: `Key set (source: ${body.source}${body.persisted ? ', persisted to file' : ', in-memory only'}). Agent ${agentText(body)}.`,
       })
     } catch (err: any) {
       setMsg({ kind: 'err', text: err?.message || 'Request failed' })
@@ -85,7 +97,7 @@ export default function SettingsPage() {
             <dt className="text-gray-400">Source</dt>
             <dd className="text-gray-800">{status.source}</dd>
             <dt className="text-gray-400">Agent</dt>
-            <dd className="text-gray-800">{status.agentReady ? 'ready' : 'not initialised'}</dd>
+            <dd className="text-gray-800">{agentText(status)}</dd>
           </dl>
         )}
 

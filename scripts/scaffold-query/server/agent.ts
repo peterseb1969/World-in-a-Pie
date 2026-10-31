@@ -6,6 +6,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import { readFileSync, writeFileSync, chmodSync } from 'fs'
 import { join, dirname } from 'path'
 import { fileURLToPath } from 'url'
+import { backoffMs, errorStatus, retryDecision } from './lib/agent-retry.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
@@ -24,7 +25,11 @@ function readKeyFile(path: string | undefined): string {
 
 // ---------- Configuration ----------
 
+// The connected MCP client, set only once connect + listTools have succeeded, so
+// "non-null" means "usable". agentState says why it is null otherwise.
 let mcpClient: Client | null = null
+let agentState: 'no-key' | 'connecting' | 'ready' | 'failed' = 'no-key'
+let agentError = ''
 let mcpTools: Anthropic.Tool[] = []
 let systemPrompt = ''
 
@@ -91,6 +96,8 @@ export function getKeyStatus() {
     source: keySource(),
     last4: key ? key.slice(-4) : null,
     agentReady: mcpClient !== null,
+    agentState,
+    agentError: agentError || null,
   }
 }
 
@@ -112,7 +119,8 @@ export async function validateKey(key: string): Promise<{ ok: boolean; error?: s
 // Set the key in the running app. Updates the in-memory override and, when
 // persist is set and ANTHROPIC_API_KEY_FILE is configured, writes the key file
 // 0600 so it survives a restart (and is picked up by file-resolve). If the agent
-// was never initialised (no key at boot), connect it now so /api/ask comes alive.
+// is not connected (no key at boot, or a rejected WIP key), start connecting it
+// in the background so /api/ask comes alive once it is.
 export async function setAnthropicKey(
   key: string,
   opts: { persist?: boolean } = {},
@@ -128,13 +136,7 @@ export async function setAnthropicKey(
     chmodSync(f, 0o600)
     persisted = true
   }
-  if (!mcpClient) {
-    try {
-      await initAgent()
-    } catch (err) {
-      console.warn('[agent] initAgent after key set failed:', (err as Error).message)
-    }
-  }
+  if (!mcpClient) startAgent()
   return { ...getKeyStatus(), persisted }
 }
 
@@ -233,19 +235,62 @@ function createTransport() {
   })
 }
 
-export async function initAgent() {
+// Connect the askBar agent in the background and keep trying until it works.
+// The HTTP server does not wait for this: MCP serves only the askBar, and a
+// platform that is still starting (e.g. the MCP server answering 503 while the
+// Registry is down during a redeploy) must not keep the app from coming up — an
+// exit here would leave a dev container with Vite running and no server, which
+// nothing restarts. Transient failures retry with growing delays, indefinitely;
+// a rejected key (401/403) stops and is reported. Safe to call more than once.
+let agentLoop: Promise<void> | null = null
+export function startAgent(): void {
   if (!anthropicKey()) {
+    agentState = 'no-key'
     console.warn('⚠ No Anthropic key (env/file/override) — /api/ask unavailable until one is set via /settings')
     return
   }
+  if (agentLoop || mcpClient) return
+  agentState = 'connecting'
+  agentLoop = (async () => {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await connectAgent()
+        agentState = 'ready'
+        agentError = ''
+        return
+      } catch (err) {
+        agentError = (err as Error)?.message || String(err)
+        if (retryDecision(err) === 'stop') {
+          agentState = 'failed'
+          console.error(`✗ MCP connect refused (HTTP ${errorStatus(err)}): ${agentError} — `
+            + 'check the WIP API key; /api/ask stays unavailable')
+          return
+        }
+        const delay = backoffMs(attempt)
+        console.warn(`⚠ MCP connect attempt ${attempt + 1} failed: ${agentError} — retrying in ${delay / 1000}s`)
+        await new Promise((r) => setTimeout(r, delay))
+      }
+    }
+  })().finally(() => { agentLoop = null })
+}
 
+// One connection attempt. Builds a fresh transport and client, and publishes
+// them (mcpClient, tools, prompt) only after connect and listTools succeed; a
+// failed attempt closes its client and throws.
+async function connectAgent() {
   const transport = createTransport()
-  mcpClient = new Client({ name: 'wip-query-agent', version: '0.1.0' })
-  await mcpClient.connect(transport)
+  const client = new Client({ name: 'wip-query-agent', version: '0.1.0' })
+  let toolsResult: Awaited<ReturnType<Client['listTools']>>
+  try {
+    await client.connect(transport)
+    toolsResult = await client.listTools()
+  } catch (err) {
+    await client.close().catch(() => {})
+    throw err
+  }
   console.log('✓ MCP client connected')
 
-  // Fetch and filter tools
-  const toolsResult = await mcpClient.listTools()
+  // Filter tools
   mcpTools = toolsResult.tools
     .filter(t => ALLOWED_TOOLS.has(t.name))
     .map(t => ({
@@ -274,7 +319,7 @@ export async function initAgent() {
 
   // Read the query assistant prompt resource for system prompt
   try {
-    const resource = await mcpClient.readResource({ uri: 'wip://query-assistant-prompt' })
+    const resource = await client.readResource({ uri: 'wip://query-assistant-prompt' })
     systemPrompt = (resource.contents[0] as any)?.text || ''
     console.log(`✓ System prompt loaded from wip://query-assistant-prompt (${systemPrompt.length} chars)`)
   } catch {
@@ -291,6 +336,9 @@ export async function initAgent() {
   } catch {
     // No app-specific prompt — that's fine
   }
+
+  // Published last: until here /api/ask still answers "connecting".
+  mcpClient = client
 }
 
 // ---------- Ask ----------
@@ -300,7 +348,11 @@ export async function ask(
   sessionId?: string,
 ): Promise<{ answer: string; toolCalls: number; sessionId: string }> {
   if (!mcpClient) {
-    throw new Error('Agent not initialised — is ANTHROPIC_API_KEY set?')
+    const why =
+      agentState === 'connecting' ? 'the assistant is still connecting to WIP — try again shortly'
+      : agentState === 'failed' ? `the assistant could not connect to WIP: ${agentError}`
+      : 'no Anthropic key is set — add one in Settings'
+    throw Object.assign(new Error(why), { status: 503 })
   }
 
   const id = sessionId || crypto.randomUUID()

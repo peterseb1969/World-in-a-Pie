@@ -2,7 +2,7 @@ import 'dotenv/config'  // Must be first — loads .env before any other module 
 import express from 'express'
 import cors from 'cors'
 import session from 'express-session'
-import { initAgent, ask } from './agent.js'
+import { startAgent, ask } from './agent.js'
 import { initAuth, requireAuth, requireAdmin, handleCallback, handleLogout } from './auth.js'
 import configRoutes from './config.routes.js'
 import path from 'node:path'
@@ -72,8 +72,9 @@ router.post('/api/ask', async (req, res) => {
     const result = await ask(question, sessionId)
     res.json(result)
   } catch (err: any) {
-    console.error('Ask error:', err)
-    res.status(500).json({ error: err.message || 'Internal error' })
+    // 503: the agent is not connected yet (or has no key) — see ask().
+    if (err.status !== 503) console.error('Ask error:', err)
+    res.status(err.status === 503 ? 503 : 500).json({ error: err.message || 'Internal error' })
   }
 })
 
@@ -117,12 +118,16 @@ if (process.env.NODE_ENV === 'production') {
 app.use(BASE_PATH || '/', router)
 
 // --- Start ---
+// Listen first, then connect the askBar agent in the background: the MCP
+// session serves only /api/ask, so a platform that is still starting must not
+// keep the server from coming up. /api/health stays locally answerable; agent
+// readiness is reported by /api/config/anthropic-key (agentReady, agentState).
 async function main() {
   await initAuth()
-  await initAgent()
   app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}${BASE_PATH || ''}`)
   })
+  startAgent()
 }
 
 main().catch(err => {
