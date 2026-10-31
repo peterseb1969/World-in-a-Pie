@@ -16,7 +16,7 @@
 # NODE_ENV === 'production') is disabled → 404 at /apps/<name>/.
 #
 # CHOKIDAR_USEPOLLING: reliable file-change detection on macOS bind mounts.
-FROM node:20-alpine
+FROM node:24-alpine
 
 WORKDIR /app
 

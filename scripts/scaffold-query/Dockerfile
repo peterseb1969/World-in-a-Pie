@@ -2,7 +2,7 @@
 # Stage 1 builds the SPA; stage 2 runs the Express server (via tsx), which in
 # production also serves the built SPA from ./dist under APP_BASE_PATH.
 
-FROM node:22-slim AS build
+FROM node:24-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
@@ -26,7 +26,7 @@ ENV VITE_BUILD_STAMP=${VITE_BUILD_STAMP}
 ENV VITE_BUILD_SHA=${VITE_BUILD_SHA}
 RUN npm run build          # vite build → /app/dist
 
-FROM node:22-slim AS runtime
+FROM node:24-slim AS runtime
 WORKDIR /app
 # The deployer's HTTP healthcheck probe is a shell `curl || wget` chain, and
 # node:*-slim ships neither: without one every probe exits 127 and the app

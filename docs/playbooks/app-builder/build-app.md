@@ -88,9 +88,9 @@ If the app imports files (CSV, PDF, XLSX):
 
 ### Step 5: Create Dockerfile
 Multi-stage build per Guide 3:
-- Stage 1: `node:20-alpine` — install deps, build
-- Stage 2: `caddy:2-alpine` — serve dist/
-- Include Caddyfile for the internal server
+- Stage 1: `node:24-slim` — install deps, `vite build`
+- Stage 2: `node:24-slim` — the Express server (via `tsx`) serves the API and the built `dist/`; install `wget` for the deployer's healthcheck probe
+- The scaffold's `Dockerfile` already does this; keep both stages on the same base
 - Expose the app's internal port
 
 ### Step 6: Write tests

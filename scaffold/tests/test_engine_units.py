@@ -357,6 +357,23 @@ def test_query_scaffold_substitutions_and_curation(tmp_path):
     assert mode & stat.S_IXUSR
 
 
+def test_query_scaffold_images_share_one_node_major():
+    """Dev and production images run one Node major, so an app is not
+    developed on one runtime and shipped on another; the dev entrypoint
+    re-installs node_modules when that runtime changes."""
+    import re
+
+    src = REPO_ROOT / "scripts/scaffold-query"
+    majors = {
+        name: re.findall(r"^FROM node:(\d+)-", (src / name).read_text(), re.MULTILINE)
+        for name in ("Dockerfile", "Dockerfile.dev")
+    }
+    assert all(majors.values()), majors
+    assert len({m for found in majors.values() for m in found}) == 1, majors
+    entrypoint = (src / "docker-entrypoint-dev.sh").read_text()
+    assert "node -v" in entrypoint and "alpine-release" in entrypoint
+
+
 def test_query_scaffold_gitignore_merges_existing(tmp_path):
     from wip_scaffold.surfaces import query_scaffold_surfaces
 

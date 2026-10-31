@@ -298,6 +298,28 @@ is reversible.
 **Action:** none. Callers that passed `force=true` only to get past the old
 count can drop it.
 
+### The app scaffold runs Node 24 in development and production
+
+Node 20 reached end of life on 2026-04-30. The scaffold's `Dockerfile.dev`
+was still `node:20-alpine` while its production `Dockerfile` was
+`node:22-slim`, so an app was developed on one Node major and shipped on
+another. Both now use Node 24 (active LTS until 2028-04-30):
+`node:24-alpine` for development, and `node:24-slim` for both production
+stages. The production image stays on slim (glibc), because it copies
+`node_modules` (with esbuild's native binary) from the build stage, and it
+installs `wget` for the deployer's healthcheck.
+
+The dev entrypoint (`docker-entrypoint-dev.sh`) now re-runs `npm ci` when the
+Node version or the libc changes, not only when `package-lock.json` does. A
+named `node_modules` volume installed under another runtime used to be kept,
+with native packages built for it. Expect one `npm ci` on the first start of
+every existing dev volume, because the hash marker's format changed.
+
+**Action (app owners):** a scaffold refresh does not rewrite an existing
+app's Dockerfiles or entrypoint. Bump your own `FROM` lines to Node 24 and
+copy the new `docker-entrypoint-dev.sh`. Rebuild and re-run your tests:
+tooling such as Vitest 5 already requires Node 22.12+.
+
 ### New apps develop in their real namespace; the scaffold no longer creates `dev-<slug>`
 
 An app used to be developed in `dev-<slug>` and deployed in `<slug>`, with

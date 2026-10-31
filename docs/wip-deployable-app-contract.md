@@ -121,7 +121,7 @@ The contract is small. The failure signatures when you skip a step are specific 
 
 ### Skip 5: no `MCP_URL` env declared
 
-**Failure (apps using MCP):** App boots; `agent.ts` falls back to `stdio` transport, tries to spawn `python -m wip_mcp` inside the container. Container is `node:20-alpine` — no Python. Crash loop with `ECONNREFUSED` after the spawn fails.
+**Failure (apps using MCP):** App boots; `agent.ts` falls back to `stdio` transport, tries to spawn `python -m wip_mcp` inside the container. Container is `node:24-alpine` — no Python. Crash loop with `ECONNREFUSED` after the spawn fails.
 
 **Symptom signature:** container restart-loops. Logs show `MCP client error: ECONNREFUSED` or `python: command not found`. The app's chat / agent surface is dead even though everything else works.
 
@@ -317,7 +317,7 @@ What `--preset query` ships today vs. what this paper recommends:
 | `/api/me` | OIDC session only | Gateway-header sniff → OIDC → anonymous |
 | SPA fallback scope | **In scaffold** (CASE-834) — API prefixes excluded; apps created before it keep the catch-all | Exclude the API prefixes (`/api`, `/auth`, `/wip`, `/server-api`, `/mcp`) so unmatched API paths return 404 JSON; page routes still fall through to `index.html` |
 | `Dockerfile.dev` | **In scaffold** | Provided as starter (canonical pattern) |
-| `Dockerfile` (production) | **In scaffold** — two-stage, `VITE_BASE_PATH` as ARG, `wget` installed in the `node:22-slim` runtime | Two-stage; `VITE_BASE_PATH` as ARG; `curl` or `wget` in the runtime stage if the manifest declares a healthcheck |
+| `Dockerfile` (production) | **In scaffold** — two-stage, `VITE_BASE_PATH` as ARG, `wget` installed in the `node:24-slim` runtime | Two-stage; `VITE_BASE_PATH` as ARG; `curl` or `wget` in the runtime stage if the manifest declares a healthcheck |
 | `.dockerignore` | **In scaffold** | Provided; narrow `*.md` exclusion called out |
 | `apps/<name>/wip-app.yaml` | Not generated — written by hand in the WIP repo | Provided alongside source-repo files; declares both ports + required env |
 
