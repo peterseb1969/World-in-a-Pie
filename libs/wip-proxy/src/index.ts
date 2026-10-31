@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { Router } from 'express'
+import { Router, type Request, type Response } from 'express'
 import { handleApiProxy, WIP_API_PREFIXES, type ApiProxyOptions } from './api-proxy.js'
 import { handleFileContent, type FileProxyOptions } from './file-proxy.js'
 
@@ -38,7 +38,31 @@ export interface WipProxyOptions {
    * for why the injection is limited to that one endpoint.
    */
   defaultNamespace?: string
+  /**
+   * What happens when neither `apiKeyFile` nor `apiKey` yields a key.
+   *
+   * - `'throw'` (default): `wipProxy()` throws at construction, naming every
+   *   attempted source. A misconfigured proxy fails loudly.
+   * - `'unavailable'`: `wipProxy()` returns a router whose routes all answer
+   *   503 `{"error": <reason>, "error_code": "wip_proxy_unavailable"}`, and
+   *   logs one warning. A missing key then costs the `/wip` mount, not the
+   *   app: called at module load, the throw would stop the process before
+   *   `listen()`, taking `/api/health` with it.
+   *
+   * The reason is the exact message `'throw'` raises, in the 503 body and on
+   * the returned router's `unavailableReason`, so a degraded app reports the
+   * same diagnosis as a crashed one. Keep the two identical.
+   */
+  onMissingKey?: 'throw' | 'unavailable'
 }
+
+/**
+ * The router `wipProxy()` returns. `unavailableReason` is null when the proxy
+ * works, and the missing-key message when it was built with
+ * `onMissingKey: 'unavailable'` and no key — so an app can surface it, e.g.
+ * as `wip_proxy` in its `appConfigHandler` entries.
+ */
+export type WipProxyRouter = Router & { readonly unavailableReason: string | null }
 
 /**
  * Create an Express router that proxies WIP API calls and file downloads.
@@ -64,9 +88,15 @@ export interface WipProxyOptions {
  * that would match the same paths — a parser ahead of the proxy drains the
  * body and an empty stream gets forwarded.
  */
-export function wipProxy(options: WipProxyOptions): Router {
+export function wipProxy(options: WipProxyOptions): WipProxyRouter {
+  let apiKey: string
+  try {
+    apiKey = resolveApiKey(options)
+  } catch (err) {
+    if (options.onMissingKey !== 'unavailable') throw err
+    return unavailableProxy(err instanceof Error ? err.message : String(err))
+  }
   const router = Router()
-  const apiKey = resolveApiKey(options)
 
   const apiOptions: ApiProxyOptions = {
     baseUrl: options.baseUrl,
@@ -101,7 +131,27 @@ export function wipProxy(options: WipProxyOptions): Router {
     })
   }
 
-  return router
+  return Object.assign(router, { unavailableReason: null })
+}
+
+/**
+ * The proxy's routes, each answering 503 with the reason. Registered exactly
+ * like the working proxy's, so a path it never served still falls through to
+ * the app as before. The handlers do not read the request body.
+ */
+function unavailableProxy(reason: string): WipProxyRouter {
+  console.warn(
+    `wipProxy: not mounted — ${reason}. /wip answers 503 until a key is configured.`
+  )
+  const router = Router()
+  const unavailable = (_req: Request, res: Response) => {
+    res.status(503).json({ error: reason, error_code: 'wip_proxy_unavailable' })
+  }
+  router.get('/files/:fileId/content', unavailable)
+  for (const prefix of WIP_API_PREFIXES) {
+    router.all(prefixPattern(prefix), unavailable)
+  }
+  return Object.assign(router, { unavailableReason: reason })
 }
 
 /**

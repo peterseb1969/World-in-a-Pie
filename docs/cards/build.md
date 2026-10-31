@@ -4,7 +4,7 @@ docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
 docs/WIP_DevGuardrails.md sha256:30130d07053d7ac5 reviewed:fe514f02
 libs/wip-client/README.md sha256:7f5f9fd97bb1fe1d reviewed:57d02741
 libs/wip-react/README.md sha256:9e71f0ba4a17d97a reviewed:a66e110f
-libs/wip-proxy/README.md sha256:35e6262638a97d55 reviewed:a66e110f
+libs/wip-proxy/README.md sha256:585feea2b45e5889 reviewed:a8c4e42f
 docs/wip-deployable-app-contract.md sha256:a2e558bf30d33677 reviewed:43aca6a0
 docs/playbooks/app-builder/build-app.md sha256:4d59d990ca82e372 reviewed:43aca6a0
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
@@ -15,9 +15,9 @@ scaffold/templates/claude-md/app.md sha256:ce6f1c0aa58c6a8b reviewed:70de3aa3
 ## Stack (pinned, v1)
 - TypeScript ^5.8 · Vite ^6 · React ^19.1 · react-router-dom ^7 · `@tanstack/react-query` ^5 · Tailwind CSS ^3.4 (not 4) · lucide-react ^0.46+.
 - `@wip/client` (typed REST), `@wip/react` (TanStack hooks), `@wip/proxy` (Express, injects the API key server-side).
-- Install the vendored `./libs/wip-*.tgz` plus `@tanstack/react-query` — a peer dep you must add yourself.
+- Install the vendored `./libs/wip-*.tgz` plus `@tanstack/react-query` (a peer dep you add yourself).
 - `package.json` refs stay relative: `file:libs/wip-<lib>-<version>.tgz`. Never an absolute home-dir path; never hand-edit or re-pack a vendored tarball.
-- Router basename is always `import.meta.env.BASE_URL`; never hardcode one.
+- Router basename is always `import.meta.env.BASE_URL`, never hardcoded.
 
 ## Forbidden
 - Extra state stores (Redux, Zustand, Jotai…): server state = TanStack Query, local = `useState`, global UI = Context.
@@ -41,7 +41,7 @@ scaffold/templates/claude-md/app.md sha256:ce6f1c0aa58c6a8b reviewed:70de3aa3
 ## `baseUrl` rules
 - Browser, behind your `@wip/proxy` mount: `` `${import.meta.env.BASE_URL}wip` `` (`'/wip'` is only correct when the app is served at `/`).
 - Node (server code, scripts): absolute URL only (e.g. `https://localhost:8443`, or `WIP_BASE_URL`). The client throws on relative or empty in Node.
-- Every other client fetch (`/api/...`, `/server-api/...`) is also prefixed with `import.meta.env.BASE_URL`, never a bare path.
+- Every other client fetch (`/api/...`, `/server-api/...`) is prefixed with `import.meta.env.BASE_URL`.
 - Per-deployment values (e.g. namespace) come from `GET <base>/api/app-config` at boot. Never bake them into `VITE_*`, and never put an API key in any `VITE_*` var.
 
 ## Proxy (server)
@@ -51,11 +51,13 @@ router.use('/wip', wipProxy({
   apiKey: process.env.WIP_API_KEY,
   apiKeyFile: process.env.WIP_API_KEY_FILE,
   defaultNamespace: process.env.WIP_NAMESPACE,
+  onMissingKey: 'unavailable',
 }))
 router.use(express.json())   // body parsers AFTER the proxy
 ```
 - The proxy streams the raw body: a parser such as `express.json()` before it drains the body and an empty one is forwarded. Mount the proxy above every parser, app-level ones included.
 - Deployed, the app's own key comes as `WIP_API_KEY`; run locally, `.env`'s `WIP_API_KEY_FILE` wins. Point it at `app-<name>-api-key` once the app is installed.
+- `onMissingKey: 'unavailable'`: no key → `/wip` answers 503 instead of the app dying on start.
 - Your key spans several namespaces: set `defaultNamespace` or pass `namespace`, or value-form template queries return 422.
 - File downloads: `GET <mount>/files/:fileId/content` through the proxy. Internal storage URLs never reach the browser.
 - All routes live on an `express.Router()` mounted under `APP_BASE_PATH`.
@@ -72,7 +74,7 @@ router.use(express.json())   // body parsers AFTER the proxy
 - Buttons: primary `bg-primary text-white hover:bg-primary-light`; destructive `bg-danger`.
 - Icons: lucide, `h-4 w-4` inline/button, `h-5 w-5` toolbar.
 - A11y floor: visible focus ring `focus:outline-none focus:ring-2 focus:ring-primary/40`; `aria-label` on icon-only buttons; modals trap focus and close on Esc; never colour alone (add icon + text); touch targets ≥32px.
-- Works from 375px wide.
+- Works at 375px wide.
 - End the root layout with `<WipFooter />` from `@wip/react`: not sticky, no colour override, never hand-rolled.
 - Charts: no standard yet — propose one in a case before adding a library.
 
@@ -87,9 +89,9 @@ router.use(express.json())   // body parsers AFTER the proxy
 - No restore UI in the app; restore is console-initiated.
 
 ## DevGuardrails essentials (Guides 1–7)
-- G1 Gateway: reach WIP only through Caddy routes (via your proxy), never direct service ports.
+- G1 Gateway: reach WIP only through Caddy routes (via your proxy), never service ports.
 - G2 UI: stack + tokens above; no app-built auth UI.
-- G3 Skeleton: health endpoint `<base>/api/health` must not depend on WIP being reachable (the deployable-app contract overrides Guide 3 here).
+- G3 Skeleton: `<base>/api/health` must not depend on WIP being reachable (the app contract overrides Guide 3 here).
 - G4 Client lib: single-item methods/hooks throw on item failure; bulk methods return `BulkResponse` (see PoNIF #4 below). Typed errors: `WipValidationError` (400/422), `WipNotFoundError`, `WipConflictError`, `WipAuthError` (401/403), `WipServerError`, `WipNetworkError`, `WipBulkItemError` (`errorCode`, `index`, `details`).
 - G5 Data entry: generate forms with `useFormSchema(templateValue, { namespace })` (term → select via `useTerms`, reference → `resolveReference(client, …)`, file → `useUploadFile`). Files are two-step: upload → link the returned file ID immediately (unlinked files become orphans). Bulk import: preview + column mapping → validate → bulk create → report created/updated/failed per row.
 - G6 Errors: 400/422 → inline field errors, keep form. 401/403 → "session expired", keep form. 404 → message + back link. 5xx/network → persistent banner + retry button. Success toast ~3s. Only GETs auto-retry (502/503/504); writes are retried only by the user.
@@ -110,4 +112,4 @@ router.use(express.json())   // body parsers AFTER the proxy
 
 ## When the card is not enough
 - `docs/WIP_DevGuardrails.md` (seven guides), `docs/technology-stack.md`, `docs/ui-guidance.md` (class strings for every shape), `docs/WIP_PoNIFs.md`.
-- `libs/wip-client-README.md`, `libs/wip-react-README.md`, `libs/wip-proxy-README.md` (also `node_modules/@wip/<lib>/README.md` after install).
+- `libs/wip-client-README.md`, `libs/wip-react-README.md`, `libs/wip-proxy-README.md`.

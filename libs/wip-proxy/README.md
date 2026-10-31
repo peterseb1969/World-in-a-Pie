@@ -19,11 +19,39 @@ app.use(wipProxy({
 }))
 
 // Or mount at /wip — frontend uses @wip/client with baseUrl: '/wip'
-app.use('/wip', wipProxy({
+const proxy = wipProxy({
   baseUrl: process.env.WIP_BASE_URL || 'https://localhost:8443',
-  apiKey: process.env.WIP_API_KEY,
+  apiKey: process.env.WIP_API_KEY,          // set by wip-deploy
+  apiKeyFile: process.env.WIP_API_KEY_FILE, // the rotation-aware source, when run outside it
+  onMissingKey: 'unavailable',
+})
+app.use('/wip', proxy)
+```
+
+### A missing key costs `/wip`, not the app
+
+`wipProxy()` is usually called while the server module loads. With the
+default `onMissingKey: 'throw'`, a configuration that yields no key stops the
+process before `listen()`, and the app's health endpoint goes with it.
+With `onMissingKey: 'unavailable'` the proxy's routes answer **503**
+`{"error": <reason>, "error_code": "wip_proxy_unavailable"}` instead, one
+warning is logged at startup, and the rest of the app serves normally. The
+reason is the exact message the throw would carry: which file failed, and
+that no inline key was set.
+
+The returned router carries the same reason, so the app can show it in its
+runtime config:
+
+```typescript
+router.get('/api/app-config', appConfigHandler({
+  namespace: process.env.WIP_NAMESPACE ?? null,
+  wip_proxy: proxy.unavailableReason ? 'unavailable' : 'available',
 }))
 ```
+
+Pass an unset source as `undefined` (as `process.env.X` already is), not
+`process.env.X || ''`: an empty string is no key, so `apiKey: process.env.WIP_API_KEY || ''`
+looks like a fallback and gives none.
 
 ## What It Does
 
@@ -65,6 +93,7 @@ app.use(express.json())             // parsers after, or scoped to app routes
 | `extraHeaders` | `Record<string, string>` | `{}` | Additional headers forwarded upstream |
 | `forwardIdentity` | `boolean` | `false` | Forward `X-WIP-User`, `X-WIP-Groups`, `X-WIP-Auth-Method` from the incoming request |
 | `defaultNamespace` | `string` | — | Namespace appended to the documents query endpoint when the caller hasn't scoped it (guards the multi-namespace-key silent-zero-rows trap) |
+| `onMissingKey` | `'throw' \| 'unavailable'` | `'throw'` | When no source yields a key: throw at construction, or answer 503 on the proxy's routes (see *A missing key costs `/wip`, not the app*) |
 
 ## Other Exports
 

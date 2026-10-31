@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `@wip/proxy` 0.6.0: a missing key can cost `/wip` instead of the app
+
+`wipProxy()` is usually called while the server module loads, and throws when
+neither `apiKeyFile` nor `apiKey` yields a key. That throw stopped the process
+before `listen()`, so the app's `/api/health`, `/api/app-config` and SPA went
+down with the one mount that needed a key. The new option
+`onMissingKey: 'unavailable'` makes the proxy's routes answer 503
+`{"error": <reason>, "error_code": "wip_proxy_unavailable"}` instead, with one
+startup warning; the reason is the exact message the throw would carry. The
+returned router exposes it as `unavailableReason`, for an app's
+`appConfigHandler`. The default stays `'throw'`; with a key, nothing changes.
+
+The build card and the ship checklist now show the option. The proxy README
+also warns that `apiKey: process.env.WIP_API_KEY || ''` passes no key (an empty
+string is none), so it is not a fallback.
+
+**Action:** none required. Apps adopt the option on their next scaffold refresh:
+vendor 0.6.0 and add `onMissingKey: 'unavailable'` to the `wipProxy({...})`
+call.
+
 ### Scoped applies restart every service whose rendered definition changed
 
 A verb that applies with a narrow scope (`app-namespace`, `group-map`,

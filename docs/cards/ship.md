@@ -17,11 +17,11 @@ Before features: healthy under `wip-deploy` on the first try, SPA at `/apps/<nam
 - [ ] `NODE_ENV=production`: serve `dist/` with SPA fallback; unmatched `/api`, `/auth`, `/wip`, `/server-api`, `/mcp` (+ yours) return 404 JSON, any method, never `index.html`.
 - [ ] `GET ${APP_BASE_PATH}/api/app-config` returns allowlisted JSON, at least `{"namespace": <WIP_NAMESPACE or null>}`; no secrets/env dump; `Cache-Control: no-store`. The SPA reads every per-deployment value from it at boot; never bake them into `VITE_*` (only `VITE_BASE_PATH`).
 - [ ] Every client fetch prefixed with `import.meta.env.BASE_URL`; never bare `/api/...` or `/wip/...`.
-- [ ] `wipProxy` (`@wip/proxy` >= 0.5.0) mounted BEFORE `express.json()` or any body parser on the same paths.
+- [ ] `wipProxy` (`@wip/proxy` >= 0.6.0) with `onMissingKey: 'unavailable'`, mounted BEFORE `express.json()` or any body parser.
 - [ ] `Dockerfile` (prod): multi-stage; build stage takes `VITE_BASE_PATH` as ARG; serves `${APP_BASE_PATH}/api/health`.
 - [ ] Prod runtime image has `curl` or `wget` if the manifest declares an HTTP healthcheck (`*-slim` and distroless have neither; alpine has busybox `wget`).
 - [ ] Prod runtime stage contains the seed dir (`server/seed/`, or what `SEED_DIR` names), copied explicitly if the server is bundled.
-- [ ] `.dockerignore`: `node_modules`, `dist`, `*.log`, `.git`; no unscoped `*.md` (drops runtime markdown such as prompts).
+- [ ] `.dockerignore`: `node_modules`, `dist`, `*.log`, `.git`; no unscoped `*.md` (drops runtime prompts).
 - [ ] `@wip/*` deps pinned as `file:libs/wip-<lib>-<version>.tgz`; after every scaffold `--refresh` commit `package.json` + `package-lock.json`; never re-pack a tarball.
 
 ## Manifest (`apps/<name>/wip-app.yaml` in the WIP repo)
