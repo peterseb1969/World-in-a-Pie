@@ -351,7 +351,46 @@ written into the namespace.
 4. Whether the restore door grows an opt-in full-schema validation
    mode for composed archives, or offline compose-validation plus
    post-restore integrity remains the contract.
-5. `--json` schema versioning policy (frozen fields vs additive).
+5. ~~`--json` schema versioning policy~~ — **settled 2026-10-31, §9.2.**
+
+### 9.2 Settled: verbs, gates, `--json`, bandwidth, `export` (2026-10-31)
+
+Decided with Peter on CASE-827.
+
+- **Verb naming: flat.** Every transform is a top-level verb beside
+  `inspect` and `restore`: `filter`, `latest-only`, `strip-blobs`,
+  `split`, `verify`, `diff`, and later the surgery and ramp verbs. No
+  `transform` group, no per-class groups. The `transform` field of a
+  `derived_from` hop is the verb's name.
+- **The CLI's verify gate: refuse, with `--force`.** `wip-toolkit
+  restore` runs `verify` on the archive before uploading it. An
+  `error` finding refuses the upload, and `--force` sends it anyway.
+  Warnings are printed, and the upload continues.
+- **The door's policy for a failed verdict: refuse unless forced.**
+  When the newest `derived_from` hop says `verdict: "fail"`, the
+  engine refuses the restore unless the request explicitly accepts it
+  (a restore option; name decided when built). `pass` and `warn`
+  verdicts keep today's warning for any derived archive. This gives
+  callers that bypass the toolkit, the REST API and MCP, the same
+  guardrail as the CLI.
+- **`--json` versioning: the `derived_from` rule.** Machine output
+  carries `schema: "<major>.<minor>"`. Frozen fields keep their
+  meaning; additions are new optional fields and bump the minor.
+  Removing a field or changing its meaning bumps the major and gets a
+  release note. Consumers check the major. One policy for every verb's
+  JSON (`inspect`, `verify`, `diff`).
+- **Bandwidth: keep the trade.** Selecting a slice means a full engine
+  backup, downloaded, then filtered locally. The engine keeps its
+  invariant that every engine archive is complete and restorable;
+  `skip_files` stays the one transfer knob. A coarse engine-side
+  filter is reconsidered only on a measured case where the download is
+  the bottleneck.
+- **`export`'s exit: warn, then remove.** The release that ships the
+  thin `backup` verb makes `export` print a deprecation warning that
+  names `backup` (and `filter`, once M3 has it). The next release
+  removes `export`. At removal, the backup matrix's R-04 cell
+  (CLI-produced archive → engine restore) moves to `backup` plus a
+  transform.
 
 ### 9.1 Settled: the `derived_from` marker (frozen 2026-10-25)
 
@@ -412,9 +451,9 @@ writes the archive.
 - Every transform verifies its own output (§6).
 - On `fail`, the archive is **still written**, the hop records
   `verdict: "fail"`, and the command exits non-zero.
-- The archive thereby declares itself broken. Whether the restore door
-  refuses such an archive is left to the door's policy; it already
-  warns on any derived archive.
+- The archive thereby declares itself broken. The restore door refuses
+  it unless the request explicitly accepts a failed verdict (§9.2); it
+  warns on every other derived archive.
 - Repairing a broken archive is a separate function, defined later,
   outside the transforms.
 
