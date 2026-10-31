@@ -540,11 +540,21 @@ def _dev_service_block(
     # at bare paths (/@vite/client) instead of prefixed
     # (/apps/rc/@vite/client) → 404 through Caddy. Only mirror when
     # VITE_BASE_PATH isn't already set — respect an explicit override.
+    #
+    # The Vite dev server answers only the hosts it allows: localhost and IP
+    # addresses unless the app's config lists more. Behind the router every
+    # request carries the install's hostname, so an install reached by name
+    # (wip-pi.internal) got "Blocked request. This host is not allowed" from
+    # every app. Vite appends __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS to the
+    # allowed hosts itself (Vite >= 5.4.12 / 6.0.9), so no app config changes.
     if isinstance(owner, App) and owner.metadata.name in app_sources:
         environment["NODE_ENV"] = "development"
         base_path = environment.get("APP_BASE_PATH")
         if base_path and "VITE_BASE_PATH" not in environment:
             environment["VITE_BASE_PATH"] = base_path
+        environment.setdefault(
+            "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS", deployment.spec.network.hostname,
+        )
     # CASE-373 Phase 1 — app containers receive NODE_EXTRA_CA_CERTS
     # pointing at the bind-mounted CA when an imported bundle has
     # seeded `secrets/external-ca.crt`. Set on apps only (backend

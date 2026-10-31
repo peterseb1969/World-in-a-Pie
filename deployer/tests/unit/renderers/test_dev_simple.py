@@ -51,6 +51,7 @@ def _dev_deployment(
     source_mount: bool = True,
     app_sources: dict[str, Path] | None = None,
     apps_from_registry: list[str] | None = None,
+    hostname: str = "localhost",
 ) -> Deployment:
     return Deployment(
         metadata=DeploymentMetadata(name="dev-test"),
@@ -59,7 +60,7 @@ def _dev_deployment(
             modules={"optional": modules or ["mcp-server"]},  # type: ignore[arg-type]
             apps=[AppRef(name=n) for n in (apps or [])],
             auth=AuthSpec(mode="oidc", gateway=True),
-            network=NetworkSpec(hostname="localhost"),
+            network=NetworkSpec(hostname=hostname),
             images=ImagesSpec(tag="dev"),
             platform=PlatformSpec(
                 dev=DevPlatform(
@@ -400,6 +401,48 @@ class TestBuildContext:
         rc = doc["services"]["react-console"]
         assert rc["environment"]["APP_BASE_PATH"] == "/apps/rc"
         assert rc["environment"]["VITE_BASE_PATH"] == "/apps/rc"
+
+    def test_app_source_override_allows_the_install_hostname_in_vite(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """The Vite dev server refuses hosts it does not allow (localhost and
+        IPs by default): an install reached by name answered every app
+        request with "Blocked request. This host is not allowed"."""
+        fake_app = tmp_path / "fake-rc-checkout-vite-host"
+        fake_app.mkdir()
+        (fake_app / "Dockerfile").write_text("FROM node:20\n")
+        d = _dev_deployment(
+            apps=["react-console"],
+            app_sources={"react-console": fake_app},
+            hostname="wip-pi.internal",
+        )
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_dev_simple(
+            d, real_discovery.components, real_discovery.apps, s,
+            repo_root=REPO_ROOT,
+        )
+        doc = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+        rc = doc["services"]["react-console"]
+        assert rc["environment"]["__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"] == "wip-pi.internal"
+
+    def test_no_override_does_not_add_vite_allowed_host(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """A registry image serves a production build, not the Vite dev
+        server: no allowed-hosts variable."""
+        d = _dev_deployment(
+            apps=["react-console"],
+            apps_from_registry=["react-console"],
+            hostname="wip-pi.internal",
+        )
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_dev_simple(
+            d, real_discovery.components, real_discovery.apps, s,
+            repo_root=REPO_ROOT,
+        )
+        doc = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+        rc = doc["services"]["react-console"]
+        assert "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS" not in rc["environment"]
 
     def test_no_override_does_not_add_vite_base_path(
         self, tmp_path: Path, real_discovery: Discovery
