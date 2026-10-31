@@ -1860,6 +1860,7 @@ class DocumentService:
         page: int = 1,
         page_size: int = 20,
         latest_only: bool = False,
+        template_version: int | None = None,
         cursor: str | None = None,
         ns_filter: dict | None = None,
         sort_by: str | None = None,
@@ -1890,6 +1891,8 @@ class DocumentService:
             query["template_id"] = template_id
         if template_value:
             query["template_value"] = template_value
+        if template_version is not None:
+            query["template_version"] = template_version
         # With latest_only, a status filter describes each document's LATEST
         # version. Applied before the group it would pick each document's
         # highest version that has the status, so status=inactive returned

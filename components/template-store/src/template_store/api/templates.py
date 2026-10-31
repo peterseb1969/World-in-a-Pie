@@ -582,14 +582,33 @@ async def delete_templates(
                         error_code="invalid_state", details={"rule": "has_documents"},
                     ))
                     continue
-            # Soft-delete: warn if active documents exist (unless force)
-            elif deps.document_count > 0 and not item.force:
-                results.append(BulkResultItem(
-                    index=i, status="error", id=item.id,
-                    error=f"Template has {deps.document_count} dependent document(s). Use force=true to deactivate anyway.",
-                    error_code="invalid_state", details={"rule": "has_documents"},
-                ))
-                continue
+            # Soft-delete: refused while active documents are on THIS version,
+            # unless force. Documents on other versions do not depend on it.
+            # An unknown count does not refuse: deactivation is reversible
+            # (unlike hard delete above, which refuses on "unknown").
+            elif not item.force:
+                assert item.version is not None  # required above for a soft delete
+                try:
+                    on_version = await DependencyService.active_documents_on_version(
+                        item.id, item.version,
+                    )
+                except Exception:
+                    on_version = 0
+                if on_version > 0:
+                    results.append(BulkResultItem(
+                        index=i, status="error", id=item.id,
+                        error=(
+                            f"Version {item.version} has {on_version} active document(s). "
+                            "Migrate them to another version (migrate_documents) or use "
+                            "force=true to deactivate anyway."
+                        ),
+                        error_code="invalid_state",
+                        details={
+                            "rule": "has_documents", "version": item.version,
+                            "document_count": on_version,
+                        },
+                    ))
+                    continue
 
             deleted = await TemplateService.delete_template(
                 item.id, item.updated_by, version=item.version,

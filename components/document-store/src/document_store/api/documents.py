@@ -363,6 +363,7 @@ async def list_documents(
     namespace: str | None = Query(default=None, description="Namespace to query (omit for all)"),
     template_id: str | None = Query(None, description="Filter by template ID"),
     template_value: str | None = Query(None, description="Filter by template value (e.g., PLANNED_VISIT)"),
+    template_version: int | None = Query(None, ge=1, description="Filter by the template version a row is pinned to. With status=active: the documents whose current version uses it."),
     status: DocumentStatus | None = Query(None, description="Filter by status. With latest_only=true it filters on each document's latest version, so status=inactive lists soft-deleted documents."),
     latest_only: bool = Query(False, description="Only return the latest version of each document"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -398,6 +399,7 @@ async def list_documents(
         return await service.list_documents(
             template_id=template_id,
             template_value=template_value,
+            template_version=template_version,
             status=status,
             page=page,
             page_size=page_size,

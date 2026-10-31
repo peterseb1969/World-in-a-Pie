@@ -344,7 +344,7 @@ Templates are the schema for entity documents. **Edge types** — schemas for re
 | `create_templates_bulk(templates)` | Create multiple templates. |
 | `create_edge_type(value, source_templates, target_templates, fields, ...)` | Create an edge type (a template with `usage: "relationship"`) with the contract validated up front: `source_templates` and `target_templates` non-empty, `source_ref` and `target_ref` reference fields present, `versioned` set explicitly. Thin wrapper over `create_template` — same storage, clearer ingress. |
 | `activate_template(id)` | Activate a draft template with cascading validation. |
-| `deactivate_template(id, version?, force?)` | Soft-delete a template version. Blocked if child templates exist. Use `force=true` to bypass document dependency check. |
+| `deactivate_template(id, version?, force?)` | Soft-delete a template version. Blocked if child templates exist, or while active documents are on that version (documents on other versions do not count). Use `force=true` to bypass the document check. |
 | `get_template_dependencies(id)` | Show child templates and documents that depend on this template. |
 
 ### Documents (10 tools)

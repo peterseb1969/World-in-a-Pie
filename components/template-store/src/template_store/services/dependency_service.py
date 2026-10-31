@@ -116,7 +116,20 @@ class DependencyService:
         return await cls._get_document_count(template_id, all_statuses=True)
 
     @classmethod
-    async def _get_document_count(cls, template_id: str, *, all_statuses: bool = False) -> int:
+    async def active_documents_on_version(cls, template_id: str, version: int) -> int:
+        """Active documents whose current version is pinned to this template version.
+
+        The count a soft delete of one version is judged by. A document has at
+        most one active row, so these are the documents still on the version,
+        not ones migrated away (their superseded rows keep resolving against
+        an inactive version). Raises when the count cannot be established.
+        """
+        return await cls._get_document_count(template_id, template_version=version)
+
+    @classmethod
+    async def _get_document_count(
+        cls, template_id: str, *, all_statuses: bool = False, template_version: int | None = None,
+    ) -> int:
         """Count document rows using this template, from Document Store.
 
         Active rows only, unless `all_statuses`. Raises on a transport failure
@@ -127,6 +140,8 @@ class DependencyService:
         params: dict[str, str | int] = {"template_id": template_id, "page_size": 1}
         if not all_statuses:
             params["status"] = "active"
+        if template_version is not None:
+            params["template_version"] = template_version
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.get(
                 f"{cls.DOCUMENT_STORE_URL}/api/document-store/documents",

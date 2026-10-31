@@ -282,6 +282,22 @@ wildcard (`*`, `>`) or whitespace shifts or widens the token it becomes.
 gets 400. Restoring an archive of such a namespace onto an install that does
 not have it fails the same way; use a fresh restore into a valid name.
 
+### Retiring a template version counts only the documents on that version
+
+Deactivating one template version was refused whenever the **template** had
+active documents, with the template's total count, even when none were on
+that version. So retiring an old version after `migrate_documents`, the
+documented lifecycle, needed `force=true`, which also skips the check for a
+version that still has documents. Now only active documents on the named
+version block it. The refusal names the version and its count
+(`details: {rule: has_documents, version, document_count}`). A count that
+cannot be read still lets the deactivation through, as before: deactivation
+is reversible.
+
+`GET /api/document-store/documents` takes a new `template_version` filter.
+**Action:** none. Callers that passed `force=true` only to get past the old
+count can drop it.
+
 ### New apps develop in their real namespace; the scaffold no longer creates `dev-<slug>`
 
 An app used to be developed in `dev-<slug>` and deployed in `<slug>`, with
