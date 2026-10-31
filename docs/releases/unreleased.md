@@ -7,7 +7,7 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
-### Document validation: patterns match the whole value, and five gaps close; wip-archive 0.9.0
+### Document validation: patterns match the whole value, and five gaps close; wip-archive 0.10.0
 
 - **`pattern` must match the whole value.** It used to match at the start
   only, so `[A-Z]{3}` accepted `ABC-anything`. Now `[A-Z]{3}` means exactly
@@ -32,7 +32,7 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   error no longer suppresses the semantic checks (email, url, …) of the fields
   after it.
 
-The offline validator in `wip-archive` (0.9.0) applies the same rules, so a
+The offline validator in `wip-archive` (0.10.0) applies the same rules, so a
 pre-upload check and the server still agree.
 
 **Action:** check templates whose `pattern` relies on matching a prefix only.
