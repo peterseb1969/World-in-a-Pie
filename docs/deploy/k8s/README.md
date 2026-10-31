@@ -146,22 +146,22 @@ Same behaviour and caveats as the [podman guide's apps section](../podman/README
 
 ## 7. Upgrading / rolling images
 
-**The clean, scoped way is `kubectl set image`** — gated on the tag existing in GHCR **for your node arch**. Deployment is `wip-<svc>`, container is `<svc>`; apps are `wip-<app>` / `<app>` (e.g. `wip-react-console` / `react-console`, `wip-wip-kb` / `wip-kb`).
+**Roll through `wip-deploy`, so the saved spec and the cluster agree.** Check that the new tag exists in GHCR **for your node arch** first:
 
 ```bash
 # 1) confirm the tag exists (Packages page, or skopeo):
 skopeo inspect docker://ghcr.io/peterseb1969/registry:<newtag> >/dev/null && echo OK
 
-# 2) roll the services you rebuilt (all 8, or a subset):
-for svc in registry def-store template-store document-store reporting-sync auth-gateway ingest-gateway mcp-server; do
-  kubectl -n wip set image deployment/wip-$svc $svc=ghcr.io/peterseb1969/$svc:<newtag>
-done
-for svc in registry def-store template-store document-store reporting-sync auth-gateway ingest-gateway mcp-server; do
-  kubectl -n wip rollout status deployment/wip-$svc --timeout=180s
-done
+# 2) preview: which images move, which stay, and why (changes nothing)
+wip-deploy images --name wip --tag <newtag>
+
+# 3) roll: writes the tag into the saved spec, re-renders, applies
+wip-deploy redeploy --name wip --tag <newtag>
 ```
 
-> ⚠️ **Prefer `kubectl set image` for a scoped roll.** On k8s, `wip-deploy app-deploy` and `wip-deploy install` **re-render the whole spec** from the install's saved state and apply *everything* — and if that saved base tag has drifted (or was deleted from GHCR), they'll re-target images that no longer exist and the rollout stalls (RollingUpdate keeps the old pods, so no outage, but you have to `kubectl rollout undo`). If you manage the install through `wip-deploy`, keep its saved tag in sync with what's actually live.
+Apps keep their own images. Any app the new tag alone would move is pinned to the tag it runs, and `redeploy` names it. To move an app, pass `--image-tag <app>=<tag>` in the same call, or run `wip-deploy app-deploy <app> --tag <tag> --name wip` on its own. `app-deploy` renders the whole spec but applies only that app, plus any service whose rendered definition changed. Background and the dev-target caveats: [the WIP guide, Upgrading to a new tag](../../wip-guide.md#upgrading-to-a-new-tag).
+
+> ⚠️ **`kubectl set image` is an escape hatch, not the upgrade path.** It changes the cluster without changing the saved spec. The next `redeploy`, `app-deploy` or `install` renders from the saved spec, so it puts back the old tags, or tags that have since been deleted from GHCR. A rollout to an image that no longer exists stalls: RollingUpdate keeps the old pods, so there is no outage, but you have to `kubectl rollout undo`. If you did roll by hand (deployment `wip-<svc>`, container `<svc>`; apps `wip-<app>` / `<app>`), bring the saved spec back in line with `wip-deploy redeploy --name wip --tag <the tag now live>`.
 
 **Roll back a bad roll:** `kubectl -n wip rollout undo deployment/wip-<svc>`.
 

@@ -78,6 +78,55 @@ You can amend a preset with `--add <module>` and `--remove <module>`. Apps (e.g.
 
 > **Legacy paths.** v1's `scripts/setup.sh` and `scripts/setup-wip.sh` were retired and **deleted**; only `wip-deploy` ships today. Older external docs may still reference them — ignore those references and use `wip-deploy` for all installs.
 
+### Upgrading to a new tag
+
+The install's saved spec (`~/.wip-deploy/<name>/deployment.deployer-state`) records which image tags it runs. Change it only through the commands below, never by editing the file.
+
+**1. See what runs, and why.** `images` is read-only:
+
+```bash
+wip-deploy images --name wip
+```
+
+It prints each service's image, and in SOURCE the rule that decided its tag:
+
+| SOURCE | Meaning |
+|---|---|
+| `pin` | a per-service tag: `--image-tag NAME=TAG`, `add-app --tag` or `app-deploy --tag` |
+| `base` | the install-wide `--tag` |
+| `manifest` | the tag in the component's or app's manifest (used when no `--tag` is set) |
+| `latest` | nothing set a tag |
+| `upstream` | an infrastructure image's own version (mongo, postgres, dex…); the install-wide tag never changes it |
+| `source` | dev target only: built locally as `<name>:dev`; no tag applies |
+
+**2. Preview the roll.** Add the new tag. Nothing changes yet:
+
+```bash
+wip-deploy images --name wip --tag 20261101a
+```
+
+Each row says whether it moves or stays. Apps that only the new tag would move are flagged ⚠. Apps are built and tagged in their own repos, so a platform tag usually doesn't exist for them.
+
+**3. Roll the platform.**
+
+```bash
+wip-deploy redeploy --name wip --tag 20261101a
+```
+
+`redeploy` writes the new tag into the saved spec, re-renders, and recreates only the services whose rendered definition changed. Data volumes and secrets are kept.
+
+**Apps don't move with the platform.** Each enabled app the new tag would otherwise carry is pinned to the image it runs today, and the command names it. To move an app as well, pin it in the same call (`--image-tag react-console=20261101b`). To move one app later on its own, use:
+
+```bash
+wip-deploy app-deploy react-console --tag 20261101b --name wip
+```
+
+`app-deploy` renders the whole spec but applies only that app, plus any service whose rendered definition changed. To hotfix one platform service on top of a roll, add `--image-tag registry=20261102-fix`.
+
+**Update the deployer first.** `redeploy` renders the *whole* spec from the deployer checkout it runs from, not just the tag. Update that checkout to the release you are rolling to before running it. If you roll to new images while the checkout is old, or update the checkout while keeping old images, the services can expect a configuration the images don't support.
+
+**Dev installs.** On the dev target, every service built from local source runs `<name>:dev` and ignores tags (SOURCE `source`). A tag roll reaches only images pulled from a registry. To take new code, update the source checkout instead.
+
 ---
 
 ## 2. Deployment Tiers

@@ -127,8 +127,9 @@ First run pulls all images, so give it a few minutes.
 curl -k https://localhost:8443/api/registry/health
 # → {"status":"healthy","database":"connected","auth_enabled":true}
 
-# What's running, on which images
+# What's running, and on which images
 wip-deploy status --name wip
+wip-deploy images --name wip
 ```
 
 All services should read `running / healthy`, then open **`https://localhost:8443/apps/rc/`** in a browser (accept the self-signed cert warning). The console loads directly in the default install.
@@ -191,7 +192,8 @@ wip-deploy install \
 ## Day-2 operations
 
 ```bash
-wip-deploy status  --name wip     # what's deployed, on which images
+wip-deploy status  --name wip     # what's deployed, and whether it's healthy
+wip-deploy images  --name wip     # which image each service runs, and why
 wip-deploy stop    --name wip     # halt without deleting anything (data + secrets kept)
 wip-deploy start   --name wip     # bring it back up
 wip-deploy nuke    --name wip     # tear down (KEEPS data volumes + secrets by default)
@@ -200,7 +202,7 @@ wip-deploy user add <username> --email <email> --group <group> --name wip   # an
 
 Dex logins (`admin`, `editor`, `viewer` by default) and their passwords are covered in [the WIP guide, §4.7](../../wip-guide.md#47-local-users-dex-static-users).
 
-**Upgrade to a newer tag** — re-run install with the new tag; volumes and secrets are reused by name.
+**Upgrade to a newer tag**: preview with `wip-deploy images --name wip --tag <newtag>`, then roll with `wip-deploy redeploy --name wip --tag <newtag>`. Volumes and secrets are kept, and apps stay on their own images unless you name them. Don't re-run `install` to change tags: it rebuilds the spec from its flags alone and ignores the saved one. Full walkthrough: [the WIP guide, Upgrading to a new tag](../../wip-guide.md#upgrading-to-a-new-tag).
 
 ---
 

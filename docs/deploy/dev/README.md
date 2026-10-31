@@ -130,6 +130,7 @@ podman exec wip-<app> sh -c 'wget -qO- --header="X-API-Key: $WIP_API_KEY" $WIP_B
 podman restart wip-<svc>          # backend source-only edit that --reload missed (~3 s)
 wip-deploy rebuild <name> --name wip   # dependency / Dockerfile.dev change
 wip-deploy status  --name wip
+wip-deploy images  --name wip     # which image each service runs: source-built ones show <name>:dev
 wip-deploy stop    --name wip     # halt, keep data + secrets
 wip-deploy start   --name wip
 wip-deploy nuke    --name wip     # tear down (keeps data volumes + secrets by default)
