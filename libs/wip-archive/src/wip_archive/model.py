@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 from .archive import ENTITY_FILES, ArchiveReader
+from .definitions import DefinitionIndex, term_names
 from .models import Manifest
 
 # Version of the machine-readable output contract (`to_dict`, and the CLI's
@@ -476,6 +477,8 @@ class ArchiveModel:
         self.files: dict[str, FileNode] = {}
         self.documents: dict[str, DocumentEntry] = {}
         self.term_relation_count: int = 0
+        # Full definition rows, for validation; filled from the same reads.
+        self.definitions = DefinitionIndex()
         # namespace -> entity_type -> count, and the registry rows per namespace
         self.entity_counts: dict[str, dict[str, int]] = {}
         self.registry_ids: dict[str, set[str]] = {}
@@ -513,6 +516,7 @@ class ArchiveModel:
 
         for ns in model.namespaces:
             model._load_definitions(reader, ns)
+        model.definitions.add_referents(reader.read_referents())
         model._resolve_declared_references()
         for ns in model.namespaces:
             model._index_documents(reader, ns)
@@ -530,6 +534,7 @@ class ArchiveModel:
             tid = row.get("terminology_id")
             if not tid:
                 continue
+            self.definitions.add_terminology(row)
             self.terminologies[tid] = TerminologyNode(
                 namespace=ns,
                 terminology_id=tid,
@@ -545,13 +550,14 @@ class ArchiveModel:
                 continue
             terminology_id = row.get("terminology_id", "") or ""
             status = str(row.get("status", "active") or "active")
+            self.definitions.add_term(row)
             self.terms[term_id] = TermNode(
                 namespace=ns,
                 term_id=term_id,
                 terminology_id=terminology_id,
                 value=row.get("value", "") or "",
                 status=status,
-                aliases=tuple(row.get("aliases") or ()),
+                aliases=term_names(row),
             )
             parent = self.terminologies.get(terminology_id)
             if parent is not None:
@@ -575,6 +581,7 @@ class ArchiveModel:
                     endpoint.relation_degree += 1
 
         for row in reader.read_entities("templates", namespace=ns):
+            self.definitions.add_template(row)
             node = self._template_version_from_row(ns, row)
             if node is None:
                 continue

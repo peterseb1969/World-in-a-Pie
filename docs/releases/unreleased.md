@@ -2554,6 +2554,26 @@ re-creating it.
 
 ---
 
+### `inspect` shows term names again; `wip-archive` 0.7.0
+
+`wip-toolkit inspect`'s vocabulary dive listed no aliases for any term in an
+engine backup: the archive model read an `aliases` key, while engine
+archives carry the term's `names`. It now reads `names`, and still accepts
+`aliases` from older toolkit archives.
+
+`wip-archive` 0.7.0 also adds, for the coming `verify` verb (CASE-827 M2):
+
+- a definition index holding every template, terminology and term row of an
+  archive and the identity rows of entities it references but does not
+  carry, which resolves template inheritance as template-store does, from
+  the archive alone;
+- an offline copy of the document identity feed and hash, so a document's
+  `identity_hash` can be recomputed without a running platform. A test in
+  document-store keeps it identical to `wip_auth`'s, source and output.
+
+**Action:** none. Apps that vendor `wip-archive` pick up 0.7.0 on their next
+scaffold refresh.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

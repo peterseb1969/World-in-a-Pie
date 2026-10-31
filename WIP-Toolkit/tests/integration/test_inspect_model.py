@@ -278,3 +278,47 @@ def test_a_real_engine_archive_is_clean(model):
     assert model.count_verification()[NS]["mismatches"] == {}
     errors = [f for f in model.findings() if f.severity == "error"]
     assert errors == [], errors
+
+
+def test_definitions_of_a_real_engine_archive(model):
+    """M2's definition index against the engine's own rows, not hand-built ones."""
+    from wip_archive.definitions import term_names
+
+    definitions = model.definitions
+    # Every template version resolves from the archive alone.
+    for template_id, version in definitions.templates:
+        resolved = definitions.resolve_template(template_id, version)
+        assert resolved.fields, (template_id, version)
+
+    # The seed sent `aliases`; the platform stores them as `names`, and the
+    # model now reads them (M1 read a key engine archives do not carry).
+    dragon = next(t for t in definitions.terms.values() if t["value"] == "dragon")
+    assert "aliases" not in dragon
+    assert set(term_names(dragon)) == {"drake", "wyrm"}
+    assert set(model.terms[dragon["term_id"]].aliases) == {"drake", "wyrm"}
+
+
+def test_offline_identity_hash_matches_what_the_platform_stored(model):
+    """The copied identity feed and hash reproduce every stored identity_hash."""
+    from wip_archive.definitions import DefinitionIndex
+    from wip_archive.identity import compute_composite_key_hash, resolved_identity_values
+
+    # The model fixture produced the engine archive this test reads.
+    assert _ENGINE_ARCHIVE is not None
+    checked = 0
+    with ArchiveReader(str(_ENGINE_ARCHIVE)) as reader:
+        definitions = DefinitionIndex.load(reader)
+        for doc in reader.read_entities("documents", namespace=NS):
+            resolved = definitions.resolve_template(doc["template_id"], doc["template_version"])
+            if not resolved.identity_fields:
+                continue
+            values = resolved_identity_values(
+                doc["data"],
+                list(resolved.identity_fields),
+                list(resolved.fields),
+                doc.get("term_references"),
+                doc.get("references"),
+            )
+            assert compute_composite_key_hash(values) == doc["identity_hash"], doc["document_id"]
+            checked += 1
+    assert checked > 0
