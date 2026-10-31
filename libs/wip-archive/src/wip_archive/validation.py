@@ -5,13 +5,13 @@ A port of document-store's `ValidationService`
 that reads templates and vocabularies from an archive instead of calling
 template-store, def-store and the Registry. It must agree with the live
 validator: a pre-upload gate that disagrees with the server is worse than none.
-So it reproduces the live behaviour exactly, including its quirks (CASE-1009):
-stages stop at the first one with errors, `pattern` anchors at the start only,
-array items of type boolean, date, datetime and file are not checked, a datetime
-accepts only a `Z` or `+00:00` offset, an earlier error suppresses later
-semantic checks, and `ambiguous_term` fails only an exact identity-field path.
-Error codes, field paths and messages are the live ones. Comparison tests
-against the live validator hold the two together.
+So it reproduces the live behaviour exactly: stages stop at the first one with
+errors, and error codes, field paths and messages are the live ones. A change
+to validation lands in both places in the same commit (CASE-1009 did: whole-value
+pattern matches, offset datetimes, checked boolean/date/datetime array items,
+ambiguous terms refused in identity array elements, per-field semantic checks).
+Comparison tests against the live validator, in the toolkit's integration
+suite, hold the two together.
 
 Stages run: structural, fields (types, constraints, semantic types), terms,
 rules. Not run here: reference resolution and file checks (live stages 5 and

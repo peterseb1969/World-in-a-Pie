@@ -1,6 +1,6 @@
 # WIP-Toolkit
 
-The **operator CLI** for WIP: export, inspect, archive conversion, seeding,
+The **operator CLI** for WIP: export, inspect, verify, archive conversion, seeding,
 status, and synonym backfill — a thin consumer of the platform APIs and of
 `libs/wip-archive` (the archive format contract + id-remap library, a
 sibling of `wip-auth`; see `docs/design/wip-archive-split.md`).
@@ -76,11 +76,22 @@ write-path.
 ```bash
 wip-toolkit export <namespace> <archive.zip> [--include-files] …
 wip-toolkit inspect <archive.zip>
-wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] …
+wip-toolkit verify <archive.zip> [--strict] [--json]
+wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
 
-`restore` uploads the archive, starts the server job and follows it to the
-end (`--no-wait` returns at once; exit code 1 when the job fails). Merge
+`verify` checks an archive offline, with no instance: inspect's findings,
+plus every document against the template version it is pinned to, its
+stored term references and its recomputed identity hash. What the archive
+does not carry (a shared template or vocabulary) is listed as unverifiable,
+not judged. Verdict `fail` (errors), `warn` or `pass`; exit code 1 on
+`fail`, and with `--strict` on `warn` too.
+
+`restore` runs the same check before uploading: an error refuses the upload
+unless `--force`, which also passes the server's refusal of an archive whose
+own verification failed. It then uploads the archive, starts the server job
+and follows it to the end (`--no-wait` returns at once; exit code 1 when the
+job fails). Merge
 options apply to `--mode merge` only: `--on-clash skip|overwrite|newer`,
 `--older-versions retire|keep` (whether the target's older versions are
 soft-deleted when the archive's version is put on top; default `retire`),
@@ -96,6 +107,7 @@ identity rows (fetched through the Registry's admin-gated
 |---|---|
 | `wip_toolkit/export/` | the CLI export pipeline (collector, closure, exporter) |
 | `wip_toolkit/convert_archive.py` | v2.0 → v3 converter (lib + CLI) |
+| `wip_toolkit/verify.py` | the offline verify behind `verify` and `restore`'s pre-upload gate |
 | `wip_toolkit/seed.py`, `status.py`, `backfill.py` | operator utilities |
 | `libs/wip-archive` (separate lib) | `ArchiveReader`/`ArchiveWriter`, `Manifest` models, `IDRemapper` |
 

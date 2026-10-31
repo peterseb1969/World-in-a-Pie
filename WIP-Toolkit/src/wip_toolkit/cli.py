@@ -18,6 +18,7 @@ from .config import WIPConfig
 from .export.exporter import run_export
 from .inspect_view import (
     json_payload,
+    render_findings,
     render_summary,
     render_template_dive,
     render_terminology_dive,
@@ -245,6 +246,62 @@ def inspect(
         sys.exit(1)
 
 
+@main.command()
+@click.argument("archive_path")
+@click.option(
+    "--namespace",
+    "namespaces",
+    multiple=True,
+    help="Restrict the check to these namespaces (repeatable)",
+)
+@click.option("--strict", is_flag=True, help="Also exit 1 on warnings")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def verify(
+    archive_path: str,
+    namespaces: tuple[str, ...],
+    strict: bool,
+    as_json: bool,
+) -> None:
+    """Check an archive offline: is it consistent and restorable?
+
+    Reads the archive alone. Beyond inspect's findings it checks every
+    document against the template version it is pinned to, its stored term
+    references and its identity hash. What the archive does not carry (a
+    shared template or vocabulary) is listed as unverifiable, not judged.
+
+    Verdict: fail (errors), warn (warnings only) or pass. Exits 1 on fail;
+    with --strict, also on warn.
+    """
+    from .verify import json_payload, verdict, verify_archive
+
+    try:
+        model = verify_archive(archive_path, list(namespaces) or None)
+    except FileNotFoundError:
+        console.print(f"[red]Archive not found:[/red] {archive_path}")
+        sys.exit(1)
+    except Exception as e:
+        console.print(f"[red]Error reading archive:[/red] {e}")
+        sys.exit(1)
+
+    findings = model.findings()
+    outcome = verdict(findings)
+    if as_json:
+        click.echo(_json.dumps(json_payload(model), indent=2, default=str))
+    else:
+        render_findings(model, console)
+        check = model.document_check
+        if check is not None:
+            console.print(
+                f"\n{check.checked:,} document row(s) checked, "
+                f"{check.invalid_documents:,} invalid; "
+                f"{check.identity_checked:,} identity hash(es) recomputed"
+            )
+        colour = {"pass": "green", "warn": "yellow", "fail": "red"}[outcome]
+        console.print(f"[{colour}]verdict: {outcome}[/{colour}]")
+    if outcome == "fail" or (strict and outcome == "warn"):
+        sys.exit(1)
+
+
 def _show_entity_ids(reader: ArchiveReader) -> None:
     """List all entity IDs in the archive, per namespace."""
     id_fields = {
@@ -460,9 +517,10 @@ _MERGE_ONLY_OPTIONS = ("on_clash", "older_versions", "add_missing", "extend_term
 @click.option("--skip-files", is_flag=True, help="Do not restore file blobs.")
 @click.option("--dry-run", is_flag=True, help="Report what would happen; write nothing.")
 @click.option("--force", is_flag=True,
-              help="Send an archive that is known to be broken anyway: one whose own "
-                   "verification failed (verdict 'fail' in its derived_from chain), "
-                   "which the server otherwise refuses.")
+              help="Send an archive that is known to be broken anyway: one that fails "
+                   "the offline verify run before uploading, or whose own verification "
+                   "failed (verdict 'fail' in its derived_from chain), which the server "
+                   "otherwise refuses. One flag passes both gates.")
 @click.option("--no-wait", is_flag=True, help="Print the queued job and return.")
 @click.option("--timeout", default=3600.0, show_default=True,
               help="Seconds to follow the job before returning (it keeps running).")
@@ -489,9 +547,11 @@ def restore(
 ) -> None:
     """Restore or merge an archive through the server's restore engine.
 
-    ARCHIVE_PATH is a backup ZIP. The server validates everything that
-    enters; this command uploads the archive, starts the job and follows it.
-    Exits 1 when the job fails.
+    ARCHIVE_PATH is a backup ZIP. Before uploading, the archive is verified
+    offline (as `wip-toolkit verify` does): an error refuses the upload
+    unless --force, warnings are printed. The server then validates everything
+    that enters; this command uploads the archive, starts the job and follows
+    it. Exits 1 when the archive is refused or the job fails.
 
     Examples:
 
@@ -527,9 +587,42 @@ def restore(
         parsed_map[source] = target
 
     path = Path(archive_path)
+
+    # The verify gate: catch an archive that would not restore intact before
+    # it costs an upload and a failed job.
+    from .verify import counts, verdict, verify_archive
+
+    model = verify_archive(str(path))
+    findings = model.findings()
+    outcome = verdict(findings)
+    if outcome != "pass" and not as_json:
+        tally = counts(findings)
+        console.print(f"verify: {tally['error']} error(s), {tally['warning']} warning(s)")
+        for finding in findings:
+            if finding.severity in ("error", "warning"):
+                colour = "red" if finding.severity == "error" else "yellow"
+                console.print(
+                    f"  [{colour}]{finding.severity}[/{colour}]  "
+                    f"{finding.finding_class}  {finding.subject} ({finding.count})"
+                )
+    if outcome == "fail":
+        if not force:
+            if as_json:
+                click.echo(_json.dumps(
+                    {"uploaded": False, "verdict": outcome,
+                     "findings": [f.to_dict() for f in findings]},
+                    indent=2, default=str,
+                ))
+            else:
+                console.print(
+                    "[red]✗ not uploaded — fix the archive, or pass --force[/red]"
+                )
+            sys.exit(1)
+        if not as_json:
+            console.print("[yellow]--force: uploading despite the errors above[/yellow]")
+
     if namespace is None:
-        with ArchiveReader(path) as reader:
-            namespace = reader.read_manifest().namespace
+        namespace = model.manifest.namespace
 
     form = build_form(
         mode,

@@ -1,6 +1,6 @@
 [project]
 name = "wip-toolkit"
-version = "0.7.2"
+version = "0.8.0"
 description = "Backup, migration, and data management toolkit for World In a Pie (WIP)"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,7 +13,7 @@ dependencies = [
     # via `-e ../libs/wip-archive`; wheel consumers install both wheels.
     # The floor is the oldest archive this toolkit's imports exist in
     # (wip_archive.model); without it pip accepts any installed archive.
-    "wip-archive>=0.2.0",
+    "wip-archive>=0.10.0",
 ]
 
 [project.scripts]

@@ -342,3 +342,14 @@ def test_every_document_of_a_real_engine_archive_checks_clean(model):
     assert summary["unverifiable"] == []
     errors = [f for f in checked.findings() if f.severity == "error"]
     assert errors == [], errors
+
+
+def test_restores_verify_gate_lets_a_real_engine_backup_through(model):
+    """The pre-upload gate must not refuse the engine's own output."""
+    from click.testing import CliRunner
+    from wip_toolkit.cli import main
+
+    assert _ENGINE_ARCHIVE is not None
+    result = CliRunner().invoke(main, ["verify", str(_ENGINE_ARCHIVE)])
+    assert result.exit_code == 0, result.output
+    assert "verdict: fail" not in result.output

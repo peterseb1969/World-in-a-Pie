@@ -2656,6 +2656,30 @@ archives carry the term's `names`. It now reads `names`, and still accepts
 **Action:** none. Apps that vendor `wip-archive` pick up 0.9.0 on their next
 scaffold refresh. Consumers of `inspect --json` see schema 1.1.
 
+### `wip-toolkit verify`, and `restore` verifies before it uploads; WIP-Toolkit 0.8.0
+
+`wip-toolkit verify <archive>` checks an archive offline, without an
+instance: `inspect`'s findings, plus every document against the template
+version it is pinned to, its stored term references and its recomputed
+identity hash (the `wip-archive` 0.9.0 document check). It answers `fail`
+(errors), `warn` or `pass`, exits 1 on `fail`, and with `--strict` also on
+`warn`. `--json` carries the verdict, the findings and the per-template
+document results (schema 1.1).
+
+**Behaviour change:** `wip-toolkit restore` now runs the same check before
+uploading. An error refuses the upload (`✗ not uploaded — fix the archive, or
+pass --force`); warnings are printed and the upload continues. `--force`
+uploads anyway and also passes the server's refusal of an archive whose own
+verification failed, so one flag covers both gates.
+
+WIP-Toolkit 0.8.0 requires `wip-archive` 0.10.0 or later, the first whose
+offline validator matches the live one after CASE-1009. (`wip-archive`
+0.10.1 changes a docstring only.)
+
+**Action:** scripts calling `wip-toolkit restore` on archives they know to
+be incomplete add `--force`. Apps that vendor the toolkit pick up 0.8.0 on
+their next scaffold refresh.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving
