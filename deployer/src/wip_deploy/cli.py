@@ -2900,23 +2900,21 @@ def redeploy(
         else:
             deployment.spec.images.tag_overrides[svc] = svc_tag
             tag_changes.append(f"{svc}={svc_tag}")
-    if deployment.spec.images.tag != before_roll.spec.images.tag:
-        # Apps are built and tagged in their own repos: a new base tag
-        # rarely names an image that exists for them. Keep every app the
-        # base tag alone would move on the image it runs now; moving one
-        # stays possible with an explicit --image-tag APP=TAG.
-        from wip_deploy.image_plan import apps_carried_by_base_tag, plan_images
+    # Apps are built and tagged in their own repos: a new base tag rarely
+    # names an image that exists for them. Keep every app the base tag
+    # alone would move on the image it runs now; moving one stays possible
+    # with an explicit --image-tag APP=TAG.
+    from wip_deploy.image_plan import pin_apps_carried_by_base_tag
 
-        rows = plan_images(before_roll, components, apps_list, after=deployment)
-        for row in apps_carried_by_base_tag(rows):
-            kept = row.image.rsplit(":", 1)[1]
-            deployment.spec.images.tag_overrides[row.name] = kept
-            tag_changes.append(f"{row.name}={kept}")
-            typer.echo(
-                f"⊙ app {row.name!r} stays on {kept!r} (pinned; the base tag "
-                f"no longer moves it — roll it with --image-tag {row.name}=<tag> "
-                "or `app-deploy`)."
-            )
+    for app_name, kept in pin_apps_carried_by_base_tag(
+        before_roll, deployment, components, apps_list
+    ):
+        tag_changes.append(f"{app_name}={kept}")
+        typer.echo(
+            f"⊙ app {app_name!r} stays on {kept!r} (pinned; the base tag "
+            f"no longer moves it — roll it with --image-tag {app_name}=<tag> "
+            "or `app-deploy`)."
+        )
     if overrides:
         # CASE-556: an override that matches no enabled component/app is
         # never consulted — warn here as install does.
@@ -3019,11 +3017,11 @@ def images(
     own version pin, which a base tag never touches), or `source` (dev
     target: built locally as `<name>:dev`, tags do not apply).
 
-    With `--tag` / `--image-tag` it previews a roll on the saved spec,
-    without applying it: each row says whether it would move or stay, and
-    flags apps that would move only because the base tag moved — apps are
-    built in their own repos, so the new base tag rarely names an image
-    that exists for them.
+    With `--tag` / `--image-tag` it previews exactly the roll `redeploy`
+    would make with the same flags, without applying it: each row says
+    whether it would move or stay. Apps the new base tag alone would move
+    are pinned to their current images, as `redeploy --tag` does, and
+    named. The preview ends with the `redeploy` command that applies it.
 
     Examples:
 
@@ -3032,9 +3030,9 @@ def images(
       wip-deploy images --name prod-test --format json
     """
     from wip_deploy.image_plan import (
-        apps_carried_by_base_tag,
         format_image_json,
         format_image_table,
+        pin_apps_carried_by_base_tag,
         plan_images,
     )
 
@@ -3042,43 +3040,50 @@ def images(
         typer.echo("error: --format must be 'table' or 'json'", err=True)
         raise typer.Exit(2)
 
-    _, _, deployment, components, apps_list, _ = _load_and_discover_for_mutation(
-        name, install_dir, repo_root
+    resolved_name, _, deployment, components, apps_list, _ = (
+        _load_and_discover_for_mutation(name, install_dir, repo_root)
     )
 
     preview = tag is not None or bool(image_tag)
     after = None
+    pinned: list[tuple[str, str]] = []
+    overrides = _parse_image_tags_or_exit(image_tag or [])
     if preview:
         after = deployment.model_copy(deep=True)
         if tag is not None:
             if not tag.strip():
                 typer.echo("error: --tag must be a non-empty image tag", err=True)
                 raise typer.Exit(2)
-            after.spec.images.tag = tag.strip()
-        after.spec.images.tag_overrides.update(
-            _parse_image_tags_or_exit(image_tag or [])
-        )
+            tag = tag.strip()
+            after.spec.images.tag = tag
+        after.spec.images.tag_overrides.update(overrides)
+        # The same pinning `redeploy --tag` applies, so the preview is the roll.
+        pinned = pin_apps_carried_by_base_tag(deployment, after, components, apps_list)
 
     rows = plan_images(deployment, components, apps_list, after=after)
     if output_format == "json":
         typer.echo(format_image_json(rows))
         return
     typer.echo(format_image_table(rows, preview=preview))
-    if preview:
-        carried = apps_carried_by_base_tag(rows)
-        if carried:
-            pins = " ".join(
-                f"--image-tag {r.name}={r.image.rsplit(':', 1)[1]}" for r in carried
-            )
-            typer.echo(
-                typer.style(
-                    f"\n⚠ {len(carried)} app(s) would move with the base tag: "
-                    f"{', '.join(r.name for r in carried)}. To keep their "
-                    f"current images, pin them: {pins}",
-                    fg=typer.colors.YELLOW,
-                ),
-                err=True,
-            )
+    if not preview:
+        return
+
+    if pinned:
+        typer.echo(
+            f"\n⊙ {len(pinned)} app(s) stay on their current images: the roll "
+            f"pins {', '.join(f'{n}={t}' for n, t in pinned)}. To move one too, "
+            "add --image-tag <app>=<tag>."
+        )
+    if not any(r.moves for r in rows):
+        typer.echo("\nNothing would move.")
+        return
+    target = (
+        f"--install-dir {install_dir}" if install_dir is not None
+        else f"--name {resolved_name}"
+    )
+    flags = [f"--tag {tag}"] if tag is not None else []
+    flags += [f"--image-tag {svc}={svc_tag}" for svc, svc_tag in overrides.items()]
+    typer.echo(f"\nTo apply: wip-deploy redeploy {target} {' '.join(flags)}")
 
 
 # Install secrets rotate-key may regenerate in place: rotating them needs only

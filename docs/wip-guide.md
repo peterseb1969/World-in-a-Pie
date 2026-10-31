@@ -105,7 +105,7 @@ It prints each service's image, and in SOURCE the rule that decided its tag:
 wip-deploy images --name wip --tag 20261101a
 ```
 
-Each row says whether it moves or stays. Apps that only the new tag would move are flagged ⚠. Apps are built and tagged in their own repos, so a platform tag usually doesn't exist for them.
+The preview is exactly the roll `redeploy` makes with the same flags. Each row says whether it moves or stays, and apps the new tag alone would move are listed as staying on their current images (step 3 explains why). It ends with the command that applies the roll.
 
 **3. Roll the platform.**
 

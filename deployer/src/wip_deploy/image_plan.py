@@ -105,6 +105,28 @@ def apps_carried_by_base_tag(rows: list[ImageRow]) -> list[ImageRow]:
     return [r for r in rows if r.kind == "app" and r.moves and r.new_source == "base"]
 
 
+def pin_apps_carried_by_base_tag(
+    before: Deployment,
+    after: Deployment,
+    components: list[Component],
+    apps: list[App],
+) -> list[tuple[str, str]]:
+    """Pin, in `after`, every app its new base tag alone would move, to the
+    tag it runs in `before`. Returns the (app, tag) pins it added.
+
+    `redeploy --tag` applies this; `images --tag` previews it, so the
+    preview shows exactly what the roll will do."""
+    if after.spec.images.tag == before.spec.images.tag:
+        return []
+    rows = plan_images(before, components, apps, after=after)
+    pinned = []
+    for row in apps_carried_by_base_tag(rows):
+        kept = row.image.rsplit(":", 1)[1]
+        after.spec.images.tag_overrides[row.name] = kept
+        pinned.append((row.name, kept))
+    return pinned
+
+
 _STAY_REASONS = {
     "pin": "stays (pinned)",
     "upstream": "stays (upstream pin)",
@@ -123,13 +145,10 @@ def format_image_table(rows: list[ImageRow], *, preview: bool) -> str:
     for r in rows:
         line = [r.name, r.kind, r.image, r.source]
         if preview:
-            if r.moves:
-                after = f"→ {r.new_image}"
-                if r in apps_carried_by_base_tag([r]):
-                    after += "  ⚠ app moved by base tag"
-            else:
-                after = _STAY_REASONS.get(str(r.new_source), "stays")
-            line.append(after)
+            line.append(
+                f"→ {r.new_image}" if r.moves
+                else _STAY_REASONS.get(str(r.new_source), "stays")
+            )
         table.append(line)
     widths = [max(len(row[i]) for row in table) for i in range(len(headers))]
     lines = [

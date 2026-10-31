@@ -2595,9 +2595,11 @@ sync afterwards.
   --tag`), `base` (the deployment-wide `--tag`), `manifest`, `latest`,
   `upstream` (an infra image's own version, which a base tag never touches)
   and `source` (dev target: built locally as `<name>:dev`, tags do not
-  apply). `--tag` and `--image-tag` preview a roll without applying it: each
-  row says whether it moves or stays, and apps the base tag alone would move
-  are flagged. `--format json` is available.
+  apply). `--tag` and `--image-tag` preview exactly the roll `redeploy` makes
+  with the same flags, without applying it. Each row says whether it moves or
+  stays, the apps that stay on their current images are named, and the
+  preview ends with the `redeploy` command that applies it. `--format json`
+  is available.
 - **`redeploy --tag` no longer moves apps.** Apps are built and tagged in
   their own repos, so a new platform tag rarely names an image that exists
   for them. Before this change, every app without its own pin rendered at

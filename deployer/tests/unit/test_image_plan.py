@@ -160,7 +160,7 @@ class TestPlan:
         assert [r.name for r in apps_carried_by_base_tag(rows)] == ["rc"]
 
         table = format_image_table(rows, preview=True)
-        assert "⚠ app moved by base tag" in table
+        assert "→ ghcr.io/t/rc:NEW" in table
         assert "stays (pinned)" in table
         assert "stays (upstream pin)" in table
 
@@ -226,7 +226,7 @@ class TestImagesCommand:
         assert "AFTER CHANGE" not in result.output
         assert state.read_text() == before
 
-    def test_tag_preview_warns_with_the_pins_that_keep_apps(
+    def test_tag_preview_shows_the_roll_redeploy_would_make(
         self, tmp_path: Path
     ) -> None:
         state = _write_state(
@@ -238,8 +238,14 @@ class TestImagesCommand:
         )
         assert result.exit_code == 0, result.output
         assert "→ ghcr.io/t/registry:NEW" in result.output
-        assert "--image-tag react-console=OLD" in result.output
+        # The preview applies redeploy's own app pinning: the app stays.
+        assert "react-console=OLD" in result.output
+        assert "→ ghcr.io/t/react-console" not in result.output
         assert "wip-kb=" not in result.output
+        assert (
+            f"To apply: wip-deploy redeploy --install-dir {tmp_path} --tag NEW"
+            in result.output
+        )
         assert state.read_text() == before
 
     def test_image_tag_preview(self, tmp_path: Path) -> None:
@@ -250,6 +256,16 @@ class TestImagesCommand:
         )
         assert result.exit_code == 0, result.output
         assert "→ ghcr.io/t/registry:FIX" in result.output
+        assert "--image-tag registry=FIX" in result.output
+
+    def test_preview_that_moves_nothing_says_so(self, tmp_path: Path) -> None:
+        _write_state(tmp_path, apps=[], overrides={})
+        result = runner.invoke(
+            app, ["images", "--install-dir", str(tmp_path), "--tag", "OLD"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Nothing would move." in result.output
+        assert "To apply" not in result.output
 
     def test_bad_format_exits_2(self, tmp_path: Path) -> None:
         _write_state(tmp_path, apps=[], overrides={})
