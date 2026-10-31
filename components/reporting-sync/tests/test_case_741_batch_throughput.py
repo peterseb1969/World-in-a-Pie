@@ -51,7 +51,6 @@ def svc():
     pool.acquire = MagicMock(return_value=acm)
 
     service = BatchSyncService(pool)
-    service._resolve_template_fields = AsyncMock(side_effect=lambda t: t)
     service.schema_manager.ensure_table_for_template = AsyncMock(
         return_value="doc_ct_trial_ae__v1"
     )

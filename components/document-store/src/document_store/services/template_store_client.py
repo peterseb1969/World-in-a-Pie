@@ -217,6 +217,18 @@ class TemplateStoreClient:
                 if response.status_code == 404:
                     return None
 
+                if response.status_code == 409:
+                    try:
+                        body = response.json()
+                    except ValueError:
+                        body = {}
+                    if not isinstance(body, dict):
+                        body = {}
+                    raise TemplateStoreError(
+                        str(body.get("detail") or response.text),
+                        code=body.get("error_code"),
+                    )
+
                 if response.status_code != 200:
                     raise TemplateStoreError(
                         f"Failed to get template: {response.status_code} - {response.text}"
@@ -394,8 +406,16 @@ class TemplateStoreClient:
 
 
 class TemplateStoreError(Exception):
-    """Error communicating with the Template Store service."""
-    pass
+    """Error communicating with the Template Store service.
+
+    ``code`` carries Template Store's own ``error_code`` when it refused for a
+    reason (e.g. ``inheritance_unresolved``), so callers can tell a template
+    that cannot be served from an outage.
+    """
+
+    def __init__(self, message: str, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 # Singleton instance for convenience

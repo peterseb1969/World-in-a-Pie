@@ -7,6 +7,40 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Templates that extend another are served whole, or refused
+
+Reading a template with inheritance resolved (`GET /templates/{id}`, the
+by-value routes, document writes, reporting sync) flattened its parent's fields
+into it but dropped the child's other properties: `usage`, `versioned`,
+`source_templates` / `target_templates`, `header_fields`, `reporting`,
+`extends_version` and `renames` came back as defaults. A relationship or
+`versioned: false` template that extended another was therefore validated as an
+ordinary entity template: edges skipped their endpoint checks and
+`versioned: false` documents gained versions. Reporting sync ignored the
+child's `reporting` settings. Now the resolved template is the child with only
+`fields`, `rules` and `identity_fields` merged; every other property is the
+child's own.
+
+- **A chain that cannot be resolved is an error**, not the child's own fields
+  served as if they were the schema. The causes are a missing or unpinned
+  parent version, a cycle, or a chain deeper than 10. The resolving routes
+  answer 409 `{"error_code": "inheritance_unresolved", "details": {"rule": …}}`;
+  a caller who cannot read the template still gets 404. The `/raw` routes keep
+  serving the stored template. A document write against such a template fails
+  per item with `template_unresolvable`.
+- **`GET /templates/by-value/{value}` resolves inheritance**, as its
+  description always said. `@wip/client`'s `getTemplateByValue` therefore
+  returns the inherited fields too.
+- **reporting-sync no longer resolves inheritance itself.** It used the
+  parent's latest version, not the pinned one, and fell back to the child's own
+  fields when the parent was missing. It now reads templates resolved by
+  Template Store.
+
+**Action:** none for templates without `extends`. A `versioned: false`
+template that extends another may already hold documents above version 1, and
+an extending edge type may hold edges whose endpoints its declaration excludes.
+Both were written before this fix and are not changed by it.
+
 ### A restore refuses an archive whose own verification failed; `@wip/client` 0.70.0, WIP-Toolkit 0.7.2
 
 An archive transform (filter, latest-only, …) verifies its own output and

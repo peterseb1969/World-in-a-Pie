@@ -29,7 +29,7 @@ from ..models.api_models import (
 )
 from ..models.template import Template
 from ..services.dependency_service import DependencyService, TemplateDependencies
-from ..services.errors import error_fields
+from ..services.errors import TemplateUnresolvable, error_fields
 from ..services.inheritance_service import InheritanceService
 from ..services.portable import template_with_portable_refs
 from ..services.registry_client import RegistryError
@@ -41,6 +41,22 @@ router = APIRouter(
     tags=["Templates"],
     dependencies=[Depends(require_api_key)]
 )
+
+
+async def _gate_unresolvable(
+    exc: TemplateUnresolvable, raw: TemplateResponse | None
+) -> None:
+    """Let a TemplateUnresolvable through only to a caller who may read it.
+
+    The resolving routes check read permission after fetching; a 409 for a
+    template the caller cannot read would confirm that it exists, which the
+    404 on denial is there to hide. ``raw`` is the same template unresolved.
+    """
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Template not found") from exc
+    await check_namespace_permission(require_current_identity(), raw.namespace, "read")
+    raise exc
+
 
 # Shared `refs` query parameter for the single-template read routes.
 # Stored references are canonical UUIDs (instance-specific); the portable
@@ -194,10 +210,21 @@ async def get_template(
     # Resolve synonym if not canonical UUID (e.g., "PATIENT" → UUID)
     resolved_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
 
-    template = await TemplateService.get_template(template_id=resolved_id, version=version)
-    if not template and namespace:
-        # Fallback: try as value (requires namespace)
-        template = await TemplateService.get_template(value=template_id, version=version, namespace=namespace)
+    try:
+        template = await TemplateService.get_template(template_id=resolved_id, version=version)
+        if not template and namespace:
+            # Fallback: try as value (requires namespace)
+            template = await TemplateService.get_template(value=template_id, version=version, namespace=namespace)
+    except TemplateUnresolvable as exc:
+        raw = await TemplateService.get_template(
+            template_id=resolved_id, version=version, resolve_inheritance=False
+        )
+        if raw is None and namespace:
+            raw = await TemplateService.get_template(
+                value=template_id, version=version, resolve_inheritance=False,
+                namespace=namespace,
+            )
+        await _gate_unresolvable(exc, raw)
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     # CASE-386 — gate read on the template's actual namespace (prevents
@@ -267,8 +294,15 @@ async def get_template_by_value(
     versions = await TemplateService.get_template_versions(value, ns_filter=ns_filter.query)
     if not versions:
         raise HTTPException(status_code=404, detail="Template not found")
-    # Return the first one (highest version since sorted descending)
-    template = versions[0]
+    # The first one is the highest version (sorted descending). Served
+    # resolved, as the docstring promises; the caller can read its namespace
+    # (the query was filtered to readable namespaces).
+    latest = versions[0]
+    template = latest
+    if latest.extends:
+        template = await TemplateService.get_template(
+            template_id=latest.template_id, version=latest.version
+        ) or latest
     if refs == "portable":
         template = await template_with_portable_refs(template)
     return template
@@ -341,9 +375,15 @@ async def get_template_by_value_and_version(
 
     Returns the template with inheritance resolved.
     """
-    template = await TemplateService.get_template_by_value_and_version(
-        value, version, namespace=namespace
-    )
+    try:
+        template = await TemplateService.get_template_by_value_and_version(
+            value, version, namespace=namespace
+        )
+    except TemplateUnresolvable as exc:
+        raw = await TemplateService.get_template_by_value_and_version(
+            value, version, resolve_inheritance=False, namespace=namespace
+        )
+        await _gate_unresolvable(exc, raw)
     if not template:
         raise HTTPException(status_code=404, detail="Template version not found")
     # CASE-386 — gate read on the template's actual namespace.

@@ -164,7 +164,21 @@ async def _fetch_namespace_templates(namespace: str) -> list[dict[str, Any]]:
             response.raise_for_status()
             data = response.json()
             items = data.get("items", [])
-            templates.extend(items)
+            for item in items:
+                # The listing serves templates as stored; one that extends
+                # another is re-read resolved, the shape its tables are built
+                # from (inherited fields included).
+                if item.get("extends"):
+                    resolved = await client.get(
+                        f"{settings.template_store_url}/api/template-store/templates/"
+                        f"{item['template_id']}",
+                        params={"version": str(item.get("version", 1))},
+                        headers={"X-API-Key": settings.api_key},
+                        timeout=30.0,
+                    )
+                    resolved.raise_for_status()
+                    item = resolved.json()
+                templates.append(item)
             if len(items) < 100:
                 return templates
             page += 1

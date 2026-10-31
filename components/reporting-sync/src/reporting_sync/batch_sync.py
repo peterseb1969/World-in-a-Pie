@@ -129,11 +129,18 @@ class BatchSyncService:
                     )
                     return None
                 items = response.json().get("items", [])
-                # The value branch sorts version-descending: first = latest active.
-                return cast(dict[str, Any] | None, items[0] if items else None)
         except Exception as e:
             logger.error(f"Error fetching active version of {template_value}: {e}")
             return None
+        # The value branch sorts version-descending: first = latest active.
+        if not items:
+            return None
+        row = cast(dict[str, Any], items[0])
+        if not row.get("extends"):
+            return row
+        # The listing serves templates as stored; a template that extends
+        # another is re-read through the by-id route, which resolves it.
+        return await self._fetch_template_version(row["template_id"], int(row["version"]))
 
     async def _fetch_template_version(
         self, template_id: str, version: int
@@ -159,48 +166,6 @@ class BatchSyncService:
         except Exception as e:
             logger.error(f"Error fetching template {template_id} v{version}: {e}")
             return None
-
-    async def _resolve_template_fields(self, template: dict[str, Any]) -> dict[str, Any]:
-        """
-        Resolve template with all inherited fields from parent templates.
-
-        The Template Store API returns templates with only their own fields.
-        Documents using inheritance include fields from parent templates,
-        so we need to recursively fetch parents and merge fields.
-        """
-        if not template.get("extends"):
-            return template
-
-        # Fetch parent template by ID
-        parent_id = template["extends"]
-        parent_template = await self._fetch_template(parent_id)
-
-        if not parent_template:
-            logger.warning(f"Could not fetch parent template {parent_id}, using template as-is")
-            return template
-
-        # Recursively resolve parent fields
-        parent_template = await self._resolve_template_fields(parent_template)
-
-        # Merge parent fields (parent fields come first, then child fields)
-        parent_fields = parent_template.get("fields", [])
-        child_fields = template.get("fields", [])
-
-        # Child fields with same name override parent fields
-        child_field_names = {f["name"] for f in child_fields}
-        merged_fields = [f for f in parent_fields if f["name"] not in child_field_names]
-        merged_fields.extend(child_fields)
-
-        # Create resolved template
-        resolved = template.copy()
-        resolved["fields"] = merged_fields
-
-        logger.debug(
-            f"Resolved {template['value']}: {len(child_fields)} own fields + "
-            f"{len(parent_fields)} parent fields = {len(merged_fields)} total"
-        )
-
-        return resolved
 
     async def _list_templates(self) -> list[dict[str, Any]]:
         """List all templates from Template Store."""
@@ -408,8 +373,20 @@ class BatchSyncService:
         job.started_at = datetime.now(UTC)
 
         try:
-            # Resolve inherited fields from parent templates
-            template = await self._resolve_template_fields(template)
+            # A template from a listing is served as stored; one that extends
+            # another is re-read through Template Store's resolving route, the
+            # one resolver every service uses (pinned parent version, child's
+            # own properties kept, a broken chain refused).
+            if template.get("extends"):
+                resolved = await self._fetch_template_version(
+                    template["template_id"], int(template.get("version", 1))
+                )
+                if resolved is None:
+                    raise RuntimeError(
+                        f"Template {template.get('value')} v{template.get('version')} "
+                        "could not be read resolved from Template Store"
+                    )
+                template = resolved
 
             config = self._get_reporting_config(template)
 
@@ -451,9 +428,8 @@ class BatchSyncService:
                     )
                     version_templates[version] = template
                     return template
-                resolved = await self._resolve_template_fields(fetched)
-                version_templates[version] = resolved
-                return resolved
+                version_templates[version] = fetched
+                return fetched
 
             # Eagerly ensure the latest version's table even when there are
             # zero documents: a freshly bootstrapped namespace (templates, no
@@ -509,9 +485,7 @@ class BatchSyncService:
                         # eagerly, the lazy path covers its documents.
                         eager_template = None
                     else:
-                        eager_template = await self._resolve_template_fields(
-                            fetched_active
-                        )
+                        eager_template = fetched_active
                         eager_version = int(eager_template.get("version", 1))
                         version_templates[eager_version] = eager_template
                 if eager_template is not None:

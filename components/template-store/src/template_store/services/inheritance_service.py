@@ -11,8 +11,16 @@ MAX_INHERITANCE_DEPTH = 10
 
 
 class InheritanceError(Exception):
-    """Error during inheritance resolution."""
-    pass
+    """A template's inheritance chain cannot be resolved.
+
+    ``rule`` names why: ``unpinned_parent`` (extends without an
+    extends_version), ``missing_parent`` (the pinned parent version does not
+    exist), ``circular_inheritance`` or ``max_depth``.
+    """
+
+    def __init__(self, message: str, rule: str) -> None:
+        super().__init__(message)
+        self.rule = rule
 
 
 class InheritanceService:
@@ -28,10 +36,14 @@ class InheritanceService:
         """
         Resolve a template's inheritance chain and return a flattened template.
 
-        The resolved template contains:
-        - All fields from parent(s), with child overrides applied
-        - All rules from parent(s) merged with child rules
-        - Child's identity_fields (if specified) replace parent's
+        The resolved template is the child with three properties merged
+        along the chain:
+        - fields: parent fields first, child fields override by name
+        - rules: concatenated root to child
+        - identity_fields: the child's if non-empty, else the nearest ancestor's
+        Every other property (usage, versioned, endpoint lists, header_fields,
+        reporting, extends_version, renames, ...) is the child's own; a
+        relationship or versioned:false template stays one after resolution.
 
         Args:
             template: The template to resolve
@@ -58,26 +70,14 @@ class InheritanceService:
         # Identity fields: use child's if specified, otherwise parent's
         resolved_identity_fields = InheritanceService._resolve_identity_fields(chain)
 
-        # Create resolved template (copy of original with resolved data)
-        return Template(
-            id=template.id,
-            namespace=template.namespace,
-            template_id=template.template_id,
-            value=template.value,
-            label=template.label,
-            description=template.description,
-            version=template.version,
-            extends=template.extends,  # Keep original extends reference
-            identity_fields=resolved_identity_fields,
-            fields=resolved_fields,
-            rules=resolved_rules,
-            metadata=template.metadata,
-            status=template.status,
-            created_at=template.created_at,
-            created_by=template.created_by,
-            updated_at=template.updated_at,
-            updated_by=template.updated_by,
-        )
+        # A copy of the child with the merged properties replaced; never
+        # saved. Building a new Template from a list of arguments dropped
+        # every property the list missed.
+        return template.model_copy(update={
+            "identity_fields": resolved_identity_fields,
+            "fields": resolved_fields,
+            "rules": resolved_rules,
+        })
 
     @staticmethod
     async def _build_inheritance_chain(template: Template) -> list[Template]:
@@ -102,7 +102,8 @@ class InheritanceService:
             depth += 1
             if depth > MAX_INHERITANCE_DEPTH:
                 raise InheritanceError(
-                    f"Maximum inheritance depth ({MAX_INHERITANCE_DEPTH}) exceeded"
+                    f"Maximum inheritance depth ({MAX_INHERITANCE_DEPTH}) exceeded",
+                    "max_depth",
                 )
 
             # Look up parent template at its pinned version. extends_version is
@@ -116,7 +117,8 @@ class InheritanceService:
                 raise InheritanceError(
                     f"Template '{current.template_id}' extends "
                     f"'{current.extends}' without a pinned extends_version "
-                    "(CASE-493: schema inheritance must pin an explicit version)"
+                    "(schema inheritance must pin an explicit version)",
+                    "unpinned_parent",
                 )
             parent = await Template.find_one({
                 "template_id": current.extends,
@@ -126,13 +128,15 @@ class InheritanceService:
             if not parent:
                 raise InheritanceError(
                     f"Parent template '{current.extends}' not found "
-                    f"at version {current.extends_version}"
+                    f"at version {current.extends_version}",
+                    "missing_parent",
                 )
 
             # Check for circular inheritance (use template_id, not template_id+version)
             if parent.template_id in seen_ids:
                 raise InheritanceError(
-                    f"Circular inheritance detected: {parent.template_id}"
+                    f"Circular inheritance detected: {parent.template_id}",
+                    "circular_inheritance",
                 )
 
             seen_ids.add(parent.template_id)

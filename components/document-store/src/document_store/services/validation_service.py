@@ -362,6 +362,12 @@ class ValidationService:
             return template
 
         except TemplateStoreError as e:
+            if e.code == "inheritance_unresolved":
+                # The template exists but its inheritance chain is broken;
+                # validating against its own fields alone would accept data
+                # the full schema refuses.
+                result.add_error(code="template_unresolvable", message=str(e))
+                return None
             result.add_error(
                 code="template_error",
                 message=f"Failed to fetch template: {e!s}"

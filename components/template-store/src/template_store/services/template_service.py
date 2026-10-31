@@ -40,7 +40,7 @@ from ..models.template import (
 )
 from .def_store_client import DefStoreError, get_def_store_client
 from .document_store_client import get_document_store_client
-from .errors import TemplateError, error_fields
+from .errors import TemplateError, TemplateUnresolvable, error_fields
 from .inbound_gate import InboundGate, carried_ids
 from .inheritance_service import InheritanceError, InheritanceService
 from .nats_client import EventType, publish_template_event
@@ -698,6 +698,24 @@ class TemplateService:
         return TemplateService._to_template_response(template)
 
     @staticmethod
+    async def _resolve_or_refuse(template: Template) -> Template:
+        """The template with its inheritance resolved, or TemplateUnresolvable.
+
+        A chain that cannot be resolved (missing or unpinned parent, a cycle,
+        too deep) is an error the caller sees: documents must never be
+        validated against the child's own fields as if they were the schema.
+        """
+        try:
+            return await InheritanceService.resolve_template(template)
+        except InheritanceError as exc:
+            raise TemplateUnresolvable(
+                f"Template '{template.value}' v{template.version} cannot be "
+                f"resolved: {exc}. Its stored form is readable at the /raw "
+                "routes.",
+                exc.rule,
+            ) from exc
+
+    @staticmethod
     async def get_template(
         template_id: str | None = None,
         value: str | None = None,
@@ -748,8 +766,7 @@ class TemplateService:
             return None
 
         if resolve_inheritance and template.extends:
-            with contextlib.suppress(InheritanceError):
-                template = await InheritanceService.resolve_template(template)
+            template = await TemplateService._resolve_or_refuse(template)
 
         return TemplateService._to_template_response(template)
 
@@ -938,8 +955,7 @@ class TemplateService:
             return None
 
         if resolve_inheritance and template.extends:
-            with contextlib.suppress(InheritanceError):
-                template = await InheritanceService.resolve_template(template)
+            template = await TemplateService._resolve_or_refuse(template)
 
         return TemplateService._to_template_response(template)
 

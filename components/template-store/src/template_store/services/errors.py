@@ -26,6 +26,19 @@ class TemplateError(ValueError):
         self.details: dict[str, Any] | None = {"rule": rule} if rule else None
 
 
+class TemplateUnresolvable(TemplateError):
+    """A template whose inheritance chain cannot be resolved.
+
+    Serving the child's own fields instead would hand callers a partial
+    schema that looks complete, so resolving reads refuse with this.
+    ``details.rule`` says why (see ``InheritanceError``). The stored template
+    stays readable through the raw routes.
+    """
+
+    def __init__(self, message: str, rule: str) -> None:
+        super().__init__(message, "inheritance_unresolved", rule=rule)
+
+
 def error_fields(exc: Exception) -> dict[str, Any]:
     """The error, error_code and details of a per-item bulk result for ``exc``."""
     if isinstance(exc, TemplateError):

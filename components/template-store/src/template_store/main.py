@@ -9,8 +9,9 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
@@ -32,6 +33,7 @@ from . import __version__
 from .api import api_router
 from .models.template import Template
 from .services.def_store_client import configure_def_store_client, get_def_store_client
+from .services.errors import TemplateUnresolvable
 from .services.integrity_service import IntegrityCheckResult, check_all_templates
 from .services.nats_client import close_nats_client, configure_nats_client, nats_stats
 from .services.registry_client import configure_registry_client, get_registry_client
@@ -217,6 +219,19 @@ app.add_middleware(
 
 # Include API router
 app.include_router(api_router)
+
+
+@app.exception_handler(TemplateUnresolvable)
+async def _template_unresolvable(_request: Request, exc: TemplateUnresolvable) -> JSONResponse:
+    """A resolving read of a template whose inheritance chain is broken.
+
+    409, not 404 (the template exists) and not 500 (the service is fine):
+    the stored template is in a state that cannot be served resolved.
+    """
+    return JSONResponse(
+        status_code=409,
+        content={"detail": str(exc), "error_code": exc.code, "details": exc.details},
+    )
 
 # Declare the X-API-Key requirement in the OpenAPI contract — runtime
 # Depends() enforcement emits nothing into the schema, and a client
