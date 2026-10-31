@@ -24,9 +24,32 @@ named that service deliberately.
 
 from __future__ import annotations
 
+from typing import Literal
+
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
+
+# Which precedence step decided a tag: a per-service pin, the
+# deployment-wide tag, the manifest pin, the `latest` fallback, or an
+# upstream version pin on a fully-qualified (infra) image.
+TagSource = Literal["pin", "base", "manifest", "latest", "upstream"]
+
+
+def resolve_tag(owner: Component | App, deployment: Deployment) -> tuple[str, TagSource]:
+    """The tag an owner renders at, and the precedence step that chose it."""
+    ref = owner.spec.image
+    spec_images = deployment.spec.images
+    override = spec_images.tag_overrides.get(owner.metadata.name)
+    if override:
+        return override, "pin"
+    if "/" in ref.name:
+        return (ref.tag, "upstream") if ref.tag else ("latest", "latest")
+    if spec_images.tag:
+        return spec_images.tag, "base"
+    if ref.tag:
+        return ref.tag, "manifest"
+    return "latest", "latest"
 
 
 def image_ref(owner: Component | App, deployment: Deployment) -> str:
@@ -39,14 +62,10 @@ def image_ref(owner: Component | App, deployment: Deployment) -> str:
       build will produce this image).
     """
     ref = owner.spec.image
-    spec_images = deployment.spec.images
-    override = spec_images.tag_overrides.get(owner.metadata.name)
-
+    tag, _ = resolve_tag(owner, deployment)
     if "/" in ref.name:
-        tag = override or ref.tag or "latest"
         return f"{ref.name}:{tag}"
-
-    tag = override or spec_images.tag or ref.tag or "latest"
-    if spec_images.registry:
-        return f"{spec_images.registry}/{ref.name}:{tag}"
+    registry = deployment.spec.images.registry
+    if registry:
+        return f"{registry}/{ref.name}:{tag}"
     return f"{ref.name}:{tag}"

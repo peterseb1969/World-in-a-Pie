@@ -2849,6 +2849,13 @@ def redeploy(
     deliberate state edit. An override naming no enabled component/app
     warns (the service would silently render at the base tag).
 
+    A `--tag` change does not move apps. Each enabled app that the new
+    base tag alone would move is pinned to the image it runs now, and the
+    command says so; apps are built and tagged in their own repos, so a
+    platform tag rarely exists for them. Move an app with `--image-tag
+    APP=TAG` in the same call, or with `app-deploy`. Preview any roll first
+    with `wip-deploy images --tag …`.
+
     Pass service names to scope the apply to a subset (compose/dev only;
     a k8s `kubectl apply` is already incremental, so a service list is
     rejected there).
@@ -2875,6 +2882,7 @@ def redeploy(
     # same shape as app-deploy's single-app override write. The persist at
     # the end of this verb writes the updated spec back to deployer-state.
     tag_changes: list[str] = []
+    before_roll = deployment.model_copy(deep=True)
     if tag is not None:
         if not tag.strip():
             typer.echo("error: --tag must be a non-empty image tag", err=True)
@@ -2892,6 +2900,23 @@ def redeploy(
         else:
             deployment.spec.images.tag_overrides[svc] = svc_tag
             tag_changes.append(f"{svc}={svc_tag}")
+    if deployment.spec.images.tag != before_roll.spec.images.tag:
+        # Apps are built and tagged in their own repos: a new base tag
+        # rarely names an image that exists for them. Keep every app the
+        # base tag alone would move on the image it runs now; moving one
+        # stays possible with an explicit --image-tag APP=TAG.
+        from wip_deploy.image_plan import apps_carried_by_base_tag, plan_images
+
+        rows = plan_images(before_roll, components, apps_list, after=deployment)
+        for row in apps_carried_by_base_tag(rows):
+            kept = row.image.rsplit(":", 1)[1]
+            deployment.spec.images.tag_overrides[row.name] = kept
+            tag_changes.append(f"{row.name}={kept}")
+            typer.echo(
+                f"⊙ app {row.name!r} stays on {kept!r} (pinned; the base tag "
+                f"no longer moves it — roll it with --image-tag {row.name}=<tag> "
+                "or `app-deploy`)."
+            )
     if overrides:
         # CASE-556: an override that matches no enabled component/app is
         # never consulted — warn here as install does.
@@ -2954,6 +2979,106 @@ def redeploy(
         services_scope=scope or None,
         repo_root=repo_root,
     )
+
+
+@app.command()
+def images(
+    name: Annotated[str | None, _name_opt()] = None,
+    install_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help="Install directory. Defaults to ~/.wip-deploy/<name>/.",
+        ),
+    ] = None,
+    tag: Annotated[
+        str | None,
+        typer.Option(
+            "--tag",
+            help="Preview a new deployment-wide tag: show what would move and what stays.",
+        ),
+    ] = None,
+    image_tag: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--image-tag",
+            help="Preview a per-service pin NAME=TAG (repeatable), as `redeploy --image-tag`.",
+        ),
+    ] = None,
+    output_format: Annotated[
+        str, typer.Option("--format", help="table | json")
+    ] = "table",
+    repo_root: Annotated[Path | None, _repo_root_opt()] = None,
+) -> None:
+    """Show the image each service of an install runs, and why. Changes nothing.
+
+    SOURCE names the rule that decided the tag: `pin` (a per-service
+    `--image-tag`, also written by `add-app --tag` / `app-deploy --tag`),
+    `base` (the deployment-wide `--tag`), `manifest` (the tag in the
+    component's or app's manifest), `latest`, `upstream` (an infra image's
+    own version pin, which a base tag never touches), or `source` (dev
+    target: built locally as `<name>:dev`, tags do not apply).
+
+    With `--tag` / `--image-tag` it previews a roll on the saved spec,
+    without applying it: each row says whether it would move or stay, and
+    flags apps that would move only because the base tag moved — apps are
+    built in their own repos, so the new base tag rarely names an image
+    that exists for them.
+
+    Examples:
+
+      wip-deploy images --name prod-test
+      wip-deploy images --name prod-test --tag 20261101a
+      wip-deploy images --name prod-test --format json
+    """
+    from wip_deploy.image_plan import (
+        apps_carried_by_base_tag,
+        format_image_json,
+        format_image_table,
+        plan_images,
+    )
+
+    if output_format not in ("table", "json"):
+        typer.echo("error: --format must be 'table' or 'json'", err=True)
+        raise typer.Exit(2)
+
+    _, _, deployment, components, apps_list, _ = _load_and_discover_for_mutation(
+        name, install_dir, repo_root
+    )
+
+    preview = tag is not None or bool(image_tag)
+    after = None
+    if preview:
+        after = deployment.model_copy(deep=True)
+        if tag is not None:
+            if not tag.strip():
+                typer.echo("error: --tag must be a non-empty image tag", err=True)
+                raise typer.Exit(2)
+            after.spec.images.tag = tag.strip()
+        after.spec.images.tag_overrides.update(
+            _parse_image_tags_or_exit(image_tag or [])
+        )
+
+    rows = plan_images(deployment, components, apps_list, after=after)
+    if output_format == "json":
+        typer.echo(format_image_json(rows))
+        return
+    typer.echo(format_image_table(rows, preview=preview))
+    if preview:
+        carried = apps_carried_by_base_tag(rows)
+        if carried:
+            pins = " ".join(
+                f"--image-tag {r.name}={r.image.rsplit(':', 1)[1]}" for r in carried
+            )
+            typer.echo(
+                typer.style(
+                    f"\n⚠ {len(carried)} app(s) would move with the base tag: "
+                    f"{', '.join(r.name for r in carried)}. To keep their "
+                    f"current images, pin them: {pins}",
+                    fg=typer.colors.YELLOW,
+                ),
+                err=True,
+            )
 
 
 # Install secrets rotate-key may regenerate in place: rotating them needs only
@@ -5592,6 +5717,13 @@ CHANGING AN EXISTING INSTALL
 
   See current state of running services:
     wip-deploy status
+
+  See which image each service runs and why; preview a tag roll first:
+    wip-deploy images --name wip-prod
+    wip-deploy images --name wip-prod --tag 20261101a
+
+  Roll the platform to a new tag (apps keep their images unless named):
+    wip-deploy redeploy --name wip-prod --tag 20261101a
 
 SECURITY — before exposing an install
   Run the read-only pre-exposure checklist (secret permissions, API-key

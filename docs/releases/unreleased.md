@@ -2568,6 +2568,23 @@ sync afterwards.
   holds the master key. The canary's namespace-upsert probe now sends a valid
   body: the route checks permission after validating the body, so its old
   invalid-body probe failed the check on every install.
+- **`wip-deploy images` shows which image each service runs, and why.**
+  Read-only, from the saved spec. One row per enabled component and app, with
+  its image and SOURCE: the rule that decided its tag. The rules are `pin` (a
+  per-service `--image-tag`, also written by `add-app --tag` and `app-deploy
+  --tag`), `base` (the deployment-wide `--tag`), `manifest`, `latest`,
+  `upstream` (an infra image's own version, which a base tag never touches)
+  and `source` (dev target: built locally as `<name>:dev`, tags do not
+  apply). `--tag` and `--image-tag` preview a roll without applying it: each
+  row says whether it moves or stays, and apps the base tag alone would move
+  are flagged. `--format json` is available.
+- **`redeploy --tag` no longer moves apps.** Apps are built and tagged in
+  their own repos, so a new platform tag rarely names an image that exists
+  for them. Before this change, every app without its own pin rendered at
+  the new tag and failed to pull. Now each such app is pinned to the image it
+  runs today, and the command names it. To move an app, pass `--image-tag
+  APP=TAG` in the same call, or use `app-deploy`. A redeploy that does not
+  change the base tag pins nothing.
 - **`nuke --remove-data` also removes the saved spec.** After a teardown
   that destroyed an install's data, the next `install` was refused as a
   reshape of an install that no longer existed: "install 'default' already
