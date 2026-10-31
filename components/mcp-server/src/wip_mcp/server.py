@@ -4660,6 +4660,7 @@ async def start_restore(
     dry_run: bool = False,
     drop_stale_reporting: bool = False,
     drop_unresolved_edges: bool = False,
+    allow_failed_verify: bool = False,
 ) -> str:
     """Restore from a local archive file. Returns the initial BackupJobSnapshot.
 
@@ -4763,6 +4764,12 @@ async def start_restore(
             install; the job result and the restore provenance list each one.
             Plain reference fields keep their value either way, and the result's
             referents.unresolved_references lists the documents that keep one.
+        allow_failed_verify: Restore an archive whose own verification failed.
+            An archive written by an archive transform records the transform's
+            verify verdict in its derived_from chain; when the newest step says
+            'fail', the archive is known to be broken and every mode refuses it
+            (dry runs included) unless this is set. Then it restores with a
+            warning, and the restore provenance records accepted_failed_verify.
     """
     try:
         data = await get_client().start_restore(
@@ -4781,6 +4788,7 @@ async def start_restore(
             dry_run=dry_run,
             drop_stale_reporting=drop_stale_reporting,
             drop_unresolved_edges=drop_unresolved_edges,
+            allow_failed_verify=allow_failed_verify,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

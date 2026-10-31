@@ -7,6 +7,29 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A restore refuses an archive whose own verification failed; `@wip/client` 0.70.0, WIP-Toolkit 0.7.2
+
+An archive transform (filter, latest-only, …) verifies its own output and
+records the result in the archive's `derived_from` chain. When the newest step
+records `verdict: "fail"`, the archive is known to be broken, and every restore
+mode — restore, merge and fresh, dry runs included — now refuses it before
+writing anything. The job fails with a message naming the transform, its
+toolkit version and the finding counts. The new restore option
+`allow_failed_verify` restores it anyway, with a warning, and the namespace's
+restore provenance records `accepted_failed_verify: true`.
+
+Every other derived archive (`pass`, `warn`, or no verdict) restores with a
+warning that names the newest transform and its verdict. Before, only the
+id-preserving restore warned; fresh and merge said nothing.
+
+The option is on both restore endpoints (`POST /backup/namespaces/{ns}/restore`
+as a form field, `POST /backup/jobs/{id}/restore` in the JSON body), MCP
+`start_restore`, `@wip/client` `RestoreOptions` (0.70.0), and
+`wip-toolkit restore --force` (0.7.2).
+
+**Action:** none today. No transform writes `derived_from` yet, so no existing
+archive is affected.
+
 ### `@wip/proxy` 0.6.0: a missing key can cost `/wip` instead of the app
 
 `wipProxy()` is usually called while the server module loads, and throws when

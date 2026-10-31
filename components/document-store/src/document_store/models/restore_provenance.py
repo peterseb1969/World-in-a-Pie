@@ -78,6 +78,14 @@ class RestoreProvenance(BeanieDocument):
             "before restores recorded it."
         ),
     )
+    accepted_failed_verify: bool | None = Field(
+        None,
+        description=(
+            "True when the restore overrode a failed verify verdict "
+            "(allow_failed_verify): the archive's newest derived_from step "
+            "recorded 'fail' and was restored anyway. Absent otherwise."
+        ),
+    )
     validation_job_id: str | None = Field(
         None,
         description="The validation job this restore started for this namespace",
@@ -116,6 +124,7 @@ class RestoreProvenanceItem(BaseModel):
     derived_from: list[dict[str, Any]] = Field(default_factory=list)
     merge: dict[str, Any] | None = None
     referents: dict[str, Any] | None = None
+    accepted_failed_verify: bool | None = None
     validation_job_id: str | None = None
     inherited: bool = False
 

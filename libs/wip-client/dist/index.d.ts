@@ -2021,6 +2021,15 @@ interface RestoreOptions {
      * references, so for a merge this is what lets such edges be left out.
      */
     drop_unresolved_edges?: boolean;
+    /**
+     * Restore an archive whose own verification failed. An archive written by
+     * an archive transform records the transform's verify verdict in its
+     * `derived_from` chain; when the newest step says `fail`, the archive is
+     * known to be broken and every mode refuses it (dry runs included) unless
+     * this is set. Then it restores with a warning, and the restore provenance
+     * records `accepted_failed_verify`.
+     */
+    allow_failed_verify?: boolean;
 }
 /** Documents of one namespace that reference an entity the archive does not
  * carry and this install does not hold; they keep its archived id. */

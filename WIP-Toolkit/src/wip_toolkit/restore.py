@@ -29,6 +29,7 @@ def build_form(
     skip_documents: bool = False,
     skip_files: bool = False,
     dry_run: bool = False,
+    allow_failed_verify: bool = False,
 ) -> dict[str, str]:
     """The multipart fields for one restore request.
 
@@ -42,6 +43,7 @@ def build_form(
         "skip_documents": str(skip_documents).lower(),
         "skip_files": str(skip_files).lower(),
         "dry_run": str(dry_run).lower(),
+        "allow_failed_verify": str(allow_failed_verify).lower(),
     }
     if target_namespace:
         data["target_namespace"] = target_namespace

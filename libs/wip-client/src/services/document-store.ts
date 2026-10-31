@@ -450,6 +450,8 @@ export class DocumentStoreService extends BaseService {
       form.append('drop_stale_reporting', String(options.drop_stale_reporting))
     if (options.drop_unresolved_edges !== undefined)
       form.append('drop_unresolved_edges', String(options.drop_unresolved_edges))
+    if (options.allow_failed_verify !== undefined)
+      form.append('allow_failed_verify', String(options.allow_failed_verify))
     return this.postFormData(`/backup/namespaces/${namespace}/restore`, form)
   }
 

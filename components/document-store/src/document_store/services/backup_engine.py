@@ -978,6 +978,9 @@ class DirectRestoreEngine:
         self._actor = actor
         # The archive file's digest, computed once per run on first use.
         self._archive_sha256: str | None = None
+        # Set when this run restores an archive whose own verify failed
+        # because the request accepted it; recorded on the provenance rows.
+        self._accepted_failed_verify = False
         self._unresolved_referents: dict[str, _UnresolvedReferent] = {}
         # Structured outcome for a caller that was not watching the event
         # stream. Progress events overwrite each other on the job record, so a
@@ -1018,6 +1021,7 @@ class DirectRestoreEngine:
         dry_run: bool = False,
         allow_missing_identity: bool = False,
         drop_unresolved_edges: bool = False,
+        allow_failed_verify: bool = False,
     ) -> None:
         """Run the full restore pipeline over every namespace in the archive.
 
@@ -1034,6 +1038,12 @@ class DirectRestoreEngine:
         """
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
+            # Before anything else: a derived archive whose own verify failed
+            # is refused here, dry runs included.
+            raw_manifest = reader.read_manifest_raw()
+            self._check_derived_archive(
+                raw_manifest, allow_failed_verify=allow_failed_verify
+            )
             targets = self._resolve_targets(reader, manifest, target_namespace)
 
             self._emit(
@@ -1051,20 +1061,6 @@ class DirectRestoreEngine:
                 await self._check_namespace_empty(tgt)
                 await self._check_reporting_precondition(
                     tgt, drop_stale_reporting, dry_run=dry_run
-                )
-
-            # An archive stamped as a derived artifact (produced by an archive
-            # transform, not a full backup) is deliberately incomplete. The
-            # Manifest model ignores unknown keys, so read the raw dict.
-            raw_manifest = reader.read_manifest_raw()
-            derived_from = raw_manifest.get("derived_from")
-            if derived_from is not None:
-                self._emit(
-                    "warning",
-                    "Archive declares itself DERIVED from a full backup "
-                    f"(derived_from={derived_from!r}) — its contents are "
-                    "deliberately incomplete; verify the restored namespace "
-                    "covers what you expect.",
                 )
 
             # Identity precondition: an archive that carries entities but no
@@ -1299,6 +1295,7 @@ class DirectRestoreEngine:
         batch_size: int = 500,
         dry_run: bool = False,
         drop_unresolved_edges: bool = False,
+        allow_failed_verify: bool = False,
     ) -> None:
         """Restore an archive's content as brand-new entities.
 
@@ -1338,6 +1335,12 @@ class DirectRestoreEngine:
 
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
+            # Before anything else: a derived archive whose own verify failed
+            # is refused here, dry runs included.
+            raw_manifest = reader.read_manifest_raw()
+            self._check_derived_archive(
+                raw_manifest, allow_failed_verify=allow_failed_verify
+            )
             sources = self._archive_namespaces(reader, manifest)
             mapping = self._resolve_remap_mapping(
                 sources, target_namespace, namespace_map
@@ -1559,7 +1562,6 @@ class DirectRestoreEngine:
                 # After the re-key: it registers the qualified form as a new,
                 # claimed synonym, which a retired document must not keep.
                 await self._release_retired_synonyms(target)
-            raw_manifest = reader.read_manifest_raw()
             for src, target in mapping.items():
                 await self._record_provenance(target, src, manifest)
                 await self._write_restore_provenance(
@@ -2443,6 +2445,64 @@ class DirectRestoreEngine:
                         f"First failures: {failed[:5]}"
                     )
 
+    def _check_derived_archive(
+        self, raw_manifest: Any, *, allow_failed_verify: bool
+    ) -> None:
+        """Gate an archive that declares itself derived (``derived_from``).
+
+        An archive transform verifies its own output and records the verdict
+        in the newest hop of the chain. A ``fail`` verdict means the archive
+        is known to be broken, so it is refused unless the request accepts it
+        with ``allow_failed_verify``. Every other derived archive — ``pass``,
+        ``warn``, an unknown verdict, a hop without one — is deliberately
+        incomplete and gets a warning. Only the newest hop counts: it
+        verified the bytes being restored. Runs before anything is written,
+        dry runs included, in every restore mode.
+        """
+        raw = raw_manifest.get("derived_from") if isinstance(raw_manifest, dict) else None
+        chain = _derived_chain(raw)
+        if not chain:
+            return
+        newest = chain[-1]
+        verify = newest.get("verify")
+        verdict = verify.get("verdict") if isinstance(verify, dict) else None
+        transform = newest.get("transform") or "an unnamed transform"
+        if verdict == "fail":
+            findings = verify.get("findings") if isinstance(verify, dict) else None
+            counts = (
+                ", ".join(f"{k}={v}" for k, v in findings.items())
+                if isinstance(findings, dict) and findings
+                else "no counts recorded"
+            )
+            produced_by = (
+                f"'{transform}' (toolkit {newest['toolkit_version']})"
+                if newest.get("toolkit_version")
+                else f"'{transform}'"
+            )
+            if not allow_failed_verify:
+                raise RestoreEngineError(
+                    f"Archive failed its own verification: the {produced_by} "
+                    f"transform that wrote it recorded verdict 'fail' "
+                    f"({counts}). It is known to be broken and is not restored. "
+                    "Inspect it with `wip-toolkit inspect`, or set "
+                    "allow_failed_verify=true to restore it anyway."
+                )
+            self._accepted_failed_verify = True
+            self._emit(
+                "warning",
+                f"Archive failed its own verification ({produced_by}, "
+                f"verdict 'fail', {counts}) — restoring it anyway because "
+                "allow_failed_verify=true.",
+            )
+            return
+        self._emit(
+            "warning",
+            f"Archive declares itself DERIVED from a full backup (newest step: "
+            f"'{transform}', verify verdict {verdict!r}) — its contents are "
+            "deliberately incomplete; verify the restored namespace covers "
+            "what you expect.",
+        )
+
     async def _write_restore_provenance(
         self,
         archive_path: Any,
@@ -2502,6 +2562,10 @@ class DirectRestoreEngine:
             "validation_job_id": None,
             "inherited": False,
         }
+        # Present only when the restore overrode a failed verify verdict;
+        # absent means it did not (the chain above carries the verdict).
+        if self._accepted_failed_verify:
+            record["accepted_failed_verify"] = True
 
         db_name, coll_name = PROVENANCE_COLLECTION
         collection = self._mongo[db_name][coll_name]
@@ -2602,6 +2666,7 @@ class DirectRestoreEngine:
         batch_size: int = 500,
         dry_run: bool = False,
         drop_unresolved_edges: bool = False,
+        allow_failed_verify: bool = False,
     ) -> None:
         """Merge an archive into an existing, possibly non-empty namespace.
 
@@ -2639,6 +2704,12 @@ class DirectRestoreEngine:
 
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
+            # Before anything else: a derived archive whose own verify failed
+            # is refused here, dry runs included.
+            raw_manifest = reader.read_manifest_raw()
+            self._check_derived_archive(
+                raw_manifest, allow_failed_verify=allow_failed_verify
+            )
             targets = self._resolve_targets(
                 reader, manifest, target_namespace, allow_redirect=True
             )
@@ -2903,7 +2974,7 @@ class DirectRestoreEngine:
                 # clashes actually written are a subset of `clash`.
                 planned = self.result["namespaces"][tgt]
                 await self._write_restore_provenance(
-                    archive_path, manifest, reader.read_manifest_raw(),
+                    archive_path, manifest, raw_manifest,
                     source=src, target=tgt, mode="merge",
                     referents=planned.get("referents"),
                     merge={

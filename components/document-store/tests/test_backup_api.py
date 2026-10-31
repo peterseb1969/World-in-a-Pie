@@ -488,6 +488,43 @@ async def test_extend_terminologies_reaches_the_runner(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    "form",
+    [
+        {"mode": "restore"},
+        {"mode": "merge"},
+        {"mode": "fresh", "target_namespace": "wip"},
+    ],
+)
+async def test_allow_failed_verify_reaches_the_runner_in_every_mode(
+    client: AsyncClient, auth_headers: dict, form: dict
+):
+    """The engine refuses a derived archive whose own verify failed unless the
+    request accepts it; the acceptance must reach the engine in every mode."""
+    fake_task = asyncio.get_running_loop().create_future()
+    fake_task.set_result(None)
+    with (
+        patch(
+            "document_store.api.backup.backup_service.make_direct_restore_runner",
+            return_value=AsyncMock(),
+        ) as mk_runner,
+        patch(
+            "document_store.api.backup.backup_service.start_async_job",
+            new=AsyncMock(return_value=fake_task),
+        ),
+    ):
+        resp = await client.post(
+            "/api/document-store/backup/namespaces/wip/restore",
+            headers=auth_headers,
+            files={"archive": ("b.zip", _valid_archive_bytes(), "application/zip")},
+            data={**form, "allow_failed_verify": "true"},
+        )
+
+    assert resp.status_code == 202, resp.text
+    assert mk_runner.call_args.kwargs["options"]["allow_failed_verify"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("field", "value"),
     [
         ("on_clash", "overwrite"),

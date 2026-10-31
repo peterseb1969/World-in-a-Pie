@@ -101,6 +101,18 @@ class TestRestoreVerb:
         assert result.exit_code == 0, result.output
         client.get.assert_not_called()
 
+    def test_force_accepts_a_failed_verify(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client, "--force")
+        assert result.exit_code == 0, result.output
+        assert _form(client)["allow_failed_verify"] == "true"
+
+    def test_without_force_a_failed_verify_is_not_accepted(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client)
+        assert result.exit_code == 0, result.output
+        assert _form(client)["allow_failed_verify"] == "false"
+
     def test_fresh_map_is_sent_as_json(self, tmp_path):
         client = _mock_client()
         result = _invoke(tmp_path, client, "--mode", "fresh", "--map", "aa=bb")

@@ -354,6 +354,36 @@ class TestRestoreRunnerModeRouting:
         engine.run_restore.assert_called_once()
 
 
+    @pytest.mark.parametrize(
+        ("mode", "entry"),
+        [("restore", "run_restore"), ("merge", "run_merge"), ("fresh", "run_remap")],
+    )
+    async def test_allow_failed_verify_reaches_every_entry_point(
+        self, tmp_path, mode, entry
+    ):
+        engine = MagicMock()
+        engine.run_merge = AsyncMock()
+        engine.run_remap = AsyncMock()
+        engine.run_restore = AsyncMock()
+
+        runner = backup_service.make_direct_restore_runner(
+            tmp_path / "a.zip",
+            {"mode": mode, "target_namespace": "kb", "allow_failed_verify": True},
+        )
+        with (
+            patch(
+                "document_store.services.backup_engine.DirectRestoreEngine",
+                return_value=engine,
+            ),
+            patch(
+                "document_store.services.file_storage_client.is_file_storage_enabled",
+                return_value=False,
+            ),
+        ):
+            await runner(lambda _event: None)
+
+        assert getattr(engine, entry).call_args.kwargs["allow_failed_verify"] is True
+
 
 class TestValidationAfterRestore:
     """A completed restore verifies what it wrote.

@@ -457,6 +457,12 @@ async def start_restore(
             "Drop edge documents (templates with usage 'relationship') whose source_ref or target_ref points at a document that is neither in the archive nor on this install. They are not restored, with all their versions, and the job result and the restore provenance list each one. Without it they are restored with the archived id. Plain reference fields always keep their value; references that do not resolve are listed either way. A merge refuses unresolved references, so for a merge this is what lets such edges be left out."
         ),
     ),
+    allow_failed_verify: bool = Form(
+        False,
+        description=(
+            "Restore an archive whose own verification failed. An archive written by an archive transform records the transform's verify result in its derived_from chain; when the newest step's verdict is 'fail', the archive is known to be broken and every restore mode (restore, merge, fresh, dry runs included) refuses it unless this is set. Then the restore proceeds with a warning, and the restore provenance records accepted_failed_verify. Other derived archives restore with a warning either way."
+        ),
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
     """Upload an archive and restore it into ``namespace``.
@@ -634,6 +640,7 @@ async def start_restore(
         "drop_stale_reporting": drop_stale_reporting,
         "allow_missing_identity": allow_missing_identity,
         "drop_unresolved_edges": drop_unresolved_edges,
+        "allow_failed_verify": allow_failed_verify,
     }
 
     # A fresh restore WRITES to the resolved targets, not to the archive's
@@ -1113,6 +1120,7 @@ async def restore_from_job(
         "batch_size": request.batch_size,
         "dry_run": request.dry_run,
         "drop_unresolved_edges": request.drop_unresolved_edges,
+        "allow_failed_verify": request.allow_failed_verify,
         "restored_from_job": src.job_id,
     }
 

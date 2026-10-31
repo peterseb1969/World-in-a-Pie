@@ -459,6 +459,10 @@ _MERGE_ONLY_OPTIONS = ("on_clash", "older_versions", "add_missing", "extend_term
 @click.option("--skip-documents", is_flag=True, help="Definitions only.")
 @click.option("--skip-files", is_flag=True, help="Do not restore file blobs.")
 @click.option("--dry-run", is_flag=True, help="Report what would happen; write nothing.")
+@click.option("--force", is_flag=True,
+              help="Send an archive that is known to be broken anyway: one whose own "
+                   "verification failed (verdict 'fail' in its derived_from chain), "
+                   "which the server otherwise refuses.")
 @click.option("--no-wait", is_flag=True, help="Print the queued job and return.")
 @click.option("--timeout", default=3600.0, show_default=True,
               help="Seconds to follow the job before returning (it keeps running).")
@@ -478,6 +482,7 @@ def restore(
     skip_documents: bool,
     skip_files: bool,
     dry_run: bool,
+    force: bool,
     no_wait: bool,
     timeout: float,
     as_json: bool,
@@ -537,6 +542,7 @@ def restore(
         skip_documents=skip_documents,
         skip_files=skip_files,
         dry_run=dry_run,
+        allow_failed_verify=force,
     )
 
     config = ctx.obj["config"]
