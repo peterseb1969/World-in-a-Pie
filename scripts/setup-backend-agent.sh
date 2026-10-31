@@ -377,6 +377,24 @@ if ! "$VENV_PYTHON" -c "import wip_mcp" 2>/dev/null; then
     fi
 fi
 
+# Idempotent WIP-Toolkit install. The toolkit depends on wip-archive, which is
+# not on PyPI: it lives in libs/wip-archive, so both are installed in one pip
+# call that names the local path. Its declared dependency stays a plain
+# version requirement because the toolkit wheel also ships to apps.
+if ! "$VENV_PYTHON" -c "import wip_toolkit, wip_archive" 2>/dev/null; then
+    if [ -f "$WIP_ROOT/WIP-Toolkit/pyproject.toml" ] && [ -f "$WIP_ROOT/libs/wip-archive/pyproject.toml" ]; then
+        echo "   Installing WIP-Toolkit and wip-archive (missing in venv)..."
+        if "$VENV_PYTHON" -m pip install -e "$WIP_ROOT/libs/wip-archive" -e "$WIP_ROOT/WIP-Toolkit" -q 2>&1; then
+            echo "   WIP-Toolkit installed"
+        else
+            echo "   WARNING: WIP-Toolkit install failed. Fix manually:"
+            echo "     source .venv/bin/activate && pip install -e libs/wip-archive -e WIP-Toolkit"
+        fi
+    else
+        echo "   WARNING: WIP-Toolkit/ or libs/wip-archive/ missing; cannot install the toolkit"
+    fi
+fi
+
 # --- 2. Generate .mcp.json ---
 
 echo "2. Generating .mcp.json..."

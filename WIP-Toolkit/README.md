@@ -5,6 +5,20 @@ status, and synonym backfill — a thin consumer of the platform APIs and of
 `libs/wip-archive` (the archive format contract + id-remap library, a
 sibling of `wip-auth`; see `docs/design/wip-archive-split.md`).
 
+## Install (from a WIP checkout)
+
+`wip-archive` is not on PyPI, so install it from the repo in the same pip
+call; a bare `pip install -e WIP-Toolkit/` fails with "No matching
+distribution found for wip-archive":
+
+```bash
+# from the repo root, with the repo venv active
+pip install -e libs/wip-archive -e WIP-Toolkit/
+```
+
+`scripts/setup-backend-agent.sh` does this for you when the toolkit is
+missing from the venv.
+
 ## Archive format — v3 (multi-namespace)
 
 The format is owned by `wip_archive` and shared with the document-store
