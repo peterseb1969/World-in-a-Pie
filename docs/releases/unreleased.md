@@ -2882,6 +2882,24 @@ too. Exit 0 when identical, 1 when they differ, 2 on an unreadable archive;
 
 **Action:** none.
 
+### `wip-toolkit split`: an archive's parts as separate archives; WIP-Toolkit 0.19.0
+
+`wip-toolkit split <archive> <out-dir>` writes one archive per namespace
+(`--by namespace`, the default: `<ns>.zip`) or one per island (`--by island`:
+`island-<n>.zip`, the templates a connected component of references joins,
+with every version of their documents, the files those reference and the
+terminologies the island uses; a terminology several islands use is copied
+into each). Terminologies no island uses, and documents pinned to a
+template the archive does not carry, go into `unattached.zip`, so every row
+lands in some part. A reference from one part into another becomes a
+referent. Each part is verified and records its own `derived_from` hop
+(`transform: split`, `params: {by, part}`); an existing part archive
+refuses the whole run without `--force`, before anything is written.
+`--dry-run` and `--json` as for the other transforms. `wip-archive` 0.20.0
+(`wip_archive.split`).
+
+**Action:** none.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

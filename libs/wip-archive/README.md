@@ -35,6 +35,8 @@ bind-mounted in dev stacks, baked into release images.
   the versions pinned references name.
 - `wip_archive.prune` — the `prune` plan: templates nothing uses, and the
   terminologies only they declared.
+- `wip_archive.split` — the `split` plan: one part per namespace or per
+  island, each kept-row rule for the transform core.
 - `wip_archive.strip_blobs` — the `strip-blobs` plan: file rows and blobs
   leave, referenced files become referents.
 - `wip_archive.transform` — `run_transform`, the core every shaping

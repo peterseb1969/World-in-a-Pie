@@ -1,7 +1,7 @@
 # WIP-Toolkit
 
 The **operator CLI** for WIP: backup, inspect, verify, the archive transforms
-(filter, prune, latest-only, strip-blobs), diff, restore, archive conversion, seeding,
+(filter, prune, latest-only, strip-blobs, split), diff, restore, archive conversion, seeding,
 status, and synonym backfill — a thin consumer of the platform APIs and of
 `libs/wip-archive` (the archive format contract + id-remap library, a
 sibling of `wip-auth`; see `docs/design/wip-archive-split.md`).
@@ -82,6 +82,7 @@ wip-toolkit filter <archive.zip> <out.zip> TEMPLATE… [--boundary strict|drop|s
 wip-toolkit prune <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit latest-only <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit strip-blobs <archive.zip> <out.zip> [--dry-run] [--json]
+wip-toolkit split <archive.zip> <out-dir> [--by namespace|island] [--dry-run] [--json]
 wip-toolkit diff <a.zip> <b.zip> [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
@@ -135,6 +136,14 @@ with their blobs (a file row without bytes would restore as a file with no
 content); each file a kept document references is recorded as a referent,
 keyed by the checksum of its bytes, so a restore points the documents at an
 install's own copy of that file and reports it as unresolved elsewhere.
+
+`split` writes an archive's parts into a directory: `<ns>.zip` per
+namespace (`--by namespace`, default), or `island-<n>.zip` per island
+(`--by island`: templates joined by references, with their documents,
+files and terminologies; a shared terminology is copied into each).
+Terminologies no island uses, and documents whose template the archive
+does not carry, go into `unattached.zip`. A reference from one part into
+another becomes a referent. Each part is verified and records its own hop.
 
 `diff` compares two archives row by row: per namespace and entity type,
 what was added, removed or changed (the differing fields named for a

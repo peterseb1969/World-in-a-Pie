@@ -621,6 +621,79 @@ def strip_blobs_cmd(
 
 
 @main.command()
+@click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
+@click.argument("output_dir", type=click.Path(file_okay=False))
+@click.option("--by", type=click.Choice(["namespace", "island"]), default="namespace",
+              show_default=True, help="One archive per namespace, or per island")
+@click.option("--dry-run", is_flag=True,
+              help="Plan, copy and verify every part on scratch space; write nothing")
+@click.option("--force", is_flag=True, help="Overwrite part archives that exist")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def split(
+    archive_path: str, output_dir: str, by: str, dry_run: bool, force: bool, as_json: bool
+) -> None:
+    """Write an archive's parts as separate archives into OUTPUT_DIR.
+
+    --by namespace (default) writes <ns>.zip per namespace. --by island
+    writes island-<n>.zip per island: templates joined by references, with
+    their documents, files and terminologies (a terminology several islands
+    use is copied into each). Terminologies no island uses, and documents
+    pinned to a template the archive does not carry, go into
+    unattached.zip. A reference from one part into another becomes a
+    referent. Every part is verified before it is written and records its
+    own derived_from hop. Exits 1 if any part's verdict is fail, or when a
+    part archive exists without --force (nothing is written then).
+    """
+    from wip_archive.split import SplitError, plan_split
+    from wip_archive.transform import run_transform
+
+    from .transform_view import TRANSFORM_JSON_SCHEMA, json_payload
+
+    with ArchiveReader(archive_path) as reader:
+        try:
+            parts = plan_split(reader, ArchiveModel.load(reader), by)
+        except SplitError as e:
+            console.print(f"[red]{e}[/red]")
+            sys.exit(1)
+    out_dir = Path(output_dir)
+    targets = [(part, out_dir / f"{part.name}.zip") for part in parts]
+    existing = [str(t) for _p, t in targets if t.exists()]
+    if existing and not force and not dry_run:
+        console.print(f"[red]Part archive(s) exist:[/red] {', '.join(existing)} "
+                      "(pass --force to overwrite). Nothing written.")
+        sys.exit(1)
+
+    results = []
+    for part, target in targets:
+        results.append((part, run_transform(
+            archive_path, target, transform="split", toolkit_version=_get_version(),
+            params={"by": by, "part": part.name}, keep_row=part.keep_row,
+            overwrite=force, dry_run=dry_run,
+        )))
+
+    if as_json:
+        click.echo(_json.dumps({
+            "schema": TRANSFORM_JSON_SCHEMA,
+            "by": by,
+            "dry_run": dry_run,
+            "parts": [{"part": p.name, "description": p.description, **json_payload(r)}
+                      for p, r in results],
+        }, indent=2, default=str))
+    else:
+        table = Table(title=f"split --by {by}" + (" (dry run, nothing written)" if dry_run else ""))
+        for column in ("Part", "Holds", "Documents", "Referents", "Verdict"):
+            table.add_column(column, justify="right" if column in ("Documents", "Referents")
+                             else "left")
+        for part, result in results:
+            table.add_row(f"{part.name}.zip", part.description,
+                          f"{result.kept.get('documents', 0):,}", f"{result.referents:,}",
+                          result.verdict)
+        console.print(table)
+    if any(r.verdict == "fail" for _p, r in results):
+        sys.exit(1)
+
+
+@main.command()
 @click.argument("archive_a", type=click.Path(exists=True, dir_okay=False))
 @click.argument("archive_b", type=click.Path(exists=True, dir_okay=False))
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output")

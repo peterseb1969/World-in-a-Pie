@@ -418,3 +418,51 @@ def test_diff_of_two_real_backups_shows_the_new_version(stack, wip_client, tmp_p
     # and updated_at, and diff names those two fields.
     assert docs["changed"] == 1
     assert docs["changed_samples"] == {f"{ids['doc_smaug']}/1": ["status", "updated_at"]}
+
+
+SPLIT_A = "toolkit-split-a"
+SPLIT_B = "toolkit-split-b"
+SPLIT_B_COPY = "toolkit-split-b-copy"
+
+
+def test_split_a_real_two_namespace_backup_and_restore_one_part(stack, wip_client, tmp_path):
+    """A two-namespace engine backup where B's document references A's
+    spell. split --by namespace writes one part each; B's part carries the
+    spell as a referent, and a real fresh restore of B alone points its
+    document at the original spell."""
+    from click.testing import CliRunner
+    from wip_toolkit.cli import main
+
+    ids = _seed(wip_client, SPLIT_A)
+    wip_client.put("registry", f"/namespaces/{SPLIT_B}",
+                   json={"description": "split B", "isolation_mode": "open"})
+    note = _created(wip_client.post("template-store", "/templates", json=[{
+        "value": "NOTE", "label": "Note", "namespace": SPLIT_B, "identity_fields": ["title"],
+        "fields": [
+            {"name": "title", "label": "Title", "type": "string", "mandatory": True},
+            {"name": "about", "label": "About", "type": "reference", "reference_type": "document",
+             "target_templates": [f"{SPLIT_A}:SPELL"]},
+        ],
+    }]))
+    _created(wip_client.post("document-store", "/documents", json=[
+        {"template_id": note["id"], "namespace": SPLIT_B,
+         "data": {"title": "On fire", "about": ids["doc_fireball"]}}]))
+
+    backup = tmp_path / "both.zip"
+    stack.portal.call(lambda: _backup_engine().run_backup([SPLIT_A, SPLIT_B], backup))
+    parts = tmp_path / "parts"
+    result = CliRunner().invoke(main, ["split", str(backup), str(parts), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert [p["part"] for p in payload["parts"]] == [SPLIT_A, SPLIT_B]
+    assert all(p["verdict"] != "fail" for p in payload["parts"]), payload
+    with ArchiveReader(parts / f"{SPLIT_B}.zip") as reader:
+        assert reader.list_namespaces() == [SPLIT_B]
+        assert ids["doc_fireball"] in {r["entry_id"] for r in reader.read_referents()}
+
+    stack.portal.call(lambda: _restore_engine().run_remap(Path(parts / f"{SPLIT_B}.zip"),
+                                                          SPLIT_B_COPY))
+    [restored] = wip_client.get("document-store", "/documents",
+                                params={"namespace": SPLIT_B_COPY})["items"]
+    about = next(r for r in restored["references"] if r["field_path"] == "about")
+    assert about["resolved"]["document_id"] == ids["doc_fireball"]
