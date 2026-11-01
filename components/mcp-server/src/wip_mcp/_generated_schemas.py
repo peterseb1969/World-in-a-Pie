@@ -1361,7 +1361,16 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                                                       'pattern '
                                                                                                                                                       'for '
                                                                                                                                                       'string '
-                                                                                                                                                      'fields'},
+                                                                                                                                                      'fields; '
+                                                                                                                                                      'must '
+                                                                                                                                                      'match '
+                                                                                                                                                      'the '
+                                                                                                                                                      'whole '
+                                                                                                                                                      'value '
+                                                                                                                                                      '(no '
+                                                                                                                                                      '^/$ '
+                                                                                                                                                      'anchors '
+                                                                                                                                                      'needed)'},
                                                                                                                            'min_length': {'type': 'integer',
                                                                                                                                           'description': 'Minimum '
                                                                                                                                                          'string '
@@ -2017,7 +2026,16 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                             'pattern '
                                                                                                             'for '
                                                                                                             'string '
-                                                                                                            'fields'},
+                                                                                                            'fields; '
+                                                                                                            'must '
+                                                                                                            'match '
+                                                                                                            'the '
+                                                                                                            'whole '
+                                                                                                            'value '
+                                                                                                            '(no '
+                                                                                                            '^/$ '
+                                                                                                            'anchors '
+                                                                                                            'needed)'},
                                                                                  'min_length': {'type': 'integer',
                                                                                                 'description': 'Minimum '
                                                                                                                'string '
