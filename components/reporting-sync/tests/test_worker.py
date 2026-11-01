@@ -342,6 +342,66 @@ class TestProcessTemplateEvent:
         assert result is False
 
     @pytest.mark.asyncio
+    async def test_extending_template_event_builds_table_from_resolved(self, worker, mock_pool):
+        """An extending template's table is built from the resolved template,
+        not the stored one the event carries (which lacks inherited fields)."""
+        _, conn = mock_pool
+        event = _make_template_event(value="child")
+        event["template"].update(
+            {"version": 3, "extends": "0190c000-0000-7000-0000-0000000000aa", "extends_version": 1,
+             "fields": [{"name": "b", "type": "string"}]}
+        )
+        resolved = _make_template(value="child", version=3, fields=[
+            {"name": "a", "type": "string"}, {"name": "b", "type": "string"},
+        ])
+        worker._fetch_template = AsyncMock(return_value=resolved)
+
+        result = await worker._process_template_event(event)
+
+        assert result is True
+        worker._fetch_template.assert_awaited_once_with("0190c000-0000-7000-0000-000000000001", 3)
+        built_from = worker.schema_manager.ensure_table_for_template.call_args[0][1]
+        assert [f["name"] for f in built_from["fields"]] == ["a", "b"]
+        # Metadata still records the template as stored (its extends link).
+        assert "0190c000-0000-7000-0000-0000000000aa" in conn.execute.call_args[0]
+
+    @pytest.mark.asyncio
+    async def test_extending_template_broken_chain_raises_for_retry(self, worker):
+        """A broken chain (Template Store 409) raises, so the event is retried
+        and finally recorded as a drop — never a table from the stored half."""
+        event = _make_template_event(value="child")
+        event["template"].update({"extends": "0190c000-0000-7000-0000-0000000000aa", "extends_version": 9})
+        worker._fetch_template = AsyncMock(side_effect=RuntimeError("Template Store returned 409"))
+
+        with pytest.raises(RuntimeError):
+            await worker._process_template_event(event)
+        worker.schema_manager.ensure_table_for_template.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_extending_template_not_found_skips_table(self, worker, mock_pool):
+        """When the resolved template is gone (404), no half table is built;
+        the event still succeeds and syncs metadata."""
+        _, conn = mock_pool
+        event = _make_template_event(value="child")
+        event["template"].update({"extends": "0190c000-0000-7000-0000-0000000000aa", "extends_version": 9})
+        worker._fetch_template = AsyncMock(return_value=None)
+
+        result = await worker._process_template_event(event)
+
+        assert result is True
+        worker.schema_manager.ensure_table_for_template.assert_not_awaited()
+        conn.execute.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_extending_template_event_does_not_refetch(self, worker):
+        """A template without a parent is built from the event payload as before."""
+        event = _make_template_event()
+        worker._fetch_template = AsyncMock()
+        await worker._process_template_event(event)
+        worker._fetch_template.assert_not_awaited()
+        assert worker.schema_manager.ensure_table_for_template.call_args[0][1] is event["template"]
+
+    @pytest.mark.asyncio
     async def test_template_event_sync_disabled_still_syncs_metadata(self, worker, mock_pool):
         """When sync is disabled, doc table is skipped but metadata still synced."""
         _, conn = mock_pool

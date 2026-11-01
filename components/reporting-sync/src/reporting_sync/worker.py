@@ -324,16 +324,34 @@ class SyncWorker:
             logger.info(f"Sync disabled for template {template_value}, skipping schema update")
             # Still sync template metadata even if doc sync is disabled
         else:
-            # Create or update document table
-            # Uncached: a template event is rare, and a natural point to
-            # re-check a table that may have been changed outside the service.
-            table_name = await self.schema_manager.ensure_table_for_template(
-                namespace, template, cached=False
-            )
-            if table_name and table_name not in self._managed_tables:
-                self._managed_tables.add(table_name)
-                self.status.tables_managed = len(self._managed_tables)
-            logger.info(f"Ensured table {table_name} for template {template_value}")
+            # The event carries the template as stored. One that extends
+            # another lacks its inherited fields there, so its table is built
+            # from the template re-read through Template Store's resolving
+            # route — the shape its documents are validated and synced against.
+            # A non-200 other than 404 (a broken chain answers 409) raises, so
+            # the event is retried and, on its last delivery, recorded as a
+            # drop rather than a table built from the stored half.
+            table_template: dict[str, Any] | None = template
+            if template.get("extends") and template_id and event_type != "template.deleted":
+                table_template = await self._fetch_template(
+                    template_id, int(template.get("version", 1))
+                )
+                if table_template is None:
+                    logger.warning(
+                        f"Template {template_value} v{template.get('version')} not found when "
+                        "re-read resolved; no reporting table built for it"
+                    )
+            if table_template is not None:
+                # Create or update document table
+                # Uncached: a template event is rare, and a natural point to
+                # re-check a table that may have been changed outside the service.
+                table_name = await self.schema_manager.ensure_table_for_template(
+                    namespace, table_template, cached=False
+                )
+                if table_name and table_name not in self._managed_tables:
+                    self._managed_tables.add(table_name)
+                    self.status.tables_managed = len(self._managed_tables)
+                logger.info(f"Ensured table {table_name} for template {template_value}")
 
         # Sync template metadata to templates table
         if template_id:

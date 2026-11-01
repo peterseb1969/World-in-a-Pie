@@ -25,9 +25,9 @@ failure it exists to catch:
   a term or relation write the closure lags by its rebuild debounce.
 
 Honest limits, by design:
-- Inherited fields (template `extends`) are not resolved; missing-column
-  detection covers the template's own fields. Extra actual columns are never
-  an issue (sync only ever adds).
+- Extra actual columns are never an issue (sync only ever adds). A template
+  that extends another is checked against its resolved form, inherited
+  fields included.
 - Count comparison is exact only for sync_strategy latest_only (the
   default): expected = the document-store active-document total, the same
   number batch sync pages through. For all_versions the expectation is not
