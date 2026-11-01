@@ -64,7 +64,19 @@ child's own.
 - **reporting-sync no longer resolves inheritance itself.** It used the
   parent's latest version, not the pinned one, and fell back to the child's own
   fields when the parent was missing. It now reads templates resolved by
-  Template Store.
+  Template Store, including when a template is created: an extending
+  template's reporting table now has its inherited columns before its first
+  document arrives. Tables created before this fix gain them on their first
+  document or a forced batch sync; `GET /parity` lists them.
+- **Writes refuse a chain that reads would refuse.** Creating a template, a new
+  version of one, or activating a draft now walks the pinned parent chain
+  the same way reads resolve it. A chain deeper than 10 is refused per item
+  with `invalid_state` / `max_depth`, a cycle with `invalid_state` /
+  `circular_inheritance`, and a missing ancestor with `reference_violation` /
+  `missing_parent`. Before, a create could succeed and the template then be
+  served only as a 409. The cycle check on a new version used each parent's
+  latest version; it now follows the pinned versions. Restores are not
+  checked: they trust the archive.
 
 **Action:** none for templates without `extends`. A `versioned: false`
 template that extends another may already hold documents above version 1, and

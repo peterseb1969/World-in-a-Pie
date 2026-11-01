@@ -1,7 +1,6 @@
 """Service for resolving template inheritance."""
 
-
-from beanie.odm.enums import SortDirection
+from typing import cast
 
 from ..models.field import FieldDefinition
 from ..models.rule import ValidationRule
@@ -73,11 +72,11 @@ class InheritanceService:
         # A copy of the child with the merged properties replaced; never
         # saved. Building a new Template from a list of arguments dropped
         # every property the list missed.
-        return template.model_copy(update={
+        return cast(Template, template.model_copy(update={
             "identity_fields": resolved_identity_fields,
             "fields": resolved_fields,
             "rules": resolved_rules,
-        })
+        }))
 
     @staticmethod
     async def _build_inheritance_chain(template: Template) -> list[Template]:
@@ -93,12 +92,39 @@ class InheritanceService:
         Raises:
             InheritanceError: If circular inheritance detected or max depth exceeded
         """
-        chain = [template]
-        seen_ids = {template.template_id}
-        current = template
+        ancestors = await InheritanceService.walk_ancestors(
+            template.template_id, template.extends, template.extends_version
+        )
+        # Root-to-child order
+        return [*reversed(ancestors), template]
+
+    @staticmethod
+    async def walk_ancestors(
+        template_id: str | None,
+        extends: str | None,
+        extends_version: int | None,
+        overrides: dict[tuple[str, int], Template] | None = None,
+    ) -> list[Template]:
+        """Walk a template's pinned parent chain, nearest parent first.
+
+        The one walk every check uses: the read path (resolution) and the
+        write paths (create, new version, activation), so a chain a write
+        accepts is a chain a read can resolve. ``template_id`` is the
+        template being walked from (None for one not yet registered);
+        ``overrides`` supplies (template_id, version) entries to use instead
+        of the stored ones — an activation set whose references are
+        normalized in memory but not yet saved.
+
+        Raises:
+            InheritanceError: unpinned or missing parent, a cycle, or a chain
+            deeper than MAX_INHERITANCE_DEPTH.
+        """
+        ancestors: list[Template] = []
+        seen_ids = {template_id} if template_id else set()
+        current_id, current_extends, current_version = template_id, extends, extends_version
         depth = 0
 
-        while current.extends:
+        while current_extends:
             depth += 1
             if depth > MAX_INHERITANCE_DEPTH:
                 raise InheritanceError(
@@ -106,33 +132,32 @@ class InheritanceService:
                     "max_depth",
                 )
 
-            # Look up parent template at its pinned version. extends_version is
-            # mandatory (CASE-493): schema inheritance always resolves to an
-            # explicit parent version, never "latest", so a child's resolved
-            # schema cannot silently shift when the parent ships a new version.
-            # The latest-active fallback was deliberately removed — a stored
-            # template reaching here without extends_version is a data-integrity
-            # error, not a cue to float to latest.
-            if current.extends_version is None:
+            # Schema inheritance resolves to an explicit parent version, never
+            # "latest", so a child's resolved schema cannot shift when the
+            # parent ships a new version. A template without extends_version
+            # is a data-integrity error, not a cue to float to latest.
+            if current_version is None:
                 raise InheritanceError(
-                    f"Template '{current.template_id}' extends "
-                    f"'{current.extends}' without a pinned extends_version "
+                    f"Template '{current_id}' extends "
+                    f"'{current_extends}' without a pinned extends_version "
                     "(schema inheritance must pin an explicit version)",
                     "unpinned_parent",
                 )
-            parent = await Template.find_one({
-                "template_id": current.extends,
-                "version": current.extends_version
-            })
+            parent = (overrides or {}).get((current_extends, current_version))
+            if parent is None:
+                parent = await Template.find_one({
+                    "template_id": current_extends,
+                    "version": current_version,
+                })
 
             if not parent:
                 raise InheritanceError(
-                    f"Parent template '{current.extends}' not found "
-                    f"at version {current.extends_version}",
+                    f"Parent template '{current_extends}' not found "
+                    f"at version {current_version}",
                     "missing_parent",
                 )
 
-            # Check for circular inheritance (use template_id, not template_id+version)
+            # A cycle is by template_id, not (template_id, version)
             if parent.template_id in seen_ids:
                 raise InheritanceError(
                     f"Circular inheritance detected: {parent.template_id}",
@@ -140,12 +165,11 @@ class InheritanceService:
                 )
 
             seen_ids.add(parent.template_id)
-            chain.append(parent)
-            current = parent
+            ancestors.append(parent)
+            current_id = parent.template_id
+            current_extends, current_version = parent.extends, parent.extends_version
 
-        # Reverse to get root-to-child order
-        chain.reverse()
-        return chain
+        return ancestors
 
     @staticmethod
     def _merge_fields(chain: list[Template]) -> list[FieldDefinition]:
@@ -225,51 +249,6 @@ class InheritanceService:
                 return template.identity_fields
 
         return []
-
-    @staticmethod
-    async def check_circular_inheritance(
-        template_id: str,
-        new_extends: str | None
-    ) -> bool:
-        """
-        Check if setting extends would create circular inheritance.
-
-        Args:
-            template_id: The template being modified
-            new_extends: The proposed parent template ID
-
-        Returns:
-            True if circular inheritance would result
-        """
-        if not new_extends:
-            return False
-
-        if template_id == new_extends:
-            return True
-
-        # Walk up the proposed parent's chain
-        seen_ids = {template_id}
-        current_id = new_extends
-        depth = 0
-
-        while current_id:
-            depth += 1
-            if depth > MAX_INHERITANCE_DEPTH:
-                return True  # Treat excessive depth as circular
-
-            if current_id in seen_ids:
-                return True
-
-            seen_ids.add(current_id)
-
-            # Get latest version of the parent
-            results = await Template.find({"template_id": current_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
-            if not results:
-                break
-
-            current_id = results[0].extends or ""
-
-        return False
 
     @staticmethod
     async def get_children(template_id: str) -> list[Template]:

@@ -163,11 +163,11 @@ Codes defined by template-store (`POST`, `PUT` and `DELETE /templates`). Where o
 | `validation_failed` | The template definition breaks an authoring rule | `field_name_unquotable`, `template_ref_version_required`, `reference_type_required`, `relationship_shape`, `full_text_indexed`, `metadata_in_declarative_slot`, `versioned_requires_identity`, `invalid_rename`, `extends_version_required`, `invalid_status` |
 | `not_found` | The template (or version) named by the request does not exist | — |
 | `already_exists` | The value is already taken: a concurrent create won the race (retry as an upsert), or a restore targets a value another template owns | `restore_conflict` |
-| `reference_violation` | A reference in the definition does not resolve | `parent_not_found`, `pinned_version_missing`, `unresolved_reference` |
+| `reference_violation` | A reference in the definition does not resolve | `parent_not_found`, `pinned_version_missing`, `unresolved_reference`, `missing_parent` (an ancestor further up the pinned chain is gone), `unpinned_parent` |
 | `cross_namespace_reference` | A reference crosses into a namespace the template's namespace may not reference | — |
 | `identity_fields_immutable` | `identity_fields` differ from the existing template's | — |
 | `immutable_property` | `value`, `usage`, `versioned` or the edge endpoint lists differ | `value` |
-| `invalid_state` | The template's state forbids the operation | `not_draft`, `not_inactive`, `not_relationship`, `has_children`, `has_documents`, `documents_unverifiable`, `circular_inheritance`, `deletion_mode_retain` |
+| `invalid_state` | The template's state forbids the operation | `not_draft`, `not_inactive`, `not_relationship`, `has_children`, `has_documents`, `documents_unverifiable`, `circular_inheritance`, `max_depth` (the pinned inheritance chain is deeper than 10), `deletion_mode_retain` |
 | `invalid_request` | A request parameter is missing or invalid; also any otherwise uncategorised refusal | `version_required`, `sort_order`, `namespace_required` |
 | `registry_error` | The Registry refused the item, or could not be reached to check namespace isolation (the write is refused rather than let through unchecked) | `unreachable` |
 

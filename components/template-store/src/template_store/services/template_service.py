@@ -568,6 +568,14 @@ class TemplateService:
             request.fields, request.extends, request.extends_version,
             check_existence=not is_draft,
         )
+        # A chain the read path cannot resolve (too deep, a missing
+        # ancestor) is refused here, before the Registry registers anything,
+        # rather than accepted and then served as a 409. Drafts are checked at
+        # activation; a restore trusts its archive, as it does for renames.
+        if not is_draft and not is_restore:
+            await TemplateService._refuse_unresolvable_inheritance(
+                None, request.extends, request.extends_version
+            )
 
         # Validate cross-namespace references (the two gates) over ALL
         # resolved schema refs — extends, field-level template/terminology
@@ -696,6 +704,32 @@ class TemplateService:
             )
 
         return TemplateService._to_template_response(template)
+
+    @staticmethod
+    async def _refuse_unresolvable_inheritance(
+        template_id: str | None,
+        extends: str | None,
+        extends_version: int | None,
+        overrides: dict[tuple[str, int], Template] | None = None,
+    ) -> None:
+        """Refuse a write whose pinned inheritance chain the read path could
+        not resolve. A missing or unpinned ancestor is a reference_violation;
+        a cycle or a chain deeper than the limit is invalid_state. The rule
+        is the resolver's own (missing_parent, unpinned_parent,
+        circular_inheritance, max_depth)."""
+        if not extends:
+            return
+        try:
+            await InheritanceService.walk_ancestors(
+                template_id, extends, extends_version, overrides
+            )
+        except InheritanceError as e:
+            code = (
+                "reference_violation"
+                if e.rule in ("missing_parent", "unpinned_parent")
+                else "invalid_state"
+            )
+            raise TemplateError(str(e), code, rule=e.rule) from e
 
     @staticmethod
     async def _resolve_or_refuse(template: Template) -> Template:
@@ -1492,12 +1526,6 @@ class TemplateService:
                 else:
                     raise TemplateError(f"Parent template '{extends_value}' not found", "reference_violation", rule="parent_not_found")
 
-            # Check for circular inheritance
-            if await InheritanceService.check_circular_inheritance(
-                template_id, extends_value
-            ):
-                raise TemplateError("Setting this parent would create circular inheritance", "invalid_state", rule="circular_inheritance")
-
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
@@ -1537,6 +1565,12 @@ class TemplateService:
             new_fields, extends_value, new_extends_version,
             check_existence=original.status != "draft",
         )
+        # The new version's whole pinned chain must resolve (cycle, depth,
+        # a missing ancestor), walked exactly as the read path walks it.
+        if original.status != "draft":
+            await TemplateService._refuse_unresolvable_inheritance(
+                original.template_id, extends_value or None, new_extends_version
+            )
 
         # Validate full_text_indexed constraints against the merged final
         # state — fields may add/remove the flag, reporting.sync_enabled
@@ -3273,6 +3307,15 @@ class TemplateService:
                 )
         except EntityNotFoundError as e:
             raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
+
+        # Every activating template's pinned chain must resolve. Set members
+        # are walked in their normalized in-memory form (their stored drafts
+        # may still name parents by value); nothing is saved if one fails.
+        set_by_version = {(t.template_id, t.version): t for t in activation_set}
+        for t in activation_set:
+            await TemplateService._refuse_unresolvable_inheritance(
+                t.template_id, t.extends, t.extends_version, overrides=set_by_version
+            )
 
         # Activate all templates in the set
         actor = get_identity_string()
