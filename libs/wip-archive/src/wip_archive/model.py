@@ -845,9 +845,16 @@ class ArchiveModel:
             if target_entry is None:
                 # A reference into a namespace this archive carries, pointing
                 # at a document it does not, is broken rather than external —
-                # the distinction the restore door will make on arrival.
+                # the distinction the restore door will make on arrival —
+                # unless the archive records that document as a referent (a
+                # transform cut it): the door resolves a referent on the
+                # target by its keys, like any entity outside the archive.
                 target_ns = resolved.get("namespace")
-                if target_ns and target_ns in self.namespaces:
+                if (
+                    target_ns
+                    and target_ns in self.namespaces
+                    and target_doc not in self.definitions.referents
+                ):
                     self.dangling.append(
                         ExternalRef(
                             "document",

@@ -23,6 +23,7 @@ from .model import (
 from .models import Manifest
 from .referents import ReferentCollector, referenced_ids
 from .remap import IDRemapper
+from .transform import TransformResult, run_transform
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -40,5 +41,7 @@ __all__ = [
     "NotAnArchiveError",
     "ReferentCollector",
     "TemplateReport",
+    "TransformResult",
     "referenced_ids",
+    "run_transform",
 ]

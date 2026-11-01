@@ -17,11 +17,26 @@ bind-mounted in dev stacks, baked into release images.
 - `wip_archive.remap` — `IDRemapper`, the reference-rewrite pass a fresh
   restore runs over every entity payload (recursive over document data:
   arrays, nested objects).
+- `wip_archive.referents` — the out-of-archive referent table: the Registry
+  rows of entities an archive references but does not carry.
+- `wip_archive.model` — `ArchiveModel`, the offline analysis behind
+  `inspect` and `verify`: entity index, reference graph, closures, islands,
+  findings.
+- `wip_archive.definitions`, `wip_archive.identity`,
+  `wip_archive.validation`, `wip_archive.document_check`,
+  `wip_archive.migratability` — the offline checks: full definitions with
+  inheritance resolved, the identity hash, the document validator, the
+  per-document check `verify` runs, and migration assessment.
+- `wip_archive.transform` — `run_transform`, the core every shaping
+  transform shares: copies the rows a transform keeps verbatim, moves cut
+  entities into the referent table, verifies the output and records the
+  `derived_from` hop.
 
 ## Who consumes it
 
 - `components/document-store` — the restore/backup engine, in-process.
-- `WIP-Toolkit` — the operator CLI (export, inspect, convert-archive).
+- `WIP-Toolkit` — the operator CLI (export, inspect, verify, restore,
+  convert-archive).
 
 Design: `docs/design/wip-archive-split.md`. Tests:
 `./scripts/wip-test.sh wip-archive`.

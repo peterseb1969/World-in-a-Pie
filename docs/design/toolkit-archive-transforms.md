@@ -394,8 +394,13 @@ flags it. This is the constraint from FIRESIDE-29: a reference crossing
 a cut must still carry something the target can resolve. It also means:
 
 - identity hashes cannot change, because no kept row changes;
-- `verify` on the output reports each cut as `unverifiable_dependency`,
-  so a filter that cuts anything ends at `warn`, not `pass`;
+- `verify` treats a reference to a referent as resolvable by design, as
+  it already treats a term known only as a referent: a document cut
+  alone verifies as `pass`, and the hop's `summary.referents` counts
+  what was cut. (This plan first said "ends at `warn`"; that claim was
+  not checked against `verify`, which never warned for referents.
+  Corrected in M3a-1. M1's dangling check had not consulted the
+  referents table at all; M3a-1 fixes that too.);
 - a change to the rows themselves is surgery (M4), not shaping.
 
 **Decisions (Peter, 2026-11-01).**

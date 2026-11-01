@@ -10,7 +10,7 @@ import zipfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
 from pathlib import Path
-from typing import Any, BinaryIO, TextIO
+from typing import IO, Any, BinaryIO, TextIO
 
 from .exceptions import (
     ManifestParseError,
@@ -166,21 +166,42 @@ class ArchiveWriter:
         """Namespaces written to this archive, in first-seen order."""
         return list(self._namespaces)
 
-    def write(self, manifest: Manifest) -> Path:
+    def write(self, manifest: Manifest | dict[str, Any]) -> Path:
         """Flush temp files and assemble the ZIP archive."""
-        # Close all open handles
+        self.assemble(self.output_path, manifest)
+        self._cleanup()
+        return self.output_path
+
+    def assemble(
+        self,
+        path: str | Path,
+        manifest: Manifest | dict[str, Any],
+        *,
+        compression: int = zipfile.ZIP_DEFLATED,
+    ) -> Path:
+        """Assemble the staged content into a ZIP at ``path``, keeping the
+        staging directory, so the same content can be assembled again.
+
+        A transform uses this twice: once uncompressed to verify its output,
+        then for real with the verdict in the manifest. ``manifest`` may be a
+        raw dict, so keys the Manifest model does not declare (a
+        ``derived_from`` chain) are written as given. Add every entity before
+        the first call: assembling closes the staging handles, and a later
+        ``add_entity`` would start that entity file over.
+        """
         for fh in self._handles.values():
             fh.close()
         self._handles.clear()
 
-        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(manifest, Manifest):
+            manifest_json = manifest.model_dump_json(indent=2)
+        else:
+            manifest_json = json.dumps(manifest, indent=2, default=str)
 
-        with zipfile.ZipFile(self.output_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            # Write manifest
-            zf.writestr(
-                MANIFEST_FILE,
-                manifest.model_dump_json(indent=2),
-            )
+        with zipfile.ZipFile(path, "w", compression) as zf:
+            zf.writestr(MANIFEST_FILE, manifest_json)
 
             # Write per-namespace JSONL files (v3 layout: namespaces/<ns>/…)
             for ns in self._namespaces:
@@ -204,8 +225,11 @@ class ArchiveWriter:
             for blob_file in sorted(self._blobs_dir.iterdir()):
                 zf.write(blob_file, f"{BLOBS_DIR}{blob_file.name}")
 
-        self._cleanup()
-        return self.output_path
+        return path
+
+    def blob_count(self) -> int:
+        """Blobs staged so far."""
+        return sum(1 for _ in self._blobs_dir.iterdir())
 
     def write_synonyms_file(self, synonyms: list[dict[str, Any]]) -> None:
         """Write synonyms.jsonl to the temp directory."""
@@ -399,6 +423,12 @@ class ArchiveReader:
             return self._zf.read(f"{BLOBS_DIR}{file_id}")
         except KeyError:
             return None
+
+    @contextmanager
+    def open_blob(self, file_id: str) -> Iterator[IO[bytes]]:
+        """Stream one blob out of the archive; KeyError when it is absent."""
+        with self._zf.open(f"{BLOBS_DIR}{file_id}") as handle:
+            yield handle
 
     def list_blobs(self) -> list[str]:
         """List all blob file IDs in the archive."""
