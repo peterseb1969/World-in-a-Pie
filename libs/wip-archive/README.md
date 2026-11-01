@@ -17,6 +17,8 @@ bind-mounted in dev stacks, baked into release images.
 - `wip_archive.remap` — `IDRemapper`, the reference-rewrite pass a fresh
   restore runs over every entity payload (recursive over document data:
   arrays, nested objects).
+- `wip_archive.redact` — the `redact` surgery: named non-identity fields
+  cleared in every version, with their snapshots and unshared files.
 - `wip_archive.referents` — the out-of-archive referent table: the Registry
   rows of entities an archive references but does not carry.
 - `wip_archive.model` — `ArchiveModel`, the offline analysis behind

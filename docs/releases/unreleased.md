@@ -2946,6 +2946,27 @@ mapping is recorded verbatim in its hop. `wip-archive` 0.23.0
 
 **Action:** none.
 
+### `wip-toolkit redact`: fields cleared from an archive's whole history; WIP-Toolkit 0.23.0
+
+`wip-toolkit redact <archive> <out> --field TEMPLATE=path[,path…]` sets the
+named fields to null in every version row of the template's documents,
+whatever their status, so no history keeps the value. Paths are dot paths
+(`contact.phone`). A redacted term, reference or file field drops its
+snapshots; a file no remaining document references leaves the archive with
+its blob, while a file another document still uses stays. Refused, with
+nothing written, for an identity field (its values are also in the
+document's Registry row, and changing identity is a fork) and for a path
+the template never declared.
+
+Registry rows are not touched: a document's `search_values` come from its
+primary key and synonyms, never its data. A synonym a caller registered by
+hand with the same value is not redacted. Rows keep their timestamps and
+writers; the hop records `params_redacted: true` with the template names
+and paths, never the values. The output is verified with an identity
+mismatch counting as an error. `wip-archive` 0.24.0 (`wip_archive.redact`).
+
+**Action:** none.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

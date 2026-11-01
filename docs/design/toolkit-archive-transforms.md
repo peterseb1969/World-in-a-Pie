@@ -249,7 +249,7 @@ stability is a contract from day one.
 | **M1** (done) | `ArchiveModel` (index, edges, closures, islands, stats, findings) + grown `inspect` (summary, deep dive, `--json`) | nothing new beyond wip-archive |
 | **M2** (done, §6.2) | offline validate/recompute library; `verify` verb (findings → exit code); `inspect --target-version` migratability | identity-hash + term-resolution logic shared with wip-auth's canonical implementations |
 | **M3** (done: M3a §7.2, M3b §7.3) | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, `prune`, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
-| **M4** (planned, §6.3) | surgery: fill-value migration via mapping file, redaction | M2 library |
+| **M4** (done, §6.4; plan §6.3) | surgery: fill-value migration via mapping file, redaction | M2 library |
 | **M5** | `compose` on-ramp; `export` removed with the next release | M4; separate design iteration |
 
 Every transform (M3+) runs `verify` on its output automatically and
@@ -421,6 +421,37 @@ platform refuses.
 | M4-1 | Surgery core in `wip-archive`: row edits through the transform core, identity recomputation, identity-change refusal, `identity_hash_mismatch` as an error on surgery output. |
 | M4-2 | `migrate`: mapping file, live migration semantics, the live comparison test. |
 | M4-3 | `redact`: field paths per template, snapshot and file-reference clean-up, `params_redacted`. |
+
+### 6.4 M4 delivered (2026-11-01)
+
+| Slice | Commit | What shipped |
+|---|---|---|
+| M4-1 | `94670878` | The surgery core: `run_transform(rewrite_row=…, strict_identity=True)`, `TransformResult.findings`, and `wip_archive.surgery` (identity recomputed with the platform's feed and a change refused, snapshot paths under renames, stamp and actor). wip-archive 0.22.0. |
+| M4-2 | `113fece8` | `migrate`: a JSON mapping with constant, copy, format and value fills; live migration's cohort and rows (old version retired, next written, `versioned: false` in place); refusal unless `--skip-failing`. WIP-Toolkit 0.22.0. |
+| M4-3 | the commit recording this section | `redact`: non-identity paths nulled in every version, snapshots and unshared files with them, `params_redacted` with paths only. WIP-Toolkit 0.23.0. |
+
+**The guards against live:**
+
+- `migrate`: an integration test applies a live migration between two
+  engine backups and requires the offline migration of the first to equal
+  the second row for row, in every field but `updated_at`, `updated_by` and
+  `created_by`. The document live refuses migrates offline with a fill and
+  restores fresh at version 2.
+- `redact`: a two-version document with an email and a term, redacted and
+  searched byte for byte: the value is in no row, Registry entry or hop;
+  restored fresh, neither version holds it.
+
+**Choices made while building, not in the plan:**
+
+- `migrate` refuses when any document would fail, unless `--skip-failing`.
+- `migrate` reads JSON mapping files only: YAML needs PyYAML, which is not a
+  WIP-Toolkit dependency, and adding one changes what every vendoring app
+  installs.
+- Rows a surgery writes record `wip-toolkit:<verb>` as their writer;
+  `redact` keeps the rows' own timestamps and writers, since it rewrites
+  history in place rather than writing a version.
+- A reference or file field cannot be filled by `migrate`: offline, its
+  snapshot cannot be resolved.
 
 ## 7. Boundary policy (M3 preview, recorded here because inspect quantifies it)
 

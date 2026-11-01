@@ -522,3 +522,64 @@ def test_export_csv_of_a_real_backup_matches_the_live_documents(stack, wip_clien
     assert row["element"] == live["data"]["element"]
     assert row["element__term_id"] == term_ref["term_id"]
     assert row["power"] == "9"
+
+
+REDACT_NS = "toolkit-redact-it"
+REDACT_COPY = "toolkit-redact-it-copy"
+
+
+def test_redact_on_a_real_backup_clears_every_version_and_restores(stack, wip_client, tmp_path):
+    """A document with two versions carrying an email and a term: redact
+    clears both fields in both versions, the archive holds the value
+    nowhere, and the restored history holds it in no version."""
+    from click.testing import CliRunner
+    from wip_toolkit.cli import main
+
+    wip_client.put("registry", f"/namespaces/{REDACT_NS}",
+                   json={"description": "redact", "isolation_mode": "open"})
+    mood = _created(wip_client.post("def-store", "/terminologies", json=[
+        {"value": "MOOD", "label": "Mood", "namespace": REDACT_NS}]))
+    assert wip_client.post("def-store", f"/terminologies/{mood['id']}/terms",
+                           json=[{"value": "calm", "label": "Calm"}],
+                           params={"namespace": REDACT_NS})["succeeded"] == 1
+    person = _created(wip_client.post("template-store", "/templates", json=[{
+        "value": "PERSON", "label": "Person", "namespace": REDACT_NS,
+        "identity_fields": ["code"],
+        "fields": [
+            {"name": "code", "label": "Code", "type": "string", "mandatory": True},
+            {"name": "email", "label": "Email", "type": "string"},
+            {"name": "mood", "label": "Mood", "type": "term", "terminology_ref": "MOOD"},
+        ],
+    }]))
+    for email in ("first@secret.example", "second@secret.example"):
+        _created(wip_client.post("document-store", "/documents", json=[
+            {"template_id": person["id"], "namespace": REDACT_NS,
+             "data": {"code": "P1", "email": email, "mood": "calm"}}]))
+
+    backup = tmp_path / "backup.zip"
+    stack.portal.call(lambda: _backup_engine().run_backup(REDACT_NS, backup))
+    out = tmp_path / "redacted.zip"
+    result = CliRunner().invoke(main, ["redact", str(backup), str(out),
+                                       "--field", "PERSON=email,mood", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["verdict"] == "pass", payload["findings"]
+    assert payload["hop"]["summary"]["rows_redacted"] == 2
+    import zipfile
+
+    with zipfile.ZipFile(out) as zf:
+        everything = b"".join(zf.read(n) for n in zf.namelist())
+    assert b"secret.example" not in everything  # in no row, no Registry entry, no hop
+
+    stack.portal.call(lambda: _restore_engine().run_remap(Path(out), REDACT_COPY))
+    [doc] = wip_client.get("document-store", "/documents",
+                           params={"namespace": REDACT_COPY, "latest_only": "true"})["items"]
+    versions = wip_client.get("document-store", f"/documents/{doc['document_id']}/versions",
+                              params={"namespace": REDACT_COPY})["versions"]
+    assert len(versions) == 2
+    for version in versions:
+        full = wip_client.get("document-store", f"/documents/{doc['document_id']}",
+                              params={"namespace": REDACT_COPY, "version": version["version"]})
+        assert full["version"] == version["version"]
+        assert full["data"].get("email") is None and full["data"].get("mood") is None
+        assert full["data"]["code"] == "P1"

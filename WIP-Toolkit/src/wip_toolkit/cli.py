@@ -824,6 +824,74 @@ def migrate(
 
 
 @main.command()
+@click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
+@click.argument("output_path", type=click.Path(dir_okay=False))
+@click.option("--field", "fields", multiple=True, required=True,
+              help="TEMPLATE=path[,path...]: field paths to clear (repeatable)")
+@click.option("--dry-run", is_flag=True,
+              help="Plan, redact and verify on scratch space; write nothing")
+@click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def redact(
+    archive_path: str, output_path: str, fields: tuple[str, ...], dry_run: bool,
+    force: bool, as_json: bool,
+) -> None:
+    """Clear named fields from every version of a template's documents.
+
+    --field PERSON=email,contact.phone sets those values to null in every
+    version row, whatever its status. A redacted term, reference or file
+    field drops its snapshots; a file no remaining document references
+    leaves, blob included. Identity fields are refused (their values are in
+    the Registry, and changing identity is a fork), and so is a path the
+    template never declared. Rows keep their timestamps and writers; the
+    derived_from hop records params_redacted with the paths, never the
+    values. The output is verified, an identity mismatch counting as an
+    error.
+    """
+    from wip_archive.redact import RedactionRefused, plan_redaction
+    from wip_archive.transform import OutputExistsError, run_transform
+
+    from .transform_view import json_payload, render_result
+
+    spec: dict[str, list[str]] = {}
+    for entry in fields:
+        template, sep, paths = entry.partition("=")
+        names = [p.strip() for p in paths.split(",") if p.strip()]
+        if not sep or not template or not names:
+            raise click.UsageError(f"--field expects TEMPLATE=path[,path...], got '{entry}'.")
+        spec.setdefault(template, []).extend(n for n in names if n not in spec.get(template, []))
+    if Path(output_path).exists() and not force and not dry_run:
+        console.print(f"[red]Output exists:[/red] {output_path} (pass --force to overwrite)")
+        sys.exit(1)
+    with ArchiveReader(archive_path) as reader:
+        try:
+            plan = plan_redaction(reader, ArchiveModel.load(reader), spec)
+        except RedactionRefused as refused:
+            console.print(f"[red]Refused:[/red] {refused}")
+            sys.exit(1)
+    try:
+        result = run_transform(
+            archive_path, output_path, transform="redact", toolkit_version=_get_version(),
+            params=plan.params(), params_redacted=True, keep_row=plan.keep_row,
+            rewrite_row=plan.rewrite_row, strict_identity=True, summary=plan.summary(),
+            overwrite=force, dry_run=dry_run,
+        )
+    except OutputExistsError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    if as_json:
+        click.echo(_json.dumps(json_payload(result), indent=2, default=str))
+    else:
+        verb = "would clear" if dry_run else "cleared"
+        console.print(f"{verb} {plan.values_cleared:,} value(s) in {plan.rows_redacted:,} "
+                      f"row(s); {len(plan.files_dropped):,} file(s) no longer referenced")
+        render_result(result, console)
+    if result.verdict == "fail":
+        sys.exit(1)
+
+
+@main.command()
 @click.argument("archive_a", type=click.Path(exists=True, dir_okay=False))
 @click.argument("archive_b", type=click.Path(exists=True, dir_okay=False))
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output")

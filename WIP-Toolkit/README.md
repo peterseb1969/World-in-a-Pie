@@ -1,7 +1,7 @@
 # WIP-Toolkit
 
 The **operator CLI** for WIP: backup, inspect, verify, the archive transforms
-(filter, prune, latest-only, strip-blobs, split), migrate, diff, export-csv, restore, archive conversion, seeding,
+(filter, prune, latest-only, strip-blobs, split), migrate, redact, diff, export-csv, restore, archive conversion, seeding,
 status, and synonym backfill — a thin consumer of the platform APIs and of
 `libs/wip-archive` (the archive format contract + id-remap library, a
 sibling of `wip-auth`; see `docs/design/wip-archive-split.md`).
@@ -84,6 +84,7 @@ wip-toolkit latest-only <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit strip-blobs <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit split <archive.zip> <out-dir> [--by namespace|island] [--dry-run] [--json]
 wip-toolkit migrate <archive.zip> <out.zip> --mapping map.json [--skip-failing] [--dry-run] [--json]
+wip-toolkit redact <archive.zip> <out.zip> --field TEMPLATE=path[,path]… [--dry-run] [--json]
 wip-toolkit diff <a.zip> <b.zip> [--json]
 wip-toolkit export-csv <archive.zip> <out-dir> [--all-versions] [--dry-run] [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
@@ -157,6 +158,13 @@ written, pinned to the target, with the same id and identity hash
 (`versioned: false`: overwritten in place). Refused with nothing written
 when the target is missing or inactive, identity fields differ, or any
 document would fail (unless `--skip-failing`).
+
+`redact` clears named fields (`--field PERSON=email,contact.phone`) in every
+version of a template's documents. A redacted term, reference or file field
+drops its snapshots, and a file nothing else references leaves with its
+blob. Identity fields are refused (their values live in the Registry too;
+changing identity is a fork), and so is a path the template never declared.
+The hop records `params_redacted: true` with the paths, never the values.
 
 `diff` compares two archives row by row: per namespace and entity type,
 what was added, removed or changed (the differing fields named for a
