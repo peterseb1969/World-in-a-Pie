@@ -2944,6 +2944,9 @@ output is verified with an identity mismatch counting as an error, and the
 mapping is recorded verbatim in its hop. `wip-archive` 0.23.0
 (`wip_archive.migrate`, `wip_archive.surgery`).
 
+From WIP-Toolkit 0.24.0 a mapping file may also be YAML (`.yaml` / `.yml`);
+other names are read as JSON. WIP-Toolkit now depends on `pyyaml>=6.0`.
+
 **Action:** none.
 
 ### `wip-toolkit redact`: fields cleared from an archive's whole history; WIP-Toolkit 0.23.0

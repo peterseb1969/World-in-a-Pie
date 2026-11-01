@@ -748,7 +748,8 @@ def export_csv_cmd(
 @click.argument("output_path", type=click.Path(dir_okay=False))
 @click.option("--mapping", "mapping_path", required=True,
               type=click.Path(exists=True, dir_okay=False),
-              help="JSON mapping: template, to_version, optional from_versions and fill rules")
+              help="Mapping file (.json, or .yaml/.yml): template, to_version, "
+                   "optional from_versions and fill rules")
 @click.option("--skip-failing", is_flag=True,
               help="Leave documents the target would refuse on their version, instead of refusing")
 @click.option("--dry-run", is_flag=True,
@@ -773,18 +774,22 @@ def migrate(
     would fail (unless --skip-failing). The output is verified, an identity
     mismatch counting as an error, and the mapping recorded in its hop.
     """
+    import yaml
     from wip_archive.migrate import MigrationRefused, plan_migration
     from wip_archive.transform import OutputExistsError, run_transform
 
     from .transform_view import json_payload, render_result
 
+    source = Path(mapping_path)
     try:
-        mapping = _json.loads(Path(mapping_path).read_text(encoding="utf-8"))
-    except (OSError, ValueError) as e:
+        text = source.read_text(encoding="utf-8")
+        is_yaml = source.suffix.lower() in (".yaml", ".yml")
+        mapping = yaml.safe_load(text) if is_yaml else _json.loads(text)
+    except (OSError, ValueError, yaml.YAMLError) as e:
         console.print(f"[red]Cannot read the mapping:[/red] {e}")
         sys.exit(1)
     if not isinstance(mapping, dict):
-        console.print("[red]The mapping must be a JSON object.[/red]")
+        console.print("[red]The mapping must be an object (a mapping of keys).[/red]")
         sys.exit(1)
     if Path(output_path).exists() and not force and not dry_run:
         console.print(f"[red]Output exists:[/red] {output_path} (pass --force to overwrite)")

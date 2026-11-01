@@ -428,7 +428,7 @@ platform refuses.
 |---|---|---|
 | M4-1 | `94670878` | The surgery core: `run_transform(rewrite_row=…, strict_identity=True)`, `TransformResult.findings`, and `wip_archive.surgery` (identity recomputed with the platform's feed and a change refused, snapshot paths under renames, stamp and actor). wip-archive 0.22.0. |
 | M4-2 | `113fece8` | `migrate`: a JSON mapping with constant, copy, format and value fills; live migration's cohort and rows (old version retired, next written, `versioned: false` in place); refusal unless `--skip-failing`. WIP-Toolkit 0.22.0. |
-| M4-3 | the commit recording this section | `redact`: non-identity paths nulled in every version, snapshots and unshared files with them, `params_redacted` with paths only. WIP-Toolkit 0.23.0. |
+| M4-3 | `b4b55e36` | `redact`: non-identity paths nulled in every version, snapshots and unshared files with them, `params_redacted` with paths only. WIP-Toolkit 0.23.0. |
 
 **The guards against live:**
 
@@ -444,9 +444,9 @@ platform refuses.
 **Choices made while building, not in the plan:**
 
 - `migrate` refuses when any document would fail, unless `--skip-failing`.
-- `migrate` reads JSON mapping files only: YAML needs PyYAML, which is not a
-  WIP-Toolkit dependency, and adding one changes what every vendoring app
-  installs.
+- `migrate` first read JSON mapping files only; Peter then approved PyYAML
+  as a WIP-Toolkit dependency, and `.yaml` / `.yml` files are read as YAML
+  (WIP-Toolkit 0.24.0).
 - Rows a surgery writes record `wip-toolkit:<verb>` as their writer;
   `redact` keeps the rows' own timestamps and writers, since it rewrites
   history in place rather than writing a version.

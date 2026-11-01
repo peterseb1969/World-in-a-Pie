@@ -22,7 +22,7 @@ def test_an_unreadable_mapping_is_refused(archive, tmp_path):  # noqa: F811
 def test_a_mapping_that_is_not_an_object_is_refused(archive, tmp_path):  # noqa: F811
     bad = tmp_path / "m.json"
     bad.write_text("[1, 2]")
-    assert "must be a JSON object" in run(archive, tmp_path / "o.zip", "--mapping", bad).output
+    assert "must be an object" in run(archive, tmp_path / "o.zip", "--mapping", bad).output
 
 
 def test_a_missing_target_version_refuses_and_writes_nothing(archive, tmp_path):  # noqa: F811
@@ -32,3 +32,18 @@ def test_a_missing_target_version_refuses_and_writes_nothing(archive, tmp_path):
     result = run(archive, out, "--mapping", mapping)
     assert result.exit_code == 1 and "v2 is not in the archive" in result.output
     assert not out.exists()
+
+
+def test_a_yaml_mapping_is_read(archive, tmp_path):  # noqa: F811
+    mapping = tmp_path / "m.yaml"
+    mapping.write_text("template: MONSTER\nto_version: 2\nfill:\n  region: EU\n")
+    result = run(archive, tmp_path / "o.zip", "--mapping", mapping)
+    # Parsed as YAML: the refusal is about the archive, not the file.
+    assert result.exit_code == 1 and "v2 is not in the archive" in result.output
+
+
+def test_malformed_yaml_is_refused(archive, tmp_path):  # noqa: F811
+    mapping = tmp_path / "m.yml"
+    mapping.write_text("template: [unclosed\n")
+    result = run(archive, tmp_path / "o.zip", "--mapping", mapping)
+    assert result.exit_code == 1 and "Cannot read the mapping" in result.output

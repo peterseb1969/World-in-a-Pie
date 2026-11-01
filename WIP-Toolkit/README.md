@@ -83,7 +83,7 @@ wip-toolkit prune <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit latest-only <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit strip-blobs <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit split <archive.zip> <out-dir> [--by namespace|island] [--dry-run] [--json]
-wip-toolkit migrate <archive.zip> <out.zip> --mapping map.json [--skip-failing] [--dry-run] [--json]
+wip-toolkit migrate <archive.zip> <out.zip> --mapping map.yaml|map.json [--skip-failing] [--dry-run] [--json]
 wip-toolkit redact <archive.zip> <out.zip> --field TEMPLATE=path[,path]… [--dry-run] [--json]
 wip-toolkit diff <a.zip> <b.zip> [--json]
 wip-toolkit export-csv <archive.zip> <out-dir> [--all-versions] [--dry-run] [--json]
@@ -150,7 +150,8 @@ another becomes a referent. Each part is verified and records its own hop.
 
 `migrate` does what live `migrate_documents` does, offline, and fills what
 the target version needs. The mapping (JSON) names `template`,
-`to_version`, optionally `from_versions`, and `fill` rules per field: a
+`to_version`, optionally `from_versions`, and `fill` rules per field
+(a `.yaml`/`.yml` file is read as YAML, anything else as JSON): a
 constant, `{"copy": "path"}`, `{"format": "{a}-{b}"}` or `{"value": ...}`;
 a fill never overwrites data, and reference and file fields cannot be
 filled. Each migrated document's old version is retired and the next
