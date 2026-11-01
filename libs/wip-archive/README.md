@@ -35,6 +35,8 @@ bind-mounted in dev stacks, baked into release images.
   boundary policies, definitions closure.
 - `wip_archive.latest_only` — the `latest-only` plan: newest versions, plus
   the versions pinned references name.
+- `wip_archive.migrate` — the `migrate` surgery: live migration semantics
+  offline, with fills from a mapping.
 - `wip_archive.prune` — the `prune` plan: templates nothing uses, and the
   terminologies only they declared.
 - `wip_archive.split` — the `split` plan: one part per namespace or per

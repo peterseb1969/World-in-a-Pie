@@ -744,6 +744,86 @@ def export_csv_cmd(
 
 
 @main.command()
+@click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
+@click.argument("output_path", type=click.Path(dir_okay=False))
+@click.option("--mapping", "mapping_path", required=True,
+              type=click.Path(exists=True, dir_okay=False),
+              help="JSON mapping: template, to_version, optional from_versions and fill rules")
+@click.option("--skip-failing", is_flag=True,
+              help="Leave documents the target would refuse on their version, instead of refusing")
+@click.option("--dry-run", is_flag=True,
+              help="Plan, migrate and verify on scratch space; write nothing")
+@click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def migrate(
+    archive_path: str, output_path: str, mapping_path: str, skip_failing: bool,
+    dry_run: bool, force: bool, as_json: bool,
+) -> None:
+    """Re-pin a template's documents to another version, filling gaps.
+
+    What live migrate_documents does, offline, plus fills for what the
+    target needs: the template's active documents on another version are
+    validated as writes against the target (renames applied, then the
+    mapping's fills: a constant, {"copy": path}, {"format": "..."} or
+    {"value": ...}; a fill never overwrites data). Each old version is
+    retired and the next version written, pinned to the target, with the
+    same document_id and identity hash; a versioned:false template is
+    overwritten in place. Refused, with nothing written, when the target is
+    missing or inactive, identity fields differ (a fork), or any document
+    would fail (unless --skip-failing). The output is verified, an identity
+    mismatch counting as an error, and the mapping recorded in its hop.
+    """
+    from wip_archive.migrate import MigrationRefused, plan_migration
+    from wip_archive.transform import OutputExistsError, run_transform
+
+    from .transform_view import json_payload, render_result
+
+    try:
+        mapping = _json.loads(Path(mapping_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        console.print(f"[red]Cannot read the mapping:[/red] {e}")
+        sys.exit(1)
+    if not isinstance(mapping, dict):
+        console.print("[red]The mapping must be a JSON object.[/red]")
+        sys.exit(1)
+    if Path(output_path).exists() and not force and not dry_run:
+        console.print(f"[red]Output exists:[/red] {output_path} (pass --force to overwrite)")
+        sys.exit(1)
+    with ArchiveReader(archive_path) as reader:
+        try:
+            plan = plan_migration(reader, ArchiveModel.load(reader), mapping,
+                                  skip_failing=skip_failing)
+        except MigrationRefused as refused:
+            console.print(f"[red]Refused:[/red] {refused}")
+            for failure in refused.failures:
+                console.print(f"  {failure}")
+            sys.exit(1)
+    try:
+        result = run_transform(
+            archive_path, output_path, transform="migrate", toolkit_version=_get_version(),
+            params=mapping, keep_row=plan.keep_row, rewrite_row=plan.rewrite_row,
+            strict_identity=True, summary=plan.summary(), overwrite=force, dry_run=dry_run,
+        )
+    except OutputExistsError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    if as_json:
+        click.echo(_json.dumps(json_payload(result), indent=2, default=str))
+    else:
+        verb = "would migrate" if dry_run else "migrated"
+        console.print(f"{plan.template}: {verb} {len(plan.cohort):,} document(s) to "
+                      f"v{plan.to_version}; {plan.skipped:,} left on their version")
+        for fname, count in plan.filled.items():
+            console.print(f"  filled {fname} in {count:,} document(s)")
+        for failure in plan.failed:
+            console.print(f"  [yellow]skipped[/yellow] {failure}")
+        render_result(result, console)
+    if result.verdict == "fail":
+        sys.exit(1)
+
+
+@main.command()
 @click.argument("archive_a", type=click.Path(exists=True, dir_okay=False))
 @click.argument("archive_b", type=click.Path(exists=True, dir_okay=False))
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output")

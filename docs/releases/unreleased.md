@@ -2917,6 +2917,35 @@ and row counts; `--json` (schema 1.0). `wip-archive` 0.21.0
 
 **Action:** none.
 
+### `wip-toolkit migrate`: a migration done on the archive, with fills; WIP-Toolkit 0.22.0
+
+`wip-toolkit migrate <archive> <out> --mapping map.json` does what live
+`POST /documents/migrate` does, on an archive and without an instance, and
+fills what the target version needs that live migration would refuse a
+document for. The mapping (a JSON object) names `template` (id, value or
+`ns:VALUE`), `to_version`, optionally `from_versions`, and `fill` rules per
+field: a constant, `{"copy": "path"}`, `{"format": "{a}-{b}"}`, or
+`{"value": ...}` for a constant that looks like a rule. Renames apply
+first, then the fills in order; a fill only sets an absent or null field.
+Reference and file fields cannot be filled.
+
+The cohort and the rows written are live migration's: the template's
+active documents on another version, each validated as a write against the
+target (terms re-resolved, so a term deprecated since fails); its old
+version retired and the next version written, pinned to the target, with
+the same `document_id`, identity hash and entity `created_at`; a
+`versioned: false` template overwritten in place. The rows record
+`wip-toolkit:migrate` as their writer. An integration test holds the
+offline rows to a live migration's, field for field, apart from when and by
+whom they were written. Refused with nothing written when the target is
+missing or inactive, when identity fields differ (a fork), or when any
+document would fail (`--skip-failing` leaves those on their version). The
+output is verified with an identity mismatch counting as an error, and the
+mapping is recorded verbatim in its hop. `wip-archive` 0.23.0
+(`wip_archive.migrate`, `wip_archive.surgery`).
+
+**Action:** none.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

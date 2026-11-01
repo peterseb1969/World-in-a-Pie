@@ -1,7 +1,7 @@
 # WIP-Toolkit
 
 The **operator CLI** for WIP: backup, inspect, verify, the archive transforms
-(filter, prune, latest-only, strip-blobs, split), diff, export-csv, restore, archive conversion, seeding,
+(filter, prune, latest-only, strip-blobs, split), migrate, diff, export-csv, restore, archive conversion, seeding,
 status, and synonym backfill — a thin consumer of the platform APIs and of
 `libs/wip-archive` (the archive format contract + id-remap library, a
 sibling of `wip-auth`; see `docs/design/wip-archive-split.md`).
@@ -83,6 +83,7 @@ wip-toolkit prune <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit latest-only <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit strip-blobs <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit split <archive.zip> <out-dir> [--by namespace|island] [--dry-run] [--json]
+wip-toolkit migrate <archive.zip> <out.zip> --mapping map.json [--skip-failing] [--dry-run] [--json]
 wip-toolkit diff <a.zip> <b.zip> [--json]
 wip-toolkit export-csv <archive.zip> <out-dir> [--all-versions] [--dry-run] [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
@@ -145,6 +146,17 @@ files and terminologies; a shared terminology is copied into each).
 Terminologies no island uses, and documents whose template the archive
 does not carry, go into `unattached.zip`. A reference from one part into
 another becomes a referent. Each part is verified and records its own hop.
+
+`migrate` does what live `migrate_documents` does, offline, and fills what
+the target version needs. The mapping (JSON) names `template`,
+`to_version`, optionally `from_versions`, and `fill` rules per field: a
+constant, `{"copy": "path"}`, `{"format": "{a}-{b}"}` or `{"value": ...}`;
+a fill never overwrites data, and reference and file fields cannot be
+filled. Each migrated document's old version is retired and the next
+written, pinned to the target, with the same id and identity hash
+(`versioned: false`: overwritten in place). Refused with nothing written
+when the target is missing or inactive, identity fields differ, or any
+document would fail (unless `--skip-failing`).
 
 `diff` compares two archives row by row: per namespace and entity type,
 what was added, removed or changed (the differing fields named for a
