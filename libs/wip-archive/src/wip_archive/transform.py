@@ -6,6 +6,10 @@ everything else, identically for each of them:
 
 - **Rows travel verbatim or not at all.** A kept row is copied as read; no
   reference inside it is rewritten. Identity hashes therefore cannot change.
+  Surgery is the one exception, through ``rewrite_row``: it may write other
+  rows in a kept row's place, and must recompute what it changes
+  (``wip_archive.surgery``); with ``strict_identity`` an identity mismatch
+  on its output is an error.
 - **A cut entity becomes a referent.** When a kept row references an entity
   that no longer travels, that entity's Registry row (primary composite key
   and synonyms) moves from the namespace's ``registry_entries.jsonl`` into the
@@ -32,6 +36,7 @@ everything else, identically for each of them:
 from __future__ import annotations
 
 import copy
+import dataclasses
 import hashlib
 import shutil
 import tempfile
@@ -64,6 +69,13 @@ SELECTABLE_TYPES: tuple[str, ...] = tuple(t for t in ENTITY_FILES if t != "regis
 KeepRow = Callable[[str, str, dict[str, Any]], bool]
 # file_id -> whether the blob travels; called only for blobs of kept file rows.
 KeepBlob = Callable[[str], bool]
+# (namespace, entity_type, row) -> the rows written in its place. Surgery's
+# hook: shaping transforms pass none, and a kept row is written as read.
+RewriteRow = Callable[[str, str, dict[str, Any]], list[dict[str, Any]]]
+
+# Finding classes that are errors on surgery output: surgery recomputes the
+# identity hash of every row it edits, so a mismatch means it failed to.
+SURGERY_ERRORS = frozenset({"identity_hash_mismatch"})
 
 _HASH_CHUNK = 1 << 20
 
@@ -117,6 +129,9 @@ class TransformResult:
     output: Path | None  # None in a dry run: nothing was written
     hop: dict[str, Any]
     model: ArchiveModel
+    # The findings the verdict was judged by: the model's, with surgery's
+    # identity mismatches raised to errors under strict_identity.
+    findings: list[Finding] = field(default_factory=list)
     kept: dict[str, int] = field(default_factory=dict)
     dropped: dict[str, int] = field(default_factory=dict)
     referents: int = 0
@@ -137,6 +152,8 @@ def run_transform(
     params: dict[str, Any],
     keep_row: KeepRow,
     keep_blob: KeepBlob | None = None,
+    rewrite_row: RewriteRow | None = None,
+    strict_identity: bool = False,
     summary: dict[str, Any] | None = None,
     manifest_updates: dict[str, Any] | None = None,
     params_redacted: bool = False,
@@ -174,7 +191,7 @@ def run_transform(
         with ArchiveReader(input_path) as reader:
             raw = reader.read_manifest_raw()
             writer = ArchiveWriter(output_path, tmp_dir=scratch)
-            copied = _copy_rows(reader, writer, keep_row, keep_blob, raw)
+            copied = _copy_rows(reader, writer, keep_row, keep_blob, raw, rewrite_row)
 
         manifest = _output_manifest(raw, copied)
         manifest.update(manifest_updates or {})
@@ -186,6 +203,11 @@ def run_transform(
         with ArchiveReader(provisional) as check_reader:
             model = ArchiveModel.load(check_reader, check_documents=True)
         findings = model.findings()
+        if strict_identity:
+            findings = [
+                dataclasses.replace(f, severity="error") if f.finding_class in SURGERY_ERRORS else f
+                for f in findings
+            ]
 
         hop: dict[str, Any] = {
             "transform": transform,
@@ -214,6 +236,7 @@ def run_transform(
         output=None if dry_run else output_path,
         hop=hop,
         model=model,
+        findings=findings,
         kept=copied.kept_counts(),
         dropped=copied.dropped_counts(),
         referents=copied.referent_rows,
@@ -228,6 +251,7 @@ class _Copied:
 
     kept: dict[tuple[str, str], int] = field(default_factory=dict)
     dropped: dict[tuple[str, str], int] = field(default_factory=dict)
+    rewritten: dict[tuple[str, str], int] = field(default_factory=dict)
     referent_rows: int = 0
     blobs_kept: int = 0
     blobs_dropped: int = 0
@@ -258,6 +282,8 @@ class _Copied:
             if entity_type in kept or entity_type in dropped:
                 out[f"{entity_type}_kept"] = kept.get(entity_type, 0)
                 out[f"{entity_type}_dropped"] = dropped.get(entity_type, 0)
+        for entity_type, n in self._per_type(self.rewritten).items():
+            out[f"{entity_type}_rewritten"] = n
         out["referents"] = self.referent_rows
         if self.blobs_kept or self.blobs_dropped:
             out["blobs_kept"] = self.blobs_kept
@@ -271,6 +297,7 @@ def _copy_rows(
     keep_row: KeepRow,
     keep_blob: KeepBlob | None,
     raw_manifest: dict[str, Any],
+    rewrite_row: RewriteRow | None = None,
 ) -> _Copied:
     copied = _Copied()
     collector = ReferentCollector()
@@ -290,13 +317,17 @@ def _copy_rows(
                 if not keep_row(ns, entity_type, row):
                     copied.bump(copied.dropped, ns, entity_type)
                     continue
-                writer.add_entity(entity_type, row, namespace=ns)
-                copied.bump(copied.kept, ns, entity_type)
-                collector.add(entity_type, row)
-                if id_key and isinstance(row.get(id_key), str):
-                    carried.add(row[id_key])
-                    if entity_type == "files":
-                        kept_files.add(row[id_key])
+                rows = rewrite_row(ns, entity_type, row) if rewrite_row else [row]
+                if rewrite_row and rows != [row]:
+                    copied.bump(copied.rewritten, ns, entity_type)
+                for out in rows:
+                    writer.add_entity(entity_type, out, namespace=ns)
+                    copied.bump(copied.kept, ns, entity_type)
+                    collector.add(entity_type, out)
+                    if id_key and isinstance(out.get(id_key), str):
+                        carried.add(out[id_key])
+                        if entity_type == "files":
+                            kept_files.add(out[id_key])
 
     referenced_outside = set(collector.external_ids()) - carried
 

@@ -13,7 +13,7 @@ from typing import Any
 from rich.console import Console
 from rich.table import Table
 from wip_archive.migratability import MigrationReport
-from wip_archive.model import ArchiveModel
+from wip_archive.model import ArchiveModel, Finding
 
 SEVERITY_STYLE = {
     "error": "red",
@@ -249,8 +249,12 @@ def _render_files(model: ArchiveModel, console: Console) -> None:
     )
 
 
-def render_findings(model: ArchiveModel, console: Console) -> None:
-    findings = model.findings()
+def render_findings(
+    model: ArchiveModel, console: Console, findings: list[Finding] | None = None
+) -> None:
+    """The model's findings, or ``findings`` when the caller judged by an
+    adjusted list (surgery raises identity mismatches to errors)."""
+    findings = model.findings() if findings is None else findings
     if not findings:
         console.print("\n[green]No findings.[/green]")
         return

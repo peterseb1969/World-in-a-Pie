@@ -28,7 +28,7 @@ def json_payload(result: TransformResult) -> dict[str, Any]:
         "dry_run": result.output is None,
         "verdict": result.verdict,
         "hop": result.hop,
-        "findings": [f.to_dict() for f in result.model.findings()],
+        "findings": [f.to_dict() for f in result.findings],
     }
 
 
@@ -50,8 +50,8 @@ def render_result(result: TransformResult, console: Console) -> None:
         f"{result.referents:,} referent(s): entities the output references but does "
         "not carry; a restore resolves them on the target by their keys"
     )
-    if result.model.findings():
-        render_findings(result.model, console)
+    if result.findings:
+        render_findings(result.model, console, result.findings)
     verdict = result.verdict
     console.print(f"[{_COLOURS[verdict]}]verdict: {verdict}[/{_COLOURS[verdict]}]")
     if result.output is None:

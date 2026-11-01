@@ -41,6 +41,8 @@ bind-mounted in dev stacks, baked into release images.
   island, each kept-row rule for the transform core.
 - `wip_archive.strip_blobs` — the `strip-blobs` plan: file rows and blobs
   leave, referenced files become referents.
+- `wip_archive.surgery` — what an edited row must recompute: identity
+  (refusing a change), snapshot paths under renames, timestamps and actor.
 - `wip_archive.transform` — `run_transform`, the core every shaping
   transform shares: copies the rows a transform keeps verbatim, moves cut
   entities into the referent table, verifies the output and records the
