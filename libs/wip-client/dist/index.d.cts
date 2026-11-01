@@ -2030,6 +2030,14 @@ interface RestoreOptions {
      * records `accepted_failed_verify`.
      */
     allow_failed_verify?: boolean;
+    /**
+     * `mode: 'restore'` only. Restore an archive that carries entity rows but
+     * no registry identity rows (an export made without synonyms). Such a
+     * restore otherwise refuses, because nothing in the restored namespace
+     * would resolve by id; with this set it restores with a warning. Rejected
+     * for `merge` and `fresh`.
+     */
+    allow_missing_identity?: boolean;
 }
 /** Documents of one namespace that reference an entity the archive does not
  * carry and this install does not hold; they keep its archived id. */

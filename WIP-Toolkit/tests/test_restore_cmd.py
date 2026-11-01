@@ -110,6 +110,25 @@ class TestRestoreVerb:
         assert result.exit_code == 0, result.output
         client.get.assert_not_called()
 
+    def test_allow_missing_identity_reaches_the_form(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client, "--allow-missing-identity")
+        assert result.exit_code == 0, result.output
+        assert _form(client)["allow_missing_identity"] == "true"
+
+    def test_without_the_flag_missing_identity_is_not_accepted(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client)
+        assert result.exit_code == 0, result.output
+        assert _form(client)["allow_missing_identity"] == "false"
+
+    def test_allow_missing_identity_is_refused_outside_restore(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client, "--mode", "merge", "--allow-missing-identity")
+        assert result.exit_code == 2
+        assert "--mode restore only" in result.output
+        client.post_form.assert_not_called()
+
     def test_force_accepts_a_failed_verify(self, tmp_path):
         client = _mock_client()
         result = _invoke(tmp_path, client, "--force")

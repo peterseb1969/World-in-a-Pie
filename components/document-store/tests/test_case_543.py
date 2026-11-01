@@ -459,6 +459,43 @@ class TestRestoreFromJob:
         assert resp.json()["options"]["allow_failed_verify"] is True
 
     @pytest.mark.asyncio
+    async def test_allow_missing_identity_reaches_the_job(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """A restore of an archive without registry identity rows refuses
+        unless the request accepts it; the job route takes the acceptance
+        exactly as the upload route does."""
+        src = await _job(namespaces=["wip"])
+        archive = scratch_path_for(src.job_id)
+        _make_v3_archive(archive, ["wip"])
+        src.archive_path = str(archive)
+        await src.save()
+
+        p1, p2 = _patched_pipeline()
+        with p1, p2:
+            resp = await client.post(
+                f"/api/document-store/backup/jobs/{src.job_id}/restore",
+                headers=auth_headers,
+                json={"allow_missing_identity": True},
+            )
+
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["options"]["allow_missing_identity"] is True
+
+    @pytest.mark.asyncio
+    async def test_allow_missing_identity_is_refused_for_a_merge_from_a_job(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        src = await _job(namespaces=["wip"])
+        resp = await client.post(
+            f"/api/document-store/backup/jobs/{src.job_id}/restore",
+            headers=auth_headers,
+            json={"mode": "merge", "allow_missing_identity": True},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "allow_missing_identity applies only to mode='restore'" in resp.text
+
+    @pytest.mark.asyncio
     async def test_missing_archive_is_410(
         self, client: AsyncClient, auth_headers: dict, tmp_path
     ):

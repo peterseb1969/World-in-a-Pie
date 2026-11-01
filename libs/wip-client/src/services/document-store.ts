@@ -452,6 +452,8 @@ export class DocumentStoreService extends BaseService {
       form.append('drop_unresolved_edges', String(options.drop_unresolved_edges))
     if (options.allow_failed_verify !== undefined)
       form.append('allow_failed_verify', String(options.allow_failed_verify))
+    if (options.allow_missing_identity !== undefined)
+      form.append('allow_missing_identity', String(options.allow_missing_identity))
     return this.postFormData(`/backup/namespaces/${namespace}/restore`, form)
   }
 

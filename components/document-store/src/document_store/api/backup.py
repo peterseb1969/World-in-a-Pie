@@ -178,6 +178,25 @@ def _validate_merge_options(
         )
 
 
+def _validate_allow_missing_identity(mode: str, allow_missing_identity: bool) -> None:
+    """Reject ``allow_missing_identity`` outside an id-preserving restore.
+
+    Shared by both restore entry points. Only that mode reads the archive's
+    registry rows as the restored namespace's identity; honouring the flag
+    elsewhere would be a no-op that misrepresents what ran.
+    """
+    if allow_missing_identity and mode != "restore":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "allow_missing_identity applies only to mode='restore' — "
+                "merge reconciles identity against the live target and "
+                "fresh mints new identities, so neither reads the archive's "
+                "registry rows the way an id-preserving restore does."
+            ),
+        )
+
+
 async def _authorize_archive_restore(
     archive_path: Path,
     identity: UserIdentity,
@@ -528,16 +547,7 @@ async def start_restore(
         extend_terminologies=extend_terminologies,
         drop_stale_reporting=drop_stale_reporting,
     )
-    if allow_missing_identity and mode != "restore":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "allow_missing_identity applies only to mode='restore' — "
-                "merge reconciles identity against the live target and "
-                "fresh mints new identities, so neither reads the archive's "
-                "registry rows the way an id-preserving restore does."
-            ),
-        )
+    _validate_allow_missing_identity(mode, allow_missing_identity)
     # Parameter of the retired toolkit import path. The direct restore engine
     # has no per-item error tolerance; silently ignoring a request for it
     # would misrepresent what the restore did, so a request that sets it is
@@ -1069,6 +1079,7 @@ async def restore_from_job(
         extend_terminologies=request.extend_terminologies,
         drop_stale_reporting=False,
     )
+    _validate_allow_missing_identity(request.mode, request.allow_missing_identity)
 
     src = await BackupJob.find_one(BackupJob.job_id == job_id)
     if src is None:
@@ -1121,6 +1132,7 @@ async def restore_from_job(
         "dry_run": request.dry_run,
         "drop_unresolved_edges": request.drop_unresolved_edges,
         "allow_failed_verify": request.allow_failed_verify,
+        "allow_missing_identity": request.allow_missing_identity,
         "restored_from_job": src.job_id,
     }
 

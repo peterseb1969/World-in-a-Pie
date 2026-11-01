@@ -1051,6 +1051,7 @@ describe('Service classes via createWipClient', () => {
           drop_stale_reporting: true,
           drop_unresolved_edges: true,
           allow_failed_verify: true,
+          allow_missing_identity: true,
         },
         'aa-backup.zip',
       )
@@ -1068,6 +1069,7 @@ describe('Service classes via createWipClient', () => {
       expect(fd.get('drop_stale_reporting')).toBe('true')
       expect(fd.get('drop_unresolved_edges')).toBe('true')
       expect(fd.get('allow_failed_verify')).toBe('true')
+      expect(fd.get('allow_missing_identity')).toBe('true')
       // Retired toolkit-era params must never be sent — the endpoint 400s them.
       expect(fd.get('target_namespace')).toBeNull()
       expect(fd.get('register_synonyms')).toBeNull()

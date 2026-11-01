@@ -1726,6 +1726,7 @@ class WipClient:
         drop_stale_reporting: bool = False,
         drop_unresolved_edges: bool = False,
         allow_failed_verify: bool = False,
+        allow_missing_identity: bool = False,
     ) -> dict:
         """Upload a local archive file and start a restore job. Streams from disk.
 
@@ -1756,6 +1757,7 @@ class WipClient:
             "drop_stale_reporting": str(drop_stale_reporting).lower(),
             "drop_unresolved_edges": str(drop_unresolved_edges).lower(),
             "allow_failed_verify": str(allow_failed_verify).lower(),
+            "allow_missing_identity": str(allow_missing_identity).lower(),
         }
         if not target_namespace:
             # The endpoint derives the target from the archive manifest for

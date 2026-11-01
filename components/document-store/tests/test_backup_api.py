@@ -524,6 +524,48 @@ async def test_allow_failed_verify_reaches_the_runner_in_every_mode(
 
 
 @pytest.mark.asyncio
+async def test_allow_missing_identity_reaches_the_runner(client: AsyncClient, auth_headers: dict):
+    fake_task = asyncio.get_running_loop().create_future()
+    fake_task.set_result(None)
+    with (
+        patch(
+            "document_store.api.backup.backup_service.make_direct_restore_runner",
+            return_value=AsyncMock(),
+        ) as mk_runner,
+        patch(
+            "document_store.api.backup.backup_service.start_async_job",
+            new=AsyncMock(return_value=fake_task),
+        ),
+    ):
+        resp = await client.post(
+            "/api/document-store/backup/namespaces/wip/restore",
+            headers=auth_headers,
+            files={"archive": ("b.zip", _valid_archive_bytes(), "application/zip")},
+            data={"mode": "restore", "allow_missing_identity": "true"},
+        )
+
+    assert resp.status_code == 202, resp.text
+    assert mk_runner.call_args.kwargs["options"]["allow_missing_identity"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "form", [{"mode": "merge"}, {"mode": "fresh", "target_namespace": "wip"}]
+)
+async def test_allow_missing_identity_is_refused_outside_restore(
+    client: AsyncClient, auth_headers: dict, form: dict
+):
+    resp = await client.post(
+        "/api/document-store/backup/namespaces/wip/restore",
+        headers=auth_headers,
+        files={"archive": ("b.zip", _valid_archive_bytes(), "application/zip")},
+        data={**form, "allow_missing_identity": "true"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "allow_missing_identity applies only to mode='restore'" in resp.text
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("field", "value"),
     [

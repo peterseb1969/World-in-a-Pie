@@ -4663,6 +4663,7 @@ async def start_restore(
     drop_stale_reporting: bool = False,
     drop_unresolved_edges: bool = False,
     allow_failed_verify: bool = False,
+    allow_missing_identity: bool = False,
 ) -> str:
     """Restore from a local archive file. Returns the initial BackupJobSnapshot.
 
@@ -4772,6 +4773,11 @@ async def start_restore(
             'fail', the archive is known to be broken and every mode refuses it
             (dry runs included) unless this is set. Then it restores with a
             warning, and the restore provenance records accepted_failed_verify.
+        allow_missing_identity: mode='restore' only. Restore an archive that
+            carries entity rows but no registry identity rows (an export made
+            without synonyms); such a restore otherwise refuses, because
+            nothing in the restored namespace would resolve by id. Then it
+            restores with a warning. Rejected for merge and fresh.
     """
     try:
         data = await get_client().start_restore(
@@ -4791,6 +4797,7 @@ async def start_restore(
             drop_stale_reporting=drop_stale_reporting,
             drop_unresolved_edges=drop_unresolved_edges,
             allow_failed_verify=allow_failed_verify,
+            allow_missing_identity=allow_missing_identity,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

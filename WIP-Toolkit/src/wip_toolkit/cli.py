@@ -548,6 +548,10 @@ _MERGE_ONLY_OPTIONS = ("on_clash", "older_versions", "add_missing", "extend_term
                    "the offline verify run before uploading, or whose own verification "
                    "failed (verdict 'fail' in its derived_from chain), which the server "
                    "otherwise refuses. One flag passes both gates.")
+@click.option("--allow-missing-identity", is_flag=True,
+              help="Restore mode only: restore an archive that carries entities but no "
+                   "registry identity rows (an export made without synonyms), which the "
+                   "server otherwise refuses because nothing restored would resolve by id.")
 @click.option("--no-wait", is_flag=True, help="Print the queued job and return.")
 @click.option("--timeout", default=3600.0, show_default=True,
               help="Seconds to follow the job before returning (it keeps running).")
@@ -568,6 +572,7 @@ def restore(
     skip_files: bool,
     dry_run: bool,
     force: bool,
+    allow_missing_identity: bool,
     no_wait: bool,
     timeout: float,
     as_json: bool,
@@ -605,6 +610,8 @@ def restore(
             raise click.UsageError(f"{flags} apply to --mode merge only.")
     if namespace_map and mode != "fresh":
         raise click.UsageError("--map applies to --mode fresh only.")
+    if allow_missing_identity and mode != "restore":
+        raise click.UsageError("--allow-missing-identity applies to --mode restore only.")
 
     parsed_map: dict[str, str] = {}
     for entry in namespace_map:
@@ -663,6 +670,7 @@ def restore(
         skip_files=skip_files,
         dry_run=dry_run,
         allow_failed_verify=force,
+        allow_missing_identity=allow_missing_identity,
     )
 
     config = ctx.obj["config"]

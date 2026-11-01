@@ -101,7 +101,10 @@ job fails). Merge
 options apply to `--mode merge` only: `--on-clash skip|overwrite|newer`,
 `--older-versions retire|keep` (whether the target's older versions are
 soft-deleted when the archive's version is put on top; default `retire`),
-`--add-missing`, `--extend-terminologies`.
+`--add-missing`, `--extend-terminologies`. `--allow-missing-identity`
+(`--mode restore` only) restores an archive that carries entities but no
+registry identity rows, which the server otherwise refuses because nothing
+restored would resolve by id.
 
 Export writes a 1-namespace v3 archive, including the raw registry
 identity rows (fetched through the Registry's admin-gated

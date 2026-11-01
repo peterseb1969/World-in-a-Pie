@@ -395,6 +395,16 @@ class RestoreFromJobRequest(StrictModel):
             "accepted_failed_verify."
         ),
     )
+    allow_missing_identity: bool = Field(
+        False,
+        description=(
+            "Restore only — proceed even when the archive carries entity rows "
+            "but no registry identity rows (e.g. a CLI export made with "
+            "--skip-synonyms). Without it such a restore refuses, because the "
+            "restored namespace would fail every id-based read while looking "
+            "healthy on list surfaces. Rejected for a merge."
+        ),
+    )
 
 
 class BackupJobSnapshot(BaseModel):

@@ -83,6 +83,25 @@ template that extends another may already hold documents above version 1, and
 an extending edge type may hold edges whose endpoints its declaration excludes.
 Both were written before this fix and are not changed by it.
 
+### `allow_missing_identity` on every restore surface; `@wip/client` 0.71.0, WIP-Toolkit 0.10.0
+
+An id-preserving restore refuses an archive that carries entities but no
+registry identity rows (an export made without synonyms), because nothing in
+the restored namespace would resolve by id. `allow_missing_identity` restores
+it anyway, with a warning. Until now only the upload restore endpoint accepted
+the option. It now reaches every surface:
+
+- `POST /backup/jobs/{job_id}/restore` (restore from a retained archive):
+  `allow_missing_identity` in the request body.
+- MCP `start_restore`: `allow_missing_identity`.
+- `@wip/client` 0.71.0: `RestoreOptions.allow_missing_identity`.
+- WIP-Toolkit 0.10.0: `restore --allow-missing-identity`.
+
+It applies to `mode: "restore"` only: both endpoints answer 400 for a merge
+or a fresh restore, and the toolkit refuses the flag outside `--mode restore`.
+
+**Action:** none.
+
 ### A restore refuses an archive whose own verification failed; `@wip/client` 0.70.0, WIP-Toolkit 0.7.2
 
 An archive transform (filter, latest-only, …) verifies its own output and

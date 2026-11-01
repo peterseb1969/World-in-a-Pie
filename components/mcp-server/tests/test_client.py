@@ -627,6 +627,24 @@ async def test_start_restore_sends_allow_failed_verify(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_start_restore_sends_allow_missing_identity(tmp_path):
+    """A restore of an archive without registry identity rows refuses unless
+    the request accepts it; the acceptance must reach the wire, off by default."""
+    archive = tmp_path / "ns.zip"
+    archive.write_bytes(b"PK\x03\x04 fake zip")
+    mock_http = _mock_http(_mock_response({"job_id": "rst-6", "status": "pending"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_restore(namespace="wip", archive_path=str(archive))
+        assert mock_http.post.call_args.kwargs["data"]["allow_missing_identity"] == "false"
+        await client.start_restore(
+            namespace="wip", archive_path=str(archive), allow_missing_identity=True
+        )
+        assert mock_http.post.call_args.kwargs["data"]["allow_missing_identity"] == "true"
+
+
+@pytest.mark.asyncio
 async def test_start_restore_omits_an_unset_target(tmp_path):
     """The endpoint derives the target from the manifest for the id-preserving
     modes; sending an empty value would override it."""
