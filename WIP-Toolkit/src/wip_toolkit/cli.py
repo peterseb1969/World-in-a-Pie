@@ -620,6 +620,38 @@ def strip_blobs_cmd(
         sys.exit(1)
 
 
+@main.command()
+@click.argument("archive_a", type=click.Path(exists=True, dir_okay=False))
+@click.argument("archive_b", type=click.Path(exists=True, dir_okay=False))
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def diff(archive_a: str, archive_b: str, as_json: bool) -> None:
+    """Show what differs between two archives, row by row.
+
+    Rows match by their identity per namespace and entity type (a template
+    or document version by id and version, the rest by id). A matched row
+    is changed when any field differs; for a sample of changes the fields
+    are named. Referents, blobs and both derived_from chains are compared
+    too. Exits 0 when identical, 1 when they differ, 2 on an unreadable
+    archive.
+    """
+    from wip_archive.diff import diff_archives
+
+    from .transform_view import DIFF_JSON_SCHEMA, render_diff
+
+    try:
+        with ArchiveReader(archive_a) as a, ArchiveReader(archive_b) as b:
+            result = diff_archives(a, b)
+    except Exception as e:
+        console.print(f"[red]Error reading archive:[/red] {e}")
+        sys.exit(2)
+    if as_json:
+        click.echo(_json.dumps({"schema": DIFF_JSON_SCHEMA, **result.to_dict()},
+                               indent=2, default=str))
+    else:
+        render_diff(result, console)
+    sys.exit(0 if result.identical else 1)
+
+
 def _show_entity_ids(reader: ArchiveReader) -> None:
     """List all entity IDs in the archive, per namespace."""
     id_fields = {

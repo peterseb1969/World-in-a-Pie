@@ -27,6 +27,8 @@ bind-mounted in dev stacks, baked into release images.
   `wip_archive.migratability` — the offline checks: full definitions with
   inheritance resolved, the identity hash, the document validator, the
   per-document check `verify` runs, and migration assessment.
+- `wip_archive.diff` — `diff_archives`: rows added, removed and changed
+  between two archives, by key, with the differing fields named.
 - `wip_archive.filter` — the `filter` plan: selection by template, the
   boundary policies, definitions closure.
 - `wip_archive.latest_only` — the `latest-only` plan: newest versions, plus

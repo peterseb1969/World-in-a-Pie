@@ -441,6 +441,16 @@ a cut must still carry something the target can resolve. It also means:
    are content-addressed (their Registry key is the checksum, within
    the namespace), so a cut file resolves to an install's own copy of
    the same bytes.
+7. **`split` takes `--by namespace|island`** (decided 2026-11-01, before
+   M3b), namespace the default. Each part is written through the
+   transform core and verified with its own hop; a reference from one
+   part into another becomes a referent, as under `filter --boundary
+   drop`.
+8. **`export-csv` writes one CSV per template** (decided 2026-11-01):
+   `<dir>/<ns>/<TEMPLATE>.csv`, each document's latest version, columns
+   `document_id`, `version`, `status`, then the data fields flattened by
+   dot path; arrays as JSON text; a term field as its submitted value
+   plus `<field>__term_id`. `--all-versions` writes every version row.
 
 **Defaults (proposed by the implementer, not objected to).**
 

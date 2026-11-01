@@ -1,7 +1,7 @@
 # WIP-Toolkit
 
 The **operator CLI** for WIP: backup, inspect, verify, the archive transforms
-(filter, prune, latest-only, strip-blobs), restore, archive conversion, seeding,
+(filter, prune, latest-only, strip-blobs), diff, restore, archive conversion, seeding,
 status, and synonym backfill — a thin consumer of the platform APIs and of
 `libs/wip-archive` (the archive format contract + id-remap library, a
 sibling of `wip-auth`; see `docs/design/wip-archive-split.md`).
@@ -82,6 +82,7 @@ wip-toolkit filter <archive.zip> <out.zip> TEMPLATE… [--boundary strict|drop|s
 wip-toolkit prune <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit latest-only <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit strip-blobs <archive.zip> <out.zip> [--dry-run] [--json]
+wip-toolkit diff <a.zip> <b.zip> [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
 
@@ -134,6 +135,11 @@ with their blobs (a file row without bytes would restore as a file with no
 content); each file a kept document references is recorded as a referent,
 keyed by the checksum of its bytes, so a restore points the documents at an
 install's own copy of that file and reports it as unresolved elsewhere.
+
+`diff` compares two archives row by row: per namespace and entity type,
+what was added, removed or changed (the differing fields named for a
+sample), plus referents, blobs and both `derived_from` chains. Exit 0 when
+identical, 1 when they differ, 2 on an unreadable archive.
 
 Every transform takes `--dry-run`: the same run on scratch space, the
 verify of what would be written included, with nothing written to the

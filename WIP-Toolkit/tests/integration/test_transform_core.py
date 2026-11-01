@@ -385,3 +385,36 @@ def test_strip_blobs_on_a_real_backup_cuts_files_and_the_door_finds_them(
     files = wip_client.get("document-store", "/files",
                            params={"namespace": STRIP_COPY})["items"]
     assert files == []  # no content-less file record was created
+
+
+DIFF_NS = "toolkit-diff-it"
+
+
+def test_diff_of_two_real_backups_shows_the_new_version(stack, wip_client, tmp_path):
+    """Two engine backups of one namespace with an update between them:
+    diff reports the new document version and nothing else in documents."""
+    from click.testing import CliRunner
+    from wip_toolkit.cli import main
+
+    ids = _seed(wip_client, DIFF_NS)
+    before = tmp_path / "before.zip"
+    stack.portal.call(lambda: _backup_engine().run_backup(DIFF_NS, before))
+    _created(wip_client.post("document-store", "/documents", json=[
+        {"template_id": ids["monster_template"], "namespace": DIFF_NS,
+         "data": {"name": "Smaug"}}]))
+    after = tmp_path / "after.zip"
+    stack.portal.call(lambda: _backup_engine().run_backup(DIFF_NS, after))
+
+    same = CliRunner().invoke(main, ["diff", str(before), str(before)])
+    assert same.exit_code == 0, same.output
+    result = CliRunner().invoke(main, ["diff", str(before), str(after), "--json"])
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    docs = next(t for t in payload["types"]
+                if t["namespace"] == DIFF_NS and t["entity_type"] == "documents")
+    assert docs["added_samples"] == [f"{ids['doc_smaug']}/2"]
+    assert docs["removed"] == 0
+    # Writing v2 retires v1 in place: the engine changes exactly its status
+    # and updated_at, and diff names those two fields.
+    assert docs["changed"] == 1
+    assert docs["changed_samples"] == {f"{ids['doc_smaug']}/1": ["status", "updated_at"]}

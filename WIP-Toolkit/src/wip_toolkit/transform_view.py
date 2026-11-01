@@ -56,3 +56,37 @@ def render_result(result: TransformResult, console: Console) -> None:
     console.print(f"[{_COLOURS[verdict]}]verdict: {verdict}[/{_COLOURS[verdict]}]")
     if result.output is None:
         console.print("Dry run: this is what would be written. Nothing was written.")
+
+
+# `diff --json`: versioned like the transform verbs' JSON.
+DIFF_JSON_SCHEMA = "1.0"
+
+
+def render_diff(diff: Any, console: Console) -> None:
+    """The differing (namespace, entity type) rows, then referents, blobs
+    and the two provenance chains."""
+    if diff.namespaces_only_a or diff.namespaces_only_b:
+        console.print(f"namespaces only in A: {', '.join(diff.namespaces_only_a) or '—'}; "
+                      f"only in B: {', '.join(diff.namespaces_only_b) or '—'}")
+    table = Table(title="Rows (A → B)")
+    for column in ("Namespace", "Entity", "Added", "Removed", "Changed", "Unchanged"):
+        table.add_column(column, justify="left" if column in ("Namespace", "Entity") else "right")
+    rows = [((ns, t), d) for (ns, t), d in sorted(diff.types.items()) if d.differs]
+    rows += [(("(archive)", "referents"), diff.referents), (("(archive)", "blobs"), diff.blobs)]
+    for (ns, entity_type), d in rows:
+        if d.differs:
+            table.add_row(ns, entity_type, f"{d.added:,}", f"{d.removed:,}", f"{d.changed:,}",
+                          f"{d.unchanged:,}")
+    if table.row_count:
+        console.print(table)
+    for (ns, entity_type), d in rows:
+        for key, fields in d.changed_samples.items():
+            changed = ", ".join(fields) if fields else "content"
+            console.print(f"  changed {ns} {entity_type} {key}: {changed}")
+    for label, chain in (("A", diff.chain_a), ("B", diff.chain_b)):
+        hops = " → ".join(str(h.get("transform", "?")) for h in chain) or "a full backup"
+        console.print(f"{label}: {hops}")
+    if diff.identical:
+        console.print("[green]identical[/green]")
+    else:
+        console.print("[yellow]differ[/yellow]")

@@ -2868,6 +2868,20 @@ moves to schema 1.1: `dry_run`, and `output` null in a dry run.
 
 **Action:** none.
 
+### `wip-toolkit diff`: what differs between two archives; WIP-Toolkit 0.18.0
+
+`wip-toolkit diff <a> <b>` compares two archives row by row. Rows match by
+their identity per namespace and entity type (a template or document
+version by id and version, a term relation by its terms and type, the rest
+by id); a matched row is changed when any field differs, compared as
+canonical JSON, and for a sample of changes the differing fields are named.
+Referents, blobs (by content) and both `derived_from` chains are compared
+too. Exit 0 when identical, 1 when they differ, 2 on an unreadable archive;
+`--json` (schema 1.0) carries every count and sample. `wip-archive` 0.19.0
+(`wip_archive.diff`).
+
+**Action:** none.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving
