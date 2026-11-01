@@ -466,3 +466,59 @@ def test_split_a_real_two_namespace_backup_and_restore_one_part(stack, wip_clien
                                 params={"namespace": SPLIT_B_COPY})["items"]
     about = next(r for r in restored["references"] if r["field_path"] == "about")
     assert about["resolved"]["document_id"] == ids["doc_fireball"]
+
+
+CSV_NS = "toolkit-csv-it"
+
+
+def test_export_csv_of_a_real_backup_matches_the_live_documents(stack, wip_client, tmp_path):
+    """A real engine backup with a term field and a two-version document:
+    each CSV row carries the latest version the live API serves, and the
+    term id the platform resolved."""
+    import csv
+
+    from click.testing import CliRunner
+    from wip_toolkit.cli import main
+
+    wip_client.put("registry", f"/namespaces/{CSV_NS}",
+                   json={"description": "export-csv", "isolation_mode": "open"})
+    lov = _created(wip_client.post("def-store", "/terminologies", json=[
+        {"value": "ELEMENT", "label": "Element", "namespace": CSV_NS}]))
+    terms = wip_client.post("def-store", f"/terminologies/{lov['id']}/terms",
+                            json=[{"value": "fire", "label": "Fire", "aliases": ["flame"]}],
+                            params={"namespace": CSV_NS})
+    assert terms["succeeded"] == 1, terms
+    spell = _created(wip_client.post("template-store", "/templates", json=[{
+        "value": "SPELL", "label": "Spell", "namespace": CSV_NS, "identity_fields": ["name"],
+        "fields": [
+            {"name": "name", "label": "Name", "type": "string", "mandatory": True},
+            {"name": "element", "label": "Element", "type": "term", "terminology_ref": "ELEMENT"},
+            {"name": "power", "label": "Power", "type": "integer"},
+        ],
+    }]))
+    for power in (3, 9):
+        _created(wip_client.post("document-store", "/documents", json=[
+            {"template_id": spell["id"], "namespace": CSV_NS,
+             "data": {"name": "Fireball", "element": "flame", "power": power}}]))
+    [live] = wip_client.get("document-store", "/documents",
+                            params={"namespace": CSV_NS, "latest_only": "true"})["items"]
+
+    backup = tmp_path / "csv.zip"
+    stack.portal.call(lambda: _backup_engine().run_backup(CSV_NS, backup))
+    out = tmp_path / "csv"
+    result = CliRunner().invoke(main, ["export-csv", str(backup), str(out)])
+    assert result.exit_code == 0, result.output
+    with (out / CSV_NS / "SPELL.csv").open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        header, rows = reader.fieldnames, list(reader)
+    assert header == ["document_id", "version", "status", "name", "element",
+                      "element__term_id", "power"]
+    [row] = rows
+    [term_ref] = live["term_references"]
+    assert row["document_id"] == live["document_id"]
+    assert row["version"] == str(live["version"]) == "2"
+    assert row["status"] == live["status"]
+    # The value as the document holds it, and the term the platform resolved.
+    assert row["element"] == live["data"]["element"]
+    assert row["element__term_id"] == term_ref["term_id"]
+    assert row["power"] == "9"

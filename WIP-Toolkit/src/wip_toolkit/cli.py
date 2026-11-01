@@ -693,6 +693,56 @@ def split(
         sys.exit(1)
 
 
+@main.command(name="export-csv")
+@click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
+@click.argument("output_dir", type=click.Path(file_okay=False))
+@click.option("--all-versions", is_flag=True,
+              help="Every version row, not just each document's latest")
+@click.option("--dry-run", is_flag=True, help="List the files and row counts; write nothing")
+@click.option("--force", is_flag=True, help="Overwrite CSV files that exist")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def export_csv_cmd(
+    archive_path: str, output_dir: str, all_versions: bool, dry_run: bool, force: bool,
+    as_json: bool,
+) -> None:
+    """Write an archive's documents as one CSV per template.
+
+    OUTPUT_DIR/<namespace>/<TEMPLATE>.csv, each document's latest version
+    (--all-versions: every version). Columns: document_id, version, status,
+    then the data fields flattened by dot path (arrays as JSON text), in
+    the template's field order. A term field is its value plus a
+    <path>__term_id column (a JSON list for an array). No instance needed.
+    An existing CSV refuses the run without --force, before anything is
+    written.
+    """
+    from wip_archive.export_csv import ExportExistsError, export_csv
+
+    with ArchiveReader(archive_path) as reader:
+        try:
+            files = export_csv(reader, ArchiveModel.load(reader), output_dir,
+                               all_versions=all_versions, overwrite=force, dry_run=dry_run)
+        except ExportExistsError as e:
+            console.print(f"[red]{e}[/red] (pass --force to overwrite). Nothing written.")
+            sys.exit(1)
+
+    if as_json:
+        click.echo(_json.dumps({
+            "schema": "1.0",
+            "dry_run": dry_run,
+            "all_versions": all_versions,
+            "files": [{"namespace": f.namespace, "template": f.template, "path": str(f.path),
+                       "rows": f.rows, "columns": f.columns} for f in files],
+        }, indent=2, default=str))
+        return
+    table = Table(title="export-csv" + (" (dry run, nothing written)" if dry_run else ""))
+    table.add_column("File")
+    table.add_column("Rows", justify="right")
+    table.add_column("Columns", justify="right")
+    for f in files:
+        table.add_row(str(f.path), f"{f.rows:,}", f"{len(f.columns):,}")
+    console.print(table)
+
+
 @main.command()
 @click.argument("archive_a", type=click.Path(exists=True, dir_okay=False))
 @click.argument("archive_b", type=click.Path(exists=True, dir_okay=False))

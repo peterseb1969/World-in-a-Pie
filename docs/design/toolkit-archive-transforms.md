@@ -248,7 +248,7 @@ stability is a contract from day one.
 |---|---|---|
 | **M1** (done) | `ArchiveModel` (index, edges, closures, islands, stats, findings) + grown `inspect` (summary, deep dive, `--json`) | nothing new beyond wip-archive |
 | **M2** (done, §6.2) | offline validate/recompute library; `verify` verb (findings → exit code); `inspect --target-version` migratability | identity-hash + term-resolution logic shared with wip-auth's canonical implementations |
-| **M3** (M3a done §7.2; M3b planned §7.1) | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, `prune`, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
+| **M3** (done: M3a §7.2, M3b §7.3) | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, `prune`, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
 | **M4+** | surgery (fill-value migration via mapping file, version squash, redaction design), `compose` on-ramp, `export` deprecation | M2 library; separate design iterations |
 
 Every transform (M3+) runs `verify` on its output automatically and
@@ -531,6 +531,33 @@ restored result checked against what the verb promised.
   only stamps the manifest; the API refuses it and nothing calls it.
 - Each verb loads the archive model twice (plan, then verify). Not
   measured how much of the time that is.
+
+### 7.3 M3b delivered (2026-11-01)
+
+| Slice | Commit | What shipped |
+|---|---|---|
+| — | `eecb525f` | `--dry-run` on every transform: `run_transform` on scratch space, verify included, only the final write skipped (§1). WIP-Toolkit 0.17.0. |
+| M3b-1 | `e28278d4` | `diff`: rows added, removed and changed per namespace and entity type, the differing fields named for a sample; referents, blobs, both chains. Exit 0 / 1 / 2. WIP-Toolkit 0.18.0. |
+| M3b-2 | `a531ce93` | `split --by namespace|island` (decision 7): each part through the core, cross-part references as referents, an `unattached` part for terminologies no island uses and documents whose template is not carried. WIP-Toolkit 0.19.0. |
+| M3b-3 | the commit recording this section | `export-csv` (decision 8): one CSV per template, latest versions, flattened, terms as value plus `__term_id`. WIP-Toolkit 0.20.0. |
+
+**Measured on the real pbs-clintrial archive:**
+
+| Verb | Time | Peak memory | Result |
+|---|---|---|---|
+| `diff` (archive vs its `latest-only` output) | 9.5 s | 97 MB | exactly the 18,448 removed version rows |
+| `split --by namespace` | 20.3 s | 277 MB | 2 parts, 1,482 referents into the reference namespace, both pass |
+| `split --by island` | 37.1 s | 279 MB | 9 islands + `unattached`, 240,474 documents across them, no referents, all pass |
+| `export-csv` | 8.1 s | 218 MB | 12 files, 222,026 rows, 116 MB |
+
+**Real-engine tests** for each: two backups around an update (`diff`
+names exactly `status` and `updated_at` on the retired version); a
+two-namespace backup split and one part restored fresh, its
+cross-namespace reference resolving; a CSV row held field by field to the
+live API's document, term id included.
+
+**Known limits:** `split --by island` re-reads the input once per part.
+`export-csv` writes no hop (it produces CSV files, not an archive).
 
 ## 8. Restore provenance (door-side requirement, tracked here)
 

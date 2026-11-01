@@ -1,7 +1,7 @@
 # WIP-Toolkit
 
 The **operator CLI** for WIP: backup, inspect, verify, the archive transforms
-(filter, prune, latest-only, strip-blobs, split), diff, restore, archive conversion, seeding,
+(filter, prune, latest-only, strip-blobs, split), diff, export-csv, restore, archive conversion, seeding,
 status, and synonym backfill — a thin consumer of the platform APIs and of
 `libs/wip-archive` (the archive format contract + id-remap library, a
 sibling of `wip-auth`; see `docs/design/wip-archive-split.md`).
@@ -84,6 +84,7 @@ wip-toolkit latest-only <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit strip-blobs <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit split <archive.zip> <out-dir> [--by namespace|island] [--dry-run] [--json]
 wip-toolkit diff <a.zip> <b.zip> [--json]
+wip-toolkit export-csv <archive.zip> <out-dir> [--all-versions] [--dry-run] [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
 
@@ -149,6 +150,12 @@ another becomes a referent. Each part is verified and records its own hop.
 what was added, removed or changed (the differing fields named for a
 sample), plus referents, blobs and both `derived_from` chains. Exit 0 when
 identical, 1 when they differ, 2 on an unreadable archive.
+
+`export-csv` writes `<out-dir>/<namespace>/<TEMPLATE>.csv`, one per
+template, each document's latest version (`--all-versions`: every row).
+Columns: `document_id`, `version`, `status`, then the data fields flattened
+by dot path in the template's field order, arrays as JSON text; a term
+field is its value plus `<path>__term_id`. No instance needed.
 
 Every transform takes `--dry-run`: the same run on scratch space, the
 verify of what would be written included, with nothing written to the

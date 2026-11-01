@@ -2900,6 +2900,23 @@ refuses the whole run without `--force`, before anything is written.
 
 **Action:** none.
 
+### `wip-toolkit export-csv`: an archive as spreadsheets; WIP-Toolkit 0.20.0
+
+`wip-toolkit export-csv <archive> <out-dir>` writes one CSV per template,
+`<out-dir>/<namespace>/<TEMPLATE>.csv`, holding each document's latest
+version (`--all-versions`: every version row), from the archive alone.
+Columns: `document_id`, `version`, `status`, then the data fields flattened
+by dot path (`parent.child`), in the order of the template's latest version
+with inheritance resolved, undeclared paths after them sorted; arrays are
+JSON text, booleans `true`/`false`, null and absent fields empty. A term
+field is the value the document holds plus a `<path>__term_id` column (a
+JSON list in item order for an array). An existing CSV refuses the run
+without `--force`, before anything is written; `--dry-run` lists the files
+and row counts; `--json` (schema 1.0). `wip-archive` 0.21.0
+(`wip_archive.export_csv`).
+
+**Action:** none.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving
