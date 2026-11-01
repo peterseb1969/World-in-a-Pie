@@ -245,7 +245,7 @@ stability is a contract from day one.
 |---|---|---|
 | **M1** (done) | `ArchiveModel` (index, edges, closures, islands, stats, findings) + grown `inspect` (summary, deep dive, `--json`) | nothing new beyond wip-archive |
 | **M2** (done, §6.2) | offline validate/recompute library; `verify` verb (findings → exit code); `inspect --target-version` migratability | identity-hash + term-resolution logic shared with wip-auth's canonical implementations |
-| **M3** | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
+| **M3** (planned, §7.1) | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, `prune`, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
 | **M4+** | surgery (fill-value migration via mapping file, version squash, redaction design), `compose` on-ramp, `export` deprecation | M2 library; separate design iterations |
 
 Every transform (M3+) runs `verify` on its output automatically and
@@ -378,6 +378,94 @@ merely the guaranteed-same-namespace case):
 
 `inspect`'s deep dive shows the consequences of each policy for a
 given selection — that is its filter-dry-run role.
+
+### 7.1 The M3 plan (agreed 2026-11-01)
+
+**The principle: shaping never edits a row it keeps.** A transform
+selects which rows travel. It does not rewrite, null or re-anchor a
+reference inside a row it keeps. When an entity is cut, its Registry row
+moves from `registry_entries.jsonl` to `referents.jsonl`, the table in
+which an archive records what it references but does not carry. On
+restore, the door resolves each referent on the target by its portable
+keys (`{ns, type, value}`, a document's template-qualified identity
+synonym), never by its old id. When nothing or several entities match,
+the reference keeps its archived id and the namespace validation job
+flags it. This is the constraint from FIRESIDE-29: a reference crossing
+a cut must still carry something the target can resolve. It also means:
+
+- identity hashes cannot change, because no kept row changes;
+- `verify` on the output reports each cut as `unverifiable_dependency`,
+  so a filter that cuts anything ends at `warn`, not `pass`;
+- a change to the rows themselves is surgery (M4), not shaping.
+
+**Decisions (Peter, 2026-11-01).**
+
+1. **`drop` keeps a cut reference and moves its target into the
+   referents table.** Nulling the field was rejected: that edits rows,
+   and it can break mandatory or identity fields. Dropping every
+   document that holds a cut reference was rejected too: it cascades
+   and can empty the selection.
+2. **Relationship documents whose source is selected come along by
+   default.** Closure follows outgoing references, and a relationship
+   document references its source, so without this rule selecting
+   MONSTER would leave its MONSTER→SPELL relationships behind.
+   `/relationships` and `/traverse` are visible to apps, so losing them
+   changes how an app behaves. Their targets then pass through the
+   boundary policy like any other reference. `--no-relationships` opts
+   out.
+3. **The boundary policy covers documents only.** Schema closure is
+   mandatory: every template version a kept document pins, its
+   `extends` chain, and every terminology those templates draw from
+   travel, and a terminology travels whole. Carrying only the terms in
+   use would change how later writes validate. Definitions are small.
+   References into namespaces the input archive itself does not carry
+   (typically `wip`) stay as they are: already referents.
+4. **"Remove the templates nothing uses" is its own verb, `prune`.** It
+   answers the deletion question (in-degree zero), which is the opposite
+   of `filter`'s extraction question (out-degree and closure). M1 keeps
+   the two apart.
+5. **The slice order below**, split into M3a and M3b with a check-in
+   between them.
+
+**Defaults (proposed by the implementer, not objected to).**
+
+- **`stubs`:** an endpoint document one hop out travels with its pinned
+  template version and that template's terminologies. Its own outgoing
+  references become referents.
+- **`closure`:** prints how much it would pull in before writing, and
+  needs `--yes` when that is more than half the archive's documents.
+  The threshold is a choice, not a measurement.
+- **`latest-only`:** keeps every template version. A reference with
+  `version_strategy: "pinned"` can name an older document version than
+  the latest one; that version travels anyway, and the summary counts
+  how many did. Slice 4 confirms how a pinned reference is stored
+  before relying on this.
+- **Output:** every transform takes `IN OUT`, and refuses to overwrite
+  `OUT` without `--force`. The dry run is `inspect` on the plan (§1).
+- **What leaves with a cut entity:** its synonym rows, and any blob only
+  cut documents reference. The manifest's provenance rows (§8) travel
+  unchanged.
+- **Tests:** hand-built archives for each policy, and in every slice at
+  least one transform of a real engine backup restored through the
+  real engine.
+
+**Slices, one commit each.**
+
+| # | Slice |
+|---|---|
+| M3a-1 | Transform core in `wip-archive`: the input digest, appending the `derived_from` hop (§9.1), moving cut entities' rows into referents, the verify postcondition, writing the output. |
+| M3a-2 | `filter`: selection by template, the four boundary policies, relationship documents with their source, mandatory schema closure, `--definitions-only`. |
+| M3a-3 | `prune`: templates with in-degree zero, and the terminologies only they used. |
+| M3a-4 | `latest-only`. |
+| M3a-5 | `strip-blobs`. |
+| M3a-6 | The thin `backup` verb, and `export`'s deprecation warning (§9.2). |
+| — | Check-in with Peter. |
+| M3b-1 | `diff`. |
+| M3b-2 | `split`. |
+| M3b-3 | `export-csv`. |
+
+Each slice ships its wheel versions, golden re-captures and release
+notes in the same commit.
 
 ## 8. Restore provenance (door-side requirement, tracked here)
 
