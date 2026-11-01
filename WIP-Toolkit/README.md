@@ -75,7 +75,7 @@ write-path.
 
 ```bash
 wip-toolkit export <namespace> <archive.zip> [--include-files] …
-wip-toolkit inspect <archive.zip>
+wip-toolkit inspect <archive.zip> [TEMPLATE] [--target-version N] [--json]
 wip-toolkit verify <archive.zip> [--strict] [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
@@ -86,6 +86,12 @@ stored term references and its recomputed identity hash. What the archive
 does not carry (a shared template or vocabulary) is listed as unverifiable,
 not judged. Verdict `fail` (errors), `warn` or `pass`; exit code 1 on
 `fail`, and with `--strict` on `warn` too.
+
+`inspect TEMPLATE --target-version N` assesses migrating that template's
+active documents to version N, as a migrate dry run would on the instance:
+each is validated as a write against N (declared renames applied, terms
+re-resolved, so a term deprecated since fails it), grouped by the version it
+is on, with the failures counted. Reference and file fields are not checked.
 
 `restore` runs the same check before uploading: an error refuses the upload
 unless `--force`, which also passes the server's refusal of an archive whose

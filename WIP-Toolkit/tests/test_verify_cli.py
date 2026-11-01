@@ -38,7 +38,7 @@ def test_json_carries_verdict_findings_and_document_checks(tmp_path):
     result = run(_real_archive(tmp_path, template_version=3), "--json")
     assert result.exit_code == 1
     payload = json.loads(result.output)
-    assert payload["schema"] == "1.1"
+    assert payload["schema"] == "1.2"
     assert payload["verdict"] == "fail"
     assert payload["counts"]["error"] >= 1
     assert {f["class"] for f in payload["findings"]} >= {"template_version_missing"}

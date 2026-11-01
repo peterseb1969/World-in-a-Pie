@@ -19,6 +19,7 @@ from .export.exporter import run_export
 from .inspect_view import (
     json_payload,
     render_findings,
+    render_migratability,
     render_summary,
     render_template_dive,
     render_terminology_dive,
@@ -156,6 +157,12 @@ def export(
     multiple=True,
     help="Restrict the analysis to these namespaces (repeatable)",
 )
+@click.option(
+    "--target-version",
+    type=int,
+    default=None,
+    help="With one TEMPLATE: would its active documents migrate to this version?",
+)
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
 @click.option("--show-ids", is_flag=True, help="List all entity IDs")
 @click.option("--show-references", is_flag=True, help="Show raw dependency graph")
@@ -164,6 +171,7 @@ def inspect(
     subjects: tuple[str, ...],
     terminologies: tuple[str, ...],
     namespaces: tuple[str, ...],
+    target_version: int | None,
     as_json: bool,
     show_ids: bool,
     show_references: bool,
@@ -177,7 +185,14 @@ def inspect(
     A deep dive is also the plan a future `filter` would execute: what it
     prints as the closure of a template is what filtering to that template
     would carry along.
+
+    --target-version N with one TEMPLATE assesses migrating its active
+    documents to version N, as a migrate dry run would: each is validated as
+    a write against N (terms re-resolved, declared renames applied), with no
+    instance needed. Reference and file fields are not checked.
     """
+    if target_version is not None and len(subjects) != 1:
+        raise click.UsageError("--target-version needs exactly one TEMPLATE.")
     try:
         with ArchiveReader(archive_path) as reader:
             model = ArchiveModel.load(
@@ -202,6 +217,15 @@ def inspect(
                     sys.exit(2)
                 selected_terminologies.append(node.terminology_id)
 
+            migration = None
+            if target_version is not None:
+                from wip_archive.migratability import assess_migration
+
+                migration = assess_migration(
+                    reader, model.definitions, selected_templates[0], target_version,
+                    namespaces=model.namespaces,
+                )
+
             if as_json:
                 click.echo(
                     _json.dumps(
@@ -209,6 +233,7 @@ def inspect(
                             model,
                             templates=selected_templates,
                             terminologies=selected_terminologies,
+                            migratability=migration,
                         ),
                         indent=2,
                         default=str,
@@ -219,6 +244,8 @@ def inspect(
             if selected_templates or selected_terminologies:
                 for template_id in selected_templates:
                     render_template_dive(model, template_id, console)
+                if migration is not None:
+                    render_migratability(migration, console)
                 for terminology_id in selected_terminologies:
                     render_terminology_dive(model, terminology_id, console)
             else:

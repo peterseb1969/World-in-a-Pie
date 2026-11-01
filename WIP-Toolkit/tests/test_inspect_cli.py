@@ -294,7 +294,7 @@ class TestJson:
         result = run(str(archive), "--json")
         assert result.exit_code == 0, result.output
         payload = json.loads(result.output)
-        assert payload["schema"] == "1.1"
+        assert payload["schema"] == "1.2"
         assert payload["archive"]["templates"] == 3
         assert payload["islands"][0]["templates"] == [
             "MONSTER",

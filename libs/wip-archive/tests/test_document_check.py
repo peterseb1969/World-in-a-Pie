@@ -162,8 +162,8 @@ def test_json_carries_the_document_checks_only_when_run(tmp_path):
     path = build_archive(tmp_path / "k.zip", _rows([_doc("d1", {"code": "A"})]))
     with ArchiveReader(path) as reader:
         plain = ArchiveModel.load(reader).to_dict()
-    assert SCHEMA_VERSION == "1.1"
-    assert plain["schema"] == "1.1" and plain["document_checks"] is None
+    assert SCHEMA_VERSION == "1.2"
+    assert plain["schema"] == "1.2" and plain["document_checks"] is None
     model, _findings = _check(path)
     payload = model.to_dict()
     assert payload["document_checks"]["documents_checked"] == 1

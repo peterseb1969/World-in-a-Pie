@@ -49,7 +49,7 @@ from .models import Manifest
 # Version of the machine-readable output contract (`to_dict`, and the CLI's
 # `inspect --json`). Consumers branch on it. Additive fields keep the version;
 # removing or re-typing a field is a major bump.
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 # Entity types that carry a Registry identity row. Mirrors the restore door's
 # own list: these are the rows whose absence makes a restored namespace look

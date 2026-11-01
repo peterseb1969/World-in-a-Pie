@@ -2680,6 +2680,26 @@ offline validator matches the live one after CASE-1009. (`wip-archive`
 be incomplete add `--force`. Apps that vendor the toolkit pick up 0.8.0 on
 their next scaffold refresh.
 
+### `inspect --target-version`: would a migration succeed? WIP-Toolkit 0.9.0
+
+`wip-toolkit inspect <archive> TEMPLATE --target-version N` assesses, from the
+archive alone, migrating that template's active documents to version N: what
+`POST /documents/migrate` with `dry_run` would answer on the instance it came
+from. It follows the live rules: the migration is refused when N is missing or
+inactive, or when its `identity_fields` differ from a source version's (a fork);
+declared renames are applied; each document is validated as a write against N,
+so a term deprecated since the document was written fails it. Results are
+grouped by source version, with counts per failing field and code and samples.
+Reference and file fields are not checked (the report says so). An integration
+test holds it to the live dry run.
+
+`inspect --json` moves to schema 1.2, adding `migratability` (null unless
+requested). WIP-Toolkit 0.9.0 requires `wip-archive` 0.11.0, which carries the
+assessment (`wip_archive.migratability`).
+
+**Action:** none. Apps that vendor the toolkit pick up 0.9.0 on their next
+scaffold refresh.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

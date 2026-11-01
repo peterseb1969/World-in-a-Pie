@@ -12,6 +12,7 @@ from typing import Any
 
 from rich.console import Console
 from rich.table import Table
+from wip_archive.migratability import MigrationReport
 from wip_archive.model import ArchiveModel
 
 SEVERITY_STYLE = {
@@ -399,5 +400,46 @@ def json_payload(
     *,
     templates: list[str] | None = None,
     terminologies: list[str] | None = None,
+    migratability: MigrationReport | None = None,
 ) -> dict[str, Any]:
-    return model.to_dict(templates=templates, terminologies=terminologies)
+    payload = model.to_dict(templates=templates, terminologies=terminologies)
+    # Schema 1.2: the --target-version assessment, null unless requested.
+    payload["migratability"] = migratability.to_dict() if migratability else None
+    return payload
+
+
+def render_migratability(report: MigrationReport, console: Console) -> None:
+    console.print(
+        f"\n[bold]Migrating {report.template} to v{report.to_version}[/bold] "
+        "(offline; reference and file fields not checked)"
+    )
+    if report.blocked:
+        console.print(f"[red]Refused:[/red] {report.blocked}")
+        return
+    if not report.cohorts:
+        console.print("No active documents on other versions — nothing to migrate.")
+        return
+    table = Table()
+    table.add_column("From", justify="right")
+    table.add_column("Documents", justify="right")
+    table.add_column("Ready", justify="right")
+    table.add_column("Failing", justify="right")
+    table.add_column("Why")
+    for version in sorted(report.cohorts):
+        cohort = report.cohorts[version]
+        if cohort.blocked:
+            why = f"[red]refused: {cohort.blocked}[/red]"
+            failing = cohort.documents
+        else:
+            failing = cohort.documents - cohort.ready
+            why = "; ".join(
+                f"{n}x {code}{' ' + str(fld) if fld else ''}"
+                for (fld, code), n in cohort.failures.most_common(5)
+            )
+            if cohort.samples:
+                why += f"\n[dim]e.g. {', '.join(cohort.samples)}[/dim]"
+        table.add_row(
+            f"v{version}", str(cohort.documents), str(cohort.ready if not cohort.blocked else 0),
+            str(failing), why,
+        )
+    console.print(table)
