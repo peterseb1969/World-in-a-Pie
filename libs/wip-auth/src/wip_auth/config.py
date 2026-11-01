@@ -241,9 +241,13 @@ class AuthConfig(BaseSettings):
 
         keys: list[APIKeyRecord] = []
         seen_names: set[str] = set()
+        # Plaintext per key name, for the shared-value check below. A later
+        # source replaces an earlier key of the same name, here as in `keys`.
+        plaintexts: dict[str, str] = {}
 
         # Load legacy key if set
         if self.legacy_api_key:
+            plaintexts["legacy"] = self.legacy_api_key
             keys.append(APIKeyRecord(
                 name="legacy",
                 key_hash=hash_api_key(self.legacy_api_key, self.api_key_hash_salt),
@@ -268,6 +272,7 @@ class AuthConfig(BaseSettings):
                         keys = [k for k in keys if k.name != key_record.name]
                     keys.append(key_record)
                     seen_names.add(key_record.name)
+                    _track_plaintext(plaintexts, key_record.name, key_dict)
             except json.JSONDecodeError as e:
                 import logging
                 logging.getLogger("wip_auth").warning(
@@ -286,11 +291,31 @@ class AuthConfig(BaseSettings):
                         keys = [k for k in keys if k.name != key_record.name]
                     keys.append(key_record)
                     seen_names.add(key_record.name)
+                    _track_plaintext(plaintexts, key_record.name, key_dict)
+
+        import logging
+        logger = logging.getLogger("wip_auth")
+
+        # One plaintext, one key. A presented key authenticates as the first
+        # record it matches and that answer is cached, so a value two keys
+        # share is whichever key a process matched first: services started at
+        # different times disagree about who the caller is. Refuse the value
+        # instead — none of its keys load. The master key is the exception:
+        # services authenticate to each other with it, so it stays and the
+        # keys sharing its value are dropped.
+        dropped = _shared_plaintext_names(plaintexts)
+        if dropped:
+            keys = [k for k in keys if k.name not in dropped]
+            for group in _shared_plaintext_groups(plaintexts):
+                logger.error(
+                    "API keys %s share one plaintext; %s not loaded. Give each key "
+                    "its own value.",
+                    ", ".join(group),
+                    ", ".join(n for n in group if n in dropped),
+                )
 
         # Warn about unscoped non-privileged keys at load time
         _PRIVILEGED_GROUPS = {"wip-admins", "wip-services"}
-        import logging
-        logger = logging.getLogger("wip_auth")
         for key in keys:
             if key.namespaces is None and not any(
                 g in _PRIVILEGED_GROUPS for g in key.groups
@@ -320,6 +345,33 @@ class AuthConfig(BaseSettings):
             key_dict["key_hash"] = hash_func(key_dict.pop("key"), self.api_key_hash_salt)
 
         return APIKeyRecord(**key_dict)
+
+
+def _track_plaintext(plaintexts: dict[str, str], name: str, key_dict: dict) -> None:
+    """Record a key's plaintext; a pre-hashed entry has none to compare."""
+    if "key" in key_dict and "key_hash" not in key_dict and key_dict["key"]:
+        plaintexts[name] = key_dict["key"]
+    else:
+        plaintexts.pop(name, None)
+
+
+def _shared_plaintext_groups(plaintexts: dict[str, str]) -> list[list[str]]:
+    """Names of keys that share a plaintext, one sorted group per value."""
+    by_value: dict[str, list[str]] = {}
+    for name, value in plaintexts.items():
+        by_value.setdefault(value, []).append(name)
+    return sorted(sorted(g) for g in by_value.values() if len(g) > 1)
+
+
+def _shared_plaintext_names(plaintexts: dict[str, str]) -> set[str]:
+    """The keys not to load: every key in a shared group, except the master
+    key ("legacy"), which keeps its value."""
+    return {
+        name
+        for group in _shared_plaintext_groups(plaintexts)
+        for name in group
+        if name != "legacy"
+    }
 
 
 def get_auth_config() -> AuthConfig:

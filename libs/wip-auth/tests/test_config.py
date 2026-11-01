@@ -117,8 +117,11 @@ class TestLegacyEnvMapping:
 
     def test_api_key_mapped(self, monkeypatch):
         """API_KEY should be mapped to WIP_AUTH_LEGACY_API_KEY."""
-        # Clear any existing WIP_AUTH_LEGACY_API_KEY
-        monkeypatch.delenv("WIP_AUTH_LEGACY_API_KEY", raising=False)
+        # Clear any existing WIP_AUTH_LEGACY_API_KEY. Set it through
+        # monkeypatch first: a delenv of an absent variable records nothing
+        # to undo, so the value the mapping writes would outlive the test.
+        monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "")
+        monkeypatch.delenv("WIP_AUTH_LEGACY_API_KEY")
         monkeypatch.setenv("API_KEY", "legacy_key_value")
 
         # Re-import to trigger mapping
@@ -129,7 +132,8 @@ class TestLegacyEnvMapping:
 
     def test_master_api_key_mapped(self, monkeypatch):
         """MASTER_API_KEY should be mapped to WIP_AUTH_LEGACY_API_KEY."""
-        monkeypatch.delenv("WIP_AUTH_LEGACY_API_KEY", raising=False)
+        monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "")
+        monkeypatch.delenv("WIP_AUTH_LEGACY_API_KEY")
         monkeypatch.setenv("MASTER_API_KEY", "master_key_value")
 
         from wip_auth import config as config_module
