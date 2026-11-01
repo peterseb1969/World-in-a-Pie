@@ -193,3 +193,53 @@ def test_filter_cli_on_a_real_backup_brings_relationships_and_restores(
         if r["field_path"] in ("favourite", "target_ref")
     }
     assert targets == {"favourite": ids["doc_fireball"], "target_ref": ids["doc_fireball"]}
+
+
+PRUNE_NS = "toolkit-prune-it"
+PRUNE_COPY = "toolkit-prune-it-copy"
+
+
+def test_prune_on_a_real_backup_drops_only_the_unused_and_restores(
+    stack, wip_client, tmp_path
+):
+    """An engine backup with one template nothing uses (and a vocabulary only
+    it declares): prune removes those two, keeps every document, and the
+    output restores fresh through the real engine."""
+    from click.testing import CliRunner
+    from wip_toolkit.cli import main
+
+    ids = _seed(wip_client, PRUNE_NS)
+    unused_lov = _created(wip_client.post("def-store", "/terminologies", json=[
+        {"value": "UNUSED_MOOD", "label": "Unused mood", "namespace": PRUNE_NS}]))
+    unused = _created(wip_client.post("template-store", "/templates", json=[{
+        "value": "UNUSED", "label": "Unused", "namespace": PRUNE_NS,
+        "fields": [{"name": "mood", "label": "Mood", "type": "term",
+                    "terminology_ref": "UNUSED_MOOD"}],
+    }]))
+    backup = tmp_path / "backup.zip"
+    stack.portal.call(lambda: _backup_engine().run_backup(PRUNE_NS, backup))
+
+    out = tmp_path / "pruned.zip"
+    result = CliRunner().invoke(main, ["prune", str(backup), str(out), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["verdict"] == "pass", payload["findings"]
+    assert payload["hop"]["summary"]["templates_pruned"] == [f"{PRUNE_NS}:UNUSED"]
+    assert payload["hop"]["summary"]["terminologies_pruned"] == [f"{PRUNE_NS}:UNUSED_MOOD"]
+    with ArchiveReader(out) as reader, ArchiveReader(backup) as original:
+        assert list(reader.read_entities("documents", namespace=PRUNE_NS)) \
+            == list(original.read_entities("documents", namespace=PRUNE_NS))
+        templates = {t["template_id"] for t in reader.read_entities("templates", namespace=PRUNE_NS)}
+        assert unused["id"] not in templates and ids["monster_template"] in templates
+        carried = {r["entry_id"] for r in reader.read_entities("registry_entries",
+                                                                namespace=PRUNE_NS)}
+        assert unused["id"] not in carried and unused_lov["id"] not in carried
+        assert list(reader.read_referents()) == []
+
+    stack.portal.call(lambda: _restore_engine().run_remap(Path(out), PRUNE_COPY))
+    restored = wip_client.get("template-store", "/templates",
+                              params={"namespace": PRUNE_COPY})["items"]
+    assert {t["value"] for t in restored} == {"SPELL", "MONSTER", "MONSTER_KNOWS"}
+    docs = wip_client.get("document-store", "/documents",
+                          params={"namespace": PRUNE_COPY, "page_size": 100})["items"]
+    assert len(docs) == 3

@@ -2778,6 +2778,25 @@ exit 2 naming the candidates, and accept `ns:VALUE` to pick one, as
 **Action:** scripts that inspect a multi-namespace archive by a bare value
 carried by several namespaces name it as `ns:VALUE`.
 
+### `wip-toolkit prune`: an archive without the templates nothing uses; WIP-Toolkit 0.13.0
+
+`wip-toolkit prune <archive> <out>` writes a new archive without the
+templates nothing uses: no document is pinned to them, and no schema of a
+template with documents needs them as a parent, reference target or
+edge-type endpoint. Unused templates that only declare each other go too.
+A terminology goes only when a pruned template declared it and nothing kept
+uses it (no kept template declares it, no kept document holds its terms, no
+term relation from a kept terminology points into it); a terminology no
+template ever declared stays, since an app may use it through validation
+alone. Every document and file travels.
+
+As with `filter`, the output is verified before it is written, the pruned
+names are recorded in its `derived_from` chain, an existing output needs
+`--force`, and `--json` carries the hop. `wip-archive` 0.15.0 carries the
+plan (`wip_archive.prune`).
+
+**Action:** none.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

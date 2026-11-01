@@ -29,6 +29,8 @@ bind-mounted in dev stacks, baked into release images.
   per-document check `verify` runs, and migration assessment.
 - `wip_archive.filter` — the `filter` plan: selection by template, the
   boundary policies, definitions closure.
+- `wip_archive.prune` — the `prune` plan: templates nothing uses, and the
+  terminologies only they declared.
 - `wip_archive.transform` — `run_transform`, the core every shaping
   transform shares: copies the rows a transform keeps verbatim, moves cut
   entities into the referent table, verifies the output and records the

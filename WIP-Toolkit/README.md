@@ -78,6 +78,7 @@ wip-toolkit export <namespace> <archive.zip> [--include-files] …
 wip-toolkit inspect <archive.zip> [TEMPLATE] [--target-version N] [--json]
 wip-toolkit verify <archive.zip> [--strict] [--json]
 wip-toolkit filter <archive.zip> <out.zip> TEMPLATE… [--boundary strict|drop|stubs|closure] [--no-relationships] [--definitions-only] [--json]
+wip-toolkit prune <archive.zip> <out.zip> [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
 
@@ -105,6 +106,13 @@ resolves on the target install; `strict` refuses, `stubs` keeps the targets
 one hop out, `closure` follows until nothing crosses (`--yes` when that
 keeps more than half the documents). The output is verified first, and the
 verdict and parameters go into its `derived_from` chain; exit 1 on `fail`.
+
+`prune` writes a new archive without the templates nothing uses: no
+document is pinned to them and no schema of a template with documents needs
+them. Terminologies only those templates declared, and nothing kept uses,
+go too; a terminology no template declares stays. Every document and file
+travels, the output is verified first, and the pruned names are recorded in
+its `derived_from` chain.
 
 `restore` runs the same check before uploading: an error refuses the upload
 unless `--force`, which also passes the server's refusal of an archive whose
