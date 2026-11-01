@@ -2833,6 +2833,28 @@ the `derived_from` chain, `--force`, `--json`. `wip-archive` 0.17.0.
 
 **Action:** none.
 
+### `wip-toolkit backup`, and `export` is deprecated; WIP-Toolkit 0.16.0
+
+`wip-toolkit backup <namespace> <out.zip>` runs the server's backup engine
+(`POST /backup/namespaces/{namespace}/backup`), follows the job and
+downloads the archive to `out.zip` (through a `.partial` file, renamed when
+complete). The archive is the engine's: complete and restorable, every
+entity in every status and version, with the Registry rows and referents.
+`--also NS` adds namespaces to the same archive, `--all-namespaces` takes
+every one, `--include-files` adds the blobs, `--skip-documents` keeps
+definitions only. Admin is required on every namespace backed up. Exit
+code 1 when the job fails or does not finish within `--timeout` (the job
+keeps running on the server).
+
+**Behaviour change:** `wip-toolkit export` now prints a deprecation warning.
+It is the client-side collector the server engine replaced, and it is
+removed in the next release. What it did selectively is done offline now:
+`backup`, then `filter` (templates, boundary policy), `latest-only`, `prune`
+or `strip-blobs`.
+
+**Action:** scripts calling `wip-toolkit export` move to `wip-toolkit
+backup` plus the transform they need before the next release.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

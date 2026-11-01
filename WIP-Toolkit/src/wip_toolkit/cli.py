@@ -100,10 +100,19 @@ def export(
     NAMESPACE is the WIP namespace to export (e.g., "wip").
     OUTPUT_PATH is the destination file path for the archive.
 
+    Deprecated: use `backup` (the server engine's complete archive), then
+    `filter`, `prune`, `latest-only` or `strip-blobs` to shape it. export
+    is removed in the next release.
+
     Default contract: the archive carries the latest ACTIVE version of each
     document. Full version history requires --include-inactive (superseded
     versions are status=inactive in document-store).
     """
+    console.print(
+        "[yellow]Deprecated:[/yellow] `export` is removed in the next release. Use "
+        "`wip-toolkit backup NAMESPACE OUT.zip` (the server's complete archive), then "
+        "`filter`, `prune`, `latest-only` or `strip-blobs` to shape it."
+    )
     config = ctx.obj["config"]
     with WIPClient(config) as client:
         # Check service health first
@@ -975,6 +984,96 @@ def restore(
             console.print(_json.dumps(snapshot["result"], indent=2, default=str))
     if snapshot.get("status") == "failed":
         sys.exit(1)
+
+
+@main.command()
+@click.argument("namespace")
+@click.argument("output_path", type=click.Path(dir_okay=False))
+@click.option("--also", "also", multiple=True,
+              help="Back up this namespace too, into the same archive (repeatable)")
+@click.option("--all-namespaces", is_flag=True, help="Back up every namespace")
+@click.option("--include-files", is_flag=True, help="Include file blobs in the archive")
+@click.option("--skip-documents", is_flag=True, help="Definitions only")
+@click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
+@click.option("--timeout", default=3600.0, show_default=True,
+              help="Seconds to wait for the job before giving up (it keeps running)")
+@click.option("--json", "as_json", is_flag=True, help="Print the final job snapshot as JSON")
+@click.pass_context
+def backup(
+    ctx: click.Context,
+    namespace: str,
+    output_path: str,
+    also: tuple[str, ...],
+    all_namespaces: bool,
+    include_files: bool,
+    skip_documents: bool,
+    force: bool,
+    timeout: float,
+    as_json: bool,
+) -> None:
+    """Back up a namespace with the server's backup engine and download it.
+
+    The engine reads the databases directly and writes a complete,
+    restorable archive: every entity in every status and version, with the
+    Registry rows and the referents. This command starts the job, follows
+    it and saves the archive to OUTPUT_PATH. Shape it afterwards with
+    filter, prune, latest-only or strip-blobs. Needs admin on every
+    namespace backed up. Exits 1 when the job fails or does not finish
+    within --timeout.
+
+    Examples:
+
+      wip-toolkit backup library library.zip
+
+      wip-toolkit backup library both.zip --also kb --include-files
+    """
+    from .backup import build_request, download_archive, start_backup
+    from .restore import wait_for_job
+
+    output = Path(output_path)
+    if output.exists() and not force:
+        console.print(f"[red]Output exists:[/red] {output} (pass --force to overwrite)")
+        sys.exit(1)
+    body = build_request(namespaces=list(also) or None, all_namespaces=all_namespaces,
+                         include_files=include_files, skip_documents=skip_documents)
+
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        try:
+            snapshot = start_backup(client, namespace, body)
+        except WIPClientError as e:
+            console.print(f"[red]Backup refused:[/red] {e}")
+            sys.exit(1)
+        last_message: list[str | None] = [None]
+
+        def _progress(snap: dict) -> None:
+            message = snap.get("message")
+            if message and message != last_message[0] and not as_json:
+                console.print(f"[dim]{message}[/dim]")
+            last_message[0] = message
+
+        snapshot = wait_for_job(client, snapshot["job_id"], timeout=timeout,
+                                on_progress=_progress)
+        status = snapshot.get("status")
+        if status != "complete":
+            if as_json:
+                click.echo(_json.dumps(snapshot, indent=2, default=str))
+            else:
+                console.print(f"[red]{snapshot.get('job_id')}: {status}[/red]")
+                if snapshot.get("error"):
+                    console.print(f"[red]{snapshot['error']}[/red]")
+                if status not in ("failed",):
+                    console.print("Not finished within --timeout; the job keeps running "
+                                  "on the server.")
+            sys.exit(1)
+        size = download_archive(client, snapshot["job_id"], output)
+
+    if as_json:
+        click.echo(_json.dumps({**snapshot, "output": str(output), "bytes": size},
+                               indent=2, default=str))
+    else:
+        console.print(f"[green]{snapshot['job_id']}: complete[/green] → {output} "
+                      f"({size:,} bytes)")
 
 
 @main.command()

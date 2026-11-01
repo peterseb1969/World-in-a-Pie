@@ -245,7 +245,7 @@ stability is a contract from day one.
 |---|---|---|
 | **M1** (done) | `ArchiveModel` (index, edges, closures, islands, stats, findings) + grown `inspect` (summary, deep dive, `--json`) | nothing new beyond wip-archive |
 | **M2** (done, §6.2) | offline validate/recompute library; `verify` verb (findings → exit code); `inspect --target-version` migratability | identity-hash + term-resolution logic shared with wip-auth's canonical implementations |
-| **M3** (planned, §7.1) | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, `prune`, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
+| **M3** (M3a done §7.2; M3b planned §7.1) | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, `prune`, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
 | **M4+** | surgery (fill-value migration via mapping file, version squash, redaction design), `compose` on-ramp, `export` deprecation | M2 library; separate design iterations |
 
 Every transform (M3+) runs `verify` on its output automatically and
@@ -478,6 +478,47 @@ a cut must still carry something the target can resolve. It also means:
 
 Each slice ships its wheel versions, golden re-captures and release
 notes in the same commit.
+
+### 7.2 M3a delivered (2026-11-01)
+
+| Slice | Commit | What shipped |
+|---|---|---|
+| M3a-1 | `d6d4d29c` | `wip_archive.transform.run_transform`: kept rows copied verbatim, cut entities moved into `referents.jsonl`, the raw manifest kept with counts recomputed, one `derived_from` hop, verify before the final write. Fix: a reference to a recorded referent is no longer `dangling_document_reference`. wip-archive 0.12.0. |
+| M3a-2 | `b1c80008` | `filter`: selection by template (id, value, `ns:VALUE`; an ambiguous bare value refused), relationships with their source, the four boundary policies, mandatory definitions closure, `--definitions-only`. WIP-Toolkit 0.11.0. |
+| — | `03ec7420` | `inspect` and the model's name lookup refuse a bare value several namespaces carry (it picked the first). WIP-Toolkit 0.12.0. |
+| M3a-3 | `929906a3` | `prune`: templates without documents that no schema of a template with documents needs, and the terminologies only they declared. WIP-Toolkit 0.13.0. |
+| M3a-4 | `67c617e3` | `latest-only`: newest version per document, plus the versions `pinned` references name (the hard-delete guard treats `pinned` + `resolved.version` as a version reference). `include_all_versions: false`. WIP-Toolkit 0.14.0. |
+| M3a-5 | `adaea2cf` | `strip-blobs`: file rows leave with their blobs; referenced files become referents, resolved by checksum (decision 6). WIP-Toolkit 0.15.0. |
+| M3a-6 | this commit | `backup`: the server engine's archive, followed and downloaded. `export` prints its deprecation warning (§9.2). WIP-Toolkit 0.16.0. |
+
+**Measured on the real pbs-clintrial archive** (72 MB, 240,474 document
+rows):
+
+| Verb | Time | Peak memory | Verdict | What it did |
+|---|---|---|---|---|
+| `filter PCT_TRIAL_ELIGIBILITY` (drop) | 8.9 s | 231 MB | pass | 1,777 references cut to 1,777 referents |
+| same, `--boundary stubs` | 8.9 s | 223 MB | pass | the 1,777 PCT_STUDY targets kept instead |
+| same, `--boundary strict` | 5.7 s | 216 MB | — | refused, nothing written |
+| `prune` | 17.8 s | 238 MB | pass | 3 templates without documents, 2 empty terminologies |
+| `latest-only` | 17.4 s | 286 MB | pass | 18,448 older version rows dropped |
+
+The archive holds one document-reference class and no files, so `closure`
+and `strip-blobs` were measured only on seeded data.
+
+**Every verb has a real-engine test** (`WIP-Toolkit/tests/integration/
+test_transform_core.py`): a seeded namespace backed up by the engine,
+transformed through the CLI, restored fresh by the engine, and the
+restored result checked against what the verb promised.
+
+**Known limits:**
+
+- No dry run: §1's "a transform's dry run is `inspect` on its plan" is
+  not built. `strict` and `closure`'s `--yes` are the only stops before
+  writing.
+- The engine's `run_backup(latest_only=True)` still exists in-process and
+  only stamps the manifest; the API refuses it and nothing calls it.
+- Each verb loads the archive model twice (plan, then verify). Not
+  measured how much of the time that is.
 
 ## 8. Restore provenance (door-side requirement, tracked here)
 

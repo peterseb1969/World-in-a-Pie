@@ -1,6 +1,7 @@
 # WIP-Toolkit
 
-The **operator CLI** for WIP: export, inspect, verify, archive conversion, seeding,
+The **operator CLI** for WIP: backup, inspect, verify, the archive transforms
+(filter, prune, latest-only, strip-blobs), restore, archive conversion, seeding,
 status, and synonym backfill — a thin consumer of the platform APIs and of
 `libs/wip-archive` (the archive format contract + id-remap library, a
 sibling of `wip-auth`; see `docs/design/wip-archive-split.md`).
@@ -71,10 +72,10 @@ registry identity and the engine could restore them faithfully;
 `wip-toolkit restore` is a thin client of that endpoint, not a second
 write-path.
 
-## CLI (single-namespace export)
+## CLI
 
 ```bash
-wip-toolkit export <namespace> <archive.zip> [--include-files] …
+wip-toolkit backup <namespace> <archive.zip> [--also NS]… [--all-namespaces] [--include-files] [--json]
 wip-toolkit inspect <archive.zip> [TEMPLATE] [--target-version N] [--json]
 wip-toolkit verify <archive.zip> [--strict] [--json]
 wip-toolkit filter <archive.zip> <out.zip> TEMPLATE… [--boundary strict|drop|stubs|closure] [--no-relationships] [--definitions-only] [--json]
@@ -83,6 +84,12 @@ wip-toolkit latest-only <archive.zip> <out.zip> [--json]
 wip-toolkit strip-blobs <archive.zip> <out.zip> [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
+
+`backup` starts the server's backup engine for a namespace (and any
+`--also` namespaces), follows the job and downloads the archive: complete
+and restorable, every entity in every status and version. Shape it
+afterwards with the transforms below. Needs admin on every namespace backed
+up.
 
 `verify` checks an archive offline, with no instance: inspect's findings,
 plus every document against the template version it is pinned to, its
@@ -141,7 +148,9 @@ soft-deleted when the archive's version is put on top; default `retire`),
 registry identity rows, which the server otherwise refuses because nothing
 restored would resolve by id.
 
-Export writes a 1-namespace v3 archive, including the raw registry
+`export` (the old client-side collector) is deprecated: it prints a
+warning naming `backup` and the transforms, and is removed in the next
+release. Export writes a 1-namespace v3 archive, including the raw registry
 identity rows (fetched through the Registry's admin-gated
 `POST /entries/export`) that a server-side restore re-inserts verbatim.
 
