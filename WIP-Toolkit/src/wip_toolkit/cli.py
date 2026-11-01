@@ -502,6 +502,56 @@ def prune(archive_path: str, output_path: str, force: bool, as_json: bool) -> No
         sys.exit(1)
 
 
+@main.command(name="latest-only")
+@click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
+@click.argument("output_path", type=click.Path(dir_okay=False))
+@click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def latest_only_cmd(archive_path: str, output_path: str, force: bool, as_json: bool) -> None:
+    """Write a new archive with each document's newest version only.
+
+    The newest version travels whatever its status, so a document retired
+    in its newest version stays retired. A version a pinned reference names
+    travels too: the platform guards such a reference. Every template
+    version stays. A file only dropped versions referenced leaves with them.
+
+    The output is verified before it is written, records
+    include_all_versions false, and counts what it dropped in its
+    derived_from chain. Exits 1 on a fail verdict.
+    """
+    from wip_archive.latest_only import plan_latest_only
+    from wip_archive.transform import OutputExistsError, run_transform
+
+    from .transform_view import json_payload, render_result
+
+    if Path(output_path).exists() and not force:
+        console.print(f"[red]Output exists:[/red] {output_path} (pass --force to overwrite)")
+        sys.exit(1)
+    with ArchiveReader(archive_path) as reader:
+        plan = plan_latest_only(reader, ArchiveModel.load(reader))
+    try:
+        result = run_transform(
+            archive_path, output_path, transform="latest-only",
+            toolkit_version=_get_version(), params={},
+            keep_row=plan.keep_row, summary=plan.summary(),
+            manifest_updates={"include_all_versions": False}, overwrite=force,
+        )
+    except OutputExistsError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    if as_json:
+        click.echo(_json.dumps(json_payload(result), indent=2, default=str))
+    else:
+        console.print(
+            f"{plan.versions_dropped:,} older version row(s) dropped; "
+            f"{plan.pinned_versions_kept:,} kept because a pinned reference names them"
+        )
+        render_result(result, console)
+    if result.verdict == "fail":
+        sys.exit(1)
+
+
 def _show_entity_ids(reader: ArchiveReader) -> None:
     """List all entity IDs in the archive, per namespace."""
     id_fields = {

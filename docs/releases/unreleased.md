@@ -2797,6 +2797,25 @@ plan (`wip_archive.prune`).
 
 **Action:** none.
 
+### `wip-toolkit latest-only`: each document's newest version; WIP-Toolkit 0.14.0
+
+`wip-toolkit latest-only <archive> <out>` writes a new archive holding each
+document's highest version, whatever its status: a document retired in its
+newest version stays retired. A version that a `pinned` reference names
+(`version_strategy: "pinned"` with the `resolved.version` it recorded)
+travels too, followed through kept versions that pin further ones: the
+platform refuses to hard-delete such a version, so dropping it would break
+a reference the platform guards. Every template version stays. A file only
+dropped versions referenced leaves with them, with its blob. The output
+manifest records `include_all_versions: false`, the first archive that
+says so truthfully (the backup API refuses `latest_only`).
+
+As with `filter` and `prune`: verified before it is written, counts in the
+`derived_from` chain (`versions_dropped`, `pinned_versions_kept`), `--force`,
+`--json`. `wip-archive` 0.16.0 carries the plan (`wip_archive.latest_only`).
+
+**Action:** none.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

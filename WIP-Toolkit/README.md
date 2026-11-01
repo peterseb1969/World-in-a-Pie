@@ -79,6 +79,7 @@ wip-toolkit inspect <archive.zip> [TEMPLATE] [--target-version N] [--json]
 wip-toolkit verify <archive.zip> [--strict] [--json]
 wip-toolkit filter <archive.zip> <out.zip> TEMPLATE… [--boundary strict|drop|stubs|closure] [--no-relationships] [--definitions-only] [--json]
 wip-toolkit prune <archive.zip> <out.zip> [--json]
+wip-toolkit latest-only <archive.zip> <out.zip> [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
 
@@ -113,6 +114,12 @@ them. Terminologies only those templates declared, and nothing kept uses,
 go too; a terminology no template declares stays. Every document and file
 travels, the output is verified first, and the pruned names are recorded in
 its `derived_from` chain.
+
+`latest-only` writes a new archive with each document's newest version,
+whatever its status. A version a `pinned` reference names travels too (the
+platform refuses to hard-delete such a version), every template version
+stays, and a file only dropped versions referenced leaves with them. The
+output records `include_all_versions: false`.
 
 `restore` runs the same check before uploading: an error refuses the upload
 unless `--force`, which also passes the server's refusal of an archive whose

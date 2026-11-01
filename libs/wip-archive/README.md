@@ -29,6 +29,8 @@ bind-mounted in dev stacks, baked into release images.
   per-document check `verify` runs, and migration assessment.
 - `wip_archive.filter` — the `filter` plan: selection by template, the
   boundary policies, definitions closure.
+- `wip_archive.latest_only` — the `latest-only` plan: newest versions, plus
+  the versions pinned references name.
 - `wip_archive.prune` — the `prune` plan: templates nothing uses, and the
   terminologies only they declared.
 - `wip_archive.transform` — `run_transform`, the core every shaping

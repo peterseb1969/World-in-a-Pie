@@ -137,6 +137,7 @@ def run_transform(
     keep_row: KeepRow,
     keep_blob: KeepBlob | None = None,
     summary: dict[str, Any] | None = None,
+    manifest_updates: dict[str, Any] | None = None,
     params_redacted: bool = False,
     overwrite: bool = False,
     tmp_dir: str | Path | None = None,
@@ -146,7 +147,9 @@ def run_transform(
     ``transform`` is the CLI verb's name and ``params`` its parameters,
     recorded verbatim in the hop. ``summary`` adds transform-specific counts
     to the hop's summary, after the per-type kept/dropped counts this
-    function records. Refuses an existing ``output_path`` unless
+    function records. ``manifest_updates`` sets top-level manifest fields
+    the transform changes the meaning of (``latest-only`` clears
+    ``include_all_versions``). Refuses an existing ``output_path`` unless
     ``overwrite``, and always refuses writing over the input itself.
     """
     input_path = Path(input_path)
@@ -166,6 +169,7 @@ def run_transform(
             copied = _copy_rows(reader, writer, keep_row, keep_blob, raw)
 
         manifest = _output_manifest(raw, copied)
+        manifest.update(manifest_updates or {})
         chain = input_chain(raw)
 
         provisional = scratch / "provisional.zip"

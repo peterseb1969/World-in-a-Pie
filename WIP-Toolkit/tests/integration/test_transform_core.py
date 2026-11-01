@@ -243,3 +243,74 @@ def test_prune_on_a_real_backup_drops_only_the_unused_and_restores(
     docs = wip_client.get("document-store", "/documents",
                           params={"namespace": PRUNE_COPY, "page_size": 100})["items"]
     assert len(docs) == 3
+
+
+LATEST_NS = "toolkit-latest-it"
+LATEST_COPY = "toolkit-latest-it-copy"
+
+
+def test_latest_only_on_a_real_backup_keeps_pinned_versions_and_restores(
+    stack, wip_client, tmp_path
+):
+    """Smaug reaches v3; a HOARD document pinned Smaug while it was v1.
+    latest-only keeps v3 (newest) and v1 (pinned), drops v2, and the output
+    restores fresh through the real engine."""
+    from click.testing import CliRunner
+    from wip_toolkit.cli import main
+
+    ids = _seed(wip_client, LATEST_NS)
+    hoard = _created(wip_client.post("template-store", "/templates", json=[{
+        "value": "HOARD", "label": "Hoard", "namespace": LATEST_NS,
+        "identity_fields": ["name"],
+        "fields": [
+            {"name": "name", "label": "Name", "type": "string", "mandatory": True},
+            {"name": "keeper", "label": "Keeper", "type": "reference",
+             "reference_type": "document", "target_templates": [ids["monster_template"]],
+             "version_strategy": "pinned"},
+        ],
+    }]))
+    _created(wip_client.post("document-store", "/documents", json=[
+        {"template_id": hoard["id"], "namespace": LATEST_NS,
+         "data": {"name": "Lonely Mountain", "keeper": ids["doc_smaug"]}}]))
+    for favourite in (None, ids["doc_fireball"]):
+        data = {"name": "Smaug"} if favourite is None else {"name": "Smaug", "favourite": favourite}
+        _created(wip_client.post("document-store", "/documents", json=[
+            {"template_id": ids["monster_template"], "namespace": LATEST_NS, "data": data}]))
+    versions = wip_client.get("document-store", f"/documents/{ids['doc_smaug']}/versions",
+                              params={"namespace": LATEST_NS})["versions"]
+    assert sorted(v["version"] for v in versions) == [1, 2, 3]
+
+    backup = tmp_path / "backup.zip"
+    stack.portal.call(lambda: _backup_engine().run_backup(LATEST_NS, backup))
+    with ArchiveReader(backup) as reader:
+        [hoard_row] = [d for d in reader.read_entities("documents", namespace=LATEST_NS)
+                       if d["template_id"] == hoard["id"]]
+    [keeper] = [r for r in hoard_row["references"] if r["field_path"] == "keeper"]
+    # The platform's own record of a pinned reference: the strategy, and the
+    # version it saw.
+    assert keeper["version_strategy"] == "pinned"
+    assert keeper["resolved"]["version"] == 1
+
+    out = tmp_path / "latest.zip"
+    result = CliRunner().invoke(main, ["latest-only", str(backup), str(out), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["verdict"] == "pass", payload["findings"]
+    assert payload["hop"]["summary"]["versions_dropped"] == 1
+    assert payload["hop"]["summary"]["pinned_versions_kept"] == 1
+    with ArchiveReader(out) as reader:
+        smaug = sorted(d["version"] for d in reader.read_entities("documents", namespace=LATEST_NS)
+                       if d["document_id"] == ids["doc_smaug"])
+        assert smaug == [1, 3]
+        assert reader.read_manifest_raw()["include_all_versions"] is False
+
+    stack.portal.call(lambda: _restore_engine().run_remap(Path(out), LATEST_COPY))
+    docs = wip_client.get("document-store", "/documents",
+                          params={"namespace": LATEST_COPY, "page_size": 100,
+                                  "latest_only": "true"})["items"]
+    restored_smaug = next(d for d in docs if d["data"].get("name") == "Smaug")
+    assert restored_smaug["data"].get("favourite") is not None
+    copy_versions = wip_client.get(
+        "document-store", f"/documents/{restored_smaug['document_id']}/versions",
+        params={"namespace": LATEST_COPY})["versions"]
+    assert sorted(v["version"] for v in copy_versions) == [1, 3]
