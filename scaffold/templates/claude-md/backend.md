@@ -399,7 +399,7 @@ Full rule at `feedback_push_to_gitea.md`.
 
 **Branching:** work on `develop`. `main` is the stable branch — tagged releases only. PRs go to `main` when ready.
 
-**CI:** Gitea Actions via `act_runner` on `wip-pi.local`. Workflow at `.gitea/workflows/test.yaml`. Run `/wip-check` locally before pushing.
+**CI:** Gitea Actions via `act_runner` on the Mac Studio. Workflow at `.gitea/workflows/test.yaml`. Run `/wip-check` locally before pushing.
 
 ---
 
