@@ -249,7 +249,8 @@ stability is a contract from day one.
 | **M1** (done) | `ArchiveModel` (index, edges, closures, islands, stats, findings) + grown `inspect` (summary, deep dive, `--json`) | nothing new beyond wip-archive |
 | **M2** (done, §6.2) | offline validate/recompute library; `verify` verb (findings → exit code); `inspect --target-version` migratability | identity-hash + term-resolution logic shared with wip-auth's canonical implementations |
 | **M3** (done: M3a §7.2, M3b §7.3) | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, `prune`, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
-| **M4+** | surgery (fill-value migration via mapping file, version squash, redaction design), `compose` on-ramp, `export` deprecation | M2 library; separate design iterations |
+| **M4** (planned, §6.3) | surgery: fill-value migration via mapping file, redaction | M2 library |
+| **M5** | `compose` on-ramp; `export` removed with the next release | M4; separate design iteration |
 
 Every transform (M3+) runs `verify` on its output automatically and
 stamps the verdict into the `derived_from` hop it writes — a
@@ -364,6 +365,62 @@ rate (about 38,000 rows/s for the check).
 - For an ambiguous name on a non-identity field, the recorded bearer can
   differ from live when two bearers were created in the same millisecond
   (the archive has no insertion order). Validity is unaffected; both warn.
+
+### 6.3 The M4 plan (agreed 2026-11-01)
+
+Shaping (M3) never edits a row it keeps. Surgery is the class that does,
+so it carries an obligation shaping does not: whatever it changes, it
+recomputes everything derived from it. One fact shapes all of it: a
+document's Registry row records its identity hash in its primary key, and
+its identity values in clear in a synonym (checked on a real engine
+archive). An edit to an identity value would therefore have to rewrite
+the Registry row as well, and changing identity is a fork, which the
+platform refuses.
+
+**Decisions (Peter, 2026-11-01).**
+
+1. **The surgery contract.** Surgery edits rows, never changes a
+   `document_id`, never renumbers versions. It recomputes what depends on
+   what it changed: the identity hash (`wip_archive.identity`), term and
+   reference snapshots, file references. The Registry is not touched,
+   because surgery refuses identity changes. On surgery output an
+   `identity_hash_mismatch` is an error, not a warning: it would mean the
+   recomputation failed.
+2. **Order:** fill-value migration first (M2's migratability already
+   says what a migration lacks), redaction second. `compose` becomes M5;
+   removing `export` goes with the next release cut, not a slice.
+3. **Migration mapping file (open question 3).** JSON or YAML naming the
+   template, its source versions and the target version, with one rule
+   per field to fill: a constant, `{"copy": "<path>"}` from another
+   field, or `{"format": "{a}-{b}"}`. No Python hook in v1: a hook
+   cannot be recorded reproducibly in a hop, and it would run arbitrary
+   code against archives from anywhere. Semantics are live
+   `migrate_documents`' own: a new version row pinned to the target, the
+   old version retired, the same `document_id` and identity hash; an
+   identity-changing migration is refused as a fork. Each migrated
+   document must pass the offline write validation against the target,
+   and a comparison test holds the result to the live migration.
+4. **Redaction.** Identity fields are refused (their values live in the
+   Registry's synonyms, and changing them is a fork). Non-identity fields
+   are named by path per template and cleared to null in every version;
+   a term or reference field drops its snapshot, a file field its file
+   reference (the file leaves when nothing else references it). The hop
+   records the paths, never the values, with `params_redacted: true`.
+5. **No version squash.** Keeping each document's newest version is
+   `latest-only`; renumbering history to version 1 would break the
+   pinned references the platform guards, and the stable-version contract.
+6. **Open question 4: no opt-in full-schema validation at the door for
+   now.** Offline verify plus post-restore integrity validation stays
+   the contract. Revisited with `compose`, the first producer of rows no
+   install ever held.
+
+**Slices, one commit each.**
+
+| # | Slice |
+|---|---|
+| M4-1 | Surgery core in `wip-archive`: row edits through the transform core, identity recomputation, identity-change refusal, `identity_hash_mismatch` as an error on surgery output. |
+| M4-2 | `migrate`: mapping file, live migration semantics, the live comparison test. |
+| M4-3 | `redact`: field paths per template, snapshot and file-reference clean-up, `params_redacted`. |
 
 ## 7. Boundary policy (M3 preview, recorded here because inspect quantifies it)
 
@@ -537,9 +594,9 @@ restored result checked against what the verb promised.
 | Slice | Commit | What shipped |
 |---|---|---|
 | — | `eecb525f` | `--dry-run` on every transform: `run_transform` on scratch space, verify included, only the final write skipped (§1). WIP-Toolkit 0.17.0. |
-| M3b-1 | `e28278d4` | `diff`: rows added, removed and changed per namespace and entity type, the differing fields named for a sample; referents, blobs, both chains. Exit 0 / 1 / 2. WIP-Toolkit 0.18.0. |
-| M3b-2 | `a531ce93` | `split --by namespace|island` (decision 7): each part through the core, cross-part references as referents, an `unattached` part for terminologies no island uses and documents whose template is not carried. WIP-Toolkit 0.19.0. |
-| M3b-3 | the commit recording this section | `export-csv` (decision 8): one CSV per template, latest versions, flattened, terms as value plus `__term_id`. WIP-Toolkit 0.20.0. |
+| M3b-1 | `d259d21f` | `diff`: rows added, removed and changed per namespace and entity type, the differing fields named for a sample; referents, blobs, both chains. Exit 0 / 1 / 2. WIP-Toolkit 0.18.0. |
+| M3b-2 | `534b9241` | `split --by namespace|island` (decision 7): each part through the core, cross-part references as referents, an `unattached` part for terminologies no island uses and documents whose template is not carried. WIP-Toolkit 0.19.0. |
+| M3b-3 | `883121be` | `export-csv` (decision 8): one CSV per template, latest versions, flattened, terms as value plus `__term_id`. WIP-Toolkit 0.20.0. |
 
 **Measured on the real pbs-clintrial archive:**
 
@@ -628,12 +685,10 @@ written into the namespace.
 1. ~~`derived_from` hop schema~~ — **settled 2026-10-25, frozen in §9.1.**
 2. ~~The structured provenance record's home and schema~~ —
    **settled and built 2026-10-25, §8.**
-3. Migration mapping-file format (M4): constants + copy-from-field +
-   simple templates, escape hatch as jq-style/Python hook; no bespoke
-   expression language.
-4. Whether the restore door grows an opt-in full-schema validation
-   mode for composed archives, or offline compose-validation plus
-   post-restore integrity remains the contract.
+3. ~~Migration mapping-file format~~ — **settled 2026-11-01, §6.3
+   item 3** (constants, copy, format string; no hook in v1).
+4. ~~Opt-in full-schema validation at the door~~ — **settled for now
+   2026-11-01, §6.3 item 6** (no; revisited with `compose`).
 5. ~~`--json` schema versioning policy~~ — **settled 2026-10-31, §9.2.**
 
 ### 9.2 Settled: verbs, gates, `--json`, bandwidth, `export` (2026-10-31)
