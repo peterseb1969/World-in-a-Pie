@@ -358,3 +358,50 @@ class TestNamespaceOption:
         assert both["archive"]["templates"] == 2
         only_a = json.loads(run(str(path), "--namespace", "a", "--json").output)
         assert only_a["archive"]["templates"] == 1
+
+
+class TestNamesAcrossNamespaces:
+    """A bare value two namespaces carry names nothing: inspect refuses it
+    rather than diving into whichever namespace it found first."""
+
+    @pytest.fixture
+    def two(self, tmp_path):
+        path = tmp_path / "two.zip"
+        writer = ArchiveWriter(path)
+        entries = []
+        for ns in ("aa", "bb"):
+            rows = {
+                "terminologies": [{"terminology_id": f"lov-{ns}", "value": "COLOUR",
+                                   "namespace": ns, "status": "active"}],
+                "templates": [{"template_id": f"tpl-{ns}", "version": 1, "value": "ITEM",
+                               "namespace": ns, "status": "active", "fields": []}],
+            }
+            for entity_type, entities in rows.items():
+                for entity in entities:
+                    writer.add_entity(entity_type, entity, namespace=ns)
+            counts = EntityCounts(**{k: len(v) for k, v in rows.items()})
+            entries.append(NamespaceEntry(prefix=ns, counts=counts))
+        writer.write(Manifest(namespaces=entries))
+        return path
+
+    def test_a_bare_template_value_in_two_namespaces_is_refused(self, two):
+        result = run(str(two), "ITEM")
+        assert result.exit_code == 2
+        assert "several namespaces (aa:ITEM, bb:ITEM)" in flat(result.output)
+
+    def test_ns_value_names_one_template(self, two):
+        result = run(str(two), "bb:ITEM", "--json")
+        assert result.exit_code == 0, result.output
+        [dive] = json.loads(result.output)["deep_dive"]["templates"]
+        assert dive["template_id"] == "tpl-bb"
+
+    def test_a_bare_terminology_value_in_two_namespaces_is_refused(self, two):
+        result = run(str(two), "--terminology", "COLOUR")
+        assert result.exit_code == 2
+        assert "several namespaces" in flat(result.output)
+
+    def test_ns_value_names_one_terminology(self, two):
+        result = run(str(two), "--terminology", "aa:COLOUR", "--json")
+        assert result.exit_code == 0, result.output
+        [dive] = json.loads(result.output)["deep_dive"]["terminologies"]
+        assert dive["terminology_id"] == "lov-aa"

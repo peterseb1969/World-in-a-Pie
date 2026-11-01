@@ -44,7 +44,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .archive import ArchiveReader
-from .model import ArchiveModel
+from .model import AmbiguousNameError, ArchiveModel
 
 BOUNDARIES = ("strict", "drop", "stubs", "closure")
 
@@ -115,25 +115,16 @@ class FilterPlan:
 def resolve_templates(model: ArchiveModel, names: list[str]) -> set[str]:
     """Template ids for the names a caller gave: an id, ``ns:VALUE``, or a
     bare value. A bare value carried by several namespaces is refused, never
-    picked."""
+    picked (``ArchiveModel.resolve_template``)."""
     out: set[str] = set()
     for name in names:
-        if name in model.templates:
-            out.add(name)
-            continue
-        if ":" in name:
-            ns, value = name.split(":", 1)
-            matches = [t for t in model.templates.values()
-                       if t.namespace == ns and t.value == value]
-        else:
-            matches = [t for t in model.templates.values() if t.value == name]
-        if not matches:
+        try:
+            template = model.resolve_template(name)
+        except AmbiguousNameError as e:
+            raise FilterError(str(e)) from e
+        if template is None:
             raise FilterError(f"no template {name!r} in this archive")
-        if len(matches) > 1:
-            spelled = ", ".join(sorted(f"{t.namespace}:{t.value}" for t in matches))
-            raise FilterError(f"template {name!r} is in several namespaces ({spelled}); "
-                              "name it as ns:VALUE")
-        out.add(matches[0].template_id)
+        out.add(template.template_id)
     return out
 
 

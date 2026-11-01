@@ -11,7 +11,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 from wip_archive.archive import ArchiveReader
-from wip_archive.model import ArchiveModel
+from wip_archive.model import AmbiguousNameError, ArchiveModel
 
 from .backfill import backfill_synonyms
 from .client import WIPClient, WIPClientError
@@ -202,7 +202,11 @@ def inspect(
 
             selected_templates = []
             for name in subjects:
-                template = model.resolve_template(name)
+                try:
+                    template = model.resolve_template(name)
+                except AmbiguousNameError as e:
+                    console.print(f"[red]{e}[/red]")
+                    sys.exit(2)
                 if template is None:
                     console.print(f"[red]No such template in archive:[/red] {name}")
                     sys.exit(2)
@@ -210,7 +214,11 @@ def inspect(
 
             selected_terminologies = []
             for name in terminologies:
-                node = model.resolve_terminology(name)
+                try:
+                    node = model.resolve_terminology(name)
+                except AmbiguousNameError as e:
+                    console.print(f"[red]{e}[/red]")
+                    sys.exit(2)
                 if node is None:
                     console.print(
                         f"[red]No such terminology in archive:[/red] {name}"

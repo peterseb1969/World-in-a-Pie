@@ -38,8 +38,9 @@ O(archive), which keeps the model usable on archives far larger than RAM.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, TypeVar
 
 from .archive import ENTITY_FILES, ArchiveReader
 from .definitions import DefinitionIndex, term_names
@@ -101,6 +102,21 @@ class Finding:
             "count": self.count,
             "samples": list(self.samples),
         }
+
+
+# A model node that a name can address: templates and terminologies.
+_Named = TypeVar("_Named", "TemplateNode", "TerminologyNode")
+
+
+class AmbiguousNameError(ValueError):
+    """A bare name that several namespaces' entities carry."""
+
+    def __init__(self, kind: str, name: str, candidates: list[str]) -> None:
+        self.candidates = candidates
+        super().__init__(
+            f"{kind} {name!r} is in several namespaces ({', '.join(candidates)}); "
+            "name it as ns:VALUE"
+        )
 
 
 @dataclass
@@ -717,9 +733,9 @@ class ArchiveModel:
             if tpl.value:
                 templates_by_value[(tpl.namespace, tpl.value)] = template_id
         terminologies_by_value: dict[tuple[str, str], str] = {}
-        for terminology_id, node in self.terminologies.items():
-            if node.value:
-                terminologies_by_value[(node.namespace, node.value)] = terminology_id
+        for terminology_id, term_node in self.terminologies.items():
+            if term_node.value:
+                terminologies_by_value[(term_node.namespace, term_node.value)] = terminology_id
 
         def resolve(ref: str, namespace: str, index: dict, known: dict) -> str | None:
             if ref in known:
@@ -974,21 +990,28 @@ class ArchiveModel:
         return term.label if term else terminology_id
 
     def resolve_template(self, name: str) -> TemplateNode | None:
-        """Find a template by value or id — the CLI accepts either."""
+        """Find a template by id, ``ns:VALUE`` or bare value; None when the
+        archive has none. A bare value carried by several namespaces raises
+        AmbiguousNameError: it names no single template, so none is picked."""
         if name in self.templates:
             return self.templates[name]
-        for tpl in self.templates.values():
-            if tpl.value == name:
-                return tpl
-        return None
+        return self._by_name("template", name, self.templates.values())
 
     def resolve_terminology(self, name: str) -> TerminologyNode | None:
+        """As resolve_template, for terminologies."""
         if name in self.terminologies:
             return self.terminologies[name]
-        for node in self.terminologies.values():
-            if node.value == name:
-                return node
-        return None
+        return self._by_name("terminology", name, self.terminologies.values())
+
+    def _by_name(self, kind: str, name: str, nodes: Iterable[_Named]) -> _Named | None:
+        ns, _, value = name.partition(":")
+        if value and ns in self.namespaces:
+            matches = [n for n in nodes if n.namespace == ns and n.value == value]
+        else:
+            matches = [n for n in nodes if n.value == name]
+        if len(matches) > 1:
+            raise AmbiguousNameError(kind, name, sorted(f"{n.namespace}:{n.value}" for n in matches))
+        return matches[0] if matches else None
 
     # ------------------------------------------------------------ analyses
 
@@ -1297,7 +1320,7 @@ class ArchiveModel:
         node = self.terminologies.get(terminology_id)
         if node is None:
             return []
-        rows = []
+        rows: list[dict[str, Any]] = []
         for term_id in node.term_ids:
             term = self.terms[term_id]
             rows.append(

@@ -2765,6 +2765,19 @@ fix there: `inspect` and `verify` no longer report a reference as dangling
 **Action:** none. Apps that vendor the toolkit pick up 0.11.0 on their next
 scaffold refresh.
 
+### `inspect` refuses a name two namespaces carry; WIP-Toolkit 0.12.0
+
+`wip-toolkit inspect <archive> TEMPLATE` and `--terminology NAME` used to
+dive into whichever namespace's entity they found first when a bare value
+was carried by several namespaces of a multi-namespace archive. They now
+exit 2 naming the candidates, and accept `ns:VALUE` to pick one, as
+`filter` does. Ids and values unique in the archive work as before.
+(`wip-archive` 0.14.0: `ArchiveModel.resolve_template` and
+`resolve_terminology` raise `AmbiguousNameError`.)
+
+**Action:** scripts that inspect a multi-namespace archive by a bare value
+carried by several namespaces name it as `ns:VALUE`.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving
