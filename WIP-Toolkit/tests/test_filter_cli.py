@@ -90,7 +90,8 @@ def test_json_carries_the_hop_and_verdict(archive, tmp_path):
     result = run(archive, tmp_path / "out.zip", "MONSTER", "--json")
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["schema"] == "1.0"
+    assert payload["schema"] == "1.1"
+    assert payload["dry_run"] is False
     assert payload["verdict"] == "pass"
     assert payload["hop"]["transform"] == "filter"
 
@@ -144,3 +145,31 @@ def test_a_failed_verdict_still_writes_and_exits_1(tmp_path):
     assert result.exit_code == 1
     assert "verdict: fail" in result.output
     assert _manifest(out)["derived_from"][-1]["verify"]["verdict"] == "fail"
+
+
+def test_dry_run_writes_nothing_and_reports_the_plan(archive, tmp_path):
+    out = tmp_path / "out.zip"
+    result = run(archive, out, "MONSTER", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert "Nothing was written" in result.output
+    assert "verdict: pass" in result.output
+    assert not out.exists()
+
+
+def test_dry_run_json_says_so(archive, tmp_path):
+    result = run(archive, tmp_path / "out.zip", "MONSTER", "--dry-run", "--json")
+    payload = json.loads(result.output)
+    assert payload["dry_run"] is True and payload["output"] is None
+    assert payload["hop"]["summary"]["cut_documents"] == 1
+
+
+def test_a_closure_dry_run_needs_no_yes(archive, tmp_path):
+    out = tmp_path / "out.zip"
+    result = run(archive, out, "MONSTER", "--boundary", "closure", "--dry-run")
+    assert result.exit_code == 0, result.output
+    assert not out.exists()
+
+
+def test_strict_still_refuses_in_a_dry_run(archive, tmp_path):
+    result = run(archive, tmp_path / "out.zip", "MONSTER", "--boundary", "strict", "--dry-run")
+    assert result.exit_code == 1 and "Refused" in result.output

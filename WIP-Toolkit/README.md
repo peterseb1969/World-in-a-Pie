@@ -78,10 +78,10 @@ write-path.
 wip-toolkit backup <namespace> <archive.zip> [--also NS]… [--all-namespaces] [--include-files] [--json]
 wip-toolkit inspect <archive.zip> [TEMPLATE] [--target-version N] [--json]
 wip-toolkit verify <archive.zip> [--strict] [--json]
-wip-toolkit filter <archive.zip> <out.zip> TEMPLATE… [--boundary strict|drop|stubs|closure] [--no-relationships] [--definitions-only] [--json]
-wip-toolkit prune <archive.zip> <out.zip> [--json]
-wip-toolkit latest-only <archive.zip> <out.zip> [--json]
-wip-toolkit strip-blobs <archive.zip> <out.zip> [--json]
+wip-toolkit filter <archive.zip> <out.zip> TEMPLATE… [--boundary strict|drop|stubs|closure] [--no-relationships] [--definitions-only] [--dry-run] [--json]
+wip-toolkit prune <archive.zip> <out.zip> [--dry-run] [--json]
+wip-toolkit latest-only <archive.zip> <out.zip> [--dry-run] [--json]
+wip-toolkit strip-blobs <archive.zip> <out.zip> [--dry-run] [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
 
@@ -134,6 +134,11 @@ with their blobs (a file row without bytes would restore as a file with no
 content); each file a kept document references is recorded as a referent,
 keyed by the checksum of its bytes, so a restore points the documents at an
 install's own copy of that file and reports it as unresolved elsewhere.
+
+Every transform takes `--dry-run`: the same run on scratch space, the
+verify of what would be written included, with nothing written to the
+output path. It reports the counts and the verdict the real run would
+record.
 
 `restore` runs the same check before uploading: an error refuses the upload
 unless `--force`, which also passes the server's refusal of an archive whose

@@ -2855,6 +2855,19 @@ or `strip-blobs`.
 **Action:** scripts calling `wip-toolkit export` move to `wip-toolkit
 backup` plus the transform they need before the next release.
 
+### Transforms take `--dry-run`; WIP-Toolkit 0.17.0
+
+`filter`, `prune`, `latest-only` and `strip-blobs` take `--dry-run`. It runs
+the transform itself on scratch space, the copy and the verify of the
+would-be output included, and skips only the final write: it reports the
+counts and the verdict the real run would record, and leaves the output
+path untouched (an existing one is not refused). `filter --boundary closure
+--dry-run` needs no `--yes`; `strict` still refuses. Transform `--json`
+moves to schema 1.1: `dry_run`, and `output` null in a dry run.
+`wip-archive` 0.18.0 (`run_transform(dry_run=True)`).
+
+**Action:** none.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

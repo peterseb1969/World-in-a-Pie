@@ -58,7 +58,10 @@ Decisions this document builds on, restated in full:
   the chain namespace-granularly (see §8).
 - **Dry-run is not a code path.** Every transform's dry-run is an
   `inspect` view of its plan; there is no parallel preview code to
-  drift.
+  drift. *(As built, 2026-11-01: `--dry-run` on each transform verb runs
+  `run_transform` itself on scratch space, the copy and the verify of the
+  would-be output included, and skips only the final write. It reports
+  the counts and the verdict the real run would write.)*
 
 ## 2. Architecture
 
@@ -489,7 +492,7 @@ notes in the same commit.
 | M3a-3 | `929906a3` | `prune`: templates without documents that no schema of a template with documents needs, and the terminologies only they declared. WIP-Toolkit 0.13.0. |
 | M3a-4 | `67c617e3` | `latest-only`: newest version per document, plus the versions `pinned` references name (the hard-delete guard treats `pinned` + `resolved.version` as a version reference). `include_all_versions: false`. WIP-Toolkit 0.14.0. |
 | M3a-5 | `adaea2cf` | `strip-blobs`: file rows leave with their blobs; referenced files become referents, resolved by checksum (decision 6). WIP-Toolkit 0.15.0. |
-| M3a-6 | this commit | `backup`: the server engine's archive, followed and downloaded. `export` prints its deprecation warning (§9.2). WIP-Toolkit 0.16.0. |
+| M3a-6 | `68d33295` | `backup`: the server engine's archive, followed and downloaded. `export` prints its deprecation warning (§9.2). WIP-Toolkit 0.16.0. |
 
 **Measured on the real pbs-clintrial archive** (72 MB, 240,474 document
 rows):
@@ -512,9 +515,8 @@ restored result checked against what the verb promised.
 
 **Known limits:**
 
-- No dry run: §1's "a transform's dry run is `inspect` on its plan" is
-  not built. `strict` and `closure`'s `--yes` are the only stops before
-  writing.
+- Dry run added after the M3a check-in: `--dry-run` on every transform
+  verb (§1). wip-archive 0.18.0, WIP-Toolkit 0.17.0.
 - The engine's `run_backup(latest_only=True)` still exists in-process and
   only stamps the manifest; the API refuses it and nothing calls it.
 - Each verb loads the archive model twice (plan, then verify). Not

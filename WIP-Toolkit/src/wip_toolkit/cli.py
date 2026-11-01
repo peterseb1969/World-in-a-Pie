@@ -364,6 +364,8 @@ def verify(
               help="Templates, terminologies and terms only: no document or file")
 @click.option("--yes", is_flag=True,
               help="With --boundary closure: proceed when it keeps more than half the documents")
+@click.option("--dry-run", is_flag=True,
+              help="Plan, copy and verify on scratch space; write nothing to OUTPUT_PATH")
 @click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
 def filter_cmd(
@@ -374,6 +376,7 @@ def filter_cmd(
     no_relationships: bool,
     definitions_only: bool,
     yes: bool,
+    dry_run: bool,
     force: bool,
     as_json: bool,
 ) -> None:
@@ -399,7 +402,7 @@ def filter_cmd(
 
     from .transform_view import json_payload, render_result
 
-    if Path(output_path).exists() and not force:
+    if Path(output_path).exists() and not force and not dry_run:
         console.print(f"[red]Output exists:[/red] {output_path} (pass --force to overwrite)")
         sys.exit(1)
     try:
@@ -417,7 +420,7 @@ def filter_cmd(
         console.print(f"[red]{e}[/red]")
         sys.exit(1)
 
-    if (boundary == "closure" and not yes
+    if (boundary == "closure" and not yes and not dry_run
             and len(plan.documents) * 2 > plan.archive_documents):
         console.print(
             f"--boundary closure keeps {len(plan.documents):,} of the archive's "
@@ -436,7 +439,7 @@ def filter_cmd(
         result = run_transform(
             archive_path, output_path, transform="filter",
             toolkit_version=_get_version(), params=params,
-            keep_row=plan.keep_row, summary=plan.summary(), overwrite=force,
+            keep_row=plan.keep_row, summary=plan.summary(), overwrite=force, dry_run=dry_run,
         )
     except OutputExistsError as e:
         console.print(f"[red]{e}[/red]")
@@ -461,9 +464,13 @@ def filter_cmd(
 @main.command()
 @click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
 @click.argument("output_path", type=click.Path(dir_okay=False))
+@click.option("--dry-run", is_flag=True,
+              help="Plan, copy and verify on scratch space; write nothing to OUTPUT_PATH")
 @click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
-def prune(archive_path: str, output_path: str, force: bool, as_json: bool) -> None:
+def prune(
+    archive_path: str, output_path: str, dry_run: bool, force: bool, as_json: bool
+) -> None:
     """Write a new archive without the templates nothing uses.
 
     A template is used when documents are pinned to it, or when the schema
@@ -481,7 +488,7 @@ def prune(archive_path: str, output_path: str, force: bool, as_json: bool) -> No
 
     from .transform_view import json_payload, render_result
 
-    if Path(output_path).exists() and not force:
+    if Path(output_path).exists() and not force and not dry_run:
         console.print(f"[red]Output exists:[/red] {output_path} (pass --force to overwrite)")
         sys.exit(1)
     with ArchiveReader(archive_path) as reader:
@@ -490,7 +497,7 @@ def prune(archive_path: str, output_path: str, force: bool, as_json: bool) -> No
         result = run_transform(
             archive_path, output_path, transform="prune",
             toolkit_version=_get_version(), params={},
-            keep_row=plan.keep_row, summary=plan.summary(), overwrite=force,
+            keep_row=plan.keep_row, summary=plan.summary(), overwrite=force, dry_run=dry_run,
         )
     except OutputExistsError as e:
         console.print(f"[red]{e}[/red]")
@@ -503,7 +510,7 @@ def prune(archive_path: str, output_path: str, force: bool, as_json: bool) -> No
             for label, names in (("template", plan.template_names),
                                  ("terminology", plan.terminology_names)):
                 for name in names:
-                    console.print(f"pruned {label} {name}")
+                    console.print(f"{'would prune' if dry_run else 'pruned'} {label} {name}")
         else:
             console.print("Nothing unused: every template and terminology travels.")
         render_result(result, console)
@@ -514,9 +521,13 @@ def prune(archive_path: str, output_path: str, force: bool, as_json: bool) -> No
 @main.command(name="latest-only")
 @click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
 @click.argument("output_path", type=click.Path(dir_okay=False))
+@click.option("--dry-run", is_flag=True,
+              help="Plan, copy and verify on scratch space; write nothing to OUTPUT_PATH")
 @click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
-def latest_only_cmd(archive_path: str, output_path: str, force: bool, as_json: bool) -> None:
+def latest_only_cmd(
+    archive_path: str, output_path: str, dry_run: bool, force: bool, as_json: bool
+) -> None:
     """Write a new archive with each document's newest version only.
 
     The newest version travels whatever its status, so a document retired
@@ -533,7 +544,7 @@ def latest_only_cmd(archive_path: str, output_path: str, force: bool, as_json: b
 
     from .transform_view import json_payload, render_result
 
-    if Path(output_path).exists() and not force:
+    if Path(output_path).exists() and not force and not dry_run:
         console.print(f"[red]Output exists:[/red] {output_path} (pass --force to overwrite)")
         sys.exit(1)
     with ArchiveReader(archive_path) as reader:
@@ -543,7 +554,7 @@ def latest_only_cmd(archive_path: str, output_path: str, force: bool, as_json: b
             archive_path, output_path, transform="latest-only",
             toolkit_version=_get_version(), params={},
             keep_row=plan.keep_row, summary=plan.summary(),
-            manifest_updates={"include_all_versions": False}, overwrite=force,
+            manifest_updates={"include_all_versions": False}, overwrite=force, dry_run=dry_run,
         )
     except OutputExistsError as e:
         console.print(f"[red]{e}[/red]")
@@ -553,7 +564,8 @@ def latest_only_cmd(archive_path: str, output_path: str, force: bool, as_json: b
         click.echo(_json.dumps(json_payload(result), indent=2, default=str))
     else:
         console.print(
-            f"{plan.versions_dropped:,} older version row(s) dropped; "
+            f"{plan.versions_dropped:,} older version row(s) "
+            f"{'would be dropped' if dry_run else 'dropped'}; "
             f"{plan.pinned_versions_kept:,} kept because a pinned reference names them"
         )
         render_result(result, console)
@@ -564,9 +576,13 @@ def latest_only_cmd(archive_path: str, output_path: str, force: bool, as_json: b
 @main.command(name="strip-blobs")
 @click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
 @click.argument("output_path", type=click.Path(dir_okay=False))
+@click.option("--dry-run", is_flag=True,
+              help="Plan, copy and verify on scratch space; write nothing to OUTPUT_PATH")
 @click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
 @click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
-def strip_blobs_cmd(archive_path: str, output_path: str, force: bool, as_json: bool) -> None:
+def strip_blobs_cmd(
+    archive_path: str, output_path: str, dry_run: bool, force: bool, as_json: bool
+) -> None:
     """Write a new archive without file content.
 
     File rows leave with their blobs: a file row without its bytes would
@@ -583,14 +599,14 @@ def strip_blobs_cmd(archive_path: str, output_path: str, force: bool, as_json: b
 
     from .transform_view import json_payload, render_result
 
-    if Path(output_path).exists() and not force:
+    if Path(output_path).exists() and not force and not dry_run:
         console.print(f"[red]Output exists:[/red] {output_path} (pass --force to overwrite)")
         sys.exit(1)
     try:
         result = run_transform(
             archive_path, output_path, transform="strip-blobs",
             toolkit_version=_get_version(), params={},
-            keep_row=StripBlobsPlan().keep_row, overwrite=force,
+            keep_row=StripBlobsPlan().keep_row, overwrite=force, dry_run=dry_run,
         )
     except OutputExistsError as e:
         console.print(f"[red]{e}[/red]")

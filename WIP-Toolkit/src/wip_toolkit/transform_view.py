@@ -14,7 +14,7 @@ from .inspect_view import render_findings
 
 # `--json` of every transform verb: versioned like inspect's and verify's
 # (major.minor; additions are new optional fields and bump the minor).
-TRANSFORM_JSON_SCHEMA = "1.0"
+TRANSFORM_JSON_SCHEMA = "1.1"  # 1.1: dry_run; output null in a dry run
 
 _COLOURS = {"pass": "green", "warn": "yellow", "fail": "red"}
 _TYPES = ("terminologies", "terms", "term_relations", "templates", "documents", "files",
@@ -24,7 +24,8 @@ _TYPES = ("terminologies", "terms", "term_relations", "templates", "documents", 
 def json_payload(result: TransformResult) -> dict[str, Any]:
     return {
         "schema": TRANSFORM_JSON_SCHEMA,
-        "output": str(result.output),
+        "output": str(result.output) if result.output is not None else None,
+        "dry_run": result.output is None,
         "verdict": result.verdict,
         "hop": result.hop,
         "findings": [f.to_dict() for f in result.model.findings()],
@@ -32,7 +33,8 @@ def json_payload(result: TransformResult) -> dict[str, Any]:
 
 
 def render_result(result: TransformResult, console: Console) -> None:
-    table = Table(title=f"{result.hop['transform']} → {result.output}")
+    target = result.output if result.output is not None else "dry run, nothing written"
+    table = Table(title=f"{result.hop['transform']} → {target}")
     table.add_column("Entity")
     table.add_column("Kept", justify="right")
     table.add_column("Dropped", justify="right")
@@ -52,3 +54,5 @@ def render_result(result: TransformResult, console: Console) -> None:
         render_findings(result.model, console)
     verdict = result.verdict
     console.print(f"[{_COLOURS[verdict]}]verdict: {verdict}[/{_COLOURS[verdict]}]")
+    if result.output is None:
+        console.print("Dry run: this is what would be written. Nothing was written.")

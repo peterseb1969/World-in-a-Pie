@@ -111,9 +111,10 @@ def input_chain(raw_manifest: dict[str, Any]) -> list[dict[str, Any]]:
 
 @dataclass
 class TransformResult:
-    """What a transform wrote and what verifying it found."""
+    """What a transform wrote (or, in a dry run, would write) and what
+    verifying it found."""
 
-    output: Path
+    output: Path | None  # None in a dry run: nothing was written
     hop: dict[str, Any]
     model: ArchiveModel
     kept: dict[str, int] = field(default_factory=dict)
@@ -140,6 +141,7 @@ def run_transform(
     manifest_updates: dict[str, Any] | None = None,
     params_redacted: bool = False,
     overwrite: bool = False,
+    dry_run: bool = False,
     tmp_dir: str | Path | None = None,
 ) -> TransformResult:
     """Copy the rows ``keep_row`` keeps into a new archive at ``output_path``.
@@ -151,10 +153,16 @@ def run_transform(
     the transform changes the meaning of (``latest-only`` clears
     ``include_all_versions``). Refuses an existing ``output_path`` unless
     ``overwrite``, and always refuses writing over the input itself.
+
+    ``dry_run`` runs every step on scratch space, the copy and the verify of
+    what would be written included, and skips only the final write: the
+    result reports exactly what the real run would write and its verdict,
+    and ``output_path`` is neither checked nor touched. A dry run is this
+    same path, not a preview beside it, so the two cannot drift.
     """
     input_path = Path(input_path)
     output_path = Path(output_path)
-    if output_path.exists():
+    if output_path.exists() and not dry_run:
         if output_path.resolve() == input_path.resolve():
             raise OutputExistsError(f"output is the input archive itself: {output_path}")
         if not overwrite:
@@ -195,14 +203,15 @@ def run_transform(
         }
         manifest["derived_from"] = [*chain, hop]
 
-        partial = output_path.with_name(output_path.name + ".partial")
-        writer.assemble(partial, manifest)
-        partial.replace(output_path)
+        if not dry_run:
+            partial = output_path.with_name(output_path.name + ".partial")
+            writer.assemble(partial, manifest)
+            partial.replace(output_path)
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
 
     return TransformResult(
-        output=output_path,
+        output=None if dry_run else output_path,
         hop=hop,
         model=model,
         kept=copied.kept_counts(),

@@ -372,3 +372,25 @@ def test_the_output_is_a_valid_zip_with_a_json_manifest(src, tmp_path):
         assert zf.testzip() is None
         json.loads(zf.read("manifest.json"))
         assert all(i.compress_type == zipfile.ZIP_DEFLATED for i in zf.infolist())
+
+
+class TestDryRun:
+    def test_a_dry_run_reports_exactly_what_the_real_run_writes(self, src, tmp_path):
+        out = tmp_path / "out.zip"
+        dry = _run(src, out, _drop_spells, dry_run=True)
+        assert dry.output is None
+        assert not out.exists()
+        real = _run(src, out, _drop_spells)
+        assert out.exists()
+        assert (dry.kept, dry.dropped, dry.referents) == (real.kept, real.dropped, real.referents)
+        assert (dry.blobs_kept, dry.blobs_dropped) == (real.blobs_kept, real.blobs_dropped)
+        assert dry.hop["verify"] == real.hop["verify"]
+        assert dry.hop["summary"] == real.hop["summary"]
+
+    def test_a_dry_run_ignores_an_existing_output(self, src, tmp_path):
+        out = tmp_path / "out.zip"
+        out.write_bytes(b"precious")
+        result = _run(src, out, _drop_spells, dry_run=True)
+        assert result.verdict == "pass"
+        assert out.read_bytes() == b"precious"
+        assert not (tmp_path / "out.zip.partial").exists()
