@@ -431,6 +431,13 @@ a cut must still carry something the target can resolve. It also means:
    the two apart.
 5. **The slice order below**, split into M3a and M3b with a check-in
    between them.
+6. **`strip-blobs` cuts file rows to referents** (decided 2026-11-01,
+   during M3a-5). A fresh restore of a file row whose blob is missing
+   still inserts the file: a record that lists but has no content.
+   Keeping metadata without bytes was rejected for that reason. Files
+   are content-addressed (their Registry key is the checksum, within
+   the namespace), so a cut file resolves to an install's own copy of
+   the same bytes.
 
 **Defaults (proposed by the implementer, not objected to).**
 

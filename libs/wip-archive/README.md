@@ -33,6 +33,8 @@ bind-mounted in dev stacks, baked into release images.
   the versions pinned references name.
 - `wip_archive.prune` — the `prune` plan: templates nothing uses, and the
   terminologies only they declared.
+- `wip_archive.strip_blobs` — the `strip-blobs` plan: file rows and blobs
+  leave, referenced files become referents.
 - `wip_archive.transform` — `run_transform`, the core every shaping
   transform shares: copies the rows a transform keeps verbatim, moves cut
   entities into the referent table, verifies the output and records the

@@ -2816,6 +2816,23 @@ As with `filter` and `prune`: verified before it is written, counts in the
 
 **Action:** none.
 
+### `wip-toolkit strip-blobs`: an archive without file content; WIP-Toolkit 0.15.0
+
+`wip-toolkit strip-blobs <archive> <out>` writes a new archive without file
+blobs, and without the file rows: a fresh restore of a file row whose blob
+is missing still creates the file, which then lists but has no content.
+Instead, each file a kept document references is recorded as a referent.
+Files are keyed by the checksum of their bytes within their namespace, so a
+fresh or merge restore points the documents at the target install's own
+copy of the same file, and reports the reference as unresolved where there
+is none. A file nothing references leaves no trace. Everything else travels
+unchanged.
+
+As with the other transforms: verified before it is written, recorded in
+the `derived_from` chain, `--force`, `--json`. `wip-archive` 0.17.0.
+
+**Action:** none.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

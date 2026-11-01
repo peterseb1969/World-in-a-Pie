@@ -80,6 +80,7 @@ wip-toolkit verify <archive.zip> [--strict] [--json]
 wip-toolkit filter <archive.zip> <out.zip> TEMPLATE… [--boundary strict|drop|stubs|closure] [--no-relationships] [--definitions-only] [--json]
 wip-toolkit prune <archive.zip> <out.zip> [--json]
 wip-toolkit latest-only <archive.zip> <out.zip> [--json]
+wip-toolkit strip-blobs <archive.zip> <out.zip> [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
 
@@ -120,6 +121,12 @@ whatever its status. A version a `pinned` reference names travels too (the
 platform refuses to hard-delete such a version), every template version
 stays, and a file only dropped versions referenced leaves with them. The
 output records `include_all_versions: false`.
+
+`strip-blobs` writes a new archive without file content. File rows leave
+with their blobs (a file row without bytes would restore as a file with no
+content); each file a kept document references is recorded as a referent,
+keyed by the checksum of its bytes, so a restore points the documents at an
+install's own copy of that file and reports it as unresolved elsewhere.
 
 `restore` runs the same check before uploading: an error refuses the upload
 unless `--force`, which also passes the server's refusal of an archive whose

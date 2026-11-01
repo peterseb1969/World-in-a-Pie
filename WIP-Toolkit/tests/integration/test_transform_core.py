@@ -314,3 +314,74 @@ def test_latest_only_on_a_real_backup_keeps_pinned_versions_and_restores(
         "document-store", f"/documents/{restored_smaug['document_id']}/versions",
         params={"namespace": LATEST_COPY})["versions"]
     assert sorted(v["version"] for v in copy_versions) == [1, 3]
+
+
+STRIP_NS = "toolkit-strip-it"
+STRIP_COPY = "toolkit-strip-it-copy"
+
+
+def test_strip_blobs_on_a_real_backup_cuts_files_and_the_door_finds_them(
+    stack, wip_client, tmp_path
+):
+    """A document holds a file. strip-blobs cuts the file row to a referent
+    keyed by its checksum; a real fresh restore on the install that still
+    holds the file points the restored document at that very file.
+
+    The harness has no object store, so the file is registered through the
+    Registry and its metadata row inserted directly: the same Registry key
+    (checksum, namespace) and row an upload creates.
+    """
+    from click.testing import CliRunner
+    from wip_toolkit.cli import main
+
+    from document_store.models.file import File, FileStatus
+
+    wip_client.put("registry", f"/namespaces/{STRIP_NS}",
+                   json={"description": "strip-blobs", "isolation_mode": "open"})
+    checksum = "c0ffee" * 10 + "abcd"
+    registered = wip_client.post("registry", "/entries/register", json=[{
+        "namespace": STRIP_NS, "entity_type": "files",
+        "composite_key": {"checksum": checksum}, "metadata": {"type": "file"},
+    }])["results"][0]
+    file_id = registered["registry_id"]
+
+    async def _insert_file() -> None:
+        await File(namespace=STRIP_NS, file_id=file_id, filename="scroll.txt",
+                   content_type="text/plain", size_bytes=5, checksum=checksum,
+                   storage_key=file_id, status=FileStatus.ACTIVE).insert()
+
+    stack.portal.call(_insert_file)
+    scroll = _created(wip_client.post("template-store", "/templates", json=[{
+        "value": "SCROLL", "label": "Scroll", "namespace": STRIP_NS,
+        "identity_fields": ["name"],
+        "fields": [
+            {"name": "name", "label": "Name", "type": "string", "mandatory": True},
+            {"name": "scan", "label": "Scan", "type": "file",
+             "file_config": {"allowed_types": ["text/*"], "max_size_mb": 1}},
+        ],
+    }]))
+    _created(wip_client.post("document-store", "/documents", json=[
+        {"template_id": scroll["id"], "namespace": STRIP_NS,
+         "data": {"name": "Fire spell", "scan": file_id}}]))
+
+    backup = tmp_path / "backup.zip"
+    stack.portal.call(lambda: _backup_engine().run_backup(STRIP_NS, backup))
+    out = tmp_path / "stripped.zip"
+    result = CliRunner().invoke(main, ["strip-blobs", str(backup), str(out), "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["verdict"] == "pass", payload["findings"]
+    with ArchiveReader(out) as reader:
+        assert list(reader.read_entities("files", namespace=STRIP_NS)) == []
+        [referent] = list(reader.read_referents())
+    assert referent["entry_id"] == file_id
+    assert referent["primary_composite_key"] == {"checksum": checksum}
+
+    stack.portal.call(lambda: _restore_engine().run_remap(Path(out), STRIP_COPY))
+    [doc] = wip_client.get("document-store", "/documents",
+                           params={"namespace": STRIP_COPY, "page_size": 10})["items"]
+    assert [f["file_id"] for f in doc["file_references"]] == [file_id]
+    assert doc["data"]["scan"] == file_id
+    files = wip_client.get("document-store", "/files",
+                           params={"namespace": STRIP_COPY})["items"]
+    assert files == []  # no content-less file record was created
