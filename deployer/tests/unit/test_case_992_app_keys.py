@@ -35,7 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 BASE = "https://wip.example"
 ADMIN = "admin-key"
 COOK = "cook-key"
-ALL = {"registry", "def-store", "document-store", "reporting-sync"}
+ALL = {"registry", "def-store", "template-store", "document-store", "reporting-sync"}
 FOREIGN_ENTRY = "0190aaaa-0000-7000-0000-000000000001"
 KEYS = [
     AppKey(app="cook", key=COOK, owned=["cooking"],
@@ -62,10 +62,14 @@ def _enforcing(request: httpx.Request) -> httpx.Response:
         return _json(401)
     if path.startswith("/api/registry/entries/"):
         return _json(404, {"detail": f"Entry not found: {path.rsplit('/', 1)[1]}"})
-    if path == "/api/document-store/documents":
+    if path == "/api/registry/my/namespaces":
+        return _json(200, [{"prefix": "wip"}, {"prefix": "cooking"}])
+    if path in ("/api/document-store/documents", "/api/template-store/templates",
+                "/api/reporting-sync/tables"):
         return _json(200, {"items": []}) if ns == "cooking" else _json(404)
     if path == "/api/def-store/terminologies":
-        return _json(200, {"items": []}) if request.method == "GET" and ns == "wip" else _json(403)
+        readable = request.method == "GET" and ns in ("wip", "cooking")
+        return _json(200, {"items": []}) if readable else _json(403)
     if path == "/api/reporting-sync/namespace/cooking/views":
         return _json(400)
     if path.startswith("/api/reporting-sync/namespace/"):
@@ -95,6 +99,43 @@ def test_reading_another_apps_namespace_fails():
     [result] = _run(handler)
     assert not result.passed
     assert "GET documents in 'kb': app key got 200 — not a refusal" in result.fix_hint
+
+
+def test_a_boundary_split_between_services_fails():
+    """One service refusing while another lets the same key read the same
+    namespace: the split a plaintext shared by two keys produces when the
+    services resolve it to different keys."""
+    def handler(request):
+        if request.url.path == "/api/template-store/templates":
+            return _json(200, {"items": []})
+        return _enforcing(request)
+
+    [result] = _run(handler)
+    assert not result.passed
+    assert "GET templates in 'kb': app key got 200 — not a refusal" in result.fix_hint
+    assert "GET documents in 'kb'" not in result.fix_hint
+
+
+def test_the_registry_listing_a_foreign_namespace_fails():
+    def handler(request):
+        if request.url.path == "/api/registry/my/namespaces":
+            return _json(200, [{"prefix": p} for p in ("wip", "cooking", "kb")])
+        return _enforcing(request)
+
+    [result] = _run(handler)
+    assert not result.passed
+    assert "GET /my/namespaces: lists 'kb'" in result.fix_hint
+
+
+def test_the_registry_not_listing_its_own_namespace_fails():
+    def handler(request):
+        if request.url.path == "/api/registry/my/namespaces":
+            return _json(200, [{"prefix": "wip"}])
+        return _enforcing(request)
+
+    [result] = _run(handler)
+    assert not result.passed
+    assert "does not list its own 'cooking'" in result.fix_hint
 
 
 def test_an_unknown_app_key_is_a_failure_not_a_refusal():

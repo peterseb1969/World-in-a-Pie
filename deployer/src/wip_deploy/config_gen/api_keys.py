@@ -118,6 +118,39 @@ def api_key_secret_names(deployment: Deployment, apps: list[App] | None = None) 
     return [k.secret_name for k in effective_api_keys(deployment, apps)]
 
 
+MASTER_KEY_SECRET = "api-key"
+"""The install's master key, which every service also loads as a key."""
+
+
+def shared_api_key_values(
+    deployment: Deployment, apps: list[App], secrets: ResolvedSecrets
+) -> list[list[str]]:
+    """Groups of key secrets that hold the same value.
+
+    A plaintext must belong to exactly one key. Services match a presented
+    key against their keys in order and cache the first match, so a value
+    two keys share authenticates as whichever one a service happened to
+    match — and services that started at different times disagree. The
+    master key counts: an app key equal to it would sometimes be the master
+    key.
+    """
+    names = dict.fromkeys([MASTER_KEY_SECRET, *api_key_secret_names(deployment, apps)])
+    by_value: dict[str, list[str]] = {}
+    for name in names:
+        value = secrets.values.get(name)
+        if value:
+            by_value.setdefault(value, []).append(name)
+    return sorted(group for group in by_value.values() if len(group) > 1)
+
+
+def app_key_secrets(deployment: Deployment, apps: list[App]) -> dict[str, str]:
+    """Secret name -> app, for the install's derived app keys."""
+    return {
+        k.secret_name: k.owner.removeprefix("app:")
+        for k in app_api_keys(deployment, apps)
+    }
+
+
 def declares_api_keys_file(owner: Component | App) -> bool:
     """Does this component/app manifest consume the rendered key file?
 

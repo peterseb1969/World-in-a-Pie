@@ -44,6 +44,17 @@ ABSENT_ENTRY_ID = "0190c999-0000-7000-0000-0000000ff999"
 
 _REFUSED = (403, 404)
 
+# A namespace read on each data service. Every service resolves the key on
+# its own, so one that refuses while another lets the same key through is a
+# split boundary — as broken as one that lets it through everywhere — and is
+# only seen by asking each of them.
+NAMESPACE_READS = (
+    ("def-store", "terminologies", "/api/def-store/terminologies"),
+    ("template-store", "templates", "/api/template-store/templates"),
+    ("document-store", "documents", "/api/document-store/documents"),
+    ("reporting-sync", "reporting tables", "/api/reporting-sync/tables"),
+)
+
 NOT_PROBED = (
     "not probed: MCP calls and NATS consumers (no HTTP surface here), "
     "deleting or archiving its own namespace (a regression would destroy data)"
@@ -197,12 +208,10 @@ def _check_one(
         if foreign is None:
             skipped.append("reads across namespaces (no other namespace on this install)")
         else:
-            if "document-store" in active:
-                probed += 1
-                refused(
-                    f"GET documents in '{foreign}'",
-                    send("GET", f"/api/document-store/documents?namespace={foreign}"),
-                )
+            for service, what, path in NAMESPACE_READS:
+                if service in active:
+                    probed += 1
+                    refused(f"GET {what} in '{foreign}'", send("GET", f"{path}?namespace={foreign}"))
             if "registry" in active:
                 entry = _first_entry(base_url, foreign, admin, client)
                 if entry is None:
@@ -233,12 +242,10 @@ def _check_one(
         if own is None:
             skipped.append("reads of its own namespace (none exists yet: the app has not bootstrapped)")
         else:
-            if "document-store" in active:
-                probed += 1
-                passes(
-                    f"GET documents in its own '{own}'",
-                    send("GET", f"/api/document-store/documents?namespace={own}"),
-                )
+            for service, what, path in NAMESPACE_READS:
+                if service in active:
+                    probed += 1
+                    passes(f"GET {what} in its own '{own}'", send("GET", f"{path}?namespace={own}"))
             if "reporting-sync" in active:
                 probed += 1
                 passes(
@@ -247,6 +254,22 @@ def _check_one(
                          {"name": RESERVED_VIEW_NAME, "sql": "SELECT 1"}),
                     expected=400,
                 )
+
+        # The Registry's own view of the key: what /my/namespaces lists is
+        # what the services that ask the Registry would allow.
+        if "registry" in active:
+            probed += 1
+            resp = send("GET", "/api/registry/my/namespaces")
+            if resp.status_code != 200 or not _is_json(resp):
+                problems.append(f"GET /my/namespaces: app key got {resp.status_code}, expected 200")
+            else:
+                body = resp.json()
+                rows = body.get("items", []) if isinstance(body, dict) else body
+                listed = {n.get("prefix") for n in rows if isinstance(n, dict)}
+                if foreign is not None and foreign in listed:
+                    problems.append(f"GET /my/namespaces: lists '{foreign}', which the key may not read")
+                if own is not None and own not in listed:
+                    problems.append(f"GET /my/namespaces: does not list its own '{own}'")
 
         # Namespaces: none outside its reservations, and its own only as reserved.
         if "registry" in active:
