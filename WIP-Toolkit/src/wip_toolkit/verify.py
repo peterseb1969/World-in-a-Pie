@@ -17,28 +17,17 @@ from __future__ import annotations
 from typing import Any
 
 from wip_archive.archive import ArchiveReader
-from wip_archive.model import SCHEMA_VERSION, ArchiveModel, Finding
+from wip_archive.model import SCHEMA_VERSION, ArchiveModel
+
+# One definition of the verdict for verify, restore's gate and every
+# transform's derived_from hop.
+from wip_archive.transform import finding_counts as counts
+from wip_archive.transform import verdict
 
 
 def verify_archive(path: str, namespaces: list[str] | None = None) -> ArchiveModel:
     with ArchiveReader(path) as reader:
         return ArchiveModel.load(reader, namespaces=namespaces, check_documents=True)
-
-
-def verdict(findings: list[Finding]) -> str:
-    severities = {f.severity for f in findings}
-    if "error" in severities:
-        return "fail"
-    if "warning" in severities:
-        return "warn"
-    return "pass"
-
-
-def counts(findings: list[Finding]) -> dict[str, int]:
-    out = {"error": 0, "warning": 0, "info": 0}
-    for f in findings:
-        out[f.severity] = out.get(f.severity, 0) + 1
-    return out
 
 
 def json_payload(model: ArchiveModel) -> dict[str, Any]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json as _json
 import sys
 from importlib.metadata import version
+from pathlib import Path
 
 import click
 from rich.console import Console
@@ -326,6 +327,117 @@ def verify(
         colour = {"pass": "green", "warn": "yellow", "fail": "red"}[outcome]
         console.print(f"[{colour}]verdict: {outcome}[/{colour}]")
     if outcome == "fail" or (strict and outcome == "warn"):
+        sys.exit(1)
+
+
+@main.command(name="filter")
+@click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
+@click.argument("output_path", type=click.Path(dir_okay=False))
+@click.argument("templates", nargs=-1)
+@click.option(
+    "--boundary",
+    type=click.Choice(["strict", "drop", "stubs", "closure"]),
+    default="drop",
+    show_default=True,
+    help="What happens to a reference from a kept document to one the selection leaves out",
+)
+@click.option("--no-relationships", is_flag=True,
+              help="Leave behind the relationship documents of the selected documents")
+@click.option("--definitions-only", is_flag=True,
+              help="Templates, terminologies and terms only: no document or file")
+@click.option("--yes", is_flag=True,
+              help="With --boundary closure: proceed when it keeps more than half the documents")
+@click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output")
+def filter_cmd(
+    archive_path: str,
+    output_path: str,
+    templates: tuple[str, ...],
+    boundary: str,
+    no_relationships: bool,
+    definitions_only: bool,
+    yes: bool,
+    force: bool,
+    as_json: bool,
+) -> None:
+    """Write a new archive holding only some templates' documents.
+
+    TEMPLATES are template values, ids or ns:VALUE. Every version of their
+    documents travels and, unless --no-relationships, every relationship
+    document whose source is one of them. Definitions always close: the
+    templates the kept documents pin, everything those declare, and their
+    terminologies, whole.
+
+    A reference from a kept document to a document left out is never
+    rewritten. Under --boundary drop the target is recorded as a referent,
+    which a restore resolves on the target install; strict refuses instead;
+    stubs keeps the targets one hop out; closure keeps following them.
+
+    The output is verified before it is written, and the verdict and the
+    parameters are recorded in its derived_from chain. Exits 1 when the
+    output's verdict is fail (it is still written) or nothing was written.
+    """
+    from wip_archive.filter import BoundaryViolation, FilterError, plan_filter
+    from wip_archive.transform import OutputExistsError, run_transform
+
+    from .transform_view import json_payload, render_result
+
+    if Path(output_path).exists() and not force:
+        console.print(f"[red]Output exists:[/red] {output_path} (pass --force to overwrite)")
+        sys.exit(1)
+    try:
+        with ArchiveReader(archive_path) as reader:
+            model = ArchiveModel.load(reader)
+            plan = plan_filter(
+                reader, model, list(templates), boundary=boundary,
+                relationships=not no_relationships, definitions_only=definitions_only,
+            )
+    except BoundaryViolation as refused:
+        console.print(f"[red]Refused (--boundary strict):[/red] {refused}")
+        console.print("Nothing written. --boundary drop records those documents as referents.")
+        sys.exit(1)
+    except FilterError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    if (boundary == "closure" and not yes
+            and len(plan.documents) * 2 > plan.archive_documents):
+        console.print(
+            f"--boundary closure keeps {len(plan.documents):,} of the archive's "
+            f"{plan.archive_documents:,} documents ({plan.added_documents:,} added by "
+            "following references). Nothing written; pass --yes to proceed."
+        )
+        sys.exit(1)
+
+    params = {
+        "templates": list(templates),
+        "boundary": boundary,
+        "relationships": not no_relationships,
+        "definitions_only": definitions_only,
+    }
+    try:
+        result = run_transform(
+            archive_path, output_path, transform="filter",
+            toolkit_version=_get_version(), params=params,
+            keep_row=plan.keep_row, summary=plan.summary(), overwrite=force,
+        )
+    except OutputExistsError as e:
+        console.print(f"[red]{e}[/red]")
+        sys.exit(1)
+
+    if as_json:
+        click.echo(_json.dumps(json_payload(result), indent=2, default=str))
+    else:
+        if not definitions_only:
+            console.print(
+                f"{plan.selected_documents:,} document(s) selected, "
+                f"{plan.relationship_documents:,} relationship document(s) with them, "
+                f"{plan.added_documents:,} added by --boundary {boundary}; "
+                f"{plan.cut_references:,} reference(s) cross to "
+                f"{len(plan.cut_targets):,} document(s) left out"
+            )
+        render_result(result, console)
+    if result.verdict == "fail":
         sys.exit(1)
 
 

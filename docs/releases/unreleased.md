@@ -2731,6 +2731,40 @@ assessment (`wip_archive.migratability`).
 **Action:** none. Apps that vendor the toolkit pick up 0.9.0 on their next
 scaffold refresh.
 
+### `wip-toolkit filter`: an archive cut down to some templates; WIP-Toolkit 0.11.0
+
+`wip-toolkit filter <archive> <out> TEMPLATE…` writes a new archive holding
+every version of those templates' documents and, unless `--no-relationships`,
+every relationship document whose source is one of them. Definitions always
+travel complete: the templates the kept documents pin, everything those
+declare (parents, reference targets, edge-type endpoints) and their
+terminologies, whole. `--definitions-only` keeps definitions and no
+document.
+
+Kept rows are copied unchanged. A reference from a kept document to a
+document left out is never rewritten: `--boundary drop` (the default)
+records the left-out document as a referent (its Registry row, keys and
+synonyms), which a fresh or merge restore resolves on the target install
+like anything else an archive references but does not carry. `strict`
+refuses instead and writes nothing; `stubs` keeps the targets one hop out;
+`closure` follows references until none cross, and asks for `--yes` when
+that keeps more than half the archive's documents.
+
+The output is verified before it is written. The verdict, the parameters,
+the SHA-256 of the input and the kept/dropped counts are recorded in the
+output's `derived_from` chain; a `fail` verdict still writes the archive
+(the restore door then refuses it unless forced) and exits 1. An existing
+output is refused without `--force`. `--json` carries the hop (schema 1.0).
+
+`wip-archive` 0.13.0 carries the plan (`wip_archive.filter`) and the core
+every shaping transform shares (`wip_archive.transform`, 0.12.0). A
+transform's output lists only the namespaces something of travelled. One
+fix there: `inspect` and `verify` no longer report a reference as dangling
+(an error) when the archive records its target as a referent.
+
+**Action:** none. Apps that vendor the toolkit pick up 0.11.0 on their next
+scaffold refresh.
+
 ## What happens on first start after the upgrade
 
 def-store converts stored terms to the unified names shape before serving

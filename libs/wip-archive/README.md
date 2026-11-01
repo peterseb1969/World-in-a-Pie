@@ -27,6 +27,8 @@ bind-mounted in dev stacks, baked into release images.
   `wip_archive.migratability` — the offline checks: full definitions with
   inheritance resolved, the identity hash, the document validator, the
   per-document check `verify` runs, and migration assessment.
+- `wip_archive.filter` — the `filter` plan: selection by template, the
+  boundary policies, definitions closure.
 - `wip_archive.transform` — `run_transform`, the core every shaping
   transform shares: copies the rows a transform keeps verbatim, moves cut
   entities into the referent table, verifies the output and records the

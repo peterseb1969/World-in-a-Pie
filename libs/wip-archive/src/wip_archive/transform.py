@@ -328,9 +328,25 @@ def _output_manifest(raw: dict[str, Any], copied: _Copied) -> dict[str, Any]:
     recomputed for the output. Every other key, known or not, is kept."""
     manifest = copy.deepcopy(raw)
     manifest.pop("derived_from", None)
+    entries = []
     for entry in manifest.get("namespaces") or []:
         ns_counts = copied.ns_counts(entry.get("prefix", ""))
+        if not any(ns_counts.values()):
+            # Nothing of this namespace travels: listing it would make a
+            # restore provision an empty namespace nobody selected.
+            continue
         entry["counts"] = {t: ns_counts.get(t, 0) for t in ENTITY_FILES}
+        entries.append(entry)
+    if "namespaces" in manifest and len(entries) != len(manifest["namespaces"]):
+        manifest["namespaces"] = entries
+        # The single-namespace convenience mirrors the sole entry, if any.
+        # Untouched when every namespace travels: the input's own fields stand.
+        if len(entries) == 1:
+            manifest["namespace"] = entries[0].get("prefix", "")
+            manifest["namespace_config"] = entries[0].get("namespace_config")
+        else:
+            manifest["namespace"] = ""
+            manifest["namespace_config"] = None
     kept = copied.kept_counts()
     manifest["counts"] = {t: kept.get(t, 0) for t in ENTITY_FILES}
     manifest["referents"] = copied.referent_rows

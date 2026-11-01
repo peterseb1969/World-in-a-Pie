@@ -77,6 +77,7 @@ write-path.
 wip-toolkit export <namespace> <archive.zip> [--include-files] …
 wip-toolkit inspect <archive.zip> [TEMPLATE] [--target-version N] [--json]
 wip-toolkit verify <archive.zip> [--strict] [--json]
+wip-toolkit filter <archive.zip> <out.zip> TEMPLATE… [--boundary strict|drop|stubs|closure] [--no-relationships] [--definitions-only] [--json]
 wip-toolkit restore <archive.zip> [--mode restore|merge|fresh] [--dry-run] [--force] …
 ```
 
@@ -92,6 +93,18 @@ active documents to version N, as a migrate dry run would on the instance:
 each is validated as a write against N (declared renames applied, terms
 re-resolved, so a term deprecated since fails it), grouped by the version it
 is on, with the failures counted. Reference and file fields are not checked.
+
+`filter` writes a new archive with every version of the named templates'
+documents and, unless `--no-relationships`, the relationship documents
+whose source is one of them. Definitions always travel complete (pinned
+templates, what they declare, their terminologies whole);
+`--definitions-only` keeps no document. Kept rows are copied unchanged; a
+reference to a document left out is never rewritten. Under `--boundary
+drop` (default) that document is recorded as a referent, which a restore
+resolves on the target install; `strict` refuses, `stubs` keeps the targets
+one hop out, `closure` follows until nothing crosses (`--yes` when that
+keeps more than half the documents). The output is verified first, and the
+verdict and parameters go into its `derived_from` chain; exit 1 on `fail`.
 
 `restore` runs the same check before uploading: an error refuses the upload
 unless `--force`, which also passes the server's refusal of an archive whose
@@ -117,6 +130,7 @@ identity rows (fetched through the Registry's admin-gated
 | `wip_toolkit/export/` | the CLI export pipeline (collector, closure, exporter) |
 | `wip_toolkit/convert_archive.py` | v2.0 → v3 converter (lib + CLI) |
 | `wip_toolkit/verify.py` | the offline verify behind `verify` and `restore`'s pre-upload gate |
+| `wip_toolkit/transform_view.py` | what every transform verb prints, and its `--json` |
 | `wip_toolkit/seed.py`, `status.py`, `backfill.py` | operator utilities |
 | `libs/wip-archive` (separate lib) | `ArchiveReader`/`ArchiveWriter`, `Manifest` models, `IDRemapper` |
 

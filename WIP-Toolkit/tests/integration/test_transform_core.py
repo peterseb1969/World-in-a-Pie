@@ -11,6 +11,7 @@ keys, not by its old id.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -29,18 +30,18 @@ def _created(result: dict, index: int = 0) -> dict:
     return item
 
 
-def _seed(client) -> dict:
+def _seed(client, ns: str = NS) -> dict:
     ids: dict = {}
-    client.put("registry", f"/namespaces/{NS}",
+    client.put("registry", f"/namespaces/{ns}",
                json={"description": "Transform core", "isolation_mode": "open"})
     spell = _created(client.post("template-store", "/templates", json=[{
-        "value": "SPELL", "label": "Spell", "namespace": NS,
+        "value": "SPELL", "label": "Spell", "namespace": ns,
         "identity_fields": ["name"],
         "fields": [{"name": "name", "label": "Name", "type": "string", "mandatory": True}],
     }]))
     ids["spell_template"] = spell["id"]
     monster = _created(client.post("template-store", "/templates", json=[{
-        "value": "MONSTER", "label": "Monster", "namespace": NS,
+        "value": "MONSTER", "label": "Monster", "namespace": ns,
         "identity_fields": ["name"],
         "fields": [
             {"name": "name", "label": "Name", "type": "string", "mandatory": True},
@@ -50,7 +51,7 @@ def _seed(client) -> dict:
     }]))
     ids["monster_template"] = monster["id"]
     edge = _created(client.post("template-store", "/templates", json=[{
-        "value": "MONSTER_KNOWS", "label": "Monster knows", "namespace": NS,
+        "value": "MONSTER_KNOWS", "label": "Monster knows", "namespace": ns,
         "usage": "relationship", "versioned": False,
         "identity_fields": ["source_ref", "target_ref"],
         "source_templates": ["MONSTER"], "target_templates": ["SPELL"],
@@ -64,16 +65,16 @@ def _seed(client) -> dict:
     ids["edge_template"] = edge["id"]
 
     fireball = _created(client.post("document-store", "/documents", json=[
-        {"template_id": ids["spell_template"], "namespace": NS, "data": {"name": "Fireball"}},
+        {"template_id": ids["spell_template"], "namespace": ns, "data": {"name": "Fireball"}},
     ]))
     ids["doc_fireball"] = fireball["document_id"]
     smaug = _created(client.post("document-store", "/documents", json=[
-        {"template_id": ids["monster_template"], "namespace": NS,
+        {"template_id": ids["monster_template"], "namespace": ns,
          "data": {"name": "Smaug", "favourite": ids["doc_fireball"]}},
     ]))
     ids["doc_smaug"] = smaug["document_id"]
     knows = _created(client.post("document-store", "/documents", json=[
-        {"template_id": ids["edge_template"], "namespace": NS,
+        {"template_id": ids["edge_template"], "namespace": ns,
          "data": {"source_ref": ids["doc_smaug"], "target_ref": ids["doc_fireball"]}},
     ]))
     ids["doc_knows"] = knows["document_id"]
@@ -149,3 +150,46 @@ def test_a_cut_reference_resolves_after_a_real_fresh_restore(stack, wip_client, 
     assert target["resolved"]["document_id"] == ids["doc_fireball"]
     source = next(r for r in knows["references"] if r["field_path"] == "source_ref")
     assert source["resolved"]["document_id"] == smaug["document_id"]
+
+
+FILTER_NS = "toolkit-filter-it"
+FILTER_COPY = "toolkit-filter-it-copy"
+
+
+def test_filter_cli_on_a_real_backup_brings_relationships_and_restores(
+    stack, wip_client, tmp_path
+):
+    """`wip-toolkit filter MONSTER` on an engine backup: the relationship
+    comes with its source, both spell references cross the cut as referents,
+    and a real fresh restore resolves them to the original spell."""
+    from click.testing import CliRunner
+    from wip_toolkit.cli import main
+
+    ids = _seed(wip_client, FILTER_NS)
+    backup = tmp_path / "backup.zip"
+    stack.portal.call(lambda: _backup_engine().run_backup(FILTER_NS, backup))
+
+    cut = tmp_path / "monsters.zip"
+    result = CliRunner().invoke(main, ["filter", str(backup), str(cut), "MONSTER", "--json"])
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["verdict"] == "pass", payload["findings"]
+    summary = payload["hop"]["summary"]
+    assert summary["selected_documents"] == 1
+    assert summary["relationship_documents"] == 1
+    assert summary["cut_documents"] == 1
+    with ArchiveReader(cut) as reader:
+        assert {d["document_id"] for d in reader.read_entities("documents", namespace=FILTER_NS)} \
+            == {ids["doc_smaug"], ids["doc_knows"]}
+        assert [r["entry_id"] for r in reader.read_referents()] == [ids["doc_fireball"]]
+
+    stack.portal.call(lambda: _restore_engine().run_remap(Path(cut), FILTER_COPY))
+    docs = wip_client.get("document-store", "/documents",
+                          params={"namespace": FILTER_COPY, "page_size": 100})["items"]
+    assert len(docs) == 2, docs
+    targets = {
+        r["field_path"]: r["resolved"]["document_id"]
+        for doc in docs for r in doc["references"]
+        if r["field_path"] in ("favourite", "target_ref")
+    }
+    assert targets == {"favourite": ids["doc_fireball"], "target_ref": ids["doc_fireball"]}
