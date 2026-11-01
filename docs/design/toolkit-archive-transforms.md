@@ -243,8 +243,8 @@ stability is a contract from day one.
 
 | | Contents | Needs |
 |---|---|---|
-| **M1** | `ArchiveModel` (index, edges, closures, islands, stats, findings) + grown `inspect` (summary, deep dive, `--json`) | nothing new beyond wip-archive |
-| **M2** | offline validate/recompute library; `verify` verb (findings → exit code); `inspect --target-version` migratability | identity-hash + term-resolution logic shared with wip-auth's canonical implementations |
+| **M1** (done) | `ArchiveModel` (index, edges, closures, islands, stats, findings) + grown `inspect` (summary, deep dive, `--json`) | nothing new beyond wip-archive |
+| **M2** (done, §6.2) | offline validate/recompute library; `verify` verb (findings → exit code); `inspect --target-version` migratability | identity-hash + term-resolution logic shared with wip-auth's canonical implementations |
 | **M3** | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
 | **M4+** | surgery (fill-value migration via mapping file, version squash, redaction design), `compose` on-ramp, `export` deprecation | M2 library; separate design iterations |
 
@@ -318,11 +318,49 @@ terminology, the first-created bearer on ambiguity.
 | 3 | `verify` pass in `ArchiveModel`: a third streaming pass keeping counters and capped samples only; new finding classes (`document_invalid`, `identity_hash_mismatch`, `unverifiable_dependency`, …); `--json` schema 1.1. |
 | 4 | Toolkit: the `verify` verb and `restore`'s pre-upload gate with `--force`. |
 | 5 | Migratability: `inspect --target-version`. |
-| 6 | wip-archive 0.7.0, WIP-Toolkit 0.8.0, golden re-capture, release notes. |
+| 6 | Wrap-up: milestone status here (§6.2), CASE-827 comment. Versions, goldens and release notes shipped with each slice. |
 
 Every slice carries hand-built-archive tests, at least one assertion
 against a real engine backup, and, from slice 2 on, comparison tests
 against the live validator.
+
+### 6.2 M2 delivered (2026-11-01)
+
+| Slice | Commit | What shipped |
+|---|---|---|
+| 0 | `192031d2` | CASE-1008: the restore door refuses an archive whose newest hop says `verdict: "fail"`, in all three modes, unless the request accepts it (`allow_failed_verify`; the toolkit's `--force`). |
+| 1 | `03330c84` | `wip_archive.definitions` (full rows, template-store's inheritance, referents) and `wip_archive.identity` (a verbatim copy guarded by a source-and-output parity test in document-store). wip-archive 0.7.0. |
+| 2 | `3182d6f1` | `wip_archive.validation`: the offline validator, held to the live one by an integration comparison suite. wip-archive 0.8.0. CASE-1009 later changed both sides together (`aa44e0de`, 0.10.0). |
+| 3 | `4fd631e9` | `wip_archive.document_check` behind `ArchiveModel.load(check_documents=True)`: `template_version_missing` and `missing_term_reference` (errors), `document_invalid`, `identity_hash_mismatch` and `unverifiable_dependency` (warnings). `--json` schema 1.1. wip-archive 0.9.0. |
+| 4 | `fb4673dd` | `wip-toolkit verify` and `restore`'s pre-upload gate; `--force` passes both gates. WIP-Toolkit 0.8.0. |
+| 5 | `ca86a65e` | `wip_archive.migratability` and `inspect --target-version`, held to the live migrate dry run by an integration comparison test. `--json` schema 1.2. wip-archive 0.11.0, WIP-Toolkit 0.9.0. |
+
+**Measured on a real archive** (pbs-clintrial, 72 MB, 240,474 document rows,
+taken 2026-10-13): `inspect` 3.3 s, `verify` 6.0 s, both about 232 MB peak
+memory. The document check adds about 2.7 s and no memory. Verdict `pass`:
+no invalid document, every identity hash recomputed offline equals the stored
+one, nothing unverifiable. A synthetic 270,834-row archive measured the same
+rate (about 38,000 rows/s for the check).
+
+**What the M2 work changed or found elsewhere:**
+
+- M1 read term aliases from an `aliases` key engine archives do not carry;
+  terms are read from `names` now.
+- Live inheritance resolution dropped template properties and suppressed
+  resolution errors (CASE-1010, fixed `b030cb80`).
+- Five live validation gaps and quirks (CASE-1009, fixed in both validators).
+- Live migration re-resolves terms, so a term deprecated since a document was
+  written fails its migration; `verify` deliberately does not re-resolve.
+
+**Known limits:**
+
+- Reference and file checks are not reproduced offline; `verify` checks
+  stored term references for existence and leaves document references to M1's
+  `dangling_document_reference`. Migratability reports
+  `references_checked: false`.
+- For an ambiguous name on a non-identity field, the recorded bearer can
+  differ from live when two bearers were created in the same millisecond
+  (the archive has no insertion order). Validity is unaffected; both warn.
 
 ## 7. Boundary policy (M3 preview, recorded here because inspect quantifies it)
 
