@@ -8,6 +8,8 @@ from typing import cast
 
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pymongo import UpdateOne
+from pymongo.errors import BulkWriteError
 
 from wip_auth import UserIdentity
 
@@ -63,11 +65,8 @@ from ..models.namespace import Namespace
 from ..services.auth import require_api_key, require_privileged_key
 from ..services.claims import (
     claim_entries_keys_pending,
-    claim_entry_keys_pending,
     confirm_entries_keys,
-    confirm_entry_keys,
     release_entries_keys,
-    release_entry_keys,
     retire_entry_synonyms,
     revive_entry_synonyms,
 )
@@ -988,6 +987,152 @@ async def reserve_ids(
     )
 
 
+async def _activate_keyed(
+    items: list[ActivateItem],
+    keyed: list[int],
+    results: list[ActivateItemResponse | None],
+) -> tuple[int, int]:
+    """Activate the keyed items of a request in bulk; fills ``results`` at
+    their indices and returns (activated, errors).
+
+    A keyed item finalises a deferred-claim reservation: the entry gets its
+    final key, the key is claimed (a collision fails the item, never
+    duplicating an identity), and the entry flips to active. For the whole
+    request that is one read of the entries, one claim insert, one guarded
+    write and one confirm, instead of a read, a claim, a full save and a
+    confirm per item. A repeated entry_id is answered as taking the items
+    in order would: the first activates, the rest find it active.
+    """
+    activated = 0
+    errors = 0
+    entries_coll = RegistryEntry.get_motor_collection()
+
+    first_index: dict[str, int] = {}
+    repeats: list[int] = []
+    for i in keyed:
+        eid = items[i].entry_id
+        if eid in first_index:
+            repeats.append(i)
+        else:
+            first_index[eid] = i
+
+    loaded = {
+        e.entry_id: e
+        async for e in RegistryEntry.find({"entry_id": {"$in": list(first_index)}})
+    }
+
+    candidates: list[tuple[int, RegistryEntry]] = []
+    for eid, i in first_index.items():
+        entry = loaded.get(eid)
+        if entry is None:
+            results[i] = ActivateItemResponse(index=i, status="not_found", entry_id=eid)
+            errors += 1
+        elif entry.status == "active":
+            results[i] = ActivateItemResponse(index=i, status="already_active", entry_id=eid)
+        elif entry.status != "reserved":
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=eid,
+                error=f"Cannot activate entry with status '{entry.status}'",
+                error_code="invalid_state", details={"rule": "not_reserved"},
+            )
+            errors += 1
+        else:
+            key = items[i].composite_key or {}
+            entry.primary_composite_key = key
+            entry.primary_composite_key_hash = (
+                HashService.compute_composite_key_hash(key) if key else ""
+            )
+            entry.rebuild_search_values()
+            candidates.append((i, entry))
+
+    # Two-phase claim, as provision does it: pending before the write,
+    # confirmed after it.
+    conflicts = await claim_entries_keys_pending([entry for _, entry in candidates])
+    to_write: list[tuple[int, RegistryEntry]] = []
+    for (i, entry), conflict in zip(candidates, conflicts, strict=True):
+        if conflict is not None:
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=entry.entry_id, error=conflict,
+                error_code="already_exists", details={"rule": "key_claimed"},
+            )
+            errors += 1
+        else:
+            to_write.append((i, entry))
+
+    now = datetime.now(UTC)
+    ops = [
+        UpdateOne(
+            {"entry_id": entry.entry_id, "status": "reserved"},
+            {"$set": {
+                "primary_composite_key": entry.primary_composite_key,
+                "primary_composite_key_hash": entry.primary_composite_key_hash,
+                "search_values": entry.search_values,
+                "status": "active",
+                "updated_at": now,
+            }},
+        )
+        for _, entry in to_write
+    ]
+    failed: dict[int, dict] = {}  # position in to_write -> error fields
+    if ops:
+        try:
+            await entries_coll.bulk_write(ops, ordered=False)
+        except BulkWriteError as e:
+            for err in e.details.get("writeErrors", []):
+                failed[err["index"]] = error_fields(Exception(err.get("errmsg", "write failed")))
+        except Exception as e:
+            # Outcome unknown: the re-read below decides per entry.
+            for pos in range(len(to_write)):
+                failed[pos] = error_fields(e)
+
+        # An entry is activated only if it now holds the key this request
+        # wrote. Anything else (a write error, or a status that changed
+        # between the read and the guarded write) is re-read to tell.
+        written = {
+            d["entry_id"]: d
+            async for d in entries_coll.find(
+                {"entry_id": {"$in": [entry.entry_id for _, entry in to_write]}},
+                {"entry_id": 1, "status": 1, "primary_composite_key_hash": 1, "_id": 0},
+            )
+        }
+        confirmed: list[RegistryEntry] = []
+        released: list[RegistryEntry] = []
+        for pos, (i, entry) in enumerate(to_write):
+            doc = written.get(entry.entry_id) or {}
+            ours = (
+                doc.get("status") == "active"
+                and doc.get("primary_composite_key_hash") == entry.primary_composite_key_hash
+            )
+            if ours:
+                confirmed.append(entry)
+                results[i] = ActivateItemResponse(
+                    index=i, status="activated", entry_id=entry.entry_id)
+                activated += 1
+                continue
+            released.append(entry)
+            fields = failed.get(pos) or {
+                "error": "Entry status changed concurrently; not activated",
+                "error_code": "concurrency_conflict",
+            }
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=entry.entry_id, **fields)
+            errors += 1
+        await release_entries_keys(released)
+        await confirm_entries_keys(confirmed)
+
+    for i in repeats:
+        first = results[first_index[items[i].entry_id]]
+        if first is not None and first.status in ("activated", "already_active"):
+            results[i] = ActivateItemResponse(
+                index=i, status="already_active", entry_id=items[i].entry_id)
+        else:
+            assert first is not None
+            results[i] = first.model_copy(update={"index": i})
+            if first.status != "already_active":
+                errors += 1
+    return activated, errors
+
+
 @router.post(
     "/activate",
     response_model=ActivateBulkResponse,
@@ -1025,56 +1170,10 @@ async def activate_entries(
     keyed = [i for i, it in enumerate(items) if it.composite_key is not None]
     keyless = [i for i, it in enumerate(items) if it.composite_key is None]
 
-    for i in keyed:
-        item = items[i]
-        entry = await RegistryEntry.find_one(RegistryEntry.entry_id == item.entry_id)
-        if entry is None:
-            results[i] = ActivateItemResponse(
-                index=i, status="not_found", entry_id=item.entry_id)
-            error_count += 1
-            continue
-        if entry.status == "active":
-            results[i] = ActivateItemResponse(
-                index=i, status="already_active", entry_id=item.entry_id)
-            continue
-        if entry.status != "reserved":
-            results[i] = ActivateItemResponse(
-                index=i, status="error", entry_id=item.entry_id,
-                error=f"Cannot activate entry with status '{entry.status}'",
-                error_code="invalid_state", details={"rule": "not_reserved"},
-            )
-            error_count += 1
-            continue
-        # Set the final key, then run the two-phase claim: pending before the
-        # write, confirm after — the same protocol provision uses, just here.
-        entry.primary_composite_key = item.composite_key or {}
-        entry.primary_composite_key_hash = (
-            HashService.compute_composite_key_hash(item.composite_key)
-            if item.composite_key else ""
-        )
-        entry.rebuild_search_values()
-        conflict = await claim_entry_keys_pending(entry)
-        if conflict is not None:
-            results[i] = ActivateItemResponse(
-                index=i, status="error", entry_id=item.entry_id, error=conflict,
-                error_code="already_exists", details={"rule": "key_claimed"},
-            )
-            error_count += 1
-            continue
-        entry.status = "active"
-        entry.updated_at = datetime.now(UTC)
-        try:
-            await entry.save()
-        except Exception as e:
-            await release_entry_keys(entry)
-            results[i] = ActivateItemResponse(
-                index=i, status="error", entry_id=item.entry_id, **error_fields(e))
-            error_count += 1
-            continue
-        await confirm_entry_keys(entry)
-        results[i] = ActivateItemResponse(
-            index=i, status="activated", entry_id=item.entry_id)
-        activated_count += 1
+    if keyed:
+        keyed_activated, keyed_errors = await _activate_keyed(items, keyed, results)
+        activated_count += keyed_activated
+        error_count += keyed_errors
 
     if keyless:
         requested_ids = [items[i].entry_id for i in keyless]
