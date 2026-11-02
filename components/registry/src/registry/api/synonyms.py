@@ -3,8 +3,10 @@
 import logging
 from datetime import UTC, datetime
 
+from beanie.odm.utils.encoder import Encoder
 from fastapi import APIRouter, Body, Depends
-from pymongo.errors import DuplicateKeyError
+from pymongo import UpdateOne
+from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from wip_auth import UserIdentity
 
@@ -22,7 +24,11 @@ from ..models.api_models import (
 from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
-from ..services.claims import resolve_stale_claim
+from ..services.claims import (
+    claim_keys_pending_bulk,
+    confirm_keys_bulk,
+    release_keys_bulk,
+)
 from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.hash import HashService
 from .grants import NamespaceAccess
@@ -89,160 +95,224 @@ async def add_synonyms(
 
     Needs write on the entry's namespace. A target the caller cannot read is
     reported target_not_found; one it can read but not write is forbidden.
+
+    The request is handled in bulk: one read of the target entries, one
+    claim insert for the new keys, one write per changed entry and one
+    confirm. The items are still decided in order, so the per-item results
+    are those of taking them one at a time: a later item for the same entry
+    sees what the earlier ones added.
     """
-    results = []
+    results: list[AddSynonymResponse | None] = [None] * len(items)
     access = NamespaceAccess(identity)
 
+    loaded = await _load_active_entries({item.target_id for item in items})
+
+    # Decide every item in order, in memory. An addition needs a claim; it is
+    # applied to its entry only once the claim holds.
+    planned: list[tuple[int, RegistryEntry, Synonym, Synonym | None]] = []
+    pending: dict[tuple[str, str], int] = {}  # (entry_id, hash) -> planned index
+    dependents: dict[int, list[int]] = {}  # planned index -> items riding on it
     for i, item in enumerate(items):
         try:
             invalid = invalid_entity_type_fields(item.synonym_entity_type)
             if invalid:
-                results.append(AddSynonymResponse(index=i, status="error", **invalid))
+                results[i] = AddSynonymResponse(index=i, status="error", **invalid)
                 continue
 
-            # Find the target entry by ID
-            entry = await RegistryEntry.find_one({
-                "entry_id": item.target_id,
-                "status": "active"
-            })
-
+            entry = loaded.get(item.target_id)
             if not entry or not await access.allows(entry.namespace, "read"):
-                results.append(AddSynonymResponse(
-                    index=i, status="target_not_found",
-                ))
+                results[i] = AddSynonymResponse(index=i, status="target_not_found")
                 continue
 
             refusal = await _write_refusal(access, entry.namespace)
             if refusal:
-                results.append(AddSynonymResponse(
-                    index=i, status="forbidden", error=refusal,
-                ))
+                results[i] = AddSynonymResponse(index=i, status="forbidden", error=refusal)
                 continue
 
             mismatch = _scope_mismatch(entry, item.synonym_namespace, item.synonym_entity_type)
             if mismatch:
-                results.append(AddSynonymResponse(
+                results[i] = AddSynonymResponse(
                     index=i, status="error", registry_id=entry.entry_id, **mismatch,
-                ))
+                )
                 continue
-            synonym_namespace, synonym_entity_type = entry.namespace, entry.entity_type
 
             # Keys starting with "@" qualify system-generated synonyms (a
             # document's "@template"). Only system callers may write them, so
             # an explicit synonym cannot claim the key a document will need.
             reserved = sorted(k for k in item.synonym_composite_key if k.startswith("@"))
             if reserved and not identity.has_any_group(["wip-admins", "wip-services"]):
-                results.append(AddSynonymResponse(
+                results[i] = AddSynonymResponse(
                     index=i, status="forbidden",
                     error=(
                         f"Synonym keys {reserved} are reserved for system-generated "
                         "synonyms (keys starting with '@')"
                     ),
-                ))
+                )
                 continue
 
-            # Compute hash for the new synonym
             synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
+
+            # The same synonym for the same entry earlier in this request: it
+            # shares that item's outcome (already_exists once it is added).
+            earlier = pending.get((entry.entry_id, synonym_hash))
+            if earlier is not None:
+                dependents.setdefault(earlier, []).append(i)
+                continue
 
             # Fast path: this entry already owns the hash (primary or embedded
             # synonym) → idempotent already_exists, no claim churn. An inactive
             # copy (released when the entity was retired) does not count: the
-            # add claims the key again below, or reports who holds it now.
+            # add claims the key again, or reports who holds it now.
             recorded = entry.find_synonym_by_hash(synonym_hash)
             if entry.primary_composite_key_hash == synonym_hash or (
                 recorded is not None and recorded.status != "inactive"
             ):
-                results.append(AddSynonymResponse(
-                    index=i, status="already_exists",
-                    registry_id=entry.entry_id,
-                ))
-                continue
-
-            # Atomic uniqueness gate (CASE-427, two-phase since CASE-554):
-            # claim the hash pending before writing; the unique index is the
-            # lock — no check-then-insert race. Confirmed after the save.
-            claim_conflict = False
-            for attempt in (1, 2):
-                try:
-                    await CompositeKeyClaim.claim(
-                        synonym_namespace, synonym_entity_type,
-                        synonym_hash, entry.entry_id, "synonym",
-                        state="pending",
-                    )
-                    break
-                except DuplicateKeyError:
-                    existing_claim = await CompositeKeyClaim.find_existing(
-                        synonym_namespace, synonym_entity_type, synonym_hash
-                    )
-                    owner = existing_claim.owner_entry_id if existing_claim else "?"
-                    if existing_claim and owner == entry.entry_id:
-                        # Self-owned claim (embedded write died mid-flight) —
-                        # safe to reclaim by writing the embedded synonym below.
-                        break
-                    # Stale claim from a dead request or crashed delete? Heal
-                    # inline and retry once; the unique index arbitrates
-                    # racing healers. Genuine owner → never auto-steal.
-                    if attempt == 1 and await resolve_stale_claim(existing_claim):
-                        continue
-                    results.append(AddSynonymResponse(
-                        index=i, status="error",
-                        error=f"Synonym already registered under different entry: {owner}",
-                        error_code="synonym_conflict",
-                    ))
-                    claim_conflict = True
-                    break
-            if claim_conflict:
+                results[i] = AddSynonymResponse(
+                    index=i, status="already_exists", registry_id=entry.entry_id,
+                )
                 continue
 
             synonym = Synonym(
-                namespace=synonym_namespace,
-                entity_type=synonym_entity_type,
+                namespace=entry.namespace,
+                entity_type=entry.entity_type,
                 composite_key=item.synonym_composite_key,
                 composite_key_hash=synonym_hash,
                 source_info=item.synonym_source_info,
                 created_by=item.created_by,
             )
-
-            if recorded is not None:
-                entry.synonyms.remove(recorded)  # the inactive copy it replaces
-            entry.synonyms.append(synonym)
-            entry.rebuild_search_values()
-            entry.updated_at = datetime.now(UTC)
-            try:
-                await entry.save()
-            except Exception:
-                # Compensate the no-transaction window: release the pending
-                # claim we just took so it doesn't dangle, then re-raise.
-                # Anything this release misses is pending and dies in the
-                # reconcile pass.
-                await CompositeKeyClaim.release(
-                    synonym_namespace, synonym_entity_type,
-                    synonym_hash, owner_entry_id=entry.entry_id,
-                )
-                raise
-
-            # Entry committed — flip the claim to confirmed. Best-effort: a
-            # failure leaves a pending-but-backed claim for the reconcile
-            # pass; it must not fail the committed synonym.
-            await CompositeKeyClaim.confirm(
-                synonym_namespace, synonym_entity_type,
-                synonym_hash, entry.entry_id,
-            )
-
-            results.append(AddSynonymResponse(
-                index=i, status="added", registry_id=entry.entry_id,
-            ))
-
+            pending[(entry.entry_id, synonym_hash)] = len(planned)
+            planned.append((i, entry, synonym, recorded))
         except Exception as e:
-            results.append(AddSynonymResponse(
-                index=i, status="error", **error_fields(e)
-            ))
+            results[i] = AddSynonymResponse(index=i, status="error", **error_fields(e))
 
-    return BulkSynonymAddResponse(
-        results=results, total=len(items),
-        succeeded=sum(1 for r in results if r.status == "added"),
-        failed=sum(1 for r in results if r.status in ("target_not_found", "forbidden", "error")),
+    def settle(p: int, response: AddSynonymResponse) -> None:
+        i = planned[p][0]
+        results[i] = response.model_copy(update={"index": i})
+        for d in dependents.get(p, []):
+            follow = response
+            if response.status == "added":
+                follow = AddSynonymResponse(
+                    index=d, status="already_exists", registry_id=response.registry_id,
+                )
+            results[d] = follow.model_copy(update={"index": d})
+
+    # Atomic uniqueness gate (CASE-427, two-phase since CASE-554): claim every
+    # new hash pending before writing; the unique index is the lock. A claim
+    # the entry itself already holds (its write died mid-flight) is fine, a
+    # stale holder is healed and retried once, a genuine owner is never
+    # stolen from.
+    blocked = await claim_keys_pending_bulk([
+        [(entry.namespace, entry.entity_type, synonym.composite_key_hash, entry.entry_id, "synonym")]
+        for _, entry, synonym, _ in planned
+    ])
+    changed: dict[str, RegistryEntry] = {}
+    by_entry: dict[str, list[int]] = {}
+    for p, ((_i, entry, synonym, recorded), owner) in enumerate(zip(planned, blocked, strict=True)):
+        if owner is not None:
+            settle(p, AddSynonymResponse(
+                index=0, status="error",
+                error=f"Synonym already registered under different entry: {owner}",
+                error_code="synonym_conflict",
+            ))
+            continue
+        if recorded is not None:
+            entry.synonyms.remove(recorded)  # the inactive copy it replaces
+        entry.synonyms.append(synonym)
+        changed[entry.entry_id] = entry
+        by_entry.setdefault(entry.entry_id, []).append(p)
+
+    failed = await _write_synonym_lists(
+        changed, lambda entry_id: [planned[p][2].composite_key_hash for p in by_entry[entry_id]],
     )
+    claims_to_confirm, claims_to_release = [], []
+    for entry_id, positions in by_entry.items():
+        for p in positions:
+            _, entry, synonym, _ = planned[p]
+            key = (entry.namespace, entry.entity_type, synonym.composite_key_hash, entry_id, "synonym")
+            if entry_id in failed:
+                claims_to_release.append(key)
+                settle(p, AddSynonymResponse(index=0, status="error", **failed[entry_id]))
+            else:
+                claims_to_confirm.append(key)
+                settle(p, AddSynonymResponse(index=0, status="added", registry_id=entry_id))
+    # A failed write releases its claims (anything missed is pending and dies
+    # in the reconcile pass); a committed one confirms them, best-effort.
+    await release_keys_bulk(claims_to_release)
+    await confirm_keys_bulk(claims_to_confirm)
+
+    done = [r for r in results if r is not None]
+    return BulkSynonymAddResponse(
+        results=done, total=len(items),
+        succeeded=sum(1 for r in done if r.status == "added"),
+        failed=sum(1 for r in done if r.status in ("target_not_found", "forbidden", "error")),
+    )
+
+
+async def _load_active_entries(entry_ids: set[str]) -> dict[str, RegistryEntry]:
+    """The active entries among ``entry_ids``, in one read."""
+    return {
+        e.entry_id: e
+        async for e in RegistryEntry.find({"entry_id": {"$in": list(entry_ids)}, "status": "active"})
+    }
+
+
+async def _write_synonym_lists(
+    changed: dict[str, RegistryEntry],
+    expected_hashes,
+    updated_by: dict[str, str | None] | None = None,
+    absent: bool = False,
+) -> dict[str, dict]:
+    """Write each changed entry's synonyms, search_values and updated_at in one
+    bulk write, instead of a full save per item. Returns the entries whose
+    write failed, with the per-item error fields.
+
+    When the bulk write does not say which writes failed, each entry is
+    re-read: it counts as written if the synonym hashes this request changed
+    are present and active (``absent=False``) or gone (``absent=True``) on it.
+    """
+    if not changed:
+        return {}
+    now = datetime.now(UTC)
+    ops = []
+    order = list(changed)
+    for entry_id in order:
+        entry = changed[entry_id]
+        entry.rebuild_search_values()
+        entry.updated_at = now
+        fields = {"synonyms", "search_values", "updated_at"}
+        if updated_by is not None and entry_id in updated_by:
+            entry.updated_by = updated_by[entry_id]
+            fields.add("updated_by")
+        encoded = Encoder().encode(entry)
+        ops.append(UpdateOne(
+            {"entry_id": entry_id}, {"$set": {f: encoded[f] for f in fields}},
+        ))
+    failed: dict[str, dict] = {}
+    try:
+        await RegistryEntry.get_motor_collection().bulk_write(ops, ordered=False)
+    except BulkWriteError as e:
+        for err in e.details.get("writeErrors", []):
+            failed[order[err["index"]]] = error_fields(Exception(err.get("errmsg", "write failed")))
+    except Exception as e:
+        # Outcome unknown: re-read and decide per entry.
+        stored = {
+            d["entry_id"]: {
+                s.get("composite_key_hash")
+                for s in d.get("synonyms") or []
+                if s.get("status") != "inactive"
+            }
+            async for d in RegistryEntry.get_motor_collection().find(
+                {"entry_id": {"$in": order}},
+                {"entry_id": 1, "synonyms.composite_key_hash": 1, "synonyms.status": 1, "_id": 0},
+            )
+        }
+        for entry_id in order:
+            hashes = set(expected_hashes(entry_id))
+            have = stored.get(entry_id, set())
+            written = not (hashes & have) if absent else hashes <= have
+            if not written:
+                failed[entry_id] = error_fields(e)
+    return failed
 
 
 @router.post(
@@ -261,21 +331,26 @@ async def remove_synonyms(
     a synonym stored under another scope before add refused that can still
     be removed; remove only deletes what is there. Needs write on the entry's
     namespace and the synonym's; an unreadable target is not_found.
+
+    Handled in bulk, like add: one read, one write per changed entry, one
+    release of the removed synonyms' claims. Items are decided in order, so
+    removing the same synonym twice answers not_found the second time.
     """
-    results = []
+    results: list[RemoveSynonymResponse | None] = [None] * len(items)
     access = NamespaceAccess(identity)
 
+    loaded = await _load_active_entries({item.target_id for item in items})
+
+    removals: dict[str, list[tuple[int, tuple]]] = {}  # entry_id -> (item, claim key)
+    changed: dict[str, RegistryEntry] = {}
+    updated_by: dict[str, str | None] = {}
     for i, item in enumerate(items):
         try:
-            entry = await RegistryEntry.find_one({
-                "entry_id": item.target_id,
-                "status": "active"
-            })
-
+            entry = loaded.get(item.target_id)
             if not entry or not await access.allows(entry.namespace, "read"):
-                results.append(RemoveSynonymResponse(
+                results[i] = RemoveSynonymResponse(
                     index=i, status="not_found", registry_id=item.target_id,
-                ))
+                )
                 continue
 
             synonym_namespace = item.synonym_namespace or entry.namespace
@@ -283,10 +358,9 @@ async def remove_synonyms(
 
             refusal = await _write_refusal(access, entry.namespace, synonym_namespace)
             if refusal:
-                results.append(RemoveSynonymResponse(
-                    index=i, status="forbidden", registry_id=entry.entry_id,
-                    error=refusal,
-                ))
+                results[i] = RemoveSynonymResponse(
+                    index=i, status="forbidden", registry_id=entry.entry_id, error=refusal,
+                )
                 continue
 
             synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
@@ -298,49 +372,47 @@ async def remove_synonyms(
                         and s.entity_type == synonym_entity_type
                         and s.composite_key_hash == synonym_hash)
             ]
-
             if len(entry.synonyms) == original_count:
-                results.append(RemoveSynonymResponse(
+                results[i] = RemoveSynonymResponse(
                     index=i, status="not_found", registry_id=entry.entry_id,
-                    error="Synonym not found in entry"
-                ))
+                    error="Synonym not found in entry",
+                )
                 continue
 
-            entry.rebuild_search_values()
-            entry.updated_at = datetime.now(UTC)
-            entry.updated_by = item.updated_by
-            await entry.save()
-
-            # Release the claim (CASE-427), scoped to this owner so we never
-            # delete a claim that belongs elsewhere. A leftover claim is a
-            # benign orphan reconciliation would clear, so failures here don't
-            # fail the user's remove.
-            try:
-                await CompositeKeyClaim.release(
-                    synonym_namespace, synonym_entity_type,
-                    synonym_hash, owner_entry_id=entry.entry_id,
-                )
-            except Exception as release_err:
-                logger.warning(
-                    "CASE-427: failed to release claim for %s (%s/%s) on entry "
-                    "%s after synonym removal: %s",
-                    synonym_hash, synonym_namespace, synonym_entity_type,
-                    entry.entry_id, release_err,
-                )
-
-            results.append(RemoveSynonymResponse(
-                index=i, status="removed", registry_id=entry.entry_id,
-            ))
-
+            changed[entry.entry_id] = entry
+            updated_by[entry.entry_id] = item.updated_by
+            removals.setdefault(entry.entry_id, []).append((i, (
+                synonym_namespace, synonym_entity_type, synonym_hash, entry.entry_id, "synonym",
+            )))
         except Exception as e:
-            results.append(RemoveSynonymResponse(
-                index=i, status="error", **error_fields(e)
-            ))
+            results[i] = RemoveSynonymResponse(index=i, status="error", **error_fields(e))
 
+    failed = await _write_synonym_lists(
+        changed,
+        lambda entry_id: [key[2] for _, key in removals[entry_id]],
+        updated_by=updated_by,
+        absent=True,
+    )
+    released = []
+    for entry_id, entry_removals in removals.items():
+        for i, key in entry_removals:
+            if entry_id in failed:
+                results[i] = RemoveSynonymResponse(index=i, status="error", **failed[entry_id])
+            else:
+                released.append(key)
+                results[i] = RemoveSynonymResponse(
+                    index=i, status="removed", registry_id=entry_id,
+                )
+    # Release the removed synonyms' claims (CASE-427), each scoped to its
+    # owner so a claim that belongs elsewhere is never deleted. A leftover
+    # claim is a benign orphan that reconciliation clears.
+    await release_keys_bulk(released)
+
+    done = [r for r in results if r is not None]
     return BulkSynonymRemoveResponse(
-        results=results, total=len(items),
-        succeeded=sum(1 for r in results if r.status == "removed"),
-        failed=sum(1 for r in results if r.status in ("not_found", "forbidden", "error")),
+        results=done, total=len(items),
+        succeeded=sum(1 for r in done if r.status == "removed"),
+        failed=sum(1 for r in done if r.status in ("not_found", "forbidden", "error")),
     )
 
 
