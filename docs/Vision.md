@@ -370,6 +370,8 @@ This means services must not implement their own identity resolution as a substi
 
 **Why this matters:** The Registry's authority is what makes federation possible, what makes data migration reliable, and what makes the synonym philosophy real. If services bypass the Registry for resolution, synonyms become a feature that works sometimes — which is worse than not having it at all, because callers can't predict when it will work.
 
+**If the Registry is down, WIP is down — by design.** Every service depends on the Registry, and that dependence is the architecture, not a single point of failure to engineer around. Services must not keep working without it through fallbacks, last-known-good copies, or local resolution of identities, keys or permissions: an answer given without the Registry is an answer the identity authority did not give. Caches exist to make the Registry fast, never to stand in for it when it is unreachable — a request it cannot answer fails, and fails visibly.
+
 ### 4. Preserve Original Values
 
 Documents store both the original submitted value AND the resolved reference. This supports:
