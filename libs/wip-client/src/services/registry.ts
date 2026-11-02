@@ -22,6 +22,7 @@ import type {
   GrantBulkResponse,
   GrantRevokeBulkResponse,
   APIKeyInfo,
+  APIKeyRevokeResult,
   APIKeyListResponse,
   CreateAPIKeyRequest,
   CreateAPIKeyResponse,
@@ -250,7 +251,7 @@ export class RegistryService extends BaseService {
     return this.patch(`/api-keys/${name}`, request)
   }
 
-  async revokeAPIKey(name: string): Promise<{ status: string; name: string }> {
+  async revokeAPIKey(name: string): Promise<APIKeyRevokeResult> {
     return this.del(`/api-keys/${name}`)
   }
 }

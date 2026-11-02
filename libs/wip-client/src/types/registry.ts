@@ -299,6 +299,21 @@ export interface APIKeyInfo {
    * NamespaceGrants, not shown here (CASE-693).
    */
   grants: Record<string, 'read' | 'write' | 'admin'> | null
+  /**
+   * For a runtime key: the config key that has the same plaintext. A
+   * shadowed runtime key does not authenticate (the plaintext is the config
+   * key's) and is left out of key sync. Always null for config keys; absent
+   * from Registries that predate it.
+   */
+  shadowed_by?: string | null
+}
+
+/** Result of revoking a runtime API key. */
+export interface APIKeyRevokeResult {
+  status: string
+  name: string
+  /** Namespaces whose grants to the key were revoked with it. */
+  revoked_grants: string[]
 }
 
 export interface CreateAPIKeyRequest {

@@ -7,6 +7,47 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### One plaintext, one key; revoking a key revokes its grants; `@wip/client` 0.72.0
+
+A presented key authenticates as the first record it matches, and each
+service caches that match. Two keys with one plaintext therefore
+authenticated as whichever key a service had matched first, so services
+started at different times disagreed about the caller. This was seen when a
+runtime key's plaintext was pasted into an app's key secret.
+
+- **wip-deploy refuses an apply whose key secrets share a value.** That covers
+  app keys, spec-declared keys, the canary and the master key. The error names
+  the secrets and points to `rotate-key`. An edited `app-<app>-api-key` gets
+  an error explaining that the deployer generates app keys, and naming
+  `wip-deploy app-namespace add <app> <ns>` (to widen access) and
+  `wip-deploy rotate-key app-<app>` (for a fresh key).
+- **`verify --security --live` checks every data service per app key.** It
+  also checks the Registry's `/my/namespaces`, so a per-service split fails.
+- **Config keys that share a plaintext are not loaded,** and an error names
+  them. The master key is the exception: it stays, and the keys sharing its
+  value are dropped.
+- **A runtime key with the same plaintext as a config key is shadowed.** The
+  Registry checks each runtime key's hash against each config key's value, at
+  startup and every 10 s. A matching runtime key no longer authenticates: the
+  config key wins. It is left out of key sync, so every service converges on
+  the config key within about 40 s. `GET /api-keys` lists it with
+  `shadowed_by: <config key>`, and the Registry logs it once. The runtime key
+  is kept so an operator can revoke it.
+- **Revoking a runtime key revokes its namespace grants.** Grants are keyed by
+  the key's name, and were left behind on revoke, so a later key created under
+  the same name inherited them. `DELETE /api-keys/{name}` now deletes them and
+  returns `revoked_grants` (the namespaces). Grants that earlier revokes left
+  behind are not cleaned up.
+- **`@wip/client` 0.72.0:** `APIKeyInfo.shadowed_by`, and `revokeAPIKey`
+  returns `APIKeyRevokeResult` (with `revoked_grants`).
+
+**Action:**
+1. If a service logs "share one plaintext", or the Registry logs "has the
+   same plaintext as config key", give one of the keys a new value.
+2. To find grants left behind by earlier revokes, list each namespace's grants
+   (`GET /namespaces/{prefix}/grants`). Revoke any `api_key` grant whose
+   subject is not a current key name.
+
 ### Document validation: patterns match the whole value, and five gaps close; wip-archive 0.10.0
 
 - **`pattern` must match the whole value.** It used to match at the start

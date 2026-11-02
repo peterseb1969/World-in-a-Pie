@@ -1397,6 +1397,25 @@ describe('Service classes via createWipClient', () => {
   })
 
   describe('RegistryService', () => {
+    it('revokeAPIKey sends DELETE and returns the revoked grants', async () => {
+      mockJsonResponse({ status: 'deleted', name: 'app-key', revoked_grants: ['aa', 'bb'] })
+
+      const result = await client.registry.revokeAPIKey('app-key')
+
+      expect(result.revoked_grants).toEqual(['aa', 'bb'])
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/registry/api-keys/app-key')
+      expect(init.method).toBe('DELETE')
+    })
+
+    it('getAPIKey carries shadowed_by for a shadowed runtime key', async () => {
+      mockJsonResponse({ name: 'rt', source: 'runtime', shadowed_by: 'app-x' })
+
+      const result = await client.registry.getAPIKey('rt')
+
+      expect(result.shadowed_by).toBe('app-x')
+    })
+
     it('listNamespaces sends GET', async () => {
       mockJsonResponse([{ prefix: 'wip-terms', status: 'active' }])
 
