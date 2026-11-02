@@ -62,7 +62,6 @@ from .remap_restore import (
     rehash_document_row,
 )
 from .reporting_client import ReportingSyncClient
-from .synonym_migration import requalify_identity_synonyms
 
 logger = logging.getLogger("document_store.backup_engine")
 
@@ -1044,6 +1043,7 @@ class DirectRestoreEngine:
             self._check_derived_archive(
                 raw_manifest, allow_failed_verify=allow_failed_verify
             )
+            self._refuse_bare_identity_synonyms(reader, manifest)
             targets = self._resolve_targets(reader, manifest, target_namespace)
 
             self._emit(
@@ -1341,6 +1341,7 @@ class DirectRestoreEngine:
             self._check_derived_archive(
                 raw_manifest, allow_failed_verify=allow_failed_verify
             )
+            self._refuse_bare_identity_synonyms(reader, manifest)
             sources = self._archive_namespaces(reader, manifest)
             mapping = self._resolve_remap_mapping(
                 sources, target_namespace, namespace_map
@@ -1548,30 +1549,9 @@ class DirectRestoreEngine:
             # the archive's registry_entries; carry the remaining ones over now
             # that every entity is active.
             await self._restore_synonyms(mapping, rewritten)
-            # Archives taken before identity-values synonyms were qualified by
-            # template carry them in the bare form, which claims the spelling
-            # for every template in the namespace. Re-key them, so a restore
-            # always ends in the current form whatever the archive's age.
+            # A fresh restore registers synonyms as active; release the ones a
+            # retired document must not keep.
             for target in mapping.values():
-
-                def _requalify_progress(done: int, total: int, target: str = target) -> None:
-                    self._emit(
-                        "phase_requalify",
-                        f"[{target}] re-qualified {done} of {total} identity synonym(s)",
-                        current=done, total=total,
-                    )
-
-                requalified = await requalify_identity_synonyms(
-                    target, dry_run=False, progress=_requalify_progress
-                )
-                if requalified.errors:
-                    logger.warning(
-                        "Restore into %s: %d identity-values synonym(s) could not be "
-                        "re-qualified; run /maintenance/requalify-identity-synonyms",
-                        target, requalified.errors,
-                    )
-                # After the re-key: it registers the qualified form as a new,
-                # claimed synonym, which a retired document must not keep.
                 await self._release_retired_synonyms(target)
             for src, target in mapping.items():
                 await self._record_provenance(target, src, manifest)
@@ -2457,6 +2437,52 @@ class DirectRestoreEngine:
                         f"First failures: {failed[:5]}"
                     )
 
+    def _refuse_bare_identity_synonyms(self, reader: Any, manifest: Any) -> None:
+        """Refuse an archive that carries document identity synonyms in the
+        old, bare form, before anything is written. Every restore mode.
+
+        A document's identity values are registered as a synonym qualified
+        by its template ({"@template": <template value>, <field>: <value>,
+        …}). Archives taken before that carry them bare ({<field>: <value>,
+        …}), which claims the spelling for every template in the namespace.
+        The bare form has no use any more and is not brought forward: a
+        restore that wrote it would put it back into an install. A synonym is
+        bare when its key set is exactly its template's identity_fields. A
+        document whose template is not in the archive cannot be judged and is
+        not counted.
+        """
+        sources = self._archive_namespaces(reader, manifest)
+        identity: dict[str, set[str]] = {}
+        for src in sources:
+            for template in reader.read_entities("templates", namespace=src):
+                fields = template.get("identity_fields") or []
+                if fields and template.get("template_id"):
+                    identity[template["template_id"]] = set(fields)
+        if not identity:
+            return
+        counts: dict[str, int] = {}
+        for src in sources:
+            for entry in reader.read_entities("registry_entries", namespace=src):
+                if entry.get("entity_type") != "documents":
+                    continue
+                keys = identity.get((entry.get("primary_composite_key") or {}).get("template_id"))
+                if not keys:
+                    continue
+                if any(
+                    isinstance(syn, dict) and set(syn.get("composite_key") or {}) == keys
+                    for syn in entry.get("synonyms") or []
+                ):
+                    counts[src] = counts.get(src, 0) + 1
+        if counts:
+            listed = ", ".join(f"{ns}: {n}" for ns, n in sorted(counts.items()))
+            raise RestoreEngineError(
+                "This archive carries document identity synonyms in the old bare "
+                f"form, without '@template' ({listed} document(s)). That form is "
+                "no longer restored. Restore it with an earlier WIP release, which "
+                "re-qualifies identity synonyms on restore, then take a new backup "
+                "there."
+            )
+
     def _check_derived_archive(
         self, raw_manifest: Any, *, allow_failed_verify: bool
     ) -> None:
@@ -2722,6 +2748,7 @@ class DirectRestoreEngine:
             self._check_derived_archive(
                 raw_manifest, allow_failed_verify=allow_failed_verify
             )
+            self._refuse_bare_identity_synonyms(reader, manifest)
             targets = self._resolve_targets(
                 reader, manifest, target_namespace, allow_redirect=True
             )

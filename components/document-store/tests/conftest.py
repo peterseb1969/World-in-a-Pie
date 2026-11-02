@@ -934,7 +934,6 @@ async def client(session_mongo_client) -> AsyncGenerator[AsyncClient, None]:
         patch('document_store.main.get_def_store_client', return_value=mock_def_store),
         patch('document_store.api.table_view.get_template_store_client', return_value=mock_template_store),
         patch('document_store.services.identity_migration.get_template_store_client', return_value=mock_template_store),
-        patch('document_store.services.synonym_migration.get_template_store_client', return_value=mock_template_store),
         patch('document_store.services.identity_migration.get_registry_client', return_value=real_registry),
     ):
         transport = ASGITransport(app=app)

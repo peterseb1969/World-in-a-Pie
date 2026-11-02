@@ -1078,10 +1078,13 @@ class TestRunRestoreDryRun:
         ), patch("httpx.AsyncClient") as mock_httpx_cls:
             await engine.run_restore(tmp_path / "kb.zip", "kb", dry_run=True)
 
-        # No namespace upsert (httpx never even instantiated), no entity reads,
-        # no inserts on any collection.
+        # No namespace upsert (httpx never even instantiated), no inserts on
+        # any collection. The only entities read are the ones the old-format
+        # check needs (templates and Registry entries): a dry run refuses what
+        # the real run would.
         assert not mock_httpx_cls.called
-        assert not reader.read_entities.called
+        read_types = {c.args[0] for c in reader.read_entities.call_args_list}
+        assert read_types <= {"templates", "registry_entries"}
         for coll in collections.values():
             assert not coll.insert_many.called
 
