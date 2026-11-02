@@ -21,18 +21,18 @@ if _XDIST_WORKER:
 os.environ.setdefault("MASTER_API_KEY", "test_master_key")
 os.environ.setdefault("AUTH_ENABLED", "true")
 
-from registry.api.api_keys import configure_api_key_management
-from registry.main import app
-from registry.main import providers as _app_providers
-from registry.models.api_key import StoredAPIKey
-from registry.models.composite_key_claim import CompositeKeyClaim
-from registry.models.deletion_journal import DeletionJournal
-from registry.models.entry import RegistryEntry
-from registry.models.grant import NamespaceGrant
-from registry.models.id_counter import IdCounter
-from registry.models.namespace import Namespace
-from registry.models.reservation import RuntimeReservation
-from registry.services.auth import AuthService
+from registry.api.api_keys import configure_api_key_management  # noqa: E402
+from registry.main import app  # noqa: E402
+from registry.main import providers as _app_providers  # noqa: E402
+from registry.models.api_key import StoredAPIKey  # noqa: E402
+from registry.models.composite_key_claim import CompositeKeyClaim  # noqa: E402
+from registry.models.deletion_journal import DeletionJournal  # noqa: E402
+from registry.models.entry import RegistryEntry  # noqa: E402
+from registry.models.grant import NamespaceGrant  # noqa: E402
+from registry.models.id_counter import IdCounter  # noqa: E402
+from registry.models.namespace import Namespace  # noqa: E402
+from registry.models.reservation import RuntimeReservation  # noqa: E402
+from registry.services.auth import AuthService  # noqa: E402
 
 
 async def _ensure_mongo_reachable(mongo_client: AsyncIOMotorClient, uri: str) -> None:
