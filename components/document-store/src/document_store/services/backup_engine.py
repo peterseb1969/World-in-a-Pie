@@ -1510,13 +1510,22 @@ class DirectRestoreEngine:
                     merged_file_map.update(plan.id_map["files"])
                 await self._remap_blobs(reader, merged_file_map)
 
+            # The archived synonyms, rewritten for their re-minted owners. A
+            # document's travel with its activation item, so its entry is
+            # written once with its key and its synonyms; the rest are added
+            # once every entity is active.
+            rewritten = {
+                src: self._rewritten_synonyms(reader, src, target, plans[src])
+                for src, target in mapping.items()
+            }
             for target in targets:
                 # Documents were reserved with a deferred claim; their FINAL
                 # composite key (built from the rewritten + rehashed row) is
-                # claimed now, at activation (CASE-787). An identity-less doc
-                # has an empty key — it stays keyless (opts out of dedup).
-                # Other entity types were already claimed at provision, so they
-                # activate keyless (a bare status flip).
+                # claimed now, at activation (CASE-787), together with their
+                # synonyms. An identity-less doc has an empty key — it stays
+                # keyless (opts out of dedup). Other entity types were already
+                # claimed at provision, so they activate keyless (a bare status
+                # flip) and get their synonyms afterwards.
                 items: list[dict[str, Any]] = []
                 for src, t in mapping.items():
                     if t != target:
@@ -1528,15 +1537,17 @@ class DirectRestoreEngine:
                             item: dict[str, Any] = {"entry_id": new_id}
                             if new_id in doc_keys:
                                 item["composite_key"] = doc_keys[new_id]
+                                carried = rewritten[src].pop(new_id, None)
+                                if carried:
+                                    item["synonyms"] = carried
                             items.append(item)
                 await self._activate_entries(target, items)
-            # CASE-792: provision/activate set only the PRIMARY composite key.
-            # The value-form lookup synonyms the create services auto-register
-            # (and any custom synonyms) live in the archive's registry_entries
-            # but are otherwise never carried onto the re-minted entities — so a
-            # fresh-restored entity would resolve only by canonical id, not by
-            # value. Carry them over now that every entity is active.
-            await self._restore_synonyms(reader, mapping, plans)
+            # CASE-792: provision/activate set only the primary composite key
+            # for everything but documents. The value-form lookup synonyms the
+            # create services auto-register (and any custom synonyms) live in
+            # the archive's registry_entries; carry the remaining ones over now
+            # that every entity is active.
+            await self._restore_synonyms(mapping, rewritten)
             # Archives taken before identity-values synonyms were qualified by
             # template carry them in the bare form, which claims the spelling
             # for every template in the namespace. Re-key them, so a restore
@@ -2223,76 +2234,77 @@ class DirectRestoreEngine:
                         f"First failures: {failed[:5]}"
                     )
 
+    def _rewritten_synonyms(
+        self, reader: Any, src: str, target: str, plan: Any,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """The archived synonyms of ``src``, rewritten for their re-minted
+        owners in ``target``: ``{new_id: [synonym item, …]}`` (CASE-792).
+
+        The fresh path re-mints every entity, and the value-form lookup
+        synonyms the create services auto-register ({ns, type, value} for a
+        terminology, the template-qualified identity values for a document, …)
+        plus any custom synonyms live only in the archive's registry_entries.
+        Without them a fresh-restored entity would resolve only by canonical
+        id, never by value (Vision: every synonym must resolve identically to
+        the canonical id).
+
+        Each synonym is rewritten for the target — namespace, any id-valued key
+        part via the id_map, and (for a document whose identity hash was
+        recomputed during remap) the identity_hash. A synonym the archive holds
+        inactive was released when its entity was retired; claiming it again
+        could fail the restore if another archived entity took the key since,
+        so it is not carried over.
+        """
+        flat_id_map: dict[str, str] = {}
+        for m in plan.id_map.values():
+            flat_id_map.update(m)
+        # A document claims its (possibly recomputed) identity hash at
+        # activation; its synonym must carry the SAME new hash, not the
+        # archived pre-remap one (id-valued identity fields — edges — rehash).
+        new_doc_hash: dict[str, str] = {
+            doc_id: key["identity_hash"]
+            for doc_id, key in plan.final_document_keys(target).items()
+            if key.get("identity_hash")
+        }
+
+        syn_by_old: dict[str, list[dict[str, Any]]] = {}
+        for entry in reader.read_entities("registry_entries", namespace=src):
+            syns = entry.get("synonyms")
+            if isinstance(syns, list) and syns:
+                syn_by_old[entry.get("entry_id")] = [
+                    s for s in syns
+                    if not (isinstance(s, dict) and s.get("status") == "inactive")
+                ]
+
+        by_new: dict[str, list[dict[str, Any]]] = {}
+        for id_map in plan.id_map.values():
+            for old_id, new_id in id_map.items():
+                for syn in syn_by_old.get(old_id, []):
+                    item = self._rewrite_synonym_for_restore(
+                        syn, src, target, flat_id_map, new_doc_hash.get(new_id)
+                    )
+                    if item is not None:
+                        by_new.setdefault(new_id, []).append(
+                            {"created_by": "restore-remap", **item}
+                        )
+        return by_new
+
     async def _restore_synonyms(
         self,
-        reader: Any,
         mapping: dict[str, str],
-        plans: dict[str, Any],
+        rewritten: dict[str, dict[str, list[dict[str, Any]]]],
     ) -> None:
-        """Carry the archived synonyms onto the re-minted entities (CASE-792).
-
-        The fresh path re-mints every entity through provision/activate, which
-        set only the PRIMARY composite key. The value-form lookup synonyms the
-        create services auto-register ({ns, type, value} for a terminology, a
-        template-scoped {ns, type, template, identity_hash} for a document, …)
-        plus any CUSTOM synonyms live in the archive's registry_entries but were
-        never carried over — so a fresh-restored entity resolved only by
-        canonical id, never by value (Vision: every synonym must resolve
-        identically to the canonical id).
-
-        Each archived synonym is rewritten for the target — namespace, any
-        id-valued key part via the id_map, and (for a document whose identity
-        hash was recomputed during remap) the identity_hash — and registered
-        through /synonyms/add, which claims the synonym key exactly as original
-        creation did. Chosen over teaching /entries/activate to carry synonyms:
-        the keyless activate path (terminologies/terms, claimed at provision) is
-        a bulk update_many that never loads full documents, and attaching +
-        claiming synonyms there would forfeit that fast path for the very entity
-        types this fixes.
+        """Register the rewritten synonyms activation did not carry, through
+        /synonyms/add, which claims each key exactly as original creation did.
         """
         for src, target in mapping.items():
-            plan = plans[src]
-            flat_id_map: dict[str, str] = {}
-            for m in plan.id_map.values():
-                flat_id_map.update(m)
-            # A document claims its (possibly recomputed) identity hash at
-            # activation; its synonym must carry the SAME new hash, not the
-            # archived pre-remap one (id-valued identity fields — edges — rehash).
-            new_doc_hash: dict[str, str] = {
-                doc_id: key["identity_hash"]
-                for doc_id, key in plan.final_document_keys(target).items()
-                if key.get("identity_hash")
-            }
-
-            syn_by_old: dict[str, list[dict[str, Any]]] = {}
-            for entry in reader.read_entities("registry_entries", namespace=src):
-                syns = entry.get("synonyms")
-                if isinstance(syns, list) and syns:
-                    # A synonym the archive holds inactive was released when
-                    # its entity was retired; /synonyms/add would claim it
-                    # again — and fail the restore if another archived entity
-                    # took the key since. It is not carried over.
-                    syn_by_old[entry.get("entry_id")] = [
-                        s for s in syns
-                        if not (isinstance(s, dict) and s.get("status") == "inactive")
-                    ]
-            if not syn_by_old:
-                continue
-
-            items: list[dict[str, Any]] = []
-            for id_map in plan.id_map.values():
-                for old_id, new_id in id_map.items():
-                    for syn in syn_by_old.get(old_id, []):
-                        rewritten = self._rewrite_synonym_for_restore(
-                            syn, src, target, flat_id_map, new_doc_hash.get(new_id)
-                        )
-                        if rewritten is not None:
-                            items.append({
-                                "target_id": new_id,
-                                "created_by": "restore-remap",
-                                **rewritten,
-                            })
-            await self._add_synonyms(target, items)
+            items = [
+                {"target_id": new_id, **syn}
+                for new_id, syns in rewritten.get(src, {}).items()
+                for syn in syns
+            ]
+            if items:
+                await self._add_synonyms(target, items)
 
     @staticmethod
     def _rewrite_synonym_for_restore(

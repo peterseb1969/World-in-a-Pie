@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from typing import cast
 
 import httpx
+from beanie.odm.utils.encoder import Encoder
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pymongo import UpdateOne
 from pymongo.errors import BulkWriteError
@@ -17,6 +18,7 @@ from ..models.api_models import (
     ActivateBulkResponse,
     ActivateItem,
     ActivateItemResponse,
+    ActivateSynonym,
     BrowseEntriesResponse,
     BrowseEntryItem,
     BulkDeleteResponse,
@@ -987,6 +989,54 @@ async def reserve_ids(
     )
 
 
+def _attach_activation_synonyms(
+    entry: RegistryEntry, synonyms: list[ActivateSynonym],
+) -> dict | None:
+    """Give an entry the synonyms its activation item carries, in memory.
+
+    The same rules as /synonyms/add: a synonym takes the entry's namespace
+    and entity type (anything else is synonym_scope_mismatch), one equal to
+    the primary key or already held is not added twice, and an inactive
+    copy of the same key is replaced. The caller's claim covers them, since
+    an entry's claims are its primary key plus its active synonyms. Returns
+    the refusal fields, or None.
+    """
+    for item in synonyms:
+        invalid = invalid_entity_type_fields(item.synonym_entity_type)
+        if invalid:
+            return invalid
+        if item.synonym_namespace not in (None, entry.namespace) or (
+            item.synonym_entity_type not in (None, entry.entity_type)
+        ):
+            return {
+                "error": (
+                    f"A synonym takes its entry's scope: namespace '{entry.namespace}', "
+                    f"entity_type '{entry.entity_type}' (got namespace "
+                    f"'{item.synonym_namespace}', entity_type '{item.synonym_entity_type}')"
+                ),
+                "error_code": "invalid_request",
+                "details": {"rule": "synonym_scope_mismatch"},
+            }
+    for item in synonyms:
+        key_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
+        if key_hash == entry.primary_composite_key_hash:
+            continue
+        recorded = entry.find_synonym_by_hash(key_hash)
+        if recorded is not None and recorded.status != "inactive":
+            continue
+        if recorded is not None:
+            entry.synonyms.remove(recorded)
+        entry.synonyms.append(Synonym(
+            namespace=entry.namespace,
+            entity_type=entry.entity_type,
+            composite_key=item.synonym_composite_key,
+            composite_key_hash=key_hash,
+            source_info=item.synonym_source_info,
+            created_by=item.created_by,
+        ))
+    return None
+
+
 async def _activate_keyed(
     items: list[ActivateItem],
     keyed: list[int],
@@ -1042,6 +1092,13 @@ async def _activate_keyed(
             entry.primary_composite_key_hash = (
                 HashService.compute_composite_key_hash(key) if key else ""
             )
+            refusal = _attach_activation_synonyms(entry, items[i].synonyms or [])
+            if refusal is not None:
+                results[i] = ActivateItemResponse(
+                    index=i, status="error", entry_id=eid, **refusal,
+                )
+                errors += 1
+                continue
             entry.rebuild_search_values()
             candidates.append((i, entry))
 
@@ -1060,19 +1117,21 @@ async def _activate_keyed(
             to_write.append((i, entry))
 
     now = datetime.now(UTC)
-    ops = [
-        UpdateOne(
-            {"entry_id": entry.entry_id, "status": "reserved"},
-            {"$set": {
-                "primary_composite_key": entry.primary_composite_key,
-                "primary_composite_key_hash": entry.primary_composite_key_hash,
-                "search_values": entry.search_values,
-                "status": "active",
-                "updated_at": now,
-            }},
-        )
-        for _, entry in to_write
-    ]
+    with_synonyms = {items[i].entry_id for i in keyed if items[i].synonyms}
+    ops = []
+    for _, entry in to_write:
+        fields: dict = {
+            "primary_composite_key": entry.primary_composite_key,
+            "primary_composite_key_hash": entry.primary_composite_key_hash,
+            "search_values": entry.search_values,
+            "status": "active",
+            "updated_at": now,
+        }
+        if entry.entry_id in with_synonyms:
+            fields["synonyms"] = Encoder().encode(entry)["synonyms"]
+        ops.append(UpdateOne(
+            {"entry_id": entry.entry_id, "status": "reserved"}, {"$set": fields},
+        ))
     failed: dict[int, dict] = {}  # position in to_write -> error fields
     if ops:
         try:

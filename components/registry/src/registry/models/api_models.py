@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .entry import SourceInfo, Synonym
 from .id_algorithm import IdConfigWrite
@@ -334,6 +334,20 @@ class ReserveBulkResponse(BaseModel):
 # Activate API Models
 # =============================================================================
 
+class ActivateSynonym(StrictModel):
+    """A synonym carried on an activation item."""
+
+    synonym_namespace: str | None = Field(
+        default=None, description="Must be the entry's namespace, or omitted.",
+    )
+    synonym_entity_type: str | None = Field(
+        default=None, description="Must be the entry's entity type, or omitted.",
+    )
+    synonym_composite_key: dict[str, Any] = Field(..., description="Composite key for the synonym")
+    synonym_source_info: SourceInfo | None = Field(default=None, description="Source info for synonym")
+    created_by: str | None = Field(default=None, description="Creator identifier")
+
+
 class ActivateItem(StrictModel):
     """Request model for activating a reserved entry."""
 
@@ -348,6 +362,20 @@ class ActivateItem(StrictModel):
                     "identity. When omitted, activation only flips status (the "
                     "key was already claimed at provision).",
     )
+    synonyms: list[ActivateSynonym] | None = Field(
+        default=None,
+        description="Synonyms to give the entry as it activates, claimed "
+                    "together with the final composite key and written in the "
+                    "same update. Only with composite_key. Each takes the "
+                    "entry's namespace and entity type; a synonym scoped "
+                    "elsewhere fails the item (synonym_scope_mismatch).",
+    )
+
+    @model_validator(mode="after")
+    def _synonyms_need_a_key(self) -> "ActivateItem":
+        if self.synonyms and self.composite_key is None:
+            raise ValueError("synonyms can only be given with composite_key")
+        return self
 
 
 class ActivateItemResponse(BaseModel):
