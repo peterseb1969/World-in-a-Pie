@@ -62,8 +62,11 @@ from ..models.id_algorithm import VALID_ENTITY_TYPES, IdFormatValidator
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key, require_privileged_key
 from ..services.claims import (
+    claim_entries_keys_pending,
     claim_entry_keys_pending,
+    confirm_entries_keys,
     confirm_entry_keys,
+    release_entries_keys,
     release_entry_keys,
     retire_entry_synonyms,
     revive_entry_synonyms,
@@ -610,9 +613,10 @@ async def register_keys(
     # An entry without a claim is thereby unrepresentable by ordering.
     gated_entries: list = []
     gated_indices: list[int] = []
+    conflicts = await claim_entries_keys_pending(entries_to_insert)
     for pos, idx in enumerate(insert_indices):
         entry = entries_to_insert[pos]
-        conflict = await claim_entry_keys_pending(entry)
+        conflict = conflicts[pos]
         if conflict is not None:
             results[idx] = RegisterKeyResponse(
                 index=idx, status="error", error=conflict,
@@ -627,9 +631,9 @@ async def register_keys(
     if gated_entries:
         try:
             await RegistryEntry.insert_many(gated_entries)
+            await confirm_entries_keys(gated_entries)
             for pos, idx in enumerate(gated_indices):
                 entry = gated_entries[pos]
-                await confirm_entry_keys(entry)
                 results[idx] = RegisterKeyResponse(
                     index=idx,
                     status="created",
@@ -640,15 +644,17 @@ async def register_keys(
                 )
                 created_count += 1
         except Exception as e:
-            for pos, idx in enumerate(gated_indices):
-                if results[idx] is None:
-                    await release_entry_keys(gated_entries[pos])
-                    results[idx] = RegisterKeyResponse(
-                        index=idx,
-                        status="error",
-                        error=f"Batch insert failed: {e!s}", error_code="internal_error"
-                    )
-                    error_count += 1
+            unwritten = [
+                (pos, idx) for pos, idx in enumerate(gated_indices) if results[idx] is None
+            ]
+            await release_entries_keys([gated_entries[pos] for pos, _ in unwritten])
+            for _pos, idx in unwritten:
+                results[idx] = RegisterKeyResponse(
+                    index=idx,
+                    status="error",
+                    error=f"Batch insert failed: {e!s}", error_code="internal_error"
+                )
+                error_count += 1
 
     return RegisterBulkResponse(
         results=cast(list[RegisterKeyResponse], results),
@@ -830,20 +836,17 @@ async def provision_ids(
         # Claim-first (pending) for reserved entries too; a conflict on a
         # provisioned composite key fails the whole provision loudly rather
         # than reserving an entry whose key resolves elsewhere.
-        for entry in entries:
-            conflict = await claim_entry_keys_pending(entry)
-            if conflict is not None:
-                for e in entries:
-                    await release_entry_keys(e)
-                raise HTTPException(status_code=409, detail=conflict)
+        conflicts = await claim_entries_keys_pending(entries)
+        conflict = next((c for c in conflicts if c is not None), None)
+        if conflict is not None:
+            await release_entries_keys(entries)
+            raise HTTPException(status_code=409, detail=conflict)
         try:
             await RegistryEntry.insert_many(entries)
         except Exception:
-            for entry in entries:
-                await release_entry_keys(entry)
+            await release_entries_keys(entries)
             raise
-        for entry in entries:
-            await confirm_entry_keys(entry)
+        await confirm_entries_keys(entries)
 
     return ProvisionResponse(
         namespace=request.namespace,
@@ -941,9 +944,10 @@ async def reserve_ids(
     # insert and confirm — same two-phase shape as the register path.
     gated_entries = []
     gated_indices = []
+    conflicts = await claim_entries_keys_pending(entries_to_insert)
     for pos, idx in enumerate(insert_indices):
         entry = entries_to_insert[pos]
-        conflict = await claim_entry_keys_pending(entry)
+        conflict = conflicts[pos]
         if conflict is not None:
             results[idx] = ReserveItemResponse(
                 index=idx, status="error", error=conflict,
@@ -957,22 +961,24 @@ async def reserve_ids(
     if gated_entries:
         try:
             await RegistryEntry.insert_many(gated_entries)
+            await confirm_entries_keys(gated_entries)
             for pos, idx in enumerate(gated_indices):
                 entry = gated_entries[pos]
-                await confirm_entry_keys(entry)
                 results[idx] = ReserveItemResponse(
                     index=idx, status="reserved", entry_id=entry.entry_id
                 )
                 reserved_count += 1
         except Exception as e:
-            for pos, idx in enumerate(gated_indices):
-                if results[idx] is None:
-                    await release_entry_keys(gated_entries[pos])
-                    results[idx] = ReserveItemResponse(
-                        index=idx, status="error",
-                        error=f"Batch insert failed: {e!s}", error_code="internal_error"
-                    )
-                    error_count += 1
+            unwritten = [
+                (pos, idx) for pos, idx in enumerate(gated_indices) if results[idx] is None
+            ]
+            await release_entries_keys([gated_entries[pos] for pos, _ in unwritten])
+            for _pos, idx in unwritten:
+                results[idx] = ReserveItemResponse(
+                    index=idx, status="error",
+                    error=f"Batch insert failed: {e!s}", error_code="internal_error"
+                )
+                error_count += 1
 
     return ReserveBulkResponse(
         results=[r for r in results if r is not None],
