@@ -534,27 +534,47 @@ Registry work. Both paths have the fixable costs listed below, so the
 ratio is a property of today's code, not of the two designs. Whether 1.7
 times counts as "clearly faster" for decision 5 is open, for Peter.
 
-**Findings from the measurement** (code reading, each tied to a measured
-phase; none is fixed by this plan):
+**Repeated on the Mac Studio dev install (2026-11-02, `059b854a`),
+archive in the current format only:** fresh restore 12 min 55 s
+(activation ~6 min 10 s, synonyms ~4 min 36 s; validation healthy); live
+bulk create 23 min 5 s (44 s definitions, 22 min 21 s documents; 0 errors).
+About 1.8 times, the same ratio as the Pi at about a third of the time.
+
+**Peter's direction (2026-11-02).** The old (bare) identity-synonym format
+goes away; there is no use case for it. Investment goes into improvements
+that benefit every restore path and the live path alike: missing bulk
+support and avoidable round trips. Filed as CASE-1017 to CASE-1023.
+
+**Findings from the measurement** (each tied to a measured phase; none is
+fixed by this plan):
 
 1. Keyed activation (`registry/api/entries.py`, `activate_entries`) and
    `/synonyms/add` (`registry/api/synonyms.py`) handle one item at a time:
    a full-document read, a pending claim, a full-document save and a
    confirm, about 4 to 6 MongoDB round trips each. Keyless activation
-   (terms) is bulk: 18,054 identities took 15 s.
+   (terms) is bulk: 18,054 identities took 15 s. Under both sits a claim
+   protocol with no bulk form, which `/entries/register` (every live
+   create) also pays. CASE-1017 (claims), CASE-1018 (activation),
+   CASE-1019 (synonyms); CASE-1020: a fresh restore writes each document's
+   entry twice, once per pass.
 2. A fresh restore adds an archive's bare identity synonyms, then
    `requalify_identity_synonyms` re-adds every one qualified and removes the
-   bare one. Qualifying them in `_restore_synonyms` before the add would make
-   the requalify pass a no-op on fresh restores.
-3. The live path's inbound-reference gate looks up a term field's
-   terminology namespace with a single-item `lookup/by-id`, memoised only
-   per document (`validation_service.py`, `gate.namespace_of`; a new
-   `InboundGate` per document in `_validate_as_writer`): about one Registry
-   round trip per document for a lookup whose answer is the same for the
-   whole batch.
+   bare one; on an archive in the current format the pass still reads every
+   entry back to find nothing. CASE-1021 retires the format and the pass.
+3. The live path spends its time in an untimed stage of `bulk_create`:
+   the namespace-isolation check on each document's references, run one
+   document at a time with its own Registry `lookup/by-id`
+   (`document_service.py`, `_check_new_references`;
+   `reference_validator.py`, `lookup_entry_namespaces`). For a namespace
+   that is not `strict` the check cannot fail. Measured from the bulk
+   response's own `timing`: a batch of 500 rows with term fields took
+   4,118 ms, of which the timed stages account for about 130 ms; a batch
+   without term fields took 56 ms. CASE-1022. (This replaces an earlier
+   reading that blamed the inbound gate's terminology lookup during
+   validation; all of validation took 60 ms for that batch.)
 4. `wip-toolkit restore` follows the job for 3600 s, then prints the last
    snapshot and exits 0 while the job is still running. `backup` exits 1 on
-   the same timeout.
+   the same timeout. CASE-1023.
 
 **Not yet decided** (proposed defaults, for the plan after the
 measurement): input as CSV and JSONL rows; a per-template mapping file in
