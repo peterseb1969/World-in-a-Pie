@@ -2046,6 +2046,7 @@ class WipClient:
         description: str | None = None,
         expires_at: str | None = None,
         grant_permission: str | None = None,
+        reserve: list[dict[str, Any]] | None = None,
     ) -> dict:
         payload: dict[str, Any] = {"name": name, "owner": owner}
         if groups is not None:
@@ -2056,6 +2057,8 @@ class WipClient:
             payload["description"] = description
         if grant_permission is not None:
             payload["grant_permission"] = grant_permission
+        if reserve is not None:
+            payload["reserve"] = reserve
         if expires_at is not None:
             payload["expires_at"] = expires_at
         return await self._post(

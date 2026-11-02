@@ -7,6 +7,55 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### App keys for apps wip-deploy does not manage: runtime namespace reservations; `@wip/client` 0.73.0
+
+Until now only wip-deploy could issue a key that bootstraps an app: a key that
+is not a platform admin may create a namespace only if the install reserves it,
+and reservations came only from the deployed apps' manifests. A platform admin
+can now issue such a key through the Registry's API, for an external app or for
+someone developing against WIP.
+
+- **`POST /api-keys` takes `reserve`:** `[{prefix, settings}]`, each prefix also
+  in `namespaces`. The key gets `admin` on each reserved namespace and creates it
+  through the namespace upsert. The upsert applies the reserved settings: the
+  bootstrap may omit them or send equal values, as for a wip-deploy app.
+  Everything is checked before anything is written. Refused:
+  - `wip` or an invalid prefix (400);
+  - a prefix the install reserves for one of its apps, or another key's (409);
+  - an ID prefix another reservation or namespace claims (409).
+- **Widen and narrow:**
+  - `PUT /api-keys/{name}/namespaces/{prefix}` adds a namespace. Send
+    `reserve` to reserve it too; the grant is `admin` when reserving, else
+    `permission` (default `read`).
+  - `DELETE /api-keys/{name}/namespaces/{prefix}` removes it, revokes the grant,
+    and releases the key's reservation if the namespace was never created.
+  - `PATCH` can no longer drop a reserved namespace from `namespaces`. Use the
+    `DELETE` above, which also handles the reservation and the grant.
+- **Revoke** (`DELETE /api-keys/{name}`) handles the key's reservations:
+  - it releases those whose namespace was never created
+    (`released_reservations`);
+  - it keeps those whose namespace exists (`kept_reservations`);
+  - it never deletes a namespace.
+- **`GET /reservations`** (admin) lists every reservation from both sources,
+  with `source`, `namespace_exists` and `conflict`. `DELETE /reservations/{prefix}`
+  releases a runtime reservation explicitly.
+- **One prefix has one owner.** A wip-deploy apply asks the running Registry
+  for its runtime reservations. It refuses an app reservation that collides
+  with one on a namespace or an ID prefix, and names the key. When the Registry
+  is unreachable (a fresh install) the apply proceeds with a note. If a prefix
+  ends up reserved by both sources anyway, the namespace upsert refuses it
+  (409) until one is removed, the listing marks the conflict, and the Registry
+  logs it.
+- **MCP:** `create_api_key` takes `reserve`. **`@wip/client` 0.73.0:**
+  - `CreateAPIKeyRequest.reserve`;
+  - `addAPIKeyNamespace`, `removeAPIKeyNamespace`, `listReservations`,
+    `releaseReservation`;
+  - `APIKeyInfo.reserved_namespaces`;
+  - the reservation outcomes on `APIKeyRevokeResult`.
+
+**Action:** none for existing installs. Apps deployed by wip-deploy keep their
+derived keys; use these endpoints only for apps wip-deploy does not manage.
+
 ### One plaintext, one key; revoking a key revokes its grants; `@wip/client` 0.72.0
 
 A presented key authenticates as the first record it matches, and each

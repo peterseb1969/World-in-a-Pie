@@ -1408,6 +1408,52 @@ describe('Service classes via createWipClient', () => {
       expect(init.method).toBe('DELETE')
     })
 
+    it('createAPIKey sends reserve with the key', async () => {
+      mockJsonResponse({ name: 'ext', plaintext_key: 'k', reserved_namespaces: ['ext-ns'] })
+
+      await client.registry.createAPIKey({
+        name: 'ext', namespaces: ['ext-ns'],
+        reserve: [{ prefix: 'ext-ns', settings: { deletion_mode: 'full' } }],
+      })
+
+      const [, init] = fetchMock.mock.calls[0]
+      expect(JSON.parse(init.body).reserve).toEqual([{ prefix: 'ext-ns', settings: { deletion_mode: 'full' } }])
+    })
+
+    it('addAPIKeyNamespace sends PUT to the key namespace path', async () => {
+      mockJsonResponse({ name: 'ext', reserved_namespaces: ['more'] })
+
+      await client.registry.addAPIKeyNamespace('ext', 'more', { reserve: {} })
+
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/registry/api-keys/ext/namespaces/more')
+      expect(init.method).toBe('PUT')
+      expect(JSON.parse(init.body)).toEqual({ reserve: {} })
+    })
+
+    it('removeAPIKeyNamespace sends DELETE and returns the reservation outcome', async () => {
+      mockJsonResponse({ name: 'ext', prefix: 'more', namespaces: [], reservation: 'kept' })
+
+      const result = await client.registry.removeAPIKeyNamespace('ext', 'more')
+
+      expect(result.reservation).toBe('kept')
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/registry/api-keys/ext/namespaces/more')
+      expect(init.method).toBe('DELETE')
+    })
+
+    it('listReservations passes the source filter; releaseReservation sends DELETE', async () => {
+      mockJsonResponse([])
+      await client.registry.listReservations('runtime')
+      expect(fetchMock.mock.calls[0][0]).toContain('/api/registry/reservations?source=runtime')
+
+      mockJsonResponse({ status: 'released', prefix: 'p', app: 'ext' })
+      await client.registry.releaseReservation('p')
+      const [url, init] = fetchMock.mock.calls[1]
+      expect(url).toContain('/api/registry/reservations/p')
+      expect(init.method).toBe('DELETE')
+    })
+
     it('getAPIKey carries shadowed_by for a shadowed runtime key', async () => {
       mockJsonResponse({ name: 'rt', source: 'runtime', shadowed_by: 'app-x' })
 

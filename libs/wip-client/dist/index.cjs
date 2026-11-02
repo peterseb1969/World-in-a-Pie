@@ -1374,6 +1374,23 @@ var RegistryService = class extends BaseService {
   async revokeAPIKey(name) {
     return this.del(`/api-keys/${name}`);
   }
+  /** Widen a runtime key to one more namespace, optionally reserving it. */
+  async addAPIKeyNamespace(name, prefix, request = {}) {
+    return this.put(`/api-keys/${name}/namespaces/${prefix}`, request);
+  }
+  /** Narrow a runtime key by one namespace; releases its reservation if the namespace was never created. */
+  async removeAPIKeyNamespace(name, prefix) {
+    return this.del(`/api-keys/${name}/namespaces/${prefix}`);
+  }
+  /** Every namespace reservation, from the install's file and the Registry (admin only). */
+  async listReservations(source) {
+    const suffix = source ? `?source=${source}` : "";
+    return this.get(`/reservations${suffix}`);
+  }
+  /** Release a runtime reservation; the namespace itself is never touched (admin only). */
+  async releaseReservation(prefix) {
+    return this.del(`/reservations/${prefix}`);
+  }
 };
 
 // src/services/reporting-sync.ts

@@ -5,7 +5,7 @@ docs/WIP_DevGuardrails.md sha256:30130d07053d7ac5 reviewed:fe514f02
 libs/wip-client/README.md sha256:7f5f9fd97bb1fe1d reviewed:57d02741
 libs/wip-react/README.md sha256:9e71f0ba4a17d97a reviewed:a66e110f
 libs/wip-proxy/README.md sha256:585feea2b45e5889 reviewed:a8c4e42f
-docs/wip-deployable-app-contract.md sha256:a2e558bf30d33677 reviewed:43aca6a0
+docs/wip-deployable-app-contract.md sha256:c8a847e72594308d reviewed:5a8bc025
 docs/playbooks/app-builder/build-app.md sha256:4d59d990ca82e372 reviewed:43aca6a0
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
 scaffold/templates/claude-md/app.md sha256:ce6f1c0aa58c6a8b reviewed:70de3aa3

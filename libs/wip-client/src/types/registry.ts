@@ -306,6 +306,58 @@ export interface APIKeyInfo {
    * from Registries that predate it.
    */
   shadowed_by?: string | null
+  /** For a runtime key: the namespaces it reserves. Null for config keys. */
+  reserved_namespaces?: string[] | null
+}
+
+/**
+ * Settings a reserved namespace is created with. Omitted fields take the
+ * platform defaults. The key's bootstrap may omit them or send equal values,
+ * never different ones.
+ */
+export interface ReservationSettings {
+  description?: string
+  isolation_mode?: 'open' | 'strict'
+  allowed_external_refs?: string[]
+  inbound_references?: 'closed' | 'open'
+  id_config?: Record<string, unknown>
+  deletion_mode?: 'retain' | 'full'
+}
+
+/** A namespace a runtime key reserves. */
+export interface NamespaceReserve {
+  prefix: string
+  settings?: ReservationSettings
+}
+
+/** Body of addAPIKeyNamespace (widen a runtime key by one namespace). */
+export interface AddAPIKeyNamespaceRequest {
+  /** The grant on the namespace: 'admin' when reserving, else 'read' by default. */
+  permission?: 'read' | 'write' | 'admin'
+  /** Reserve the namespace with these settings (`{}` for the defaults). */
+  reserve?: ReservationSettings
+}
+
+/** Result of removeAPIKeyNamespace (narrow a runtime key by one namespace). */
+export interface RemoveAPIKeyNamespaceResult {
+  name: string
+  prefix: string
+  namespaces: string[]
+  /** 'released', 'kept' (the namespace exists), or null (it was not reserved by this key). */
+  reservation: 'released' | 'kept' | null
+}
+
+/** A namespace reservation, from the install's file or the Registry. */
+export interface NamespaceReservation {
+  prefix: string
+  /** The owning app (file) or runtime API key (runtime). */
+  app: string
+  source: 'file' | 'runtime'
+  /** The settings a create applies. */
+  settings: Record<string, unknown>
+  namespace_exists: boolean
+  /** Set when both sources reserve the prefix; the upsert refuses it until one is removed. */
+  conflict: string | null
 }
 
 /** Result of revoking a runtime API key. */
@@ -314,6 +366,10 @@ export interface APIKeyRevokeResult {
   name: string
   /** Namespaces whose grants to the key were revoked with it. */
   revoked_grants: string[]
+  /** Reservations released because their namespace was never created. */
+  released_reservations?: string[]
+  /** Reservations kept because their namespace exists; release with releaseReservation. */
+  kept_reservations?: string[]
 }
 
 export interface CreateAPIKeyRequest {
@@ -329,6 +385,12 @@ export interface CreateAPIKeyRequest {
    * scoped key can read its namespaces but not write.
    */
   grant_permission?: 'read' | 'write' | 'admin'
+  /**
+   * Namespaces the key reserves (each listed in `namespaces`). The key gets
+   * admin on each and can create it with the reserved settings: an app key
+   * for an app wip-deploy does not manage.
+   */
+  reserve?: NamespaceReserve[]
 }
 
 export interface CreateAPIKeyResponse extends APIKeyInfo {

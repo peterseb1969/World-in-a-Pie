@@ -137,14 +137,19 @@ install reserves it for an app, else from platform defaults
 (isolation_mode='open', inbound_references='closed', deletion_mode='retain',
 description='', allowed_external_refs=[]).
 
-Who may call it: a platform admin key, or a key holding `admin` on a namespace
-the install reserves for an app (the app manifest's spec.namespaces). The
-latter is how an app bootstraps without an admin key: upsert with NO settings
-and the namespace is created exactly as reserved. Any setting it sends must
-equal the reservation's (403 naming the field), except the description, which
-a create stores as sent; it never changes a namespace that already exists.
-An operator adds namespaces to one app on one install with
-`wip-deploy app-namespace add`.
+Who may call it: a platform admin key, or a key holding `admin` on a reserved
+namespace. Reservations come from two sources: the install reserves the
+namespaces of the apps it deploys (the app manifest's spec.namespaces), and a
+platform admin can reserve namespaces for an app the install does not deploy
+by creating a runtime API key with `reserve` (create_api_key). The latter key
+holds admin on each. Either way this is how an app bootstraps without an admin
+key: upsert with NO settings and the namespace is created exactly as reserved.
+Any setting it sends must equal the reservation's (403 naming the field),
+except the description, which a create stores as sent; it never changes a
+namespace that already exists. A prefix has one owner: a runtime reservation
+of a namespace the install reserves is refused, and a prefix both sources
+reserve is refused at the upsert (409) until one is removed. An operator adds
+namespaces to a deployed app with `wip-deploy app-namespace add`.
 
 Safety guards on `deletion_mode`:
 - The 'wip' default namespace cannot be flipped to `full` — 400.
@@ -1499,6 +1504,7 @@ async def create_api_key(
     description: str | None = None,
     expires_at: str | None = None,
     grant_permission: str | None = None,
+    reserve: list[dict] | None = None,
 ) -> str:
     """Create a runtime API key. Returns the plaintext key (shown once, never stored).
 
@@ -1513,6 +1519,14 @@ async def create_api_key(
             grant for the key on each scoped namespace (requires namespaces).
             Without it a scoped key can READ its namespaces but not WRITE;
             for app provisioning you almost always want 'write'.
+        reserve: namespaces the key reserves, each listed in namespaces:
+            [{"prefix": "my-app", "settings": {"deletion_mode": "full"}}].
+            The key gets admin on each and can create it (upsert_namespace)
+            with exactly those settings; omitted settings take the platform
+            defaults. This is an app key for an app wip-deploy does not
+            manage; a namespace the install reserves for one of its apps is
+            refused. Revoking the key releases each reservation whose
+            namespace was never created.
     """
     try:
         data = await get_client().create_api_key(
@@ -1523,6 +1537,7 @@ async def create_api_key(
             description=description,
             expires_at=expires_at,
             grant_permission=grant_permission,
+            reserve=reserve,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:

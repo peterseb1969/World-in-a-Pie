@@ -23,6 +23,9 @@ import type {
   GrantRevokeBulkResponse,
   APIKeyInfo,
   APIKeyRevokeResult,
+  AddAPIKeyNamespaceRequest,
+  NamespaceReservation,
+  RemoveAPIKeyNamespaceResult,
   APIKeyListResponse,
   CreateAPIKeyRequest,
   CreateAPIKeyResponse,
@@ -253,5 +256,30 @@ export class RegistryService extends BaseService {
 
   async revokeAPIKey(name: string): Promise<APIKeyRevokeResult> {
     return this.del(`/api-keys/${name}`)
+  }
+
+  /** Widen a runtime key to one more namespace, optionally reserving it. */
+  async addAPIKeyNamespace(
+    name: string,
+    prefix: string,
+    request: AddAPIKeyNamespaceRequest = {},
+  ): Promise<APIKeyInfo> {
+    return this.put(`/api-keys/${name}/namespaces/${prefix}`, request)
+  }
+
+  /** Narrow a runtime key by one namespace; releases its reservation if the namespace was never created. */
+  async removeAPIKeyNamespace(name: string, prefix: string): Promise<RemoveAPIKeyNamespaceResult> {
+    return this.del(`/api-keys/${name}/namespaces/${prefix}`)
+  }
+
+  /** Every namespace reservation, from the install's file and the Registry (admin only). */
+  async listReservations(source?: 'file' | 'runtime'): Promise<NamespaceReservation[]> {
+    const suffix = source ? `?source=${source}` : ''
+    return this.get(`/reservations${suffix}`)
+  }
+
+  /** Release a runtime reservation; the namespace itself is never touched (admin only). */
+  async releaseReservation(prefix: string): Promise<{ status: string; prefix: string; app: string }> {
+    return this.del(`/reservations/${prefix}`)
   }
 }
