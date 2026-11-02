@@ -591,11 +591,11 @@ if (preview.failed === 0) {
 // (error_code 'validation_failed' | 'identity_fields_changed')
 ```
 
-### Maintenance: Rehashing Identities and Requalifying Synonyms
+### Maintenance: Rehashing Identities
 
-Two per-namespace repair passes, both requiring admin permission on the
-namespace and both defaulting to a dry run on the server. The namespace goes
-in the request body.
+A per-namespace repair pass. It requires admin permission on the namespace
+and defaults to a dry run on the server. The namespace goes in the request
+body.
 
 `rehashIdentities` recomputes the identity hash of documents whose identity
 fields are term- or reference-typed, so that documents written before the
@@ -625,19 +625,7 @@ if (preview.collisions === 0 && preview.errors === 0) {
 }
 ```
 
-`requalifyIdentitySynonyms` re-keys identity-value synonyms to the
-template-qualified form (`{"@template": <template value>, ...}`):
-
-```typescript
-const report = await client.documents.requalifyIdentitySynonyms({
-  namespace: 'clinic-a',
-  dry_run: false,
-})
-// report.items[i].status: 'requalified' | 'no_entry' | 'error'
-```
-
-In React, use `useRehashIdentities()` and `useRequalifyIdentitySynonyms()`
-from `@wip/react`.
+In React, use `useRehashIdentities()` from `@wip/react`.
 
 ---
 

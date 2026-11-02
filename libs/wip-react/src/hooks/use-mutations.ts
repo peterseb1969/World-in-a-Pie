@@ -27,8 +27,6 @@ import type {
   MergeRequest,
   RehashIdentitiesRequest,
   RehashIdentitiesResponse,
-  RequalifyIdentitySynonymsRequest,
-  RequalifyIdentitySynonymsResponse,
 } from '@wip/client'
 import { useWipClient } from '../provider.js'
 import { wipKeys } from '../utils/keys.js'
@@ -697,25 +695,6 @@ export function useRehashIdentities(
     onSuccess: (...args) => {
       if (!args[0].dry_run) {
         queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
-        queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
-      }
-      onSuccess?.(...args)
-    },
-  })
-}
-
-export function useRequalifyIdentitySynonyms(
-  options?: Omit<UseMutationOptions<RequalifyIdentitySynonymsResponse, Error, RequalifyIdentitySynonymsRequest>, 'mutationFn'>,
-) {
-  const { onSuccess, ...restOptions } = options ?? {}
-  const client = useWipClient()
-  const queryClient = useQueryClient()
-  return useMutation({
-    ...restOptions,
-    mutationFn: (data: RequalifyIdentitySynonymsRequest) =>
-      client.documents.requalifyIdentitySynonyms(data),
-    onSuccess: (...args) => {
-      if (!args[0].dry_run) {
         queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
       }
       onSuccess?.(...args)

@@ -921,19 +921,6 @@ var DocumentStoreService = class extends BaseService {
   async rehashIdentities(request) {
     return this.post("/maintenance/rehash-identities", request);
   }
-  /**
-   * Re-key a namespace's identity-value synonyms to the template-qualified
-   * form: add `{"@template": <template value>, ...}` and remove the bare
-   * synonym that claimed the spelling for every template in the namespace.
-   *
-   * `dry_run` defaults to true on the server. The namespace is named in the
-   * request body; requires admin permission on it.
-   *
-   * @param request Namespace and dry_run.
-   */
-  async requalifyIdentitySynonyms(request) {
-    return this.post("/maintenance/requalify-identity-synonyms", request);
-  }
   // ---- Import ----
   async previewImport(file, filename) {
     const form = new FormData();

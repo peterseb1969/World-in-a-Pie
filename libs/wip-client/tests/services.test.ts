@@ -1371,29 +1371,6 @@ describe('Service classes via createWipClient', () => {
       const [, options] = fetchMock.mock.calls[0]
       expect(JSON.parse(options.body)).toEqual({ namespace: 'n', dry_run: false })
     })
-
-    it('requalifyIdentitySynonyms POSTs the namespace in the body', async () => {
-      mockJsonResponse({
-        namespace: 'clinic-a', dry_run: true, scanned: 1, requalified: 1,
-        unchanged: 0, no_entry: 0, errors: 0,
-        items: [{
-          document_id: 'doc-1', template_value: 'PATIENT', status: 'requalified',
-          bare: { title: 'X' }, qualified: { '@template': 'PATIENT', title: 'X' },
-          detail: null,
-        }],
-      })
-
-      const result = await client.documents.requalifyIdentitySynonyms({
-        namespace: 'clinic-a',
-      })
-
-      expect(result.requalified).toBe(1)
-      const [url, options] = fetchMock.mock.calls[0]
-      expect(url).toContain('/api/document-store/maintenance/requalify-identity-synonyms')
-      expect(url).not.toContain('namespace=')
-      expect(options.method).toBe('POST')
-      expect(JSON.parse(options.body)).toEqual({ namespace: 'clinic-a' })
-    })
   })
 
   describe('RegistryService', () => {

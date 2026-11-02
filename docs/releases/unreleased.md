@@ -7,6 +7,43 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Archives with bare identity synonyms are refused; the re-qualification pass is gone; `@wip/client` 0.74.0, `@wip/react` 0.25.0
+
+A document's identity values are registered as a synonym qualified by its
+template (`{"@template": <template value>, <field>: <value>, …}`). Data written
+before that carries them bare (`{<field>: <value>, …}`), a form that claims the
+spelling for every template in the namespace. The bare form is no longer
+supported anywhere.
+
+- **Restore refuses it.** Every restore mode (restore, merge, fresh) refuses an
+  archive whose document entries carry a bare identity synonym, before
+  anything is written, dry runs included. The message names the count per
+  namespace. To bring such an archive forward, restore it with an earlier WIP
+  release, which re-qualifies identity synonyms on restore, then take a new
+  backup there.
+- **The re-qualification pass is removed.** A fresh restore no longer runs
+  it. `POST /api/document-store/maintenance/requalify-identity-synonyms`,
+  `@wip/client`'s `documents.requalifyIdentitySynonyms()` with its
+  `RequalifyIdentitySynonyms*` types, and `@wip/react`'s
+  `useRequalifyIdentitySynonyms()` are removed. This supersedes the entries
+  below on batched re-qualification and on the pass's typed response.
+- **Before upgrading,** check every live namespace with the old release's dry
+  run (`POST …/requalify-identity-synonyms` with `dry_run: true`) and apply
+  it where it finds bare synonyms. Archives taken before that are refused
+  afterwards.
+
+### Fresh restores do their Registry work in bulk
+
+A fresh restore's Registry work ran one item at a time: activating each
+document identity, then adding each synonym. Both now run in bulk, and a
+document's synonyms are written together with its activation. On a Mac Studio
+a fresh restore of 240,474 document rows went from 12 min 55 s to 2 min 26 s
+(activation about 6 min to under a minute, the separate synonym pass gone).
+`/entries/register`, `/provision`, `/reserve`, `/entries/activate` and
+`/synonyms/add` / `/remove` claim composite keys in one insert per request;
+their per-item results are unchanged. `/entries/activate` items accept
+`synonyms` (with `composite_key` only).
+
 ### App keys for apps wip-deploy does not manage: runtime namespace reservations; `@wip/client` 0.73.0
 
 Until now only wip-deploy could issue a key that bootstraps an app: a key that
