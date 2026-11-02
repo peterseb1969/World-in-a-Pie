@@ -237,7 +237,7 @@ class AuthConfig(BaseSettings):
         Note: Keys in JSON can be provided as plaintext "key" (will be hashed)
         or pre-hashed "key_hash". Plaintext keys are hashed on load.
         """
-        from .providers.api_key import hash_api_key
+        from .providers.api_key import api_key_prehash, hash_api_key
 
         keys: list[APIKeyRecord] = []
         seen_names: set[str] = set()
@@ -248,7 +248,7 @@ class AuthConfig(BaseSettings):
         # Load legacy key if set
         if self.legacy_api_key:
             plaintexts["legacy"] = self.legacy_api_key
-            keys.append(APIKeyRecord(
+            legacy = APIKeyRecord(
                 name="legacy",
                 key_hash=hash_api_key(self.legacy_api_key, self.api_key_hash_salt),
                 owner="system:legacy",
@@ -258,7 +258,11 @@ class AuthConfig(BaseSettings):
                 last_used_at=None,
                 expires_at=None,
                 namespaces=None,
-            ))
+            )
+            legacy._plaintext_prehash = api_key_prehash(
+                self.legacy_api_key, self.api_key_hash_salt
+            )
+            keys.append(legacy)
             seen_names.add("legacy")
 
         # Load keys from JSON environment variable
@@ -339,12 +343,19 @@ class AuthConfig(BaseSettings):
         Returns:
             APIKeyRecord with hashed key
         """
+        from .providers.api_key import api_key_prehash
+
         # If plaintext key is provided, hash it
+        plaintext = None
         if "key" in key_dict and "key_hash" not in key_dict:
             key_dict = key_dict.copy()
-            key_dict["key_hash"] = hash_func(key_dict.pop("key"), self.api_key_hash_salt)
+            plaintext = key_dict.pop("key")
+            key_dict["key_hash"] = hash_func(plaintext, self.api_key_hash_salt)
 
-        return APIKeyRecord(**key_dict)
+        record = APIKeyRecord(**key_dict)
+        if plaintext:
+            record._plaintext_prehash = api_key_prehash(plaintext, self.api_key_hash_salt)
+        return record
 
 
 def _track_plaintext(plaintexts: dict[str, str], name: str, key_dict: dict) -> None:

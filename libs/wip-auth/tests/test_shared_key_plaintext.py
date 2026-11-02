@@ -14,8 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from wip_auth import AuthConfig, reset_auth_config
-from wip_auth.providers.api_key import APIKeyProvider, hash_api_key
+from wip_auth import APIKeyRecord, AuthConfig, reset_auth_config
+from wip_auth.providers.api_key import (
+    APIKeyProvider,
+    api_key_prehash,
+    hash_api_key,
+    prehash_matches,
+    verify_api_key,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -99,3 +105,55 @@ def test_every_provider_answers_the_same_for_a_shared_value(tmp_path: Path):
         assert provider.identify_key("same") is None
         identity = provider.identify_key("master")
         assert identity is not None and identity.username == "legacy"
+
+
+# --- The plaintext prehash a config key keeps, for the Registry's check of
+# runtime keys against config keys (a runtime key sharing a config key's
+# plaintext is withheld from key sync). ---
+
+
+def test_config_keys_keep_the_prehash_of_their_plaintext(tmp_path: Path):
+    config = _config(tmp_path, [_key("a", "one")], legacy_api_key="master")
+    salt = config.api_key_hash_salt
+    by_name = {k.name: k for k in config.load_api_keys()}
+    assert by_name["a"].plaintext_prehash == api_key_prehash("one", salt)
+    assert by_name["legacy"].plaintext_prehash == api_key_prehash("master", salt)
+
+
+def test_a_pre_hashed_config_entry_has_no_prehash(tmp_path: Path):
+    config = _config(tmp_path, [{"name": "h", "key_hash": hash_api_key("x"), "namespaces": ["ns"]}])
+    (record,) = config.load_api_keys()
+    assert record.plaintext_prehash is None
+
+
+def test_the_prehash_never_serializes(tmp_path: Path):
+    config = _config(tmp_path, [_key("a", "one")])
+    (record,) = config.load_api_keys()
+    dumped = record.model_dump()
+    assert api_key_prehash("one", config.api_key_hash_salt) not in dumped.values()
+    assert not any("prehash" in k for k in dumped)
+
+
+def test_provider_lists_the_prehashes_of_its_current_config_keys(tmp_path: Path):
+    config = _config(tmp_path, [_key("a", "one"), _key("b", "two")])
+    provider = APIKeyProvider(config.load_api_keys(), hash_salt=config.api_key_hash_salt)
+    runtime = hash_api_key("rt", config.api_key_hash_salt)
+    provider.add_key(APIKeyRecord(name="rt", key_hash=runtime, namespaces=["ns"]))
+    assert set(provider.config_key_prehashes()) == {"a", "b"}
+
+    # A reload swaps the set: a key that leaves stops being listed.
+    reloaded = _config(tmp_path, [_key("b", "two")]).load_api_keys()
+    provider.reload_config_keys(reloaded)
+    assert set(provider.config_key_prehashes()) == {"b"}
+
+
+def test_prehash_matches_agrees_with_verify_api_key():
+    salt = "s"
+    bcrypt_hash = hash_api_key("k", salt)
+    legacy_hash = api_key_prehash("k", salt).hex()
+    for key_hash in (bcrypt_hash, legacy_hash):
+        assert prehash_matches(api_key_prehash("k", salt), key_hash)
+        assert not prehash_matches(api_key_prehash("other", salt), key_hash)
+        assert verify_api_key("k", key_hash, salt)
+        assert not verify_api_key("other", key_hash, salt)
+    assert not prehash_matches(api_key_prehash("k", salt), "not-a-hash")

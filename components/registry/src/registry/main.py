@@ -5,6 +5,7 @@ A federated identity management service for the World In a Pie system.
 Provides composite key registration, synonym management, and cross-namespace search.
 """
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -14,7 +15,6 @@ from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
     APIKeyProvider,
-    APIKeyRecord,
     build_metadata,
     check_production_security,
     declare_api_key_security,
@@ -35,6 +35,7 @@ from .models.entry import RegistryEntry
 from .models.grant import NamespaceGrant
 from .models.id_counter import IdCounter
 from .models.namespace import Namespace
+from .services import key_shadowing
 
 
 # Application configuration
@@ -158,18 +159,17 @@ async def lifespan(app: FastAPI):
         # Load runtime keys from MongoDB and add to provider
         runtime_docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
         for doc in runtime_docs:
-            api_key_provider.add_key(APIKeyRecord(
-                name=doc.name,
-                key_hash=doc.key_hash,
-                owner=doc.owner,
-                groups=doc.groups,
-                description=doc.description,
-                created_at=doc.created_at,
-                expires_at=doc.expires_at,
-                enabled=doc.enabled,
-                namespaces=doc.namespaces,
-            ))
+            api_key_provider.add_key(key_shadowing.runtime_record(doc))
         print(f"Loaded {len(runtime_docs)} runtime API key(s) from MongoDB.")
+
+        # Before serving: a runtime key sharing a config key's plaintext must
+        # be out of the provider and of /api-keys/sync from the first request.
+        shadowed = await key_shadowing.reconcile(api_key_provider)
+        if shadowed:
+            print(f"Withheld {len(shadowed)} runtime API key(s) shadowed by a config key.")
+        shadow_task = asyncio.create_task(
+            key_shadowing.run_reconcile_loop(api_key_provider)
+        )
 
         configure_api_key_management(api_key_provider)
     else:
@@ -178,6 +178,8 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    if api_key_provider:
+        shadow_task.cancel()
     print("Shutting down WIP Registry Service...")
     await get_deletion_service().stop_recovery()
     app.state.mongodb_client.close()

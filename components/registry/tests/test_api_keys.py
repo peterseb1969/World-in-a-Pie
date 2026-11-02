@@ -233,6 +233,38 @@ class TestDeleteAPIKey:
         assert response.status_code == 404
 
     @pytest.mark.asyncio
+    async def test_delete_revokes_the_keys_grants(self, client: AsyncClient, auth_headers: dict):
+        """Grants are keyed by the key's name: left behind, they would pass to
+        the next key created under that name."""
+        await client.post(
+            BASE,
+            json={"name": "granted-key", "namespaces": ["vendor1", "vendor2"],
+                  "grant_permission": "write"},
+            headers=auth_headers,
+        )
+        # Another subject's grant on the same namespace is not touched.
+        await client.post(
+            "/api/registry/namespaces/vendor1/grants",
+            json=[{"subject": "someone-else", "subject_type": "api_key", "permission": "read"}],
+            headers=auth_headers,
+        )
+
+        response = await client.delete(f"{BASE}/granted-key", headers=auth_headers)
+        assert response.status_code == 200
+        assert response.json()["revoked_grants"] == ["vendor1", "vendor2"]
+
+        # A new key under the same name starts with no grants.
+        await client.post(
+            BASE, json={"name": "granted-key", "namespaces": ["vendor1"]}, headers=auth_headers,
+        )
+        grants = (await client.get(
+            "/api/registry/namespaces/vendor1/grants", headers=auth_headers,
+        )).json()
+        subjects = {g["subject"] for g in (grants if isinstance(grants, list) else grants["items"])}
+        assert "granted-key" not in subjects
+        assert "someone-else" in subjects
+
+    @pytest.mark.asyncio
     async def test_delete_config_key_rejected(self, client: AsyncClient, auth_headers: dict):
         response = await client.delete(f"{BASE}/legacy", headers=auth_headers)
         assert response.status_code == 400

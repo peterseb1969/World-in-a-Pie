@@ -97,6 +97,15 @@ class APIKeyResponse(BaseModel):
             "NamespaceGrants (wipe-mortal) and are not shown in this field."
         ),
     )
+    shadowed_by: str | None = Field(
+        default=None,
+        description=(
+            "For a runtime key: the config key that has the same plaintext. "
+            "A shadowed runtime key does not authenticate (the plaintext is "
+            "the config key's) and is left out of key sync; revoke it, or "
+            "give the config key a new value. Always None for config keys."
+        ),
+    )
 
 
 class APIKeyCreatedResponse(APIKeyResponse):

@@ -41,6 +41,16 @@ def _is_sha256_hash(h: str) -> bool:
     return len(h) == 64 and all(c in "0123456789abcdef" for c in h)
 
 
+def api_key_prehash(key: str, salt: str = "wip_auth_salt") -> bytes:
+    """SHA-256 of the salted key: what bcrypt hashes, and what a legacy
+    SHA-256 hash is the hex of.
+
+    bcrypt has a 72-byte input limit, so the salt and key are pre-hashed to
+    support arbitrarily long combinations while preserving full entropy.
+    """
+    return hashlib.sha256(f"{salt}:{key}".encode()).digest()
+
+
 def hash_api_key(key: str, salt: str = "wip_auth_salt") -> str:
     """Hash an API key using bcrypt.
 
@@ -55,11 +65,25 @@ def hash_api_key(key: str, salt: str = "wip_auth_salt") -> str:
     Returns:
         Bcrypt hash string (starts with $2b$)
     """
-    # bcrypt has a 72-byte input limit. Pre-hash with SHA-256 to support
-    # arbitrarily long salt+key combinations while preserving full entropy.
-    salted = f"{salt}:{key}"
-    prehash = hashlib.sha256(salted.encode()).digest()
-    return bcrypt.hashpw(prehash, bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(api_key_prehash(key, salt), bcrypt.gensalt()).decode()
+
+
+def prehash_matches(prehash: bytes, key_hash: str) -> bool:
+    """Whether a key whose api_key_prehash is `prehash` matches `key_hash`.
+
+    Supports both bcrypt (preferred) and legacy SHA-256 hashes, with
+    constant-time comparison for the latter.
+    """
+    if _is_bcrypt_hash(key_hash):
+        try:
+            return bcrypt.checkpw(prehash, key_hash.encode())
+        except (ValueError, TypeError):
+            return False
+
+    if _is_sha256_hash(key_hash):
+        return hmac.compare_digest(prehash.hex(), key_hash)
+
+    return False
 
 
 def verify_api_key(key: str, key_hash: str, salt: str = "wip_auth_salt") -> bool:
@@ -76,22 +100,7 @@ def verify_api_key(key: str, key_hash: str, salt: str = "wip_auth_salt") -> bool
     Returns:
         True if the key matches the hash
     """
-    salted = f"{salt}:{key}"
-
-    if _is_bcrypt_hash(key_hash):
-        try:
-            # Pre-hash to match hash_api_key() (handles >72-byte inputs)
-            prehash = hashlib.sha256(salted.encode()).digest()
-            return bcrypt.checkpw(prehash, key_hash.encode())
-        except (ValueError, TypeError):
-            return False
-
-    if _is_sha256_hash(key_hash):
-        # Legacy SHA-256 fallback — constant-time comparison
-        computed = hashlib.sha256(salted.encode()).hexdigest()
-        return hmac.compare_digest(computed, key_hash)
-
-    return False
+    return prehash_matches(api_key_prehash(key, salt), key_hash)
 
 
 class APIKeyProvider:
@@ -174,6 +183,16 @@ class APIKeyProvider:
     def config_key_names(self) -> frozenset[str]:
         """Names of the current config keys (env and key file)."""
         return self._config_names
+
+    def config_key_prehashes(self) -> dict[str, bytes]:
+        """api_key_prehash of each loaded, enabled config key that was given
+        as a plaintext, by name. Pre-hashed config entries have none."""
+        keys, names = self._keys, self._config_names
+        return {
+            k.name: k.plaintext_prehash
+            for k in keys
+            if k.name in names and k.plaintext_prehash is not None
+        }
 
     def reload_config_keys(self, config_keys: list["APIKeyRecord"]) -> None:
         """Replace the config keys atomically, keeping the runtime keys.

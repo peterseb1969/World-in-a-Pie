@@ -3,7 +3,7 @@
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 
 class UserIdentity(BaseModel):
@@ -97,6 +97,16 @@ class APIKeyRecord(BaseModel):
             "to local (Registry-free) permission resolution"
         ),
     )
+
+    # SHA-256 of the salted plaintext (what bcrypt hashes), kept for config
+    # keys loaded from a plaintext so the Registry can tell whether a runtime
+    # key's hash matches a config key's value. Not a field: it never
+    # serializes. None for runtime keys and pre-hashed config entries.
+    _plaintext_prehash: bytes | None = PrivateAttr(default=None)
+
+    @property
+    def plaintext_prehash(self) -> bytes | None:
+        return self._plaintext_prehash
 
     def is_expired(self) -> bool:
         """Check if the key has expired.

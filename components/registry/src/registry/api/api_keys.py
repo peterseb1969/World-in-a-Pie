@@ -30,6 +30,7 @@ from ..models.api_key import (
     generate_plaintext_key,
 )
 from ..models.grant import NamespaceGrant
+from ..services import key_shadowing
 from ..services.auth import require_admin_key, require_groups
 
 logger = logging.getLogger("registry.api_keys")
@@ -73,6 +74,7 @@ def _stored_to_response(doc: StoredAPIKey) -> APIKeyResponse:
         namespaces=doc.namespaces,
         created_by=doc.created_by,
         source="runtime",
+        shadowed_by=key_shadowing.shadowed_by(doc.name),
     )
 
 
@@ -147,18 +149,10 @@ async def create_api_key(
     )
     await doc.insert()
 
-    # Add to local provider so it works immediately
-    provider.add_key(APIKeyRecord(
-        name=doc.name,
-        key_hash=doc.key_hash,
-        owner=doc.owner,
-        groups=doc.groups,
-        description=doc.description,
-        created_at=doc.created_at,
-        expires_at=doc.expires_at,
-        enabled=doc.enabled,
-        namespaces=doc.namespaces,
-    ))
+    # Add to local provider so it works immediately. A plaintext the Registry
+    # generated cannot already be a config key's; a config key that takes it
+    # later is caught by the next shadow check.
+    provider.add_key(key_shadowing.runtime_record(doc))
 
     logger.info("Created runtime API key: name=%s owner=%s created_by=%s",
                 doc.name, doc.owner, doc.created_by)
@@ -256,6 +250,9 @@ async def sync_api_keys(
     """Return enabled runtime keys with hashes for service polling.
 
     Only returns runtime keys — config keys are already loaded by each service.
+    A runtime key with the same plaintext as a config key is shadowed and
+    left out, so every service resolves that plaintext as the config key;
+    the key listing names the config key that shadows it.
     Requires the wip-services or wip-admins group — enforced by the
     require_groups dependency above. This endpoint returns
     key_hash values, so it must never be reachable by an unprivileged
@@ -276,6 +273,7 @@ async def sync_api_keys(
             namespaces=doc.namespaces,
         )
         for doc in docs
+        if not key_shadowing.is_shadowed(doc.name)
     ]
 
 
@@ -342,19 +340,12 @@ async def update_api_key(
 
     await doc.save()
 
-    # Update the in-memory provider: remove old, add updated
-    provider.remove_key(doc.key_hash)
-    provider.add_key(APIKeyRecord(
-        name=doc.name,
-        key_hash=doc.key_hash,
-        owner=doc.owner,
-        groups=doc.groups,
-        description=doc.description,
-        created_at=doc.created_at,
-        expires_at=doc.expires_at,
-        enabled=doc.enabled,
-        namespaces=doc.namespaces,
-    ))
+    # Update the in-memory provider: remove old, add updated — unless a config
+    # key shadows it, in which case it stays out.
+    async with key_shadowing.provider_lock:
+        provider.remove_key(doc.key_hash)
+        if not key_shadowing.is_shadowed(doc.name):
+            provider.add_key(key_shadowing.runtime_record(doc))
 
     logger.info("Updated runtime API key: name=%s by=%s", name, get_identity_string())
 
@@ -369,7 +360,11 @@ async def delete_api_key(
     name: str,
     _admin: str = Depends(require_admin_key),
 ) -> dict:
-    """Hard-delete a runtime API key. Config-file keys cannot be deleted."""
+    """Hard-delete a runtime API key and its namespace grants.
+
+    Config-file keys cannot be deleted. The response lists the namespaces
+    whose grants to the key were revoked with it (`revoked_grants`).
+    """
     if _is_config_key(name):
         raise HTTPException(
             status_code=400,
@@ -383,9 +378,23 @@ async def delete_api_key(
     provider = _get_provider()
 
     # Remove from provider first, then from DB
-    provider.remove_key(doc.key_hash)
-    await doc.delete()
+    async with key_shadowing.provider_lock:
+        provider.remove_key(doc.key_hash)
+        await doc.delete()
 
-    logger.info("Revoked runtime API key: name=%s by=%s", name, get_identity_string())
+    # The key's namespace grants go with it. Grants are keyed by the key's
+    # name, so a grant left behind would silently pass to the next key
+    # created under the same name. Both subject spellings are matched: the
+    # bare name (canonical) and the "apikey:<name>" user_id form.
+    grant_query = {"subject_type": "api_key", "subject": {"$in": [name, f"apikey:{name}"]}}
+    grants = await NamespaceGrant.find(grant_query).to_list()
+    if grants:
+        await NamespaceGrant.find(grant_query).delete()
+    revoked_grants = sorted({g.namespace for g in grants})
 
-    return {"status": "deleted", "name": name}
+    logger.info(
+        "Revoked runtime API key: name=%s by=%s grants_revoked=%s",
+        name, get_identity_string(), revoked_grants,
+    )
+
+    return {"status": "deleted", "name": name, "revoked_grants": revoked_grants}
