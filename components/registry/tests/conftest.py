@@ -31,6 +31,7 @@ from registry.models.entry import RegistryEntry
 from registry.models.grant import NamespaceGrant
 from registry.models.id_counter import IdCounter
 from registry.models.namespace import Namespace
+from registry.models.reservation import RuntimeReservation
 from registry.services.auth import AuthService
 
 
@@ -65,7 +66,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await _ensure_mongo_reachable(mongo_client, mongo_uri)
     await init_beanie(
         database=mongo_client[os.environ["DATABASE_NAME"]],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey, CompositeKeyClaim]
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey, CompositeKeyClaim, RuntimeReservation]
     )
 
     # Clean up data from previous test
@@ -75,6 +76,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await DeletionJournal.delete_all()
     await StoredAPIKey.delete_all()
     await CompositeKeyClaim.delete_all()
+    await RuntimeReservation.delete_all()
 
     # Store client in app state (needed by health check)
     app.state.mongodb_client = mongo_client

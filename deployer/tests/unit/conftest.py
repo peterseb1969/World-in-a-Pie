@@ -15,3 +15,18 @@ def _no_live_cluster_secrets() -> Iterator[None]:
     read reports "nothing to read" unless a test patches it itself."""
     with patch("wip_deploy.cli.read_live_secrets", return_value=None):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_live_registry_reservations() -> Iterator[None]:
+    """Every apply asks the running Registry for its runtime namespace
+    reservations. Unit tests must never reach a real install, so the apply's
+    check finds nothing to compare. (Tests of the check itself import the
+    function directly, which this patch does not replace.)"""
+    from wip_deploy.runtime_reservations import RuntimeReservationCheck
+
+    with patch(
+        "wip_deploy.runtime_reservations.check_runtime_reservations",
+        return_value=RuntimeReservationCheck(),
+    ):
+        yield

@@ -12,6 +12,8 @@ from beanie import Document
 from pydantic import BaseModel, ConfigDict, Field
 from pymongo import IndexModel
 
+from ..services.reservations import ReservationSettings
+
 
 class StoredAPIKey(Document):
     """A runtime API key persisted in MongoDB.
@@ -50,6 +52,22 @@ def generate_plaintext_key() -> str:
 # --- Request / Response models ---
 
 
+class NamespaceReserveRequest(BaseModel):
+    """A namespace a runtime key reserves, with the settings it is created with."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prefix: str = Field(..., description="The namespace to reserve")
+    settings: ReservationSettings = Field(
+        default_factory=ReservationSettings,
+        description=(
+            "Settings the namespace is created with; omitted ones take the "
+            "platform defaults. The key's bootstrap may omit them or send equal "
+            "values, never different ones."
+        ),
+    )
+
+
 class APIKeyCreateRequest(BaseModel):
     """Request body for creating a new runtime API key."""
 
@@ -71,6 +89,36 @@ class APIKeyCreateRequest(BaseModel):
             "`namespaces`. Requires `namespaces` to be set. Without it, a "
             "scoped key can read its namespaces but not write — the grant "
             "is a separate, easily-missed step."
+        ),
+    )
+    reserve: list[NamespaceReserveRequest] | None = Field(
+        default=None,
+        description=(
+            "Namespaces this key reserves, each listed in `namespaces`. The key "
+            "gets `admin` on each, and may create it (PUT /namespaces/{prefix}) "
+            "with the reserved settings: a key that bootstraps its app without "
+            "being a platform admin. For apps wip-deploy does not manage; a "
+            "prefix the install's reservations hold is refused. Revoking the key "
+            "releases each reservation whose namespace was not created."
+        ),
+    )
+
+
+class NamespaceAddRequest(BaseModel):
+    """Widen a runtime key to one more namespace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    permission: Literal["read", "write", "admin"] | None = Field(
+        default=None,
+        description="The grant on the namespace; 'admin' when reserving, else 'read' by default",
+    )
+    reserve: ReservationSettings | None = Field(
+        default=None,
+        description=(
+            "Reserve the namespace for the key with these settings (send {} for "
+            "the defaults), so the key may create it. Requires permission admin "
+            "(the default when reserving)."
         ),
     )
 
@@ -105,6 +153,10 @@ class APIKeyResponse(BaseModel):
             "the config key's) and is left out of key sync; revoke it, or "
             "give the config key a new value. Always None for config keys."
         ),
+    )
+    reserved_namespaces: list[str] | None = Field(
+        default=None,
+        description="For a runtime key: the namespaces it reserves. None for config keys.",
     )
 
 

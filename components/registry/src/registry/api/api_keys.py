@@ -7,6 +7,7 @@ Runtime API keys are stored in MongoDB and managed here. Config-file keys
 import logging
 import math
 from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -26,12 +27,16 @@ from ..models.api_key import (
     APIKeyResponse,
     APIKeySyncRecord,
     APIKeyUpdateRequest,
+    NamespaceAddRequest,
     StoredAPIKey,
     generate_plaintext_key,
 )
 from ..models.grant import NamespaceGrant
-from ..services import key_shadowing
+from ..models.reservation import RuntimeReservation
+from ..services import key_shadowing, reservation_store
 from ..services.auth import require_admin_key, require_groups
+from ..services.reservation_store import ReservationRefused
+from ..services.reservations import ReservationSettings, ReservationsUnavailable
 
 logger = logging.getLogger("registry.api_keys")
 
@@ -61,7 +66,7 @@ def _get_provider() -> APIKeyProvider:
     return _api_key_provider
 
 
-def _stored_to_response(doc: StoredAPIKey) -> APIKeyResponse:
+def _stored_to_response(doc: StoredAPIKey, reserved: list[str] | None = None) -> APIKeyResponse:
     """Convert a StoredAPIKey document to an APIKeyResponse."""
     return APIKeyResponse(
         name=doc.name,
@@ -75,7 +80,60 @@ def _stored_to_response(doc: StoredAPIKey) -> APIKeyResponse:
         created_by=doc.created_by,
         source="runtime",
         shadowed_by=key_shadowing.shadowed_by(doc.name),
+        reserved_namespaces=sorted(reserved or []),
     )
+
+
+async def _reserved_by(name: str) -> list[str]:
+    return [r.prefix for r in await reservation_store.reservations_of(name)]
+
+
+async def _check_reservation(prefix: str, settings: ReservationSettings, owner: str) -> None:
+    """The reservation checks as an HTTP error."""
+    try:
+        await reservation_store.check_new_reservation(prefix, settings, owner)
+    except ReservationRefused as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+    except ReservationsUnavailable as e:
+        raise HTTPException(
+            status_code=503, detail=f"Namespace reservations are unavailable: {e}"
+        ) from e
+
+
+async def _set_grant(name: str, prefix: str, permission: Literal["read", "write", "admin"]) -> None:
+    """Create or replace the key's grant on `prefix`."""
+    grant = await NamespaceGrant.find_one({
+        "namespace": prefix, "subject": name, "subject_type": "api_key",
+    })
+    if grant is None:
+        await NamespaceGrant(
+            namespace=prefix,
+            subject=name,
+            subject_type="api_key",
+            permission=permission,
+            granted_by=get_identity_string(),
+        ).create()
+    elif grant.permission != permission:
+        grant.permission = permission
+        await grant.save()
+
+
+def _grant_query(name: str, prefix: str | None = None) -> dict:
+    """The key's grants (on `prefix`, or everywhere). Both subject spellings:
+    the bare name (canonical) and the "apikey:<name>" user_id form."""
+    query: dict = {"subject_type": "api_key", "subject": {"$in": [name, f"apikey:{name}"]}}
+    if prefix is not None:
+        query["namespace"] = prefix
+    return query
+
+
+async def _refresh_provider(doc: StoredAPIKey) -> None:
+    """Put the key's current record in the provider, unless a config key shadows it."""
+    provider = _get_provider()
+    async with key_shadowing.provider_lock:
+        provider.remove_key(doc.key_hash)
+        if not key_shadowing.is_shadowed(doc.name):
+            provider.add_key(key_shadowing.runtime_record(doc))
 
 
 def _config_key_to_response(record: APIKeyRecord) -> APIKeyResponse:
@@ -105,7 +163,13 @@ async def create_api_key(
     request: APIKeyCreateRequest,
     _admin: str = Depends(require_admin_key),
 ) -> APIKeyCreatedResponse:
-    """Create a new runtime API key. The plaintext is returned once and never stored."""
+    """Create a new runtime API key. The plaintext is returned once and never stored.
+
+    With `reserve`, the key also reserves those namespaces (each must be in
+    `namespaces`) and gets `admin` on each, so it can create them with the
+    reserved settings: an app key for an app wip-deploy does not manage.
+    Every reservation is checked before anything is written.
+    """
     provider = _get_provider()
 
     # CASE-450: grant_permission without a namespace scope is meaningless —
@@ -130,6 +194,20 @@ async def create_api_key(
             status_code=409,
             detail=f"Runtime key '{request.name}' already exists",
         )
+
+    reserve = request.reserve or []
+    reserved_prefixes = [r.prefix for r in reserve]
+    if len(set(reserved_prefixes)) != len(reserved_prefixes):
+        raise HTTPException(status_code=422, detail="reserve lists a namespace twice")
+    outside = sorted(set(reserved_prefixes) - set(request.namespaces or []))
+    if outside:
+        raise HTTPException(
+            status_code=422,
+            detail=f"reserve: {', '.join(outside)} not in `namespaces`; a key reserves "
+            "only namespaces it is scoped to",
+        )
+    for r in reserve:
+        await _check_reservation(r.prefix, r.settings, request.name)
 
     # Generate and hash
     plaintext = generate_plaintext_key()
@@ -157,29 +235,36 @@ async def create_api_key(
     logger.info("Created runtime API key: name=%s owner=%s created_by=%s",
                 doc.name, doc.owner, doc.created_by)
 
-    # CASE-450: optionally create namespace grants for the new key in the
-    # same call, so a scoped key is usable (not read-only) immediately.
-    # Mirrors POST /namespaces/{prefix}/grants semantics with the canonical
-    # api_key subject (bare key name). Namespace existence is intentionally
-    # not enforced — key namespace scoping isn't either, and app
-    # provisioning flows may create the namespace after the key.
+    # Optionally create namespace grants for the new key in the same call, so
+    # a scoped key is usable (not read-only) immediately. Same semantics as
+    # POST /namespaces/{prefix}/grants, with the canonical api_key subject
+    # (the bare key name). Namespace existence is intentionally not enforced:
+    # key namespace scoping isn't either, and app provisioning may create the
+    # namespace after the key. A reserved namespace always gets admin.
     granted_namespaces: list[str] | None = None
-    if request.grant_permission and request.namespaces:
+    if (request.grant_permission or reserve) and request.namespaces:
         granted_namespaces = []
         for prefix in request.namespaces:
-            grant = NamespaceGrant(
-                namespace=prefix,
-                subject=doc.name,
-                subject_type="api_key",
-                permission=request.grant_permission,
-                granted_by=get_identity_string(),
-            )
-            await grant.create()
+            permission: Literal["read", "write", "admin"]
+            if prefix in reserved_prefixes:
+                permission = "admin"
+            elif request.grant_permission:
+                permission = request.grant_permission
+            else:
+                continue
+            await _set_grant(doc.name, prefix, permission)
             granted_namespaces.append(prefix)
         logger.info(
-            "Granted %s on %s to api_key %s (CASE-450 grant_permission)",
-            request.grant_permission, granted_namespaces, doc.name,
+            "Granted on %s to api_key %s (grant_permission=%s, reserved=%s)",
+            granted_namespaces, doc.name, request.grant_permission, reserved_prefixes,
         )
+
+    for r in reserve:
+        await reservation_store.save_reservation(
+            r.prefix, r.settings, doc.name, get_identity_string()
+        )
+    if reserve:
+        logger.info("Runtime key %s reserves %s", doc.name, reserved_prefixes)
 
     return APIKeyCreatedResponse(
         granted_namespaces=granted_namespaces,
@@ -194,6 +279,7 @@ async def create_api_key(
         created_by=doc.created_by,
         source="runtime",
         plaintext_key=plaintext,
+        reserved_namespaces=sorted(reserved_prefixes),
     )
 
 
@@ -223,8 +309,11 @@ async def list_api_keys(
 
     # Runtime keys from MongoDB (source of truth for metadata)
     runtime_docs = await StoredAPIKey.find_all().to_list()
+    reserved: dict[str, list[str]] = {}
+    for r in await RuntimeReservation.find_all().to_list():
+        reserved.setdefault(r.app, []).append(r.prefix)
     for doc in runtime_docs:
-        results.append(_stored_to_response(doc))
+        results.append(_stored_to_response(doc, reserved.get(doc.name)))
 
     results.sort(key=lambda r: r.name)
     total = len(results)
@@ -298,7 +387,7 @@ async def get_api_key(
     # Check runtime keys
     doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
     if doc:
-        return _stored_to_response(doc)
+        return _stored_to_response(doc, await _reserved_by(name))
 
     raise HTTPException(status_code=404, detail=f"API key '{name}' not found")
 
@@ -324,7 +413,16 @@ async def update_api_key(
     if not doc:
         raise HTTPException(status_code=404, detail=f"Runtime key '{name}' not found")
 
-    provider = _get_provider()
+    reserved = await _reserved_by(name)
+    if request.namespaces is not None:
+        dropped = sorted(set(reserved) - set(request.namespaces))
+        if dropped:
+            raise HTTPException(
+                status_code=409,
+                detail=f"namespaces would drop {', '.join(dropped)}, which the key "
+                f"reserves; narrow with DELETE /api-keys/{name}/namespaces/<prefix>, "
+                "which also handles the reservation and the grant",
+            )
 
     # Apply updates
     if request.description is not None:
@@ -339,17 +437,113 @@ async def update_api_key(
         doc.enabled = request.enabled
 
     await doc.save()
-
-    # Update the in-memory provider: remove old, add updated — unless a config
-    # key shadows it, in which case it stays out.
-    async with key_shadowing.provider_lock:
-        provider.remove_key(doc.key_hash)
-        if not key_shadowing.is_shadowed(doc.name):
-            provider.add_key(key_shadowing.runtime_record(doc))
+    await _refresh_provider(doc)
 
     logger.info("Updated runtime API key: name=%s by=%s", name, get_identity_string())
 
-    return _stored_to_response(doc)
+    return _stored_to_response(doc, reserved)
+
+
+async def _runtime_key(name: str) -> StoredAPIKey:
+    if _is_config_key(name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot modify config-file key '{name}' via API; wip-deploy manages it",
+        )
+    doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Runtime key '{name}' not found")
+    return doc
+
+
+@router.put(
+    "/{name}/namespaces/{prefix}",
+    response_model=APIKeyResponse,
+    summary="Widen a runtime API key to a namespace",
+)
+async def add_key_namespace(
+    name: str,
+    prefix: str,
+    request: NamespaceAddRequest,
+    _admin: str = Depends(require_admin_key),
+) -> APIKeyResponse:
+    """Scope a runtime key to one more namespace, with a grant on it.
+
+    With `reserve`, the key also reserves the namespace with those settings
+    and gets `admin` on it, so it may create it. Idempotent: repeating the
+    call changes nothing, and re-reserving with other settings replaces
+    them (an existing namespace is never retuned by a reservation).
+    """
+    doc = await _runtime_key(name)
+    if doc.namespaces is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Runtime key '{name}' is not namespace-scoped; there is no scope to widen",
+        )
+    permission = request.permission or ("admin" if request.reserve is not None else "read")
+    if request.reserve is not None:
+        if permission != "admin":
+            raise HTTPException(
+                status_code=422,
+                detail="a key reserving a namespace holds admin on it; omit permission or send 'admin'",
+            )
+        await _check_reservation(prefix, request.reserve, name)
+
+    if prefix not in doc.namespaces:
+        doc.namespaces = [*doc.namespaces, prefix]
+        await doc.save()
+        await _refresh_provider(doc)
+    await _set_grant(name, prefix, permission)
+    if request.reserve is not None:
+        await reservation_store.save_reservation(
+            prefix, request.reserve, name, get_identity_string()
+        )
+    logger.info(
+        "Widened runtime key %s to %s (permission=%s, reserved=%s) by=%s",
+        name, prefix, permission, request.reserve is not None, get_identity_string(),
+    )
+    return _stored_to_response(doc, await _reserved_by(name))
+
+
+@router.delete(
+    "/{name}/namespaces/{prefix}",
+    summary="Narrow a runtime API key by one namespace",
+)
+async def remove_key_namespace(
+    name: str,
+    prefix: str,
+    _admin: str = Depends(require_admin_key),
+) -> dict:
+    """Take a namespace out of a runtime key's scope and revoke its grant
+    there. A reservation of the namespace is released when the namespace
+    was never created; otherwise it is kept (`reservation: "kept"`) for an
+    operator to release with DELETE /reservations/{prefix}. The namespace
+    itself is never touched."""
+    doc = await _runtime_key(name)
+    if not doc.namespaces or prefix not in doc.namespaces:
+        raise HTTPException(
+            status_code=404, detail=f"Runtime key '{name}' is not scoped to '{prefix}'"
+        )
+    doc.namespaces = [n for n in doc.namespaces if n != prefix]
+    await doc.save()
+    await _refresh_provider(doc)
+    await NamespaceGrant.find(_grant_query(name, prefix)).delete()
+    reservation = None
+    held = await RuntimeReservation.find_one(
+        RuntimeReservation.prefix == prefix
+    )
+    if held is not None and held.app == name:
+        reservation = await reservation_store.release(prefix)
+    logger.info(
+        "Narrowed runtime key %s by %s (reservation=%s) by=%s",
+        name, prefix, reservation, get_identity_string(),
+    )
+    return {
+        "name": name,
+        "prefix": prefix,
+        "namespaces": doc.namespaces,
+        "reservation": reservation,
+    }
 
 
 @router.delete(
@@ -363,7 +557,10 @@ async def delete_api_key(
     """Hard-delete a runtime API key and its namespace grants.
 
     Config-file keys cannot be deleted. The response lists the namespaces
-    whose grants to the key were revoked with it (`revoked_grants`).
+    whose grants to the key were revoked with it (`revoked_grants`). The
+    key's namespace reservations are released where the namespace was never
+    created (`released_reservations`) and kept where it exists
+    (`kept_reservations`; release them with DELETE /reservations/{prefix}).
     """
     if _is_config_key(name):
         raise HTTPException(
@@ -386,15 +583,31 @@ async def delete_api_key(
     # name, so a grant left behind would silently pass to the next key
     # created under the same name. Both subject spellings are matched: the
     # bare name (canonical) and the "apikey:<name>" user_id form.
-    grant_query = {"subject_type": "api_key", "subject": {"$in": [name, f"apikey:{name}"]}}
+    grant_query = _grant_query(name)
     grants = await NamespaceGrant.find(grant_query).to_list()
     if grants:
         await NamespaceGrant.find(grant_query).delete()
     revoked_grants = sorted({g.namespace for g in grants})
 
+    # Its reservations: released when the namespace was never created, kept
+    # (and reported) when it exists, so an operator decides. The namespace
+    # itself is never deleted as a side effect.
+    released: list[str] = []
+    kept: list[str] = []
+    for r in await reservation_store.reservations_of(name):
+        outcome = await reservation_store.release(r.prefix)
+        (released if outcome == "released" else kept).append(r.prefix)
+
     logger.info(
-        "Revoked runtime API key: name=%s by=%s grants_revoked=%s",
-        name, get_identity_string(), revoked_grants,
+        "Revoked runtime API key: name=%s by=%s grants_revoked=%s "
+        "reservations_released=%s reservations_kept=%s",
+        name, get_identity_string(), revoked_grants, released, kept,
     )
 
-    return {"status": "deleted", "name": name, "revoked_grants": revoked_grants}
+    return {
+        "status": "deleted",
+        "name": name,
+        "revoked_grants": revoked_grants,
+        "released_reservations": sorted(released),
+        "kept_reservations": sorted(kept),
+    }

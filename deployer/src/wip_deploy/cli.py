@@ -1267,6 +1267,7 @@ def install(
     secrets = _ensure_secrets_via_spec(
         deployment, components, apps_list, install_dir=target_dir,
     )
+    _refuse_runtime_reservation_collisions(deployment, apps_list, secrets)
 
     # CASE-459: stamp the source checkout into the deployer-state so the
     # mutation verbs (add-app / app-deploy / ...) can discover manifests
@@ -2438,6 +2439,7 @@ def _apply_and_persist_mutation(
         deployment, components, apps_list,
         install_dir=target_dir, regenerate=regenerate,
     )
+    _refuse_runtime_reservation_collisions(deployment, apps_list, secrets)
     # CASE-355: surface render-time errors cleanly through the additive
     # verbs too — `add-app NAME` without --app-source on a dev install
     # hits the same gate.
@@ -6443,6 +6445,30 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
             )
             raise typer.Exit(2) from e
         raise typer.Exit(result.returncode)
+
+
+def _refuse_runtime_reservation_collisions(
+    deployment: Deployment, apps_list: list[App], secrets: ResolvedSecrets
+) -> None:
+    """Stop an apply that would reserve a namespace (or an ID prefix) a
+    runtime API key already reserves in the running Registry. See
+    runtime_reservations.py; an unreachable Registry is a note, not a stop."""
+    from wip_deploy.runtime_reservations import check_runtime_reservations
+
+    result = check_runtime_reservations(
+        deployment, apps_list, secrets.values.get("api-key")
+    )
+    if result.note:
+        typer.echo(f"note: {result.note}", err=True)
+    if result.errors:
+        typer.echo(
+            "error: the install's namespace reservations collide with runtime "
+            "reservations in the Registry — a namespace has one owner:",
+            err=True,
+        )
+        for error in result.errors:
+            typer.echo(f"  {error}", err=True)
+        raise typer.Exit(2)
 
 
 def _ensure_secrets_via_spec(

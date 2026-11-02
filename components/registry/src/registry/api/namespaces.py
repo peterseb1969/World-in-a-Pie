@@ -37,11 +37,11 @@ from ..services.id_prefixes import (
     collision_error,
     is_prefix_collision,
 )
+from ..services.reservation_store import ReservationConflict, find_reservation
 from ..services.reservations import (
     SETTING_DEFAULTS,
     SETTING_FIELDS,
     ReservationsUnavailable,
-    load_reservations,
 )
 from .grants import _resolve_permission
 
@@ -87,22 +87,25 @@ def namespace_to_response(ns: Namespace) -> NamespaceResponse:
     )
 
 
-def _reserved_settings(prefix: str) -> dict[str, Any] | None:
-    """The settings the install's reservation of `prefix` approves, with its
-    id_config validated as any namespace write's is; None when not reserved.
+async def _reserved_settings(prefix: str) -> dict[str, Any] | None:
+    """The settings the reservation of `prefix` approves (from the install's
+    file or a runtime reservation), with its id_config validated as any
+    namespace write's is; None when not reserved.
 
-    An unusable reservations file is a 503 and an invalid reservation a 409,
-    both naming the cause: the operator's declaration is wrong, and neither
-    refusing the app nor creating the namespace at other settings is a safe
-    guess.
+    An unusable reservations file is a 503; an invalid reservation, or a
+    prefix both sources reserve, is a 409. Each names the cause: the
+    operator's declaration is wrong, and neither refusing the app nor
+    creating the namespace at other settings is a safe guess.
     """
     try:
-        reservation = load_reservations().get(prefix)
+        reservation = await find_reservation(prefix)
     except ReservationsUnavailable as e:
         logger.critical("Namespace reservations unavailable: %s", e)
         raise HTTPException(
             status_code=503, detail=f"Namespace reservations are unavailable: {e}"
         ) from e
+    except ReservationConflict as e:
+        raise HTTPException(status_code=409, detail=str(e)) from e
     if reservation is None:
         return None
     settings = reservation.effective_settings()
@@ -374,7 +377,7 @@ async def upsert_namespace(
                 [{**err, "loc": ("body", "id_config", *err["loc"])} for err in e.errors()]
             ) from e
 
-    reserved = _reserved_settings(prefix)
+    reserved = await _reserved_settings(prefix)
     if not identity.has_any_group(get_auth_config().admin_groups):
         await _check_reserved_upsert(identity, prefix, ns, update_data, reserved)
         if ns is not None:

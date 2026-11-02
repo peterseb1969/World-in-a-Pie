@@ -35,6 +35,7 @@ from .models.entry import RegistryEntry
 from .models.grant import NamespaceGrant
 from .models.id_counter import IdCounter
 from .models.namespace import Namespace
+from .models.reservation import RuntimeReservation
 from .services import key_shadowing
 
 
@@ -67,7 +68,7 @@ async def lifespan(app: FastAPI):
     # yet on fresh k8s boot, node drain, pod reschedule.
     await init_beanie_with_retry(
         database=client[settings.DATABASE_NAME],
-        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey, CompositeKeyClaim],
+        document_models=[Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal, StoredAPIKey, CompositeKeyClaim, RuntimeReservation],
         description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")

@@ -8,6 +8,7 @@ from .grants import my_router as my_router
 from .grants import router as grants_router
 from .namespace_deletion import router as deletion_router
 from .namespaces import router as namespaces_router
+from .reservations import router as reservations_router
 from .search import router as search_router
 from .synonyms import router as synonyms_router
 
@@ -23,5 +24,6 @@ api_router.include_router(synonyms_router, prefix="/synonyms", tags=["Synonyms"]
 api_router.include_router(search_router, prefix="/search", tags=["Search"])
 api_router.include_router(my_router, prefix="/my", tags=["My Permissions"])
 api_router.include_router(api_keys_router, prefix="/api-keys", tags=["API Keys"])
+api_router.include_router(reservations_router, prefix="/reservations", tags=["Reservations"])
 
 __all__ = ["api_router"]
