@@ -453,6 +453,115 @@ platform refuses.
 - A reference or file field cannot be filled by `migrate`: offline, its
   snapshot cannot be resolved.
 
+### 6.5 The M5 plan (decisions 2026-11-02; measurement first)
+
+`compose` is the first producer of rows no install ever held. Every
+earlier transform starts from rows a live install validated; compose
+builds them from outside data.
+
+**What a composed archive must hold** (read from `run_remap` in
+`backup_engine.py`). A fresh restore re-mints every ID through the
+Registry and rewrites references, so compose may write placeholder ids.
+It still reads the archive's `registry_entries`: `_restore_synonyms`
+carries each archived synonym onto the re-minted entity, a document's
+identity-values synonym included. So compose writes Registry rows as well
+as document rows. Each document row carries what a live write derives:
+`identity_hash`, the `term_references` and `references` snapshots, and
+`template_version`. The M2 library already computes all of these
+(`identity`, `document_check`, `validation`), as `migrate` does.
+
+**Decisions (Peter, 2026-11-02).**
+
+1. **Use cases:** migrating a legacy system (a one-off large load into a
+   new namespace), and bulk loads faster than the live write path.
+   Seeding app data and test fixtures are not drivers.
+2. **Definitions come from an existing archive.** Templates and
+   terminologies are authored on a live install, where they are fully
+   validated, and taken from its backup. Compose adds documents and their
+   Registry rows only. It never creates a schema, so no offline template
+   validation is needed.
+3. **Compose validates every row; the door is unchanged.** Each composed
+   row must pass the offline write validation against its template, the
+   same check `migrate` runs. A failure refuses the run unless
+   `--skip-failing`. Open question 4 stays closed: no full-schema
+   validation at the door. The known gap: an archive edited after compose
+   is checked again only by `verify` and the post-restore integrity
+   validation, which covers references, not schemas.
+4. **Staged: v1 targets fresh restore only.** A merge keeps the archive's
+   canonical IDs (the docstring of `_check_ids_are_free` in
+   `backup_engine.py`: "Canonical IDs are preserved by a merge"). Merging a composed archive would
+   make compose's offline placeholder IDs canonical, which bypasses the
+   Registry as the identity authority and breaks namespaces with prefixed
+   ID formats. A fresh restore re-mints every ID through the Registry, so
+   v1 serves the legacy load into an empty namespace. Recurring loads into
+   a populated namespace need a merge variant that re-mints new documents'
+   IDs. That is engine work, decided on the measurement below.
+5. **Measure first.** The speed claim behind the second use case is
+   unmeasured. Before building compose, measure a fresh restore against
+   live bulk create of the same documents. If the restore is not clearly
+   faster, the bulk-load use case is better served by speeding up the
+   live write path, and the merge variant is dropped.
+
+**The measurement (2026-11-02, Raspberry Pi 5, dev install at
+`4de37267`).** The pbs-clintrial archive (240,474 document rows, 222,026
+documents, two namespaces) loaded both ways into fresh namespaces, one
+client each, no concurrency:
+
+| Path | Time | Result |
+|---|---|---|
+| Fresh restore (server job) | 71 min 44 s | 240,474 rows, 222,026 latest; post-restore validation healthy |
+| Live bulk create: definitions-only fresh restore, then `POST /documents` in batches of 500 through Caddy | 2 min 23 s + 70 min 28 s | 240,474 rows, 222,026 latest; 222,026 created, 18,448 updated, 0 errors |
+| Fresh restore of an archive whose identity synonyms are already qualified | 43 min 53 s | 240,474 rows, 222,026 latest; validation healthy; nothing re-qualified |
+
+Where the restore's time went: activating 222,119 document identities
+17 min 42 s; restoring 222,113 synonyms 16 min 12 s; re-qualifying the
+archive's bare identity synonyms about 33 min (a lookup pass, then each
+synonym added again in the qualified form and the bare one removed). The
+archive predates qualified identity synonyms, so this restore paid the
+requalify pass; a composed archive writes the qualified form and would not.
+The third row measures exactly that shape: a backup of the restored
+namespace (its synonyms now qualified), restored fresh again. Its phases:
+activation 18 min 10 s, synonyms 17 min 19 s, and about 5 min for the
+requalify pass, which still reads every entry back to find nothing to do.
+
+The live path ran at 27 to 133 rows a second depending on the template.
+
+**Reading.** For the archive shape compose would write, a fresh restore
+took 43 min 53 s against 72 min 51 s for live bulk create: about 1.7 times
+faster. Nearly all of the restore's time is two per-item Registry passes
+(finding 1); nearly all of the live path's is per-document validation and
+Registry work. Both paths have the fixable costs listed below, so the
+ratio is a property of today's code, not of the two designs. Whether 1.7
+times counts as "clearly faster" for decision 5 is open, for Peter.
+
+**Findings from the measurement** (code reading, each tied to a measured
+phase; none is fixed by this plan):
+
+1. Keyed activation (`registry/api/entries.py`, `activate_entries`) and
+   `/synonyms/add` (`registry/api/synonyms.py`) handle one item at a time:
+   a full-document read, a pending claim, a full-document save and a
+   confirm, about 4 to 6 MongoDB round trips each. Keyless activation
+   (terms) is bulk: 18,054 identities took 15 s.
+2. A fresh restore adds an archive's bare identity synonyms, then
+   `requalify_identity_synonyms` re-adds every one qualified and removes the
+   bare one. Qualifying them in `_restore_synonyms` before the add would make
+   the requalify pass a no-op on fresh restores.
+3. The live path's inbound-reference gate looks up a term field's
+   terminology namespace with a single-item `lookup/by-id`, memoised only
+   per document (`validation_service.py`, `gate.namespace_of`; a new
+   `InboundGate` per document in `_validate_as_writer`): about one Registry
+   round trip per document for a lookup whose answer is the same for the
+   whole batch.
+4. `wip-toolkit restore` follows the job for 3600 s, then prints the last
+   snapshot and exits 0 while the job is still running. `backup` exits 1 on
+   the same timeout.
+
+**Not yet decided** (proposed defaults, for the plan after the
+measurement): input as CSV and JSONL rows; a per-template mapping file in
+`migrate`'s format; references named by identity values, synonym or term
+value and resolved offline against the archive; the hop recording the
+input files and their digests.
+
 ## 7. Boundary policy (M3 preview, recorded here because inspect quantifies it)
 
 When a selection cuts document-reference edges (plain reference
