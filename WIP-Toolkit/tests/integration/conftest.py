@@ -260,6 +260,7 @@ def stack():
         from registry.models.grant import NamespaceGrant
         from registry.models.id_counter import IdCounter
         from registry.models.namespace import Namespace
+        from registry.models.reservation import RuntimeReservation
         from registry.services.auth import AuthService
         from template_store.api.auth import set_api_key as template_store_set_api_key
         from template_store.main import app as template_store_app
@@ -278,7 +279,7 @@ def stack():
     models = [
         # Registry
         Namespace, RegistryEntry, IdCounter, NamespaceGrant,
-        DeletionJournal, CompositeKeyClaim,
+        DeletionJournal, CompositeKeyClaim, RuntimeReservation,
         # Def-Store
         Terminology, Term, TermRelation, TermAuditLog,
         # Template-Store

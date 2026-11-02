@@ -125,6 +125,7 @@ from registry.models.entry import RegistryEntry  # noqa: E402
 from registry.models.grant import NamespaceGrant  # noqa: E402
 from registry.models.id_counter import IdCounter  # noqa: E402
 from registry.models.namespace import Namespace  # noqa: E402
+from registry.models.reservation import RuntimeReservation  # noqa: E402
 from registry.services.auth import AuthService  # noqa: E402
 from wip_auth import AuthConfig, set_auth_config  # noqa: E402
 from wip_auth.resolve import clear_resolution_cache, set_resolve_transport  # noqa: E402
@@ -777,6 +778,7 @@ _ALL_TEST_MODELS = [
     # Registry models
     Namespace, RegistryEntry, IdCounter, NamespaceGrant, DeletionJournal,
     CompositeKeyClaim,  # register_keys claims composite keys here
+    RuntimeReservation,  # namespace upsert reads runtime reservations
     # Document-Store models — union of every fixture's needs
     Document, BackupJob, File, RestoreProvenance,
     # Def-Store models (the real def-store app in the term-resolution contract tests)
