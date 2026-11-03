@@ -1968,54 +1968,21 @@ class DocumentService:
             query["template_value"] = template_value
         if template_version is not None:
             query["template_version"] = template_version
-        # With latest_only, a status filter describes each document's LATEST
-        # version. Applied before the group it would pick each document's
-        # highest version that has the status, so status=inactive returned
-        # the superseded versions of live documents next to the deleted ones.
-        # Active is the exception: a document has at most one active version,
-        # so filtering before the group gives the same result and keeps the
-        # common call cheap.
-        status_after_group: dict | None = None
-        if status:
-            if latest_only and status != DocumentStatus.ACTIVE:
-                status_after_group = {"status": status.value}
-            else:
-                query["status"] = status.value
-        name_every_status(query)
-
         if latest_only:
             if cursor:
                 raise ValueError(
                     "cursor is incompatible with latest_only (latest_only pages by "
                     "page/page_size over the grouped result)."
                 )
-            sort_clauses = build_sort_clauses(sort_by, sort_order)
-            # Aggregation: group by document_id, keep highest version
-            pipeline: list[dict] = [
-                {"$match": query} if query else {"$match": {}},
-                {"$sort": {"document_id": 1, "version": -1}},
-                {"$group": {
-                    "_id": "$document_id",
-                    "doc": {"$first": "$$ROOT"},
-                }},
-                {"$replaceRoot": {"newRoot": "$doc"}},
-                *([{"$match": status_after_group}] if status_after_group else []),
-                {"$sort": dict(sort_clauses)},
-            ]
+            # Each document's LATEST version, then the status filter on that
+            # row — rewritten as a plain filter so the page and count below
+            # run as ordinary indexed finds.
+            query = await self._latest_versions_query(query, status)
+        elif status:
+            query["status"] = status.value
+        name_every_status(query)
 
-            count_pipeline = [*pipeline, {"$count": "total"}]
-            count_result = await Document.aggregate(count_pipeline).to_list()
-            total = count_result[0]["total"] if count_result else 0
-
-            skip = (page - 1) * page_size
-            paginated_pipeline = [
-                *pipeline,
-                {"$skip": skip},
-                {"$limit": page_size},
-            ]
-            results = await Document.aggregate(paginated_pipeline).to_list()
-            documents = [Document(**doc) for doc in results]
-        elif cursor:
+        if cursor:
             if sort_by is not None or sort_order is not None:
                 raise ValueError(
                     "sort_by/sort_order are incompatible with cursor pagination "
@@ -3627,6 +3594,70 @@ class DocumentService:
                 )
                 responses.append(self._result_to_validation_response(result))
         return responses
+
+    @staticmethod
+    async def _latest_versions_query(
+        base: dict[str, Any], status: DocumentStatus | None
+    ) -> dict[str, Any]:
+        """A filter matching each document's latest version among ``base``.
+
+        With ``status``, only documents whose latest version has that status.
+        Grouping every row and sorting the groups made a large namespace's
+        listing take seconds. Nearly every document has the shape a write
+        leaves — one active row on top of its superseded inactive rows — and
+        for those the latest version IS the active row. One lean group (no
+        row bodies, no sort) finds the documents that differ, and the result
+        is a plain filter:
+
+        - several active rows (a merge restore with ``older_versions: keep``
+          leaves them on purpose): only the highest is the latest;
+        - no active row (soft-deleted): the highest inactive row is;
+        - an active row under a higher inactive one: the inactive one is.
+        """
+        active = DocumentStatus.ACTIVE.value
+        exceptions = await Document.get_motor_collection().aggregate([
+            {"$match": base},
+            {"$group": {
+                "_id": "$document_id",
+                "top": {"$max": "$version"},
+                "n_active": {"$sum": {"$cond": [{"$eq": ["$status", active]}, 1, 0]}},
+                "top_active": {"$max": {"$cond": [
+                    {"$eq": ["$status", active]}, "$version", None]}},
+            }},
+            {"$match": {"$or": [
+                {"n_active": {"$gt": 1}},
+                {"n_active": 0},
+                {"$expr": {"$lt": ["$top_active", "$top"]}},
+            ]}},
+        ], allowDiskUse=True).to_list(None)
+
+        hidden_active: list = []    # active rows that are not their document's latest
+        latest_inactive: list = []  # the latest rows of documents whose latest is inactive
+        if exceptions:
+            top = {e["_id"]: e["top"] for e in exceptions}
+            rows = Document.get_motor_collection().find(
+                {**base, "document_id": {"$in": list(top)}},
+                {"_id": 1, "document_id": 1, "version": 1, "status": 1},
+            )
+            async for row in rows:
+                is_latest = row["version"] == top[row["document_id"]]
+                if row["status"] == active and not is_latest:
+                    hidden_active.append(row["_id"])
+                elif row["status"] != active and is_latest:
+                    latest_inactive.append(row["_id"])
+
+        live: dict[str, Any] = {"status": active}
+        if hidden_active:
+            live["_id"] = {"$nin": hidden_active}
+        retired: dict[str, Any] = {"_id": {"$in": latest_inactive}}
+
+        if status == DocumentStatus.ACTIVE:
+            return {**base, **live}
+        if status is not None:
+            return {**base, **retired, "status": status.value}
+        if not latest_inactive:
+            return {**base, **live}
+        return {**base, "$or": [live, retired]}
 
     async def _batch_to_responses(self, documents: list[Document]) -> list[DocumentResponse]:
         """Convert a batch of Documents to DocumentResponses with a single aggregation.
