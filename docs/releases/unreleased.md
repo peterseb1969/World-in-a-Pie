@@ -44,6 +44,18 @@ a fresh restore of 240,474 document rows went from 12 min 55 s to 2 min 26 s
 their per-item results are unchanged. `/entries/activate` items accept
 `synonyms` (with `composite_key` only).
 
+### Document writes ask the Registry where references live only in strict namespaces
+
+Before writing a document, document-store checks the source namespace's
+`isolation_mode` against the namespaces of the document's new references.
+It used to look those namespaces up in the Registry once per document,
+although only a `strict` namespace can refuse a reference. Writes into any
+other namespace now skip the lookup: create, bulk create and PATCH. A bulk
+write into a strict namespace looks up the whole batch's references at once,
+in requests of up to 500 ids. Refusals are unchanged.
+The bulk response's `timing` gains `1b_reference_gates`, the time spent on
+the relationship and namespace-isolation checks after validation.
+
 ### App keys for apps wip-deploy does not manage: runtime namespace reservations; `@wip/client` 0.73.0
 
 Until now only wip-deploy could issue a key that bootstraps an app: a key that

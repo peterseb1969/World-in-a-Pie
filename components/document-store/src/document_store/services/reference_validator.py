@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 # too (CASE-607).
 NAMESPACE_CACHE_TTL_SECONDS = 5.0
 
+# Entity ids per Registry lookup when a strict namespace's batch is placed
+# at once (place_references).
+PLACEMENT_CHUNK = 500
+
 
 class ReferenceValidationError(Exception):
     """Raised when a cross-namespace reference violates isolation rules."""
@@ -93,6 +97,7 @@ class ReferenceValidator:
         document_references: list[dict[str, Any]] | None = None,
         previous: Any | None = None,
         identity: UserIdentity | None = None,
+        placements: dict[str, str] | None = None,
     ) -> None:
         """
         Check a document's new cross-namespace references against the
@@ -108,6 +113,12 @@ class ReferenceValidator:
         loses read on its target, and the document's template, fixed for the
         document's life, is checked when the document is first written.
 
+        Only a strict source can refuse anything: for any other source the
+        outbound gate passes every target, so the check returns before
+        asking the Registry where the targets live. That answer could not
+        change the outcome, and skipping it records nothing the Registry
+        could later disagree with.
+
         Args:
             document_namespace: Namespace of the document being created/updated
             template_namespace: Namespace of the referenced template
@@ -119,6 +130,8 @@ class ReferenceValidator:
             previous: The version this write replaces (a Document or its
                 dict), or None for a new document
             identity: The writer; defaults to the request's identity
+            placements: Entity id -> namespace, already looked up for a
+                whole batch (place_references); ids it lacks are looked up
 
         Raises:
             ReferenceValidationError: A reference the source namespace's own
@@ -126,50 +139,24 @@ class ReferenceValidator:
             RegistryUnavailableError: If namespace settings, target namespaces
                 or the writer's permission cannot be read
         """
-        carried = _referenced_ids(previous) if previous is not None else set()
-        # (type, entity id, namespace if the reference carries it, field path)
-        targets: list[tuple[str, str, str | None, str | None]] = []
-        seen: set[str] = set()
-
-        def add(kind: str, entity_id: str, namespace: str | None, field: str | None) -> None:
-            if entity_id in carried or entity_id in seen:
-                return
-            seen.add(entity_id)
-            targets.append((kind, entity_id, namespace, field))
-
-        if previous is None and template_namespace != document_namespace:
-            targets.append(("template", "", template_namespace, None))
-        for ref in document_references or []:
-            resolved = ref.get("resolved") or {}
-            kind = ref.get("reference_type") or ""
-            entity_id = resolved.get(_RESOLVED_ID_KEYS.get(kind, ""))
-            if entity_id:
-                add(
-                    kind, entity_id,
-                    resolved.get("namespace") if kind == "document" else None,
-                    ref.get("field_path"),
-                )
-        for ref in term_references or []:
-            if ref.get("term_id"):
-                add("term", ref["term_id"], None, ref.get("field_path"))
-        for ref in file_references or []:
-            if ref.get("file_id"):
-                add("file", ref["file_id"], None, ref.get("field_path"))
+        targets = _collect_targets(
+            document_namespace, template_namespace,
+            term_references, file_references, document_references, previous,
+        )
         if not targets:
             return
 
-        unplaced = sorted({eid for _, eid, ns, _ in targets if ns is None and eid})
-        placed: dict[str, str] = {}
-        if unplaced:
-            registry = self._registry or get_registry_client()
-            try:
-                placed = await registry.lookup_entry_namespaces(unplaced, raise_on_error=True)
-            except (RegistryError, httpx.HTTPError) as e:
-                raise RegistryUnavailableError(
-                    f"Cannot check the namespaces of references from '{document_namespace}': {e}"
-                ) from e
-
         source_config = await self._get_namespace(document_namespace)
+        if not _is_strict(source_config):
+            return
+
+        placed = dict(placements or {})
+        unplaced = sorted({
+            eid for _, eid, ns, _ in targets if ns is None and eid and eid not in placed
+        })
+        if unplaced:
+            placed.update(await self._place(document_namespace, unplaced))
+
         violations: list[dict[str, Any]] = []
         for kind, entity_id, namespace, _field in targets:
             target_ns = namespace or placed.get(entity_id)
@@ -193,6 +180,52 @@ class ReferenceValidator:
                 f"(isolation_mode=strict): {len(violations)} violation(s)",
                 violations=violations,
             )
+
+    async def place_references(
+        self, document_namespace: str, documents: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Place a whole batch's references in their namespaces at once.
+
+        ``documents`` holds each document's reference lists, keyed like
+        validate_document_references' arguments (term_references,
+        file_references, document_references). Returns entity id ->
+        namespace for the ids no reference already places ("" for an id the
+        Registry could not place); pass it to
+        validate_document_references as ``placements`` so the batch costs
+        one Registry lookup per 500 ids instead of one per document.
+
+        A non-strict source needs no placements (see
+        validate_document_references) and gets {} without a lookup.
+        """
+        source_config = await self._get_namespace(document_namespace)
+        if not _is_strict(source_config):
+            return {}
+        unplaced: set[str] = set()
+        for doc in documents:
+            for _, eid, ns, _ in _collect_targets(
+                document_namespace, document_namespace,
+                doc.get("term_references"), doc.get("file_references"),
+                doc.get("document_references"), None,
+            ):
+                if ns is None and eid:
+                    unplaced.add(eid)
+        ids = sorted(unplaced)
+        # Every id asked about gets an answer, "" for one the Registry could
+        # not place (not an active entity), so no document asks again.
+        placed: dict[str, str] = dict.fromkeys(ids, "")
+        for i in range(0, len(ids), PLACEMENT_CHUNK):
+            placed.update(await self._place(document_namespace, ids[i:i + PLACEMENT_CHUNK]))
+        return placed
+
+    async def _place(self, document_namespace: str, entity_ids: list[str]) -> dict[str, str]:
+        """Look up the namespaces of ``entity_ids`` in one Registry request."""
+        registry = self._registry or get_registry_client()
+        try:
+            return await registry.lookup_entry_namespaces(entity_ids, raise_on_error=True)
+        except (RegistryError, httpx.HTTPError) as e:
+            raise RegistryUnavailableError(
+                f"Cannot check the namespaces of references from '{document_namespace}': {e}"
+            ) from e
 
     async def validate_template_references(
         self,
@@ -256,6 +289,57 @@ _RESOLVED_ID_KEYS = {
     "terminology": "terminology_id",
     "template": "template_id",
 }
+
+
+def _is_strict(source_config: dict[str, Any]) -> bool:
+    """Can the source namespace's outbound gate refuse any target?
+
+    Mirrors wip_auth.reference_policy.outbound_allows, which passes every
+    target unless isolation_mode is strict.
+    """
+    return bool(source_config.get("isolation_mode", "open") == "strict")
+
+
+def _collect_targets(
+    document_namespace: str,
+    template_namespace: str,
+    term_references: list[dict[str, Any]] | None,
+    file_references: list[dict[str, Any]] | None,
+    document_references: list[dict[str, Any]] | None,
+    previous: Any | None,
+) -> list[tuple[str, str, str | None, str | None]]:
+    """A document's new references, as (type, entity id, namespace if the
+    reference carries it, field path); references the previous version
+    already held are left out."""
+    carried = _referenced_ids(previous) if previous is not None else set()
+    targets: list[tuple[str, str, str | None, str | None]] = []
+    seen: set[str] = set()
+
+    def add(kind: str, entity_id: str, namespace: str | None, field: str | None) -> None:
+        if entity_id in carried or entity_id in seen:
+            return
+        seen.add(entity_id)
+        targets.append((kind, entity_id, namespace, field))
+
+    if previous is None and template_namespace != document_namespace:
+        targets.append(("template", "", template_namespace, None))
+    for ref in document_references or []:
+        resolved = ref.get("resolved") or {}
+        kind = ref.get("reference_type") or ""
+        entity_id = resolved.get(_RESOLVED_ID_KEYS.get(kind, ""))
+        if entity_id:
+            add(
+                kind, entity_id,
+                resolved.get("namespace") if kind == "document" else None,
+                ref.get("field_path"),
+            )
+    for ref in term_references or []:
+        if ref.get("term_id"):
+            add("term", ref["term_id"], None, ref.get("field_path"))
+    for ref in file_references or []:
+        if ref.get("file_id"):
+            add("file", ref["file_id"], None, ref.get("field_path"))
+    return targets
 
 
 def _referenced_ids(previous: Any) -> set[str]:

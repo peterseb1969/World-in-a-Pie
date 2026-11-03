@@ -306,6 +306,7 @@ class DocumentService:
 
     async def _check_new_references(
         self, namespace: str, template_id: str, vr: Any,
+        placements: dict[str, str] | None = None,
     ) -> None:
         """Apply the cross-namespace reference gates to a create or upsert.
 
@@ -315,6 +316,9 @@ class DocumentService:
         namespace, or only what they may, and pay nothing extra. The lookup
         is the Registry's read-only primary-key lookup, the key the write is
         about to register, so a refused write leaves nothing behind.
+
+        ``placements`` carries a batch's reference namespaces, looked up once
+        for the whole batch (ReferenceValidator.place_references).
         """
         kwargs = {
             "document_namespace": namespace,
@@ -322,6 +326,7 @@ class DocumentService:
             "term_references": vr.term_references,
             "file_references": vr.file_references,
             "document_references": vr.references,
+            "placements": placements,
         }
         validator = get_reference_validator()
         try:
@@ -2904,7 +2909,27 @@ class DocumentService:
         # must apply the identical check or the guardrail holds on one path only.
         # validation_service.validate already populated each reference's resolved
         # {namespace, status}, so this reuses _validate_relationship_constraints.
+        start = time.perf_counter()
         template_client = get_template_store_client()
+        # Namespace isolation can only refuse in a strict namespace; there the
+        # whole batch's references are placed with one Registry lookup per
+        # 500 ids, not one per document. If that lookup fails, each item
+        # falls back to its own lookup below and is refused on its own.
+        placements: dict[str, str] | None
+        try:
+            placements = await get_reference_validator().place_references(
+                namespace,
+                [
+                    {
+                        "term_references": vr.term_references,
+                        "file_references": vr.file_references,
+                        "document_references": vr.references,
+                    }
+                    for _, _, vr in validation_results
+                ],
+            )
+        except RegistryUnavailableError:
+            placements = None
         rel_checked: list = []
         for entry in validation_results:
             idx, req, vr = entry
@@ -2934,7 +2959,9 @@ class DocumentService:
             # writes and not for batches. The validator caches each
             # namespace's settings, so a batch costs one lookup per namespace.
             try:
-                await self._check_new_references(namespace, req.template_id, vr)
+                await self._check_new_references(
+                    namespace, req.template_id, vr, placements=placements,
+                )
             except (
                 ReferenceValidationError, RegistryUnavailableError,
             ) as e:
@@ -2945,6 +2972,7 @@ class DocumentService:
                 continue
             rel_checked.append(entry)
         validation_results = rel_checked
+        timing["1b_reference_gates"] = (time.perf_counter() - start) * 1000
 
         if not validation_results:
             return self._finalize_bulk_response(results, len(items), timing, total_start)
