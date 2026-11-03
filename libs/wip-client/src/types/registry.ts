@@ -230,6 +230,17 @@ export interface ImportResponse {
 export type GrantSubjectType = 'user' | 'api_key' | 'group'
 export type GrantPermission = 'read' | 'write' | 'admin'
 
+/**
+ * The error code the Registry answers for any API write to a record
+ * wip-deploy owns (a key, grant or reservation imported from the install's
+ * files): HTTP 409 `{detail, error_code}` on single writes, a per-item
+ * `error_code` on bulk grant writes. Change such a record with wip-deploy.
+ */
+export const MANAGED_BY_DEPLOYER = 'managed_by_deployer'
+
+/** Who wrote a Registry auth record. */
+export type RecordOrigin = 'file' | 'console' | 'restored'
+
 export interface Grant {
   namespace: string
   subject: string
@@ -238,6 +249,12 @@ export interface Grant {
   granted_by: string
   granted_at: string
   expires_at: string | null
+  /**
+   * 'wip-deploy' for a grant imported from the install's key file; the API
+   * refuses to change it (MANAGED_BY_DEPLOYER). Absent from Registries that
+   * predate it.
+   */
+  managed_by?: 'wip-deploy' | null
 }
 
 export interface CreateGrantRequest {
@@ -258,6 +275,8 @@ export interface GrantBulkResult {
   subject: string
   permission: string | null
   error: string | null
+  /** Machine-readable reason for an error item, e.g. MANAGED_BY_DEPLOYER. */
+  error_code?: string | null
 }
 
 export interface GrantBulkResponse {
@@ -269,8 +288,12 @@ export interface GrantBulkResponse {
 
 export interface GrantRevokeResult {
   index: number
-  status: 'revoked' | 'not_found'
+  status: 'revoked' | 'not_found' | 'error'
   subject: string
+  /** For an error item: the reason. */
+  error?: string | null
+  /** For an error item: e.g. MANAGED_BY_DEPLOYER. */
+  error_code?: string | null
 }
 
 export interface GrantRevokeBulkResponse {
@@ -308,6 +331,15 @@ export interface APIKeyInfo {
   shadowed_by?: string | null
   /** For a runtime key: the namespaces it reserves. Null for config keys. */
   reserved_namespaces?: string[] | null
+  /**
+   * 'wip-deploy' when the Registry holds the key as a record imported from
+   * the install's key file. The API refuses to change it
+   * (MANAGED_BY_DEPLOYER); change it with wip-deploy. Absent from
+   * Registries that predate it.
+   */
+  managed_by?: 'wip-deploy' | null
+  /** For a stored record: who wrote it. */
+  origin?: RecordOrigin | null
 }
 
 /**
@@ -347,7 +379,7 @@ export interface RemoveAPIKeyNamespaceResult {
   reservation: 'released' | 'kept' | null
 }
 
-/** A namespace reservation, from the install's file or the Registry. */
+/** A namespace reservation: the install's (imported from its file) or a runtime key's. */
 export interface NamespaceReservation {
   prefix: string
   /** The owning app (file) or runtime API key (runtime). */
@@ -356,7 +388,17 @@ export interface NamespaceReservation {
   /** The settings a create applies. */
   settings: Record<string, unknown>
   namespace_exists: boolean
-  /** Set when both sources reserve the prefix; the upsert refuses it until one is removed. */
+  /**
+   * 'wip-deploy' for a reservation imported from the install's file; the
+   * API refuses to release it (MANAGED_BY_DEPLOYER). Absent from Registries
+   * that predate it.
+   */
+  managed_by?: 'wip-deploy' | null
+  /**
+   * Always null from current Registries: one record holds each prefix, and
+   * a file reservation of a prefix a runtime one held replaces it. Older
+   * Registries set it when both sources reserved the prefix.
+   */
   conflict: string | null
 }
 

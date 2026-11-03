@@ -2635,6 +2635,15 @@ interface ImportResponse {
 }
 type GrantSubjectType = 'user' | 'api_key' | 'group';
 type GrantPermission = 'read' | 'write' | 'admin';
+/**
+ * The error code the Registry answers for any API write to a record
+ * wip-deploy owns (a key, grant or reservation imported from the install's
+ * files): HTTP 409 `{detail, error_code}` on single writes, a per-item
+ * `error_code` on bulk grant writes. Change such a record with wip-deploy.
+ */
+declare const MANAGED_BY_DEPLOYER = "managed_by_deployer";
+/** Who wrote a Registry auth record. */
+type RecordOrigin = 'file' | 'console' | 'restored';
 interface Grant {
     namespace: string;
     subject: string;
@@ -2643,6 +2652,12 @@ interface Grant {
     granted_by: string;
     granted_at: string;
     expires_at: string | null;
+    /**
+     * 'wip-deploy' for a grant imported from the install's key file; the API
+     * refuses to change it (MANAGED_BY_DEPLOYER). Absent from Registries that
+     * predate it.
+     */
+    managed_by?: 'wip-deploy' | null;
 }
 interface CreateGrantRequest {
     subject: string;
@@ -2660,6 +2675,8 @@ interface GrantBulkResult {
     subject: string;
     permission: string | null;
     error: string | null;
+    /** Machine-readable reason for an error item, e.g. MANAGED_BY_DEPLOYER. */
+    error_code?: string | null;
 }
 interface GrantBulkResponse {
     results: GrantBulkResult[];
@@ -2669,8 +2686,12 @@ interface GrantBulkResponse {
 }
 interface GrantRevokeResult {
     index: number;
-    status: 'revoked' | 'not_found';
+    status: 'revoked' | 'not_found' | 'error';
     subject: string;
+    /** For an error item: the reason. */
+    error?: string | null;
+    /** For an error item: e.g. MANAGED_BY_DEPLOYER. */
+    error_code?: string | null;
 }
 interface GrantRevokeBulkResponse {
     results: GrantRevokeResult[];
@@ -2704,6 +2725,15 @@ interface APIKeyInfo {
     shadowed_by?: string | null;
     /** For a runtime key: the namespaces it reserves. Null for config keys. */
     reserved_namespaces?: string[] | null;
+    /**
+     * 'wip-deploy' when the Registry holds the key as a record imported from
+     * the install's key file. The API refuses to change it
+     * (MANAGED_BY_DEPLOYER); change it with wip-deploy. Absent from
+     * Registries that predate it.
+     */
+    managed_by?: 'wip-deploy' | null;
+    /** For a stored record: who wrote it. */
+    origin?: RecordOrigin | null;
 }
 /**
  * Settings a reserved namespace is created with. Omitted fields take the
@@ -2738,7 +2768,7 @@ interface RemoveAPIKeyNamespaceResult {
     /** 'released', 'kept' (the namespace exists), or null (it was not reserved by this key). */
     reservation: 'released' | 'kept' | null;
 }
-/** A namespace reservation, from the install's file or the Registry. */
+/** A namespace reservation: the install's (imported from its file) or a runtime key's. */
 interface NamespaceReservation {
     prefix: string;
     /** The owning app (file) or runtime API key (runtime). */
@@ -2747,7 +2777,17 @@ interface NamespaceReservation {
     /** The settings a create applies. */
     settings: Record<string, unknown>;
     namespace_exists: boolean;
-    /** Set when both sources reserve the prefix; the upsert refuses it until one is removed. */
+    /**
+     * 'wip-deploy' for a reservation imported from the install's file; the
+     * API refuses to release it (MANAGED_BY_DEPLOYER). Absent from Registries
+     * that predate it.
+     */
+    managed_by?: 'wip-deploy' | null;
+    /**
+     * Always null from current Registries: one record holds each prefix, and
+     * a file reservation of a prefix a runtime one held replaces it. Older
+     * Registries set it when both sources reserved the prefix.
+     */
     conflict: string | null;
 }
 /** Result of revoking a runtime API key. */
@@ -3829,4 +3869,4 @@ interface ResolvedReference {
  */
 declare function resolveReference(client: WipClient, templateId: string, searchTerm: string, limit?: number): Promise<ResolvedReference[]>;
 
-export { type APIKeyInfo, type APIKeyListResponse, type APIKeyRevokeResult, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddAPIKeyNamespaceRequest, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type ClashPolicy, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CrossVersionView, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeleteViewResult, type DeprecateTermRequest, type DerivedTableParity, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type DroppedEdge, type EndpointRef, type EndpointRefInput, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type ListViewsResponse, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceIntegrityIssue, type NamespaceIntegrityResult, type NamespaceIntegritySummary, type NamespaceParityResult, type NamespaceReservation, type NamespaceReserve, type NamespaceStats, OidcAuthProvider, type OlderVersionsPolicy, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type ReconcileCounts, type ReconcileTerminologyRequest, type ReconcileTerminologyResponse, type Reference, type ReferenceType, type ReferencedByResponse, type RegisterViewResult, type RegisteredView, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RehashCollisionGroup, type RehashIdentitiesItem, type RehashIdentitiesRequest, type RehashIdentitiesResponse, type RemoveAPIKeyNamespaceResult, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ReservationSettings, type ResolvedReference, type RestoreJobResult, type RestoreMode, type RestoreOptions, type RestoreReferents, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateFacet, type TemplateFacetsParams, type TemplateFacetsResponse, type TemplateListResponse, type TemplateMetadata, type TemplateMigrationOffer, type TemplateParity, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type TemplateVersionEventDetails, type TemplateVersionImpact, type Term, type TermDocumentsResponse, type TermListResponse, type TermMatchCandidate, type TermName, type TermReference, type TermRelation, type TermRelationListResponse, type TermSearchHit, type TermSearchResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UnresolvedReference, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateNamespaceParams, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, type ViewParity, type ViewRowsFilter, type ViewRowsParams, type ViewRowsSort, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { type APIKeyInfo, type APIKeyListResponse, type APIKeyRevokeResult, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddAPIKeyNamespaceRequest, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type ClashPolicy, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CrossVersionView, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeleteViewResult, type DeprecateTermRequest, type DerivedTableParity, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type DroppedEdge, type EndpointRef, type EndpointRefInput, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type ListViewsResponse, MANAGED_BY_DEPLOYER, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceIntegrityIssue, type NamespaceIntegrityResult, type NamespaceIntegritySummary, type NamespaceParityResult, type NamespaceReservation, type NamespaceReserve, type NamespaceStats, OidcAuthProvider, type OlderVersionsPolicy, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type ReconcileCounts, type ReconcileTerminologyRequest, type ReconcileTerminologyResponse, type RecordOrigin, type Reference, type ReferenceType, type ReferencedByResponse, type RegisterViewResult, type RegisteredView, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RehashCollisionGroup, type RehashIdentitiesItem, type RehashIdentitiesRequest, type RehashIdentitiesResponse, type RemoveAPIKeyNamespaceResult, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ReservationSettings, type ResolvedReference, type RestoreJobResult, type RestoreMode, type RestoreOptions, type RestoreReferents, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateFacet, type TemplateFacetsParams, type TemplateFacetsResponse, type TemplateListResponse, type TemplateMetadata, type TemplateMigrationOffer, type TemplateParity, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type TemplateVersionEventDetails, type TemplateVersionImpact, type Term, type TermDocumentsResponse, type TermListResponse, type TermMatchCandidate, type TermName, type TermReference, type TermRelation, type TermRelationListResponse, type TermSearchHit, type TermSearchResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UnresolvedReference, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateNamespaceParams, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, type ViewParity, type ViewRowsFilter, type ViewRowsParams, type ViewRowsSort, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };

@@ -1725,6 +1725,9 @@ function asVersionEventDetails(details) {
   return details;
 }
 
+// src/types/registry.ts
+var MANAGED_BY_DEPLOYER = "managed_by_deployer";
+
 // src/utils/query-string.ts
 function buildQueryString(params) {
   const searchParams = new URLSearchParams();
@@ -1880,6 +1883,7 @@ exports.DefStoreService = DefStoreService;
 exports.DocumentStoreService = DocumentStoreService;
 exports.FetchTransport = FetchTransport;
 exports.FileStoreService = FileStoreService;
+exports.MANAGED_BY_DEPLOYER = MANAGED_BY_DEPLOYER;
 exports.OidcAuthProvider = OidcAuthProvider;
 exports.RegistryService = RegistryService;
 exports.ReportingSyncService = ReportingSyncService;
