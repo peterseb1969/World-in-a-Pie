@@ -96,7 +96,7 @@ def test_every_reader_mounts_the_directory_k8s(discovery: Discovery) -> None:
     tree = render_k8s(d, discovery.components, discovery.apps, _secrets(d, discovery))
     secret = next(
         s for s in yaml.safe_load_all(tree.files[Path("api-keys-secret.yaml")].content)
-        if s["metadata"]["name"] == "wip-api-keys-config"
+        if s["metadata"]["name"] == "wip-auth-config"
     )
     assert secret["stringData"]["federated-groups.json"] == ""
     for name in _readers(discovery):

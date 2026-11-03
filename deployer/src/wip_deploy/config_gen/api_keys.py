@@ -42,6 +42,10 @@ API_KEYS_CONTAINER_PATH = f"{KEY_FILE_CONTAINER_DIR}/api-keys.json"
 KEY_FILE_RENDER_DIR = "config/keys"
 API_KEYS_RENDER_PATH = f"{KEY_FILE_RENDER_DIR}/api-keys.json"
 KEY_FILE_ENVS = ("WIP_REGISTRY_KEY_FILE", "WIP_AUTH_API_KEYS_FILE")
+# Where renders before the move wrote the key file: in the auth config
+# directory, which every federated-groups reader mounts. A compose or dev
+# render removes it, so an upgraded install keeps no plaintext there.
+LEGACY_API_KEYS_RENDER_PATH = "config/auth/api-keys.json"
 
 # The auth config directory: the federated group policy and the namespace
 # reservations, mounted into every manifest that reads one of them. It

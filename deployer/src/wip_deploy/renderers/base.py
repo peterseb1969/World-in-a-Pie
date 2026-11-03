@@ -40,9 +40,15 @@ class FileTree:
 
     Paths are relative to the install directory. `apply` materializes
     them there.
+
+    `obsolete` names files an earlier render wrote that this one must not
+    leave behind: `write` removes them. Writing only adds and overwrites,
+    so without it a file that moved stays where it was, still mounted
+    wherever its old directory is.
     """
 
     files: dict[Path, FileEntry] = field(default_factory=dict)
+    obsolete: set[Path] = field(default_factory=set)
 
     def add(self, path: str | Path, content: str, *, mode: int = 0o644) -> None:
         self.files[Path(path)] = FileEntry(content=content, mode=mode)
@@ -73,3 +79,5 @@ class FileTree:
             target.write_text(entry.content)
             with contextlib.suppress(NotImplementedError, OSError):
                 target.chmod(entry.mode)
+        for rel in self.obsolete - set(self.files):
+            (root / rel).unlink(missing_ok=True)

@@ -382,6 +382,11 @@ def _render_network_policies(ns: str) -> str:
 
 
 KEY_FILE_SECRET = "wip-key-file"
+# The auth config Secret (federated groups, reservations). Renamed from
+# "wip-api-keys-config", which also carried the key file: apply cannot drop
+# a key from a Secret's stringData, so the old Secret is left out of the
+# render and the apply's prune deletes it, plaintexts included.
+AUTH_CONFIG_SECRET = "wip-auth-config"
 
 
 def _render_api_keys_secret(
@@ -406,7 +411,7 @@ def _render_api_keys_secret(
         "apiVersion": "v1",
         "kind": "Secret",
         "metadata": {
-            "name": "wip-api-keys-config",
+            "name": AUTH_CONFIG_SECRET,
             "namespace": ns,
             "labels": {_LABELS_PART_OF: "wip"},
         },
@@ -662,7 +667,7 @@ def _render_component(
         })
         volumes.append({
             "name": "api-keys-config",
-            "secret": {"secretName": "wip-api-keys-config"},
+            "secret": {"secretName": AUTH_CONFIG_SECRET},
         })
     if declares_api_keys_file(owner):
         volume_mounts.append({

@@ -273,6 +273,27 @@ class TestComposeRender:
         assert len(importers) > 1  # the scan still finds the other services
 
 
+    def test_an_upgrade_removes_the_key_file_from_the_auth_directory(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """A render from before the key file moved wrote it into the auth
+        config directory, which every federated-groups reader mounts.
+        Writing a current render over such an install removes it, so no
+        other container keeps the old plaintexts."""
+        d = _compose_deployment(api_keys=[WEB_YAC])
+        secrets = _secrets(tmp_path, d, real_discovery)
+        install = tmp_path / "install"
+        stale = install / "config" / "auth" / "api-keys.json"
+        stale.parent.mkdir(parents=True)
+        stale.write_text('{"keys": [{"name": "old", "key": "old-plaintext"}]}')
+
+        render_compose(d, real_discovery.components, real_discovery.apps, secrets).write(install)
+
+        assert not stale.exists()
+        assert (install / API_KEYS_RENDER_PATH).exists()
+        assert (install / "config" / "auth" / "federated-groups.json").exists()
+
+
 # ────────────────────────────────────────────────────────────────────
 # Dev render
 # ────────────────────────────────────────────────────────────────────
@@ -355,7 +376,10 @@ class TestK8sRender:
         }
         # The key file in a Secret of its own; the auth config Secret holds none.
         assert "web-yac" in docs["wip-key-file"]["stringData"]["api-keys.json"]
-        assert "api-keys.json" not in docs["wip-api-keys-config"]["stringData"]
+        assert "api-keys.json" not in docs["wip-auth-config"]["stringData"]
+        # The old Secret, which carried the key file, is left out of the
+        # render, so the apply's prune deletes it.
+        assert "wip-api-keys-config" not in docs
 
         registry_docs = list(
             yaml.safe_load_all(tree.files[Path("services/registry.yaml")].content)

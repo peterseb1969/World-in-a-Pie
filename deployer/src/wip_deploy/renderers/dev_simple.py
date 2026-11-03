@@ -44,6 +44,7 @@ from wip_deploy.config_gen.api_keys import (
     FEDERATED_GROUPS_RENDER_PATH,
     KEY_FILE_CONTAINER_DIR,
     KEY_FILE_RENDER_DIR,
+    LEGACY_API_KEYS_RENDER_PATH,
     declares_api_keys_file,
     generate_api_keys_json,
     mounts_auth_config_dir,
@@ -301,6 +302,7 @@ def render_dev_simple(
     # compose target (0644 inside the 0700 install directory, mounted
     # where the manifest declares the env).
     tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets, apps))
+    tree.obsolete.add(Path(LEGACY_API_KEYS_RENDER_PATH))
     tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment))
     tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps))
 
