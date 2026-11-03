@@ -2884,6 +2884,16 @@ class DocumentService:
         await asyncio.gather(*(warm_template(tid) for tid in unique_template_ids))
         timing["0_cache_warmup"] = (time.perf_counter() - start) * 1000
 
+        # Stage 0t: resolve every term value of the batch up front, so each
+        # document's term validation is answered from the batch instead of
+        # sending its own def-store request.
+        start = time.perf_counter()
+        await self.validation_service.prefetch_term_values(
+            [(item.template_id, item.template_version, item.data) for item in items],
+            namespace,
+        )
+        timing["0t_term_prefetch"] = (time.perf_counter() - start) * 1000
+
         # Stage 1: Validate all documents (see _validate_batch — concurrent
         # when continue_on_error, sequential stop-on-first otherwise). On the
         # sequential stop path, items that validated before the failure are in

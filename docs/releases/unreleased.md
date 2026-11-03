@@ -66,6 +66,13 @@ in requests of up to 500 ids. Refusals are unchanged.
 The bulk response's `timing` gains `1b_reference_gates`, the time spent on
 the relationship and namespace-isolation checks after validation.
 
+A bulk write also resolves its term values up front. It used to send
+def-store one request per document for the values the batch had not seen
+yet; now the batch's distinct values go in one request per 1,000 pairs,
+before validation, and every document is answered from them. def-store still
+decides every value at write time, and if that request fails each document
+resolves its own values as before. `timing` gains `0t_term_prefetch`.
+
 ### App keys for apps wip-deploy does not manage: runtime namespace reservations; `@wip/client` 0.73.0
 
 Until now only wip-deploy could issue a key that bootstraps an app: a key that

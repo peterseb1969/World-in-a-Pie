@@ -22,6 +22,10 @@ from .template_store_client import TemplateStoreError, get_template_store_client
 
 logger = logging.getLogger(__name__)
 
+# Distinct (terminology, value) pairs per def-store request when a bulk
+# write resolves its term values up front (prefetch_term_values).
+TERM_PREFETCH_CHUNK = 1000
+
 
 # An ISO 8601 UTC offset at the end of a datetime: Z or +HH:MM / -HH:MM.
 _DATETIME_OFFSET = re.compile(r"(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$")
@@ -1435,6 +1439,46 @@ class ValidationService:
         except TemplateStoreError:
             return None
         return (nested or {}).get("fields") or None
+
+    async def prefetch_term_values(
+        self,
+        documents: list[tuple[str, int | None, dict[str, Any]]],
+        namespace: str | None,
+    ) -> None:
+        """Resolve a batch's term values before its documents are validated.
+
+        ``documents`` holds (template_id, template_version, data) per
+        document. Their term values are collected as stage 4 collects them,
+        and the distinct (terminology, value) pairs are resolved with one
+        def-store request per TERM_PREFETCH_CHUNK. Inside a
+        term_resolution_batch the answers become the batch's shared
+        resolutions, so each document's stage 4 finds its values there and
+        asks def-store nothing. def-store still decides every value, at
+        write time, by the same rule.
+
+        Only a speed-up: a pair it misses is resolved by its document as
+        before, and if it fails nothing is kept (a failed resolution is not
+        shared) and each document resolves, and fails, on its own.
+        """
+        client = get_template_store_client()
+        pairs: dict[tuple[str, str], None] = {}
+        try:
+            for template_id, version, data in documents:
+                template = await client.get_template_resolved(template_id, version=version)
+                if not template or not isinstance(data, dict):
+                    continue
+                for tv in await self._collect_term_values(data, template.get("fields", []), ""):
+                    if isinstance(tv["value"], str):
+                        pairs[(tv["terminology_ref"], tv["value"])] = None
+            keys = list(pairs)
+            for i in range(0, len(keys), TERM_PREFETCH_CHUNK):
+                await get_def_store_client().validate_values_bulk(
+                    [{"terminology_ref": ref, "value": value}
+                     for ref, value in keys[i:i + TERM_PREFETCH_CHUNK]],
+                    namespace=namespace,
+                )
+        except Exception as e:  # a skipped prefetch only costs speed
+            logger.warning("Term prefetch skipped; documents resolve their own values: %s", e)
 
     async def _collect_term_values(
         self,
