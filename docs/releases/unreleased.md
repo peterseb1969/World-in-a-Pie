@@ -7,6 +7,47 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A system backup of API keys, grants and reservations; WIP-Toolkit 0.25.0
+
+Nothing backed up the Registry's auth state. After a wipe or a move to new
+hardware, the following were lost and had to be recreated by hand:
+- every Console-issued API key;
+- every namespace grant;
+- every runtime reservation.
+
+Namespace backups do not carry these, by design.
+
+There is now a separate system backup:
+- `POST /api/registry/system-backup` returns one JSON archive: every stored
+  API key (its bcrypt hash and metadata, never a plaintext, including keys
+  imported from the install's key file), every grant and every reservation.
+  Config keys, the master key among them, are not included.
+- `POST /api/registry/system-restore` restores an archive. It is a dry run
+  unless `dry_run=false` is sent.
+- **Both need a platform admin key.** There is no MCP tool.
+- **WIP-Toolkit 0.25.0** adds `wip-toolkit system-backup OUT.json`, which
+  writes the file with mode 0600, and `wip-toolkit system-restore IN.json`,
+  which reports only; `--apply` writes. It also takes `--overwrite` and
+  `--include-user-grants`.
+
+**How a restore behaves:**
+- It upserts by identity and never deletes.
+- Every restored record arrives unmanaged, with `origin: "restored"`. The
+  key import re-adopts any record the install's files declare.
+- A record that differs on the target is replaced only with `overwrite`.
+  Records the install's files manage are never replaced.
+- It is refused when the archive's API key hash salt differs from the
+  instance's.
+- User grants from another OIDC issuer are skipped unless
+  `include_user_grants` is set.
+- A grant on a namespace that does not exist, and is not reserved, is
+  skipped. Restore namespace backups first, then the system backup.
+- The dry-run report warns when the target already holds auth state of its
+  own: restoring brings back access revoked since the backup.
+
+The archive is sensitive and not encrypted. Store it like `~/.wip-deploy/`.
+See `docs/wip-guide.md` §5.7.
+
 ### The Registry imports the install's key file and reservations file; `@wip/client` 0.75.0
 
 First step of one key model in the Registry. The Registry now imports the

@@ -75,6 +75,11 @@ def _config_names() -> set[str]:
     return set(_api_key_provider.config_key_names()) if _api_key_provider is not None else set()
 
 
+def _api_key_provider_or_none() -> APIKeyProvider | None:
+    """The Registry's API key provider, or None before startup wired it."""
+    return _api_key_provider
+
+
 def _get_provider() -> APIKeyProvider:
     if _api_key_provider is None:
         raise HTTPException(

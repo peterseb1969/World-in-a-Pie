@@ -684,7 +684,69 @@ edge-type templates through import have known open defects at the time of
 writing — check open cases against the toolkit before relying on either.
 There is no point-in-time snapshot (an export captures current state), no
 archive merge/diff, and archives do not carry API keys or namespace
-grants: a restore brings back data, not access.
+grants: a restore brings back data, not access. Access has its own backup
+(§5.7).
+
+### 5.7 System backup — API keys, grants and reservations
+
+Namespace backups never carry auth state. The **system backup** does: every
+API key the Registry stores, every namespace grant and every namespace
+reservation, in one JSON file. It includes the keys the Registry imported
+from the install's key file. After a wipe or a move to other hardware, it
+brings back the keys apps were issued from the Console (the apps still hold
+the plaintexts), the grants to users, groups and keys, and the runtime
+reservations.
+
+```bash
+# Platform admin key required for both
+wip-toolkit --proxy system-backup auth-state.json        # written with mode 0600
+
+wip-toolkit --proxy system-restore auth-state.json       # dry run: what would change
+wip-toolkit --proxy system-restore auth-state.json --apply
+```
+
+The same is available as `POST /api/registry/system-backup` and
+`POST /api/registry/system-restore` (`dry_run=true` by default). There is no
+MCP tool.
+
+**What it carries:**
+- Each key's bcrypt hash and metadata, never a plaintext.
+- No config keys, which includes the master key. They come from the install's
+  own config.
+
+**The file is sensitive.** It holds every key hash. Keep it like
+`~/.wip-deploy/`. It is not encrypted; encrypt it for offsite storage as
+in §5.5.
+
+**How a restore behaves:**
+- **Upsert, never delete.** A key is matched by name, a grant by namespace,
+  subject and subject type, and a reservation by prefix. Missing records are
+  created and identical ones left alone. A record that differs is listed and
+  skipped unless `--overwrite` is given. Records that are not in the file are
+  kept.
+- **Restored records are unmanaged** (`origin: restored`). Where the install's
+  own key file or reservations file declares the same key, grant or prefix,
+  the Registry's import takes it over on its next pass (§4.3).
+- **The install's files win.** A restore never replaces a record wip-deploy
+  manages on this instance, a grant to a key whose grants the key file
+  declares, or a key named like a loaded config key, even with `--overwrite`.
+- **The hash salt must match.** A file made under a different
+  `WIP_AUTH_API_KEY_HASH_SALT` is refused, because none of its hashes could
+  authenticate. wip-deploy does not set the salt, so installs share the
+  default.
+- **User grants follow the OIDC issuer.** User grants made under a different
+  issuer are skipped, since the same email may belong to someone else. Pass
+  `--include-user-grants` to restore them anyway. Group and key grants are
+  always restored.
+- **Order.** A grant on a namespace that does not exist is skipped, unless
+  the prefix is reserved here; a reserving key needs its grant to create the
+  namespace. Restore the namespace backups first, then the system backup.
+  Re-running the restore is safe, and picks up grants whose namespaces have
+  arrived since.
+- **Restoring onto an instance in use brings back old access.** If the
+  instance already holds keys, grants or reservations of its own, the report
+  opens with a warning. Access revoked since the backup comes back too:
+  review the dry run before `--apply`.
 
 ---
 
