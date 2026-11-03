@@ -7,6 +7,7 @@ import time
 from datetime import UTC, datetime
 from typing import Any, ClassVar, NamedTuple, cast
 
+from beanie import PydanticObjectId
 from beanie.odm.enums import SortDirection
 
 from wip_auth.synonym_lifecycle import sync_entry_lifecycle
@@ -52,6 +53,23 @@ from .template_store_client import get_template_store_client
 from .validation_service import ValidationService
 
 logger = logging.getLogger(__name__)
+
+
+class _PlannedWrite(NamedTuple):
+    """A row stage 4 will write in bulk (DocumentService._write_planned).
+
+    existing is the version it replaces, if any; validation_result carries
+    the item's warnings.
+    """
+
+    item_index: int
+    document: "Document"
+    existing: "Document | None"
+    validation_result: Any
+
+
+# Rows per insert when stage 4 writes planned rows in bulk.
+BULK_WRITE_CHUNK = 1000
 
 
 class _ItemOutcome(NamedTuple):
@@ -899,6 +917,46 @@ class DocumentService:
 
         return False
 
+    @staticmethod
+    def _new_document(
+        *,
+        namespace: str,
+        document_id: str,
+        template_id: str,
+        template_version: int,
+        template_value: str,
+        identity_hash: str,
+        version: int,
+        data: dict,
+        term_references: list,
+        references: list,
+        file_references: list,
+        metadata: DocumentMetadata,
+        actor: str,
+        now: datetime,
+        entity_created_at: datetime | None = None,
+    ) -> "Document":
+        """A new active document row, as every write path builds it."""
+        return Document(
+            namespace=namespace,
+            document_id=document_id,
+            template_id=template_id,
+            template_version=template_version,
+            template_value=template_value,
+            identity_hash=identity_hash or "",
+            version=version,
+            data=data,
+            term_references=term_references,
+            references=references,
+            file_references=file_references,
+            status=DocumentStatus.ACTIVE,
+            created_at=entity_created_at or now,
+            created_by=actor,
+            updated_at=now,
+            updated_by=actor,
+            metadata=metadata,
+        )
+
     async def _insert_with_retry(
         self,
         namespace: str,
@@ -940,24 +998,22 @@ class DocumentService:
         logger = logging.getLogger(__name__)
 
         for attempt in range(max_retries):
-            document = Document(
+            document = self._new_document(
                 namespace=namespace,
                 document_id=document_id,
                 template_id=template_id,
                 template_version=template_version,
                 template_value=template_value,
-                identity_hash=identity_hash or "",
+                identity_hash=identity_hash,
                 version=version,
                 data=data,
                 term_references=term_references,
                 references=references,
                 file_references=file_references,
-                status=DocumentStatus.ACTIVE,
-                created_at=entity_created_at or now,
-                created_by=actor,
-                updated_at=now,
-                updated_by=actor,
                 metadata=metadata,
+                actor=actor,
+                now=now,
+                entity_created_at=entity_created_at,
             )
             try:
                 await document.insert()
@@ -2614,6 +2670,238 @@ class DocumentService:
         timing["1_validation"] = (time.perf_counter() - start) * 1000
         return validation_results, results, failed
 
+    async def _per_item_document_ids(
+        self,
+        validation_results: list,
+        registry_results: list[dict],
+        existing_by_doc_id: dict,
+    ) -> set[str]:
+        """Document ids whose items must keep the per-item write path.
+
+        An item needs it when it carries inline synonyms, pins its version
+        (restore/migration), revives a deleted document, or belongs to a
+        template that is not versioned (updates overwrite in place). Every
+        other item of the same document follows it, so one document's
+        version chain is never split between the two paths.
+        """
+        versioned: dict[str, bool] = {}
+        ids: set[str] = set()
+        for (_, item, _), registry_result in zip(validation_results, registry_results, strict=False):
+            if registry_result.get("status") == "error":
+                continue
+            document_id = registry_result["registry_id"]
+            if item.template_id not in versioned:
+                versioned[item.template_id] = await self._is_template_versioned(item.template_id)
+            existing = (
+                existing_by_doc_id.get(document_id)
+                if registry_result.get("status") != "created" else None
+            )
+            if (
+                item.synonyms
+                or (item.document_id and item.version is not None)
+                or not versioned[item.template_id]
+                or (existing is not None and self._is_revival(existing))
+            ):
+                ids.add(document_id)
+        return ids
+
+    @staticmethod
+    def _bulk_eligible(registry_result: dict, per_item_ids: set[str]) -> bool:
+        return (
+            registry_result.get("status") != "error"
+            and registry_result["registry_id"] not in per_item_ids
+        )
+
+    def _plan_validated_item(
+        self,
+        i: int,
+        item: DocumentCreateRequest,
+        validation_result,
+        registry_result: dict,
+        existing_by_doc_id: dict,
+        namespace: str,
+        actor: str,
+        now: datetime,
+        retiring: dict[Any, "Document"],
+    ) -> "_PlannedWrite | _ItemOutcome":
+        """Stage 4 for a plain create or new version, without writing.
+
+        The same decisions as _apply_validated_item for an item without
+        inline synonyms, version pin or revival, on a versioned template:
+        unchanged is reported at once; otherwise the new row is built and the
+        version it replaces is marked inactive. A replaced version stored
+        before this request goes into ``retiring`` for one bulk update; one
+        planned earlier in this batch is simply never written as active.
+        """
+        document_id = cast(str, registry_result["registry_id"])
+        identity_hash = validation_result.identity_hash
+        is_new_from_registry = registry_result.get("status") == "created"
+        existing = existing_by_doc_id.get(document_id) if not is_new_from_registry else None
+
+        if existing is not None:
+            if not self._document_has_changed(
+                existing,
+                item.data,
+                validation_result.term_references,
+                validation_result.references,
+                validation_result.file_references,
+                new_metadata_custom=item.metadata,
+            ):
+                return _ItemOutcome(
+                    BulkResultItem(
+                        index=i,
+                        status="unchanged",
+                        document_id=existing.document_id,
+                        identity_hash=identity_hash,
+                        version=existing.version,
+                        is_new=False,
+                        warnings=validation_result.warnings,
+                    ),
+                    None,
+                    "unchanged",
+                )
+            existing.status = DocumentStatus.INACTIVE
+            existing.updated_at = now
+            existing.updated_by = actor
+            if existing.id is not None and existing.id not in retiring:
+                retiring[existing.id] = existing
+            version = existing.version + 1
+        else:
+            version = 1
+
+        if item.metadata is not None:
+            custom_metadata = item.metadata
+        elif existing is not None and existing.metadata:
+            custom_metadata = dict(existing.metadata.custom)
+        else:
+            custom_metadata = {}
+        document = self._new_document(
+            namespace=namespace,
+            document_id=document_id,
+            template_id=item.template_id,
+            template_version=validation_result.template_version,
+            template_value=validation_result.template_value,
+            identity_hash=identity_hash,
+            version=version,
+            data=item.data,
+            term_references=validation_result.term_references,
+            references=validation_result.references,
+            file_references=validation_result.file_references,
+            metadata=DocumentMetadata(warnings=validation_result.warnings, custom=custom_metadata),
+            actor=actor,
+            now=now,
+            entity_created_at=existing.created_at if existing is not None else None,
+        )
+        document.id = PydanticObjectId()
+        existing_by_doc_id[document_id] = document
+        return _PlannedWrite(i, document, existing, validation_result)
+
+    async def _write_planned(
+        self,
+        planned: list["_PlannedWrite"],
+        retiring: dict[Any, "Document"],
+        namespace: str,
+        actor: str,
+        now: datetime,
+        timing: dict[str, float],
+    ) -> list["_ItemOutcome"]:
+        """Write the planned rows: one update retiring the versions they
+        replace, then one unordered insert per BULK_WRITE_CHUNK rows.
+
+        A row refused for a duplicate key (a concurrent writer took that
+        version) is written again through _insert_with_retry, which reads the
+        latest version and retries; any other refused row reports its error.
+        Then each written row gets its result, event and file reference
+        counts, as on the per-item path.
+        """
+        from pymongo.errors import BulkWriteError
+
+        if not planned:
+            return []
+        start = time.perf_counter()
+        if retiring:
+            await Document.get_motor_collection().update_many(
+                {"_id": {"$in": list(retiring)}},
+                {"$set": {"status": DocumentStatus.INACTIVE.value,
+                          "updated_at": now, "updated_by": actor}},
+            )
+        timing["4a_retire_versions"] = (time.perf_counter() - start) * 1000
+
+        start = time.perf_counter()
+        refused: dict[int, dict] = {}
+        for first in range(0, len(planned), BULK_WRITE_CHUNK):
+            chunk = planned[first:first + BULK_WRITE_CHUNK]
+            try:
+                await Document.insert_many([p.document for p in chunk], ordered=False)
+            except BulkWriteError as e:
+                for err in e.details.get("writeErrors", []):
+                    refused[first + err["index"]] = err
+        timing["4b_insert_documents"] = (time.perf_counter() - start) * 1000
+
+        outcomes: list[_ItemOutcome] = []
+        for pos, plan in enumerate(planned):
+            document = plan.document
+            err = refused.get(pos)
+            if err is not None:
+                if err.get("code") != 11000:
+                    outcomes.append(_ItemOutcome(
+                        BulkResultItem(
+                            index=plan.item_index, status="error", error_code="internal_error",
+                            error=f"Document write failed: {err.get('errmsg', err)}",
+                        ),
+                        None,
+                        "failed",
+                    ))
+                    continue
+                try:
+                    document = await self._insert_with_retry(
+                        namespace=namespace,
+                        document_id=document.document_id,
+                        template_id=document.template_id,
+                        template_version=document.template_version,
+                        template_value=plan.validation_result.template_value,
+                        identity_hash=document.identity_hash,
+                        version=document.version,
+                        data=document.data,
+                        term_references=document.term_references,
+                        references=document.references,
+                        file_references=document.file_references,
+                        metadata=document.metadata,
+                        actor=actor,
+                        now=now,
+                        entity_created_at=document.created_at,
+                    )
+                except Exception as exc:
+                    outcomes.append(_ItemOutcome(
+                        BulkResultItem(index=plan.item_index, status="error", **error_fields(exc)),
+                        None,
+                        "failed",
+                    ))
+                    continue
+
+            is_new = document.version == 1
+            event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
+            if plan.existing is not None:
+                await self._update_file_reference_counts(plan.existing.file_references, delta=-1)
+            await self._update_file_reference_counts(document.file_references, delta=1)
+            outcomes.append(_ItemOutcome(
+                BulkResultItem(
+                    index=plan.item_index,
+                    status="created" if is_new else "updated",
+                    document_id=document.document_id,
+                    identity_hash=document.identity_hash,
+                    version=document.version,
+                    is_new=is_new,
+                    warnings=plan.validation_result.warnings,
+                ),
+                (event_type, await self._document_to_event_payload(
+                    document if document.status == DocumentStatus.ACTIVE
+                    else document.model_copy(update={"status": DocumentStatus.ACTIVE})
+                )),
+                "created" if is_new else "updated",
+            ))
+        return outcomes
+
     async def _apply_validated_item(
         self,
         i: int,
@@ -3081,14 +3369,40 @@ class DocumentService:
         now = datetime.now(UTC)
         pending_events: list[tuple[EventType, dict]] = []
 
+        # Plain creates and new versions are planned in memory and written
+        # in bulk after the loop (_write_planned); everything else, and every
+        # item of a document that has such an item, keeps the per-item path.
+        # Stop-on-first-error keeps the per-item path for the whole batch: a
+        # bulk write cannot stop at the failing item.
+        per_item_ids = (
+            await self._per_item_document_ids(
+                validation_results, registry_results, existing_by_doc_id,
+            )
+            if continue_on_error else None
+        )
+        planned: list[_PlannedWrite] = []
+        retiring: dict[Any, Document] = {}
+
         for idx, ((i, item, validation_result), registry_result) in enumerate(
             zip(validation_results, registry_results, strict=False)
         ):
             try:
-                outcome = await self._apply_validated_item(
-                    i, item, validation_result, registry_result,
-                    existing_by_doc_id, namespace, actor, now,
-                )
+                if per_item_ids is not None and self._bulk_eligible(
+                    registry_result, per_item_ids,
+                ):
+                    plan = self._plan_validated_item(
+                        i, item, validation_result, registry_result,
+                        existing_by_doc_id, namespace, actor, now, retiring,
+                    )
+                    if isinstance(plan, _PlannedWrite):
+                        planned.append(plan)
+                        continue
+                    outcome = plan
+                else:
+                    outcome = await self._apply_validated_item(
+                        i, item, validation_result, registry_result,
+                        existing_by_doc_id, namespace, actor, now,
+                    )
             except Exception as e:
                 failed += 1
                 results.append(BulkResultItem(
@@ -3115,6 +3429,17 @@ class DocumentService:
             elif outcome.counter == "unchanged":
                 unchanged += 1
             else:  # "failed" — registry-error row, no exception raised
+                failed += 1
+
+        for outcome in await self._write_planned(planned, retiring, namespace, actor, now, timing):
+            results.append(outcome.result)
+            if outcome.pending_event:
+                pending_events.append(outcome.pending_event)
+            if outcome.counter == "created":
+                created += 1
+            elif outcome.counter == "updated":
+                updated += 1
+            else:
                 failed += 1
 
         timing["4_create_documents"] = (time.perf_counter() - start) * 1000

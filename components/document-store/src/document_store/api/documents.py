@@ -14,6 +14,7 @@ from wip_auth import (
 )
 
 from ..models.api_models import (
+    MAX_BULK_ITEMS,
     BulkResponse,
     BulkResultItem,
     DeleteItem,
@@ -53,7 +54,7 @@ batch operations with cache warmup.
     """
 )
 async def create_documents(
-    items: list[DocumentCreateRequest] = Body(...),
+    items: list[DocumentCreateRequest] = Body(..., max_length=MAX_BULK_ITEMS),
     continue_on_error: bool = Query(True, description="Continue processing if an item fails"),
     identity: UserIdentity = Depends(require_api_key)
 ):
@@ -144,7 +145,7 @@ DOCUMENT_UPDATED event as POST-driven version bumps.
 """
 )
 async def patch_documents(
-    items: list[PatchDocumentItem] = Body(...),
+    items: list[PatchDocumentItem] = Body(..., max_length=MAX_BULK_ITEMS),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     identity: UserIdentity = Depends(require_api_key),
 ):
@@ -692,7 +693,7 @@ async def traverse_document_relationships(
     description="Delete one or more documents. Soft-delete by default. Set hard_delete=true to permanently remove (requires namespace deletion_mode='full'). A hard delete is refused (error_code=invalid_state, details.rule=referenced) while other documents still reference it; details.referrers groups them by namespace and template. Documents hard-deleted in the same request do not count. force=true, with hard_delete, deletes anyway and reports the referrers as details.broken_references."
 )
 async def delete_documents(
-    items: list[DeleteItem] = Body(...),
+    items: list[DeleteItem] = Body(..., max_length=MAX_BULK_ITEMS),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     identity: UserIdentity = Depends(require_api_key)
 ):

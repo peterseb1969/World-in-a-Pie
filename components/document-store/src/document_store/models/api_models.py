@@ -647,6 +647,13 @@ class ValidationResponse(BaseModel):
     )
 
 
+# Most items one bulk document request may carry (create, PATCH, delete,
+# validate-bulk). A request is held in memory whole while it is processed,
+# so an unbounded list is an unbounded allocation; clients send more in
+# several requests.
+MAX_BULK_ITEMS = 1000
+
+
 class BulkValidationRequest(StrictModel):
     """Request to validate multiple documents against ONE template.
 
@@ -672,7 +679,11 @@ class BulkValidationRequest(StrictModel):
     )
     items: list[dict[str, Any]] = Field(
         ...,
-        description="Document data payloads to validate, each shaped like the singular validate `data`"
+        max_length=MAX_BULK_ITEMS,
+        description=(
+            "Document data payloads to validate, each shaped like the singular "
+            f"validate `data`; at most {MAX_BULK_ITEMS}"
+        ),
     )
 
 

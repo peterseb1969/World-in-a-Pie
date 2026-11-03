@@ -44,6 +44,18 @@ a fresh restore of 240,474 document rows went from 12 min 55 s to 2 min 26 s
 their per-item results are unchanged. `/entries/activate` items accept
 `synonyms` (with `composite_key` only).
 
+### Bulk document requests carry at most 1,000 items
+
+`POST`, `PATCH` and `DELETE /api/document-store/documents` and
+`POST /api/document-store/validation/validate-bulk` reject a request with
+more than 1,000 items with **422**, before anything is validated or written.
+A request is held in memory whole while it is processed, so an unbounded
+list was an unbounded allocation; on a Raspberry Pi a single oversized
+request could exhaust memory. **Callers sending more must split them** into
+several requests: the WIP-Toolkit, ingest-gateway (100) and CSV import are
+already well below the limit, while the MCP bulk tools and
+`@wip/client.createDocuments` pass through what they are given.
+
 ### Term values from a closed namespace are now refused for writers who cannot read it
 
 A namespace with `inbound_references: closed` (the default) accepts a
@@ -90,6 +102,16 @@ yet; now the batch's distinct values go in one request per 1,000 pairs,
 before validation, and every document is answered from them. def-store still
 decides every value at write time, and if that request fails each document
 resolves its own values as before. `timing` gains `0t_term_prefetch`.
+
+Bulk create now writes its documents in bulk: one update retiring the
+versions a batch replaces, then one insert, instead of a database round trip
+per document. Items with inline synonyms, a pinned version, a revival or a
+non-versioned template keep the per-item path, as does a request with
+`continue_on_error=false`. Per-item results are unchanged. `timing` gains
+`4a_retire_versions` and `4b_insert_documents`. The Registry's
+`/entries/register` mints new ids from the namespace configuration it has
+already read instead of reading the namespace once per new entry, and its
+response gains an optional `timing` per phase.
 
 ### App keys for apps wip-deploy does not manage: runtime namespace reservations; `@wip/client` 0.73.0
 
