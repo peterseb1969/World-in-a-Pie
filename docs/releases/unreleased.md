@@ -183,9 +183,14 @@ A failed sync does not extend that. Once the 90 s have passed:
   and also **unknown and invalid keys**, which get 503 instead of 401. That is
   intended: the answer reveals nothing about which keys exist.
 - **Config keys keep working through an outage of any length.** These are the
-  keys from the environment and the key file, including any in an admin group,
-  and the master key. They are not a copy of the Registry. A Registry outage
-  therefore does not mean that no key works.
+  keys a service loads from its own environment, which on a wip-deploy
+  install is the master key (`MASTER_API_KEY`, also each service's own
+  credential). They are not a copy of the Registry, so a Registry outage does
+  not mean that no key works. The
+  key file's keys are not config keys in these services: the Registry
+  imports them and key sync serves them (see "Every service resolves every
+  key through the Registry" above), so they stop after 90 s like every other
+  runtime key.
 - **At service start**, runtime keys get 503 until the first sync succeeds.
   Before, they got 401.
 
