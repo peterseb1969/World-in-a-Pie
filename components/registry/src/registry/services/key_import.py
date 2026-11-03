@@ -64,7 +64,11 @@ from .reservations import RESERVATIONS_FILE_ENV, ReservationsUnavailable, load_r
 
 logger = logging.getLogger("registry.key_import")
 
-KEY_FILE_ENV = "WIP_AUTH_API_KEYS_FILE"
+# The key file: WIP_REGISTRY_KEY_FILE, which only the Registry reads. An
+# install rendered before it existed declares WIP_AUTH_API_KEYS_FILE, which
+# wip-auth also loads as config keys, so its imports stay dormant.
+KEY_FILE_ENV = "WIP_REGISTRY_KEY_FILE"
+LEGACY_KEY_FILE_ENV = "WIP_AUTH_API_KEYS_FILE"
 # The key every rendered key file carries (wip-deploy's CANARY_KEY_NAME,
 # deployer/src/wip_deploy/spec/deployment.py). Its absence marks a broken render.
 CANARY_KEY_NAME = "wip-canary"
@@ -118,20 +122,24 @@ def _digest(path: str | None) -> str | None:
         return None
 
 
+def _key_file_path() -> str | None:
+    return os.getenv(KEY_FILE_ENV) or os.getenv(LEGACY_KEY_FILE_ENV) or None
+
+
 def _current_digests() -> tuple[str | None, str | None]:
-    return _digest(os.getenv(KEY_FILE_ENV)), _digest(os.getenv(RESERVATIONS_FILE_ENV))
+    return _digest(_key_file_path()), _digest(os.getenv(RESERVATIONS_FILE_ENV))
 
 
 def _read_key_file() -> tuple[list[dict[str, Any]] | None, str | None]:
     """The key file's entries, or (None, why) when it must not be imported."""
-    path = os.getenv(KEY_FILE_ENV)
+    path = _key_file_path()
     if not path:
         return None, None  # a hand-run Registry: nothing to import, nothing to report
     try:
         with open(path) as f:
             data = json.load(f)
     except FileNotFoundError:
-        return None, f"{KEY_FILE_ENV}={path} does not exist"
+        return None, f"{path} does not exist"
     except (OSError, ValueError) as e:
         return None, f"{path} cannot be read: {e}"
     entries = data.get("keys") if isinstance(data, dict) else None

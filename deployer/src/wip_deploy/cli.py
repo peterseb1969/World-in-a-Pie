@@ -3108,9 +3108,9 @@ def _key_readers(
 
     These are the services the rotation's apply restarts: their rendered
     definition carries a hash of the secrets they take from the environment.
-    The declared-key file (api-keys.json) is not among them — the services
-    that read it re-read it while running, so a declared key reaches them
-    without a restart.
+    The key file (api-keys.json) is not among them — the Registry, which
+    alone reads it, re-imports it while running, and every other service
+    learns the change by key sync, so a declared key needs no restart.
     """
     enabled_apps = {ref.name for ref in deployment.spec.apps if ref.enabled}
     owners: list[Component | App] = [
@@ -3295,11 +3295,12 @@ def rotate_key(
         )
     if key_name is not None:
         typer.echo(
-            "The services that check declared keys re-read api-keys.json "
-            "while running: the new key is accepted, and the old one refused, "
-            "within about 10 s on compose and dev, and within about two "
-            "minutes on k8s, where the kubelet first refreshes the mounted "
-            "file. Nothing restarts for it."
+            "The Registry re-imports api-keys.json while running and every "
+            "service learns the change by key sync: the new key is accepted, "
+            "and the old one refused, within about 40 s on compose and dev "
+            "(10 s import, 30 s key sync), and within about three minutes on "
+            "k8s, where the kubelet first refreshes the mounted file. Nothing "
+            "restarts for it."
         )
     typer.echo(
         typer.style(
@@ -3314,9 +3315,10 @@ def rotate_key(
         return
     from wip_deploy.verify_security import check_key_rotation
 
-    # A declared key arrives by the services re-reading api-keys.json, which
+    # A declared key arrives by the Registry re-importing api-keys.json, which
     # on k8s waits for the kubelet to refresh the mount (about a minute
-    # measured), so its probe gets a longer window than a restart needs.
+    # measured), so its probe gets a longer window than a restart needs. The
+    # probe asks the Registry; other services follow within one key sync.
     problems = check_key_rotation(
         deployment, new_plaintext, old_plaintext,
         attempts=75 if key_name is not None else 30,
@@ -4573,7 +4575,8 @@ app.add_typer(
     help=(
         "Give an app another namespace on this install only: owned (reserved "
         "for it, its key holds admin) or used (--access read|write). Applies "
-        "without restarting anything; the services re-read the key file."
+        "without restarting anything; the Registry re-imports the key file and "
+        "the services follow by key sync."
     ),
 )
 
@@ -4686,8 +4689,8 @@ def app_namespace_add(
         target_dir,
         f"Gave app {app_name!r} {what} on {resolved_name}",
         repo_root=repo_root,
-        # Config only: the services re-read the key file, the Registry the
-        # reservations file.
+        # Config only: the Registry re-imports the key file and the
+        # reservations file; the services follow by key sync.
         services_scope=[],
     )
 
@@ -6450,9 +6453,10 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
 def _refuse_runtime_reservation_collisions(
     deployment: Deployment, apps_list: list[App], secrets: ResolvedSecrets
 ) -> None:
-    """Stop an apply that would reserve a namespace (or an ID prefix) a
-    runtime API key already reserves in the running Registry. See
-    runtime_reservations.py; an unreachable Registry is a note, not a stop."""
+    """Stop an apply that would claim an ID prefix a runtime reservation
+    already claims in the running Registry, and say which runtime
+    reservations the install's would replace. See runtime_reservations.py;
+    an unreachable Registry is a note, not a stop."""
     from wip_deploy.runtime_reservations import check_runtime_reservations
 
     result = check_runtime_reservations(
@@ -6460,10 +6464,12 @@ def _refuse_runtime_reservation_collisions(
     )
     if result.note:
         typer.echo(f"note: {result.note}", err=True)
+    for warning in result.warnings:
+        typer.echo(f"warning: {warning}", err=True)
     if result.errors:
         typer.echo(
-            "error: the install's namespace reservations collide with runtime "
-            "reservations in the Registry — a namespace has one owner:",
+            "error: the install's namespace reservations claim ID prefixes runtime "
+            "reservations in the Registry already claim — a prefix names one ID sequence:",
             err=True,
         )
         for error in result.errors:

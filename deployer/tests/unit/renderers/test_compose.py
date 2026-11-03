@@ -91,7 +91,7 @@ class TestTreeShape:
             "config/dex/config.yaml",
             "config/router/Caddyfile",
             "config/mongodb/entrypoint.sh",
-            "config/auth/api-keys.json",
+            "config/keys/api-keys.json",
             "config/auth/federated-groups.json",
             "config/auth/namespace-reservations.json",
         }

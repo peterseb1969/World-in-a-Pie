@@ -417,6 +417,38 @@ class TestWipBaseUrlSubstitution:
         assert wip_base.value == "http://wip-router:8080"
 
 
+class TestAppsOnlyAppKey:
+    """An apps-only install has no Registry of its own to import an app's
+    derived key; the remote WIP knows only the key issued there, which
+    `import-bundle` puts into the install's `api-key` secret. Its apps run
+    with that key; a full install's apps keep their derived keys."""
+
+    def _app_key(self, apps_only: bool):
+        from wip_deploy.discovery import discover
+
+        discovery = discover(REPO_ROOT)
+        inputs = BuildInputs(
+            name="t",
+            preset="standard",
+            target="compose",
+            hostname="localhost",
+            compose_data_dir=Path("/tmp/wip-case-1035"),
+            apps=["wip-cooking"],
+            apps_only=apps_only,
+            remote_wip_url="https://cloud-wip.example.com" if apps_only else None,
+        )
+        d = build_deployment(inputs)
+        ctx = make_spec_context(d, discovery.components)
+        resolved = resolve_all_env(d, discovery.components, discovery.apps, ctx)
+        return resolved["wip-cooking"].required["WIP_API_KEY"]
+
+    def test_apps_only_apps_run_with_the_installs_api_key(self) -> None:
+        assert self._app_key(apps_only=True).name == "api-key"
+
+    def test_full_install_apps_keep_their_derived_key(self) -> None:
+        assert self._app_key(apps_only=False).name == "app-wip-cooking-api-key"
+
+
 # ────────────────────────────────────────────────────────────────────
 # Renderer shape — apps-only compose has NO core/infra-of-core services
 # ────────────────────────────────────────────────────────────────────

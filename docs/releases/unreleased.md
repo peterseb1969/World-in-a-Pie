@@ -48,6 +48,53 @@ There is now a separate system backup:
 The archive is sensitive and not encrypted. Store it like `~/.wip-deploy/`.
 See `docs/wip-guide.md` §5.7.
 
+### Every service resolves every key through the Registry; only the Registry holds the key file
+
+Second step of one key model in the Registry. The install's key file (the
+spec-declared keys, each app's key and the canary) is now read by the
+Registry alone:
+
+- **A directory of its own.** The file is rendered to `config/keys/api-keys.json`
+  (on k8s, the Secret `wip-key-file`) and mounted only into the Registry, as
+  `WIP_REGISTRY_KEY_FILE`. def-store, template-store, document-store,
+  reporting-sync and ingest-gateway no longer mount it or declare
+  `WIP_AUTH_API_KEYS_FILE`, so no other container holds a plaintext. The
+  auth config directory (`config/auth/`, the Secret `wip-api-keys-config`)
+  keeps the federated group policy and the namespace reservations.
+- **The Registry's records are the keys.** The Registry imports the file as
+  before and no longer loads it as config keys, so every imported key is
+  served by key sync. The other services authenticate app keys from their
+  synced copy and ask the Registry for their grants, like any other key.
+  A key-file change now reaches them within one import and one key sync:
+  about 40 s on compose and dev (it was about 10 s), longer on k8s while the
+  Secret propagates.
+- **If the Registry is down, app keys stop working** too, once a service's
+  synced copy is 90 s old. That is the design ("if the Registry is down, WIP
+  is down"). Before this, app keys kept working through any outage, because
+  every service resolved them locally.
+- **The key listing shows a managed key's declared grants** in `grants`, as
+  it did for config keys, so a client can tell which keys' grants the file
+  owns. A key that declares no grants shows `grants: null` and keeps grants
+  you set through the API.
+- **An apply no longer refuses a namespace a runtime key reserves.** It
+  warns, naming the key, and the Registry replaces the key's reservation with
+  the install's (logged CRITICAL; the key keeps its grants). An apply still
+  refuses an ID prefix a runtime reservation already claims.
+- **`wip-deploy verify --security`** has a new check: the key file is mounted
+  only into the Registry. A render from before this change fails it, with a
+  re-render hint.
+- **Apps-only installs** (`--apps-only` against a remote WIP): the apps now
+  run with the install's `api-key`, the key `wip-deploy import-bundle`
+  brings from the remote WIP. Since apps got derived keys, they had run with
+  a derived key the remote WIP never knew. That was found by reading the
+  code; it has not been run.
+
+**Action:** re-render every install with images that carry this change, in
+one apply: `wip-deploy redeploy --name <install> --tag <tag>`. Run
+`wip-deploy verify --security` afterwards. An install left on the old render
+keeps working: the Registry still imports the file, and its records stay
+dormant while it also loads the file as config keys.
+
 ### The Registry imports the install's key file and reservations file; `@wip/client` 0.75.0
 
 First step of one key model in the Registry. The Registry now imports the

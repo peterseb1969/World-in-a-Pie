@@ -1,19 +1,20 @@
-"""An apply must not reserve a namespace a runtime key already reserves.
+"""What an apply's reservations would do to the Registry's runtime ones.
 
 A platform admin can reserve namespaces through the Registry's API, for an
 app wip-deploy does not manage (a runtime API key with `reserve`). The
-install's own reservations come from its apps' manifests. One prefix has one
-owner: if an apply rendered a file reservation of a prefix a runtime key
-holds, neither could be trusted to create it, and the Registry refuses the
-prefix until one of the two is removed.
+install's own reservations come from its apps' manifests, and the Registry
+imports them. One record holds each prefix, and the install's wins: a file
+reservation of a prefix a runtime key holds replaces it in the Registry,
+logged CRITICAL there, and the key keeps its grants. An apply that would do
+that says so, naming the key, before rendering. It does not stop.
 
-So an apply asks the running Registry for its runtime reservations and
-refuses a collision before rendering, naming both owners. A collision on an
-ID prefix is refused the same way, since one prefix names one ID sequence.
+An ID prefix is different: one prefix names one ID sequence, and two
+reservations of different namespaces claiming it cannot both be honoured,
+whichever wins. An apply that would claim an ID prefix a runtime
+reservation claims is refused, naming both.
+
 When the Registry cannot be reached (a fresh install, a stopped stack) or
-predates runtime reservations, the apply proceeds with a note: the Registry
-itself refuses a colliding prefix at the namespace upsert, so nothing is
-created under two owners.
+predates runtime reservations, the apply proceeds with a note.
 """
 
 from __future__ import annotations
@@ -29,28 +30,34 @@ from wip_deploy.spec import App, Deployment
 @dataclass
 class RuntimeReservationCheck:
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
     note: str | None = None
+
+
+def replacements(
+    file_reservations: list[dict[str, Any]], runtime_reservations: list[dict[str, Any]]
+) -> list[str]:
+    """The runtime reservations the install's would replace in the Registry."""
+    runtime = {r["prefix"]: r for r in runtime_reservations}
+    return [
+        f"namespace {f['prefix']!r} is reserved for app {f['app']!r} and by runtime API "
+        f"key {runtime[f['prefix']]['app']!r}; the Registry replaces the key's reservation "
+        "with the app's (the key keeps its grants)"
+        for f in file_reservations
+        if f["prefix"] in runtime
+    ]
 
 
 def collisions(
     file_reservations: list[dict[str, Any]], runtime_reservations: list[dict[str, Any]]
 ) -> list[str]:
-    """What the install's reservations contradict in the runtime ones."""
+    """The ID prefixes the install's reservations would claim twice."""
     errors: list[str] = []
-    runtime = {r["prefix"]: r for r in runtime_reservations}
     runtime_ids: dict[str, str] = {}
     for r in runtime_reservations:
         for entity_type, prefix in _prefixed_ids(r.get("settings") or {}).items():
             runtime_ids[prefix] = f"{r['prefix']}.{entity_type} (runtime key {r['app']!r})"
     for f in file_reservations:
-        held = runtime.get(f["prefix"])
-        if held is not None:
-            errors.append(
-                f"namespace {f['prefix']!r} is reserved for app {f['app']!r}, but runtime "
-                f"API key {held['app']!r} already reserves it. Release it in the Registry "
-                f"(DELETE /api/registry/reservations/{f['prefix']}, or narrow or revoke "
-                "the key) or reserve another namespace for the app"
-            )
         for entity_type, prefix in sorted(_prefixed_ids(f.get("settings") or {}).items()):
             if prefix in runtime_ids:
                 errors.append(
@@ -94,7 +101,7 @@ def check_runtime_reservations(
     except httpx.HTTPError as e:
         return RuntimeReservationCheck(
             note=f"the Registry is not reachable ({type(e).__name__}); runtime "
-            "reservations not checked — the Registry refuses a colliding prefix itself"
+            "reservations not checked"
         )
     if resp.status_code == 404:
         return RuntimeReservationCheck(
@@ -105,6 +112,10 @@ def check_runtime_reservations(
     ):
         return RuntimeReservationCheck(
             note=f"the Registry answered {resp.status_code} for its runtime reservations; "
-            "not checked — the Registry refuses a colliding prefix itself"
+            "not checked"
         )
-    return RuntimeReservationCheck(errors=collisions(file_reservations, resp.json()))
+    runtime = resp.json()
+    return RuntimeReservationCheck(
+        errors=collisions(file_reservations, runtime),
+        warnings=replacements(file_reservations, runtime),
+    )

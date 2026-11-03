@@ -1,13 +1,18 @@
 """Config-file API key generation (CASE-655).
 
-Spec-declared API keys (`auth.api_keys`) render into wip-auth's
-config-file key mechanism: a JSON document consumed via
-WIP_AUTH_API_KEYS_FILE by every component whose manifest declares that
-env var. The plaintext for each key comes from the install's secret
-backend (`<name>-api-key`, generated on first apply, stable across
-re-renders), and each entry carries the key's read scope and write
-grants — so the whole credential survives a MongoDB wipe/restore with
-no re-registration step.
+Spec-declared API keys (`auth.api_keys`), each app's derived key and the
+canary render into one JSON document, the key file. The plaintext for
+each key comes from the install's secret backend (`<name>-api-key`,
+generated on first apply, stable across re-renders), and each entry
+carries the key's read scope and write grants.
+
+Only the Registry reads the key file (WIP_REGISTRY_KEY_FILE): it imports
+every key, its grants and the reservations into its own records, and
+every other service resolves keys through the Registry. The file lives
+in a directory of its own, mounted into exactly the manifests that
+declare it, so no other container holds the plaintext. A manifest that
+still declares WIP_AUTH_API_KEYS_FILE is mounted the same directory and
+loads the file as wip-auth config keys (the pre-import model).
 
 Target-neutral decision layer: compose/dev mount the rendered file,
 k8s mounts it from a Secret. Renderers only serialize.
@@ -22,25 +27,30 @@ from wip_deploy.secrets_backend.base import ResolvedSecrets
 from wip_deploy.spec import App, AppRef, Component, Deployment
 from wip_deploy.spec.deployment import CANARY_KEY_NAME, SpecAPIKey
 
-# Where the rendered file appears inside service containers; injected
-# as WIP_AUTH_API_KEYS_FILE via `from_spec: security.api_keys_file`.
-API_KEYS_CONTAINER_PATH = "/etc/wip/api-keys.json"
-
-# The file is mounted through its DIRECTORY, never as a single file: a
+# The key file has a directory of its own, mounted only into the manifests
+# that declare it (the Registry), so the plaintext reaches no other
+# container. Mounted through the DIRECTORY, never as a single file: a
 # running container then sees a rewritten file (k8s refreshes a directory-
 # mounted Secret in place, a compose directory bind follows the host
-# directory), and wip-auth re-reads it without a restart. A k8s `subPath`
-# or a single-file bind would pin the content the container started with.
-API_KEYS_CONTAINER_DIR = "/etc/wip"
+# directory), and the Registry re-imports it without a restart. A k8s
+# `subPath` or a single-file bind would pin the content the container
+# started with. Injected as WIP_REGISTRY_KEY_FILE via
+# `from_spec: security.api_keys_file`.
+KEY_FILE_CONTAINER_DIR = "/etc/wip-keys"
+API_KEYS_CONTAINER_PATH = f"{KEY_FILE_CONTAINER_DIR}/api-keys.json"
+# Relative paths inside the rendered install tree (compose/dev).
+KEY_FILE_RENDER_DIR = "config/keys"
+API_KEYS_RENDER_PATH = f"{KEY_FILE_RENDER_DIR}/api-keys.json"
+KEY_FILE_ENVS = ("WIP_REGISTRY_KEY_FILE", "WIP_AUTH_API_KEYS_FILE")
 
-# Relative path inside the rendered install tree (compose/dev). The
-# file carries plaintext keys, so it is written mode 0600 — same
-# posture as the install's `.env`.
-API_KEYS_RENDER_PATH = "config/auth/api-keys.json"
+# The auth config directory: the federated group policy and the namespace
+# reservations, mounted into every manifest that reads one of them. It
+# holds no key material.
+API_KEYS_CONTAINER_DIR = "/etc/wip"
 API_KEYS_RENDER_DIR = "config/auth"
 
-# The federated group policy (CASE-947) lives in the same directory, so the
-# one directory mount carries both and both are re-read while running.
+# The federated group policy lives in the auth config directory, re-read
+# while running.
 # Rendered on every install — empty when no connector is declared — so the
 # mount exists from the first render and a policy change alters only the
 # file's content, never a container definition.
@@ -152,31 +162,23 @@ def app_key_secrets(deployment: Deployment, apps: list[App]) -> dict[str, str]:
 
 
 def declares_api_keys_file(owner: Component | App) -> bool:
-    """Does this component/app manifest consume the rendered key file?
+    """Does this component/app manifest read the rendered key file?
 
-    The WIP_AUTH_API_KEYS_FILE env declaration is the opt-in: renderers
-    mount the file for exactly the manifests that declare it — no
-    renderer-side component name list to drift.
+    The env declaration (WIP_REGISTRY_KEY_FILE, or the pre-import
+    WIP_AUTH_API_KEYS_FILE) is the opt-in: renderers mount the key file's
+    directory for exactly the manifests that declare it — no renderer-side
+    component name list to drift.
     """
-    return any(
-        ev.name == "WIP_AUTH_API_KEYS_FILE" for ev in owner.spec.env.required
-    )
+    names = {ev.name for ev in (*owner.spec.env.required, *owner.spec.env.optional)}
+    return bool(names & set(KEY_FILE_ENVS))
 
 
 def mounts_auth_config_dir(owner: Component | App) -> bool:
-    """Does this manifest read a file from the auth config directory
-    (the declared API keys, the federated group policy or the namespace
-    reservations)? The env declarations are the opt-in, as for
-    `declares_api_keys_file`."""
+    """Does this manifest read a file from the auth config directory (the
+    federated group policy or the namespace reservations)? The env
+    declarations are the opt-in, as for `declares_api_keys_file`."""
     names = {ev.name for ev in (*owner.spec.env.required, *owner.spec.env.optional)}
-    return bool(
-        names
-        & {
-            "WIP_AUTH_API_KEYS_FILE",
-            "WIP_AUTH_FEDERATED_GROUPS_FILE",
-            "WIP_NAMESPACE_RESERVATIONS_FILE",
-        }
-    )
+    return bool(names & {"WIP_AUTH_FEDERATED_GROUPS_FILE", "WIP_NAMESPACE_RESERVATIONS_FILE"})
 
 
 def generate_api_keys_json(

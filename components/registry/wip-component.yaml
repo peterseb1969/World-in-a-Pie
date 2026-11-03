@@ -46,9 +46,11 @@ spec:
       # Security posture — arms the WIP_VARIANT=prod startup guard (refuse
       # to start on known-default secrets). From the deployment's --variant.
       - {name: WIP_VARIANT, source: {from_spec: security.variant}}
-      # Spec-declared config-file API keys (deployment auth.api_keys);
-      # empty when none are declared — wip-auth treats empty as unset.
-      - {name: WIP_AUTH_API_KEYS_FILE, source: {from_spec: security.api_keys_file}}
+      # The install's key file (spec-declared keys, each app's key, the
+      # canary). Only the Registry reads it: it imports every key, its
+      # grants and the reservations into its own records, and every other
+      # service resolves keys through the Registry.
+      - {name: WIP_REGISTRY_KEY_FILE, source: {from_spec: security.api_keys_file}}
       # Namespaces the install reserves for its apps, with their approved
       # settings: an app's own key may create its namespace only as reserved.
       # Empty when no app declares a namespace.

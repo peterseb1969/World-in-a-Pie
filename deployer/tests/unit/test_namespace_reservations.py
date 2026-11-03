@@ -111,7 +111,10 @@ def test_k8s_carries_the_file_in_the_auth_config_secret(discovery: Discovery) ->
     apps = [_app(discovery, "cooking-app", COOKING)]
     d = _deployment("k8s", apps)
     tree = render_k8s(d, discovery.components, apps, _secrets(d, discovery.components, apps))
-    secret = yaml.safe_load(tree.files[Path("api-keys-secret.yaml")].content)
+    secret = next(
+        s for s in yaml.safe_load_all(tree.files[Path("api-keys-secret.yaml")].content)
+        if s["metadata"]["name"] == "wip-api-keys-config"
+    )
     doc = json.loads(secret["stringData"]["namespace-reservations.json"])
     assert [r["prefix"] for r in doc["reservations"]] == ["cooking", "cooking-ref"]
 

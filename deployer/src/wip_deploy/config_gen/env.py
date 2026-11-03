@@ -348,15 +348,23 @@ def _mongo_env(
     return []
 
 
-def _app_key_env(owner: Component | App) -> list[EnvVar]:
+def _app_key_env(owner: Component | App, deployment: Deployment) -> list[EnvVar]:
     """WIP_API_KEY for an app: its own derived key (config_gen/api_keys.py),
     never the master key. Nothing for components or a privileged_key app,
-    which declare their key themselves."""
+    which declare their key themselves.
+
+    An apps-only install (no local backend) has no Registry of its own to
+    import a derived key: its apps talk to a remote WIP, which knows only the
+    key the operator was issued there (the bundle's, imported into the
+    install's `api-key` secret by `wip-deploy import-bundle`). Its apps run
+    with that key."""
     if not isinstance(owner, App):
         return []
     key = app_api_key(owner)
     if key is None:
         return []
+    if deployment.spec.modules.suppress_core:
+        return [EnvVar(name="WIP_API_KEY", source=EnvSource(from_secret="api-key"))]
     return [EnvVar(name="WIP_API_KEY", source=EnvSource(from_secret=key.secret_name))]
 
 
@@ -425,7 +433,7 @@ def resolve_component_env(
     required_vars += _nats_env(component, deployment, components, apps)
     required_vars += _mongo_env(component, deployment, components, apps)
     required_vars += namespace_env(component)
-    required_vars += _app_key_env(component)
+    required_vars += _app_key_env(component, deployment)
 
     return ResolvedEnv(
         required=_resolve(required_vars, skip_inactive=False),

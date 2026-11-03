@@ -43,6 +43,8 @@ from wip_deploy.config_gen import (
 from wip_deploy.config_gen.api_keys import (
     API_KEYS_CONTAINER_DIR,
     FEDERATED_GROUPS_FILENAME,
+    KEY_FILE_CONTAINER_DIR,
+    declares_api_keys_file,
     generate_api_keys_json,
     mounts_auth_config_dir,
 )
@@ -126,9 +128,10 @@ def render_k8s(
     # Secrets
     tree.add("secrets.yaml", _render_secrets(ns, secrets), mode=0o600)
 
-    # Config-file API keys (the spec's plus the canary): a dedicated
-    # Secret carrying the rendered api-keys.json, mounted (subPath) into
-    # components whose manifest declares WIP_AUTH_API_KEYS_FILE.
+    # The key file (the spec's keys, each app's key and the canary) in a
+    # Secret of its own, mounted as a directory into the manifests that read
+    # it (the Registry); the auth config (federated groups, reservations) in
+    # another, mounted where those are read. No other pod holds a plaintext.
     tree.add(
         "api-keys-secret.yaml",
         _render_api_keys_secret(
@@ -378,13 +381,28 @@ def _render_network_policies(ns: str) -> str:
 # ────────────────────────────────────────────────────────────────────
 
 
+KEY_FILE_SECRET = "wip-key-file"
+
+
 def _render_api_keys_secret(
     ns: str, api_keys_json: str, federated_groups: str, reservations: str
 ) -> str:
-    """The rendered WIP_AUTH_API_KEYS_FILE document as its own Secret,
-    mounted as a directory so a running pod sees it change (wip-secrets
-    carries flat name→value pairs, not files)."""
-    return _dump({
+    """Two Secrets, each mounted as a directory so a running pod sees it
+    change (wip-secrets carries flat name→value pairs, not files): the key
+    file alone, for the manifests that read it, and the auth config (the
+    federated group policy and the namespace reservations)."""
+    key_file = {
+        "apiVersion": "v1",
+        "kind": "Secret",
+        "metadata": {
+            "name": KEY_FILE_SECRET,
+            "namespace": ns,
+            "labels": {_LABELS_PART_OF: "wip"},
+        },
+        "type": "Opaque",
+        "stringData": {"api-keys.json": api_keys_json},
+    }
+    auth_config = {
         "apiVersion": "v1",
         "kind": "Secret",
         "metadata": {
@@ -394,11 +412,11 @@ def _render_api_keys_secret(
         },
         "type": "Opaque",
         "stringData": {
-            "api-keys.json": api_keys_json,
             FEDERATED_GROUPS_FILENAME: federated_groups,
             RESERVATIONS_FILENAME: reservations,
         },
-    })
+    }
+    return _dump_multi([key_file, auth_config])
 
 
 def _render_secrets(ns: str, secrets: ResolvedSecrets) -> str:
@@ -634,8 +652,8 @@ def _render_component(
             "persistentVolumeClaim": {"claimName": pvc_name},
         })
 
-    # Config-file API keys — mounted for exactly the manifests
-    # that declare WIP_AUTH_API_KEYS_FILE (the env is the opt-in).
+    # The auth config (federated groups, reservations) and the key file,
+    # each mounted for exactly the manifests that declare its env.
     if mounts_auth_config_dir(owner):
         volume_mounts.append({
             "name": "api-keys-config",
@@ -645,6 +663,16 @@ def _render_component(
         volumes.append({
             "name": "api-keys-config",
             "secret": {"secretName": "wip-api-keys-config"},
+        })
+    if declares_api_keys_file(owner):
+        volume_mounts.append({
+            "name": "key-file",
+            "mountPath": KEY_FILE_CONTAINER_DIR,
+            "readOnly": True,
+        })
+        volumes.append({
+            "name": "key-file",
+            "secret": {"secretName": KEY_FILE_SECRET},
         })
 
     # Config-file mounts for known components. Generalizing via

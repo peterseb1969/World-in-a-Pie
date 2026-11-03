@@ -281,35 +281,41 @@ The `WIP_AUTH_MODE` env var picks the mode. `dual` is recommended.
 
 API keys are sent as `X-API-Key: <key>`. JWTs are sent as `Authorization: Bearer <token>`.
 
-### 4.3 API keys: config keys vs runtime keys
+### 4.3 API keys: key-file keys vs Console keys
 
-WIP supports two kinds of API keys; both authenticate identically.
+Every API key is a Registry record, and every service resolves keys through
+the Registry: key sync carries the keys (every 30 s), the Registry answers
+for their grants. Records have two authors:
 
-| Aspect | Config keys | Runtime keys |
+| Aspect | Key-file keys (wip-deploy) | Console keys |
 |---|---|---|
-| Defined in | `config/api-keys.json` | MongoDB, via REST API |
-| Created by | Declared in the deployment spec (`--api-key`, below) or by editing the file + recreating services | `POST /api/registry/api-keys` |
-| Modifiable via API | No (read-only) | Yes |
-| Deletable via API | No | Yes |
-| Survives a MongoDB wipe/restore | **Yes** — material lives in the spec + secret backend | **No** — key and grants are Mongo rows; the plaintext is unrecoverable |
-| Use case | Bootstrap keys, service accounts, agent keys that must survive redeploys | App keys, temporary keys, UI-created keys |
-| `source` field on the key | `"config"` | `"runtime"` |
+| Authored in | The deployment spec and app manifests, rendered to the key file `config/keys/api-keys.json` | `POST /api/registry/api-keys` (or RC's API-key page) |
+| In the Registry | Imported, `managed_by: "wip-deploy"`, `origin: "file"` | `origin: "console"` |
+| Changed through the API | No — 409, `error_code: managed_by_deployer`; change them with wip-deploy | Yes |
+| Plaintext kept by | The install's secret backend; the app gets it as `WIP_API_KEY` | Nobody: shown once at creation |
+| After a MongoDB wipe or restore | Re-imported by the Registry at its next start (and every 10 s) | Gone unless restored from a backup |
+| Use case | App keys, standing agent and service keys | Apps wip-deploy does not manage, temporary keys |
 
-**The Registry also holds every key in the key file.** It imports the
-install's key file and reservations file into its own records, marked
-`managed_by: "wip-deploy"`: each key (hashed; the plaintext is never
-stored), the grants a key declares, and each reservation. It re-imports at
-startup, every 10 seconds and whenever a reservation lookup finds a file
-changed, and removes records the files no longer declare. A file it cannot
-trust (missing, unparseable, or without the `wip-canary` key) changes
-nothing. For now the services still authenticate these keys from the file:
-the imported record is listed once (`source: "config"`, `managed_by:
-"wip-deploy"`) and is left out of key sync. The API refuses every write to a
-managed key, grant or reservation (409, `error_code: managed_by_deployer`);
-change them with wip-deploy. A runtime key with a file key's name, a grant
-on a namespace a file key declares, or a runtime reservation of a prefix the
-file reserves is replaced by the file's record, and the Registry logs it at
-CRITICAL.
+**Only the Registry reads the key file.** The deployer renders it into a
+directory of its own (`config/keys/`, on k8s the Secret `wip-key-file`),
+mounted only into the Registry as `WIP_REGISTRY_KEY_FILE`; no other
+container holds a plaintext (`wip-deploy verify --security` checks it). The
+Registry imports each key (hashed; the plaintext is never stored), the
+grants a key declares and the install's namespace reservations into its own
+records, marked `managed_by: "wip-deploy"`. It re-imports at startup, every
+10 seconds and whenever a reservation lookup finds a file changed, and
+removes records the files no longer declare. A file it cannot trust
+(missing, unparseable, or without the `wip-canary` key) changes nothing.
+
+A Console key with a key-file key's name, a grant on a namespace a key-file
+key declares, or a runtime reservation of a prefix the file reserves is
+replaced by the file's record, and the Registry logs it at CRITICAL. A
+Console key with a key-file key's plaintext does not authenticate and is
+listed with `shadowed_by`.
+
+If the Registry is down, keys stop working: a service answers 503 once its
+synced copy is 90 s old (three missed key syncs), and the Registry's grants are the only
+grants. That is the design.
 
 **Spec-declared keys (recommended for standing agent/service keys).**
 Declare keys on the deployment and wip-deploy provisions everything:
@@ -321,16 +327,17 @@ wip-deploy install --target dev \
 
 For each declared key the deployer generates a random plaintext into the
 install's secret backend (`~/.wip-deploy/<name>/secrets/<key>-api-key`,
-stable across re-applies), renders `config/auth/api-keys.json` (mode
-0600), and mounts it into every backend service. `namespaces` is the
-key's read scope; `grants` gives per-namespace `read`/`write`/`admin`
-and must stay within `namespaces`. Crucially, a spec-declared key's
-grants resolve **locally in wip-auth** — not via Registry grants in
-MongoDB — so the key keeps working, at full declared scope, after any
-Mongo rebuild (redeploy with a fresh volume, `nuke --remove-data`, or
-the wipe-and-restore remediation ritual). Runtime keys die in exactly
-those events, and backups do not cover them. The declaration persists
-in the install's state: plain `redeploy`/`rebuild` keep it.
+stable across re-applies) and renders it into the key file. `namespaces` is
+the key's read scope; `grants` gives per-namespace `read`/`write`/`admin`
+and must stay within `namespaces`. A key that declares `grants` has them
+owned by the file: the API refuses to change them. A key without `grants`
+keeps Registry grants you set through the API. Because the Registry
+re-imports the file at every start, a spec-declared key keeps working, at
+full declared scope, after any Mongo rebuild (redeploy with a fresh volume,
+`nuke --remove-data`, or the wipe-and-restore remediation ritual). Console
+keys die in exactly those events unless a system backup restores them (§5.7). The
+declaration persists in the install's state: plain `redeploy`/`rebuild`
+keep it.
 
 Several keys are more comfortably declared in a file than in repeated
 `--api-key` JSON — reviewable and diffable deployer input:
@@ -404,7 +411,7 @@ wip-deploy app-namespace remove wip-kb kb-research
 ```
 
 - The addition is kept in the install's saved spec, so `redeploy` keeps it. Other installs and the app's manifest are untouched.
-- Nothing restarts: the app keeps its key, and its scope changes in the key file, which every service re-reads within about 10 seconds (about a minute on k8s, while the Secret propagates). The Registry reads the reservation on the next upsert.
+- Nothing restarts: the app keeps its key, and its scope changes in the key file. The Registry re-imports it within about 10 seconds (about a minute on k8s, while the Secret propagates), and the other services follow within one key sync (30 seconds). The Registry reads the reservation on the next upsert.
 - An owned namespace may be created by the app's own key, with the settings given here (`--setting deletion_mode=full`, `--setting isolation_mode=strict`, `--setting allowed_external_refs=a,b`, `--setting id_config=<json>`). The app may send its own description; any other setting must match. Or create it yourself with the master key and let the app use it.
 - `remove` takes the namespace away from the app at once, even while it holds the app's data. The namespace and its data stay; deleting them is a separate admin action.
 - An app holding the master key (`privileged_key`) takes no additions, and a namespace its manifest already declares cannot be added again.

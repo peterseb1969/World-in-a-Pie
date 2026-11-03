@@ -94,7 +94,10 @@ def test_every_reader_mounts_the_directory_compose(discovery: Discovery) -> None
 def test_every_reader_mounts_the_directory_k8s(discovery: Discovery) -> None:
     d = _deployment("k8s")
     tree = render_k8s(d, discovery.components, discovery.apps, _secrets(d, discovery))
-    secret = yaml.safe_load(tree.files[Path("api-keys-secret.yaml")].content)
+    secret = next(
+        s for s in yaml.safe_load_all(tree.files[Path("api-keys-secret.yaml")].content)
+        if s["metadata"]["name"] == "wip-api-keys-config"
+    )
     assert secret["stringData"]["federated-groups.json"] == ""
     for name in _readers(discovery):
         path = Path(f"services/{name}.yaml")

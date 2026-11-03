@@ -59,6 +59,13 @@ check mutates anything; the whole module is read-only.
      users. An install rendered before that runs MongoDB without
      authentication: any workload could read and write every database.
 
+  9. **The key file only in the Registry** — the rendered key file holds
+     every app key's plaintext. Only the Registry reads it (it imports the
+     keys into its own records), so only the Registry's container may mount
+     its directory. A render from before the file moved keeps it in the
+     shared auth directory, mounted into every service; that fails with a
+     re-render hint.
+
 ### What's NOT checked
 
   - Live service health — that's `wip-deploy status`.
@@ -66,24 +73,24 @@ check mutates anything; the whole module is read-only.
     compose-shaped checks report "not applicable" on k8s installs
     rather than guessing at cluster state.
   - PostgreSQL authentication config: its credentials are rendered per
-    install and the service roles are probed live (check 9).
+    install and the service roles are probed live (check 11).
 
 ### Live checks (`--live`, opt-in)
 
   The checks above read files. With `--live` the command also sends
   requests to the running install through its public base URL:
 
-  9. **Anonymous requests refused** — one read-only, credential-less
+  10. **Anonymous requests refused** — one read-only, credential-less
      request per protected route group of every active service must get a
      JSON 401/403/404; each service's health probe must answer 200 without
      a key. An HTML answer is the SPA fallback for an unserved route and
      counts as a failure, not a refusal.
 
-  10. **reporting-sync on unprivileged roles** — with the install's
+  11. **reporting-sync on unprivileged roles** — with the install's
      api-key, reporting-sync's status must report
      postgres_service_roles_ok = true.
 
-  11. **Authenticated callers without permission refused** — the install's
+  12. **Authenticated callers without permission refused** — the install's
      canary key (authenticates, authorized for nothing) must be refused
      by one privileged and one namespace-scoped route per active service,
      with a JSON 403/404. A 401 means the service does not know the canary,
@@ -108,6 +115,7 @@ from typing import Any
 import yaml
 
 from wip_deploy.check_app import CheckResult
+from wip_deploy.config_gen.api_keys import API_KEYS_RENDER_PATH, KEY_FILE_CONTAINER_DIR
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.deployment import NetworkSpec
 
@@ -267,18 +275,18 @@ def check_secret_permissions(install_dir: Path, deployment: Deployment) -> Check
     # inside them. Other host users are kept out by the install
     # directory, which must therefore be 0700; the file itself must not
     # be writable by them.
-    api_keys_file = install_dir / "config" / "auth" / "api-keys.json"
+    api_keys_file = install_dir / API_KEYS_RENDER_PATH
     if api_keys_file.is_file():
         install_mode = _mode_of(install_dir)
         if install_mode & 0o077:
             offenders.append(
                 f"{install_dir}/ is {install_mode:04o} (want 0700 — it guards "
-                "config/auth/api-keys.json, which containers must read)"
+                f"{API_KEYS_RENDER_PATH}, which the Registry must read)"
             )
         ak_mode = _mode_of(api_keys_file)
         if ak_mode & 0o022:
             offenders.append(
-                f"config/auth/api-keys.json is {ak_mode:04o} (writable by others)"
+                f"{API_KEYS_RENDER_PATH} is {ak_mode:04o} (writable by others)"
             )
 
     if offenders:
@@ -452,6 +460,48 @@ def check_published_ports(install_dir: Path, deployment: Deployment) -> CheckRes
     return CheckResult(name, True, f"no datastore/admin ports on the host (published: {summary})")
 
 
+def check_key_file_mounts(install_dir: Path, deployment: Deployment) -> CheckResult:
+    """Only the Registry's container holds the key file's plaintexts: every
+    other service resolves keys through the Registry."""
+    name = "key file only in the Registry"
+    compose_yaml = install_dir / "docker-compose.yaml"
+    if deployment.spec.target == "k8s" or not compose_yaml.is_file():
+        return CheckResult(
+            name, True, "not applicable (no rendered compose file — k8s install)"
+        )
+    legacy = install_dir / "config" / "auth" / "api-keys.json"
+    if legacy.is_file():
+        return CheckResult(
+            name,
+            False,
+            "config/auth/api-keys.json exists: a render from before the key file moved, "
+            "mounted into every service that reads the auth config",
+            fix_hint="re-render the install: `wip-deploy redeploy --name <install>`",
+        )
+    try:
+        compose = yaml.safe_load(compose_yaml.read_text())
+    except yaml.YAMLError as exc:
+        return CheckResult(name, False, f"could not parse {compose_yaml}: {exc}")
+    mounting = sorted(
+        svc_name
+        for svc_name, svc in ((compose or {}).get("services") or {}).items()
+        if any(
+            str(v).split(":")[1:2] == [KEY_FILE_CONTAINER_DIR]
+            for v in (svc.get("volumes") or [])
+        )
+    )
+    others = [s for s in mounting if s != "registry" and not s.endswith("-registry")]
+    if others:
+        return CheckResult(
+            name,
+            False,
+            f"the key file is mounted into {', '.join(others)}",
+            fix_hint="re-render the install; only the Registry's manifest may declare "
+            "WIP_REGISTRY_KEY_FILE",
+        )
+    return CheckResult(name, True, f"mounted only into {', '.join(mounting) or 'nothing'}")
+
+
 def check_caddy_security_headers(install_dir: Path, deployment: Deployment) -> CheckResult:
     """Public (letsencrypt) installs should send Strict-Transport-Security."""
     name = "security headers (Caddyfile)"
@@ -602,6 +652,7 @@ def verify_security(install_dir: Path, deployment: Deployment) -> SecurityReport
         check_tls_hostname_sanity(network),
         check_variant_exposure(deployment),
         check_published_ports(install_dir, deployment),
+        check_key_file_mounts(install_dir, deployment),
         check_caddy_security_headers(install_dir, deployment),
         check_nats_authentication(install_dir, deployment),
         check_mongodb_authentication(install_dir, deployment),

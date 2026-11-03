@@ -1556,7 +1556,7 @@ async def list_api_keys() -> str:
 
 @mcp.tool()
 async def revoke_api_key(name: str) -> str:
-    """Revoke (hard-delete) a runtime API key. Config-file keys cannot be revoked.
+    """Revoke (hard-delete) a runtime API key. Keys wip-deploy manages (from the install's key file) cannot be revoked here.
 
     Args:
         name: Name of the runtime key to revoke

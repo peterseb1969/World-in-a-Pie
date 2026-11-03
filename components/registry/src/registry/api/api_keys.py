@@ -88,8 +88,27 @@ def _get_provider() -> APIKeyProvider:
     return _api_key_provider
 
 
-def _stored_to_response(doc: StoredAPIKey, reserved: list[str] | None = None) -> APIKeyResponse:
-    """Convert a StoredAPIKey document to an APIKeyResponse."""
+async def _declared_grants(docs: list[StoredAPIKey]) -> dict[str, dict[str, str]]:
+    """The imported grants of each managed key whose grants the key file
+    declares, by key name ({namespace: permission})."""
+    names = [d.name for d in docs if d.managed_by is not None and d.grants_managed]
+    if not names:
+        return {}
+    out: dict[str, dict[str, str]] = {n: {} for n in names}
+    for g in await NamespaceGrant.find(
+        {"subject_type": "api_key", "subject": {"$in": names}, "managed_by": {"$ne": None}}
+    ).to_list():
+        out[g.subject][g.namespace] = g.permission
+    return out
+
+
+def _stored_to_response(
+    doc: StoredAPIKey,
+    reserved: list[str] | None = None,
+    grants: dict[str, str] | None = None,
+) -> APIKeyResponse:
+    """Convert a StoredAPIKey document to an APIKeyResponse. `grants` are a
+    managed key's declared grants, None for every other key."""
     return APIKeyResponse(
         name=doc.name,
         owner=doc.owner,
@@ -101,6 +120,7 @@ def _stored_to_response(doc: StoredAPIKey, reserved: list[str] | None = None) ->
         namespaces=doc.namespaces,
         created_by=doc.created_by,
         source="runtime",
+        grants=grants,
         shadowed_by=key_shadowing.shadowed_by(doc.name),
         reserved_namespaces=sorted(reserved or []),
         managed_by=doc.managed_by,
@@ -347,11 +367,12 @@ async def list_api_keys(
     reserved: dict[str, list[str]] = {}
     for r in await RuntimeReservation.find(RuntimeReservation.managed_by == None).to_list():  # noqa: E711
         reserved.setdefault(r.app, []).append(r.prefix)
+    declared = await _declared_grants(runtime_docs)
     for doc in runtime_docs:
         # A dormant import is the config key listed above: list it once.
         if key_import.is_dormant(doc, config_names):
             continue
-        results.append(_stored_to_response(doc, reserved.get(doc.name)))
+        results.append(_stored_to_response(doc, reserved.get(doc.name), declared.get(doc.name)))
 
     results.sort(key=lambda r: r.name)
     total = len(results)
@@ -429,7 +450,8 @@ async def get_api_key(
     # Check runtime keys
     doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
     if doc:
-        return _stored_to_response(doc, await _reserved_by(name))
+        declared = await _declared_grants([doc])
+        return _stored_to_response(doc, await _reserved_by(name), declared.get(name))
 
     raise HTTPException(status_code=404, detail=f"API key '{name}' not found")
 

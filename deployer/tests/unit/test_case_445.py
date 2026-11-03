@@ -25,6 +25,7 @@ from wip_deploy.spec import Deployment
 from wip_deploy.verify_security import (
     check_api_key_strength,
     check_caddy_security_headers,
+    check_key_file_mounts,
     check_published_ports,
     check_secret_permissions,
     check_tls_hostname_sanity,
@@ -151,9 +152,9 @@ class TestCheckSecretPermissions:
         assert ".env" in r.message
 
     def _api_keys_file(self, install: Path, mode: int) -> None:
-        auth_dir = install / "config" / "auth"
-        auth_dir.mkdir(parents=True)
-        ak = auth_dir / "api-keys.json"
+        keys_dir = install / "config" / "keys"
+        keys_dir.mkdir(parents=True)
+        ak = keys_dir / "api-keys.json"
         ak.write_text('{"keys": []}\n')
         ak.chmod(mode)
 
@@ -367,6 +368,47 @@ class TestCheckCaddySecurityHeaders:
 
 
 # ────────────────────────────────────────────────────────────────────
+# Key file only in the Registry
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestKeyFileMounts:
+    """Only the Registry's container may mount the key file's directory:
+    every other service resolves keys through the Registry."""
+
+    def _compose(self, tmp_path: Path, volumes_by_service: dict[str, list[str]]) -> None:
+        compose = {"services": {s: {"image": "x", "volumes": v} for s, v in volumes_by_service.items()}}
+        (tmp_path / "docker-compose.yaml").write_text(yaml.safe_dump(compose))
+
+    def test_only_the_registry_passes(self, tmp_path: Path) -> None:
+        self._compose(tmp_path, {
+            "registry": ["./config/keys:/etc/wip-keys:ro", "./config/auth:/etc/wip:ro"],
+            "def-store": ["./config/auth:/etc/wip:ro"],
+        })
+        r = check_key_file_mounts(tmp_path, _make_deployment(tmp_path))
+        assert r.passed, r.message
+        assert "registry" in r.message
+
+    def test_another_service_mounting_it_fails(self, tmp_path: Path) -> None:
+        self._compose(tmp_path, {
+            "registry": ["./config/keys:/etc/wip-keys:ro"],
+            "def-store": ["./config/keys:/etc/wip-keys:ro"],
+        })
+        r = check_key_file_mounts(tmp_path, _make_deployment(tmp_path))
+        assert not r.passed
+        assert "def-store" in r.message
+
+    def test_a_render_from_before_the_move_fails(self, tmp_path: Path) -> None:
+        self._compose(tmp_path, {"registry": ["./config/auth:/etc/wip:ro"]})
+        legacy = tmp_path / "config" / "auth"
+        legacy.mkdir(parents=True)
+        (legacy / "api-keys.json").write_text('{"keys": []}')
+        r = check_key_file_mounts(tmp_path, _make_deployment(tmp_path))
+        assert not r.passed
+        assert "redeploy" in (r.fix_hint or "")
+
+
+# ────────────────────────────────────────────────────────────────────
 # Report roll-up + CLI
 # ────────────────────────────────────────────────────────────────────
 
@@ -378,7 +420,7 @@ class TestVerifySecurityReport:
         d = _make_deployment(tmp_path)
         report = verify_security(tmp_path, d)
         assert report.ok, [f"{r.name}: {r.message}" for r in report.failures]
-        assert len(report.results) == 8
+        assert len(report.results) == 9
 
     def test_failures_are_collected(self, tmp_path: Path) -> None:
         _make_secrets(tmp_path, api_key="dev_master_key_for_testing")
@@ -424,7 +466,7 @@ class TestCli:
             app, ["verify", "--security", "--install-dir", str(tmp_path)]
         )
         assert result.exit_code == 0, result.output
-        assert "9 check(s) passed" in result.output
+        assert "10 check(s) passed" in result.output
 
     def test_failing_install_exits_1_with_hints(self, tmp_path: Path) -> None:
         _make_secrets(tmp_path, api_key="dev_master_key_for_testing")

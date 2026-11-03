@@ -42,6 +42,9 @@ from wip_deploy.config_gen.api_keys import (
     API_KEYS_RENDER_DIR,
     API_KEYS_RENDER_PATH,
     FEDERATED_GROUPS_RENDER_PATH,
+    KEY_FILE_CONTAINER_DIR,
+    KEY_FILE_RENDER_DIR,
+    declares_api_keys_file,
     generate_api_keys_json,
     mounts_auth_config_dir,
 )
@@ -625,6 +628,10 @@ def _dev_service_block(
         )
     if mounts_auth_config_dir(owner):
         volumes.append(f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro")
+    # The key file's own directory, for the manifests that read it (the
+    # Registry): no other container holds the plaintext.
+    if declares_api_keys_file(owner):
+        volumes.append(f"./{KEY_FILE_RENDER_DIR}:{KEY_FILE_CONTAINER_DIR}:ro")
     if uses_launcher:
         volumes.append(
             f"./{UVICORN_LAUNCHER_RENDER_PATH}:{UVICORN_LAUNCHER_CONTAINER_PATH}:ro"

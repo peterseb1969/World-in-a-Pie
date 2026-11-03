@@ -159,10 +159,12 @@ class APIKeyResponse(BaseModel):
     grants: dict[str, str] | None = Field(
         default=None,
         description=(
-            "Config-declared grants ({namespace: read|write|admin}) — "
-            "resolved locally in wip-auth and surviving MongoDB rebuilds. "
-            "Always None for runtime keys: their write grants are Registry "
-            "NamespaceGrants (wipe-mortal) and are not shown in this field."
+            "The grants a key file declares for this key ({namespace: "
+            "read|write|admin}): on a config key, and on a key the Registry "
+            "imported from the key file (managed_by wip-deploy) whose entry "
+            "declares grants. Those grants are the file's; the API refuses "
+            "to change them. None for every other key: its grants are "
+            "Registry grants, changed through the API."
         ),
     )
     shadowed_by: str | None = Field(

@@ -1,11 +1,13 @@
 """Regression coverage for CASE-655 — spec-declared config-file API keys.
 
-`auth.api_keys` renders into wip-auth's WIP_AUTH_API_KEYS_FILE mechanism:
-one secret per key in the secret backend (generated on first apply,
-stable thereafter), an `api-keys.json` in the rendered tree (0600),
-mounted into exactly the components whose manifest declares the env var.
-Spec-declared keys therefore survive a MongoDB wipe/restore — the loss
-mode that killed the out-of-band `web-yac` runtime key.
+`auth.api_keys` renders into the install's key file: one secret per key in
+the secret backend (generated on first apply, stable thereafter), an
+`api-keys.json` in the rendered tree, mounted (through a directory of its
+own) into exactly the components whose manifest declares it — the Registry,
+as WIP_REGISTRY_KEY_FILE. The Registry imports the keys into its own records
+and re-imports them at every start, so spec-declared keys survive a MongoDB
+wipe/restore — the loss mode that killed the out-of-band `web-yac` runtime
+key — and no other container holds the plaintext.
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from wip_deploy.config_gen.api_keys import (
     API_KEYS_RENDER_DIR,
     API_KEYS_RENDER_PATH,
     CANARY_NAMESPACE,
+    KEY_FILE_CONTAINER_DIR,
+    KEY_FILE_RENDER_DIR,
     generate_api_keys_json,
 )
 from wip_deploy.discovery import Discovery, discover
@@ -53,17 +57,10 @@ WEB_YAC = SpecAPIKey(
     owner="system:web-yac",
 )
 
-# Manifests that declare WIP_AUTH_API_KEYS_FILE today — the wip-auth
-# importers. Kept in lockstep with the component manifests; the
+# The only manifest that reads the key file: the Registry, which imports it.
+# Every other wip-auth importer resolves keys through the Registry. The
 # consumer-set test below verifies against the real manifests.
-EXPECTED_CONSUMERS = {
-    "registry",
-    "def-store",
-    "template-store",
-    "document-store",
-    "reporting-sync",
-    "ingest-gateway",
-}
+EXPECTED_CONSUMERS = {"registry"}
 
 
 @pytest.fixture(scope="session")
@@ -211,18 +208,23 @@ class TestComposeRender:
             tree.files[Path("docker-compose.yaml")].content
         )
         services = compose["services"]
-        mount = f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro"
-        active_consumers = EXPECTED_CONSUMERS & set(services)
-        assert active_consumers  # the fixture activates several
-        for name in active_consumers:
-            svc = services[name]
-            assert mount in svc.get("volumes", []), name
-            assert (
-                svc["environment"]["WIP_AUTH_API_KEYS_FILE"]
-                == API_KEYS_CONTAINER_PATH
-            ), name
-        # A non-consumer infra service gets neither.
-        assert mount not in services["mongodb"].get("volumes", [])
+        mount = f"./{KEY_FILE_RENDER_DIR}:{KEY_FILE_CONTAINER_DIR}:ro"
+        registry = services["registry"]
+        assert mount in registry.get("volumes", [])
+        assert registry["environment"]["WIP_REGISTRY_KEY_FILE"] == API_KEYS_CONTAINER_PATH
+        assert "WIP_AUTH_API_KEYS_FILE" not in registry["environment"]
+        # No other service holds the key file, though several still mount
+        # the auth config directory (federated groups, reservations).
+        for name, svc in services.items():
+            if name == "registry":
+                continue
+            assert mount not in svc.get("volumes", []), name
+            assert "WIP_AUTH_API_KEYS_FILE" not in (svc.get("environment") or {}), name
+        assert any(
+            f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro" in svc.get("volumes", [])
+            for name, svc in services.items() if name != "registry"
+        )
+        assert not API_KEYS_RENDER_PATH.startswith(API_KEYS_RENDER_DIR + "/")
 
     def test_no_declared_keys_still_mounts_the_canary(
         self, tmp_path: Path, real_discovery: Discovery
@@ -237,15 +239,15 @@ class TestComposeRender:
             tree.files[Path("docker-compose.yaml")].content
         )
         registry = compose["services"]["registry"]
-        assert registry["environment"]["WIP_AUTH_API_KEYS_FILE"] == API_KEYS_CONTAINER_PATH
-        assert f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro" in registry.get("volumes", [])
+        assert registry["environment"]["WIP_REGISTRY_KEY_FILE"] == API_KEYS_CONTAINER_PATH
+        assert f"./{KEY_FILE_RENDER_DIR}:{KEY_FILE_CONTAINER_DIR}:ro" in registry.get("volumes", [])
 
     def test_consumer_set_matches_wip_auth_importers(
         self, real_discovery: Discovery
     ) -> None:
-        """The manifests that declare the env var are exactly the
-        components whose source imports wip_auth — the declaration must
-        not drift from the actual consumer set."""
+        """Exactly the Registry declares the key file. Every other component
+        whose source imports wip_auth resolves keys through the Registry and
+        must not declare it: the plaintext reaches no other container."""
         from wip_deploy.config_gen.api_keys import declares_api_keys_file
 
         declaring = {
@@ -267,7 +269,8 @@ class TestComposeRender:
                 for p in src.rglob("*.py")
             ):
                 importers.add(c.metadata.name)
-        assert declaring == importers
+        assert declaring <= importers
+        assert len(importers) > 1  # the scan still finds the other services
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -310,8 +313,7 @@ class TestDevRender:
             tree.files[Path("docker-compose.yaml")].content
         )
         registry = compose["services"]["registry"]
-        mount = f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro"
-        assert mount in registry["volumes"]
+        assert f"./{KEY_FILE_RENDER_DIR}:{KEY_FILE_CONTAINER_DIR}:ro" in registry["volumes"]
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -347,11 +349,13 @@ class TestK8sRender:
             d, real_discovery.components, real_discovery.apps, secrets
         )
 
-        secret_doc = yaml.safe_load(
-            tree.files[Path("api-keys-secret.yaml")].content
-        )
-        assert secret_doc["metadata"]["name"] == "wip-api-keys-config"
-        assert "web-yac" in secret_doc["stringData"]["api-keys.json"]
+        docs = {
+            d["metadata"]["name"]: d
+            for d in yaml.safe_load_all(tree.files[Path("api-keys-secret.yaml")].content)
+        }
+        # The key file in a Secret of its own; the auth config Secret holds none.
+        assert "web-yac" in docs["wip-key-file"]["stringData"]["api-keys.json"]
+        assert "api-keys.json" not in docs["wip-api-keys-config"]["stringData"]
 
         registry_docs = list(
             yaml.safe_load_all(tree.files[Path("services/registry.yaml")].content)
@@ -362,11 +366,15 @@ class TestK8sRender:
         container = workload["spec"]["template"]["spec"]["containers"][0]
         mounts = container.get("volumeMounts", [])
         # Mounted through its directory, never subPath: a running pod must see
-        # the file change so wip-auth can re-read it (CASE-884).
+        # the file change so the Registry can re-import it (CASE-884).
         assert any(
-            m["mountPath"] == API_KEYS_CONTAINER_DIR and "subPath" not in m
+            m["mountPath"] == KEY_FILE_CONTAINER_DIR and "subPath" not in m
             for m in mounts
         )
+        # No other workload mounts the key file's Secret.
+        for path, entry in tree.files.items():
+            if str(path).startswith("services/") and path.name != "registry.yaml":
+                assert "wip-key-file" not in entry.content, path
 
     def test_no_declared_keys_still_renders_the_canary_secret(
         self, tmp_path: Path, real_discovery: Discovery

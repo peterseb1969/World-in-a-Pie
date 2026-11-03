@@ -55,15 +55,18 @@ def _transport(status: int, body: Any, seen: list[httpx.Request]) -> httpx.MockT
     return httpx.MockTransport(handler)
 
 
-def test_a_namespace_a_runtime_key_reserves_is_refused(discovery: Discovery):
+def test_a_namespace_a_runtime_key_reserves_is_a_warning_not_a_stop(discovery: Discovery):
+    # The install's reservation wins in the Registry; the apply says so.
     app = _app(discovery, "cook", [{"role": "main", "name": "cook-data", "env": "WIP_NAMESPACE"}])
     seen: list[httpx.Request] = []
     result = check_runtime_reservations(
         _deployment([app]), [app], "admin-key",
         transport=_transport(200, [{"prefix": "cook-data", "app": "ext-key", "settings": {}}], seen),
     )
-    assert len(result.errors) == 1
-    assert "runtime API key 'ext-key' already reserves it" in result.errors[0]
+    assert result.errors == []
+    assert len(result.warnings) == 1
+    assert "runtime API key 'ext-key'" in result.warnings[0]
+    assert "replaces the key's reservation" in result.warnings[0]
     assert seen[0].url.path == "/api/registry/reservations"
     assert seen[0].url.params["source"] == "runtime"
     assert seen[0].headers["X-API-Key"] == "admin-key"
@@ -75,7 +78,7 @@ def test_no_collision_passes(discovery: Discovery):
         _deployment([app]), [app], "admin-key",
         transport=_transport(200, [{"prefix": "other", "app": "ext-key", "settings": {}}], []),
     )
-    assert result.errors == [] and result.note is None
+    assert result.errors == [] and result.warnings == [] and result.note is None
 
 
 def test_an_id_prefix_collision_is_refused():
@@ -133,11 +136,16 @@ def test_an_apply_stops_on_a_collision_and_proceeds_on_a_note(discovery: Discove
     d, secrets = _deployment([app]), ResolvedSecrets(values={"api-key": "k"})
     target = "wip_deploy.runtime_reservations.check_runtime_reservations"
 
-    collision = RuntimeReservationCheck(errors=["namespace 'cook-data' ..."])
+    collision = RuntimeReservationCheck(errors=["ID prefix 'CK-' ..."])
     with patch(target, return_value=collision), pytest.raises(typer.Exit) as exc:
         _refuse_runtime_reservation_collisions(d, [app], secrets)
     assert exc.value.exit_code == 2
-    assert "collide with runtime reservations" in capsys.readouterr().err
+    assert "claim ID prefixes runtime reservations" in capsys.readouterr().err
+
+    replaced = RuntimeReservationCheck(warnings=["namespace 'cook-data' ... replaces"])
+    with patch(target, return_value=replaced):
+        _refuse_runtime_reservation_collisions(d, [app], secrets)
+    assert "warning: namespace 'cook-data'" in capsys.readouterr().err
 
     with patch(target, return_value=RuntimeReservationCheck(note="not reachable")):
         _refuse_runtime_reservation_collisions(d, [app], secrets)

@@ -176,7 +176,7 @@ class TestDeclaredKey:
         # nothing restarts, and the output says how the key arrives instead.
         assert not any(line.startswith("Restarted by this apply")
                        for line in result.output.splitlines())
-        assert "re-read api-keys.json" in result.output
+        assert "re-imports api-keys.json" in result.output
         assert "new-agent" not in result.output
 
 
