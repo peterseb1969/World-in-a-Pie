@@ -1,4 +1,4 @@
-"""Runtime API keys whose plaintext a config key already has.
+"""Runtime API keys whose plaintext a config key, or the key file, already has.
 
 A presented key authenticates as the first record it matches, config keys
 first, and the match is cached per process. A runtime key that shares its
@@ -23,6 +23,12 @@ so a steady-state pass is a database read and dictionary lookups. The check
 runs at startup and then every RECONCILE_INTERVAL_SECONDS, which also picks
 up config-key reloads (the key-file watcher swaps the provider's config keys
 in place).
+
+The key file's keys are also imported as Registry records (key_import),
+marked managed by wip-deploy. Those are the file's own keys, so they are
+never shadowed. The plaintexts compared are the loaded config keys' and the
+last imported key file's: the two are the same set while the Registry loads
+the file as config keys, and the file's alone once it no longer does.
 """
 
 import asyncio
@@ -111,8 +117,16 @@ async def reconcile(provider: APIKeyProvider) -> dict[str, str]:
     matches); keys no longer shadowed return to it if they still exist and
     are enabled. Returns the current shadow map.
     """
-    docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
-    config_prehashes = provider.config_key_prehashes()
+    # Only API-made keys can be shadowed: a managed key is the key file's own
+    # (key_import), so it cannot shadow itself. Its plaintext shadows an API
+    # key of the same value as a loaded config key's does.
+    from .key_import import file_prehashes
+
+    docs = [
+        d for d in await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
+        if d.managed_by is None
+    ]
+    config_prehashes = {**file_prehashes(), **provider.config_key_prehashes()}
     runtime = [(d.name, d.key_hash) for d in docs]
     # bcrypt is slow and CPU-bound: keep it off the event loop. The cache is
     # only touched by reconcile, which runs one pass at a time.

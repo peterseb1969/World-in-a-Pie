@@ -84,6 +84,11 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     # Initialize auth service
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
 
+    # The key import remembers the files it last imported; every test starts
+    # from an empty database, so it must import them afresh.
+    from registry.services import key_import
+    key_import.reset_for_tests()
+
     # Configure API key management using the SAME providers the middleware uses
     from wip_auth import APIKeyProvider
     for p in _app_providers:

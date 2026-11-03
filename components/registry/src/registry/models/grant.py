@@ -38,6 +38,14 @@ class NamespaceGrant(Document):
     expires_at: datetime | None = Field(
         default=None, description="Optional expiration (None = never)"
     )
+    managed_by: Literal["wip-deploy"] | None = Field(
+        default=None,
+        description="'wip-deploy': imported from a key's grants in the install's key file",
+    )
+    origin: Literal["file", "console", "restored"] = Field(
+        default="console",
+        description="Who wrote the grant: the install's key file, the API, or a restore",
+    )
 
     def is_expired(self) -> bool:
         if self.expires_at is None:
@@ -116,6 +124,11 @@ class GrantResponse(BaseModel):
     granted_by: str
     granted_at: datetime
     expires_at: datetime | None = None
+    managed_by: Literal["wip-deploy"] | None = Field(
+        default=None,
+        description="'wip-deploy' for a grant imported from the install's key file; "
+        "the API refuses to change it (error_code managed_by_deployer)",
+    )
 
 
 class MyNamespaceResponse(BaseModel):

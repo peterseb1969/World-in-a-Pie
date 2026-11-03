@@ -37,7 +37,7 @@ from ..services.id_prefixes import (
     collision_error,
     is_prefix_collision,
 )
-from ..services.reservation_store import ReservationConflict, find_reservation
+from ..services.reservation_store import find_reservation
 from ..services.reservations import (
     SETTING_DEFAULTS,
     SETTING_FIELDS,
@@ -92,8 +92,8 @@ async def _reserved_settings(prefix: str) -> dict[str, Any] | None:
     file or a runtime reservation), with its id_config validated as any
     namespace write's is; None when not reserved.
 
-    An unusable reservations file is a 503; an invalid reservation, or a
-    prefix both sources reserve, is a 409. Each names the cause: the
+    An unusable reservations file is a 503; an invalid reservation is a 409.
+    Each names the cause: the
     operator's declaration is wrong, and neither refusing the app nor
     creating the namespace at other settings is a safe guess.
     """
@@ -104,8 +104,6 @@ async def _reserved_settings(prefix: str) -> dict[str, Any] | None:
         raise HTTPException(
             status_code=503, detail=f"Namespace reservations are unavailable: {e}"
         ) from e
-    except ReservationConflict as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
     if reservation is None:
         return None
     settings = reservation.effective_settings()

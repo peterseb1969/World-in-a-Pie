@@ -33,8 +33,9 @@ from ..models.api_key import (
 )
 from ..models.grant import NamespaceGrant
 from ..models.reservation import RuntimeReservation
-from ..services import key_shadowing, reservation_store
+from ..services import key_import, key_shadowing, reservation_store
 from ..services.auth import require_admin_key, require_groups
+from ..services.managed import key_refusal
 from ..services.reservation_store import ReservationRefused
 from ..services.reservations import ReservationSettings, ReservationsUnavailable
 
@@ -56,6 +57,22 @@ def _is_config_key(name: str) -> bool:
     """A config-file key (cannot be changed through the API). Asked of the
     provider each time: a key-file reload changes the set at runtime."""
     return _api_key_provider is not None and name in _api_key_provider.config_key_names()
+
+
+async def _managed_doc(name: str) -> StoredAPIKey | None:
+    """The stored record of `name` when wip-deploy manages it, else None."""
+    doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
+    return doc if doc is not None and doc.managed_by is not None else None
+
+
+async def _refuse_if_managed(name: str) -> None:
+    """409 managed_by_deployer for a key imported from the install's key file."""
+    if await _managed_doc(name) is not None:
+        raise key_refusal(name)
+
+
+def _config_names() -> set[str]:
+    return set(_api_key_provider.config_key_names()) if _api_key_provider is not None else set()
 
 
 def _get_provider() -> APIKeyProvider:
@@ -81,6 +98,8 @@ def _stored_to_response(doc: StoredAPIKey, reserved: list[str] | None = None) ->
         source="runtime",
         shadowed_by=key_shadowing.shadowed_by(doc.name),
         reserved_namespaces=sorted(reserved or []),
+        managed_by=doc.managed_by,
+        origin=doc.origin,
     )
 
 
@@ -136,8 +155,11 @@ async def _refresh_provider(doc: StoredAPIKey) -> None:
             provider.add_key(key_shadowing.runtime_record(doc))
 
 
-def _config_key_to_response(record: APIKeyRecord) -> APIKeyResponse:
-    """Convert a config-file APIKeyRecord to an APIKeyResponse."""
+def _config_key_to_response(
+    record: APIKeyRecord, managed: StoredAPIKey | None = None
+) -> APIKeyResponse:
+    """Convert a config-file APIKeyRecord to an APIKeyResponse. `managed` is
+    the Registry's imported record of the same key, if there is one."""
     return APIKeyResponse(
         name=record.name,
         owner=record.owner,
@@ -150,6 +172,8 @@ def _config_key_to_response(record: APIKeyRecord) -> APIKeyResponse:
         created_by="config-file",
         source="config",
         grants=dict(record.grants) if record.grants is not None else None,
+        managed_by=managed.managed_by if managed is not None else None,
+        origin=managed.origin if managed is not None else None,
     )
 
 
@@ -179,6 +203,9 @@ async def create_api_key(
             status_code=422,
             detail="grant_permission requires `namespaces` to be set",
         )
+
+    # A key the install's key file declares belongs to wip-deploy
+    await _refuse_if_managed(request.name)
 
     # Reject name collision with config-file keys
     if _is_config_key(request.name):
@@ -301,18 +328,24 @@ async def list_api_keys(
     """
     provider = _get_provider()
     results: list[APIKeyResponse] = []
-
-    # Config-file keys
-    for record in provider.iter_keys():
-        if _is_config_key(record.name):
-            results.append(_config_key_to_response(record))
+    config_names = _config_names()
 
     # Runtime keys from MongoDB (source of truth for metadata)
     runtime_docs = await StoredAPIKey.find_all().to_list()
+    managed = {d.name: d for d in runtime_docs if d.managed_by is not None}
+
+    # Config-file keys, marked managed when the Registry holds their import
+    for record in provider.iter_keys():
+        if record.name in config_names:
+            results.append(_config_key_to_response(record, managed.get(record.name)))
+
     reserved: dict[str, list[str]] = {}
-    for r in await RuntimeReservation.find_all().to_list():
+    for r in await RuntimeReservation.find(RuntimeReservation.managed_by == None).to_list():  # noqa: E711
         reserved.setdefault(r.app, []).append(r.prefix)
     for doc in runtime_docs:
+        # A dormant import is the config key listed above: list it once.
+        if key_import.is_dormant(doc, config_names):
+            continue
         results.append(_stored_to_response(doc, reserved.get(doc.name)))
 
     results.sort(key=lambda r: r.name)
@@ -349,6 +382,9 @@ async def sync_api_keys(
     authenticates with its admin/service-scoped Registry key.
     """
     docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
+    # A managed key the Registry also loads as a config key of the same name
+    # is dormant: every service already holds that plaintext as the config key.
+    config_names = _config_names()
     return [
         APIKeySyncRecord(
             name=doc.name,
@@ -363,6 +399,7 @@ async def sync_api_keys(
         )
         for doc in docs
         if not key_shadowing.is_shadowed(doc.name)
+        and not key_import.is_dormant(doc, config_names)
     ]
 
 
@@ -382,7 +419,7 @@ async def get_api_key(
     if _is_config_key(name):
         for record in provider.iter_keys():
             if record.name == name:
-                return _config_key_to_response(record)
+                return _config_key_to_response(record, await _managed_doc(name))
 
     # Check runtime keys
     doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
@@ -403,6 +440,7 @@ async def update_api_key(
     _admin: str = Depends(require_admin_key),
 ) -> APIKeyResponse:
     """Update metadata on a runtime API key. Config-file keys cannot be modified."""
+    await _refuse_if_managed(name)
     if _is_config_key(name):
         raise HTTPException(
             status_code=400,
@@ -445,6 +483,7 @@ async def update_api_key(
 
 
 async def _runtime_key(name: str) -> StoredAPIKey:
+    await _refuse_if_managed(name)
     if _is_config_key(name):
         raise HTTPException(
             status_code=400,
@@ -562,6 +601,7 @@ async def delete_api_key(
     created (`released_reservations`) and kept where it exists
     (`kept_reservations`; release them with DELETE /reservations/{prefix}).
     """
+    await _refuse_if_managed(name)
     if _is_config_key(name):
         raise HTTPException(
             status_code=400,

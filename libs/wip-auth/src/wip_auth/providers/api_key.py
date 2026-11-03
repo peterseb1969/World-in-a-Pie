@@ -65,9 +65,11 @@ def api_key_prehash(key: str, salt: str = "wip_auth_salt") -> bytes:
 def hash_api_key(key: str, salt: str = "wip_auth_salt") -> str:
     """Hash an API key using bcrypt.
 
-    The deployment salt is prefixed to the key before bcrypt hashing,
-    providing defense in depth (different deployments produce different
-    hashes even for the same key).
+    The salt (`api_key_hash_salt`) is prefixed to the key before bcrypt
+    hashing. Every install uses the default salt unless it sets
+    WIP_AUTH_API_KEY_HASH_SALT (wip-deploy does not), so hashes of one key
+    are not install-specific; two hashes of one key differ only through
+    bcrypt's own per-hash salt.
 
     Args:
         key: The plain-text API key

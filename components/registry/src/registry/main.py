@@ -36,7 +36,8 @@ from .models.grant import NamespaceGrant
 from .models.id_counter import IdCounter
 from .models.namespace import Namespace
 from .models.reservation import RuntimeReservation
-from .services import key_shadowing
+from .services import key_import, key_shadowing
+from .services.managed import ManagedRecordRefused, managed_record_refused_handler
 
 
 # Application configuration
@@ -157,8 +158,23 @@ async def lifespan(app: FastAPI):
             break
 
     if api_key_provider:
-        # Load runtime keys from MongoDB and add to provider
-        runtime_docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
+        # Before serving: import the install's key file and reservations
+        # file into the Registry's records, so lookups never answer from an
+        # import older than the files. A file that cannot be read imports
+        # nothing and removes nothing.
+        try:
+            await key_import.run_pass(api_key_provider)
+        except Exception as e:
+            print(f"WARNING: Key import failed; the previous import stands: {e}")
+
+        # Load runtime keys from MongoDB and add to provider. A managed key
+        # the provider already holds as a config key of the same name stays
+        # out (dormant): one plaintext, one record.
+        config_names = api_key_provider.config_key_names()
+        runtime_docs = [
+            d for d in await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
+            if not key_import.is_dormant(d, config_names)
+        ]
         for doc in runtime_docs:
             api_key_provider.add_key(key_shadowing.runtime_record(doc))
         print(f"Loaded {len(runtime_docs)} runtime API key(s) from MongoDB.")
@@ -168,9 +184,7 @@ async def lifespan(app: FastAPI):
         shadowed = await key_shadowing.reconcile(api_key_provider)
         if shadowed:
             print(f"Withheld {len(shadowed)} runtime API key(s) shadowed by a config key.")
-        shadow_task = asyncio.create_task(
-            key_shadowing.run_reconcile_loop(api_key_provider)
-        )
+        shadow_task = asyncio.create_task(key_import.run_loop(api_key_provider))
 
         configure_api_key_management(api_key_provider)
     else:
@@ -244,6 +258,8 @@ app.add_middleware(
 
 # Include API router
 app.include_router(api_router)
+# A write to a record wip-deploy owns: 409 with error_code managed_by_deployer.
+app.add_exception_handler(ManagedRecordRefused, managed_record_refused_handler)
 
 # Declare the X-API-Key requirement in the OpenAPI contract — runtime
 # Depends() enforcement emits nothing into the schema, and a client

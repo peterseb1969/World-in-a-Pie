@@ -2,6 +2,10 @@
 
 Runtime API keys are stored in MongoDB and managed via REST endpoints.
 They coexist with config-file keys (loaded at startup via wip-auth).
+
+A key imported from the deployer's key file is stored here too, marked
+`managed_by: "wip-deploy"` (services/key_import.py). The API refuses to
+change a managed record; wip-deploy owns it.
 """
 
 import secrets
@@ -35,6 +39,22 @@ class StoredAPIKey(Document):
     )
     created_by: str = Field(
         default="system", description="Identity string of the admin who created this key"
+    )
+    managed_by: Literal["wip-deploy"] | None = Field(
+        default=None,
+        description="'wip-deploy': imported from the install's key file; the API refuses to change it",
+    )
+    origin: Literal["file", "console", "restored"] = Field(
+        default="console",
+        description="Who wrote the record: the install's key file, the API (Console), or a restore",
+    )
+    grants_managed: bool = Field(
+        default=False,
+        description=(
+            "A managed key whose file entry declares grants: its grants are "
+            "imported and the API refuses to change them. A managed key that "
+            "declares none keeps its grants under the API."
+        ),
     )
 
     class Settings:
@@ -157,6 +177,18 @@ class APIKeyResponse(BaseModel):
     reserved_namespaces: list[str] | None = Field(
         default=None,
         description="For a runtime key: the namespaces it reserves. None for config keys.",
+    )
+    managed_by: Literal["wip-deploy"] | None = Field(
+        default=None,
+        description=(
+            "'wip-deploy' when the Registry holds this key as a record imported "
+            "from the install's key file. The API refuses to change it "
+            "(409, error_code managed_by_deployer); change it with wip-deploy."
+        ),
+    )
+    origin: Literal["file", "console", "restored"] | None = Field(
+        default=None,
+        description="For a stored record: the key file, the API (Console), or a restore",
     )
 
 

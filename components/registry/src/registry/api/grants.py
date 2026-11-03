@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from wip_auth import UserIdentity
 
+from ..models.api_key import StoredAPIKey
 from ..models.grant import (
     GrantBulkResponse,
     GrantCreate,
@@ -22,6 +23,7 @@ from ..models.grant import (
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key
 from ..services.errors import error_fields
+from ..services.managed import MANAGED_BY_DEPLOYER, grant_refusal
 
 # The wire-level set of auth_method values UserIdentity accepts. Mirrors
 # the Literal in libs/wip-auth/src/wip_auth/models.py::UserIdentity.
@@ -91,6 +93,20 @@ def _build_synthetic_identity(
     )
 
 
+async def _grant_is_managed(
+    namespace: str, subject: str, subject_type: str, grant: NamespaceGrant | None
+) -> bool:
+    """A grant wip-deploy owns: one imported from the install's key file, or
+    any grant to a key whose grants the key file declares (the import would
+    undo a change made through the API)."""
+    if grant is not None and grant.managed_by is not None:
+        return True
+    if subject_type != "api_key":
+        return False
+    key = await StoredAPIKey.find_one(StoredAPIKey.name == subject)
+    return key is not None and key.managed_by is not None and key.grants_managed
+
+
 def _grant_to_response(grant: NamespaceGrant) -> GrantResponse:
     return GrantResponse(
         namespace=grant.namespace,
@@ -100,6 +116,7 @@ def _grant_to_response(grant: NamespaceGrant) -> GrantResponse:
         granted_by=grant.granted_by,
         granted_at=grant.granted_at,
         expires_at=grant.expires_at,
+        managed_by=grant.managed_by,
     )
 
 
@@ -323,6 +340,8 @@ async def create_grants(
                 "subject": subject,
                 "subject_type": item.subject_type,
             })
+            if await _grant_is_managed(prefix, subject, item.subject_type, existing):
+                raise grant_refusal(prefix, subject)
             if existing:
                 existing.permission = item.permission
                 existing.expires_at = item.expires_at
@@ -388,6 +407,13 @@ async def revoke_grants(
             "subject": subject,
             "subject_type": item.subject_type,
         })
+        if await _grant_is_managed(prefix, subject, item.subject_type, grant):
+            results.append({
+                "index": i, "status": "error", "subject": subject,
+                "error": grant_refusal(prefix, subject).detail,
+                "error_code": MANAGED_BY_DEPLOYER,
+            })
+            continue
         if grant:
             await grant.delete()
             results.append({"index": i, "status": "revoked", "subject": subject})
@@ -399,7 +425,7 @@ async def revoke_grants(
         "results": results,
         "total": len(items),
         "succeeded": succeeded,
-        "failed": 0,
+        "failed": sum(1 for r in results if r["status"] == "error"),
     }
 
 

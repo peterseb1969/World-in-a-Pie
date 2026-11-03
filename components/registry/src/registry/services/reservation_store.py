@@ -1,13 +1,15 @@
-"""Reservations from both sources: the deployer's file and the Registry's API.
+"""Reservations, held by the Registry: one record per prefix.
 
-A prefix is reserved by one source or the other, never both. A runtime
-reservation of a prefix the file reserves is refused when it is made. The
-reverse (a later apply renders a file reservation of a prefix that already
-has a runtime one) is refused by the deployer when it can reach the Registry;
-when it could not, the collision reaches the Registry, which refuses to pick
-a winner: the namespace upsert answers 409 for that prefix, the listing shows
-the conflict, and the collision is logged CRITICAL until an operator removes
-one of the two.
+Two writers keep them: the install's reservations file, which the Registry
+imports (key_import) into records managed by wip-deploy, and the Registry's
+API, through a runtime API key. Every lookup first brings the import up to
+date with the file, so an answer is never older than the file.
+
+A runtime reservation of a prefix the install's file reserves is refused
+when it is made (409, error_code managed_by_deployer). The reverse, a file
+reservation of a prefix an API reservation already holds, is resolved by the
+import: the file's reservation replaces it, logged CRITICAL. The key that
+made it keeps its grants.
 """
 
 import logging
@@ -20,7 +22,8 @@ from ..models.id_algorithm import validate_id_config_write
 from ..models.namespace import WIP_NAMESPACE, Namespace, prefix_error
 from ..models.reservation import RuntimeReservation
 from .id_prefixes import IdPrefixError, assert_prefixes_free, check_prefix_rule, claimed_prefixes
-from .reservations import Reservation, ReservationSettings, load_reservations
+from .managed import reservation_refusal
+from .reservations import Reservation, ReservationSettings
 
 logger = logging.getLogger("registry.reservations")
 
@@ -34,29 +37,14 @@ class ReservationRefused(Exception):
         self.detail = detail
 
 
-class ReservationConflict(Exception):
-    """A prefix both the install's file and a runtime reservation reserve."""
-
-    def __init__(self, prefix: str, file_app: str, runtime_app: str) -> None:
-        self.prefix = prefix
-        self.file_app = file_app
-        self.runtime_app = runtime_app
-        super().__init__(
-            f"namespace '{prefix}' is reserved both by the install's reservations "
-            f"(app '{file_app}') and by runtime API key '{runtime_app}'; remove one "
-            f"of the two (wip-deploy for the app, DELETE "
-            f"/api/registry/reservations/{prefix} for the runtime one)"
-        )
-
-
 @dataclass
 class ReservationView:
     prefix: str
     app: str
-    source: str  # "file" or "runtime"
+    source: str  # "file" (managed by wip-deploy) or "runtime" (the API)
     settings: dict[str, Any]
     namespace_exists: bool
-    conflict: str | None
+    managed_by: str | None = None
 
 
 def _as_reservation(doc: RuntimeReservation) -> Reservation:
@@ -65,68 +53,60 @@ def _as_reservation(doc: RuntimeReservation) -> Reservation:
     )
 
 
-async def find_reservation(prefix: str) -> Reservation | None:
-    """The reservation of `prefix` from either source, or None.
+async def _current() -> None:
+    """Bring the import up to date with the files before answering. Raises
+    ReservationsUnavailable for a reservations file that is present and
+    unusable: guessing would either refuse an app its own namespace or create
+    one at settings nobody approved."""
+    from .key_import import ensure_current
 
-    Raises ReservationsUnavailable for an unusable file and ReservationConflict
-    when both sources reserve the prefix.
-    """
-    from_file = load_reservations().get(prefix)
-    runtime = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
-    if from_file is not None and runtime is not None:
-        conflict = ReservationConflict(prefix, from_file.app, runtime.app)
-        logger.critical("%s", conflict)
-        raise conflict
-    if runtime is not None:
-        return _as_reservation(runtime)
-    return from_file
+    await ensure_current()
+
+
+async def find_reservation(prefix: str) -> Reservation | None:
+    """The reservation of `prefix`, or None. Raises ReservationsUnavailable
+    for an unusable reservations file."""
+    await _current()
+    doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
+    return _as_reservation(doc) if doc is not None else None
 
 
 async def list_reservations() -> list[ReservationView]:
-    """Every reservation from both sources, sorted by prefix, conflicts marked."""
-    from_file = load_reservations()
-    runtime = {d.prefix: d for d in await RuntimeReservation.find_all().to_list()}
-    prefixes = sorted(set(from_file) | set(runtime))
+    """Every reservation, sorted by prefix."""
+    await _current()
+    docs = sorted(await RuntimeReservation.find_all().to_list(), key=lambda d: d.prefix)
     existing = {
         ns.prefix
-        for ns in await Namespace.find({"prefix": {"$in": prefixes}}).to_list()
+        for ns in await Namespace.find({"prefix": {"$in": [d.prefix for d in docs]}}).to_list()
     }
-    views: list[ReservationView] = []
-    for prefix in prefixes:
-        f, r = from_file.get(prefix), runtime.get(prefix)
-        conflict = str(ReservationConflict(prefix, f.app, r.app)) if f and r else None
-        for source, res in (("file", f), ("runtime", _as_reservation(r) if r else None)):
-            if res is None:
-                continue
-            views.append(ReservationView(
-                prefix=prefix,
-                app=res.app,
-                source=source,
-                settings=res.effective_settings(),
-                namespace_exists=prefix in existing,
-                conflict=conflict,
-            ))
-    return views
+    return [
+        ReservationView(
+            prefix=d.prefix,
+            app=d.app,
+            source="file" if d.managed_by is not None else "runtime",
+            settings=_as_reservation(d).effective_settings(),
+            namespace_exists=d.prefix in existing,
+            managed_by=d.managed_by,
+        )
+        for d in docs
+    ]
 
 
 async def check_new_reservation(prefix: str, settings: ReservationSettings, owner: str) -> None:
     """Refuse (ReservationRefused) a runtime reservation that cannot be made.
 
     Re-reserving a prefix the same key already holds is allowed (its settings
-    are replaced).
+    are replaced). A prefix the install's file reserves raises
+    ManagedRecordRefused (409, managed_by_deployer).
     """
     if prefix == WIP_NAMESPACE:
         raise ReservationRefused(400, "the 'wip' namespace cannot be reserved")
     if error := prefix_error(prefix):
         raise ReservationRefused(400, error)
-    from_file = load_reservations()
-    if prefix in from_file:
-        raise ReservationRefused(
-            409,
-            f"namespace '{prefix}' is reserved by app '{from_file[prefix].app}' in the "
-            "install's reservations; wip-deploy manages that app's namespaces and key",
-        )
+    await _current()
     held = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
+    if held is not None and held.managed_by is not None:
+        raise reservation_refusal(prefix, held.app)
     if held is not None and held.app != owner:
         raise ReservationRefused(
             409, f"namespace '{prefix}' is already reserved by runtime API key '{held.app}'"
@@ -144,16 +124,12 @@ async def check_new_reservation(prefix: str, settings: ReservationSettings, owne
         raise ReservationRefused(e.status_code, e.detail) from e
 
     # An ID prefix names one sequence on the install: no other reservation
-    # (of either source) may claim one this reservation claims.
-    others: list[tuple[str, str, list[str]]] = [
-        (p, f"app '{r.app}'", claimed_prefixes(r.effective_settings()["id_config"]))
-        for p, r in from_file.items()
-    ]
+    # (the install's or the API's) may claim one this reservation claims.
+    others: list[tuple[str, str, list[str]]] = []
     for doc in await RuntimeReservation.find(RuntimeReservation.prefix != prefix).to_list():
         res = _as_reservation(doc)
-        others.append(
-            (doc.prefix, f"runtime key '{doc.app}'", claimed_prefixes(res.effective_settings()["id_config"]))
-        )
+        label = f"app '{doc.app}'" if doc.managed_by is not None else f"runtime key '{doc.app}'"
+        others.append((doc.prefix, label, claimed_prefixes(res.effective_settings()["id_config"])))
     for other_prefix, owner_label, claimed in others:
         clash = sorted(set(id_prefixes) & set(claimed))
         if clash:
@@ -171,6 +147,8 @@ async def save_reservation(
     """Create or replace the runtime reservation of `prefix` (checked first)."""
     stored = settings.model_dump(exclude_none=True)
     doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
+    if doc is not None and doc.managed_by is not None:
+        raise reservation_refusal(prefix, doc.app)
     if doc is None:
         doc = RuntimeReservation(prefix=prefix, app=owner, settings=stored, created_by=actor)
         await doc.insert()
@@ -187,7 +165,7 @@ async def release(prefix: str) -> str | None:
     for an operator to release explicitly), or None (no runtime reservation).
     """
     doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
-    if doc is None:
+    if doc is None or doc.managed_by is not None:
         return None
     if await Namespace.find_one(Namespace.prefix == prefix) is not None:
         return "kept"
@@ -196,4 +174,8 @@ async def release(prefix: str) -> str | None:
 
 
 async def reservations_of(owner: str) -> list[RuntimeReservation]:
-    return await RuntimeReservation.find(RuntimeReservation.app == owner).to_list()
+    """The API reservations a runtime key owns. A managed reservation's `app`
+    names an app, not a key, so it is never one of them."""
+    return await RuntimeReservation.find(
+        RuntimeReservation.app == owner, RuntimeReservation.managed_by == None  # noqa: E711
+    ).to_list()

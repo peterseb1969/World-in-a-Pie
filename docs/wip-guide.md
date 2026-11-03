@@ -295,6 +295,22 @@ WIP supports two kinds of API keys; both authenticate identically.
 | Use case | Bootstrap keys, service accounts, agent keys that must survive redeploys | App keys, temporary keys, UI-created keys |
 | `source` field on the key | `"config"` | `"runtime"` |
 
+**The Registry also holds every key in the key file.** It imports the
+install's key file and reservations file into its own records, marked
+`managed_by: "wip-deploy"`: each key (hashed; the plaintext is never
+stored), the grants a key declares, and each reservation. It re-imports at
+startup, every 10 seconds and whenever a reservation lookup finds a file
+changed, and removes records the files no longer declare. A file it cannot
+trust (missing, unparseable, or without the `wip-canary` key) changes
+nothing. For now the services still authenticate these keys from the file:
+the imported record is listed once (`source: "config"`, `managed_by:
+"wip-deploy"`) and is left out of key sync. The API refuses every write to a
+managed key, grant or reservation (409, `error_code: managed_by_deployer`);
+change them with wip-deploy. A runtime key with a file key's name, a grant
+on a namespace a file key declares, or a runtime reservation of a prefix the
+file reserves is replaced by the file's record, and the Registry logs it at
+CRITICAL.
+
 **Spec-declared keys (recommended for standing agent/service keys).**
 Declare keys on the deployment and wip-deploy provisions everything:
 

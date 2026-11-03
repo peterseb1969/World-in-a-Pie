@@ -3,9 +3,11 @@
 A platform admin creates a runtime key that reserves its namespaces, with
 settings the admin fixes. The key gets `admin` on each and can create it
 through the namespace upsert, exactly like a deployer-managed app key with a
-file reservation. A prefix is reserved by the file or by a runtime key,
-never both. Narrowing or revoking releases a reservation whose namespace was
-never created and keeps (and reports) one whose namespace exists.
+file reservation. One record holds each prefix: a runtime reservation of a
+prefix the install's file reserves is refused (managed_by_deployer), and a
+file reservation of a prefix a runtime one holds replaces it. Narrowing or
+revoking releases a reservation whose namespace was never created and keeps
+(and reports) one whose namespace exists.
 """
 
 import json
@@ -115,7 +117,8 @@ async def test_a_prefix_has_one_owner(
     _file(monkeypatch, tmp_path, {"prefix": in_file, "app": "cooking"})
     refused = await _app_key(client, auth_headers, _p("third"), in_file)
     assert refused.status_code == 409
-    assert "wip-deploy manages" in refused.json()["detail"]
+    assert refused.json()["error_code"] == "managed_by_deployer"
+    assert "managed by wip-deploy" in refused.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -204,22 +207,32 @@ async def test_patch_cannot_drop_a_reserved_namespace(client: AsyncClient, auth_
 
 
 @pytest.mark.asyncio
-async def test_a_prefix_both_sources_reserve_is_refused_and_listed_as_a_conflict(
+async def test_a_file_reservation_replaces_a_runtime_one_of_the_same_prefix(
     client: AsyncClient, auth_headers: dict, monkeypatch, tmp_path,
 ):
     prefix = _p("both")
-    assert (await _app_key(client, auth_headers, _p("key"), prefix)).status_code == 201
-    # A later apply rendered a file reservation of the same prefix.
+    key_name = _p("key")
+    created = await _app_key(client, auth_headers, key_name, prefix)
+    assert created.status_code == 201
+    # A later apply rendered a file reservation of the same prefix: the
+    # install's reservation wins, and the listing shows one record.
     _file(monkeypatch, tmp_path, {"prefix": prefix, "app": "cooking"})
 
-    # Neither wins: not even a platform admin's create picks one.
-    upsert = await client.put(f"{NS}/{prefix}", json={}, headers=auth_headers)
-    assert upsert.status_code == 409
-    assert "reserved both" in upsert.json()["detail"]
-
     listed = [r for r in (await client.get(RES, headers=auth_headers)).json() if r["prefix"] == prefix]
-    assert sorted(r["source"] for r in listed) == ["file", "runtime"]
-    assert all(r["conflict"] for r in listed)
+    assert [(r["source"], r["app"], r["managed_by"]) for r in listed] == [
+        ("file", "cooking", "wip-deploy")
+    ]
+    assert listed[0]["conflict"] is None
+
+    # The key that made the runtime one no longer reserves it, keeps its
+    # grant, and can still create the namespace (at the file's settings).
+    key = (await client.get(f"{KEYS}/{key_name}", headers=auth_headers)).json()
+    assert key["reserved_namespaces"] == []
+    assert (await _grants(client, auth_headers, prefix))[key_name] == "admin"
+    upsert = await client.put(
+        f"{NS}/{prefix}", json={}, headers={"X-API-Key": created.json()["plaintext_key"]}
+    )
+    assert upsert.status_code == 200, upsert.text
 
     runtime_only = (await client.get(f"{RES}?source=runtime", headers=auth_headers)).json()
     assert all(r["source"] == "runtime" for r in runtime_only)
@@ -231,7 +244,9 @@ async def test_release_endpoint_refuses_file_reservations_and_unknown_prefixes(
 ):
     in_file = _p("deployed")
     _file(monkeypatch, tmp_path, {"prefix": in_file, "app": "cooking"})
-    assert (await client.delete(f"{RES}/{in_file}", headers=auth_headers)).status_code == 400
+    refused = await client.delete(f"{RES}/{in_file}", headers=auth_headers)
+    assert refused.status_code == 409
+    assert refused.json()["error_code"] == "managed_by_deployer"
     assert (await client.delete(f"{RES}/{_p('none')}", headers=auth_headers)).status_code == 404
 
 

@@ -7,6 +7,74 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### The Registry imports the install's key file and reservations file; `@wip/client` 0.75.0
+
+First step of one key model in the Registry. The Registry now imports the
+key file and the reservations file wip-deploy renders into its own records,
+marked `managed_by: "wip-deploy"`:
+
+- **Keys** go into `api_keys`, hashed with bcrypt; the plaintext is never
+  stored.
+- **The grants a key declares** go into `namespace_grants`. Its namespaces
+  give read, its grants their level, as wip-auth resolves them for a config
+  key.
+- **Reservations** go into `namespace_reservations`.
+
+**When it imports, and what it removes.** It imports at startup before
+serving, every 10 s, and whenever a reservation lookup finds a file changed.
+It removes managed records the files no longer declare, and never removes a
+record it did not import.
+
+**A file it cannot trust changes nothing.** That covers a key file that is
+missing, unparseable, or without the `wip-canary` key, and a missing or
+unparseable reservations file. The previous import stands, and the Registry
+logs why.
+
+**Nothing changes for authentication yet.** The services still resolve these
+keys from the file. While the Registry also loads the file as config keys, an
+imported key stays out of key sync, and the key listing shows it once
+(`source: "config"`, `managed_by: "wip-deploy"`).
+
+Behaviour changes:
+
+- **The API refuses every write to a managed record** with 409 and
+  `{"detail": "...", "error_code": "managed_by_deployer"}`; `detail` stays a
+  string. That covers creating, updating, widening, narrowing or revoking a
+  managed key; creating or revoking a managed grant, or any grant to a key
+  whose grants the file declares; and reserving or releasing a prefix the
+  file reserves. Bulk grant writes refuse per item, with the same
+  `error_code`. Before this:
+  - writes to a config key's name answered 400;
+  - reserving a file-reserved prefix answered 409 with another message;
+  - releasing a file reservation answered 400.
+- **A collision is won by the file's record, loudly, logged CRITICAL:**
+  - a runtime key with a file key's name is replaced, and its old value stops
+    working;
+  - an API grant to that key on a namespace the file declares is replaced;
+  - a runtime reservation of a prefix the file reserves is replaced, and the
+    key that made it keeps its grants.
+
+  This replaces the previous rule, which refused a prefix reserved both ways
+  (the namespace upsert answered 409 until an operator removed one).
+  `GET /reservations` therefore lists one record per prefix, and its
+  `conflict` field is always null.
+- **A key that declares no grants keeps its API grants.** Spec-declared keys
+  without `grants` still resolve through the Registry's grants, and the API
+  may change those.
+- **Listings carry the new fields.** `managed_by` and `origin` appear on API
+  keys, and `managed_by` on grants and reservations.
+- **`@wip/client` 0.75.0** adds:
+  - `managed_by` on `APIKeyInfo`, `Grant` and `NamespaceReservation`, and
+    `origin` on `APIKeyInfo`;
+  - `error_code` on grant bulk results, and `'error'` as a revoke status;
+  - the constant `MANAGED_BY_DEPLOYER`.
+
+  A 409 refusal arrives as `WipConflictError`, with the code in
+  `err.detail.error_code`.
+
+**Action:** none. Nothing about the key file, the secrets or the deployer
+changes.
+
 ### Runtime API keys stop working 90 s into a Registry outage
 
 def-store, document-store, template-store, reporting-sync and ingest-gateway
