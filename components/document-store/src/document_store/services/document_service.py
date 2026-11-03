@@ -129,6 +129,20 @@ def json_merge_patch(target: Any, patch: Any) -> Any:
 _CORE_SORT_FIELDS = ("created_at", "updated_at", "version")
 
 
+def name_every_status(query: dict[str, Any]) -> None:
+    """Spell "any status" out as every status, on a one-template query.
+
+    A document's status is always one of DocumentStatus (startup rewrites
+    the retired `archived` value), so this changes no result. It lets the
+    template indexes serve the query: they hold status between template_id
+    and the sort keys, and an unconstrained status there forces MongoDB to
+    sort the whole template in memory. Named, each status is one sorted
+    index range, and MongoDB merges them.
+    """
+    if "template_id" in query and "status" not in query:
+        query["status"] = {"$in": [s.value for s in DocumentStatus]}
+
+
 def build_sort_clauses(
     sort_by: str | None,
     sort_order: str | None,
@@ -1967,6 +1981,7 @@ class DocumentService:
                 status_after_group = {"status": status.value}
             else:
                 query["status"] = status.value
+        name_every_status(query)
 
         if latest_only:
             if cursor:
@@ -2526,6 +2541,7 @@ class DocumentService:
                     f"nin, exists, regex."
                 )
 
+        name_every_status(query)
         return query
 
     def _finalize_bulk_response(

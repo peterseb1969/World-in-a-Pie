@@ -6,6 +6,7 @@ Validates documents against templates and manages document versioning.
 """
 
 import asyncio
+import contextlib
 import os
 from contextlib import asynccontextmanager
 
@@ -81,6 +82,25 @@ class Settings:
 settings = Settings()
 
 
+SUPERSEDED_DOCUMENT_INDEXES = (
+    # {namespace, template_id, status, created_at desc}: replaced by
+    # ns_template_status_time_doc_idx, which adds document_id (the list
+    # sort's tiebreaker) and so serves every query the old index did.
+    "ns_template_status_time_idx",
+)
+
+
+async def drop_superseded_document_indexes(db) -> None:
+    """Drop document indexes a newer index has replaced.
+
+    Runs after init_beanie has built the replacements, so a document query
+    never loses its index. Best-effort: a fresh database never had them.
+    """
+    for name in SUPERSEDED_DOCUMENT_INDEXES:
+        with contextlib.suppress(Exception):
+            await db["documents"].drop_index(name)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
@@ -100,6 +120,8 @@ async def lifespan(app: FastAPI):
         description=f"MongoDB init ({settings.DATABASE_NAME})",
     )
     print("MongoDB connection and Beanie initialization successful.")
+
+    await drop_superseded_document_indexes(client[settings.DATABASE_NAME])
 
     # Store client in app state
     app.state.mongodb_client = client

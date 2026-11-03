@@ -150,10 +150,16 @@ class Document(BeanieDocument):
             IndexModel([("namespace", 1), ("template_id", 1), ("status", 1)], name="ns_template_status_idx"),
             # Time-based queries within namespace
             IndexModel([("namespace", 1), ("created_at", DESCENDING)], name="ns_created_at_idx"),
-            # Composite for common queries within namespace
+            # One template's documents in the list endpoint's default order:
+            # created_at descending, then document_id (the tiebreaker
+            # build_sort_clauses always appends). document_id belongs in the
+            # key: without it every page reads and sorts the template's whole
+            # document set in memory. Replaces ns_template_status_time_idx
+            # (no document_id), which startup drops.
             IndexModel(
-                [("namespace", 1), ("template_id", 1), ("status", 1), ("created_at", DESCENDING)],
-                name="ns_template_status_time_idx"
+                [("namespace", 1), ("template_id", 1), ("status", 1),
+                 ("created_at", DESCENDING), ("document_id", 1)],
+                name="ns_template_status_time_doc_idx"
             ),
             # Cursor paging of one template's documents (the list endpoint's
             # cursor mode, which the reporting batch sync uses): equality on
@@ -162,6 +168,14 @@ class Document(BeanieDocument):
             IndexModel(
                 [("namespace", 1), ("template_id", 1), ("status", 1), ("_id", 1)],
                 name="ns_template_status_id_idx"
+            ),
+            # The same cursor paging and counts for a caller with no
+            # namespace filter (a superadmin key, or a whole-instance
+            # reporting sync): every index above leads with namespace and
+            # cannot serve them.
+            IndexModel(
+                [("template_id", 1), ("status", 1), ("_id", 1)],
+                name="template_status_id_idx"
             ),
             # document_id lookup (non-unique, for finding all versions)
             IndexModel([("document_id", 1)], name="document_id_idx"),
