@@ -1412,6 +1412,123 @@ def backup(
                       f"({size:,} bytes)")
 
 
+@main.command(name="system-backup")
+@click.argument("output_path", type=click.Path(dir_okay=False))
+@click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
+@click.pass_context
+def system_backup_cmd(ctx: click.Context, output_path: str, force: bool) -> None:
+    """Back up the Registry's API keys, grants and reservations.
+
+    The system backup is separate from namespace backups: it holds every
+    stored API key (its bcrypt hash, never a plaintext), every namespace
+    grant and every reservation, and no namespace data. Config keys, the
+    master key among them, are not included. Needs a platform admin key.
+
+    The file is written with mode 0600. Keep it like the install's secrets:
+    it holds every key hash.
+
+    Example:
+
+      wip-toolkit system-backup auth-state.json
+    """
+    import os
+
+    output = Path(output_path)
+    if output.exists() and not force:
+        console.print(f"[red]Output exists:[/red] {output} (pass --force to overwrite)")
+        sys.exit(1)
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        try:
+            archive = client.post("registry", "/system-backup")
+        except WIPClientError as e:
+            console.print(f"[red]System backup refused:[/red] {e}")
+            sys.exit(1)
+    fd = os.open(output, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        _json.dump(archive, fh, indent=2)
+    os.chmod(output, 0o600)
+    console.print(
+        f"[green]System backup[/green] → {output}: "
+        f"{len(archive.get('api_keys', []))} key(s), {len(archive.get('grants', []))} grant(s), "
+        f"{len(archive.get('reservations', []))} reservation(s)"
+    )
+
+
+@main.command(name="system-restore")
+@click.argument("archive_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--apply", "apply_", is_flag=True,
+              help="Write the changes (without it, only report what would change)")
+@click.option("--overwrite", is_flag=True,
+              help="Replace records that exist here with different content")
+@click.option("--include-user-grants", is_flag=True,
+              help="Restore user grants although the archive comes from another OIDC issuer")
+@click.option("--json", "as_json", is_flag=True, help="Print the report as JSON")
+@click.pass_context
+def system_restore_cmd(
+    ctx: click.Context,
+    archive_path: str,
+    apply_: bool,
+    overwrite: bool,
+    include_user_grants: bool,
+    as_json: bool,
+) -> None:
+    """Restore a system backup: API keys, grants and reservations.
+
+    Reports what would change unless --apply is given. Records are upserted
+    by identity and never deleted; restored records arrive unmanaged. Records
+    the install's files manage here are never replaced. A grant on a
+    namespace that does not exist (and is not reserved) is skipped: restore
+    the namespace backups first, then run this (re-running is safe). Refused
+    when the archive's API key hash salt differs from this instance's.
+    Needs a platform admin key.
+
+    Examples:
+
+      wip-toolkit system-restore auth-state.json
+
+      wip-toolkit system-restore auth-state.json --apply
+    """
+    try:
+        archive = _json.loads(Path(archive_path).read_text())
+    except (OSError, ValueError) as e:
+        console.print(f"[red]Cannot read {archive_path}:[/red] {e}")
+        sys.exit(1)
+    params = {
+        "dry_run": str(not apply_).lower(),
+        "overwrite": str(overwrite).lower(),
+        "include_user_grants": str(include_user_grants).lower(),
+    }
+    config = ctx.obj["config"]
+    with WIPClient(config) as client:
+        try:
+            report = client.post("registry", "/system-restore", json=archive, params=params)
+        except WIPClientError as e:
+            console.print(f"[red]System restore refused:[/red] {e}")
+            sys.exit(1)
+    if as_json:
+        click.echo(_json.dumps(report, indent=2))
+        return
+    for warning in report.get("warnings", []):
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+    for part, label in (("reservations", "Reservations"), ("api_keys", "API keys"),
+                        ("grants", "Grants")):
+        section = report.get(part, {})
+        console.print(
+            f"[bold]{label}[/bold]: {len(section.get('created', []))} created, "
+            f"{len(section.get('replaced', []))} replaced, "
+            f"{len(section.get('unchanged', []))} unchanged, "
+            f"{len(section.get('skipped', []))} skipped"
+        )
+        for verb in ("created", "replaced"):
+            for record_id in section.get(verb, []):
+                console.print(f"  {verb}: {record_id}")
+        for skipped in section.get("skipped", []):
+            console.print(f"  skipped: {skipped['id']} ({skipped['reason']})")
+    if report.get("dry_run", True):
+        console.print("[dim]Dry run: nothing was written. Pass --apply to restore.[/dim]")
+
+
 @main.command()
 @click.argument("data_model_dir")
 @click.argument("namespace")
