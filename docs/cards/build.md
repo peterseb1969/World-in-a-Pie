@@ -2,10 +2,10 @@
 docs/technology-stack.md sha256:35a66855d47b3bc4 reviewed:ea985986
 docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
 docs/WIP_DevGuardrails.md sha256:30130d07053d7ac5 reviewed:fe514f02
-libs/wip-client/README.md sha256:7f5f9fd97bb1fe1d reviewed:57d02741
-libs/wip-react/README.md sha256:9e71f0ba4a17d97a reviewed:a66e110f
+libs/wip-client/README.md sha256:99630dea3cc016b1 reviewed:8374a83a
+libs/wip-react/README.md sha256:07fa579102c72f72 reviewed:8374a83a
 libs/wip-proxy/README.md sha256:585feea2b45e5889 reviewed:a8c4e42f
-docs/wip-deployable-app-contract.md sha256:c8a847e72594308d reviewed:5a8bc025
+docs/wip-deployable-app-contract.md sha256:0aaf4ca6452f0808 reviewed:8374a83a
 docs/playbooks/app-builder/build-app.md sha256:4d59d990ca82e372 reviewed:43aca6a0
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
 scaffold/templates/claude-md/app.md sha256:ce6f1c0aa58c6a8b reviewed:70de3aa3
