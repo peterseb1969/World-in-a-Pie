@@ -44,6 +44,24 @@ a fresh restore of 240,474 document rows went from 12 min 55 s to 2 min 26 s
 their per-item results are unchanged. `/entries/activate` items accept
 `synonyms` (with `composite_key` only).
 
+### Term values from a closed namespace are now refused for writers who cannot read it
+
+A namespace with `inbound_references: closed` (the default) accepts a
+reference from another namespace only when the writer can read it. For term
+values the check never ran: the resolver's results lacked the terminology id
+the gate decides on, so a writer could store a term from a closed namespace
+it cannot read. A value that exists was accepted while an absent one was
+refused, so the vocabulary could be probed value by value.
+
+Document writes (single, bulk, PATCH and validate) now refuse such a value
+exactly like an absent one: `invalid_term`, no suggestion. A term the
+document's previous version already held stays usable. **Writes that
+succeeded before may now fail**: give the writer's key read on the
+terminology's namespace, or open that namespace's `inbound_references`.
+`wip_auth.term_resolution.resolve_term_values` results now carry
+`terminology_id`. Within a bulk write the gate's Registry lookups are shared,
+one per terminology.
+
 ### `wip-toolkit restore` exits 1 when the job outlives `--timeout`; WIP-Toolkit 0.24.1
 
 `restore` follows its job for `--timeout` seconds (default 3600). When the

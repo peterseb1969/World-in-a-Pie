@@ -23,8 +23,11 @@ carried, again with an enforcing gate.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import contextvars
 import logging
+from collections.abc import Iterator
 from typing import Any
 
 from wip_auth import UserIdentity
@@ -96,18 +99,66 @@ class InboundGate:
         return await self.refuses(await self.namespace_of(entity_id), entity_id)
 
     async def namespace_of(self, entity_id: str) -> str | None:
-        """The namespace an active Registry entry lives in, or None."""
+        """The namespace an active Registry entry lives in, or None.
+
+        Inside a placement_batch the answer is shared with the request's
+        other documents, so a bulk write asks the Registry once per entity.
+        """
         if entity_id not in self._placed:
-            try:
-                placed = await get_registry_client().lookup_entry_namespaces(
-                    [entity_id], raise_on_error=True,
-                )
-            except RegistryError as e:
-                raise RegistryUnavailableError(
-                    f"Cannot check the namespace of a reference: {e}"
-                ) from e
-            self._placed[entity_id] = placed.get(entity_id)
+            self._placed[entity_id] = await _place(entity_id)
         return self._placed[entity_id]
+
+
+async def _lookup_namespace(entity_id: str) -> str | None:
+    try:
+        placed = await get_registry_client().lookup_entry_namespaces(
+            [entity_id], raise_on_error=True,
+        )
+    except RegistryError as e:
+        raise RegistryUnavailableError(
+            f"Cannot check the namespace of a reference: {e}"
+        ) from e
+    return placed.get(entity_id)
+
+
+# Placements shared by every document of one write request. Request-scoped
+# by construction, like wip_auth.term_resolution's batch: the memo lives in
+# a context variable set for one request and is gone with it, so every
+# answer still comes from the Registry during the write. Entries are
+# futures: concurrent documents needing the same entity await one lookup.
+_placements: contextvars.ContextVar[dict[str, asyncio.Future[str | None]] | None] = (
+    contextvars.ContextVar("wip_inbound_placements", default=None)
+)
+
+
+@contextlib.contextmanager
+def placement_batch() -> Iterator[None]:
+    """Share the inbound gate's Registry placements across one request."""
+    token = _placements.set({})
+    try:
+        yield
+    finally:
+        _placements.reset(token)
+
+
+async def _place(entity_id: str) -> str | None:
+    batch = _placements.get()
+    if batch is None:
+        return await _lookup_namespace(entity_id)
+    if entity_id in batch:
+        return await batch[entity_id]
+    future: asyncio.Future[str | None] = asyncio.get_running_loop().create_future()
+    batch[entity_id] = future
+    try:
+        namespace = await _lookup_namespace(entity_id)
+    except BaseException as e:
+        # Waiters see the same failure; a later document may ask again.
+        batch.pop(entity_id, None)
+        future.set_exception(e)
+        future.exception()  # retrieved here: no waiter is required
+        raise
+    future.set_result(namespace)
+    return namespace
 
 
 _current: contextvars.ContextVar[InboundGate | None] = contextvars.ContextVar(

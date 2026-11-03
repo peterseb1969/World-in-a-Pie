@@ -210,3 +210,39 @@ async def test_remote_call_shape_and_error(httpx_mock):
     assert json.loads(request.content) == {"items": [{"terminology_id": UUID_A, "value": "ada"}]}
     with pytest.raises(TermResolutionError, match="503"):
         await resolve_term_values([{"terminology_ref": UUID_A, "value": "x"}], base_url=base, api_key="k")
+
+
+# Every result names its terminology, valid or not: the inbound gate decides
+# by terminology, so a present and an absent value must carry it alike.
+
+
+@pytest.mark.asyncio
+async def test_every_result_names_its_terminology():
+    fetch = _fake_def_store()
+    with patch.object(term_resolution, "_resolve_remote", fetch), \
+         patch.object(term_resolution, "resolve_entity_id", side_effect=_resolve_by_ns):
+        present = await _one("STATUS", "ns-a-only", "ns-a")
+        absent = await _one("STATUS", "missing", "ns-a")
+        by_uuid = await _one(UUID_B, "ns-b-only", "ns-b")
+    assert present["valid"] and present["terminology_id"] == UUID_A
+    assert not absent["valid"] and absent["terminology_id"] == UUID_A
+    assert by_uuid["terminology_id"] == UUID_B
+
+
+@pytest.mark.asyncio
+async def test_an_unresolved_terminology_names_none():
+    with patch.object(term_resolution, "resolve_entity_id", new_callable=AsyncMock,
+                      side_effect=EntityNotFoundError("STATUS", "terminology")):
+        result = await _one("STATUS", "anything", "ns-a")
+    assert "terminology_id" not in result
+
+
+@pytest.mark.asyncio
+async def test_a_shared_answer_is_not_changed_by_its_readers():
+    fetch = _fake_def_store()
+    with patch.object(term_resolution, "_resolve_remote", fetch), term_resolution_batch():
+        first = await _one(UUID_A, "ns-a-only")
+        first["terminology_id"] = "tampered"
+        second = await _one(UUID_A, "ns-a-only")
+    assert second["terminology_id"] == UUID_A
+    assert len(_asked(fetch)) == 1

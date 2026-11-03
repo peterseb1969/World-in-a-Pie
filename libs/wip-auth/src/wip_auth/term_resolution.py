@@ -112,7 +112,9 @@ async def resolve_term_values(
 
     Each item has `terminology_ref` (canonical UUID, a bare value = the
     `namespace`'s terminology, or 'ns:VALUE') and `value`. Each result, in
-    item order, has `valid`, `matched_term` ({term_id, value}),
+    item order, has `terminology_id` (the canonical id of the terminology
+    the value was resolved in, absent only when the terminology itself did
+    not resolve), `valid`, `matched_term` ({term_id, value}),
     `matched_via` ('value' | 'alias'), `ambiguous` + `candidates` when
     several terms bear the matched name, `suggestion` on a miss, or `error`
     when the terminology itself does not resolve.
@@ -127,6 +129,7 @@ async def resolve_term_values(
     batch = _batch.get()
 
     results: list[dict[str, Any] | None] = [None] * len(items)
+    terminology_ids: list[str | None] = [None] * len(items)
     pending: dict[tuple[str, str], list[int]] = {}
     shared: list[tuple[int, asyncio.Future[dict[str, Any]]]] = []
     canonical: dict[str, str | None] = {}
@@ -138,6 +141,7 @@ async def resolve_term_values(
         if terminology_id is None:
             results[index] = {"valid": False, "error": f"Terminology '{ref}' not found"}
             continue
+        terminology_ids[index] = terminology_id
         key = (terminology_id, item["value"])
         if batch is not None and key in batch:
             _stats["batch_reused"] += 1
@@ -172,6 +176,14 @@ async def resolve_term_values(
 
     for index, future in shared:
         results[index] = await future
+    # Each result names the terminology its value was resolved in, valid or
+    # not: the caller decides by terminology (e.g. whether the writer may
+    # reference its namespace), so a present and an absent value must carry
+    # it alike. A copy per item: resolutions are shared across a batch.
+    for index, terminology_id in enumerate(terminology_ids):
+        if terminology_id is not None:
+            results[index] = {**cast(dict[str, Any], results[index]),
+                              "terminology_id": terminology_id}
     return cast(list[dict[str, Any]], results)
 
 

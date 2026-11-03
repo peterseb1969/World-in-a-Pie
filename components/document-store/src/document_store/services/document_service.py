@@ -40,7 +40,7 @@ from ..models.document import Document, DocumentMetadata, DocumentStatus
 from .errors import DocumentStoreError, error_fields
 from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
-from .inbound_gate import InboundGate, carried_ids
+from .inbound_gate import InboundGate, carried_ids, placement_batch
 from .nats_client import EventType, publish_document_event
 from .reference_validator import (
     ReferenceValidationError,
@@ -2830,8 +2830,9 @@ class DocumentService:
         continue_on_error: bool = True,
     ) -> BulkResponse:
         """Create multiple documents; the batch shares term resolutions
-        (term_resolution_batch)."""
-        with term_resolution_batch():
+        (term_resolution_batch) and the inbound gate's Registry placements
+        (placement_batch)."""
+        with term_resolution_batch(), placement_batch():
             return await self._bulk_create(items, namespace, continue_on_error)
 
     async def _bulk_create(
@@ -3274,7 +3275,7 @@ class DocumentService:
         # _validate_batch) so repeated reference lookups hit cache.
         doc_ref_cache: dict = {}
         responses: list[ValidationResponse] = []
-        with term_resolution_batch():
+        with term_resolution_batch(), placement_batch():
             for data in items:
                 result = await self._validate_as_writer(
                     template_id,
