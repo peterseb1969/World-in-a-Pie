@@ -7,6 +7,34 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Runtime API keys stop working 90 s into a Registry outage
+
+def-store, document-store, template-store, reporting-sync and ingest-gateway
+each keep a copy of the Registry's runtime API keys, which key sync refreshes
+every 30 s. When the Registry was unreachable, that copy was kept forever: a
+runtime key went on authenticating for the whole outage. A runtime key in
+`wip-admins` was also authorized for everything, because the superadmin check
+needs no Registry call. That contradicted "if the Registry is down, WIP is
+down".
+
+The copy is now a cache with a lifetime. Each successful sync confirms the
+runtime keys for 90 s, three poll intervals, so two missed polls do no harm.
+A failed sync does not extend that. Once the 90 s have passed:
+
+- **Every key that is not a config key gets 503** (`API keys cannot be
+  verified: the Registry has not confirmed them within the last 90 s`) until a
+  sync succeeds again. This covers runtime keys, including admin-group ones,
+  and also **unknown and invalid keys**, which get 503 instead of 401. That is
+  intended: the answer reveals nothing about which keys exist.
+- **Config keys keep working through an outage of any length.** These are the
+  keys from the environment and the key file, including any in an admin group,
+  and the master key. They are not a copy of the Registry. A Registry outage
+  therefore does not mean that no key works.
+- **At service start**, runtime keys get 503 until the first sync succeeds.
+  Before, they got 401.
+
+Nothing to configure. The Registry's own key handling is unchanged.
+
 ### Documents with a term inside an object field reach the reporting layer
 
 reporting-sync never wrote a document whose object field held a term value

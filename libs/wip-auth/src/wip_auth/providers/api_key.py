@@ -31,6 +31,17 @@ _REJECTED_MAX = 1024
 _REJECTED_TTL_SECONDS = 60.0
 
 
+def _monotonic() -> float:
+    """The clock the runtime-key deadline is measured on (patched in tests)."""
+    return time.monotonic()
+
+
+class KeysUnverifiable(Exception):
+    """The presented key can only be a runtime key, and the runtime keys are
+    past their deadline: the Registry has not confirmed them recently enough
+    to answer for them. Authentication reports it as 503, not 401."""
+
+
 def _is_bcrypt_hash(h: str) -> bool:
     """Check if a hash string looks like a bcrypt hash."""
     return h.startswith(("$2b$", "$2a$", "$2y$"))
@@ -146,6 +157,13 @@ class APIKeyProvider:
         # SHA-256(plaintext_key) → monotonic expiry, for keys matching nothing.
         self._rejected: OrderedDict[str, float] = OrderedDict()
 
+        # Runtime keys are the Registry's keys, copied here by key sync; the
+        # copy is a cache and answers only until this monotonic deadline.
+        # None means no deadline: a provider nobody syncs (the Registry's
+        # own, whose keys are not a copy) never expires them.
+        self._runtime_deadline: float | None = None
+        self._runtime_ttl: float | None = None
+
         # Warn about legacy SHA-256 hashes
         for key in self._keys:
             if _is_sha256_hash(key.key_hash):
@@ -248,6 +266,32 @@ class APIKeyProvider:
             self._keys = config_keys + runtime
             self._rebuild_caches()
 
+    def expire_runtime_keys(self) -> None:
+        """Mark the runtime keys unconfirmed until the next successful sync.
+
+        Key sync calls this when it starts, so a synced provider does not
+        answer for runtime keys before the Registry has confirmed them once.
+        """
+        self._runtime_deadline = _monotonic()
+
+    def confirm_runtime_keys(self, ttl_seconds: float) -> None:
+        """The Registry just confirmed the runtime keys: they answer for
+        ttl_seconds more. Only a successful sync calls this."""
+        self._runtime_ttl = ttl_seconds
+        self._runtime_deadline = _monotonic() + ttl_seconds
+
+    def runtime_keys_expired(self) -> bool:
+        """Whether the runtime keys are past their deadline."""
+        deadline = self._runtime_deadline
+        return deadline is not None and _monotonic() >= deadline
+
+    def _unverifiable(self) -> KeysUnverifiable:
+        if self._runtime_ttl is None:
+            reason = "the Registry has not confirmed them since this service started"
+        else:
+            reason = f"the Registry has not confirmed them within the last {self._runtime_ttl:g} s"
+        return KeysUnverifiable(f"API keys cannot be verified: {reason}")
+
     def iter_keys(self) -> tuple[APIKeyRecord, ...]:
         """Read-only snapshot of the registered keys.
 
@@ -266,28 +310,47 @@ class APIKeyProvider:
 
         Uses a fast SHA-256 fingerprint cache so bcrypt only runs once
         per unique key. Subsequent requests hit the O(1) cache lookup.
+
+        Past the runtime-key deadline only config keys answer: a key that
+        matches no config key raises KeysUnverifiable, whether it is a known
+        runtime key, a cached one, or no key at all — the copy cannot say
+        which, and saying "invalid" would tell a valid caller its key is bad.
         """
+        expired = self.runtime_keys_expired()
+        config_names = self._config_names
+
         # Fast path: check cache with SHA-256 fingerprint of plaintext key
         fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
         cached = self._verified_cache.get(fingerprint)
         if cached is not None:
+            if expired and cached.name not in config_names:
+                raise self._unverifiable()
             if cached.is_expired():
                 self._verified_cache.pop(fingerprint, None)
                 return None, "API key has expired"
             return cached, None
 
         if self._recently_rejected(fingerprint):
+            if expired:
+                raise self._unverifiable()
             return None, "Invalid API key"
 
-        # Slow path: bcrypt verify against all registered keys
+        # Slow path: bcrypt verify against the registered keys — only the
+        # config keys once the runtime copy is past its deadline.
         for record in self._keys:
+            if expired and record.name not in config_names:
+                continue
             if verify_api_key(api_key, record.key_hash, self.hash_salt):
                 if record.is_expired():
                     return None, "API key has expired"
                 self._verified_cache[fingerprint] = record
                 return record, None
 
+        # Matching no config key is true whatever the Registry says, so the
+        # rejection is cached either way; the next successful sync clears it.
         self._reject(fingerprint)
+        if expired:
+            raise self._unverifiable()
         return None, "Invalid API key"
 
     def _recently_rejected(self, fingerprint: str) -> bool:
@@ -307,22 +370,31 @@ class APIKeyProvider:
 
     def lookup(self, api_key: str) -> APIKeyRecord | None:
         """The registered, unexpired key matching api_key, or None — through
-        the same caches as authentication."""
-        record, error = self._validate_key(api_key)
+        the same caches as authentication. None too when the key cannot be
+        verified (runtime keys past their deadline)."""
+        try:
+            record, error = self._validate_key(api_key)
+        except KeysUnverifiable:
+            return None
         return None if error is not None else record
 
     async def authenticate(self, request: Request) -> UserIdentity | None:
         """Authenticate the request using API key.
 
         Returns UserIdentity if authenticated, None if no API key header.
-        Raises HTTPException if API key is present but invalid.
+        Raises HTTPException if API key is present but invalid (401), or
+        cannot be verified because the runtime keys are past their deadline
+        (503 — the Registry is unreachable, not the key wrong).
         """
         api_key = self._get_key_from_header(request)
 
         if api_key is None:
             return None
 
-        key_record, error = self._validate_key(api_key)
+        try:
+            key_record, error = self._validate_key(api_key)
+        except KeysUnverifiable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         if error is not None:
             raise HTTPException(
@@ -353,9 +425,12 @@ class APIKeyProvider:
         For a service that receives a key outside an HTTP request: the
         ingest gateway reads a producer's key from a NATS message header and
         needs to know whose it is. Neither logs nor raises — an unusable key
-        is simply no identity.
+        is simply no identity, and so is one that cannot be verified now.
         """
-        key_record, error = self._validate_key(api_key)
+        try:
+            key_record, error = self._validate_key(api_key)
+        except KeysUnverifiable:
+            return None
         if error is not None or key_record is None:
             return None
         return self._identity(key_record)

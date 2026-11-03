@@ -2,6 +2,15 @@
 
 Non-Registry services use this to pick up newly created/revoked keys
 without requiring a restart. Polling interval defaults to 30 seconds.
+
+The synced copy is a cache of the Registry's keys, and like every cache it
+answers only for a bounded time: each successful sync confirms the runtime
+keys for ttl_seconds (default three poll intervals, 90 s — two missed polls
+are absorbed, including one that times out). Past that, the provider stops
+answering for runtime keys and authentication returns 503 until a sync
+succeeds again; a failed sync never extends the deadline. Config keys are
+not a copy of the Registry and keep working. Before the first successful
+sync the runtime keys count as unconfirmed.
 """
 
 import asyncio
@@ -26,6 +35,7 @@ class KeySyncService:
         provider: APIKeyProvider,
         config_key_names: set[str] | None = None,
         interval_seconds: int = 30,
+        ttl_seconds: float | None = None,
     ):
         # config_key_names is accepted for older callers and not used: the
         # provider knows its current config keys, which a key-file reload
@@ -34,17 +44,20 @@ class KeySyncService:
         self.api_key = api_key
         self.provider = provider
         self.interval_seconds = interval_seconds
+        self.ttl_seconds = ttl_seconds if ttl_seconds is not None else 3 * interval_seconds
         self._task: asyncio.Task | None = None
         self._running = False
 
     async def start(self) -> None:
         """Start the background polling loop."""
+        self.provider.expire_runtime_keys()
         self._running = True
         self._task = asyncio.create_task(self._poll_loop())
         logger.info(
-            "Key sync started: registry=%s interval=%ds",
+            "Key sync started: registry=%s interval=%ds ttl=%gs",
             self.registry_url,
             self.interval_seconds,
+            self.ttl_seconds,
         )
 
     async def stop(self) -> None:
@@ -96,6 +109,7 @@ class KeySyncService:
             ]
 
             self.provider.replace_runtime_keys(records)
+            self.provider.confirm_runtime_keys(self.ttl_seconds)
             logger.debug("Key sync complete: %d runtime key(s)", len(records))
 
         except httpx.HTTPStatusError as e:
