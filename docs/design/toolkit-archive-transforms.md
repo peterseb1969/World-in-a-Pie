@@ -250,7 +250,7 @@ stability is a contract from day one.
 | **M2** (done, §6.2) | offline validate/recompute library; `verify` verb (findings → exit code); `inspect --target-version` migratability | identity-hash + term-resolution logic shared with wip-auth's canonical implementations |
 | **M3** (done: M3a §7.2, M3b §7.3) | shaping transforms (`filter` with boundary policy `strict/drop/stubs/closure`, definitions-only, `prune`, strip-blobs, latest-only, split), `export-csv` off-ramp, thin `backup`/`restore` verbs, `diff` | M1 model; M2 for filter's auto-verify postcondition |
 | **M4** (done, §6.4; plan §6.3) | surgery: fill-value migration via mapping file, redaction | M2 library |
-| **M5** | `compose` on-ramp; `export` removed with the next release | M4; separate design iteration |
+| **M5** (closed, not built for now, §6.5) | `compose` on-ramp: not built, the live write path is the bulk-load path; `export` still removed with the next release | M4; separate design iteration |
 
 Every transform (M3+) runs `verify` on its output automatically and
 stamps the verdict into the `derived_from` hop it writes — a
@@ -575,6 +575,58 @@ fixed by this plan):
 4. `wip-toolkit restore` follows the job for 3600 s, then prints the last
    snapshot and exits 0 while the job is still running. `backup` exits 1 on
    the same timeout. CASE-1023.
+
+**The retest (2026-11-03), after CASE-1017 to CASE-1027.** Same archive,
+the current (qualified) format, same runner on both machines: a fresh
+restore into one pair of empty namespaces, then a definitions-only fresh
+restore into a second pair followed by `POST /documents` in batches of 500
+through Caddy, one client, no concurrency. Every run ended 222,026
+documents latest, 0 errors, post-restore validation healthy.
+
+| Machine, commit | Fresh restore | Live bulk create (definitions + documents) |
+|---|---|---|
+| Mac, `059b854a` (2026-11-02, above) | 12 min 55 s | 23 min 5 s |
+| Mac, `01d21196` | 1 min 16 s (server job; 1 min 25 s client, upload included) | 5 min 28 s (19 s + 5 min 9 s) |
+| Mac, `ba609931` (adds CASE-1026/1027) | not re-run; neither commit touches the restore path | 3 min 48 s (18 s + 3 min 30 s) |
+| Pi, `4de37267` (2026-11-02, above) | 43 min 53 s | 72 min 51 s |
+| Pi, `01d21196` | 6 min 22 s (client) | not used: code changed mid-run |
+| Pi, `ba609931` | 5 min 49 s (server job; 6 min 18 s client) | 14 min 28 s (1 min 52 s + 12 min 36 s; 324 rows/s) |
+
+What moved the live path, per 500-row batch on the Mac (the bulk
+response's own `timing`): server total 602 → 225 ms; the stage-4 writes
+280 → 51 ms (CASE-1026: one retire `update_many`, one `insert_many`);
+the Registry register 262 → 99 ms (CASE-1027: ids minted from the
+namespace config already read). Before those, CASE-1022 had taken a
+term-bearing batch from 4.1 s to about 0.15 s (reference-gate lookups only
+in strict namespaces, once per batch) and CASE-1024 the term-heavy
+MDMS batches from about 0.95 s to 0.17 s (term values resolved once per
+batch). CASE-1025, found on the way, is a guardrail fix rather than a
+speed-up: the term inbound gate had never refused anything.
+
+**The live path is now bound by reporting, by design.** Of the Mac
+`ba609931` run's 206 s document phase, the server worked about 110 s; the
+rest is document-store's backpressure throttle (`get_throttle_delay`:
+50/100/500 ms after each write while reporting-sync has more than
+1k/10k/50k events pending). A probe batch's client-minus-server gap was
+115 ms during the load and 12–13 ms once reporting had caught up.
+
+**The two numbers do not stop at the same point.** A fresh restore
+reports done when its job completes; its reporting sync starts afterwards
+(the job's own reporting verdict: "a fresh restore does not wait for
+reporting"). The live figure includes the throttle, that is, it already
+pays part of the reporting catch-up. Time until reporting holds the
+restored namespace was not measured. Comparing server work only, restore
+76 s against live about 110 s plus 18 s of definitions.
+
+**Decision (Peter, 2026-11-03): M5 is closed, `compose` not built for
+now.** Restore is still the faster path (live against the restore's
+server job: Mac 3 times, Pi 2.5 times), but the gap that motivated compose is gone: minutes, not an hour,
+for 222,026 documents, and about 1.7 times on server work on the Mac. Under decision 5 the bulk-load use case is served
+by the live write path, and the merge variant is dropped. A legacy load
+goes through `POST /documents` (or the CSV/XLSX import), validated by the
+server's own rules, with no offline twin to keep in step. Removing `export`
+with the next release is unaffected. Reopen compose if a load needs
+offline shaping the live path cannot do, not for speed alone.
 
 **Not yet decided** (proposed defaults, for the plan after the
 measurement): input as CSV and JSONL rows; a per-template mapping file in
