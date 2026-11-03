@@ -13,6 +13,7 @@ import json
 import logging
 import time
 import uuid
+from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -31,10 +32,42 @@ from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
 
 logger = logging.getLogger(__name__)
 
+
+def _name_row_key(terminology_id: str | None, row: dict[str, Any]) -> tuple:
+    """A term_names row as compared between def-store and the table."""
+    return (terminology_id, row["value"], row["type"], row["language"],
+            row["source"], row["preferred"])
+
 # The smallest MongoDB ObjectId: a cursor below every document, so the first
 # cursor page starts at the beginning. The document-store enters cursor mode
 # only when a cursor is given.
 FIRST_CURSOR = "000000000000000000000000"
+
+
+def _only_if_changed(columns: tuple[str, ...]) -> str:
+    """The WHERE of an upsert's DO UPDATE that skips an unchanged row.
+
+    The batch sweeps re-send every terminology, term and relation, and a
+    plain DO UPDATE rewrites each one: a new row version and a dead tuple per
+    row even when nothing changed. Comparing the updated columns against the
+    current row (aliased ``cur``) leaves an unchanged row alone.
+    """
+    current = ", ".join(f'cur."{c}"' for c in columns)
+    incoming = ", ".join(f'EXCLUDED."{c}"' for c in columns)
+    return f"WHERE ({current}) IS DISTINCT FROM ({incoming})"
+
+
+_TERMINOLOGY_UPDATE_COLUMNS = (
+    "value", "label", "description", "case_sensitive", "allow_multiple",
+    "extensible", "mutable", "status", "term_count", "updated_at", "updated_by",
+)
+_TERM_UPDATE_COLUMNS = (
+    "terminology_value", "value", "aliases", "label", "description",
+    "sort_order", "parent_term_id", "status", "updated_at", "updated_by",
+)
+_TERM_RELATION_UPDATE_COLUMNS = (
+    "status", "source_term_value", "target_term_value", "metadata",
+)
 
 
 class BatchSyncService:
@@ -831,7 +864,7 @@ class BatchSyncService:
                                 table_name = ns_tables[t.get("namespace") or namespace or "wip"]
                                 await conn.execute(
                                     f"""
-                                    INSERT INTO {table_name} (
+                                    INSERT INTO {table_name} AS cur (
                                         "terminology_id", "namespace", "value", "label",
                                         "description", "case_sensitive", "allow_multiple",
                                         "extensible", "mutable", "status", "term_count",
@@ -850,6 +883,7 @@ class BatchSyncService:
                                         "term_count" = EXCLUDED."term_count",
                                         "updated_at" = EXCLUDED."updated_at",
                                         "updated_by" = EXCLUDED."updated_by"
+                                    {_only_if_changed(_TERMINOLOGY_UPDATE_COLUMNS)}
                                     """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                     t["terminology_id"],
                                     t.get("namespace", namespace),
@@ -1079,12 +1113,15 @@ class BatchSyncService:
                                 )
 
                         async with self.pool.acquire() as conn:
+                            current_names = await self._current_name_rows(
+                                conn, items, namespace, ns_names_tables
+                            )
                             for t in items:
                                 try:
                                     table_name = ns_tables[t.get("namespace") or namespace or "wip"]
                                     await conn.execute(
                                         f"""
-                                        INSERT INTO {table_name} (
+                                        INSERT INTO {table_name} AS cur (
                                             "term_id", "namespace", "terminology_id",
                                             "terminology_value", "value", "aliases",
                                             "label", "description", "sort_order",
@@ -1104,6 +1141,7 @@ class BatchSyncService:
                                             "status" = EXCLUDED."status",
                                             "updated_at" = EXCLUDED."updated_at",
                                             "updated_by" = EXCLUDED."updated_by"
+                                        {_only_if_changed(_TERM_UPDATE_COLUMNS)}
                                         """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                         t["term_id"],
                                         t.get("namespace", namespace),
@@ -1123,14 +1161,22 @@ class BatchSyncService:
                                         _parse_datetime(t.get("updated_at")),
                                         t.get("updated_by"),
                                     )
-                                    # Refresh the term's name rows wholesale
+                                    # Rewrite the term's name rows only when they
+                                    # differ from what the table holds.
                                     t_ns = t.get("namespace") or namespace or "wip"
                                     names_table = ns_names_tables[t_ns]
+                                    name_rows = term_name_rows(t)
+                                    incoming = Counter(
+                                        _name_row_key(t.get("terminology_id"), r)
+                                        for r in name_rows
+                                    )
+                                    if incoming == current_names.get((t_ns, t["term_id"]), Counter()):
+                                        synced += 1
+                                        continue
                                     await conn.execute(
                                         f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                         t_ns, t["term_id"],
                                     )
-                                    name_rows = term_name_rows(t)
                                     if name_rows:
                                         await conn.executemany(
                                             f"""
@@ -1178,6 +1224,35 @@ class BatchSyncService:
 
         logger.info(f"Term batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed, "complete": complete}
+
+    @staticmethod
+    async def _current_name_rows(
+        conn: Any,
+        items: list[dict[str, Any]],
+        namespace: str | None,
+        names_tables: dict[str, str],
+    ) -> dict[tuple[str, str], Counter]:
+        """The name rows the names tables hold for one page of terms.
+
+        One query per namespace on the page, keyed by (namespace, term_id),
+        each a multiset of rows in the shape _name_row_key builds.
+        """
+        by_ns: dict[str, list[str]] = {}
+        for t in items:
+            by_ns.setdefault(t.get("namespace") or namespace or "wip", []).append(t["term_id"])
+        current: dict[tuple[str, str], Counter] = {}
+        for ns, term_ids in by_ns.items():
+            rows = await conn.fetch(
+                f'''SELECT "term_id", "terminology_id", "value", "type", "language", "source", "preferred"
+                FROM {names_tables[ns]} WHERE "namespace" = $1 AND "term_id" = ANY($2::text[])''',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+                ns, term_ids,
+            )
+            for r in rows:
+                current.setdefault((ns, r["term_id"]), Counter())[
+                    (r["terminology_id"], r["value"], r["type"], r["language"],
+                     r["source"], r["preferred"])
+                ] += 1
+        return current
 
     async def batch_sync_term_relations(
         self,
@@ -1248,7 +1323,7 @@ class BatchSyncService:
                             try:
                                 await conn.execute(
                                     f"""
-                                    INSERT INTO {table_name} (
+                                    INSERT INTO {table_name} AS cur (
                                         "namespace", "source_term_id", "target_term_id",
                                         "relation_type", "source_term_value", "target_term_value",
                                         "source_terminology_id", "target_terminology_id",
@@ -1260,6 +1335,7 @@ class BatchSyncService:
                                         "source_term_value" = EXCLUDED."source_term_value",
                                         "target_term_value" = EXCLUDED."target_term_value",
                                         "metadata" = EXCLUDED."metadata"
+                                    {_only_if_changed(_TERM_RELATION_UPDATE_COLUMNS)}
                                     """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                     ns,
                                     rel["source_term_id"],
