@@ -20,6 +20,14 @@ spec:
       settings:
         description: "AuthorAssist app data (bootstrap created)"
         deletion_mode: full
+    # The writer's choice of AI models, one document. The app reads the name
+    # from SETTINGS_NAMESPACE (default aa-settings) and creates it under its
+    # own key; it never deletes settings, so deletion_mode stays retain.
+    - role: settings
+      name: aa-settings
+      env: SETTINGS_NAMESPACE
+      settings:
+        description: "AuthorAssist app settings (bootstrap created)"
   image:
     name: wip-aa
     # App lives in its own repo (WIP-AA). No containerized build has been
