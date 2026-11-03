@@ -304,3 +304,17 @@ async def test_a_fresh_instance_gets_no_warning(fresh, auth_headers):
     await _wipe(_provider())
     report = await _restore(client, auth_headers, archive)
     assert report["warnings"] == []
+
+
+@pytest.mark.asyncio
+async def test_a_managed_grant_on_an_absent_namespace_reads_as_managed(fresh, auth_headers):
+    """The import writes a key's declared grants whether or not the namespace
+    exists; such a grant is the file's, not one waiting for its namespace."""
+    client = fresh
+    await NamespaceGrant(namespace="never-created", subject="file-key", subject_type="api_key",
+                         permission="read", granted_by="wip-deploy", managed_by="wip-deploy",
+                         origin="file").insert()
+    archive = await _backup(client, auth_headers)
+    report = await _restore(client, auth_headers, archive)
+    reasons = {s["id"]: s["reason"] for s in report["grants"]["skipped"]}
+    assert reasons["never-created/api_key:file-key"] == "managed by wip-deploy on this instance"

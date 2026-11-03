@@ -423,18 +423,21 @@ async def _restore_grants(
         if g.subject_type == "user" and not user_grants:
             out.skipped.append(SkippedRecord(id=gid, reason="user grant from another OIDC issuer"))
             continue
+        # Ownership first: the import writes a key's declared grants whether
+        # or not the namespace exists, and "restore the namespace" would send
+        # an operator after one that never comes.
+        existing = await NamespaceGrant.find_one({
+            "namespace": g.namespace, "subject": g.subject, "subject_type": g.subject_type,
+        })
+        if await _grant_owned_by_file(g, existing):
+            out.skipped.append(SkippedRecord(id=gid, reason="managed by wip-deploy on this instance"))
+            continue
         if g.namespace not in active:
             active[g.namespace] = await _grantable(g.namespace, report, dry_run)
         if not active[g.namespace]:
             out.skipped.append(SkippedRecord(
                 id=gid, reason="namespace does not exist here; restore it, then re-run",
             ))
-            continue
-        existing = await NamespaceGrant.find_one({
-            "namespace": g.namespace, "subject": g.subject, "subject_type": g.subject_type,
-        })
-        if await _grant_owned_by_file(g, existing):
-            out.skipped.append(SkippedRecord(id=gid, reason="managed by wip-deploy on this instance"))
             continue
         if existing is not None:
             if _grant_content(existing) == _grant_content(g):
