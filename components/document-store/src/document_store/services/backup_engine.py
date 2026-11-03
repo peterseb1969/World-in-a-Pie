@@ -2465,7 +2465,8 @@ class DirectRestoreEngine:
             for entry in reader.read_entities("registry_entries", namespace=src):
                 if entry.get("entity_type") != "documents":
                     continue
-                keys = identity.get((entry.get("primary_composite_key") or {}).get("template_id"))
+                template_id = (entry.get("primary_composite_key") or {}).get("template_id")
+                keys = identity.get(template_id) if isinstance(template_id, str) else None
                 if not keys:
                     continue
                 if any(
