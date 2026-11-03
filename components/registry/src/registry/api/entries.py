@@ -3,6 +3,7 @@
 import logging
 import math
 import re
+import time
 from datetime import UTC, datetime
 from typing import cast
 
@@ -388,6 +389,16 @@ async def register_keys(
     if not items:
         return RegisterBulkResponse(results=[], total=0, created=0, already_exists=0, errors=0)
 
+    timing: dict[str, float] = {}
+    started = time.perf_counter()
+    mark = started
+
+    def lap(phase: str) -> None:
+        nonlocal mark
+        now = time.perf_counter()
+        timing[phase] = round((now - mark) * 1000, 1)
+        mark = now
+
     results: list[RegisterKeyResponse | None] = [None] * len(items)
     created_count = 0
     exists_count = 0
@@ -407,6 +418,10 @@ async def register_keys(
     ).to_list()
     valid_namespaces = {ns.prefix for ns in existing_ns_docs}
     invalid_namespaces = unique_namespaces - valid_namespaces
+    # New ids are generated from this config: reading the namespace again
+    # per item cost one database round trip per new entry.
+    namespace_docs = {ns.prefix: ns for ns in existing_ns_docs}
+    lap("0_namespace")
 
     # Phase 1: Compute hashes for items with composite keys.
     # When identity_values is provided, compute identity_hash and inject it
@@ -434,6 +449,7 @@ async def register_keys(
     # (which may differ from its parent entry's), exactly as lookup_by_keys'
     # $elemMatch treats it. Flattening by hash alone let a cross-namespace
     # synonym slip past dedup and mint a second live owner for its key.
+    lap("1_hashes")
     dedup_hashes = [h for h in hashes if h]
     existing_by_hash: dict[tuple[str, str, str], RegistryEntry] = {}
     if dedup_hashes:
@@ -462,6 +478,8 @@ async def register_keys(
         }).to_list()
         for entry in id_entries:
             existing_by_entry_id[entry.entry_id] = entry
+
+    lap("2_find_existing")
 
     # Phase 3: Build entries to insert
     entries_to_insert: list[RegistryEntry] = []
@@ -553,7 +571,10 @@ async def register_keys(
             if item.entry_id:
                 entry_id = item.entry_id
             else:
-                entry_id = await IdGeneratorService.generate(item.namespace, item.entity_type)
+                entry_id = await IdGeneratorService.generate_from_config(
+                    namespace_docs[item.namespace].get_id_algorithm(item.entity_type),
+                    item.namespace, item.entity_type,
+                )
 
             # Build synonyms list — add identity_values as a synonym if provided.
             # CASE-430: relationship/edge types set skip_identity_value_synonym
@@ -612,6 +633,7 @@ async def register_keys(
     # Phase 3.5: claim-first gate. Every key pair is claimed pending BEFORE
     # the insert (fail-fast on conflict; the item drops out of the batch).
     # An entry without a claim is thereby unrepresentable by ordering.
+    lap("3_build_entries")
     gated_entries: list = []
     gated_indices: list[int] = []
     conflicts = await claim_entries_keys_pending(entries_to_insert)
@@ -628,11 +650,15 @@ async def register_keys(
         gated_entries.append(entry)
         gated_indices.append(idx)
 
+    lap("3b_claim_keys")
+
     # Phase 4: Batch insert, then confirm the pending claims.
     if gated_entries:
         try:
             await RegistryEntry.insert_many(gated_entries)
+            lap("4_insert_entries")
             await confirm_entries_keys(gated_entries)
+            lap("4b_confirm_keys")
             for pos, idx in enumerate(gated_indices):
                 entry = gated_entries[pos]
                 results[idx] = RegisterKeyResponse(
@@ -657,12 +683,14 @@ async def register_keys(
                 )
                 error_count += 1
 
+    timing["total"] = round((time.perf_counter() - started) * 1000, 1)
     return RegisterBulkResponse(
         results=cast(list[RegisterKeyResponse], results),
         total=len(items),
         created=created_count,
         already_exists=exists_count,
         errors=error_count,
+        timing=timing,
     )
 
 

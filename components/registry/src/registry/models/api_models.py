@@ -251,6 +251,10 @@ class RegisterBulkResponse(BaseModel):
     created: int
     already_exists: int
     errors: int
+    timing: dict[str, float] | None = Field(
+        default=None,
+        description="Server-side time per phase of the request, in milliseconds.",
+    )
 
 
 # =============================================================================
