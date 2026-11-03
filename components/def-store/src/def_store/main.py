@@ -7,12 +7,14 @@ Provides controlled vocabulary management with import/export capabilities.
 
 import asyncio
 import contextlib
+import logging
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo.errors import OperationFailure
 
 from wip_auth import (
     HealthCache,
@@ -33,7 +35,7 @@ from . import __version__
 from .api import api_router
 from .api.auth import require_groups
 from .models.audit_log import TermAuditLog
-from .models.term import Term
+from .models.term import TERM_INDEXES_BUILT_AT_STARTUP, Term
 from .models.term_relation import TermRelation
 from .models.terminology import Terminology
 from .services.nats_client import close_nats_client, configure_nats_client, nats_stats
@@ -92,6 +94,60 @@ async def _bootstrap_system_terminologies() -> None:
 _bootstrap_sleep = asyncio.sleep  # replaced in tests
 
 
+SUPERSEDED_TERM_INDEXES = (
+    # {namespace, terminology_id, sort_order}: replaced by
+    # ns_terminology_sort_value_idx, which adds value (the listing's
+    # tiebreaker) and so serves every query the old index did.
+    "ns_terminology_sort_idx",
+)
+
+
+async def reconcile_term_indexes(db) -> list[dict]:
+    """Bring the terms collection's indexes to what the model needs.
+
+    Runs after init_beanie. It builds the indexes Beanie cannot (see
+    TERM_INDEXES_BUILT_AT_STARTUP), then drops the indexes a newer one has
+    replaced — in that order, so a term query never loses its index.
+    Idempotent: an index that already exists is left alone.
+
+    The unique value index cannot be built while the collection holds two
+    terms with the same value in one terminology. Startup then carries on
+    without it and logs the duplicates at CRITICAL — refusing to start would
+    take def-store down over data an operator has to resolve by hand.
+
+    Returns the duplicate groups found (empty when the constraint holds).
+    """
+    coll = db["terms"]
+    duplicates: list[dict] = []
+    for index in TERM_INDEXES_BUILT_AT_STARTUP:
+        try:
+            await coll.create_indexes([index])
+        except OperationFailure as e:
+            if e.code != 11000:  # anything but a duplicate key is a real fault
+                raise
+            duplicates = await coll.aggregate([
+                {"$group": {
+                    "_id": {"namespace": "$namespace", "terminology_id": "$terminology_id",
+                            "value": "$value"},
+                    "term_ids": {"$push": "$term_id"},
+                    "n": {"$sum": 1},
+                }},
+                {"$match": {"n": {"$gt": 1}}},
+                {"$limit": 20},
+            ], allowDiskUse=True).to_list(None)
+            logging.getLogger("def_store.startup").critical(
+                "Index %s not built: terms share a value within one terminology, "
+                "so term values are not unique-constrained in MongoDB. Resolve "
+                "the duplicates (deprecate or merge) and restart. First %d groups: %s",
+                index.document["name"], len(duplicates), duplicates,
+            )
+
+    for name in SUPERSEDED_TERM_INDEXES:
+        with contextlib.suppress(Exception):
+            await coll.drop_index(name)
+    return duplicates
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
@@ -122,6 +178,8 @@ async def lifespan(app: FastAPI):
             f"Term-name migration: {migration['converted']} converted, "
             f"{migration['initialized']} initialized."
         )
+
+    await reconcile_term_indexes(client[settings.DATABASE_NAME])
 
     # Store client in app state
     app.state.mongodb_client = client
@@ -276,7 +334,6 @@ async def _mongo_status() -> str:
         await app.state.mongodb_client.admin.command('ping')
         return "connected"
     except Exception as e:
-        import logging
         logging.getLogger("def_store.health").error("Health check failed: %s", e)
         return "error"
 

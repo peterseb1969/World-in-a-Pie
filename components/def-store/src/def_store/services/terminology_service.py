@@ -1628,6 +1628,7 @@ class TerminologyService:
         ns_filter: dict | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
+        namespace: str | None = None,
     ) -> tuple[list[TermResponse], int]:
         """
         List terms in a terminology with pagination.
@@ -1641,6 +1642,13 @@ class TerminologyService:
             ns_filter: Namespace filter dict from resolve_namespace_filter()
             sort_by: Sort field (value, label, sort_order, created_at, updated_at)
             sort_order: Sort direction (asc or desc)
+            namespace: The terminology's own namespace. A term always lives
+                in its terminology's namespace, so naming it changes no
+                result but lets the namespace-led indexes serve the query —
+                a superadmin's empty ns_filter otherwise leaves only
+                terminology_id, which no index leads with. It narrows
+                ns_filter and never replaces it: a caller who cannot read
+                that namespace still gets nothing.
 
         Returns:
             Tuple of (list of terms, total count)
@@ -1648,6 +1656,15 @@ class TerminologyService:
         query: dict = {"terminology_id": terminology_id}
         if ns_filter:
             query.update(ns_filter)
+        if namespace is not None:
+            allowed = query.get("namespace")
+            if isinstance(allowed, dict):
+                permitted = namespace in allowed.get("$in", [])
+            else:
+                permitted = allowed is None or allowed == namespace
+            if not permitted:
+                return [], 0
+            query["namespace"] = namespace
         if status:
             query["status"] = status
 

@@ -999,7 +999,7 @@ class BatchSyncService:
     async def batch_sync_terms(
         self,
         namespace: str | None = None,
-        page_size: int = 100,
+        page_size: int = 1000,
     ) -> dict:
         """
         Batch sync all terms from Def-Store to PostgreSQL.
@@ -1182,7 +1182,7 @@ class BatchSyncService:
     async def batch_sync_term_relations(
         self,
         namespace: str | None = None,
-        page_size: int = 100,
+        page_size: int = 1000,
     ) -> dict:
         """
         Batch sync all term-relations from Def-Store to PostgreSQL.

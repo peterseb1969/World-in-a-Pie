@@ -107,4 +107,10 @@ class TermRelation(Document):
                 [("namespace", 1), ("status", 1)],
                 name="ns_status_idx"
             ),
+            # The all-relations listing across namespaces (a superadmin sends
+            # no namespace): filter by status, page in _id order.
+            IndexModel(
+                [("status", 1), ("_id", 1)],
+                name="status_id_idx"
+            ),
         ]

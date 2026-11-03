@@ -182,10 +182,8 @@ class Term(Document):
         indexes: ClassVar[list[IndexModel]] = [
             # Unique ID within namespace
             IndexModel([("namespace", 1), ("term_id", 1)], unique=True, name="ns_term_id_unique_idx"),
-            # Unique value within terminology within namespace
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("value", 1)], unique=True, name="ns_terminology_value_unique_idx"),
-            # Name lookup within terminology (multikey over names.value)
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("names.value", 1)], name="ns_terminology_name_values_idx"),
+            # The unique value index and the exact-case names index are NOT
+            # declared here — see TERM_INDEXES_BUILT_AT_STARTUP below.
             # Case-insensitive value and name resolution (see CASE_INSENSITIVE_COLLATION)
             IndexModel(
                 [("namespace", 1), ("terminology_id", 1), ("value", 1)],
@@ -195,8 +193,21 @@ class Term(Document):
                 [("namespace", 1), ("terminology_id", 1), ("names.value", 1)],
                 name="ns_terminology_name_values_ci_idx", collation=CASE_INSENSITIVE_COLLATION,
             ),
-            # Sort order within terminology
-            IndexModel([("namespace", 1), ("terminology_id", 1), ("sort_order", 1)], name="ns_terminology_sort_idx"),
+            # A terminology's terms in listing order. The listing's default
+            # sort is sort_order then value, so value belongs in the key:
+            # without it every page sorts the whole terminology in memory.
+            # Replaces ns_terminology_sort_idx (no value), which startup drops.
+            IndexModel(
+                [("namespace", 1), ("terminology_id", 1), ("sort_order", 1), ("value", 1)],
+                name="ns_terminology_sort_value_idx",
+            ),
+            # Lookup by term_id alone. Many paths address a term by its id
+            # without knowing its namespace (get, update, delete, merge, bulk
+            # prefetch, relation lookups); ns_term_id_unique_idx cannot serve
+            # them. term_id is Registry-minted and unique across namespaces,
+            # but the index stays non-unique: uniqueness is the Registry's
+            # guarantee, not one this collection adds.
+            IndexModel([("term_id", 1)], name="term_id_idx"),
             # Status filter within terminology
             IndexModel([("namespace", 1), ("terminology_id", 1), ("status", 1)], name="ns_terminology_status_idx"),
             # Parent term lookup
@@ -204,3 +215,25 @@ class Term(Document):
             # Text search (global)
             IndexModel([("value", "text"), ("label", "text"), ("description", "text")], name="text_search_idx"),
         ]
+
+
+# Term indexes that def-store builds itself at startup, after init_beanie.
+# Beanie merges the declared indexes by their key fields alone, ignoring
+# collation and uniqueness. Each of these shares its keys with a
+# case-insensitive twin above, so declared in Settings.indexes it was
+# silently dropped in favour of the twin and never built on a fresh
+# database: no unique constraint on a term's value within its terminology,
+# and no index for exact-case name lookups. Built explicitly instead (see
+# def_store.main.reconcile_term_indexes).
+TERM_INDEXES_BUILT_AT_STARTUP: list[IndexModel] = [
+    # Unique value within terminology within namespace
+    IndexModel(
+        [("namespace", 1), ("terminology_id", 1), ("value", 1)],
+        unique=True, name="ns_terminology_value_unique_idx",
+    ),
+    # Name lookup within terminology (multikey over names.value)
+    IndexModel(
+        [("namespace", 1), ("terminology_id", 1), ("names.value", 1)],
+        name="ns_terminology_name_values_idx",
+    ),
+]

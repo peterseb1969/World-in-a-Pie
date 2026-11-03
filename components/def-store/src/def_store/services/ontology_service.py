@@ -5,6 +5,7 @@ from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
+from beanie.odm.enums import SortDirection
 from pymongo.errors import DuplicateKeyError
 
 from ..api.auth import get_identity_string
@@ -407,7 +408,14 @@ class OntologyService:
         total = await TermRelation.find(query).count()
         skip = (page - 1) * page_size
 
-        rels = await TermRelation.find(query).skip(skip).limit(page_size).to_list()
+        # Pages walk a fixed order. Without a sort MongoDB returns natural
+        # order, which writes during a long sweep can reshuffle, so pages
+        # could repeat or skip relations.
+        rels = await TermRelation.find(query) \
+            .sort([("_id", SortDirection.ASCENDING)]) \
+            .skip(skip) \
+            .limit(page_size) \
+            .to_list()
 
         term_lookup = await OntologyService._build_term_lookup(rels)
         items = [OntologyService._to_term_relation_response(r, term_lookup) for r in rels]

@@ -256,6 +256,7 @@ async def list_terms(
         ns_filter=ns_filter.query,
         sort_by=sort_by,
         sort_order=sort_order,
+        namespace=terminology.namespace,
     )
 
     return TermListResponse(
