@@ -1153,7 +1153,8 @@ _MERGE_ONLY_OPTIONS = ("on_clash", "older_versions", "add_missing", "extend_term
                    "server otherwise refuses because nothing restored would resolve by id.")
 @click.option("--no-wait", is_flag=True, help="Print the queued job and return.")
 @click.option("--timeout", default=3600.0, show_default=True,
-              help="Seconds to follow the job before returning (it keeps running).")
+              help="Seconds to follow the job. A job not finished by then keeps "
+                   "running on the server, and the command exits 1.")
 @click.option("--json", "as_json", is_flag=True, help="Print the final job snapshot as JSON.")
 @click.pass_context
 def restore(
@@ -1306,7 +1307,18 @@ def restore(
             console.print(f"[yellow]warning:[/yellow] {warning}")
         if snapshot.get("result"):
             console.print(_json.dumps(snapshot["result"], indent=2, default=str))
-    if snapshot.get("status") == "failed":
+    status = snapshot.get("status")
+    if status == "failed":
+        sys.exit(1)
+    if not no_wait and status != "complete":
+        # The follow ended at --timeout with the job still going: success
+        # is only a complete job, as for backup.
+        message = (f"{snapshot.get('job_id')}: not finished within --timeout; the job "
+                   "keeps running on the server.")
+        if as_json:
+            click.echo(message, err=True)
+        else:
+            console.print(f"[red]{message}[/red]")
         sys.exit(1)
 
 

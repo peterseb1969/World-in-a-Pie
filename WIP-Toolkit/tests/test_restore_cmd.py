@@ -93,6 +93,27 @@ class TestRestoreVerb:
         result = _invoke(tmp_path, client)
         assert result.exit_code == 1
 
+    def test_a_complete_job_exits_0(self, tmp_path):
+        result = _invoke(tmp_path, _mock_client(final_status="complete"))
+        assert result.exit_code == 0, result.output
+
+    def test_a_job_still_running_at_the_timeout_exits_1(self, tmp_path):
+        client = _mock_client(final_status="running")
+        with patch("wip_toolkit.restore.wait_for_job",
+                   return_value={"job_id": "rst-1", "status": "running"}) as wait:
+            result = _invoke(tmp_path, client, "--timeout", "5")
+        assert wait.call_args.kwargs["timeout"] == 5.0
+        assert result.exit_code == 1
+        assert "rst-1: not finished within --timeout" in result.output
+
+    def test_json_still_prints_the_unfinished_snapshot(self, tmp_path):
+        client = _mock_client(final_status="running")
+        with patch("wip_toolkit.restore.wait_for_job",
+                   return_value={"job_id": "rst-1", "status": "running"}):
+            result = _invoke(tmp_path, client, "--json")
+        assert result.exit_code == 1
+        assert '"status": "running"' in result.output
+
     def test_a_refused_request_is_reported_not_raised(self, tmp_path):
         from wip_toolkit.client import WIPClientError
 

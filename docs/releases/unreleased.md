@@ -44,6 +44,16 @@ a fresh restore of 240,474 document rows went from 12 min 55 s to 2 min 26 s
 their per-item results are unchanged. `/entries/activate` items accept
 `synonyms` (with `composite_key` only).
 
+### `wip-toolkit restore` exits 1 when the job outlives `--timeout`; WIP-Toolkit 0.24.1
+
+`restore` follows its job for `--timeout` seconds (default 3600). When the
+job was still running at the timeout, the command printed the last snapshot
+and exited 0, so a script chaining on the exit code treated an unfinished
+restore as done. It now exits 1 with "not finished within --timeout; the job
+keeps running on the server.", the same rule `backup` already follows: exit
+0 only for a complete job. With `--json` the snapshot is still printed on
+stdout and the message goes to stderr. `--no-wait` is unchanged and exits 0.
+
 ### Document writes ask the Registry where references live only in strict namespaces
 
 Before writing a document, document-store checks the source namespace's
