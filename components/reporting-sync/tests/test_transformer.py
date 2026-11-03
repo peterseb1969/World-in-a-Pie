@@ -3,10 +3,13 @@ Tests for the document transformer and schema manager.
 """
 
 import json
+from unittest.mock import MagicMock
 
 from reporting_sync.models import (
     ReportingConfig,
+    TemplateField,
 )
+from reporting_sync.schema_manager import SchemaManager
 from reporting_sync.transformer import DocumentTransformer
 
 
@@ -400,6 +403,44 @@ class TestDocumentTransformer:
 
         assert isinstance(row["hire_date"], date)
         assert row["name"] == "Bob"
+
+    def test_term_inside_object_field_emits_no_column_the_table_lacks(self):
+        """A term nested in an object field must not produce a
+        "<object>_<field>_term_id" column: the table stores the object as one
+        JSONB column, so such a column makes the INSERT fail and the row is
+        dropped. Top-level term columns are still emitted."""
+        transformer = DocumentTransformer()
+        template = _make_template(
+            ("code", "string"), ("state", "term"), ("one", "object"),
+        )
+        document = {
+            "document_id": "doc-123",
+            "template_id": "0190c000-0000-7000-0000-000000000001",
+            "template_version": 1,
+            "version": 1,
+            "status": "active",
+            "identity_hash": "abc123",
+            "namespace": "wip",
+            "created_at": "2024-01-30T10:00:00Z",
+            "created_by": "test-user",
+            "data": {"code": "N-1", "state": "open", "one": {"name": "o", "kind": "beta"}},
+            "term_references": [
+                {"field_path": "state", "term_id": "0190b000-0000-7000-0000-000000000001"},
+                {"field_path": "one.kind", "term_id": "0190b000-0000-7000-0000-000000000002"},
+            ],
+        }
+
+        row = transformer.transform(document, template)[0]
+
+        sm = SchemaManager(MagicMock())
+        fields = [TemplateField(**f) for f in template["fields"]]
+        expected = sm.expected_columns_for_template(fields)
+        assert "one_kind_term_id" not in row
+        assert {k for k in row if k.startswith("one")} <= expected
+        assert row["state_term_id"] == "0190b000-0000-7000-0000-000000000001"
+        assert json.loads(row["one"]) == {"name": "o", "kind": "beta"}
+        refs = json.loads(row["term_references_json"])
+        assert {"field_path": "one.kind", "term_id": "0190b000-0000-7000-0000-000000000002"} in refs
 
     def test_upsert_sql_generation_latest_only(self):
         """Test UPSERT SQL generation for latest_only strategy."""

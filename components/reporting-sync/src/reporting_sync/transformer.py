@@ -505,8 +505,15 @@ class DocumentTransformer:
         if semantic_types:
             self._process_semantic_types(base_row, data, term_references, semantic_types)
 
-        # Add term_id columns for top-level term references
+        # Add term_id columns for top-level term references. A dotted path is
+        # a term inside an object field ("one.kind"); the DDL stores the whole
+        # object as one JSONB column and declares no "<path>_term_id" column
+        # for it, so emitting one makes the INSERT fail and the row is lost.
+        # Its term_id stays available in term_references_json. (A duration's
+        # "<field>.unit" is written by _process_duration above.)
         for field_path, term_id in term_references.items():
+            if "." in field_path:
+                continue
             if not isinstance(term_id, (list, dict)):
                 safe_field = self._safe_column_name(field_path)
                 col_name = f"{safe_field}_term_id"

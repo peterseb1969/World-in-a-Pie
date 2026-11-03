@@ -7,6 +7,27 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Documents with a term inside an object field reach the reporting layer
+
+reporting-sync never wrote a document whose object field held a term value
+(an `object` field with a `template_ref` whose template has a `term` field,
+e.g. `{"one": {"name": "o", "kind": "beta"}}`). The row named a column,
+`one_kind_term_id`, that the table does not have, because the table stores
+the whole object as one JSONB column. The insert failed and the event was
+dropped after three deliveries, with `column "one_kind_term_id" of relation
+… does not exist` in `recent_drops`. Batch sync, and so a fresh restore's
+reporting sync, used the same row builder. Terms inside array items and
+top-level terms were not affected.
+
+Such rows are now written. The nested term's id is in the row's
+`term_references_json` and its value inside the object's JSONB column.
+There is still no `<object>_<field>_term_id` column.
+
+- **After upgrading,** re-sync the templates that have such fields:
+  `POST /api/reporting-sync/sync/batch/{template_value}?namespace=<ns>`, then
+  check `GET /api/reporting-sync/parity?namespace=<ns>`. Rows the old release
+  dropped are not replayed by themselves.
+
 ### Archives with bare identity synonyms are refused; the re-qualification pass is gone; `@wip/client` 0.74.0, `@wip/react` 0.25.0
 
 A document's identity values are registered as a synonym qualified by its
