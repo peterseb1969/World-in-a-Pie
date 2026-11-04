@@ -674,6 +674,16 @@ async def restore_archive(
                 "the scope, or none): " + ", ".join(uncarried) + ". Each is written as "
                 "any grant: effective where the key exists here, otherwise it gives nothing."
             )
+        orphan_owned = sorted(
+            f"{r.prefix} (owner {r.app})" for r in archive.reservations
+            if r.managed_by is None and r.app not in carried
+        )
+        if orphan_owned:
+            report.warnings.append(
+                "Reservations owned by keys the archive does not carry: "
+                + ", ".join(orphan_owned) + ". Where the owner key does not exist here, "
+                "only a platform admin can create such a namespace."
+            )
     if not same_issuer:
         report.warnings.append(
             f"The archive was made under OIDC issuer {archive.source.oidc_issuer!r}, "
@@ -741,7 +751,12 @@ async def _plan_mirror(
     for doc in await StoredAPIKey.find({"managed_by": None}).to_list():
         if doc.name in archived_keys or doc.name in config_key_names:
             continue
-        if scope is not None and not scope.holds_key(doc.namespaces):
+        if scope is not None and (
+            # The archive's own word first: a key the source left out (it held
+            # a namespace outside the scope there) is never removed, even when
+            # this stack's copy of it holds only in-scope namespaces.
+            doc.name in scope.keys_left_out or not scope.holds_key(doc.namespaces)
+        ):
             continue
         if caller_key is not None and doc.name == caller_key:
             plan.refused.append(_skip_named(

@@ -249,3 +249,41 @@ def test_an_archive_source_refuses_fields_it_does_not_know():
     assert ArchiveSource(**base, scope={"namespaces": ["a"]}).scope.namespaces == ["a"]
     with pytest.raises(ValidationError):
         ArchiveSource(**base, scope_v2={"namespaces": ["a"]})
+
+
+@pytest.mark.asyncio
+async def test_a_key_the_source_left_out_survives_even_when_its_copy_here_fits_the_scope(fresh, auth_headers):
+    """Review CASE-1065#3: the scope of a key is the archive's word, not this
+    stack's copy. A key that spans the scope on the source is left out; here
+    it holds only in-scope namespaces (narrowed, or created with fewer). The
+    mirror must not remove it, nor its grants inside or outside the scope."""
+    client = fresh
+    s = await _stack(client, auth_headers)
+    spans = s["keys"]["spans"]
+    archive = await _backup(client, auth_headers, namespaces=s["a"])
+    assert spans in archive["source"]["scope"]["keys_left_out"]
+    # Here the key's copy fits the scope; its grant on z stays as a record.
+    await StoredAPIKey.find_one(StoredAPIKey.name == spans).update({"$set": {"namespaces": [s["a"]]}})
+
+    report = await _restore(client, auth_headers, archive, mode="mirror")
+    assert spans not in report["api_keys"]["deleted"]
+    applied = await _restore(client, auth_headers, archive, mode="mirror", dry_run=False,
+                             expect=report["plan_digest"])
+    assert spans not in applied["api_keys"]["deleted"]
+    assert await StoredAPIKey.find_one(StoredAPIKey.name == spans) is not None
+    assert await NamespaceGrant.find_one({"namespace": s["z"], "subject": spans}) is not None
+    assert await NamespaceGrant.find_one({"namespace": s["a"], "subject": spans}) is not None
+
+
+@pytest.mark.asyncio
+async def test_reservations_owned_by_an_uncarried_key_are_named(fresh, auth_headers):
+    client = fresh
+    a, z = _p("a"), _p("z")
+    owner = _p("owner")
+    await _key(client, auth_headers, owner, [a, z], reserve=[{"prefix": a}])
+    archive = await _backup(client, auth_headers, namespaces=a)
+    assert owner in archive["source"]["scope"]["keys_left_out"]
+    assert [r["prefix"] for r in archive["reservations"]] == [a]
+    report = await _restore(client, auth_headers, archive)
+    warning = next(w for w in report["warnings"] if "Reservations owned by keys" in w)
+    assert f"{a} (owner {owner})" in warning
