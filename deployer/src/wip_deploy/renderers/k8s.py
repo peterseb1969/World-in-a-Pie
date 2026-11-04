@@ -266,14 +266,18 @@ def _render_network_policies(ns: str, *, app_edge: bool = False) -> str:
     egress rules are a follow-up case (see file header).
 
     The app edge proxies users' traffic to upstreams an app-admin chose, so
-    it is the one pod whose egress must not reach WIP's own pods or the API
-    server. Policies are additive, so the edge is left out of the bundle's
+    its egress should not reach WIP's own pods or the cluster's control
+    plane. Policies are additive, so the edge is left out of the bundle's
     broad allows (every pod to every pod, 443 to anywhere) and gets its own:
     the Registry and the auth gateway in this namespace, DNS, pods in other
-    namespaces, and addresses outside the cluster. Whether an ipBlock rule
-    also matches in-cluster pod and Service IPs is up to the network plugin,
-    so on some clusters the ipBlock allow reaches more; the edge's own
-    resolve-time blocklist is the other guard.
+    namespaces, and any address by ipBlock (attached apps may run anywhere).
+
+    What that ipBlock allow does NOT keep out: the API server's real
+    endpoint and the kubelets (node addresses, ports such as 6443/16443 and
+    10250) are cluster-external to it, and whether it also matches in-cluster
+    pod and Service IPs is up to the network plugin. The edge's own
+    resolve-time blocklist covers the install's names, the `kubernetes…`
+    names and their ClusterIP, not those endpoint addresses.
     """
     labels = {_LABELS_PART_OF: "wip"}
     # Every pod but the edge, for the broad allows.

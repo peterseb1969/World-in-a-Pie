@@ -1018,9 +1018,19 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   rendered NetworkPolicy `app-edge-egress` takes the edge out of the
   namespace's broad allows. It lets the edge reach only the Registry, the
   auth gateway, DNS, pods in other namespaces and addresses outside the
-  cluster. **Caveat:** whether that last `ipBlock` rule also matches
-  in-cluster pod and Service IPs depends on the network plugin, so on some
-  clusters it reaches more.
+  cluster. **Two caveats:**
+  - The rule for addresses outside the cluster (`ipBlock 0.0.0.0/0`, `::/0`)
+    also reaches the API server's real endpoint and the kubelets: node
+    addresses on ports such as 6443/16443 and 10250 are outside the
+    cluster's pod network as far as that rule is concerned. The edge's
+    blocklist catches the `kubernetes…` names and their ClusterIP, but not
+    those addresses.
+  - Whether the same rule also matches in-cluster pod and Service IPs
+    depends on the network plugin.
+
+  Until the rule can exclude the cluster's own ranges, an attached app's
+  upstream given as a node or pod address isn't stopped at the network
+  layer. Attaching is platform admin only (above).
 - **The app's key** is created in RC or through `/api-keys` (§4.4),
   widened with `reserve` for the namespaces it creates. The app holds the
   plaintext itself.

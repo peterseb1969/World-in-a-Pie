@@ -180,6 +180,16 @@ class AttachmentRequest(AttachmentFields):
 
     name: str = Field(..., pattern=NAME_PATTERN)
 
+    @model_validator(mode="after")
+    def _subpaths_are_its_own(self) -> "AttachmentRequest":
+        """A preserved subpath outside /apps/<name>/ would take another
+        attachment's traffic to this upstream, under this one's auth."""
+        own = f"/apps/{self.name}/"
+        for sub in self.preserve_prefix_subpaths:
+            if not sub.startswith(own) or ".." in sub:
+                raise ValueError(f"preserve_prefix_subpaths entry {sub!r} must be under {own}")
+        return self
+
 
 class AttachmentResponse(AttachmentFields):
     name: str

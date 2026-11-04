@@ -360,3 +360,14 @@ async def test_install_names_resolve_concurrently(monkeypatch):
     started = time.monotonic()
     await attach_service.resolve_install_addresses(policy)
     assert time.monotonic() - started < 1.0
+
+
+@pytest.mark.parametrize("sub", ["/apps/other/api", "/apps/aa", "/apps/aa/../other/x", "/elsewhere"])
+async def test_preserved_subpaths_stay_under_the_attachments_prefix(client, auth_headers, policy, sub):
+    r = await client.post(URL, json=[_item(strip_prefix=True, preserve_prefix_subpaths=[sub])], headers=auth_headers)
+    assert r.status_code == 422
+
+
+async def test_a_preserved_subpath_of_its_own_is_accepted(client, auth_headers, policy):
+    res = (await _post(client, auth_headers, _item(strip_prefix=True, preserve_prefix_subpaths=["/apps/aa/health"])))["results"][0]
+    assert res["status"] == "created"

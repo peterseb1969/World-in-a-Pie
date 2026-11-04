@@ -184,9 +184,30 @@ def resolve(host: str) -> set[Address]:
 def resolve_many(hosts: list[str]) -> dict[str, set[Address]]:
     if not hosts:
         return {}
-    socket.setdefaulttimeout(3.0)
+    # Concurrent, so unresolvable names don't add their timeouts up. The
+    # timeouts themselves are the system resolver's.
     with ThreadPoolExecutor(max_workers=min(16, len(hosts))) as pool:
         return dict(zip(hosts, pool.map(resolve, hosts), strict=True))
+
+
+def reachable_families() -> set[int]:
+    """The address families this container has a route for. A UDP connect
+    sends nothing; it only asks the kernel for a route. An IPv4-only
+    container has no route for IPv6 (ENETUNREACH), and dialling an IPv6
+    address of a dual-stack upstream would fail."""
+    out: set[int] = set()
+    for family, probe in ((socket.AF_INET, "192.0.2.1"), (socket.AF_INET6, "2001:db8::1")):
+        try:
+            with socket.socket(family, socket.SOCK_DGRAM) as sock:
+                sock.connect((probe, 9))
+            out.add(family)
+        except OSError:
+            continue
+    return out
+
+
+def _family(ip: Address) -> int:
+    return socket.AF_INET6 if isinstance(ip, ipaddress.IPv6Address) else socket.AF_INET
 
 
 # ── records ────────────────────────────────────────────────────────────────
@@ -242,13 +263,27 @@ def _record_ok(record: dict[str, Any]) -> str | None:
     for p in [*(record.get("preserve_prefix_subpaths") or []), *([record["health"]] if record.get("health") else [])]:
         if not PATH_RE.match(str(p)):
             return "invalid path"
+    own = f"/apps/{record['name']}/"
+    for sub in record.get("preserve_prefix_subpaths") or []:
+        # A subpath outside the attachment's own prefix would take another
+        # attachment's traffic to this upstream, under this one's auth.
+        if not str(sub).startswith(own) or ".." in str(sub):
+            return f"preserve_prefix_subpaths entry {sub!r} is outside {own}"
     if record.get("allowed_groups") and not record.get("auth_required"):
         return "allowed_groups without auth_required"
     return None
 
 
-def plan(records: list[dict[str, Any]], blocked_hosts: list[str]) -> Plan:
-    """Resolve and check every record's upstream; keep the servable ones."""
+def plan(
+    records: list[dict[str, Any]],
+    blocked_hosts: list[str],
+    families: set[int] | None = None,
+) -> Plan:
+    """Resolve and check every record's upstream; keep the servable ones.
+    Every resolved address is checked; only those of a family the container
+    can reach (`families`, default: probed) are dialled."""
+    if families is None:
+        families = reachable_families()
     out = Plan()
     parsed: list[tuple[dict[str, Any], str, str, int]] = []
     for r in sorted(records, key=lambda r: str(r.get("name"))):
@@ -291,7 +326,11 @@ def plan(records: list[dict[str, Any]], blocked_hosts: list[str]) -> Plan:
         if reason:
             out.skipped[name] = reason
             continue
-        out.targets.append(Target(r, scheme, host, port, addresses))
+        dialable = [ip for ip in addresses if _family(ip) in families]
+        if not dialable:
+            out.skipped[name] = f"{host} resolves only to addresses this container has no route for"
+            continue
+        out.targets.append(Target(r, scheme, host, port, dialable))
     return out
 
 
@@ -348,6 +387,9 @@ def _route_block(t: Target, s: Settings, matcher: str, *, strip: bool) -> list[s
     lines += [
         f"\t\t\t\theader_up X-Forwarded-Proto {s.public_scheme}",
         f"\t\t\t\theader_up X-Forwarded-Host {s.public_host}",
+        # A dial that fails moves on to the next checked address.
+        "\t\t\t\tlb_try_duration 5s",
+        "\t\t\t\tlb_try_interval 250ms",
     ]
     default_port = 443 if t.scheme == "https" else 80
     if r.get("upstream_host_header"):
@@ -416,7 +458,12 @@ def caddyfile(p: Plan | None, s: Settings, *, unavailable: str | None = None) ->
 
 
 class RegistryUnavailable(Exception):
-    pass
+    """No answer, or one the edge cannot use. `reason` is what the 503 page
+    and the log say."""
+
+    def __init__(self, detail: str, reason: str = "the Registry is not answering") -> None:
+        super().__init__(detail)
+        self.reason = reason
 
 
 def fetch_attachments(s: Settings, timeout: float = 5.0) -> list[dict[str, Any]]:
@@ -431,6 +478,12 @@ def fetch_attachments(s: Settings, timeout: float = 5.0) -> list[dict[str, Any]]
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 body = json.loads(resp.read())
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                raise RegistryUnavailable(
+                    f"HTTP {e.code}", reason="the Registry refused the app edge's key"
+                ) from e
+            raise RegistryUnavailable(f"HTTP {e.code}") from e
         except (urllib.error.URLError, OSError, ValueError) as e:
             raise RegistryUnavailable(str(e)) from e
         out.extend(body.get("items", []))
@@ -479,9 +532,9 @@ def tick(s: Settings, state: State, now: float) -> str:
         logger.error("Attach policy unavailable, serving no attached app: %s", e)
         return caddyfile(None, s, unavailable="the install's attach policy is unavailable")
     except RegistryUnavailable as e:
-        logger.warning("Registry not answering: %s", e)
+        logger.warning("Cannot read attachments (%s): %s", e.reason, e)
         if state.last_ok is None or now - state.last_ok > EXPIRY_POLLS * POLL_SECONDS:
-            return caddyfile(None, s, unavailable="the Registry is not answering")
+            return caddyfile(None, s, unavailable=e.reason)
         return state.loaded or caddyfile(None, s)
     state.last_ok = now
     p = plan(records, blocked)
@@ -495,6 +548,38 @@ def tick(s: Settings, state: State, now: float) -> str:
             logger.info("Attachment %s is served again", name)
         state.reported = dict(p.skipped)
     return caddyfile(p, s)
+
+
+def apply(config: str, state: State, s: Settings) -> str | None:
+    """Load `config`; returns what Caddy now serves. If Caddy refuses it,
+    retry without the attachments carrying their own CA; if that is refused
+    too, serve the unavailable config. Never keep the previous config: that
+    would be a last-known-good copy, and deactivated attachments would stay
+    served."""
+    try:
+        load(config)
+        logger.info("Loaded config (%d bytes)", len(config))
+        return config
+    except (urllib.error.URLError, OSError) as e:
+        logger.error("Caddy refused the config: %s", e)
+    if state.plan is not None:
+        fallback = without_custom_cas(state.plan)
+        for name, why in sorted(fallback.skipped.items()):
+            if why.startswith("Caddy refused"):
+                logger.error("Attachment %s not served: %s", name, why)
+        retry = caddyfile(fallback, s)
+        try:
+            load(retry)
+            return retry
+        except (urllib.error.URLError, OSError) as e:
+            logger.error("Caddy refused the fallback config too: %s", e)
+    down = caddyfile(None, s, unavailable="the app edge's config was refused")
+    try:
+        load(down)
+        return down
+    except (urllib.error.URLError, OSError) as e:
+        logger.error("Caddy refused even the unavailable config: %s", e)
+        return None
 
 
 def main() -> int:
@@ -522,25 +607,83 @@ def main() -> int:
             return 1
         config = tick(s, state, time.monotonic())
         if config != state.loaded:
-            try:
-                load(config)
-                state.loaded = config
-                logger.info("Loaded config (%d bytes)", len(config))
-            except (urllib.error.URLError, OSError) as e:
-                logger.error("Caddy refused the config: %s", e)
-                if state.plan is not None:
-                    fallback = without_custom_cas(state.plan)
-                    for name, why in sorted(fallback.skipped.items()):
-                        if why.startswith("Caddy refused"):
-                            logger.error("Attachment %s not served: %s", name, why)
-                    try:
-                        retry = caddyfile(fallback, s)
-                        load(retry)
-                        state.loaded = retry
-                    except (urllib.error.URLError, OSError) as e2:
-                        logger.error("Caddy refused the fallback config too: %s", e2)
+            state.loaded = apply(config, state, s)
         time.sleep(POLL_SECONDS)
 
 
+# ── build-time self-test ───────────────────────────────────────────────────
+
+# A public, self-signed certificate made for this test only; nothing trusts it.
+SELF_TEST_CA = """-----BEGIN CERTIFICATE-----
+MIIBXDCCAQOgAwIBAgIBATAKBggqhkjOPQQDAjA3MTUwMwYDVQQDDCxhcHAtZWRn
+ZSBzZWxmLXRlc3QgQ0EgKG5vdCB0cnVzdGVkIGFueXdoZXJlKTAgFw0yNjAxMDEw
+MDAwMDBaGA8yMTI1MTIwODAwMDAwMFowNzE1MDMGA1UEAwwsYXBwLWVkZ2Ugc2Vs
+Zi10ZXN0IENBIChub3QgdHJ1c3RlZCBhbnl3aGVyZSkwWTATBgcqhkjOPQIBBggq
+hkjOPQMBBwNCAASwc41C3KNAwQfU2g5DOp5LzP45/ADHXF/TNGPxeTlbJVUtfkdf
+TthI61QNaLr1derEcwhow2rCSNXf0QdAMzkdMAoGCCqGSM49BAMCA0cAMEQCIHwY
+karbw6ZtDSkDY/n42xnmA+meXxJzMdPzEupR7HHwAiArQZ2FYCskw+oxeecuAzXU
+uv1qJe2gjCPT+ef3jxxb3A==
+-----END CERTIFICATE-----
+"""
+
+
+def self_test_configs() -> dict[str, str]:
+    """Generated configs exercising every option, with no DNS involved."""
+    s = Settings(
+        registry_url="http://wip-registry:8001",
+        api_key="k",
+        gateway="wip-auth-gateway:4180",
+        public_scheme="https",
+        public_host="wip.example:8443",
+        gateway_headers=("X-WIP-User", "X-WIP-Groups"),
+        client_headers=("X-WIP-User", "X-WIP-Groups", "X-WIP-Auth-Method"),
+        policy_file=None,
+    )
+    v4, v6 = ipaddress.ip_address("203.0.113.10"), ipaddress.ip_address("2001:db8::10")
+
+    def target(**r: Any) -> Target:
+        record = {"auth_required": True, "allowed_groups": [], **r}
+        scheme, host, port = _upstream(record)
+        return Target(record, scheme, host, port, [v4, v6])
+
+    full = Plan(targets=[
+        target(
+            name="aa", upstream="https://aa.example:9443", allowed_groups=["aa-users"],
+            strip_prefix=True, preserve_prefix_subpaths=["/apps/aa/health"],
+            upstream_host_header=True, streaming=True, health="/health",
+            upstream_tls={"verify": True, "ca_pem": SELF_TEST_CA},
+        ),
+        target(name="bb", upstream="http://bb.example:3000", auth_required=False, redirect_bare_path=False),
+        target(name="cc", upstream="https://cc.example", upstream_tls={"verify": False}),
+    ])
+    return {
+        "full": caddyfile(full, s),
+        "empty": caddyfile(Plan(), s),
+        "unavailable": caddyfile(None, s, unavailable="the Registry is not answering"),
+    }
+
+
+def self_test() -> int:
+    """Run `caddy validate` over every self-test config: an image whose
+    generator emits a config Caddy refuses must not build."""
+    import tempfile
+
+    failed = 0
+    for name, config in self_test_configs().items():
+        with tempfile.NamedTemporaryFile("w", suffix=".Caddyfile", delete=False) as f:
+            f.write(config)
+        result = subprocess.run(
+            ["caddy", "validate", "--config", f.name, "--adapter", "caddyfile"],
+            capture_output=True, text=True,
+        )
+        os.unlink(f.name)
+        if result.returncode != 0:
+            failed += 1
+            print(f"self-test {name}: Caddy refused the config:\n{result.stderr[-2000:]}", file=sys.stderr)
+        else:
+            print(f"self-test {name}: valid")
+    return 1 if failed else 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(self_test() if "--self-test" in sys.argv[1:] else main())

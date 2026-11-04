@@ -26,6 +26,12 @@ DNS = {
 
 
 @pytest.fixture(autouse=True)
+def both_families(monkeypatch):
+    import socket
+    monkeypatch.setattr(es, "reachable_families", lambda: {socket.AF_INET, socket.AF_INET6})
+
+
+@pytest.fixture(autouse=True)
 def fake_dns(monkeypatch):
     def resolve(host):
         try:
@@ -101,8 +107,13 @@ def test_one_blocked_address_among_several_skips_the_record(monkeypatch):
 
 
 def test_records_the_edge_cannot_quote_safely_are_skipped():
-    p = es.plan([rec(name="bad name"), rec(name="bb", allowed_groups=["a b"]), rec(name="cc", health="/x;y")], [])
-    assert set(p.skipped) == {"bad name", "bb", "cc"}
+    p = es.plan([
+        rec(name="bad name"), rec(name="bb", allowed_groups=["a b"]), rec(name="cc", health="/x;y"),
+        rec(name="dd", strip_prefix=True, preserve_prefix_subpaths=["/apps/other/api"]),
+        rec(name="ee", strip_prefix=True, preserve_prefix_subpaths=["/apps/ee/../other"]),
+    ], [])
+    assert set(p.skipped) == {"bad name", "bb", "cc", "dd", "ee"}
+    assert "outside /apps/dd/" in p.skipped["dd"]
 
 
 def test_policy_file_fails_closed(tmp_path):
@@ -249,3 +260,54 @@ def test_a_skipped_record_is_reported_once(monkeypatch, caplog):
         es.tick(SETTINGS, state, now=1.0)
         es.tick(SETTINGS, state, now=2.0)
     assert sum("not served" in r.message for r in caplog.records) == 1
+
+
+def test_unreachable_families_are_not_dialled():
+    import socket
+    p = es.plan([rec()], [], families={socket.AF_INET})
+    body = block(es.caddyfile(p, SETTINGS), "/apps/aa/*")
+    assert "reverse_proxy 203.0.113.10:443 {" in body and "2001:db8" not in body
+    v6only = es.plan([rec(upstream="https://[2001:db8::20]")], [], families={socket.AF_INET})
+    assert v6only.targets == [] and "no route" in v6only.skipped["aa"]
+
+
+def test_a_failed_dial_moves_to_the_next_address():
+    body = block(es.caddyfile(es.plan([rec()], []), SETTINGS), "/apps/aa/*")
+    assert "lb_try_duration 5s" in body and "lb_try_interval 250ms" in body
+
+
+def test_a_refused_config_never_leaves_the_old_one_serving(monkeypatch):
+    loads = []
+
+    def load(config, timeout=10.0):
+        loads.append(config)
+        if "Attached apps are unavailable" not in config:
+            raise OSError("refused")
+
+    monkeypatch.setattr(es, "load", load)
+    state = es.State(loaded="OLD", plan=es.plan([rec()], []))
+    now_serving = es.apply("NEW", state, SETTINGS)
+    assert "the app edge's config was refused" in now_serving
+    assert len(loads) == 3  # the config, the CA-free fallback, the unavailable one
+
+
+def test_a_refused_key_is_named_as_such(monkeypatch):
+    import io
+    import urllib.error
+
+    def refuse(*a, **k):
+        raise urllib.error.HTTPError("u", 403, "Forbidden", {}, io.BytesIO(b""))
+
+    monkeypatch.setattr(es.urllib.request, "urlopen", refuse)
+    cfg = es.tick(SETTINGS, es.State(), now=1.0)
+    assert "the Registry refused the app edge's key" in cfg
+
+
+def test_the_self_test_covers_every_option():
+    configs = es.self_test_configs()
+    full = configs["full"]
+    for needle in ["tls_trust_pool inline", "trust_der ", "tls_insecure_skip_verify", "uri strip_prefix",
+                   "flush_interval -1", "health_uri", "lb_try_duration", "allowed_groups=aa-users",
+                   'request_header Cookie "(^|;\\s*)wip_session']:
+        assert needle in full, needle
+    assert "unavailable" in configs["unavailable"]

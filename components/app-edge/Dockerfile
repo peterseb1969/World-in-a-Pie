@@ -6,6 +6,10 @@ RUN apk add --no-cache python3
 WORKDIR /app
 COPY src/ /app/src/
 
+# The generator's configs must be ones this Caddy accepts: run `caddy
+# validate` over configs exercising every option, or fail the build.
+RUN python3 /app/src/edge_sync.py --self-test
+
 ARG WIP_BUILD_SHA=dev
 ARG WIP_BUILD_STAMP=dev
 ARG WIP_IMAGE_TAG=dev
