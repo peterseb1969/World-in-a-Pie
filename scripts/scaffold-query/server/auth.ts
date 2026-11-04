@@ -131,6 +131,12 @@ export function requireAuth(): RequestHandler {
  * (x-wip-groups) when present, else the OIDC session. Dev mode — no OIDC and no
  * gateway user — is open, mirroring requireAuth's pass-through so local dev
  * isn't locked out. Mount AFTER requireAuth so identity is populated.
+ *
+ * Mount it only under a route the app's manifest declares auth_required:
+ * true. There the gateway sets x-wip-groups. On an auth_required: false
+ * route nothing does, and on k8s the router cannot remove a client-sent
+ * copy, so a browser could claim any group (wip-deployable-app-contract.md,
+ * "Trust the identity headers only on routes you declare auth_required").
  */
 export function requireAdmin(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {
