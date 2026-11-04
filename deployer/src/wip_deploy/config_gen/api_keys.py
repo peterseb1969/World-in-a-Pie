@@ -182,7 +182,10 @@ def mounts_auth_config_dir(owner: Component | App) -> bool:
     federated group policy or the namespace reservations)? The env
     declarations are the opt-in, as for `declares_api_keys_file`."""
     names = {ev.name for ev in (*owner.spec.env.required, *owner.spec.env.optional)}
-    return bool(names & {"WIP_AUTH_FEDERATED_GROUPS_FILE", "WIP_NAMESPACE_RESERVATIONS_FILE"})
+    return bool(
+        names
+        & {"WIP_AUTH_FEDERATED_GROUPS_FILE", "WIP_NAMESPACE_RESERVATIONS_FILE", "WIP_ATTACH_POLICY_FILE"}
+    )
 
 
 def generate_api_keys_json(

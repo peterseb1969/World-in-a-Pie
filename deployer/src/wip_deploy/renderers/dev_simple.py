@@ -49,6 +49,7 @@ from wip_deploy.config_gen.api_keys import (
     generate_api_keys_json,
     mounts_auth_config_dir,
 )
+from wip_deploy.config_gen.attach_policy import ATTACH_POLICY_RENDER_PATH, attach_policy_json
 from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
@@ -305,6 +306,7 @@ def render_dev_simple(
     tree.obsolete.add(Path(LEGACY_API_KEYS_RENDER_PATH))
     tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment))
     tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps))
+    tree.add(ATTACH_POLICY_RENDER_PATH, attach_policy_json(deployment, components, apps))
 
     if dex_conf is not None:
         tree.add("config/dex/config.yaml", dex_conf)

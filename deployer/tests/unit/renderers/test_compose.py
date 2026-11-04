@@ -94,6 +94,7 @@ class TestTreeShape:
             "config/keys/api-keys.json",
             "config/auth/federated-groups.json",
             "config/auth/namespace-reservations.json",
+            "config/auth/attach-policy.json",
         }
 
     def test_api_key_only_omits_dex(

@@ -3438,6 +3438,19 @@ sync afterwards.
 
 ## Deployment changes
 
+- **App attachments in the Registry (not served yet).** `POST
+  /api/registry/attachments` records an app put under the umbrella through
+  the API: name, upstream, gateway protection and proxy options. Also
+  `GET /attachments[/{name}]` and `POST /attachments/deactivate`. Platform
+  admin only, never hard-deleted. The router does not serve attachments yet;
+  that is the app edge, still to be built. The deployer renders a new file
+  beside the namespace reservations, `config/auth/attach-policy.json`
+  (`WIP_ATTACH_POLICY_FILE`): the install's own hosts, which an attachment may
+  not proxy to, and its apps' route names, which it may not take. An apply
+  that would add an app on an attachment's route is refused. Existing installs
+  gain the file and the Registry's env var on their next redeploy; until
+  then, the Registry refuses only loopback, link-local, unspecified and
+  multicast upstreams. See `docs/wip-guide.md` §6.5.
 - **Scoped applies on k8s carry the key file and the namespace
   reservations.** `add-app`, `app-deploy` and `app-namespace` on a k8s
   install applied a fixed list of shared manifests that did not include

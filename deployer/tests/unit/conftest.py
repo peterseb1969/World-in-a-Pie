@@ -30,3 +30,17 @@ def _no_live_registry_reservations() -> Iterator[None]:
         return_value=RuntimeReservationCheck(),
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_live_registry_attachments() -> Iterator[None]:
+    """Every apply asks the running Registry for its app attachments, so an
+    app cannot take a route one owns. Unit tests must never reach a real
+    install. (Tests of the check itself import the function directly.)"""
+    from wip_deploy.attachment_check import AttachmentCheck
+
+    with patch(
+        "wip_deploy.attachment_check.check_attachment_collisions",
+        return_value=AttachmentCheck(),
+    ):
+        yield

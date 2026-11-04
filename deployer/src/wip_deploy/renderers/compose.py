@@ -50,6 +50,7 @@ from wip_deploy.config_gen.api_keys import (
     generate_api_keys_json,
     mounts_auth_config_dir,
 )
+from wip_deploy.config_gen.attach_policy import ATTACH_POLICY_RENDER_PATH, attach_policy_json
 from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import (
     Literal,
@@ -180,6 +181,7 @@ def render_compose(
     tree.obsolete.add(Path(LEGACY_API_KEYS_RENDER_PATH))
     tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment))
     tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps))
+    tree.add(ATTACH_POLICY_RENDER_PATH, attach_policy_json(deployment, components, apps))
 
     # wip-router Caddyfile — emitted whenever the router component is
     # active (it's infrastructure, so effectively always).

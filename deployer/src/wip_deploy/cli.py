@@ -1268,6 +1268,7 @@ def install(
         deployment, components, apps_list, install_dir=target_dir,
     )
     _refuse_runtime_reservation_collisions(deployment, apps_list, secrets)
+    _refuse_attachment_collisions(deployment, apps_list, secrets)
 
     # CASE-459: stamp the source checkout into the deployer-state so the
     # mutation verbs (add-app / app-deploy / ...) can discover manifests
@@ -2440,6 +2441,7 @@ def _apply_and_persist_mutation(
         install_dir=target_dir, regenerate=regenerate,
     )
     _refuse_runtime_reservation_collisions(deployment, apps_list, secrets)
+    _refuse_attachment_collisions(deployment, apps_list, secrets)
     # CASE-355: surface render-time errors cleanly through the additive
     # verbs too — `add-app NAME` without --app-source on a dev install
     # hits the same gate.
@@ -6472,6 +6474,24 @@ def _refuse_runtime_reservation_collisions(
             "reservations in the Registry already claim — a prefix names one ID sequence:",
             err=True,
         )
+        for error in result.errors:
+            typer.echo(f"  {error}", err=True)
+        raise typer.Exit(2)
+
+
+def _refuse_attachment_collisions(
+    deployment: Deployment, apps_list: list[App], secrets: ResolvedSecrets
+) -> None:
+    """Stop an apply that would give an app a route an app attachment in the
+    running Registry already owns. See attachment_check.py; an unreachable
+    Registry is a note, not a stop."""
+    from wip_deploy.attachment_check import check_attachment_collisions
+
+    result = check_attachment_collisions(deployment, apps_list, secrets.values.get("api-key"))
+    if result.note:
+        typer.echo(f"note: {result.note}", err=True)
+    if result.errors:
+        typer.echo("error: the install's apps would take routes app attachments own:", err=True)
         for error in result.errors:
             typer.echo(f"  {error}", err=True)
         raise typer.Exit(2)

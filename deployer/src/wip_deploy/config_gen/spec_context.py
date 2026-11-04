@@ -89,6 +89,9 @@ class SpecContextSecurity:
     # WIP_NAMESPACE_RESERVATIONS_FILE. Every install has the file (empty
     # when no app declares a namespace).
     namespace_reservations_file: str
+    # Container path of the rendered attach policy (the install's own hosts
+    # and app route names), injected as WIP_ATTACH_POLICY_FILE.
+    attach_policy_file: str
 
 
 @dataclass(frozen=True)
@@ -123,6 +126,7 @@ def make_spec_context(
         API_KEYS_CONTAINER_PATH,
         FEDERATED_GROUPS_CONTAINER_PATH,
     )
+    from wip_deploy.config_gen.attach_policy import ATTACH_POLICY_CONTAINER_PATH
     from wip_deploy.config_gen.namespaces import RESERVATIONS_CONTAINER_PATH
 
     security = SpecContextSecurity(
@@ -130,6 +134,7 @@ def make_spec_context(
         api_keys_file=API_KEYS_CONTAINER_PATH,
         federated_groups_file=FEDERATED_GROUPS_CONTAINER_PATH,
         namespace_reservations_file=RESERVATIONS_CONTAINER_PATH,
+        attach_policy_file=ATTACH_POLICY_CONTAINER_PATH,
     )
     return SpecContext(network=net, auth=auth, features=features, security=security)
 

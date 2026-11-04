@@ -931,6 +931,56 @@ Do **not** rely on Caddy stripping the prefix. Do **not** hardcode paths.
 | Session lost after Dex redirect | `trust proxy` not set, or wrong cookie path | `app.set('trust proxy', 1)`; cookie path = `<BASE>/` with trailing slash |
 | `${VAR}` literal in container | Env var not resolved | Verify the manifest's `env.required` lists the var with a real `source:` |
 
+### 6.5 Attached apps — under the umbrella without wip-deploy
+
+An app whose own admin deploys it, anywhere the stack's router can reach, can
+be **attached** under the umbrella through the Registry's API instead of being
+deployed by wip-deploy. Its key is an ordinary Console key (§4.3). The
+deployer knows nothing about the app.
+
+**Not served yet.** Attachments are recorded and checked today. The router's
+app edge, which will serve `/apps/<name>` from them, is not built yet. Until
+it lands, an attachment changes no route.
+
+```bash
+curl -k -X POST https://<host>/api/registry/attachments \
+  -H "X-API-Key: <admin-key>" -H "Content-Type: application/json" \
+  -d '[{"name": "aa", "upstream": "https://aa.apps.example:3000",
+        "allowed_groups": ["aa-users"], "display_name": "AuthorAssist"}]'
+curl -k https://<host>/api/registry/attachments -H "X-API-Key: <admin-key>"
+curl -k -X POST https://<host>/api/registry/attachments/deactivate \
+  -H "X-API-Key: <admin-key>" -H "Content-Type: application/json" -d '[{"name": "aa"}]'
+```
+
+- **One record per app**, keyed by `name`, owning `/apps/<name>`. The route
+  fields match a manifest's route: `auth_required`, `allowed_groups`,
+  `strip_prefix`, `preserve_prefix_subpaths`, `redirect_bare_path`,
+  `upstream_host_header`, `streaming`. Then `upstream_tls` (`verify`, and
+  an optional `ca_pem` holding the CA certificate itself), `display_name`,
+  `ui_only` and `health`. Writes are bulk upserts and always answer 200
+  with per-item results. **Never deleted:** deactivate it, and write it
+  again to revive it.
+- **Platform admin only. Attaching is full trust.** An attached app is
+  served on WIP's own origin, so it receives the sessions of everyone who
+  visits it. Its JavaScript can call every other app as the visitor, React
+  Console included when an admin visits. Attach only apps you trust with your
+  users' sessions. Deployer apps share this origin too.
+- **Refused names:** a route of an app this install deploys
+  (`name_collision`). An apply that would add an app on an attachment's
+  route, active or not, is refused in turn.
+- **Refused upstreams** (`forbidden`, `details.rule: upstream_blocked`):
+  anything resolving to one of the install's own hosts (the deployer
+  renders them into `WIP_ATTACH_POLICY_FILE`), or to a loopback,
+  link-local (cloud metadata), unspecified or multicast address. Addresses
+  are compared, not names. This attach-time check is advisory: the Registry
+  may sit on another network than the router (a backend on one cluster, the
+  umbrella on another). The authoritative check is the router edge's, when
+  it resolves the upstream. A host that doesn't resolve from the Registry
+  is accepted with a warning.
+- **The app's key** is created in RC or through `/api-keys` (§4.4),
+  widened with `reserve` for the namespaces it creates. The app holds the
+  plaintext itself.
+
 ---
 
 ## 7. Security Hardening

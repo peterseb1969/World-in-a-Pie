@@ -1,0 +1,203 @@
+"""App attachments: an app put under the WIP umbrella through the API.
+
+An attachment says that `/apps/<name>` on the umbrella's host is served by
+`upstream`, behind the auth gateway like a deployer app's route. The app
+itself runs wherever its own admin deployed it; WIP holds only this record,
+never the app's container, image, environment or key plaintext. The app's
+key, grants and reservations are ordinary records of their own.
+
+The router's app edge serves `/apps/*` from these records. Attaching an app
+trusts it with the sessions of everyone who visits it (it is served on WIP's
+origin), so attaching needs platform admin.
+
+An attachment is keyed by `name` and is never hard-deleted: it is
+deactivated, and revived by writing it again.
+"""
+
+from datetime import UTC, datetime
+from typing import ClassVar, Literal
+
+from beanie import Document
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pymongo import IndexModel
+
+from wip_auth.bulk_models import BulkResponseBase, BulkResultItemBase
+
+# Lowercase letters, digits and hyphens, starting with a letter: safe as a
+# URL path segment, a Caddyfile token and a DNS label.
+NAME_PATTERN = r"^[a-z][a-z0-9-]{1,40}$"
+GROUP_PATTERN = r"^[A-Za-z0-9._-]+$"
+SUBPATH_PATTERN = r"^/[A-Za-z0-9._~/-]*$"
+
+
+class UpstreamTLS(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    verify: bool = Field(
+        default=True, description="Verify the upstream's certificate (https upstreams)"
+    )
+    ca_pem: str | None = Field(
+        default=None,
+        description="A CA certificate (PEM) the upstream's certificate chains to, held in "
+        "the record itself. Never a file reference.",
+    )
+
+    @field_validator("ca_pem")
+    @classmethod
+    def _looks_like_pem(cls, v: str | None) -> str | None:
+        if v is not None and (
+            "-----BEGIN CERTIFICATE-----" not in v or "-----END CERTIFICATE-----" not in v
+        ):
+            raise ValueError("ca_pem must be a PEM certificate (BEGIN/END CERTIFICATE)")
+        return v
+
+
+class AttachmentFields(BaseModel):
+    """What an attachment declares. The route's fields mirror a deployer
+    app's `Route`, so an attached app is served exactly like one. Requests
+    forbid unknown fields (AttachmentRequest); the stored document keeps
+    Beanie's own model config."""
+
+    upstream: str = Field(
+        ...,
+        description="Absolute http(s) URL the router proxies to; no credentials in it",
+    )
+    auth_required: bool = Field(default=True, description="Behind the auth gateway")
+    allowed_groups: list[str] = Field(
+        default_factory=list,
+        description="Groups the gateway lets through (empty: any logged-in user). "
+        "Requires auth_required.",
+    )
+    strip_prefix: bool = Field(
+        default=False, description="Strip /apps/<name> before proxying"
+    )
+    preserve_prefix_subpaths: list[str] = Field(
+        default_factory=list,
+        description="Subpaths under the prefix that keep it when strip_prefix is set",
+    )
+    redirect_bare_path: bool = Field(
+        default=True, description="Redirect /apps/<name> to /apps/<name>/"
+    )
+    upstream_host_header: bool = Field(
+        default=False, description="Send the upstream's host:port as Host"
+    )
+    streaming: bool = Field(default=False, description="Flush responses as they arrive")
+    upstream_tls: UpstreamTLS = Field(default_factory=UpstreamTLS)
+    display_name: str = Field(default="", max_length=120)
+    ui_only: bool = Field(default=True, description="As a deployer app's app_metadata.ui_only")
+    health: str | None = Field(
+        default=None,
+        description="Path under the upstream that the router's edge may probe. "
+        "Neither the Registry nor RC ever calls an upstream.",
+    )
+
+    @field_validator("allowed_groups")
+    @classmethod
+    def _groups(cls, v: list[str]) -> list[str]:
+        import re
+
+        for g in v:
+            if not re.match(GROUP_PATTERN, g):
+                raise ValueError(f"allowed_groups entry {g!r}: letters, digits, '.', '_', '-'")
+        return v
+
+    @field_validator("preserve_prefix_subpaths")
+    @classmethod
+    def _subpaths(cls, v: list[str]) -> list[str]:
+        import re
+
+        for s in v:
+            if not re.match(SUBPATH_PATTERN, s):
+                raise ValueError(f"preserve_prefix_subpaths entry {s!r} must be a plain path")
+        return v
+
+    @field_validator("health")
+    @classmethod
+    def _health(cls, v: str | None) -> str | None:
+        import re
+
+        if v is not None and not re.match(SUBPATH_PATTERN, v):
+            raise ValueError("health must be a plain path starting with '/'")
+        return v
+
+    @model_validator(mode="after")
+    def _groups_need_auth(self) -> "AttachmentFields":
+        if self.allowed_groups and not self.auth_required:
+            raise ValueError("allowed_groups requires auth_required: true")
+        return self
+
+
+class AppAttachment(Document, AttachmentFields):
+    name: str = Field(..., pattern=NAME_PATTERN)
+    status: Literal["active", "inactive"] = "active"
+    managed_by: Literal["wip-deploy"] | None = Field(
+        default=None,
+        description="Reserved for records a deployer writes; attachments made through "
+        "the API carry null",
+    )
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_by: str = Field(default="system")
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_by: str = Field(default="system")
+
+    @property
+    def path(self) -> str:
+        return f"/apps/{self.name}"
+
+    class Settings:
+        name = "app_attachments"
+        indexes: ClassVar[list] = [
+            IndexModel([("name", 1)], unique=True, name="attachment_name_unique"),
+        ]
+
+
+class AttachmentRequest(AttachmentFields):
+    """One item of POST /attachments: an upsert by `name`. Writing an
+    inactive attachment again revives it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(..., pattern=NAME_PATTERN)
+
+
+class AttachmentResponse(AttachmentFields):
+    name: str
+    path: str
+    status: Literal["active", "inactive"]
+    managed_by: Literal["wip-deploy"] | None = None
+    created_at: datetime
+    created_by: str
+    updated_at: datetime
+    updated_by: str
+
+    @classmethod
+    def of(cls, doc: AppAttachment) -> "AttachmentResponse":
+        return cls(
+            **doc.model_dump(include=set(AttachmentFields.model_fields)),
+            name=doc.name,
+            path=doc.path,
+            status=doc.status,
+            managed_by=doc.managed_by,
+            created_at=doc.created_at,
+            created_by=doc.created_by,
+            updated_at=doc.updated_at,
+            updated_by=doc.updated_by,
+        )
+
+
+class AttachmentListResponse(BaseModel):
+    items: list[AttachmentResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int = 0
+
+
+class AttachmentBulkResultItem(BulkResultItemBase):
+    name: str | None = None
+    path: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AttachmentBulkResponse(BulkResponseBase[AttachmentBulkResultItem]):
+    """Bulk envelope for attachment writes."""

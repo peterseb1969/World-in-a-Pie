@@ -48,6 +48,7 @@ from wip_deploy.config_gen.api_keys import (
     generate_api_keys_json,
     mounts_auth_config_dir,
 )
+from wip_deploy.config_gen.attach_policy import ATTACH_POLICY_FILENAME, attach_policy_json
 from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import Literal
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
@@ -139,6 +140,7 @@ def render_k8s(
             generate_api_keys_json(deployment, secrets, apps),
             federated_groups_policy(deployment),
             namespace_reservations_json(deployment, apps),
+            attach_policy_json(deployment, components, apps),
         ),
         mode=0o600,
     )
@@ -390,7 +392,7 @@ AUTH_CONFIG_SECRET = "wip-auth-config"
 
 
 def _render_api_keys_secret(
-    ns: str, api_keys_json: str, federated_groups: str, reservations: str
+    ns: str, api_keys_json: str, federated_groups: str, reservations: str, attach_policy: str
 ) -> str:
     """Two Secrets, each mounted as a directory so a running pod sees it
     change (wip-secrets carries flat name→value pairs, not files): the key
@@ -419,6 +421,7 @@ def _render_api_keys_secret(
         "stringData": {
             FEDERATED_GROUPS_FILENAME: federated_groups,
             RESERVATIONS_FILENAME: reservations,
+            ATTACH_POLICY_FILENAME: attach_policy,
         },
     }
     return _dump_multi([key_file, auth_config])
