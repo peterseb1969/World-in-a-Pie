@@ -19,8 +19,9 @@ it refuses an upstream that resolves, from the Registry's network, to
 - loopback, link-local (including cloud metadata at 169.254.169.254),
   unspecified or multicast addresses, and the cloud metadata addresses
   outside link-local (AWS's IPv6 `fd00:ec2::254`, Alibaba's
-  `100.100.100.200`). An IPv4-mapped IPv6 address is classified as the IPv4
-  address it carries.
+  `100.100.100.200`). An IPv4-mapped or NAT64 (`64:ff9b::/96`,
+  `64:ff9b:1::/48`) IPv6 address is classified as the IPv4 address it
+  carries.
 
 Resolved addresses are compared, not names, so an alias or an IP literal of
 a blocked host is refused too. A host that does not resolve from here is
@@ -130,11 +131,10 @@ METADATA_ADDRESSES = frozenset({
 
 
 def blocked_address_class(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
-    """Why this address may never be an upstream, or None. An IPv4-mapped
-    IPv6 address is judged as the IPv4 address it carries, whatever the
-    Python version's own handling of mapped addresses."""
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
+    """Why this address may never be an upstream, or None. An IPv6 address
+    that carries an IPv4 one (mapped, or NAT64) is judged as that IPv4
+    address, whatever the Python version's own handling."""
+    ip = _unmapped(ip)
     if ip in METADATA_ADDRESSES:
         return "cloud metadata"
     if ip.is_loopback:
@@ -181,16 +181,30 @@ InstallAddresses = dict[ipaddress.IPv4Address | ipaddress.IPv6Address, str]
 async def resolve_install_addresses(policy: AttachPolicy) -> InstallAddresses:
     """Address → name of every blocked host that resolves from here. Resolved
     once per request, not once per item."""
+    names = sorted({h.lower().rstrip(".") for h in policy.blocked_hosts})
+    resolved = await asyncio.gather(*(_resolve(n) for n in names))
     out: InstallAddresses = {}
-    for name in sorted({h.lower().rstrip(".") for h in policy.blocked_hosts}):
-        for ip in await _resolve(name):
+    for name, ips in zip(names, resolved, strict=True):
+        for ip in ips:
             out.setdefault(_unmapped(ip), name)
     return out
 
 
+# NAT64 prefixes: the well-known one and the local-use one (RFC 6052, 8215).
+# An address in them reaches the IPv4 address in its last 32 bits.
+NAT64_PREFIXES = (
+    ipaddress.ip_network("64:ff9b::/96"),
+    ipaddress.ip_network("64:ff9b:1::/48"),
+)
+
+
 def _unmapped(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        return ip.ipv4_mapped
+    """The IPv4 address an IPv6 address carries (mapped or NAT64), else ip."""
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            return ip.ipv4_mapped
+        if any(ip in net for net in NAT64_PREFIXES):
+            return ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
     return ip
 
 

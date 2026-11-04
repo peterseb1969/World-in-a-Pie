@@ -121,6 +121,9 @@ async def test_a_name_the_install_routes_is_refused(client, auth_headers, policy
         ("http://100.100.100.200", "cloud metadata"),
         ("http://[::ffff:127.0.0.1]", "loopback"),
         ("http://[::ffff:169.254.169.254]", "link-local"),
+        ("http://[64:ff9b::7f00:1]", "loopback"),
+        ("http://[64:ff9b::a9fe:a9fe]", "link-local"),
+        ("http://[64:ff9b:1::6464:64c8]", "cloud metadata"),
     ],
 )
 async def test_blocked_upstreams_are_refused(client, auth_headers, policy, upstream, why):
@@ -288,3 +291,46 @@ async def test_the_app_edge_may_read_and_nothing_else(client, auth_headers, poli
         assert (await client.get("/api/registry/api-keys", headers=edge)).status_code == 403
     finally:
         provider.remove_key(record.key_hash)
+
+
+async def test_the_edge_group_counts_only_for_an_api_key(client, monkeypatch, policy):
+    """A login whose identity provider sends a group named like the edge's
+    gains no read access; an admin login keeps it."""
+    from registry.services import auth as registry_auth
+    from wip_auth.models import UserIdentity
+
+    def as_identity(identity):
+        def require_groups(groups):
+            async def dependency(_request):
+                if not identity.has_any_group(groups):
+                    from fastapi import HTTPException
+                    raise HTTPException(status_code=403, detail="no")
+                return identity
+            return dependency
+        return require_groups
+
+    oidc_edge = UserIdentity(user_id="u", username="u", groups=["wip-app-edge"], auth_method="jwt")
+    monkeypatch.setattr(registry_auth, "require_groups", as_identity(oidc_edge))
+    from fastapi import HTTPException
+    with pytest.raises(HTTPException) as e:
+        await registry_auth.require_attachment_reader(None)
+    assert e.value.status_code == 403
+
+    oidc_admin = UserIdentity(user_id="a", username="a", groups=["wip-admins"], auth_method="jwt")
+    monkeypatch.setattr(registry_auth, "require_groups", as_identity(oidc_admin))
+    assert (await registry_auth.require_attachment_reader(None)) is oidc_admin
+
+
+async def test_install_names_resolve_concurrently(monkeypatch):
+    import asyncio
+    import time
+
+    async def slow(host):
+        await asyncio.sleep(0.2)
+        return set()
+
+    monkeypatch.setattr(attach_service, "_resolve", slow)
+    policy = attach_service.AttachPolicy(blocked_hosts=[f"h{i}" for i in range(10)])
+    started = time.monotonic()
+    await attach_service.resolve_install_addresses(policy)
+    assert time.monotonic() - started < 1.0

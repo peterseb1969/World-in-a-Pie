@@ -49,12 +49,21 @@ async def require_admin_key(request: Request) -> str:
 
 
 async def require_attachment_reader(request: Request) -> UserIdentity:
-    """Gate for reading app attachments: a platform admin, or the router's
-    app edge, whose key's group may read attachments and nothing else. Every
+    """Gate for reading app attachments: a platform admin (any auth method),
+    or the router's app edge, whose key's group may read attachments and
+    nothing else. The edge group counts only for an API key: a login whose
+    identity provider sends a group of that name gains nothing. Every
     attachment write stays behind require_admin_key."""
     from ..models.attachment import EDGE_READER_GROUP
 
-    return await require_groups([*get_auth_config().admin_groups, EDGE_READER_GROUP])(request)
+    admin_groups = list(get_auth_config().admin_groups)
+    identity = await require_groups([*admin_groups, EDGE_READER_GROUP])(request)
+    if not identity.has_any_group(admin_groups) and identity.auth_method != "api_key":
+        raise HTTPException(
+            status_code=403,
+            detail=f"Group '{EDGE_READER_GROUP}' reads attachments only with an API key",
+        )
+    return identity
 
 
 async def require_privileged_key(
