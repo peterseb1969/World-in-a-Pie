@@ -1388,16 +1388,23 @@ var RegistryService = class extends BaseService {
   }
   /**
    * Restore a system backup. A dry run unless `dryRun: false`. Upserts by
-   * identity and never deletes; branch on `skipped[i].reason_code`. When the
-   * archive's salt cannot be taken here the call throws WipConflictError
-   * whose `wipErrorCode(err)` is SALT_MISMATCH.
+   * identity; only `mode: 'mirror'` removes records, so run a mirror as a
+   * dry run first, review `deleted` and `refused`, and pass its
+   * `plan_digest` as `expect` on the apply. Branch on
+   * `skipped[i].reason_code`. A refusal throws WipConflictError whose
+   * `wipErrorCode(err)` is SALT_MISMATCH, RESTORE_REFUSED or PLAN_CHANGED.
    */
   async systemRestore(archive, options = {}) {
-    return this.post("/system-restore", archive, {
+    const params = {
       dry_run: options.dryRun ?? true,
-      overwrite: options.overwrite ?? false,
       include_user_grants: options.includeUserGrants ?? false
-    });
+    };
+    if (options.mode !== void 0) params.mode = options.mode;
+    if (options.overwrite !== void 0 || options.mode === void 0) {
+      params.overwrite = options.overwrite ?? false;
+    }
+    if (options.expect !== void 0) params.expect = options.expect;
+    return this.post("/system-restore", archive, params);
   }
   // ---- API Keys ----
   /**
@@ -1794,6 +1801,8 @@ function asVersionEventDetails(details) {
 // src/types/registry.ts
 var MANAGED_BY_DEPLOYER = "managed_by_deployer";
 var SALT_MISMATCH = "salt_mismatch";
+var RESTORE_REFUSED = "restore_refused";
+var PLAN_CHANGED = "plan_changed";
 
 // src/utils/query-string.ts
 function buildQueryString(params) {
@@ -1945,6 +1954,6 @@ async function resolveReference(client, templateId, searchTerm, limit = 10) {
   }));
 }
 
-export { ApiKeyAuthProvider, DefStoreService, DocumentStoreService, FetchTransport, FileStoreService, MANAGED_BY_DEPLOYER, OidcAuthProvider, RegistryService, ReportingSyncService, SALT_MISMATCH, TemplateStoreService, WipAuthError, WipBulkItemError, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema, wipErrorCode };
+export { ApiKeyAuthProvider, DefStoreService, DocumentStoreService, FetchTransport, FileStoreService, MANAGED_BY_DEPLOYER, OidcAuthProvider, PLAN_CHANGED, RESTORE_REFUSED, RegistryService, ReportingSyncService, SALT_MISMATCH, TemplateStoreService, WipAuthError, WipBulkItemError, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema, wipErrorCode };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

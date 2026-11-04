@@ -174,7 +174,7 @@ There is now a separate system backup:
 The archive is sensitive and not encrypted. Store it like `~/.wip-deploy/`.
 See `docs/wip-guide.md` §5.7.
 
-### `@wip/client` 0.76.0: attachments, the system backup and orphaned grants; a typed restore report
+### `@wip/client` 0.76.0 and 0.77.0: attachments, the system backup and its mirror mode, orphaned grants; a typed restore report
 
 **Registry:** the system restore report is now typed for code, while the
 system backup is still unreleased.
@@ -201,7 +201,13 @@ system backup is still unreleased.
   `orphaned` and `orphaned_at`; `Namespace` gains `activated_orphan_grants`.
 - Constants `SALT_MISMATCH` beside `MANAGED_BY_DEPLOYER`, and
   `wipErrorCode(err)`, which reads the `error_code` of any WIP HTTP error.
-- Not yet: the system restore's mirror mode (CASE-1056).
+- **0.77.0:** the mirror mode (CASE-1056). `systemRestore` takes `mode`
+  (`upsert` | `overwrite` | `mirror`) and `expect` (the dry run's
+  `plan_digest`). The report gains `mode`, `refused` and `plan_digest`, and
+  each section gains `deleted` and `deactivated`. The skip codes gain
+  `mirror_removes_key` and `caller_key`, and the 409 codes `RESTORE_REFUSED`
+  and `PLAN_CHANGED`. `overwrite: true` still works and is the same as
+  `mode: 'overwrite'`.
 
 ### A restore creates namespaces as the person who asked; orphaned grants; WIP-Toolkit 0.25.1
 

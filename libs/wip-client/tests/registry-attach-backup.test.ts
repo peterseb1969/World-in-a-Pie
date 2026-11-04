@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createWipClient } from '../src/client'
 import type { WipClient } from '../src/client'
 import { WipConflictError, WipValidationError, wipErrorCode } from '../src/errors'
-import { MANAGED_BY_DEPLOYER, SALT_MISMATCH } from '../src/types/registry'
+import { MANAGED_BY_DEPLOYER, PLAN_CHANGED, RESTORE_REFUSED, SALT_MISMATCH } from '../src/types/registry'
 import type { SystemArchive } from '../src/types/registry'
 
 // The Registry surfaces RC builds its attach, system-backup and orphaned-grant
@@ -71,6 +71,24 @@ describe('RegistryService: attachments, system backup, orphaned grants', () => {
       expect(url).toContain('dry_run=false')
       expect(url).toContain('overwrite=true')
       expect(url).toContain('include_user_grants=true')
+    })
+
+    it('a mirror sends mode and expect, and no overwrite of its own', async () => {
+      respond({ dry_run: false, mode: 'mirror' })
+      await client.registry.systemRestore(ARCHIVE, { dryRun: false, mode: 'mirror', expect: 'sha256:abc' })
+      const { url } = call()
+      expect(url).toContain('mode=mirror')
+      expect(url).toContain('expect=sha256%3Aabc')
+      expect(url).not.toContain('overwrite=')
+    })
+
+    it('a refused restore and a changed plan are typed 409s', async () => {
+      respond({ detail: 'would remove the calling key', error_code: 'restore_refused' }, 409)
+      const refused = await client.registry.systemRestore(ARCHIVE, { mode: 'mirror', dryRun: false }).catch((e) => e)
+      expect(wipErrorCode(refused)).toBe(RESTORE_REFUSED)
+      respond({ detail: 'the plan changed', error_code: 'plan_changed' }, 409)
+      const changed = await client.registry.systemRestore(ARCHIVE, { mode: 'mirror', dryRun: false, expect: 'x' }).catch((e) => e)
+      expect(wipErrorCode(changed)).toBe(PLAN_CHANGED)
     })
 
     it('a salt refusal is a WipConflictError whose code is SALT_MISMATCH', async () => {

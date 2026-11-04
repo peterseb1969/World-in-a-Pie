@@ -638,6 +638,14 @@ export type SystemRestoreSkipReason =
   | 'upstream_invalid'
   | 'upstream_blocked'
   | 'concurrent_write'
+  /** Mirror: a grant to a key the archive lacks, which the mirror removes. */
+  | 'mirror_removes_key'
+  /**
+   * In `refused`: the restore would remove (mirror) or replace by the
+   * archive's different record (overwrite, mirror) the key this request
+   * authenticates with.
+   */
+  | 'caller_key'
 
 export interface SystemRestoreSkipped {
   /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */
@@ -664,13 +672,37 @@ export interface SystemRestoreRecordReport {
   orphaned: string[]
   /** Attachments only: those whose upstream does not resolve from the Registry yet. */
   unresolved: string[]
+  /** Mirror only: keys, grants or reservations the archive lacks, removed (or, in a dry run, to be). */
+  deleted?: string[]
+  /** Mirror only, attachments: active ones the archive lacks, deactivated (never deleted). */
+  deactivated?: string[]
 }
+
+/**
+ * upsert (default): create what is missing. overwrite: also replace what
+ * differs. mirror: also remove what the archive does not hold, so the
+ * archive becomes the exact auth state (records the install's files manage,
+ * config-key names, the bootstrap grants, user grants the archive's issuer
+ * would not restore, and the calling key are kept).
+ */
+export type SystemRestoreMode = 'upsert' | 'overwrite' | 'mirror'
 
 export interface SystemRestoreReport {
   dry_run: boolean
+  /** Absent from Registries that predate restore modes. */
+  mode?: SystemRestoreMode
   /** The archive's runtime-key salt replaced this stack's (or would, in a dry run). */
   salt_adopted: boolean
   warnings: string[]
+  /**
+   * Overwrite and mirror: what the restore must not do (remove, or replace
+   * by the archive's different record, the key this request authenticates
+   * with). A plan with refusals is not applied: the apply throws with
+   * RESTORE_REFUSED.
+   */
+  refused?: SystemRestoreSkipped[]
+  /** Mirror only: pass it as `expect` on the apply (see SystemRestoreOptions). */
+  plan_digest?: string | null
   reservations: SystemRestoreRecordReport
   api_keys: SystemRestoreRecordReport
   grants: SystemRestoreRecordReport
@@ -680,7 +712,14 @@ export interface SystemRestoreReport {
 export interface SystemRestoreOptions {
   /** Default true: report only. */
   dryRun?: boolean
-  /** Replace records that exist here with different content. */
+  /** Default 'upsert'. Run a mirror as a dry run first and review `deleted`. */
+  mode?: SystemRestoreMode
+  /**
+   * Mirror apply: the dry run's `plan_digest`. The apply is refused
+   * (PLAN_CHANGED) when what it would remove has changed since.
+   */
+  expect?: string
+  /** The same as mode 'overwrite'; kept for existing callers. Not with mode 'upsert'. */
   overwrite?: boolean
   /** Restore user grants although the archive comes from another OIDC issuer. */
   includeUserGrants?: boolean
@@ -694,3 +733,12 @@ export interface SystemRestoreOptions {
  * rule may widen; branch on the code, not on the message.
  */
 export const SALT_MISMATCH = 'salt_mismatch'
+
+/**
+ * 409 `error_code` of an apply that would remove or replace the calling key
+ * (see the report's `refused`). Nothing is written.
+ */
+export const RESTORE_REFUSED = 'restore_refused'
+
+/** 409 `error_code` of a mirror apply whose plan changed since the dry run given as `expect`. */
+export const PLAN_CHANGED = 'plan_changed'

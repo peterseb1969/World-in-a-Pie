@@ -293,16 +293,23 @@ export class RegistryService extends BaseService {
 
   /**
    * Restore a system backup. A dry run unless `dryRun: false`. Upserts by
-   * identity and never deletes; branch on `skipped[i].reason_code`. When the
-   * archive's salt cannot be taken here the call throws WipConflictError
-   * whose `wipErrorCode(err)` is SALT_MISMATCH.
+   * identity; only `mode: 'mirror'` removes records, so run a mirror as a
+   * dry run first, review `deleted` and `refused`, and pass its
+   * `plan_digest` as `expect` on the apply. Branch on
+   * `skipped[i].reason_code`. A refusal throws WipConflictError whose
+   * `wipErrorCode(err)` is SALT_MISMATCH, RESTORE_REFUSED or PLAN_CHANGED.
    */
   async systemRestore(archive: SystemArchive, options: SystemRestoreOptions = {}): Promise<SystemRestoreReport> {
-    return this.post('/system-restore', archive, {
+    const params: Record<string, unknown> = {
       dry_run: options.dryRun ?? true,
-      overwrite: options.overwrite ?? false,
       include_user_grants: options.includeUserGrants ?? false,
-    })
+    }
+    if (options.mode !== undefined) params.mode = options.mode
+    if (options.overwrite !== undefined || options.mode === undefined) {
+      params.overwrite = options.overwrite ?? false
+    }
+    if (options.expect !== undefined) params.expect = options.expect
+    return this.post('/system-restore', archive, params)
   }
 
   // ---- API Keys ----
