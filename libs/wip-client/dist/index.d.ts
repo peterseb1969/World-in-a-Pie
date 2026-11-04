@@ -2442,6 +2442,13 @@ interface Namespace {
     created_by: string | null;
     updated_at: string;
     updated_by: string | null;
+    /**
+     * Set by a create only: the orphaned grants on this prefix that became
+     * effective because a platform admin created the namespace, as
+     * 'namespace/subject_type:subject'. Empty otherwise; absent from
+     * Registries that predate orphaned grants.
+     */
+    activated_orphan_grants?: string[];
 }
 interface NamespaceStats {
     prefix: string;
@@ -2658,7 +2665,47 @@ interface Grant {
      * predate it.
      */
     managed_by?: 'wip-deploy' | null;
+    /**
+     * True for a grant a system restore wrote while its namespace did not
+     * exist (and was not reserved by the archive's owner). An orphan counts as
+     * no grant until it is activated (`activateGrants`), granted again, or the
+     * namespace is created by a platform admin. A key whose own namespaces
+     * list names the prefix still reads it, as any such key does. Absent from
+     * Registries that predate it.
+     */
+    orphaned?: boolean;
+    orphaned_at?: string | null;
 }
+/** Names an orphaned grant to activate. */
+interface ActivateGrantRequest {
+    subject: string;
+    subject_type?: GrantSubjectType;
+}
+interface GrantActivateResult {
+    index: number;
+    /** 'unchanged': the grant is not orphaned. */
+    status: 'activated' | 'unchanged' | 'not_found' | 'error';
+    subject: string;
+    error?: string | null;
+    /** For an error item: MANAGED_BY_DEPLOYER. */
+    error_code?: string | null;
+}
+interface GrantActivateBulkResponse {
+    results: GrantActivateResult[];
+    total: number;
+    succeeded: number;
+    failed: number;
+}
+/** Query params for `GET /api/registry/grants` (platform admin). */
+interface ListAllGrantsParams {
+    /** true: only orphaned grants; false: only effective ones. */
+    orphaned?: boolean;
+    namespace?: string;
+    page?: number;
+    /** Default 50, max 1000. */
+    page_size?: number;
+}
+type GrantListResponse = PaginatedResponse<Grant>;
 interface CreateGrantRequest {
     subject: string;
     subject_type?: GrantSubjectType;
@@ -2845,6 +2892,157 @@ interface ListAPIKeysParams {
     /** Default 50, capped at 100. */
     page_size?: number;
 }
+interface UpstreamTLS {
+    /** Verify the upstream's certificate (https upstreams). Default true. */
+    verify?: boolean;
+    /** A CA certificate (PEM content) the upstream's certificate chains to. */
+    ca_pem?: string | null;
+}
+/**
+ * An app attached under the umbrella, served at `/apps/<name>` by the
+ * router's app edge. A write REPLACES the whole record: `auth_required` and
+ * `allowed_groups` are required on every write (no defaults), so send the
+ * full record you read. A missing or ill-typed field fails the whole request
+ * with 422 (WipValidationError), not per item. Platform admin only.
+ */
+interface AttachmentRequest {
+    /** `^[a-z][a-z0-9-]{1,40}$`; the path is always `/apps/<name>`. */
+    name: string;
+    /** Scheme, host and optional port only: no path, credentials, query or fragment. */
+    upstream: string;
+    auth_required: boolean;
+    /** Groups the gateway lets through; [] = any logged-in user. Needs auth_required. */
+    allowed_groups: string[];
+    strip_prefix?: boolean;
+    /** Each under `/apps/<name>/`. */
+    preserve_prefix_subpaths?: string[];
+    redirect_bare_path?: boolean;
+    upstream_host_header?: boolean;
+    streaming?: boolean;
+    upstream_tls?: UpstreamTLS;
+    display_name?: string;
+    ui_only?: boolean;
+    /** A path under the upstream the app edge may probe. */
+    health?: string | null;
+}
+interface Attachment extends Required<Omit<AttachmentRequest, 'upstream_tls' | 'health'>> {
+    path: string;
+    status: 'active' | 'inactive';
+    upstream_tls: UpstreamTLS;
+    health: string | null;
+    managed_by: 'wip-deploy' | null;
+    created_at: string;
+    created_by: string;
+    updated_at: string;
+    updated_by: string;
+}
+/**
+ * Per-item error codes of attachment writes (`error_code`, with
+ * `details.rule` where noted): `validation_failed` (rule `upstream_invalid`,
+ * `policy_unavailable` or `duplicate_name`), `forbidden` (rule
+ * `upstream_blocked`), `name_collision` (a name the install's own apps route
+ * under), MANAGED_BY_DEPLOYER, `concurrency_conflict` (retry), `not_found`
+ * (deactivate only).
+ */
+interface AttachmentBulkResult {
+    index: number;
+    status: 'created' | 'updated' | 'unchanged' | 'deactivated' | 'error';
+    name?: string | null;
+    path?: string | null;
+    /** e.g. the upstream does not resolve from the Registry's network yet. */
+    warnings?: string[];
+    error?: string | null;
+    error_code?: string | null;
+    details?: {
+        rule?: string;
+    } | null;
+}
+interface AttachmentBulkResponse {
+    results: AttachmentBulkResult[];
+    total: number;
+    succeeded: number;
+    failed: number;
+}
+interface ListAttachmentsParams {
+    status?: 'active' | 'inactive';
+    page?: number;
+    /** Default 50, max 1000. */
+    page_size?: number;
+}
+type AttachmentListResponse = PaginatedResponse<Attachment>;
+/**
+ * The system backup archive: every stored API key (bcrypt hash, never a
+ * plaintext), grant, reservation and app attachment. It is SENSITIVE: it
+ * holds every key hash and the runtime-key salt. Do not keep it in browser
+ * storage; hand it to the user as a file and drop it.
+ */
+interface SystemArchive {
+    format: 'wip-system-backup';
+    version: 1;
+    created_at: string;
+    source: {
+        oidc_issuer: string | null;
+        salt_fingerprint: string;
+        salt?: string | null;
+    };
+    api_keys: Record<string, unknown>[];
+    grants: Record<string, unknown>[];
+    reservations: Record<string, unknown>[];
+    attachments: Record<string, unknown>[];
+}
+/** Why a restore left a record out. Branch on this, not on `reason`. */
+type SystemRestoreSkipReason = 'managed_by_deployer' | 'managed_on_source' | 'invalid_record' | 'differs' | 'orphaned_here' | 'orphaned_in_archive' | 'other_oidc_issuer' | 'config_key_name' | 'app_route' | 'attach_policy_unavailable' | 'upstream_invalid' | 'upstream_blocked' | 'concurrent_write';
+interface SystemRestoreSkipped {
+    /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */
+    id: string;
+    /** For people. */
+    reason: string;
+    reason_code: SystemRestoreSkipReason;
+    /** Key or attachment. */
+    name?: string | null;
+    /** Reservation. */
+    prefix?: string | null;
+    /** Grant. */
+    namespace?: string | null;
+    subject_type?: GrantSubjectType | null;
+    subject?: string | null;
+}
+interface SystemRestoreRecordReport {
+    created: string[];
+    replaced: string[];
+    unchanged: string[];
+    skipped: SystemRestoreSkipped[];
+    /** Grants only: those of created/replaced written orphaned. */
+    orphaned: string[];
+    /** Attachments only: those whose upstream does not resolve from the Registry yet. */
+    unresolved: string[];
+}
+interface SystemRestoreReport {
+    dry_run: boolean;
+    /** The archive's runtime-key salt replaced this stack's (or would, in a dry run). */
+    salt_adopted: boolean;
+    warnings: string[];
+    reservations: SystemRestoreRecordReport;
+    api_keys: SystemRestoreRecordReport;
+    grants: SystemRestoreRecordReport;
+    attachments: SystemRestoreRecordReport;
+}
+interface SystemRestoreOptions {
+    /** Default true: report only. */
+    dryRun?: boolean;
+    /** Replace records that exist here with different content. */
+    overwrite?: boolean;
+    /** Restore user grants although the archive comes from another OIDC issuer. */
+    includeUserGrants?: boolean;
+}
+/**
+ * The 409 `error_code` of a system restore whose archive was made under a
+ * runtime-key salt this stack cannot take. Today that is a stack holding
+ * API keys of its own, or an archive carrying only the salt's fingerprint;
+ * a stack without keys of its own adopts the archive's salt instead. The
+ * rule may widen; branch on the code, not on the message.
+ */
+declare const SALT_MISMATCH = "salt_mismatch";
 
 declare class RegistryService extends BaseService {
     constructor(transport: FetchTransport);
@@ -2925,6 +3123,43 @@ declare class RegistryService extends BaseService {
     listGrants(prefix: string): Promise<Grant[]>;
     createGrants(prefix: string, grants: CreateGrantRequest[]): Promise<GrantBulkResponse>;
     revokeGrants(prefix: string, grants: RevokeGrantRequest[]): Promise<GrantRevokeBulkResponse>;
+    /**
+     * Make orphaned grants on an existing namespace effective (admin on the
+     * namespace). Per item: activated, unchanged (not orphaned), not_found, or
+     * error MANAGED_BY_DEPLOYER.
+     */
+    activateGrants(prefix: string, grants: ActivateGrantRequest[]): Promise<GrantActivateBulkResponse>;
+    /**
+     * Grants across every namespace (platform admin), paginated. Orphaned
+     * grants usually sit on namespaces that do not exist, which the
+     * per-namespace listing cannot reach: list them with `{ orphaned: true }`.
+     */
+    listAllGrants(params?: ListAllGrantsParams): Promise<GrantListResponse>;
+    /**
+     * Attach apps under the umbrella (bulk upsert by name). Each item REPLACES
+     * the record: send the full record, `auth_required` and `allowed_groups`
+     * included. A malformed item fails the whole request with 422; per-item
+     * refusals are in `results[i].error_code` (see AttachmentBulkResult).
+     * Writing an inactive attachment again revives it.
+     */
+    upsertAttachments(items: AttachmentRequest[]): Promise<AttachmentBulkResponse>;
+    /** Deactivate attachments by name; they are kept, never deleted. */
+    deactivateAttachments(names: string[]): Promise<AttachmentBulkResponse>;
+    listAttachments(params?: ListAttachmentsParams): Promise<AttachmentListResponse>;
+    getAttachment(name: string): Promise<Attachment>;
+    /**
+     * The system backup: every stored API key (hash only), grant, reservation
+     * and attachment. The archive is sensitive (every key hash, the salt):
+     * offer it as a download and do not keep it in browser storage.
+     */
+    systemBackup(): Promise<SystemArchive>;
+    /**
+     * Restore a system backup. A dry run unless `dryRun: false`. Upserts by
+     * identity and never deletes; branch on `skipped[i].reason_code`. When the
+     * archive's salt cannot be taken here the call throws WipConflictError
+     * whose `wipErrorCode(err)` is SALT_MISMATCH.
+     */
+    systemRestore(archive: SystemArchive, options?: SystemRestoreOptions): Promise<SystemRestoreReport>;
     /**
      * List API keys with pagination (CASE-335).
      *
@@ -3789,6 +4024,12 @@ declare class WipBulkItemError extends WipError {
     readonly details?: Record<string, unknown> | undefined;
     constructor(message: string, index: number, itemStatus: string, errorCode?: string | undefined, details?: Record<string, unknown> | undefined);
 }
+/**
+ * The machine-readable `error_code` a WIP HTTP error carries in its body
+ * (`{detail, error_code}`), e.g. MANAGED_BY_DEPLOYER or SALT_MISMATCH;
+ * undefined when there is none.
+ */
+declare function wipErrorCode(error: unknown): string | undefined;
 
 /** Build a URL query string from a params object, handling undefined, arrays, and booleans. */
 declare function buildQueryString(params: Record<string, unknown>): string;
@@ -3869,4 +4110,4 @@ interface ResolvedReference {
  */
 declare function resolveReference(client: WipClient, templateId: string, searchTerm: string, limit?: number): Promise<ResolvedReference[]>;
 
-export { type APIKeyInfo, type APIKeyListResponse, type APIKeyRevokeResult, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddAPIKeyNamespaceRequest, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type ClashPolicy, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CrossVersionView, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeleteViewResult, type DeprecateTermRequest, type DerivedTableParity, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type DroppedEdge, type EndpointRef, type EndpointRefInput, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantBulkResponse, type GrantBulkResult, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListBackupJobsParams, type ListViewsResponse, MANAGED_BY_DEPLOYER, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceIntegrityIssue, type NamespaceIntegrityResult, type NamespaceIntegritySummary, type NamespaceParityResult, type NamespaceReservation, type NamespaceReserve, type NamespaceStats, OidcAuthProvider, type OlderVersionsPolicy, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type ReconcileCounts, type ReconcileTerminologyRequest, type ReconcileTerminologyResponse, type RecordOrigin, type Reference, type ReferenceType, type ReferencedByResponse, type RegisterViewResult, type RegisteredView, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RehashCollisionGroup, type RehashIdentitiesItem, type RehashIdentitiesRequest, type RehashIdentitiesResponse, type RemoveAPIKeyNamespaceResult, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ReservationSettings, type ResolvedReference, type RestoreJobResult, type RestoreMode, type RestoreOptions, type RestoreReferents, type RetryConfig, type RevokeGrantRequest, type RuleType, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateFacet, type TemplateFacetsParams, type TemplateFacetsResponse, type TemplateListResponse, type TemplateMetadata, type TemplateMigrationOffer, type TemplateParity, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type TemplateVersionEventDetails, type TemplateVersionImpact, type Term, type TermDocumentsResponse, type TermListResponse, type TermMatchCandidate, type TermName, type TermReference, type TermRelation, type TermRelationListResponse, type TermSearchHit, type TermSearchResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UnresolvedReference, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateNamespaceParams, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, type ViewParity, type ViewRowsFilter, type ViewRowsParams, type ViewRowsSort, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { type APIKeyInfo, type APIKeyListResponse, type APIKeyRevokeResult, type ActivateGrantRequest, type ActivateTemplateResponse, type ActivationDetail, type ActivityItem, type ActivityResponse, type AddAPIKeyNamespaceRequest, type AddSynonymRequest, type Alert, type AlertConfig, type AlertSeverity, type AlertThresholds, type AlertType, type AlertsResponse, type ApiError, ApiKeyAuthProvider, type Attachment, type AttachmentBulkResponse, type AttachmentBulkResult, type AttachmentListResponse, type AttachmentRequest, type AuditLogEntry, type AuditLogResponse, type AuthProvider, type BackupJobKind, type BackupJobSnapshot, type BackupJobStatus, type BackupProgressMessage, type BackupRequest, type BatchEntitySyncResult, type BatchJobCancelResult, type BatchJobsCleared, type BatchSyncJob, type BatchSyncRequest, type BatchSyncResponse, type BatchSyncStatus, type BulkImportOptions, type BulkImportProgress, type BulkResponse, type BulkResultItem, type BulkValidateRequest, type BulkValidateResponse, type BulkValidationResponse, type CascadeResponse, type CascadeResult, type ClashPolicy, type Condition, type ConditionOperator, type ConsumerInfo, type CreateAPIKeyRequest, type CreateAPIKeyResponse, type CreateDocumentRequest, type CreateGrantRequest, type CreateNamespaceRequest, type CreateTemplateRequest, type CreateTermRelationRequest, type CreateTermRequest, type CreateTerminologyRequest, type CrossVersionView, type CsvExportQuery, DefStoreService, type DeleteTermRelationRequest, type DeleteViewResult, type DeprecateTermRequest, type DerivedTableParity, type Document, type DocumentCreateResponse, type DocumentListResponse, type DocumentMetadata, type DocumentMigrateRequest, type DocumentMigrateResponse, type DocumentQueryParams, type DocumentQueryRequest, type DocumentReference, type DocumentRelationshipsParams, type DocumentStatus, DocumentStoreService, type DocumentTraverseNode, type DocumentTraverseParams, type DocumentTraverseResponse, type DocumentValidationResponse, type DocumentVersionResponse, type DocumentVersionSummary, type DroppedEdge, type EndpointRef, type EndpointRefInput, type EntityDetails, type EntityReference, type EntityReferencesResponse, type ExportResponse, type ExportTerminologyResponse, FetchTransport, type FetchTransportConfig, type FieldDefinition, type FieldType, type FieldValidation, type FileDownloadResponse, type FileEntity, type FileFieldConfig, type FileIntegrityIssue, type FileIntegrityResponse, type FileListResponse, type FileMetadata, type FileQueryParams, type FileStatus, FileStoreService, type FileUploadMetadata, type FormField, type FormInputType, type Grant, type GrantActivateBulkResponse, type GrantActivateResult, type GrantBulkResponse, type GrantBulkResult, type GrantListResponse, type GrantPermission, type GrantRevokeBulkResponse, type GrantRevokeResult, type GrantSubjectType, type HealthResponse, type IdAlgorithmConfig, type ImportDocumentError, type ImportDocumentResult, type ImportDocumentsOptions, type ImportDocumentsResponse, type ImportPreviewResponse, type ImportResponse, type ImportTerminologyRequest, type IncomingReference, type IntegrityCheckResult, type IntegrityIssue, type IntegritySummary, type LatencyStats, type ListAPIKeysParams, type ListAllGrantsParams, type ListAttachmentsParams, type ListBackupJobsParams, type ListViewsResponse, MANAGED_BY_DEPLOYER, type MergeRequest, type MetricsResponse, type Namespace, type NamespaceIntegrityIssue, type NamespaceIntegrityResult, type NamespaceIntegritySummary, type NamespaceParityResult, type NamespaceReservation, type NamespaceReserve, type NamespaceStats, OidcAuthProvider, type OlderVersionsPolicy, type PaginatedResponse, type PatchDocumentRequest, type PeerProjection, type PerTemplateStats, type QueryFilter, type QueryFilterOperator, type ReconcileCounts, type ReconcileTerminologyRequest, type ReconcileTerminologyResponse, type RecordOrigin, type Reference, type ReferenceType, type ReferencedByResponse, type RegisterViewResult, type RegisteredView, type RegistryBrowseParams, type RegistryByTermHit, type RegistryEntry, type RegistryEntryFull, type RegistryEntryListResponse, type RegistryLookupResponse, type RegistrySearchParams, type RegistrySearchResponse, type RegistrySearchResult, RegistryService, type RegistrySourceInfo, type RegistrySynonym, type RehashCollisionGroup, type RehashIdentitiesItem, type RehashIdentitiesRequest, type RehashIdentitiesResponse, type RemoveAPIKeyNamespaceResult, type RemoveSynonymRequest, type ReplayFilter, type ReplayRequest, type ReplaySessionResponse, type ReplayStatus, type ReportEntity, type ReportEntityVersion, type ReportQueryParams, type ReportQueryResult, type ReportTable, type ReportTableColumn, type ReportTableSchema, type ReportingConfig, ReportingSyncService, type ReservationSettings, type ResolvedReference, type RestoreJobResult, type RestoreMode, type RestoreOptions, type RestoreReferents, type RetryConfig, type RevokeGrantRequest, type RuleType, SALT_MISMATCH, type SearchResponse, type SearchResult, type SearchTypeResults, type SemanticType, type SyncStatus, type SyncStrategy, type SystemArchive, type SystemRestoreOptions, type SystemRestoreRecordReport, type SystemRestoreReport, type SystemRestoreSkipReason, type SystemRestoreSkipped, type TableColumn, type TableViewParams, type TableViewResponse, type Template, type TemplateFacet, type TemplateFacetsParams, type TemplateFacetsResponse, type TemplateListResponse, type TemplateMetadata, type TemplateMigrationOffer, type TemplateParity, TemplateStoreService, type TemplateUpdateResponse, type TemplateUsage, type TemplateVersionEventDetails, type TemplateVersionImpact, type Term, type TermDocumentsResponse, type TermListResponse, type TermMatchCandidate, type TermName, type TermReference, type TermRelation, type TermRelationListResponse, type TermSearchHit, type TermSearchResponse, type TermTranslation, type Terminology, type TerminologyListResponse, type TerminologyMetadata, type TraversalNode, type TraversalResponse, type UnresolvedReference, type UpdateAPIKeyRequest, type UpdateFileMetadataRequest, type UpdateNamespaceRequest, type UpdateTemplateRequest, type UpdateTermRequest, type UpdateTerminologyRequest, type UpstreamTLS, type ValidateDocumentRequest, type ValidateDocumentsRequest, type ValidateNamespaceParams, type ValidateTemplateRequest, type ValidateTemplateResponse, type ValidateValueRequest, type ValidateValueResponse, type ValidationRule, type VersionStrategy, type ViewParity, type ViewRowsFilter, type ViewRowsParams, type ViewRowsSort, WipAuthError, WipBulkItemError, type WipClient, type WipClientConfig, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema, wipErrorCode };

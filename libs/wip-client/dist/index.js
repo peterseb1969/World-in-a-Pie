@@ -54,6 +54,15 @@ var WipBulkItemError = class extends WipError {
     this.name = "WipBulkItemError";
   }
 };
+function wipErrorCode(error) {
+  if (!(error instanceof WipError)) return void 0;
+  const body = error.detail;
+  if (body && typeof body === "object" && "error_code" in body) {
+    const code = body.error_code;
+    return typeof code === "string" ? code : void 0;
+  }
+  return void 0;
+}
 
 // src/http.ts
 var DEFAULT_TIMEOUT = 3e4;
@@ -1331,6 +1340,65 @@ var RegistryService = class extends BaseService {
   async revokeGrants(prefix, grants) {
     return this.del(`/namespaces/${prefix}/grants`, grants);
   }
+  /**
+   * Make orphaned grants on an existing namespace effective (admin on the
+   * namespace). Per item: activated, unchanged (not orphaned), not_found, or
+   * error MANAGED_BY_DEPLOYER.
+   */
+  async activateGrants(prefix, grants) {
+    return this.post(`/namespaces/${prefix}/grants/activate`, grants);
+  }
+  /**
+   * Grants across every namespace (platform admin), paginated. Orphaned
+   * grants usually sit on namespaces that do not exist, which the
+   * per-namespace listing cannot reach: list them with `{ orphaned: true }`.
+   */
+  async listAllGrants(params) {
+    return this.get("/grants", params);
+  }
+  // ---- App attachments (platform admin) ----
+  /**
+   * Attach apps under the umbrella (bulk upsert by name). Each item REPLACES
+   * the record: send the full record, `auth_required` and `allowed_groups`
+   * included. A malformed item fails the whole request with 422; per-item
+   * refusals are in `results[i].error_code` (see AttachmentBulkResult).
+   * Writing an inactive attachment again revives it.
+   */
+  async upsertAttachments(items) {
+    return this.post("/attachments", items);
+  }
+  /** Deactivate attachments by name; they are kept, never deleted. */
+  async deactivateAttachments(names) {
+    return this.post("/attachments/deactivate", names.map((name) => ({ name })));
+  }
+  async listAttachments(params) {
+    return this.get("/attachments", params);
+  }
+  async getAttachment(name) {
+    return this.get(`/attachments/${name}`);
+  }
+  // ---- System backup (platform admin) ----
+  /**
+   * The system backup: every stored API key (hash only), grant, reservation
+   * and attachment. The archive is sensitive (every key hash, the salt):
+   * offer it as a download and do not keep it in browser storage.
+   */
+  async systemBackup() {
+    return this.post("/system-backup");
+  }
+  /**
+   * Restore a system backup. A dry run unless `dryRun: false`. Upserts by
+   * identity and never deletes; branch on `skipped[i].reason_code`. When the
+   * archive's salt cannot be taken here the call throws WipConflictError
+   * whose `wipErrorCode(err)` is SALT_MISMATCH.
+   */
+  async systemRestore(archive, options = {}) {
+    return this.post("/system-restore", archive, {
+      dry_run: options.dryRun ?? true,
+      overwrite: options.overwrite ?? false,
+      include_user_grants: options.includeUserGrants ?? false
+    });
+  }
   // ---- API Keys ----
   /**
    * List API keys with pagination (CASE-335).
@@ -1725,6 +1793,7 @@ function asVersionEventDetails(details) {
 
 // src/types/registry.ts
 var MANAGED_BY_DEPLOYER = "managed_by_deployer";
+var SALT_MISMATCH = "salt_mismatch";
 
 // src/utils/query-string.ts
 function buildQueryString(params) {
@@ -1876,6 +1945,6 @@ async function resolveReference(client, templateId, searchTerm, limit = 10) {
   }));
 }
 
-export { ApiKeyAuthProvider, DefStoreService, DocumentStoreService, FetchTransport, FileStoreService, MANAGED_BY_DEPLOYER, OidcAuthProvider, RegistryService, ReportingSyncService, TemplateStoreService, WipAuthError, WipBulkItemError, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema };
+export { ApiKeyAuthProvider, DefStoreService, DocumentStoreService, FetchTransport, FileStoreService, MANAGED_BY_DEPLOYER, OidcAuthProvider, RegistryService, ReportingSyncService, SALT_MISMATCH, TemplateStoreService, WipAuthError, WipBulkItemError, WipConflictError, WipError, WipNetworkError, WipNotFoundError, WipServerError, WipValidationError, asVersionEventDetails, buildQueryString, bulkImport, createWipClient, resolveReference, templateToFormSchema, wipErrorCode };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

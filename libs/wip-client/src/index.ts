@@ -14,6 +14,7 @@ export {
   WipServerError,
   WipNetworkError,
   WipBulkItemError,
+  wipErrorCode,
 } from './errors.js'
 
 // Transport (for advanced usage)

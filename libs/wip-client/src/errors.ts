@@ -70,3 +70,18 @@ export class WipBulkItemError extends WipError {
     this.name = 'WipBulkItemError'
   }
 }
+
+/**
+ * The machine-readable `error_code` a WIP HTTP error carries in its body
+ * (`{detail, error_code}`), e.g. MANAGED_BY_DEPLOYER or SALT_MISMATCH;
+ * undefined when there is none.
+ */
+export function wipErrorCode(error: unknown): string | undefined {
+  if (!(error instanceof WipError)) return undefined
+  const body = error.detail
+  if (body && typeof body === 'object' && 'error_code' in body) {
+    const code = (body as Record<string, unknown>).error_code
+    return typeof code === 'string' ? code : undefined
+  }
+  return undefined
+}

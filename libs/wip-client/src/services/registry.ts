@@ -31,6 +31,18 @@ import type {
   CreateAPIKeyResponse,
   ListAPIKeysParams,
   UpdateAPIKeyRequest,
+  ActivateGrantRequest,
+  GrantActivateBulkResponse,
+  GrantListResponse,
+  ListAllGrantsParams,
+  Attachment,
+  AttachmentRequest,
+  AttachmentBulkResponse,
+  AttachmentListResponse,
+  ListAttachmentsParams,
+  SystemArchive,
+  SystemRestoreOptions,
+  SystemRestoreReport,
 } from '../types/registry.js'
 
 export class RegistryService extends BaseService {
@@ -222,6 +234,75 @@ export class RegistryService extends BaseService {
 
   async revokeGrants(prefix: string, grants: RevokeGrantRequest[]): Promise<GrantRevokeBulkResponse> {
     return this.del(`/namespaces/${prefix}/grants`, grants)
+  }
+
+  /**
+   * Make orphaned grants on an existing namespace effective (admin on the
+   * namespace). Per item: activated, unchanged (not orphaned), not_found, or
+   * error MANAGED_BY_DEPLOYER.
+   */
+  async activateGrants(prefix: string, grants: ActivateGrantRequest[]): Promise<GrantActivateBulkResponse> {
+    return this.post(`/namespaces/${prefix}/grants/activate`, grants)
+  }
+
+  /**
+   * Grants across every namespace (platform admin), paginated. Orphaned
+   * grants usually sit on namespaces that do not exist, which the
+   * per-namespace listing cannot reach: list them with `{ orphaned: true }`.
+   */
+  async listAllGrants(params?: ListAllGrantsParams): Promise<GrantListResponse> {
+    return this.get('/grants', params)
+  }
+
+  // ---- App attachments (platform admin) ----
+
+  /**
+   * Attach apps under the umbrella (bulk upsert by name). Each item REPLACES
+   * the record: send the full record, `auth_required` and `allowed_groups`
+   * included. A malformed item fails the whole request with 422; per-item
+   * refusals are in `results[i].error_code` (see AttachmentBulkResult).
+   * Writing an inactive attachment again revives it.
+   */
+  async upsertAttachments(items: AttachmentRequest[]): Promise<AttachmentBulkResponse> {
+    return this.post('/attachments', items)
+  }
+
+  /** Deactivate attachments by name; they are kept, never deleted. */
+  async deactivateAttachments(names: string[]): Promise<AttachmentBulkResponse> {
+    return this.post('/attachments/deactivate', names.map((name) => ({ name })))
+  }
+
+  async listAttachments(params?: ListAttachmentsParams): Promise<AttachmentListResponse> {
+    return this.get('/attachments', params)
+  }
+
+  async getAttachment(name: string): Promise<Attachment> {
+    return this.get(`/attachments/${name}`)
+  }
+
+  // ---- System backup (platform admin) ----
+
+  /**
+   * The system backup: every stored API key (hash only), grant, reservation
+   * and attachment. The archive is sensitive (every key hash, the salt):
+   * offer it as a download and do not keep it in browser storage.
+   */
+  async systemBackup(): Promise<SystemArchive> {
+    return this.post('/system-backup')
+  }
+
+  /**
+   * Restore a system backup. A dry run unless `dryRun: false`. Upserts by
+   * identity and never deletes; branch on `skipped[i].reason_code`. When the
+   * archive's salt cannot be taken here the call throws WipConflictError
+   * whose `wipErrorCode(err)` is SALT_MISMATCH.
+   */
+  async systemRestore(archive: SystemArchive, options: SystemRestoreOptions = {}): Promise<SystemRestoreReport> {
+    return this.post('/system-restore', archive, {
+      dry_run: options.dryRun ?? true,
+      overwrite: options.overwrite ?? false,
+      include_user_grants: options.includeUserGrants ?? false,
+    })
   }
 
   // ---- API Keys ----

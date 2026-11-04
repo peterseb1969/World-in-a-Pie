@@ -14,6 +14,13 @@ export interface Namespace {
   created_by: string | null
   updated_at: string
   updated_by: string | null
+  /**
+   * Set by a create only: the orphaned grants on this prefix that became
+   * effective because a platform admin created the namespace, as
+   * 'namespace/subject_type:subject'. Empty otherwise; absent from
+   * Registries that predate orphaned grants.
+   */
+  activated_orphan_grants?: string[]
 }
 
 export interface NamespaceStats {
@@ -255,7 +262,52 @@ export interface Grant {
    * predate it.
    */
   managed_by?: 'wip-deploy' | null
+  /**
+   * True for a grant a system restore wrote while its namespace did not
+   * exist (and was not reserved by the archive's owner). An orphan counts as
+   * no grant until it is activated (`activateGrants`), granted again, or the
+   * namespace is created by a platform admin. A key whose own namespaces
+   * list names the prefix still reads it, as any such key does. Absent from
+   * Registries that predate it.
+   */
+  orphaned?: boolean
+  orphaned_at?: string | null
 }
+
+/** Names an orphaned grant to activate. */
+export interface ActivateGrantRequest {
+  subject: string
+  subject_type?: GrantSubjectType
+}
+
+export interface GrantActivateResult {
+  index: number
+  /** 'unchanged': the grant is not orphaned. */
+  status: 'activated' | 'unchanged' | 'not_found' | 'error'
+  subject: string
+  error?: string | null
+  /** For an error item: MANAGED_BY_DEPLOYER. */
+  error_code?: string | null
+}
+
+export interface GrantActivateBulkResponse {
+  results: GrantActivateResult[]
+  total: number
+  succeeded: number
+  failed: number
+}
+
+/** Query params for `GET /api/registry/grants` (platform admin). */
+export interface ListAllGrantsParams {
+  /** true: only orphaned grants; false: only effective ones. */
+  orphaned?: boolean
+  namespace?: string
+  page?: number
+  /** Default 50, max 1000. */
+  page_size?: number
+}
+
+export type GrantListResponse = PaginatedResponse<Grant>
 
 export interface CreateGrantRequest {
   subject: string
@@ -462,3 +514,183 @@ export interface ListAPIKeysParams {
   /** Default 50, capped at 100. */
   page_size?: number
 }
+
+// ---- App attachments ----
+
+export interface UpstreamTLS {
+  /** Verify the upstream's certificate (https upstreams). Default true. */
+  verify?: boolean
+  /** A CA certificate (PEM content) the upstream's certificate chains to. */
+  ca_pem?: string | null
+}
+
+/**
+ * An app attached under the umbrella, served at `/apps/<name>` by the
+ * router's app edge. A write REPLACES the whole record: `auth_required` and
+ * `allowed_groups` are required on every write (no defaults), so send the
+ * full record you read. A missing or ill-typed field fails the whole request
+ * with 422 (WipValidationError), not per item. Platform admin only.
+ */
+export interface AttachmentRequest {
+  /** `^[a-z][a-z0-9-]{1,40}$`; the path is always `/apps/<name>`. */
+  name: string
+  /** Scheme, host and optional port only: no path, credentials, query or fragment. */
+  upstream: string
+  auth_required: boolean
+  /** Groups the gateway lets through; [] = any logged-in user. Needs auth_required. */
+  allowed_groups: string[]
+  strip_prefix?: boolean
+  /** Each under `/apps/<name>/`. */
+  preserve_prefix_subpaths?: string[]
+  redirect_bare_path?: boolean
+  upstream_host_header?: boolean
+  streaming?: boolean
+  upstream_tls?: UpstreamTLS
+  display_name?: string
+  ui_only?: boolean
+  /** A path under the upstream the app edge may probe. */
+  health?: string | null
+}
+
+export interface Attachment extends Required<Omit<AttachmentRequest, 'upstream_tls' | 'health'>> {
+  path: string
+  status: 'active' | 'inactive'
+  upstream_tls: UpstreamTLS
+  health: string | null
+  managed_by: 'wip-deploy' | null
+  created_at: string
+  created_by: string
+  updated_at: string
+  updated_by: string
+}
+
+/**
+ * Per-item error codes of attachment writes (`error_code`, with
+ * `details.rule` where noted): `validation_failed` (rule `upstream_invalid`,
+ * `policy_unavailable` or `duplicate_name`), `forbidden` (rule
+ * `upstream_blocked`), `name_collision` (a name the install's own apps route
+ * under), MANAGED_BY_DEPLOYER, `concurrency_conflict` (retry), `not_found`
+ * (deactivate only).
+ */
+export interface AttachmentBulkResult {
+  index: number
+  status: 'created' | 'updated' | 'unchanged' | 'deactivated' | 'error'
+  name?: string | null
+  path?: string | null
+  /** e.g. the upstream does not resolve from the Registry's network yet. */
+  warnings?: string[]
+  error?: string | null
+  error_code?: string | null
+  details?: { rule?: string } | null
+}
+
+export interface AttachmentBulkResponse {
+  results: AttachmentBulkResult[]
+  total: number
+  succeeded: number
+  failed: number
+}
+
+export interface ListAttachmentsParams {
+  status?: 'active' | 'inactive'
+  page?: number
+  /** Default 50, max 1000. */
+  page_size?: number
+}
+
+export type AttachmentListResponse = PaginatedResponse<Attachment>
+
+// ---- System backup ----
+
+/**
+ * The system backup archive: every stored API key (bcrypt hash, never a
+ * plaintext), grant, reservation and app attachment. It is SENSITIVE: it
+ * holds every key hash and the runtime-key salt. Do not keep it in browser
+ * storage; hand it to the user as a file and drop it.
+ */
+export interface SystemArchive {
+  format: 'wip-system-backup'
+  version: 1
+  created_at: string
+  source: {
+    oidc_issuer: string | null
+    salt_fingerprint: string
+    salt?: string | null
+  }
+  api_keys: Record<string, unknown>[]
+  grants: Record<string, unknown>[]
+  reservations: Record<string, unknown>[]
+  attachments: Record<string, unknown>[]
+}
+
+/** Why a restore left a record out. Branch on this, not on `reason`. */
+export type SystemRestoreSkipReason =
+  | 'managed_by_deployer'
+  | 'managed_on_source'
+  | 'invalid_record'
+  | 'differs'
+  | 'orphaned_here'
+  | 'orphaned_in_archive'
+  | 'other_oidc_issuer'
+  | 'config_key_name'
+  | 'app_route'
+  | 'attach_policy_unavailable'
+  | 'upstream_invalid'
+  | 'upstream_blocked'
+  | 'concurrent_write'
+
+export interface SystemRestoreSkipped {
+  /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */
+  id: string
+  /** For people. */
+  reason: string
+  reason_code: SystemRestoreSkipReason
+  /** Key or attachment. */
+  name?: string | null
+  /** Reservation. */
+  prefix?: string | null
+  /** Grant. */
+  namespace?: string | null
+  subject_type?: GrantSubjectType | null
+  subject?: string | null
+}
+
+export interface SystemRestoreRecordReport {
+  created: string[]
+  replaced: string[]
+  unchanged: string[]
+  skipped: SystemRestoreSkipped[]
+  /** Grants only: those of created/replaced written orphaned. */
+  orphaned: string[]
+  /** Attachments only: those whose upstream does not resolve from the Registry yet. */
+  unresolved: string[]
+}
+
+export interface SystemRestoreReport {
+  dry_run: boolean
+  /** The archive's runtime-key salt replaced this stack's (or would, in a dry run). */
+  salt_adopted: boolean
+  warnings: string[]
+  reservations: SystemRestoreRecordReport
+  api_keys: SystemRestoreRecordReport
+  grants: SystemRestoreRecordReport
+  attachments: SystemRestoreRecordReport
+}
+
+export interface SystemRestoreOptions {
+  /** Default true: report only. */
+  dryRun?: boolean
+  /** Replace records that exist here with different content. */
+  overwrite?: boolean
+  /** Restore user grants although the archive comes from another OIDC issuer. */
+  includeUserGrants?: boolean
+}
+
+/**
+ * The 409 `error_code` of a system restore whose archive was made under a
+ * runtime-key salt this stack cannot take. Today that is a stack holding
+ * API keys of its own, or an archive carrying only the salt's fingerprint;
+ * a stack without keys of its own adopts the archive's salt instead. The
+ * rule may widen; branch on the code, not on the message.
+ */
+export const SALT_MISMATCH = 'salt_mismatch'

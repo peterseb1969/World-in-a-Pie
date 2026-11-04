@@ -136,6 +136,35 @@ There is now a separate system backup:
 The archive is sensitive and not encrypted. Store it like `~/.wip-deploy/`.
 See `docs/wip-guide.md` §5.7.
 
+### `@wip/client` 0.76.0: attachments, the system backup and orphaned grants; a typed restore report
+
+**Registry:** the system restore report is now typed for code, while the
+system backup is still unreleased.
+- Every skipped record carries a `reason_code`: `managed_by_deployer`,
+  `managed_on_source`, `invalid_record`, `differs`, `orphaned_here`,
+  `orphaned_in_archive`, `other_oidc_issuer`, `config_key_name`, `app_route`,
+  `attach_policy_unavailable`, `upstream_invalid`, `upstream_blocked` or
+  `concurrent_write`.
+- It also carries its identity as fields: `name` (key, attachment),
+  `prefix` (reservation), or `namespace`, `subject_type` and `subject`
+  (grant). `id` and the human `reason` stay.
+- A salt the stack cannot take answers 409 with
+  `error_code: "salt_mismatch"` beside `detail`.
+
+**`@wip/client` 0.76.0** (`registry`):
+- `systemBackup()` and `systemRestore(archive, {dryRun, overwrite,
+  includeUserGrants})`. A dry run is the default. The archive holds every key
+  hash: offer it as a download, never keep it in browser storage.
+- `upsertAttachments`, `deactivateAttachments`, `listAttachments`,
+  `getAttachment`. A write replaces the whole record: `auth_required` and
+  `allowed_groups` are required in the type. A malformed item is a 422 for
+  the whole request.
+- `activateGrants(prefix, …)` and `listAllGrants({orphaned})`. `Grant` gains
+  `orphaned` and `orphaned_at`; `Namespace` gains `activated_orphan_grants`.
+- Constants `SALT_MISMATCH` beside `MANAGED_BY_DEPLOYER`, and
+  `wipErrorCode(err)`, which reads the `error_code` of any WIP HTTP error.
+- Not yet: the system restore's mirror mode (CASE-1056).
+
 ### A restore creates namespaces as the person who asked; orphaned grants; WIP-Toolkit 0.25.1
 
 **A namespace restore no longer bypasses the Registry's rules for creating
