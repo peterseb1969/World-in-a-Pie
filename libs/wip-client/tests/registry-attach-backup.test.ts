@@ -53,6 +53,20 @@ describe('RegistryService: attachments, system backup, orphaned grants', () => {
       expect(call().url).toContain('/api/registry/system-backup')
     })
 
+    it('systemBackup with a scope sends it as comma lists', async () => {
+      respond(ARCHIVE)
+      await client.registry.systemBackup({ namespaces: ['aa', 'aa-data'], attachments: ['aa'] })
+      const { url } = call()
+      expect(url).toContain('namespaces=aa%2Caa-data')
+      expect(url).toContain('attachments=aa')
+    })
+
+    it('systemBackup without options sends no scope', async () => {
+      respond(ARCHIVE)
+      await client.registry.systemBackup()
+      expect(call().url).not.toContain('namespaces=')
+    })
+
     it('systemRestore is a dry run by default and sends the archive as the body', async () => {
       respond({ dry_run: true, salt_adopted: false, warnings: [], reservations: {}, api_keys: {}, grants: {}, attachments: {} })
       await client.registry.systemRestore(ARCHIVE)

@@ -148,3 +148,16 @@ def test_mirror_sends_mode_and_expect_and_prints_removals(tmp_path):
     assert "deactivated: late-app" in result.output
     assert "Refused: my-key: the restore would remove the key" in result.output
     assert "Mirror plan digest: sha256:abc" in result.output
+
+
+def test_a_scoped_backup_sends_its_scope_and_names_what_stays(tmp_path):
+    out = tmp_path / "aa.json"
+    scoped = dict(ARCHIVE, source=dict(ARCHIVE.get("source", {}), scope={
+        "namespaces": ["aa", "aa-data"], "attachments": ["aa"], "keys_left_out": ["ops-key"]}))
+    client = _client(scoped)
+    result = _invoke(client, "system-backup", out, "--namespace", "aa", "--namespace", "aa-data",
+                     "--attachment", "aa")
+    assert result.exit_code == 0, result.output
+    assert client.post.call_args.kwargs["params"] == {"namespaces": "aa,aa-data", "attachments": "aa"}
+    assert "Scope: namespaces aa, aa-data; attachments aa" in result.output
+    assert "ops-key" in result.output

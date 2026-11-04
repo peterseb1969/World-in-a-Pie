@@ -41,6 +41,7 @@ import type {
   AttachmentListResponse,
   ListAttachmentsParams,
   SystemArchive,
+  SystemBackupOptions,
   SystemRestoreOptions,
   SystemRestoreReport,
 } from '../types/registry.js'
@@ -286,9 +287,17 @@ export class RegistryService extends BaseService {
    * The system backup: every stored API key (hash only), grant, reservation
    * and attachment. The archive is sensitive (every key hash, the salt):
    * offer it as a download and do not keep it in browser storage.
+   *
+   * With `namespaces` and/or `attachments` the backup is scoped: it carries
+   * those namespaces' grants and reservations, the keys whose namespaces all
+   * lie in them and the named attachments, and declares that in
+   * `source.scope`. A mirror restore of it removes only within the scope.
    */
-  async systemBackup(): Promise<SystemArchive> {
-    return this.post('/system-backup')
+  async systemBackup(options: SystemBackupOptions = {}): Promise<SystemArchive> {
+    const params: Record<string, string> = {}
+    if (options.namespaces?.length) params.namespaces = options.namespaces.join(',')
+    if (options.attachments?.length) params.attachments = options.attachments.join(',')
+    return Object.keys(params).length ? this.post('/system-backup', null, params) : this.post('/system-backup')
   }
 
   /**

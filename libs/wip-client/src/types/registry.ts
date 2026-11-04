@@ -616,11 +616,33 @@ export interface SystemArchive {
     oidc_issuer: string | null
     salt_fingerprint: string
     salt?: string | null
+    /** Set by a scoped backup; absent means the whole stack. */
+    scope?: SystemArchiveScope | null
   }
   api_keys: Record<string, unknown>[]
   grants: Record<string, unknown>[]
   reservations: Record<string, unknown>[]
   attachments: Record<string, unknown>[]
+}
+
+/**
+ * What a scoped system backup covers, declared in the archive. A mirror of a
+ * scoped archive removes only within it. Grants and reservations are in
+ * scope by namespace; a key only when every namespace it holds is in scope;
+ * an attachment only when named.
+ */
+export interface SystemArchiveScope {
+  namespaces: string[]
+  attachments: string[]
+  /** Keys the scope touches but cannot carry (a namespace outside it, or none). */
+  keys_left_out: string[]
+}
+
+/** Options of `systemBackup`. Either one makes the backup scoped. */
+export interface SystemBackupOptions {
+  namespaces?: string[]
+  /** Attachments have no namespace: a scoped backup carries only those named. */
+  attachments?: string[]
 }
 
 /** Why a restore left a record out. Branch on this, not on `reason`. */

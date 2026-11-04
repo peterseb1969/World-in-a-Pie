@@ -1415,8 +1415,15 @@ def backup(
 @main.command(name="system-backup")
 @click.argument("output_path", type=click.Path(dir_okay=False))
 @click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
+@click.option("--namespace", "namespaces", multiple=True,
+              help="Scope the backup to this namespace (repeatable)")
+@click.option("--attachment", "attachments", multiple=True,
+              help="Carry this attachment in a scoped backup (repeatable)")
 @click.pass_context
-def system_backup_cmd(ctx: click.Context, output_path: str, force: bool) -> None:
+def system_backup_cmd(
+    ctx: click.Context, output_path: str, force: bool,
+    namespaces: tuple[str, ...], attachments: tuple[str, ...],
+) -> None:
     """Back up the Registry's API keys, grants, reservations and attachments.
 
     The system backup is separate from namespace backups: it holds every
@@ -1427,9 +1434,17 @@ def system_backup_cmd(ctx: click.Context, output_path: str, force: bool) -> None
     The file is written with mode 0600. Keep it like the install's secrets:
     it holds every key hash.
 
-    Example:
+    With --namespace (and --attachment) the backup is scoped and declares its
+    scope: the grants and reservations of those namespaces, the keys whose
+    namespaces all lie in them, and the named attachments. A mirror restore of
+    it removes only within that scope. Keys the scope touches but cannot carry
+    are listed.
+
+    Examples:
 
       wip-toolkit system-backup auth-state.json
+
+      wip-toolkit system-backup aa.json --namespace aa --namespace aa-data --attachment aa
     """
     import os
 
@@ -1440,7 +1455,15 @@ def system_backup_cmd(ctx: click.Context, output_path: str, force: bool) -> None
     config = ctx.obj["config"]
     with WIPClient(config) as client:
         try:
-            archive = client.post("registry", "/system-backup")
+            if namespaces or attachments:
+                params = {}
+                if namespaces:
+                    params["namespaces"] = ",".join(namespaces)
+                if attachments:
+                    params["attachments"] = ",".join(attachments)
+                archive = client.post("registry", "/system-backup", params=params)
+            else:
+                archive = client.post("registry", "/system-backup")
         except WIPClientError as e:
             console.print(f"[red]System backup refused:[/red] {e}")
             sys.exit(1)
@@ -1454,6 +1477,14 @@ def system_backup_cmd(ctx: click.Context, output_path: str, force: bool) -> None
         f"{len(archive.get('reservations', []))} reservation(s), "
         f"{len(archive.get('attachments', []))} attachment(s)"
     )
+    scope = (archive.get("source") or {}).get("scope")
+    if scope:
+        console.print(f"Scope: namespaces {', '.join(scope.get('namespaces', [])) or '(none)'}; "
+                      f"attachments {', '.join(scope.get('attachments', [])) or '(none)'}")
+        left_out = scope.get("keys_left_out", [])
+        if left_out:
+            console.print(f"[yellow]Keys not carried[/yellow] (they hold a namespace outside the "
+                          f"scope, or none; a scoped mirror leaves them alone): {', '.join(left_out)}")
 
 
 @main.command(name="system-restore")

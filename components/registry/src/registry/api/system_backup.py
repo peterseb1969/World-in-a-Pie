@@ -40,7 +40,19 @@ router = APIRouter()
     response_model=SystemArchive,
     summary="Back up the Registry's API keys, grants, reservations and attachments",
 )
-async def system_backup(_admin: str = Depends(require_admin_key)) -> SystemArchive:
+async def system_backup(
+    namespaces: str | None = Query(
+        None,
+        description="Comma-separated namespace prefixes: a scoped backup of their "
+        "grants and reservations, and of the keys whose namespaces all lie in them",
+    ),
+    attachments: str | None = Query(
+        None,
+        description="Comma-separated attachment names to carry in a scoped backup. "
+        "Attachments have no namespace; a scoped backup carries only those named",
+    ),
+    _admin: str = Depends(require_admin_key),
+) -> SystemArchive:
     """Return the system backup archive: every stored API key record (its
     bcrypt hash and metadata, never a plaintext; managed records included),
     every namespace grant, every namespace reservation and every app
@@ -50,12 +62,25 @@ async def system_backup(_admin: str = Depends(require_admin_key)) -> SystemArchi
     Config keys, the master key among them, are not records and are not
     included. Namespace data is not included either; back it up with the
     namespace backup. The archive is sensitive: anyone holding it holds every
-    key hash."""
-    archive = await build_archive()
+    key hash.
+
+    With `namespaces` and/or `attachments` the backup is scoped and declares
+    its scope in `source.scope`: the grants and reservations of those
+    namespaces, the keys whose namespaces all lie in them, and the named
+    attachments. Keys the scope touches but cannot carry (a namespace outside
+    it, or none) are listed in `source.scope.keys_left_out`. A mirror restore
+    of a scoped archive removes only within its scope."""
+    def _names(raw: str | None) -> list[str] | None:
+        return None if raw is None else [n.strip() for n in raw.split(",") if n.strip()]
+
+    archive = await build_archive(_names(namespaces), _names(attachments))
     logger.warning(
-        "System backup taken by %s: %d key(s), %d grant(s), %d reservation(s), "
+        "System backup taken by %s%s: %d key(s), %d grant(s), %d reservation(s), "
         "%d attachment(s)",
-        get_identity_string(), len(archive.api_keys), len(archive.grants),
+        get_identity_string(),
+        f" (scope {archive.source.scope.namespaces}, attachments "
+        f"{archive.source.scope.attachments})" if archive.source.scope else "",
+        len(archive.api_keys), len(archive.grants),
         len(archive.reservations), len(archive.attachments),
     )
     return archive

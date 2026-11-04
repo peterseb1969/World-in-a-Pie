@@ -757,6 +757,18 @@ in §5.5.
   A mirror is not one transaction: if it fails part-way, re-run it. After a
   mirror the stack holds no keys of its own beyond the file's, so a mirror
   also adopts a file's other hash salt, where an upsert refuses it.
+- **A scoped backup covers one app.** `wip-toolkit system-backup aa.json
+  --namespace aa --namespace aa-data --attachment aa` carries the grants and
+  reservations of those namespaces, the keys whose namespaces all lie in them,
+  and the named attachments, and the file declares that scope. Attachments
+  have no namespace, so name the ones to carry. The backup lists the keys the
+  scope touches but cannot carry (a namespace outside it, or none); the file
+  still carries their grants inside the scope, and the restore warns about
+  them. **A mirror of a scoped file removes only within its scope**: keys
+  outside it, grants and reservations on other namespaces, and unnamed
+  attachments are never touched. A scoped file under another hash salt is
+  adopted only by a stack with no keys of its own, so in practice it is
+  restored onto the stack it came from, or one sharing its salt.
 - **Restored records are unmanaged** (`origin: restored`). Where the install's
   own key file or reservations file declares the same key, grant or prefix,
   the Registry's import takes it over on its next pass (§4.3).

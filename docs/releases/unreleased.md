@@ -33,6 +33,29 @@ upgrading. ClinTrial Explorer, which the 2026-10-12 rollout recorded as using
 the gateway's injected key, is retired. Takes effect on a redeploy with a rebuilt
 auth-gateway image.
 
+### A system backup scoped to one app's namespaces; WIP-Toolkit 0.25.7, `@wip/client` 0.78.0
+
+- `POST /api/registry/system-backup?namespaces=a,b&attachments=x` takes a
+  **scoped** backup and declares the scope in `source.scope`. It carries:
+  - the grants and reservations of those namespaces;
+  - the keys whose namespaces all lie in them;
+  - the named attachments. Attachments have no namespace, so only named ones
+    are carried.
+- `source.scope.keys_left_out` names the keys the scope touches but cannot
+  carry: unscoped keys, keys with no namespaces, and keys spanning in and out
+  of the scope. The archive still carries their grants inside the scope, and
+  the restore warns about each.
+- **A mirror of a scoped archive removes only within its scope.** The plan
+  digest includes the scope.
+- **A foreign hash salt** is adopted only by a stack with no keys of its own,
+  as before. A key outside the scope blocks it.
+- **Format:** the archive stays version 1. A Registry that predates scopes
+  refuses a scoped archive (422) instead of reading it as a whole-stack one.
+- **WIP-Toolkit 0.25.7:** `system-backup --namespace … --attachment …` prints
+  the scope and the keys left out.
+- **`@wip/client` 0.78.0:** `systemBackup({namespaces, attachments})` and
+  `SystemArchive.source.scope`.
+
 ### Mirror mode for the system restore; WIP-Toolkit 0.25.6
 
 A system restore could only add and replace records, so a key revoked since

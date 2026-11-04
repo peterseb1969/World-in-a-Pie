@@ -136,6 +136,31 @@ Origin = Literal["file", "console", "restored"]
 # --- Archive shape ---
 
 
+class ArchiveScope(BaseModel):
+    """What a scoped backup covers, declared rather than inferred: a mirror of
+    a scoped archive removes only within it. A grant or reservation is in
+    scope by its namespace or prefix; a key only when it holds a non-empty
+    list of namespaces, every one in scope; an attachment only when named."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    namespaces: list[str] = Field(default_factory=list)
+    attachments: list[str] = Field(
+        default_factory=list,
+        description="Attachments in scope, by name. Attachments have no namespace, "
+        "so a scoped backup carries only those named here",
+    )
+    keys_left_out: list[str] = Field(
+        default_factory=list,
+        description="Keys with a grant or reservation in scope that the archive does "
+        "not carry, because they hold a namespace outside it or none: a scoped "
+        "mirror never removes them",
+    )
+
+    def holds_key(self, namespaces: list[str] | None) -> bool:
+        return bool(namespaces) and set(namespaces or []) <= set(self.namespaces)
+
+
 class ArchiveSource(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -152,6 +177,12 @@ class ArchiveSource(BaseModel):
             "it. Not secret against the archive's holder; the archive is sensitive "
             "anyway, since it holds every key hash"
         ),
+    )
+    scope: ArchiveScope | None = Field(
+        default=None,
+        description="Set by a scoped backup: what the archive covers. Absent: the "
+        "whole stack. A Registry that predates scopes refuses such an archive (422) "
+        "rather than read it as a whole-stack one",
     )
 
     @model_validator(mode="after")
@@ -433,16 +464,39 @@ def _reservation_content(r: RuntimeReservation | ArchiveReservation) -> tuple:
 # --- Backup ---
 
 
-async def build_archive() -> SystemArchive:
+async def build_archive(
+    namespaces: list[str] | None = None, attachments_in_scope: list[str] | None = None,
+) -> SystemArchive:
+    """The whole stack, or with `namespaces` / `attachments_in_scope` a scoped
+    archive that declares what it covers (ArchiveScope)."""
     keys = await StoredAPIKey.find_all().to_list()
     grants = await NamespaceGrant.find_all().to_list()
     reservations = await RuntimeReservation.find_all().to_list()
     attachments = await AppAttachment.find_all().to_list()
+    scope: ArchiveScope | None = None
+    if namespaces is not None or attachments_in_scope is not None:
+        scope = ArchiveScope(
+            namespaces=sorted(set(namespaces or [])),
+            attachments=sorted(set(attachments_in_scope or [])),
+        )
+        in_ns = set(scope.namespaces)
+        grants = [g for g in grants if g.namespace in in_ns]
+        reservations = [r for r in reservations if r.prefix in in_ns]
+        attachments = [a for a in attachments if a.name in set(scope.attachments)]
+        carried = [k for k in keys if scope.holds_key(k.namespaces)]
+        carried_names = {k.name for k in carried}
+        # Keys this scope touches (a grant to them, or a reservation they own)
+        # but cannot carry: named so the operator sees what stays behind.
+        touched = {g.subject.removeprefix("apikey:") for g in grants if g.subject_type == "api_key"}
+        touched |= {r.app for r in reservations if r.managed_by is None}
+        stored = {k.name for k in keys}
+        scope.keys_left_out = sorted((touched & stored) - carried_names)
+        keys = carried
     return SystemArchive(
         created_at=datetime.now(UTC),
         source=ArchiveSource(
             oidc_issuer=current_issuer(), salt_fingerprint=salt_fingerprint(),
-            salt=current_salt(),
+            salt=current_salt(), scope=scope,
         ),
         api_keys=[
             ArchiveKey(
@@ -602,6 +656,24 @@ async def restore_archive(
             "Restoring brings back the archive's state, including access revoked "
             "since the backup was taken. Review the lists below before applying."
         )
+    if archive.source.scope is not None:
+        scope = archive.source.scope
+        report.warnings.append(
+            f"A scoped archive: namespaces {scope.namespaces or '(none)'}, attachments "
+            f"{scope.attachments or '(none)'}."
+            + (" A mirror removes only within this scope." if mode == "mirror" else "")
+        )
+        carried = {k.name for k in archive.api_keys}
+        uncarried = sorted({
+            _grant_id(g.namespace, g.subject_type, g.subject) for g in archive.grants
+            if g.subject_type == "api_key" and g.subject.removeprefix("apikey:") not in carried
+        })
+        if uncarried:
+            report.warnings.append(
+                "Grants to keys the archive does not carry (they hold a namespace outside "
+                "the scope, or none): " + ", ".join(uncarried) + ". Each is written as "
+                "any grant: effective where the key exists here, otherwise it gives nothing."
+            )
     if not same_issuer:
         report.warnings.append(
             f"The archive was made under OIDC issuer {archive.source.oidc_issuer!r}, "
@@ -626,6 +698,7 @@ async def restore_archive(
 
 @dataclass
 class MirrorPlan:
+    scope: ArchiveScope | None = None
     keys: list[StoredAPIKey] = field(default_factory=list)
     grants: list[NamespaceGrant] = field(default_factory=list)
     reservations: list[RuntimeReservation] = field(default_factory=list)
@@ -639,6 +712,8 @@ class MirrorPlan:
     @property
     def digest(self) -> str:
         body = json.dumps({
+            # The same removals under another declared scope are another plan.
+            "scope": self.scope.model_dump(exclude={"keys_left_out"}) if self.scope else None,
             "api_keys": sorted(k.name for k in self.keys),
             "grants": sorted(self.grant_ids),
             "reservations": sorted(r.prefix for r in self.reservations),
@@ -657,11 +732,16 @@ async def _plan_mirror(
     caller_key: str | None,
 ) -> MirrorPlan:
     """What a mirror removes: every record here the archive does not hold,
-    less the exclusions in the module docstring. Reads only."""
-    plan = MirrorPlan()
+    less the exclusions in the module docstring, and, for a scoped archive,
+    only records inside its declared scope. Reads only."""
+    scope = archive.source.scope
+    plan = MirrorPlan(scope=scope)
+    in_ns = set(scope.namespaces) if scope else None
     archived_keys = {k.name for k in archive.api_keys}
     for doc in await StoredAPIKey.find({"managed_by": None}).to_list():
         if doc.name in archived_keys or doc.name in config_key_names:
+            continue
+        if scope is not None and not scope.holds_key(doc.namespaces):
             continue
         if caller_key is not None and doc.name == caller_key:
             plan.refused.append(_skip_named(
@@ -678,6 +758,8 @@ async def _plan_mirror(
         if g.subject_type == "user" and not user_grants:
             continue
         removed_with_key = g.subject_type == "api_key" and g.subject in removed_subjects
+        if not removed_with_key and in_ns is not None and g.namespace not in in_ns:
+            continue
         if not removed_with_key:
             if _grant_id(g.namespace, g.subject_type, g.subject) in archived_grants:
                 continue
@@ -688,13 +770,15 @@ async def _plan_mirror(
     archived_prefixes = {r.prefix for r in archive.reservations}
     plan.reservations = [
         r for r in await RuntimeReservation.find({"managed_by": None}).to_list()
-        if r.prefix not in archived_prefixes
+        if r.prefix not in archived_prefixes and (in_ns is None or r.prefix in in_ns)
     ]
 
     archived_attachments = {a.name for a in archive.attachments}
+    in_attachments = set(scope.attachments) if scope else None
     plan.attachments = [
         a for a in await AppAttachment.find({"managed_by": None, "status": "active"}).to_list()
         if a.name not in archived_attachments
+        and (in_attachments is None or a.name in in_attachments)
     ]
     return plan
 

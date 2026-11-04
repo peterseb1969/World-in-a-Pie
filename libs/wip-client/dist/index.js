@@ -1382,9 +1382,17 @@ var RegistryService = class extends BaseService {
    * The system backup: every stored API key (hash only), grant, reservation
    * and attachment. The archive is sensitive (every key hash, the salt):
    * offer it as a download and do not keep it in browser storage.
+   *
+   * With `namespaces` and/or `attachments` the backup is scoped: it carries
+   * those namespaces' grants and reservations, the keys whose namespaces all
+   * lie in them and the named attachments, and declares that in
+   * `source.scope`. A mirror restore of it removes only within the scope.
    */
-  async systemBackup() {
-    return this.post("/system-backup");
+  async systemBackup(options = {}) {
+    const params = {};
+    if (options.namespaces?.length) params.namespaces = options.namespaces.join(",");
+    if (options.attachments?.length) params.attachments = options.attachments.join(",");
+    return Object.keys(params).length ? this.post("/system-backup", null, params) : this.post("/system-backup");
   }
   /**
    * Restore a system backup. A dry run unless `dryRun: false`. Upserts by
