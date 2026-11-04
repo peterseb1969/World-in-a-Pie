@@ -8,13 +8,15 @@ The archive is sensitive: keep it like the install's own secrets.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import JSONResponse
 
 from wip_auth import get_identity_string
 
 from ..services import key_import, key_salt, key_shadowing
 from ..services.auth import require_admin_key
 from ..services.system_backup import (
+    SALT_MISMATCH,
     SaltMismatch,
     SystemArchive,
     SystemRestoreReport,
@@ -58,6 +60,8 @@ async def system_backup(_admin: str = Depends(require_admin_key)) -> SystemArchi
     "/system-restore",
     response_model=SystemRestoreReport,
     summary="Restore a system backup (dry run by default)",
+    responses={409: {"description": "The archive's salt cannot be used here: "
+                                    "`{detail, error_code: \"salt_mismatch\"}`"}},
 )
 async def system_restore(
     archive: SystemArchive,
@@ -70,7 +74,7 @@ async def system_restore(
         description="Restore user grants although the archive comes from another OIDC issuer",
     ),
     _admin: str = Depends(require_admin_key),
-) -> SystemRestoreReport:
+) -> SystemRestoreReport | JSONResponse:
     """Restore an archive from POST /system-backup.
 
     Upserts by identity (key name; grant namespace, subject and subject type;
@@ -103,7 +107,9 @@ async def system_restore(
             restored_by=get_identity_string(),
         )
     except SaltMismatch as e:
-        raise HTTPException(status_code=409, detail=str(e)) from e
+        return JSONResponse(
+            status_code=409, content={"detail": str(e), "error_code": SALT_MISMATCH}
+        )
 
     if report.salt_adopted and not dry_run and provider is not None:
         # Runtime keys verify under the adopted salt from now on, and the

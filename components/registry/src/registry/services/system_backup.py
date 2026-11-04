@@ -222,9 +222,56 @@ class SystemArchive(BaseModel):
 # --- Report shape ---
 
 
+SkipReason = Literal[
+    "managed_by_deployer",      # wip-deploy manages the record here
+    "managed_on_source",        # the source's deployer managed it; this install's re-creates it
+    "invalid_record",           # the archived record fails today's rules for its kind
+    "differs",                  # differs here; overwrite replaces it
+    "orphaned_here",            # an orphan here, effective in the archive; activate or overwrite
+    "orphaned_in_archive",      # an orphan in the archive, effective here; never replaced
+    "other_oidc_issuer",        # a user grant from another issuer; include_user_grants restores it
+    "config_key_name",          # a config key of this name is loaded here
+    "app_route",                # an app this install deploys routes under /apps/<name>
+    "attach_policy_unavailable",
+    "upstream_invalid",
+    "upstream_blocked",
+    "concurrent_write",         # another request attached the name during the restore
+]
+
+
 class SkippedRecord(BaseModel):
+    """A record the restore left out. Branch on `reason_code`; `reason` is
+    for people. The identity fields set are the record's own: `name` (key,
+    attachment), `prefix` (reservation), or `namespace`, `subject_type` and
+    `subject` (grant)."""
+
     id: str = Field(..., description="The record's identity: key name, 'namespace/subject_type:subject', or prefix")
     reason: str
+    reason_code: SkipReason
+    name: str | None = None
+    prefix: str | None = None
+    namespace: str | None = None
+    subject_type: Literal["user", "api_key", "group"] | None = None
+    subject: str | None = None
+
+
+def _skip_named(name: str, code: SkipReason, reason: str) -> SkippedRecord:
+    return SkippedRecord(id=name, name=name, reason_code=code, reason=reason)
+
+
+def _skip_reservation(prefix: str, code: SkipReason, reason: str) -> SkippedRecord:
+    return SkippedRecord(id=prefix, prefix=prefix, reason_code=code, reason=reason)
+
+
+def _skip_grant(g: "ArchiveGrant", code: SkipReason, reason: str) -> SkippedRecord:
+    return SkippedRecord(
+        id=_grant_id(g.namespace, g.subject_type, g.subject), namespace=g.namespace,
+        subject_type=g.subject_type, subject=g.subject, reason_code=code, reason=reason,
+    )
+
+
+_MANAGED = "managed by wip-deploy on this instance"
+_DIFFERS = "differs on this instance; pass overwrite to replace it"
 
 
 class RecordReport(BaseModel):
@@ -262,8 +309,13 @@ class SystemRestoreReport(BaseModel):
     attachments: RecordReport = Field(default_factory=RecordReport)
 
 
+SALT_MISMATCH = "salt_mismatch"
+
+
 class SaltMismatch(Exception):
-    """The archive's hashes were made with another salt than the target's."""
+    """The archive's hashes were made with another salt than the target's, and
+    this stack cannot adopt it. The API answers 409 with error_code
+    `salt_mismatch`."""
 
 
 # --- Helpers ---
@@ -497,31 +549,30 @@ async def _restore_attachments(
         policy = load_policy()
     except AttachPolicyUnavailable as e:
         for a in archive.attachments:
-            out.skipped.append(SkippedRecord(id=a.name, reason=f"attach policy unavailable: {e}"))
+            out.skipped.append(_skip_named(a.name, "attach_policy_unavailable", f"attach policy unavailable: {e}"))
         return
     reserved = set(policy.reserved_names)
     install_addresses = await resolve_install_addresses(policy)
 
     for a in archive.attachments:
         if a.managed_by is not None:
-            out.skipped.append(SkippedRecord(
-                id=a.name,
-                reason="managed by wip-deploy on the source; the install that deploys the "
-                "app re-creates it",
+            out.skipped.append(_skip_named(
+                a.name, "managed_on_source",
+                "managed by wip-deploy on the source; the install that deploys the app re-creates it",
             ))
             continue
         request, why = _validated_attachment(a)
         if request is None:
-            out.skipped.append(SkippedRecord(id=a.name, reason=why or "invalid"))
+            out.skipped.append(_skip_named(a.name, "invalid_record", why or "invalid"))
             continue
         if a.name in reserved:
-            out.skipped.append(SkippedRecord(
-                id=a.name, reason=f"/apps/{a.name} is a route of an app this install deploys",
+            out.skipped.append(_skip_named(
+                a.name, "app_route", f"/apps/{a.name} is a route of an app this install deploys",
             ))
             continue
         existing = await AppAttachment.find_one(AppAttachment.name == a.name)
         if existing is not None and existing.managed_by is not None:
-            out.skipped.append(SkippedRecord(id=a.name, reason="managed by wip-deploy on this instance"))
+            out.skipped.append(_skip_named(a.name, "managed_by_deployer", _MANAGED))
             continue
         fields = _attachment_fields(request)
         status: Literal["active", "inactive"] = "active" if a.status == "active" else "inactive"
@@ -530,15 +581,15 @@ async def _restore_attachments(
                 out.unchanged.append(a.name)
                 continue
             if not overwrite:
-                out.skipped.append(SkippedRecord(id=a.name, reason="differs on this instance; pass overwrite to replace it"))
+                out.skipped.append(_skip_named(a.name, "differs", _DIFFERS))
                 continue
         try:
             check = await check_upstream(request.upstream, policy, install_addresses)
         except UpstreamInvalid as e:
-            out.skipped.append(SkippedRecord(id=a.name, reason=str(e)))
+            out.skipped.append(_skip_named(a.name, "upstream_invalid", str(e)))
             continue
         if check.blocked:
-            out.skipped.append(SkippedRecord(id=a.name, reason=f"upstream refused: {check.blocked}"))
+            out.skipped.append(_skip_named(a.name, "upstream_blocked", f"upstream refused: {check.blocked}"))
             continue
         (out.replaced if existing is not None else out.created).append(a.name)
         if check.warnings:
@@ -564,8 +615,8 @@ async def _restore_attachments(
                 out.created.remove(a.name)
                 if a.name in out.unresolved:
                     out.unresolved.remove(a.name)
-                out.skipped.append(SkippedRecord(
-                    id=a.name, reason="attached by another request during the restore",
+                out.skipped.append(_skip_named(
+                    a.name, "concurrent_write", "attached by another request during the restore",
                 ))
                 continue
         logger.info(
@@ -583,13 +634,13 @@ async def _restore_reservations(
         existing = await RuntimeReservation.find_one(RuntimeReservation.prefix == r.prefix)
         if existing is not None:
             if existing.managed_by is not None:
-                out.skipped.append(SkippedRecord(id=r.prefix, reason="managed by wip-deploy on this instance"))
+                out.skipped.append(_skip_reservation(r.prefix, "managed_by_deployer", _MANAGED))
                 continue
             if _reservation_content(existing) == _reservation_content(r):
                 out.unchanged.append(r.prefix)
                 continue
             if not overwrite:
-                out.skipped.append(SkippedRecord(id=r.prefix, reason="differs on this instance; pass overwrite to replace it"))
+                out.skipped.append(_skip_reservation(r.prefix, "differs", _DIFFERS))
                 continue
             out.replaced.append(r.prefix)
         else:
@@ -617,17 +668,19 @@ async def _restore_keys(
     for k in archive.api_keys:
         existing = await StoredAPIKey.find_one(StoredAPIKey.name == k.name)
         if existing is not None and existing.managed_by is not None:
-            out.skipped.append(SkippedRecord(id=k.name, reason="managed by wip-deploy on this instance"))
+            out.skipped.append(_skip_named(k.name, "managed_by_deployer", _MANAGED))
             continue
         if k.name in config_key_names:
-            out.skipped.append(SkippedRecord(id=k.name, reason="a config key of this name is loaded on this instance"))
+            out.skipped.append(_skip_named(
+                k.name, "config_key_name", "a config key of this name is loaded on this instance",
+            ))
             continue
         if existing is not None:
             if _key_content(existing) == _key_content(k):
                 out.unchanged.append(k.name)
                 continue
             if not overwrite:
-                out.skipped.append(SkippedRecord(id=k.name, reason="differs on this instance; pass overwrite to replace it"))
+                out.skipped.append(_skip_named(k.name, "differs", _DIFFERS))
                 continue
             out.replaced.append(k.name)
         else:
@@ -688,7 +741,7 @@ async def _restore_grants(
     for g in archive.grants:
         gid = _grant_id(g.namespace, g.subject_type, g.subject)
         if g.subject_type == "user" and not user_grants:
-            out.skipped.append(SkippedRecord(id=gid, reason="user grant from another OIDC issuer"))
+            out.skipped.append(_skip_grant(g, "other_oidc_issuer", "user grant from another OIDC issuer"))
             continue
         # Ownership first: the import writes a key's declared grants whether
         # or not the namespace exists, and "restore the namespace" would send
@@ -697,7 +750,7 @@ async def _restore_grants(
             "namespace": g.namespace, "subject": g.subject, "subject_type": g.subject_type,
         })
         if await _grant_owned_by_file(g, existing):
-            out.skipped.append(SkippedRecord(id=gid, reason="managed by wip-deploy on this instance"))
+            out.skipped.append(_skip_grant(g, "managed_by_deployer", _MANAGED))
             continue
         if g.namespace not in active:
             active[g.namespace] = await _grantable(g.namespace, report, dry_run, archive_owners)
@@ -706,8 +759,8 @@ async def _restore_grants(
             # An archived orphan was never access on its source. Replacing an
             # effective grant here with it would take access away, or (with a
             # higher permission) hand out what nobody granted.
-            out.skipped.append(SkippedRecord(
-                id=gid, reason="orphaned in the archive, effective here; left as it is",
+            out.skipped.append(_skip_grant(
+                g, "orphaned_in_archive", "orphaned in the archive, effective here; left as it is",
             ))
             continue
         if existing is not None:
@@ -715,13 +768,14 @@ async def _restore_grants(
                 out.unchanged.append(gid)
                 continue
             if not overwrite:
-                reason = (
-                    "orphaned on this instance; activate it on the namespace, or pass "
-                    "overwrite to replace it"
-                    if existing.orphaned and not orphaned
-                    else "differs on this instance; pass overwrite to replace it"
-                )
-                out.skipped.append(SkippedRecord(id=gid, reason=reason))
+                if existing.orphaned and not orphaned:
+                    out.skipped.append(_skip_grant(
+                        g, "orphaned_here",
+                        "orphaned on this instance; activate it on the namespace, or pass "
+                        "overwrite to replace it",
+                    ))
+                else:
+                    out.skipped.append(_skip_grant(g, "differs", _DIFFERS))
                 continue
             out.replaced.append(gid)
         else:

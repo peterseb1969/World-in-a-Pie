@@ -128,6 +128,7 @@ async def test_a_later_reservation_holder_does_not_inherit_orphans(client, auth_
     report = await _restore(client, auth_headers, archive, dry_run=False)
     reasons = {s["id"]: s["reason"] for s in report["grants"]["skipped"]}
     assert "orphaned on this instance" in reasons[f"{prefix}/api_key:{reader}"]
+    assert report["grants"]["skipped"][0]["reason_code"] == "orphaned_here"
 
     # The namespace's admin adopts it explicitly.
     resp = await client.post(f"{NS}/{prefix}/grants/activate", headers=owner_key, json=[
@@ -347,6 +348,8 @@ async def test_an_archived_orphan_never_replaces_an_effective_grant(client, auth
     report = await _restore(client, auth_headers, archive, dry_run=False, overwrite=True)
     reasons = {s["id"]: s["reason"] for s in report["grants"]["skipped"]}
     assert "effective here" in reasons[f"{prefix}/api_key:{reader}"]
+    codes = {s["id"]: s["reason_code"] for s in report["grants"]["skipped"]}
+    assert codes[f"{prefix}/api_key:{reader}"] == "orphaned_in_archive"
     assert await _permission(client, reader_key, prefix) == "write"
 
 

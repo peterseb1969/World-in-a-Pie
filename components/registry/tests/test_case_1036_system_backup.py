@@ -167,6 +167,7 @@ async def test_another_salt_is_refused_by_a_stack_with_keys_of_its_own(fresh, au
     resp = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
     assert resp.status_code == 409
     assert "keys of its own" in resp.json()["detail"]
+    assert resp.json()["error_code"] == "salt_mismatch"
 
 
 @pytest.mark.asyncio
@@ -180,6 +181,10 @@ async def test_user_grants_from_another_issuer_need_the_flag(fresh, auth_headers
     report = await _restore(client, auth_headers, archive, dry_run=False)
     skipped = {s["id"]: s["reason"] for s in report["grants"]["skipped"]}
     assert "another OIDC issuer" in skipped["vendor1/user:ann@example.org"]
+    skip = next(s for s in report["grants"]["skipped"] if s["id"] == "vendor1/user:ann@example.org")
+    assert skip["reason_code"] == "other_oidc_issuer"
+    assert (skip["namespace"], skip["subject_type"], skip["subject"]) == (
+        "vendor1", "user", "ann@example.org")
     assert "vendor1/group:analysts" in report["grants"]["created"]
     assert any("issuer" in w for w in report["warnings"])
     assert await NamespaceGrant.find_one({"subject": "ann@example.org"}) is None
@@ -243,6 +248,9 @@ async def test_records_the_files_own_here_are_never_replaced(fresh, auth_headers
                for s in report[part]["skipped"]}
     assert "managed by wip-deploy" in reasons[name]
     assert "managed by wip-deploy" in reasons[prefix]
+    by_id = {s["id"]: s for part in ("api_keys", "reservations") for s in report[part]["skipped"]}
+    assert (by_id[name]["reason_code"], by_id[name]["name"]) == ("managed_by_deployer", name)
+    assert (by_id[prefix]["reason_code"], by_id[prefix]["prefix"]) == ("managed_by_deployer", prefix)
     assert "managed by wip-deploy" in reasons[f"default/api_key:{name}"]
     doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
     assert doc.managed_by == "wip-deploy"
@@ -258,6 +266,7 @@ async def test_a_key_named_like_a_config_key_is_skipped(fresh, auth_headers):
     report = await _restore(client, auth_headers, archive, dry_run=False)
     reasons = {s["id"]: s["reason"] for s in report["api_keys"]["skipped"]}
     assert "config key" in reasons[config_name]
+    assert report["api_keys"]["skipped"][0]["reason_code"] == "config_key_name"
     assert await StoredAPIKey.find_one(StoredAPIKey.name == config_name) is None
 
 
@@ -275,6 +284,8 @@ async def test_a_different_record_is_replaced_only_with_overwrite(fresh, auth_he
     report = await _restore(client, auth_headers, archive, dry_run=False)
     reasons = {s["id"]: s["reason"] for s in report["grants"]["skipped"]}
     assert "overwrite" in reasons["vendor1/group:analysts"]
+    codes = {s["id"]: s["reason_code"] for s in report["grants"]["skipped"]}
+    assert codes["vendor1/group:analysts"] == "differs"
     assert (await NamespaceGrant.find_one({"subject": "analysts"})).permission == "admin"
 
     report = await _restore(client, auth_headers, archive, dry_run=False, overwrite=True)

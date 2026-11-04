@@ -161,6 +161,9 @@ async def test_attach_rules_hold_on_restore(fresh, auth_headers, policy, monkeyp
     assert "route of an app this install deploys" in skipped["kb"]
     assert "upstream refused" in skipped["meta"]
     assert "upstream refused" in skipped["moved"]
+    codes = {s["id"]: (s["reason_code"], s["name"]) for s in out["skipped"]}
+    assert codes == {"kb": ("app_route", "kb"), "meta": ("upstream_blocked", "meta"),
+                     "moved": ("upstream_blocked", "moved")}
     assert sorted(out["created"]) == ["aa", "later"]
     assert out["unresolved"] == ["later"]
     names = {a.name for a in await AppAttachment.find_all().to_list()}
@@ -229,6 +232,8 @@ async def test_an_invalid_entry_is_skipped_and_the_rest_restores(fresh, auth_hea
     skipped = {s["id"]: s["reason"] for s in report["attachments"]["skipped"]}
     assert "fails the attach rules" in skipped["bad"] and "preserve_prefix_subpaths" in skipped["bad"]
     assert "neither 'active' nor 'inactive'" in skipped["odd"]
+    codes = {s["id"]: s["reason_code"] for s in report["attachments"]["skipped"]}
+    assert codes["bad"] == codes["odd"] == "invalid_record"
     assert report["attachments"]["created"] == ["aa"]
     assert "rc-key-1055" in report["api_keys"]["created"]
 
@@ -264,4 +269,5 @@ async def test_an_entry_the_sources_deployer_manages_is_not_restored(fresh, auth
 
     report = await _restore(client, auth_headers, archive, dry_run=False)
     assert "managed by wip-deploy on the source" in report["attachments"]["skipped"][0]["reason"]
+    assert report["attachments"]["skipped"][0]["reason_code"] == "managed_on_source"
     assert await AppAttachment.find_all().count() == 0
