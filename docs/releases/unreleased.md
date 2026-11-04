@@ -47,6 +47,10 @@ unreleased), and a restore puts them back:
   is skipped and listed. An upstream that does not resolve yet is written and
   listed in the report's new `attachments.unresolved`. An unusable attach
   policy file skips every attachment.
+- **Each entry is checked on its own.** One that fails the attach rules is
+  skipped and listed; the backup and the rest of the restore go ahead. An
+  entry the source's wip-deploy manages is skipped too: the install that
+  deploys the app re-creates it.
 - A record wip-deploy manages on the target is never replaced.
 - **WIP-Toolkit 0.25.4:** `system-restore` prints the attachments section.
 

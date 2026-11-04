@@ -766,7 +766,11 @@ in §5.5.
     hosts or to a loopback, link-local or metadata address is skipped. The
     app edge checks again where it resolves (§6.5);
   - an upstream that does not resolve yet is restored and listed as
-    `unresolved`, since the app often comes back after the stack.
+    `unresolved`, since the app often comes back after the stack;
+  - an entry that fails the attach rules is skipped and listed on its own.
+    The keys, grants and other attachments are restored all the same;
+  - an entry the source's wip-deploy manages is skipped: the install that
+    deploys the app re-creates it.
 - **Either order.** A grant on a namespace that exists (active or archived),
   or on a prefix reserved here by the archive's owner, is written as it was
   (a reserving key needs its grant to create the namespace). Any other grant

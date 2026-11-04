@@ -65,7 +65,12 @@ Restore rules:
   (the router's app edge checks again where it resolves). An upstream that
   does not resolve from here is written and listed as `unresolved`: in
   disaster recovery the app often comes back after the stack. When the
-  attach policy file is unusable, every attachment is skipped.
+  attach policy file is unusable, every attachment is skipped. Each entry is
+  checked on its own: one that fails the attach rules (a record stored
+  before a rule existed, or an edited archive) is skipped and listed, and
+  never stops the backup or the rest of the restore. An entry the source's
+  deployer manages is skipped: the install that deploys the app re-creates
+  it, and on another stack it would point at a host that is not there.
 - **Dry run by default.** The report lists what would be created, replaced,
   left unchanged and skipped (with the reason), and leads with a warning when
   the target holds auth state of its own: restoring old state brings back old
@@ -77,7 +82,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pymongo.errors import DuplicateKeyError
 
 from wip_auth import get_auth_config
@@ -176,13 +181,24 @@ class ArchiveReservation(BaseModel):
     origin: Origin = "console"
 
 
-class ArchiveAttachment(AttachmentRequest):
-    """An attachment as archived: the attach request's fields (validated the
-    same way) plus its status and provenance."""
+class ArchiveAttachment(BaseModel):
+    """An attachment as archived: its name, status and provenance, and the
+    attach fields (upstream, auth_required, allowed_groups, ... as
+    POST /attachments takes them) as stored.
 
-    status: Literal["active", "inactive"] = "active"
-    managed_by: Literal["wip-deploy"] | None = Field(
-        default=None, description="On the source; a restored record arrives unmanaged"
+    The attach fields are not validated here but per record on restore,
+    where one that fails the attach rules is skipped and listed. A stored
+    record written before a rule existed must neither stop the backup nor
+    take the archive's keys and grants down with it on restore."""
+
+    model_config = ConfigDict(extra="allow")
+
+    name: str
+    status: str = "active"
+    managed_by: str | None = Field(
+        default=None,
+        description="On the source. An entry the source's deployer manages is not "
+        "restored: the install that deploys the app re-creates it",
     )
     created_at: datetime | None = None
     created_by: str = "system"
@@ -440,8 +456,25 @@ async def restore_archive(
     return report, written_keys
 
 
-def _attachment_fields(a: AppAttachment | ArchiveAttachment) -> dict[str, Any]:
+def _attachment_fields(a: AppAttachment | AttachmentRequest) -> dict[str, Any]:
     return a.model_dump(include=set(AttachmentFields.model_fields))
+
+
+_ARCHIVE_ONLY = {"status", "managed_by", "created_at", "created_by"}
+
+
+def _validated_attachment(a: ArchiveAttachment) -> tuple[AttachmentRequest | None, str | None]:
+    """The archived entry as an attach request, or why it is not one."""
+    if a.status not in ("active", "inactive"):
+        return None, f"status {a.status!r} is neither 'active' nor 'inactive'"
+    try:
+        return AttachmentRequest.model_validate(a.model_dump(exclude=_ARCHIVE_ONLY)), None
+    except ValidationError as e:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc']) or 'record'}: {err['msg']}"
+            for err in e.errors()
+        )
+        return None, f"fails the attach rules: {problems}"
 
 
 async def _restore_attachments(
@@ -470,6 +503,17 @@ async def _restore_attachments(
     install_addresses = await resolve_install_addresses(policy)
 
     for a in archive.attachments:
+        if a.managed_by is not None:
+            out.skipped.append(SkippedRecord(
+                id=a.name,
+                reason="managed by wip-deploy on the source; the install that deploys the "
+                "app re-creates it",
+            ))
+            continue
+        request, why = _validated_attachment(a)
+        if request is None:
+            out.skipped.append(SkippedRecord(id=a.name, reason=why or "invalid"))
+            continue
         if a.name in reserved:
             out.skipped.append(SkippedRecord(
                 id=a.name, reason=f"/apps/{a.name} is a route of an app this install deploys",
@@ -479,16 +523,17 @@ async def _restore_attachments(
         if existing is not None and existing.managed_by is not None:
             out.skipped.append(SkippedRecord(id=a.name, reason="managed by wip-deploy on this instance"))
             continue
-        fields = _attachment_fields(a)
+        fields = _attachment_fields(request)
+        status: Literal["active", "inactive"] = "active" if a.status == "active" else "inactive"
         if existing is not None:
-            if (_attachment_fields(existing), existing.status) == (fields, a.status):
+            if (_attachment_fields(existing), existing.status) == (fields, status):
                 out.unchanged.append(a.name)
                 continue
             if not overwrite:
                 out.skipped.append(SkippedRecord(id=a.name, reason="differs on this instance; pass overwrite to replace it"))
                 continue
         try:
-            check = await check_upstream(a.upstream, policy, install_addresses)
+            check = await check_upstream(request.upstream, policy, install_addresses)
         except UpstreamInvalid as e:
             out.skipped.append(SkippedRecord(id=a.name, reason=str(e)))
             continue
@@ -504,14 +549,14 @@ async def _restore_attachments(
         if existing is not None:
             for k, v in fields.items():
                 setattr(existing, k, v)
-            existing.status = a.status
+            existing.status = status
             existing.updated_at = now
             existing.updated_by = restored_by
             await existing.save()
         else:
             try:
                 await AppAttachment(
-                    name=a.name, **fields, status=a.status, managed_by=None,
+                    name=a.name, **fields, status=status, managed_by=None,
                     created_at=a.created_at or now, created_by=a.created_by,
                     updated_at=now, updated_by=restored_by,
                 ).insert()
@@ -525,7 +570,7 @@ async def _restore_attachments(
                 continue
         logger.info(
             "Attachment %s restored (%s) by %s: /apps/%s -> %s",
-            a.name, a.status, restored_by, a.name, a.upstream,
+            a.name, status, restored_by, a.name, request.upstream,
         )
 
 

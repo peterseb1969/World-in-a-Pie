@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from registry.models.api_key import StoredAPIKey
 from registry.models.attachment import AppAttachment
 from registry.models.grant import NamespaceGrant
 from registry.services import attachments as attach_service
@@ -206,11 +207,61 @@ async def test_an_archive_without_attachments_still_restores(fresh, auth_headers
 
 
 @pytest.mark.asyncio
-async def test_an_invalid_archived_attachment_fails_the_archive(fresh, auth_headers, policy):
-    """Archived attachments are validated like an attach request."""
+async def test_an_invalid_entry_is_skipped_and_the_rest_restores(fresh, auth_headers, policy):
+    """An entry failing the attach rules is skipped on its own; the keys and
+    the other attachments are restored all the same."""
+    client = fresh
+    await _attach(client, auth_headers, _item("aa", "https://aa.apps.example"))
+    r = await client.post(
+        "/api/registry/api-keys", headers=auth_headers,
+        json={"name": "rc-key-1055", "namespaces": ["default"]},
+    )
+    assert r.status_code == 201, r.text
+    archive = await _backup(client, auth_headers)
+    archive["attachments"].append(
+        dict(archive["attachments"][0], name="bad", preserve_prefix_subpaths=["/apps/other/x"])
+    )
+    archive["attachments"].append(dict(archive["attachments"][0], name="odd", status="paused"))
+    await AppAttachment.delete_all()
+    await StoredAPIKey.delete_all()
+
+    report = await _restore(client, auth_headers, archive, dry_run=False)
+    skipped = {s["id"]: s["reason"] for s in report["attachments"]["skipped"]}
+    assert "fails the attach rules" in skipped["bad"] and "preserve_prefix_subpaths" in skipped["bad"]
+    assert "neither 'active' nor 'inactive'" in skipped["odd"]
+    assert report["attachments"]["created"] == ["aa"]
+    assert "rc-key-1055" in report["api_keys"]["created"]
+
+
+@pytest.mark.asyncio
+async def test_a_stored_record_that_predates_a_rule_does_not_stop_the_backup(
+    fresh, auth_headers, policy,
+):
+    """The stored record has no subpath rule; the attach request does. A
+    record written before the rule is archived as stored, and skipped on
+    restore."""
+    client = fresh
+    await AppAttachment(
+        name="old", upstream="https://aa.apps.example", auth_required=True, allowed_groups=[],
+        strip_prefix=True, preserve_prefix_subpaths=["/apps/elsewhere/x"],
+    ).insert()
+    archive = await _backup(client, auth_headers)
+    assert [a["name"] for a in archive["attachments"]] == ["old"]
+    await AppAttachment.delete_all()
+
+    report = await _restore(client, auth_headers, archive, dry_run=False)
+    assert report["attachments"]["skipped"][0]["id"] == "old"
+    assert await AppAttachment.find_all().count() == 0
+
+
+@pytest.mark.asyncio
+async def test_an_entry_the_sources_deployer_manages_is_not_restored(fresh, auth_headers, policy):
     client = fresh
     await _attach(client, auth_headers, _item("aa", "https://aa.apps.example"))
     archive = await _backup(client, auth_headers)
-    archive["attachments"][0]["preserve_prefix_subpaths"] = ["/apps/other/x"]
-    r = await client.post(RESTORE, json=archive, headers=auth_headers)
-    assert r.status_code == 422
+    archive["attachments"][0]["managed_by"] = "wip-deploy"
+    await AppAttachment.delete_all()
+
+    report = await _restore(client, auth_headers, archive, dry_run=False)
+    assert "managed by wip-deploy on the source" in report["attachments"]["skipped"][0]["reason"]
+    assert await AppAttachment.find_all().count() == 0
