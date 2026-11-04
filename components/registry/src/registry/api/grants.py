@@ -3,17 +3,22 @@
 Provides grant CRUD (bulk-first) and user-facing permission queries.
 """
 
+import logging
+import math
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from wip_auth import UserIdentity
 
 from ..models.api_key import StoredAPIKey
 from ..models.grant import (
+    GrantActivate,
+    GrantActivateBulkResponse,
     GrantBulkResponse,
     GrantCreate,
+    GrantListResponse,
     GrantResponse,
     GrantRevoke,
     GrantRevokeBulkResponse,
@@ -21,7 +26,7 @@ from ..models.grant import (
     NamespaceGrant,
 )
 from ..models.namespace import Namespace
-from ..services.auth import require_api_key
+from ..services.auth import require_admin_key, require_api_key
 from ..services.errors import error_fields
 from ..services.managed import MANAGED_BY_DEPLOYER, grant_refusal
 
@@ -31,6 +36,9 @@ AuthMethod = Literal["jwt", "api_key", "gateway_oidc", "none"]
 
 router = APIRouter()        # /{prefix}/grants — mounted at /namespaces
 my_router = APIRouter()     # /my/namespaces — mounted at /my
+all_router = APIRouter()    # every grant, for platform admins — mounted at /grants
+
+logger = logging.getLogger("registry.grants")
 
 # Permission hierarchy for comparison
 _PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2, "admin": 3}
@@ -117,7 +125,36 @@ def _grant_to_response(grant: NamespaceGrant) -> GrantResponse:
         granted_at=grant.granted_at,
         expires_at=grant.expires_at,
         managed_by=grant.managed_by,
+        orphaned=grant.orphaned,
+        orphaned_at=grant.orphaned_at,
     )
+
+
+def _grant_label(grant: NamespaceGrant) -> str:
+    return f"{grant.namespace}/{grant.subject_type}:{grant.subject}"
+
+
+async def activate_orphaned_grants(prefix: str, actor: str) -> list[str]:
+    """Make every orphaned grant on `prefix` effective; returns them as
+    'namespace/subject_type:subject'.
+
+    Called when a platform admin creates the namespace: an admin could grant
+    each of them anyway, and a disaster-recovery restore of the namespace
+    data then needs no second system restore. A namespace created under a
+    reservation by its holder does not call this: an orphan exists because
+    the archive held no reservation of the prefix, so the holder is not the
+    namespace the grant was made for.
+    """
+    orphans = await NamespaceGrant.find({"namespace": prefix, "orphaned": True}).to_list()
+    for grant in orphans:
+        await grant.set({"orphaned": False, "orphaned_at": None})
+    labels = sorted(_grant_label(g) for g in orphans)
+    if labels:
+        logger.warning(
+            "Namespace '%s' created by %s: activated %d orphaned grant(s): %s",
+            prefix, actor, len(labels), ", ".join(labels),
+        )
+    return labels
 
 
 async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
@@ -190,9 +227,11 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     if not subjects:
         return "none"
 
-    # Query all matching grants for this namespace
+    # Query all matching grants for this namespace. An orphaned grant gives
+    # nothing until it is activated.
     query = {
         "namespace": namespace,
+        "orphaned": {"$ne": True},
         "$or": [
             {"subject": subj, "subject_type": stype}
             for stype, subj in subjects
@@ -343,10 +382,14 @@ async def create_grants(
             if await _grant_is_managed(prefix, subject, item.subject_type, existing):
                 raise grant_refusal(prefix, subject)
             if existing:
+                # Granting again is an admin's explicit decision, so it also
+                # activates an orphaned grant.
                 existing.permission = item.permission
                 existing.expires_at = item.expires_at
                 existing.granted_by = identity.identity_string
                 existing.granted_at = datetime.now(UTC)
+                existing.orphaned = False
+                existing.orphaned_at = None
                 await existing.save()
                 results.append({
                     "index": i, "status": "updated",
@@ -427,6 +470,100 @@ async def revoke_grants(
         "succeeded": succeeded,
         "failed": sum(1 for r in results if r["status"] == "error"),
     }
+
+
+@router.post(
+    "/{prefix}/grants/activate",
+    response_model=GrantActivateBulkResponse,
+    summary="Activate orphaned grants on a namespace (bulk)",
+)
+async def activate_grants(
+    prefix: str,
+    items: list[GrantActivate],
+    identity: UserIdentity = Depends(require_api_key),
+):
+    """Make orphaned grants effective. An orphaned grant is one a system
+    restore wrote while its namespace did not exist and was not reserved; it
+    gives nothing until activated here, re-granted, or the namespace is
+    created by a platform admin. Needs admin on the namespace, which must
+    exist. Revoking an orphan works like revoking any grant.
+
+    Per item: activated, unchanged (not orphaned), not_found, or error
+    (managed_by_deployer)."""
+    permission = await _resolve_permission(identity, prefix)
+    if _PERMISSION_LEVELS.get(permission, 0) < _PERMISSION_LEVELS["admin"]:
+        raise HTTPException(403, f"Requires admin access to namespace '{prefix}'")
+    if not await Namespace.find_one({"prefix": prefix, "status": "active"}):
+        raise HTTPException(404, f"Namespace '{prefix}' not found")
+
+    results = []
+    for i, item in enumerate(items):
+        subject = item.subject
+        if item.subject_type == "api_key":
+            subject = subject.removeprefix("apikey:")
+        grant = await NamespaceGrant.find_one({
+            "namespace": prefix, "subject": subject, "subject_type": item.subject_type,
+        })
+        if grant is None:
+            results.append({"index": i, "status": "not_found", "subject": subject})
+        elif await _grant_is_managed(prefix, subject, item.subject_type, grant):
+            results.append({
+                "index": i, "status": "error", "subject": subject,
+                "error": grant_refusal(prefix, subject).detail,
+                "error_code": MANAGED_BY_DEPLOYER,
+            })
+        elif not grant.orphaned:
+            results.append({"index": i, "status": "unchanged", "subject": subject})
+        else:
+            await grant.set({"orphaned": False, "orphaned_at": None})
+            logger.info(
+                "%s activated orphaned grant %s", identity.identity_string, _grant_label(grant)
+            )
+            results.append({"index": i, "status": "activated", "subject": subject})
+
+    return {
+        "results": results,
+        "total": len(items),
+        "succeeded": sum(1 for r in results if r["status"] in ("activated", "unchanged")),
+        "failed": sum(1 for r in results if r["status"] == "error"),
+    }
+
+
+@all_router.get(
+    "",
+    response_model=GrantListResponse,
+    summary="List grants across namespaces (platform admin)",
+)
+async def list_all_grants(
+    orphaned: bool | None = Query(None, description="Only orphaned (true) or only effective (false) grants"),
+    namespace: str | None = Query(None, description="Only grants on this namespace prefix"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
+    _admin: str = Depends(require_admin_key),
+) -> GrantListResponse:
+    """Every grant, sorted by namespace, subject type and subject. The
+    per-namespace listing needs admin on the namespace; an orphaned grant's
+    namespace usually does not exist, so this is where they are found."""
+    query: dict = {}
+    if orphaned is True:
+        query["orphaned"] = True
+    elif orphaned is False:
+        query["orphaned"] = {"$ne": True}
+    if namespace is not None:
+        query["namespace"] = namespace
+    finder = NamespaceGrant.find(query)
+    total = await finder.count()
+    docs = await (
+        finder.sort("+namespace", "+subject_type", "+subject")
+        .skip((page - 1) * page_size).limit(page_size).to_list()
+    )
+    return GrantListResponse(
+        items=[_grant_to_response(g) for g in docs],
+        total=total,
+        page=page,
+        page_size=page_size,
+        pages=math.ceil(total / page_size) if total > 0 else 0,
+    )
 
 
 # =============================================================================

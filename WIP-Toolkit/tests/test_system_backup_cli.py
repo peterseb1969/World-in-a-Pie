@@ -63,8 +63,9 @@ REPORT = {
     "dry_run": True, "warnings": ["This instance already holds API keys"],
     "reservations": {"created": [], "replaced": [], "unchanged": [], "skipped": []},
     "api_keys": {"created": ["rc-key"], "replaced": [], "unchanged": [], "skipped": []},
-    "grants": {"created": [], "replaced": [], "unchanged": [],
-               "skipped": [{"id": "x/user:a@b", "reason": "user grant from another OIDC issuer"}]},
+    "grants": {"created": ["later/group:g"], "replaced": [], "unchanged": [],
+               "skipped": [{"id": "x/user:a@b", "reason": "user grant from another OIDC issuer"}],
+               "orphaned": ["later/group:g"]},
 }
 
 
@@ -80,6 +81,7 @@ def test_restore_is_a_dry_run_unless_applied(tmp_path):
         "dry_run": "true", "overwrite": "false", "include_user_grants": "false"}
     assert "Warning:" in result.output and "created: rc-key" in result.output
     assert "user grant from another OIDC issuer" in result.output
+    assert "created: later/group:g (orphaned until its namespace exists)" in result.output
     assert "Dry run" in result.output
 
 

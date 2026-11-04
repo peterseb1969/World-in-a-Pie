@@ -28,8 +28,10 @@ from ..models.api_models import (
     NamespaceUpdate,
 )
 from ..models.entry import RegistryEntry
+from ..models.grant import NamespaceGrant
 from ..models.id_algorithm import VALID_ENTITY_TYPES, validate_id_config_write
 from ..models.namespace import WIP_NAMESPACE, Namespace, id_config_view, prefix_error
+from ..models.reservation import RuntimeReservation
 from ..services.auth import require_admin_key, require_api_key
 from ..services.id_prefixes import (
     IdPrefixError,
@@ -43,7 +45,7 @@ from ..services.reservations import (
     SETTING_FIELDS,
     ReservationsUnavailable,
 )
-from .grants import _resolve_permission
+from .grants import _resolve_permission, activate_orphaned_grants
 
 router = APIRouter()
 logger = logging.getLogger("registry.namespaces")
@@ -120,17 +122,59 @@ async def _reserved_settings(prefix: str) -> dict[str, Any] | None:
     return settings
 
 
+async def _reservation_owner(identity: UserIdentity, prefix: str) -> str | None:
+    """The calling key's name when it owns the runtime reservation of
+    `prefix`, else None.
+
+    A runtime reservation (one the Registry's API made, not the install's
+    file) names the key that reserved the prefix. It is that key's standing
+    approval to create the namespace, independent of the namespace's
+    lifecycle: deleting the namespace purges every grant on it, the owner's
+    `admin` included, but leaves the reservation, and the owner must still be
+    able to bootstrap it again. A file reservation names an app, not a key;
+    its key's grants come back through the key import instead.
+    """
+    if identity.auth_method != "api_key":
+        return None
+    doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
+    if doc is None or doc.managed_by is not None:
+        return None
+    name = identity.username.removeprefix("apikey:")
+    return name if doc.app == name else None
+
+
+async def _restore_owner_grant(prefix: str, owner: str) -> None:
+    """After the reservation's owner created the namespace: make sure the
+    owner holds a grant on it, as key creation gave it. A missing grant is
+    created as `admin`; an existing one keeps its permission and, if a
+    system restore left it orphaned, becomes effective, since it is the
+    owner's own."""
+    grant = await NamespaceGrant.find_one({
+        "namespace": prefix, "subject": owner, "subject_type": "api_key",
+    })
+    if grant is None:
+        await NamespaceGrant(
+            namespace=prefix, subject=owner, subject_type="api_key",
+            permission="admin", granted_by=f"reservation:{prefix}",
+        ).create()
+        logger.info("Namespace '%s' created by its reservation's owner: granted '%s' admin", prefix, owner)
+    elif grant.orphaned:
+        await grant.set({"orphaned": False, "orphaned_at": None})
+
+
 async def _check_reserved_upsert(
     identity: UserIdentity,
     prefix: str,
     ns: Namespace | None,
     update_data: dict[str, Any],
     reserved: dict[str, Any] | None,
+    owner: str | None = None,
 ) -> None:
     """Admit a caller outside the platform admin groups to the upsert, or 403.
 
-    Such a caller needs a reservation of the prefix and `admin` on it, and
-    may only send settings equal to the reservation's and, when the
+    Such a caller needs a reservation of the prefix and either to own it
+    (`owner`, a runtime reservation made by this key) or to hold `admin` on
+    it, and may only send settings equal to the reservation's and, when the
     namespace exists, to its live values. The description is the exception:
     it governs nothing, so a create stores the one sent and an existing
     namespace ignores it. A reservation changed after the namespace was
@@ -144,7 +188,7 @@ async def _check_reserved_upsert(
                 "an app's key may only upsert a namespace the install reserves for it"
             ),
         )
-    if await _resolve_permission(identity, prefix) != "admin":
+    if owner is None and await _resolve_permission(identity, prefix) != "admin":
         raise HTTPException(
             status_code=403,
             detail=f"Upserting reserved namespace '{prefix}' requires admin on it",
@@ -320,7 +364,11 @@ async def create_namespace(
         )
         await ns.create()
 
-    return namespace_to_response(ns)
+    response = namespace_to_response(ns)
+    response.activated_orphan_grants = await activate_orphaned_grants(
+        ns.prefix, request.created_by or "a platform admin"
+    )
+    return response
 
 
 @router.put(
@@ -376,8 +424,11 @@ async def upsert_namespace(
             ) from e
 
     reserved = await _reserved_settings(prefix)
-    if not identity.has_any_group(get_auth_config().admin_groups):
-        await _check_reserved_upsert(identity, prefix, ns, update_data, reserved)
+    is_admin = identity.has_any_group(get_auth_config().admin_groups)
+    owner: str | None = None
+    if not is_admin:
+        owner = await _reservation_owner(identity, prefix)
+        await _check_reserved_upsert(identity, prefix, ns, update_data, reserved, owner)
         if ns is not None:
             # Every supplied setting equals the live value: nothing to write.
             return namespace_to_response(ns)
@@ -436,7 +487,14 @@ async def upsert_namespace(
                 created_by=actor,
             )
             await ns.create()
-        return namespace_to_response(ns)
+        response = namespace_to_response(ns)
+        if is_admin:
+            response.activated_orphan_grants = await activate_orphaned_grants(
+                prefix, identity.identity_string
+            )
+        elif owner is not None:
+            await _restore_owner_grant(prefix, owner)
+        return response
 
     # A changed id_config must pass the prefix rule and claim its prefixes;
     # re-sending the stored one (a resume, a same-name restore) never fails.

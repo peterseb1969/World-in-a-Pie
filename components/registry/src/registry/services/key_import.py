@@ -334,6 +334,10 @@ async def _import_grants(
             canonical.origin = "file"
             canonical.granted_by = WIP_DEPLOY
             canonical.expires_at = None
+            # The install's file declares this grant: it is effective, never
+            # an orphan a restore left waiting.
+            canonical.orphaned = False
+            canonical.orphaned_at = None
             await canonical.save()
             report.grants_changed.append(f"{ns}:{name}")
 

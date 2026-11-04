@@ -5,7 +5,7 @@ namespace grant and every reservation. A restore upserts by identity, never
 deletes, runs as a dry run unless told otherwise, refuses another hash salt,
 and brings every record back unmanaged (origin "restored"); records the
 install's files own on the target are never replaced. User grants follow the
-OIDC issuer, and a grant waits for its namespace.
+OIDC issuer, and a grant without its namespace is kept orphaned.
 """
 
 import uuid
@@ -15,7 +15,6 @@ import pytest
 from registry.main import providers as _app_providers
 from registry.models.api_key import StoredAPIKey
 from registry.models.grant import NamespaceGrant
-from registry.models.namespace import Namespace
 from registry.models.reservation import RuntimeReservation
 from registry.services import key_shadowing
 from wip_auth import APIKeyProvider
@@ -187,19 +186,17 @@ async def test_user_grants_from_another_issuer_need_the_flag(fresh, auth_headers
 
 
 @pytest.mark.asyncio
-async def test_a_grant_waits_for_its_namespace(fresh, auth_headers):
+async def test_a_grant_without_its_namespace_is_written_orphaned(fresh, auth_headers):
+    """The full orphan lifecycle is in test_case_1053_orphan_grants.py."""
     client = fresh
     await _make_state(client, auth_headers)
     archive = await _backup(client, auth_headers)
     archive["grants"].append({**archive["grants"][0], "namespace": "later-ns",
                               "subject": "late-group", "subject_type": "group"})
     report = await _restore(client, auth_headers, archive, dry_run=False)
-    skipped = {s["id"]: s["reason"] for s in report["grants"]["skipped"]}
-    assert "does not exist" in skipped["later-ns/group:late-group"]
-
-    await Namespace(prefix="later-ns", description="restored later").insert()
-    report = await _restore(client, auth_headers, archive, dry_run=False)
     assert report["grants"]["created"] == ["later-ns/group:late-group"]
+    assert report["grants"]["orphaned"] == ["later-ns/group:late-group"]
+    assert report["grants"]["skipped"] == []
 
 
 @pytest.mark.asyncio

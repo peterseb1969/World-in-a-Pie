@@ -156,6 +156,11 @@ class ImportService:
                     created_by=imported_by,
                 )
                 await namespace.create()
+                # Import is a platform admin's: orphaned grants waiting for
+                # this prefix become effective, as on any admin create.
+                from ..api.grants import activate_orphaned_grants
+
+                await activate_orphaned_grants(prefix, imported_by or "a namespace import")
             else:
                 # mode='merge' on existing — return the existing record
                 namespace = existing_ns

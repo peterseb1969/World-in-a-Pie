@@ -1478,10 +1478,12 @@ def system_restore_cmd(
     Reports what would change unless --apply is given. Records are upserted
     by identity and never deleted; restored records arrive unmanaged. Records
     the install's files manage here are never replaced. A grant on a
-    namespace that does not exist (and is not reserved) is skipped: restore
-    the namespace backups first, then run this (re-running is safe). Refused
-    when the archive's API key hash salt differs from this instance's.
-    Needs a platform admin key.
+    namespace that does not exist (and is not reserved) is written orphaned:
+    it gives nothing until a platform admin creates the namespace (restoring
+    the namespace backup as an admin does) or a namespace admin activates it,
+    so this and the namespace restores work in either order. Refused when the
+    archive's API key hash salt differs from this instance's. Needs a
+    platform admin key.
 
     Examples:
 
@@ -1520,9 +1522,11 @@ def system_restore_cmd(
             f"{len(section.get('unchanged', []))} unchanged, "
             f"{len(section.get('skipped', []))} skipped"
         )
+        orphaned = set(section.get("orphaned", []))
         for verb in ("created", "replaced"):
             for record_id in section.get(verb, []):
-                console.print(f"  {verb}: {record_id}")
+                note = " (orphaned until its namespace exists)" if record_id in orphaned else ""
+                console.print(f"  {verb}: {record_id}{note}")
         for skipped in section.get("skipped", []):
             console.print(f"  skipped: {skipped['id']} ({skipped['reason']})")
     if report.get("dry_run", True):

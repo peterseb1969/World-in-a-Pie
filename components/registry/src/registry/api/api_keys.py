@@ -157,8 +157,12 @@ async def _set_grant(name: str, prefix: str, permission: Literal["read", "write"
             permission=permission,
             granted_by=get_identity_string(),
         ).create()
-    elif grant.permission != permission:
+    elif grant.permission != permission or grant.orphaned:
+        # A platform admin setting the key's grant is an explicit decision,
+        # so it also activates a grant a system restore left orphaned.
         grant.permission = permission
+        grant.orphaned = False
+        grant.orphaned_at = None
         await grant.save()
 
 

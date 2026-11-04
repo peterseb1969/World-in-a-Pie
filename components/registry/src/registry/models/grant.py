@@ -46,6 +46,18 @@ class NamespaceGrant(Document):
         default="console",
         description="Who wrote the grant: the install's key file, the API, or a restore",
     )
+    orphaned: bool = Field(
+        default=False,
+        description=(
+            "Written by a system restore onto a namespace that did not exist and "
+            "was not reserved. An orphaned grant gives nothing until it is "
+            "activated: when a platform admin creates the namespace, or when a "
+            "namespace admin activates it"
+        ),
+    )
+    orphaned_at: datetime | None = Field(
+        default=None, description="When the grant was written orphaned"
+    )
 
     def is_expired(self) -> bool:
         if self.expires_at is None:
@@ -87,6 +99,15 @@ class GrantRevoke(BaseModel):
     subject_type: Literal["user", "api_key", "group"] = "user"
 
 
+class GrantActivate(BaseModel):
+    """Names an orphaned grant to activate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    subject: str
+    subject_type: Literal["user", "api_key", "group"] = "user"
+
+
 class GrantBulkResultItem(BulkResultItemBase):
     """Per-item result of a bulk grant create/upsert.
 
@@ -114,6 +135,17 @@ class GrantRevokeBulkResponse(BulkResponseBase[GrantRevokeBulkResultItem]):
     """Envelope for the bulk grant-revoke response."""
 
 
+class GrantActivateBulkResultItem(BulkResultItemBase):
+    """Per-item result of a bulk orphan activation. Status: activated,
+    unchanged (the grant is not orphaned), not_found."""
+
+    subject: str
+
+
+class GrantActivateBulkResponse(BulkResponseBase[GrantActivateBulkResultItem]):
+    """Envelope for the bulk orphan-activation response."""
+
+
 class GrantResponse(BaseModel):
     """A grant in API responses."""
 
@@ -129,6 +161,22 @@ class GrantResponse(BaseModel):
         description="'wip-deploy' for a grant imported from the install's key file; "
         "the API refuses to change it (error_code managed_by_deployer)",
     )
+    orphaned: bool = Field(
+        default=False,
+        description="True for a grant a system restore wrote before its namespace "
+        "existed; it gives nothing until activated",
+    )
+    orphaned_at: datetime | None = None
+
+
+class GrantListResponse(BaseModel):
+    """A page of grants across namespaces."""
+
+    items: list[GrantResponse]
+    total: int
+    page: int
+    page_size: int
+    pages: int = 0
 
 
 class MyNamespaceResponse(BaseModel):

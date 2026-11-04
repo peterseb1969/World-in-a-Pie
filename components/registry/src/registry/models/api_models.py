@@ -106,6 +106,14 @@ class NamespaceResponse(BaseModel):
     created_by: str | None
     updated_at: datetime
     updated_by: str | None
+    activated_orphan_grants: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Set by a create only: the orphaned grants on this prefix that "
+            "became effective because a platform admin created the namespace "
+            "(as 'namespace/subject_type:subject'). Empty otherwise."
+        ),
+    )
 
 
 class NamespaceStatsResponse(BaseModel):

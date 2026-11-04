@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from .api_keys import router as api_keys_router
 from .attachments import router as attachments_router
 from .entries import router as entries_router
+from .grants import all_router as all_grants_router
 from .grants import my_router as my_router
 from .grants import router as grants_router
 from .namespace_deletion import router as deletion_router
@@ -24,6 +25,7 @@ api_router.include_router(grants_router, prefix="/namespaces", tags=["Grants"])
 api_router.include_router(entries_router, prefix="/entries", tags=["Entries"])
 api_router.include_router(synonyms_router, prefix="/synonyms", tags=["Synonyms"])
 api_router.include_router(search_router, prefix="/search", tags=["Search"])
+api_router.include_router(all_grants_router, prefix="/grants", tags=["Grants"])
 api_router.include_router(my_router, prefix="/my", tags=["My Permissions"])
 api_router.include_router(api_keys_router, prefix="/api-keys", tags=["API Keys"])
 api_router.include_router(reservations_router, prefix="/reservations", tags=["Reservations"])

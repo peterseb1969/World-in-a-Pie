@@ -35,12 +35,16 @@ Restore rules:
   restored; from another one they are skipped and listed unless
   `include_user_grants` is set, since the same email may name someone else.
   Group and key grants are always restored.
-- **A grant needs its namespace, or a reservation of it.** A grant on a
-  namespace that does not exist is skipped and listed, never written
-  dangling, unless the prefix is reserved here: a key that reserves a prefix
-  holds admin on it before the namespace exists, and needs that grant to
-  create it. Reservations are restored first for that reason. Otherwise
-  restore the namespace data first, then run (or re-run) the system restore.
+- **A grant without its namespace is kept, orphaned.** A grant on a namespace
+  that exists, or on a prefix reserved here, is written effective: a key that
+  reserves a prefix holds admin on it before the namespace exists, and needs
+  that grant to create it (reservations are restored first for that reason).
+  Any other grant is written `orphaned` and listed: it gives nothing until it
+  is activated, which happens when a platform admin creates the namespace
+  (a data restore an admin runs does), or when a namespace admin activates
+  it. A key that reserves the prefix later and creates the namespace does
+  not inherit it. So the system and data restores work in either order. A
+  grant the archive holds orphaned stays orphaned, wherever it lands.
 - **Dry run by default.** The report lists what would be created, replaced,
   left unchanged and skipped (with the reason), and leads with a warning when
   the target holds auth state of its own: restoring old state brings back old
@@ -116,6 +120,10 @@ class ArchiveGrant(BaseModel):
     expires_at: datetime | None = None
     managed_by: Literal["wip-deploy"] | None = None
     origin: Origin = "console"
+    orphaned: bool = Field(
+        default=False, description="Orphaned on the source; a restore keeps it orphaned"
+    )
+    orphaned_at: datetime | None = None
 
 
 class ArchiveReservation(BaseModel):
@@ -157,6 +165,12 @@ class RecordReport(BaseModel):
     replaced: list[str] = Field(default_factory=list)
     unchanged: list[str] = Field(default_factory=list)
     skipped: list[SkippedRecord] = Field(default_factory=list)
+    orphaned: list[str] = Field(
+        default_factory=list,
+        description="Grants only: those of `created` and `replaced` written orphaned, "
+        "because their namespace neither exists nor is reserved here (or they were "
+        "orphaned in the archive). They give nothing until activated.",
+    )
 
 
 class SystemRestoreReport(BaseModel):
@@ -207,8 +221,8 @@ def _key_content(k: StoredAPIKey | ArchiveKey) -> tuple:
     )
 
 
-def _grant_content(g: NamespaceGrant | ArchiveGrant) -> tuple:
-    return (g.permission, _norm_dt(g.expires_at))
+def _grant_content(g: NamespaceGrant | ArchiveGrant, orphaned: bool | None = None) -> tuple:
+    return (g.permission, _norm_dt(g.expires_at), g.orphaned if orphaned is None else orphaned)
 
 
 def _reservation_content(r: RuntimeReservation | ArchiveReservation) -> tuple:
@@ -239,6 +253,7 @@ async def build_archive() -> SystemArchive:
                 namespace=g.namespace, subject=g.subject, subject_type=g.subject_type,
                 permission=g.permission, granted_by=g.granted_by, granted_at=g.granted_at,
                 expires_at=g.expires_at, managed_by=g.managed_by, origin=g.origin,
+                orphaned=g.orphaned, orphaned_at=g.orphaned_at,
             )
             for g in sorted(grants, key=lambda g: (g.namespace, g.subject_type, g.subject))
         ],
@@ -392,10 +407,11 @@ async def _restore_keys(
 
 
 async def _grantable(namespace: str, report: SystemRestoreReport, dry_run: bool) -> bool:
-    """A grant may be written on a namespace that exists, or on a reserved
-    prefix: a key that reserves a prefix holds admin on it before the
-    namespace is created, and needs that grant to create it. A dry run counts
-    the reservations it would restore."""
+    """Whether a grant is written effective: on a namespace that exists, or on
+    a reserved prefix (a key that reserves a prefix holds admin on it before
+    the namespace is created, and needs that grant to create it). Any other
+    grant is written orphaned. A dry run counts the reservations it would
+    restore."""
     if await Namespace.find_one({"prefix": namespace, "status": "active"}):
         return True
     if dry_run and namespace in (*report.reservations.created, *report.reservations.replaced):
@@ -434,27 +450,33 @@ async def _restore_grants(
             continue
         if g.namespace not in active:
             active[g.namespace] = await _grantable(g.namespace, report, dry_run)
-        if not active[g.namespace]:
-            out.skipped.append(SkippedRecord(
-                id=gid, reason="namespace does not exist here; restore it, then re-run",
-            ))
-            continue
+        orphaned = g.orphaned or not active[g.namespace]
         if existing is not None:
-            if _grant_content(existing) == _grant_content(g):
+            if _grant_content(existing) == _grant_content(g, orphaned):
                 out.unchanged.append(gid)
                 continue
             if not overwrite:
-                out.skipped.append(SkippedRecord(id=gid, reason="differs on this instance; pass overwrite to replace it"))
+                reason = (
+                    "orphaned on this instance; activate it on the namespace, or pass "
+                    "overwrite to replace it"
+                    if existing.orphaned and not orphaned
+                    else "differs on this instance; pass overwrite to replace it"
+                )
+                out.skipped.append(SkippedRecord(id=gid, reason=reason))
                 continue
             out.replaced.append(gid)
         else:
             out.created.append(gid)
+        if orphaned:
+            out.orphaned.append(gid)
         if dry_run:
             continue
         fields = {
             "permission": g.permission, "granted_by": g.granted_by,
             "granted_at": g.granted_at or datetime.now(UTC), "expires_at": g.expires_at,
             "managed_by": None, "origin": "restored",
+            "orphaned": orphaned,
+            "orphaned_at": (g.orphaned_at or datetime.now(UTC)) if orphaned else None,
         }
         if existing is not None:
             await existing.set(fields)
