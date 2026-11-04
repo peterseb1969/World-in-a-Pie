@@ -1,8 +1,8 @@
 """System backup and restore of the Registry's auth state (platform admins only).
 
 The archive holds every stored API key (bcrypt hashes, never plaintexts),
-every namespace grant and every namespace reservation; namespace data
-backups never carry them. See services/system_backup.py for the rules.
+every namespace grant, every namespace reservation and every app
+attachment; namespace data backups never carry them. See services/system_backup.py for the rules.
 The archive is sensitive: keep it like the install's own secrets.
 """
 
@@ -31,13 +31,14 @@ router = APIRouter()
 @router.post(
     "/system-backup",
     response_model=SystemArchive,
-    summary="Back up the Registry's API keys, grants and reservations",
+    summary="Back up the Registry's API keys, grants, reservations and attachments",
 )
 async def system_backup(_admin: str = Depends(require_admin_key)) -> SystemArchive:
     """Return the system backup archive: every stored API key record (its
     bcrypt hash and metadata, never a plaintext; managed records included),
-    every namespace grant and every namespace reservation, with the OIDC
-    issuer and a fingerprint of the API key hash salt.
+    every namespace grant, every namespace reservation and every app
+    attachment, with the OIDC issuer and the API key hash salt (and its
+    fingerprint).
 
     Config keys, the master key among them, are not records and are not
     included. Namespace data is not included either; back it up with the
@@ -45,9 +46,10 @@ async def system_backup(_admin: str = Depends(require_admin_key)) -> SystemArchi
     key hash."""
     archive = await build_archive()
     logger.warning(
-        "System backup taken by %s: %d key(s), %d grant(s), %d reservation(s)",
+        "System backup taken by %s: %d key(s), %d grant(s), %d reservation(s), "
+        "%d attachment(s)",
         get_identity_string(), len(archive.api_keys), len(archive.grants),
-        len(archive.reservations),
+        len(archive.reservations), len(archive.attachments),
     )
     return archive
 
@@ -72,12 +74,16 @@ async def system_restore(
     """Restore an archive from POST /system-backup.
 
     Upserts by identity (key name; grant namespace, subject and subject type;
-    reservation prefix) and never deletes. Restored records arrive unmanaged,
-    with origin "restored". A record wip-deploy manages here, a grant to a key
-    whose grants the key file declares, and a key named like a loaded config
-    key are never replaced. A grant on a namespace that does not exist is
-    skipped: restore the namespace data first, then re-run. User grants from
-    another OIDC issuer are skipped unless include_user_grants is set.
+    reservation prefix; attachment name) and never deletes. Restored records
+    arrive unmanaged. A record wip-deploy manages here, a grant to a key whose
+    grants the key file declares, and a key named like a loaded config key are
+    never replaced. A grant on a namespace that neither exists nor is reserved
+    here is written orphaned and gives nothing until activated. User grants
+    from another OIDC issuer are skipped unless include_user_grants is set.
+    Attachments are restored last with their archived status; one whose name
+    an app of this install routes under, or whose upstream resolves from here
+    to a blocked target, is skipped; one whose upstream does not resolve yet
+    is written and listed as unresolved.
 
     When the archive was made under another runtime-key salt, a stack that
     holds no API keys of its own (only keys its key file manages) adopts the
@@ -120,10 +126,12 @@ async def system_restore(
 
     if not dry_run:
         logger.warning(
-            "System restore by %s: keys +%d ~%d, grants +%d ~%d, reservations +%d ~%d",
+            "System restore by %s: keys +%d ~%d, grants +%d ~%d, reservations +%d ~%d, "
+            "attachments +%d ~%d",
             get_identity_string(),
             len(report.api_keys.created), len(report.api_keys.replaced),
             len(report.grants.created), len(report.grants.replaced),
             len(report.reservations.created), len(report.reservations.replaced),
+            len(report.attachments.created), len(report.attachments.replaced),
         )
     return report

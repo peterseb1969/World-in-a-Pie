@@ -694,15 +694,15 @@ archive merge/diff, and archives do not carry API keys or namespace
 grants: a restore brings back data, not access. Access has its own backup
 (§5.7).
 
-### 5.7 System backup — API keys, grants and reservations
+### 5.7 System backup — API keys, grants, reservations and attachments
 
 Namespace backups never carry auth state. The **system backup** does: every
-API key the Registry stores, every namespace grant and every namespace
-reservation, in one JSON file. It includes the keys the Registry imported
-from the install's key file. After a wipe or a move to other hardware, it
-brings back the keys apps were issued from the Console (the apps still hold
-the plaintexts), the grants to users, groups and keys, and the runtime
-reservations.
+API key the Registry stores, every namespace grant, every namespace
+reservation and every app attachment (§6.5), in one JSON file. It includes
+the keys the Registry imported from the install's key file. After a wipe or a
+move to other hardware, it brings back the keys apps were issued from the
+Console (the apps still hold the plaintexts), the grants to users, groups and
+keys, the runtime reservations, and the attached apps' routes.
 
 ```bash
 # Platform admin key required for both
@@ -758,6 +758,15 @@ in §5.5.
   issuer are skipped, since the same email may belong to someone else. Pass
   `--include-user-grants` to restore them anyway. Group and key grants are
   always restored.
+- **Attachments come back last,** after keys and grants, with their archived
+  status, so an attached app is under the umbrella again as soon as it runs
+  with its original key. The attach rules still apply:
+  - a name one of this install's own apps routes under is skipped;
+  - an upstream that resolves, from the Registry, to one of the install's own
+    hosts or to a loopback, link-local or metadata address is skipped. The
+    app edge checks again where it resolves (§6.5);
+  - an upstream that does not resolve yet is restored and listed as
+    `unresolved`, since the app often comes back after the stack.
 - **Either order.** A grant on a namespace that exists (active or archived),
   or on a prefix reserved here by the archive's owner, is written as it was
   (a reserving key needs its grant to create the namespace). Any other grant

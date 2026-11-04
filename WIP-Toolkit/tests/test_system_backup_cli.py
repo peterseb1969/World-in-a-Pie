@@ -104,3 +104,25 @@ def test_a_refused_restore_exits_1(tmp_path):
     result = _invoke(_client(error=error), "system-restore", path, "--apply")
     assert result.exit_code == 1
     assert "salt" in result.output
+
+
+def test_restore_prints_attachments_and_marks_unresolved_upstreams(tmp_path):
+    path = tmp_path / "auth.json"
+    path.write_text(json.dumps(ARCHIVE))
+    report = dict(REPORT, attachments={
+        "created": ["aa", "later"], "replaced": [], "unchanged": [],
+        "skipped": [{"id": "kb", "reason": "/apps/kb is a route of an app this install deploys"}],
+        "unresolved": ["later"],
+    })
+    result = _invoke(_client(report), "system-restore", path)
+    assert result.exit_code == 0, result.output
+    assert "Attachments: 2 created, 0 replaced, 0 unchanged, 1 skipped" in result.output
+    assert "created: later (upstream does not resolve from the Registry yet)" in result.output
+    assert "skipped: kb" in result.output
+
+
+def test_backup_counts_attachments(tmp_path):
+    out = tmp_path / "auth.json"
+    result = _invoke(_client(dict(ARCHIVE, attachments=[{"name": "aa"}])), "system-backup", out)
+    assert result.exit_code == 0, result.output
+    assert "1 attachment(s)" in result.output

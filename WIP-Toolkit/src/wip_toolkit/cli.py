@@ -1417,7 +1417,7 @@ def backup(
 @click.option("--force", is_flag=True, help="Overwrite OUTPUT_PATH if it exists")
 @click.pass_context
 def system_backup_cmd(ctx: click.Context, output_path: str, force: bool) -> None:
-    """Back up the Registry's API keys, grants and reservations.
+    """Back up the Registry's API keys, grants, reservations and attachments.
 
     The system backup is separate from namespace backups: it holds every
     stored API key (its bcrypt hash, never a plaintext), every namespace
@@ -1451,7 +1451,8 @@ def system_backup_cmd(ctx: click.Context, output_path: str, force: bool) -> None
     console.print(
         f"[green]System backup[/green] → {output}: "
         f"{len(archive.get('api_keys', []))} key(s), {len(archive.get('grants', []))} grant(s), "
-        f"{len(archive.get('reservations', []))} reservation(s)"
+        f"{len(archive.get('reservations', []))} reservation(s), "
+        f"{len(archive.get('attachments', []))} attachment(s)"
     )
 
 
@@ -1473,7 +1474,7 @@ def system_restore_cmd(
     include_user_grants: bool,
     as_json: bool,
 ) -> None:
-    """Restore a system backup: API keys, grants and reservations.
+    """Restore a system backup: API keys, grants, reservations and attachments.
 
     Reports what would change unless --apply is given. Records are upserted
     by identity and never deleted; restored records arrive unmanaged. Records
@@ -1516,7 +1517,7 @@ def system_restore_cmd(
     for warning in report.get("warnings", []):
         console.print(f"[yellow]Warning:[/yellow] {warning}")
     for part, label in (("reservations", "Reservations"), ("api_keys", "API keys"),
-                        ("grants", "Grants")):
+                        ("grants", "Grants"), ("attachments", "Attachments")):
         section = report.get(part, {})
         console.print(
             f"[bold]{label}[/bold]: {len(section.get('created', []))} created, "
@@ -1525,9 +1526,12 @@ def system_restore_cmd(
             f"{len(section.get('skipped', []))} skipped"
         )
         orphaned = set(section.get("orphaned", []))
+        unresolved = set(section.get("unresolved", []))
         for verb in ("created", "replaced"):
             for record_id in section.get(verb, []):
                 note = " (orphaned until its namespace exists)" if record_id in orphaned else ""
+                if record_id in unresolved:
+                    note = " (upstream does not resolve from the Registry yet)"
                 console.print(f"  {verb}: {record_id}{note}")
         for skipped in section.get("skipped", []):
             console.print(f"  skipped: {skipped['id']} ({skipped['reason']})")

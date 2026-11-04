@@ -33,6 +33,23 @@ upgrading. ClinTrial Explorer, which the 2026-10-12 rollout recorded as using
 the gateway's injected key, is retired. Takes effect on a redeploy with a rebuilt
 auth-gateway image.
 
+### The system backup carries app attachments; WIP-Toolkit 0.25.4
+
+A restore used to leave attached apps off the umbrella until someone attached
+them again by hand. The system backup now carries every attachment (still
+archive format version 1, defaulting to none, since the format is
+unreleased), and a restore puts them back:
+
+- **Restored last,** after keys and grants, by name, with the archived status;
+  `overwrite` for one that differs, as for the other records.
+- **The attach rules hold:** a name an app of this install routes under, an
+  invalid upstream, or one that resolves from the Registry to a blocked target
+  is skipped and listed. An upstream that does not resolve yet is written and
+  listed in the report's new `attachments.unresolved`. An unusable attach
+  policy file skips every attachment.
+- A record wip-deploy manages on the target is never replaced.
+- **WIP-Toolkit 0.25.4:** `system-restore` prints the attachments section.
+
 ### Each install has its own API key hash salt, kept by the Registry; WIP-Toolkit 0.25.2
 
 Every install hashed API keys under the same public default salt

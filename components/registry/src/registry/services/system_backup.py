@@ -1,15 +1,17 @@
 """System backup: the Registry's auth state, apart from any namespace's data.
 
 A namespace (data) backup carries documents, templates and terminologies; it
-never carries key hashes, grants or reservations, so merge and fresh restores
-can re-map namespaces freely. This module backs up and restores those three
-collections on their own:
+never carries key hashes, grants, reservations or attachments, so merge and
+fresh restores can re-map namespaces freely. This module backs up and
+restores those four collections on their own:
 
 - every stored API key record (the bcrypt hash and its metadata, never a
   plaintext), managed records included, so one archive reproduces the
   instance's auth state after a wipe or on other hardware;
 - every namespace grant;
-- every namespace reservation.
+- every namespace reservation;
+- every app attachment (an app put under the umbrella through the API), so a
+  restore puts attached apps back under the umbrella with no manual step.
 
 The master key and every other config key are not records here and are not
 carried: the install's config re-creates them.
@@ -54,6 +56,16 @@ Restore rules:
   creates the namespace does not inherit it. So the system and data
   restores work in either order. A grant the archive holds orphaned is
   written orphaned, and never replaces a grant that is effective here.
+- **Attachments come last,** after keys and grants, so an attached app's key
+  exists when its route returns. Each is matched by name and restored with
+  its archived status; the attach-time rules hold: a name one of this
+  install's own apps routes under, an upstream that is not a valid URL, or
+  one that resolves from here to a blocked target is skipped and listed,
+  never written. The blocked-target check is advisory, as at attach time
+  (the router's app edge checks again where it resolves). An upstream that
+  does not resolve from here is written and listed as `unresolved`: in
+  disaster recovery the app often comes back after the stack. When the
+  attach policy file is unusable, every attachment is skipped.
 - **Dry run by default.** The report lists what would be created, replaced,
   left unchanged and skipped (with the reason), and leads with a warning when
   the target holds auth state of its own: restoring old state brings back old
@@ -66,10 +78,12 @@ from datetime import UTC, datetime
 from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pymongo.errors import DuplicateKeyError
 
 from wip_auth import get_auth_config
 
 from ..models.api_key import StoredAPIKey
+from ..models.attachment import AppAttachment, AttachmentFields, AttachmentRequest
 from ..models.grant import NamespaceGrant
 from ..models.namespace import Namespace
 from ..models.reservation import RuntimeReservation
@@ -162,6 +176,18 @@ class ArchiveReservation(BaseModel):
     origin: Origin = "console"
 
 
+class ArchiveAttachment(AttachmentRequest):
+    """An attachment as archived: the attach request's fields (validated the
+    same way) plus its status and provenance."""
+
+    status: Literal["active", "inactive"] = "active"
+    managed_by: Literal["wip-deploy"] | None = Field(
+        default=None, description="On the source; a restored record arrives unmanaged"
+    )
+    created_at: datetime | None = None
+    created_by: str = "system"
+
+
 class SystemArchive(BaseModel):
     """The system backup: the Registry's API keys, grants and reservations."""
 
@@ -174,6 +200,7 @@ class SystemArchive(BaseModel):
     api_keys: list[ArchiveKey] = Field(default_factory=list)
     grants: list[ArchiveGrant] = Field(default_factory=list)
     reservations: list[ArchiveReservation] = Field(default_factory=list)
+    attachments: list[ArchiveAttachment] = Field(default_factory=list)
 
 
 # --- Report shape ---
@@ -195,6 +222,12 @@ class RecordReport(BaseModel):
         "because their namespace neither exists nor is reserved here (or they were "
         "orphaned in the archive). They give nothing until activated.",
     )
+    unresolved: list[str] = Field(
+        default_factory=list,
+        description="Attachments only: those of `created` and `replaced` whose upstream "
+        "does not resolve from the Registry's network yet. Written anyway; the "
+        "router's app edge checks it where it resolves.",
+    )
 
 
 class SystemRestoreReport(BaseModel):
@@ -210,6 +243,7 @@ class SystemRestoreReport(BaseModel):
     reservations: RecordReport = Field(default_factory=RecordReport)
     api_keys: RecordReport = Field(default_factory=RecordReport)
     grants: RecordReport = Field(default_factory=RecordReport)
+    attachments: RecordReport = Field(default_factory=RecordReport)
 
 
 class SaltMismatch(Exception):
@@ -267,6 +301,7 @@ async def build_archive() -> SystemArchive:
     keys = await StoredAPIKey.find_all().to_list()
     grants = await NamespaceGrant.find_all().to_list()
     reservations = await RuntimeReservation.find_all().to_list()
+    attachments = await AppAttachment.find_all().to_list()
     return SystemArchive(
         created_at=datetime.now(UTC),
         source=ArchiveSource(
@@ -297,6 +332,13 @@ async def build_archive() -> SystemArchive:
                 created_by=r.created_by, managed_by=r.managed_by, origin=r.origin,
             )
             for r in sorted(reservations, key=lambda r: r.prefix)
+        ],
+        attachments=[
+            ArchiveAttachment(
+                name=a.name, **_attachment_fields(a), status=a.status,
+                managed_by=a.managed_by, created_at=a.created_at, created_by=a.created_by,
+            )
+            for a in sorted(attachments, key=lambda a: a.name)
         ],
     )
 
@@ -394,7 +436,97 @@ async def restore_archive(
     await _restore_grants(
         archive, report, dry_run, overwrite, same_issuer or include_user_grants
     )
+    await _restore_attachments(archive, report, dry_run, overwrite, restored_by)
     return report, written_keys
+
+
+def _attachment_fields(a: AppAttachment | ArchiveAttachment) -> dict[str, Any]:
+    return a.model_dump(include=set(AttachmentFields.model_fields))
+
+
+async def _restore_attachments(
+    archive: SystemArchive, report: SystemRestoreReport, dry_run: bool, overwrite: bool,
+    restored_by: str,
+) -> None:
+    """Attachments, by name, under the attach-time rules (module docstring)."""
+    from .attachments import (
+        AttachPolicyUnavailable,
+        UpstreamInvalid,
+        check_upstream,
+        load_policy,
+        resolve_install_addresses,
+    )
+
+    out = report.attachments
+    if not archive.attachments:
+        return
+    try:
+        policy = load_policy()
+    except AttachPolicyUnavailable as e:
+        for a in archive.attachments:
+            out.skipped.append(SkippedRecord(id=a.name, reason=f"attach policy unavailable: {e}"))
+        return
+    reserved = set(policy.reserved_names)
+    install_addresses = await resolve_install_addresses(policy)
+
+    for a in archive.attachments:
+        if a.name in reserved:
+            out.skipped.append(SkippedRecord(
+                id=a.name, reason=f"/apps/{a.name} is a route of an app this install deploys",
+            ))
+            continue
+        existing = await AppAttachment.find_one(AppAttachment.name == a.name)
+        if existing is not None and existing.managed_by is not None:
+            out.skipped.append(SkippedRecord(id=a.name, reason="managed by wip-deploy on this instance"))
+            continue
+        fields = _attachment_fields(a)
+        if existing is not None:
+            if (_attachment_fields(existing), existing.status) == (fields, a.status):
+                out.unchanged.append(a.name)
+                continue
+            if not overwrite:
+                out.skipped.append(SkippedRecord(id=a.name, reason="differs on this instance; pass overwrite to replace it"))
+                continue
+        try:
+            check = await check_upstream(a.upstream, policy, install_addresses)
+        except UpstreamInvalid as e:
+            out.skipped.append(SkippedRecord(id=a.name, reason=str(e)))
+            continue
+        if check.blocked:
+            out.skipped.append(SkippedRecord(id=a.name, reason=f"upstream refused: {check.blocked}"))
+            continue
+        (out.replaced if existing is not None else out.created).append(a.name)
+        if check.warnings:
+            out.unresolved.append(a.name)
+        if dry_run:
+            continue
+        now = datetime.now(UTC)
+        if existing is not None:
+            for k, v in fields.items():
+                setattr(existing, k, v)
+            existing.status = a.status
+            existing.updated_at = now
+            existing.updated_by = restored_by
+            await existing.save()
+        else:
+            try:
+                await AppAttachment(
+                    name=a.name, **fields, status=a.status, managed_by=None,
+                    created_at=a.created_at or now, created_by=a.created_by,
+                    updated_at=now, updated_by=restored_by,
+                ).insert()
+            except DuplicateKeyError:
+                out.created.remove(a.name)
+                if a.name in out.unresolved:
+                    out.unresolved.remove(a.name)
+                out.skipped.append(SkippedRecord(
+                    id=a.name, reason="attached by another request during the restore",
+                ))
+                continue
+        logger.info(
+            "Attachment %s restored (%s) by %s: /apps/%s -> %s",
+            a.name, a.status, restored_by, a.name, a.upstream,
+        )
 
 
 async def _restore_reservations(
