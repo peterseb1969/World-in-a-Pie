@@ -170,7 +170,7 @@ Because TLS verification is off on this hop, a wrong or intercepted certificate 
 1. AWS Traefik terminates TLS.
 2. The `wip-forward-auth` middleware calls the auth-gateway at `http://wip-auth-gateway.pbs-app-dev.svc:4180/auth/verify`.
 3. No session → the gateway answers with a redirect (redirect mode) to Dex at `/dex`; the user logs in; Dex returns to `/auth/callback`.
-4. With a session, the gateway returns identity headers (`X-WIP-User`, `X-WIP-Groups`, `X-API-Key`) and Traefik forwards the request to the app Service.
+4. With a session, the gateway returns identity headers (`X-WIP-User`, `X-WIP-Groups`, `X-API-Key`) and Traefik forwards the request to the app Service. **Note:** gateway images built after CASE-1050 no longer return `X-API-Key` (the install's master key). Any new hand-built setup must list only `X-WIP-User` and `X-WIP-Groups` in the middleware's `authResponseHeaders`, and must never give an app the gateway's key.
 
 **(b) An app calls a WIP service** (e.g. document-store, reporting SQL)
 1. The app sends `https://wip.stgcaas-gw.emea.roche.com/api/<service>/...` with `X-API-Key`.

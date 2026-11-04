@@ -7,6 +7,32 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### The auth gateway no longer hands apps the master key
+
+Every app behind the auth gateway received the install's master key as
+`X-API-Key` with every logged-in user's request: the gateway's verify answer
+carried it, and the proxy copied it onto every protected route. Now:
+
+- **The gateway's answer carries the user's identity only**, `X-WIP-User` and
+  `X-WIP-Groups`. The gateway no longer holds any API key (its `API_KEY`
+  setting is gone).
+- **App routes remove forged identity headers.** On compose and dev, a
+  client-sent `X-WIP-User`, `X-WIP-Groups` or `X-WIP-Auth-Method` is removed on
+  app routes the gateway does not protect, and `X-WIP-Auth-Method` on the
+  protected ones. On protected routes the gateway's answer replaces the other
+  two. **On k8s, ingress-nginx cannot remove request headers without a
+  snippet:** an app must trust `X-WIP-User` only on routes it declares
+  `auth_required: true`.
+
+**Action:** apps call WIP with their own key (`WIP_API_KEY`, which wip-deploy
+provides). An app whose server forwards the browser's request headers to WIP
+without setting its own key would now get 401. `@wip/proxy` always sets the
+app's own key. Checked: WIP-AA, WIP-Cooking, WIP-KB, WIP-RC. **Not checked:**
+pbs-clintrial, brmri, dnd, song, wip-val; their owners should confirm before
+upgrading. ClinTrial Explorer, which the 2026-10-12 rollout recorded as using
+the gateway's injected key, is retired. Takes effect on a redeploy with a rebuilt
+auth-gateway image.
+
 ### A system backup of API keys, grants and reservations; WIP-Toolkit 0.25.0
 
 Nothing backed up the Registry's auth state. After a wipe or a move to new

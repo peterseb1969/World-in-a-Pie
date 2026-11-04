@@ -4,7 +4,8 @@ Called by Caddy's forward_auth (compose) or nginx-ingress's auth-url
 (k8s) on every auth-protected request. The gateway checks the session
 cookie and returns:
 
-  - 200 with X-WIP-User / X-WIP-Groups / X-API-Key headers (authenticated)
+  - 200 with X-WIP-User / X-WIP-Groups headers (authenticated) — the
+    user's identity only; the gateway holds no API key and hands none on
   - 401 with X-Auth-Redirect header naming the login URL (unauthenticated)
 
 The 401 response is the standard signal both Caddy and nginx know how
@@ -73,7 +74,7 @@ async def health():
 async def verify(request: Request):
     """Check session cookie.
 
-    Authenticated  → 200 with X-WIP-User / X-WIP-Groups / X-API-Key headers.
+    Authenticated  → 200 with X-WIP-User / X-WIP-Groups headers.
     Unauthenticated → 401 with X-Auth-Redirect header pointing at
     /auth/login — or, in AUTH_REDIRECT_MODE=redirect, a 302 to the
     absolute public login URL for browser requests.
@@ -111,7 +112,6 @@ async def verify(request: Request):
             headers={
                 "X-WIP-User": email,
                 "X-WIP-Groups": ",".join(user_groups),
-                "X-API-Key": settings.api_key,
             },
         )
 

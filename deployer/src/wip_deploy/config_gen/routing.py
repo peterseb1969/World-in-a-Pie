@@ -19,6 +19,19 @@ from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component, Port, Route
 
+# The headers the auth gateway's verify answer carries and the proxy copies
+# onto a protected request: the logged-in user's identity, nothing else. The
+# gateway holds no API key, so no key travels with them.
+GATEWAY_IDENTITY_HEADERS: tuple[str, ...] = ("X-WIP-User", "X-WIP-Groups")
+
+# Identity headers an app may read (`@wip/proxy` forwards all three to WIP).
+# On a protected route the proxy's copy of the gateway's answer overwrites or
+# removes the gateway's two whatever the browser sent; the rest the gateway
+# never supplies, so the renderers remove them. On an app route the gateway
+# does not protect, nothing overwrites anything, so the renderers remove all
+# of them from the client's request before it reaches the app.
+CLIENT_IDENTITY_HEADERS: tuple[str, ...] = (*GATEWAY_IDENTITY_HEADERS, "X-WIP-Auth-Method")
+
 
 @dataclass(frozen=True)
 class ResolvedRoute:
@@ -46,6 +59,22 @@ class ResolvedRoute:
     # Groups the gateway lets through on this route (empty = any logged-in
     # user). Only meaningful when auth_protected.
     allowed_groups: tuple[str, ...] = ()
+    # The route belongs to an app, not a platform component. App routes
+    # have client-sent identity headers removed (see
+    # client_identity_headers_to_strip), so an app never reads a forged
+    # user from the browser.
+    is_app: bool = False
+
+    def client_identity_headers_to_strip(self) -> tuple[str, ...]:
+        """The client-sent identity headers the renderer removes on this
+        route: none on a platform route; on a protected app route those
+        the gateway's answer does not overwrite; on an unprotected app
+        route all of them."""
+        if not self.is_app:
+            return ()
+        if self.auth_protected:
+            return tuple(h for h in CLIENT_IDENTITY_HEADERS if h not in GATEWAY_IDENTITY_HEADERS)
+        return CLIENT_IDENTITY_HEADERS
 
 
 def resolve_routes(
@@ -124,8 +153,9 @@ def _routes_for(
     if not owner.spec.routes:
         return []
     port = _pick_port(owner, app_sources_with_dev_port)
+    is_app = isinstance(owner, App)
     return [
-        _resolve_one(owner.metadata.name, r, port.container_port, gateway_on)
+        _resolve_one(owner.metadata.name, r, port.container_port, gateway_on, is_app=is_app)
         for r in owner.spec.routes
     ]
 
@@ -151,7 +181,7 @@ def _pick_port(owner: Component | App, app_sources_with_dev_port: set[str]) -> P
 
 
 def _resolve_one(
-    component_name: str, route: Route, port: int, gateway_on: bool
+    component_name: str, route: Route, port: int, gateway_on: bool, *, is_app: bool = False
 ) -> ResolvedRoute:
     return ResolvedRoute(
         path=route.path,
@@ -164,6 +194,7 @@ def _resolve_one(
         preserve_prefix_subpaths=tuple(route.preserve_prefix_subpaths),
         upstream_host_header=route.upstream_host_header,
         allowed_groups=tuple(route.allowed_groups),
+        is_app=is_app,
     )
 
 

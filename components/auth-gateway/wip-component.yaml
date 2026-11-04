@@ -44,7 +44,6 @@ spec:
       # wip-gateway static client (dex-client-<client_id>).
       - {name: OIDC_CLIENT_SECRET, source: {from_secret: dex-client-wip-gateway}}
       - {name: SESSION_SECRET, source: {from_secret: gateway-session-secret}}
-      - {name: API_KEY, source: {from_secret: api-key}}
       - {name: WIP_HOSTNAME, source: {from_spec: network.hostname}}
       - {name: CALLBACK_URL, source: {from_spec: auth.callback_url}}
       # Security posture — arms the gateway's default-session-secret

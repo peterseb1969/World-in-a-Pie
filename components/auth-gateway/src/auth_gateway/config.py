@@ -8,9 +8,10 @@ logger = logging.getLogger("auth_gateway.config")
 
 # The insecure fallback for SESSION_SECRET. Publicly visible in this repo,
 # so any deployment still running it has forgeable session cookies — and a
-# forged session yields X-WIP-User / X-WIP-Groups / X-API-Key injection at
-# the gateway. wip-deploy generates a random gateway-session-secret for
-# every install; this default only survives hand-rolled deployments.
+# forged session yields X-WIP-User / X-WIP-Groups injection at the gateway:
+# any identity, to every app behind it. wip-deploy generates a random
+# gateway-session-secret for every install; this default only survives
+# hand-rolled deployments.
 DEFAULT_SESSION_SECRET = "change-me-in-production"
 
 
@@ -59,10 +60,6 @@ class Settings:
     # Session — signed cookie, no external storage.
     session_secret: str = os.getenv("SESSION_SECRET", "change-me-in-production")
     session_max_age: int = int(os.getenv("SESSION_MAX_AGE", "86400"))  # 24 hours
-
-    # WIP API key — injected into X-API-Key header so TrustedHeaderProvider
-    # on backend services accepts the gateway's identity headers.
-    api_key: str = os.getenv("API_KEY", "")
 
     # Hostname for constructing external URLs.
     wip_hostname: str = os.getenv("WIP_HOSTNAME", "localhost")

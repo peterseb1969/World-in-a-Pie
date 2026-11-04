@@ -17,7 +17,6 @@ os.environ.setdefault("OIDC_INTERNAL_ISSUER", "http://wip-dex:5556/dex")
 os.environ.setdefault("OIDC_CLIENT_ID", "wip-gateway")
 os.environ.setdefault("OIDC_CLIENT_SECRET", "test-secret")
 os.environ.setdefault("SESSION_SECRET", "test-session-secret")
-os.environ.setdefault("API_KEY", "test-api-key")
 os.environ.setdefault("WIP_HOSTNAME", "wip.local")
 os.environ.setdefault("CALLBACK_URL", "https://wip.local/auth/callback")
 

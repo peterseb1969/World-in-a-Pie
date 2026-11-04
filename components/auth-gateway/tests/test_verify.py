@@ -31,7 +31,6 @@ os.environ.setdefault("OIDC_INTERNAL_ISSUER", "http://wip-dex:5556/dex")
 os.environ.setdefault("OIDC_CLIENT_ID", "wip-gateway")
 os.environ.setdefault("OIDC_CLIENT_SECRET", "test-secret")
 os.environ.setdefault("SESSION_SECRET", "test-session-secret")
-os.environ.setdefault("API_KEY", "test-api-key")
 os.environ.setdefault("WIP_HOSTNAME", "wip.local")
 os.environ.setdefault("CALLBACK_URL", "https://wip.local/auth/callback")
 
@@ -182,4 +181,7 @@ def test_verify_authenticated_returns_200_with_identity_headers() -> None:
     assert response.status_code == 200
     assert response.headers["X-WIP-User"] == "admin@wip.local"
     assert response.headers["X-WIP-Groups"] == "wip-admins"
-    assert response.headers["X-API-Key"] == "test-api-key"
+    # The gateway hands on the user's identity, never an API key: an app
+    # behind it must not receive a privileged key with every request.
+    assert "X-API-Key" not in response.headers
+    assert set(response.headers) & {"x-wip-user", "x-wip-groups"} == {"x-wip-user", "x-wip-groups"}

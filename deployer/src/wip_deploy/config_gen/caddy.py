@@ -5,8 +5,9 @@ to a Caddyfile. Routes consume `ResolvedRoute` from `routing.py` so the
 compose and k8s paths never disagree about which route is auth-protected.
 
 The Caddy renderer uses a `forward_auth` block for every auth-protected
-route when `auth.gateway=True`. The gateway injects X-WIP-User /
-X-WIP-Groups / X-API-Key headers before forwarding to the backend.
+route when `auth.gateway=True`. The gateway's answer carries X-WIP-User /
+X-WIP-Groups, which Caddy copies onto the request before forwarding to the
+backend.
 """
 
 from __future__ import annotations

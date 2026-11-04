@@ -144,14 +144,17 @@ Separate client from `wip-console` — apps use server-side OIDC with a shared s
 
 ### Security Model
 
-The trusted header provider requires **both** `X-WIP-User` and a valid `X-API-Key`. This prevents spoofing:
+The trusted header provider requires **both** `X-WIP-User` and a valid **privileged** `X-API-Key`: a key in `wip-admins` or `wip-services` (`PROXY_KEY_GROUPS`, `wip_auth/providers/trusted_header.py`). This prevents spoofing:
 
 | Scenario | X-WIP-User | X-API-Key | Result |
 |----------|-----------|-----------|--------|
-| Normal app request (authenticated) | `admin@wip.local` | Valid | `UserIdentity(auth_method="gateway_oidc")` |
+| Normal app request (authenticated) | `admin@wip.local` | Valid, privileged | `UserIdentity(auth_method="gateway_oidc")` |
+| App with a scoped key forwarding identity | `admin@wip.local` | Valid, not privileged | Identity ignored (warning logged); authenticates as the key |
 | Normal app request (no OIDC) | absent | Valid | Falls through to `APIKeyProvider` |
 | Spoofing attempt | `admin@wip.local` | absent | `None` (ignored, warning logged) |
 | Spoofing attempt | `admin@wip.local` | invalid | `None` (ignored, warning logged) |
+
+Since every deployer app runs with a scoped key of its own, identity forwarding takes effect only for an app holding a privileged key, and today no such app sets `forwardIdentity`.
 
 ### K8s Deployment
 
@@ -274,6 +277,28 @@ routes:
   (see the Dex-connector work): a gate like `[wip-admins]` refuses them until
   their groups are mapped.
 - Namespace auth (Phase 2) becomes defense-in-depth, not the primary UX gate
+
+### What the gateway hands an app
+
+The gateway's verify answer carries the user's identity and nothing else:
+`X-WIP-User` and `X-WIP-Groups`. The proxy copies them onto the request
+(Caddy `copy_headers`, NGINX `auth-response-headers`), one list for every
+target (`GATEWAY_IDENTITY_HEADERS`, `deployer/src/wip_deploy/config_gen/routing.py`).
+
+- **No API key.** The verify answer used to carry the install's master key as
+  `X-API-Key`, so every app behind the gateway received it with every user
+  request. The gateway holds no key now. An app calls WIP with its own key.
+- **Forged identity.** On a protected route the copied answer overwrites a
+  client-sent `X-WIP-User` / `X-WIP-Groups`, and removes it when the answer's
+  value is empty or absent (checked on Caddy 2.11.7). On compose and dev,
+  the Caddy renderer also removes, on app routes, the identity headers the
+  answer does not set: `X-WIP-Auth-Method` on protected routes, and all three
+  on routes the gateway does not protect (`auth_required: false`).
+- **Gap on k8s.** ingress-nginx has no annotation that removes a request
+  header without a configuration snippet. On k8s, an app route the gateway
+  does not protect passes client-sent identity headers through, and so does
+  `X-WIP-Auth-Method` on protected routes. An app must trust `X-WIP-User` only on
+  routes it declares `auth_required: true`.
 
 ---
 
@@ -405,7 +430,7 @@ A service needs both. Authorization also needs the Registry: `REGISTRY_URL` and 
   - mcp-server.
 - `API_KEY` / `MASTER_API_KEY` map to the legacy key, which carries the admin groups (`wip_auth/config.py`). These callers therefore pass every gate above.
 - **Unverified before rollout:** browser and app consumers (React Console, `@wip/proxy` apps, the KB app's search). Any that rely on anonymous access must be fixed first.
-- **Verified during the rollout:** the React Console, the KB app and ClinTrial Explorer all send the install key (their own server-side proxies, or the auth-gateway's injected key for browser sessions). No app request was refused on any upgraded install; the only refusals logged were the rollout's own credential-less probes.
+- **Verified during the rollout:** the React Console, the KB app and ClinTrial Explorer all send the install key (their own server-side proxies, or the auth-gateway's injected key for browser sessions). The gateway no longer injects a key (CASE-1050); an app that relied on it must send its own. No app request was refused on any upgraded install; the only refusals logged were the rollout's own credential-less probes.
 
 **D6 — The definition of done is mechanical.**
 - A shape-agnostic walker in `wip_auth.testing`, beside the factory and strictness gates, fires a **credential-less** request at every route of the real ASGI app.

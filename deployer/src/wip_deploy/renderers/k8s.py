@@ -970,7 +970,16 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
     The auth gateway itself gets a direct Ingress (no auth-url — it IS the auth).
     """
     from wip_deploy.config_gen.nginx_ingress import IngressConfig
-    from wip_deploy.config_gen.routing import verify_query
+
+    # auth-response-headers copies the gateway's identity answer onto the
+    # request. ingress-nginx sets each one with proxy_set_header from the
+    # auth subrequest, so a client-sent value is replaced, and an empty one
+    # is not passed on (nginx drops a proxy_set_header whose value is
+    # empty). Not tested on a live controller. ingress-nginx has no
+    # annotation that removes other request headers without a
+    # configuration snippet, so the client-identity strip the Caddy
+    # renderer does on app routes has no k8s counterpart here.
+    from wip_deploy.config_gen.routing import GATEWAY_IDENTITY_HEADERS, verify_query
 
     cfg: IngressConfig = ingress_cfg
     docs: list[dict[str, Any]] = []
@@ -1047,7 +1056,7 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                 f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
             )
             app_annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = (
-                "X-WIP-User,X-WIP-Groups,X-API-Key"
+                ",".join(GATEWAY_IDENTITY_HEADERS)
             )
         if r.streaming:
             app_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
@@ -1102,7 +1111,7 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                 f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
             )
             strip_annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = (
-                "X-WIP-User,X-WIP-Groups,X-API-Key"
+                ",".join(GATEWAY_IDENTITY_HEADERS)
             )
         if r.streaming:
             strip_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
@@ -1192,7 +1201,7 @@ def _render_ingress(ingress_cfg: Any, ns: str) -> str:
                     f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
                 )
                 preserve_annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = (
-                    "X-WIP-User,X-WIP-Groups,X-API-Key"
+                    ",".join(GATEWAY_IDENTITY_HEADERS)
                 )
             if r.streaming:
                 preserve_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"

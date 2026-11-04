@@ -3,8 +3,10 @@
 Converts a `CaddyConfig` into Caddyfile syntax. Caddy isn't YAML — it
 has its own directive format — so this is hand-built.
 
-Auth-protected routes use `forward_auth` to delegate to the gateway
-(which injects X-WIP-User / X-WIP-Groups / X-API-Key headers).
+Auth-protected routes use `forward_auth` to delegate to the gateway,
+whose answer carries the user's identity (X-WIP-User / X-WIP-Groups)
+onto the request. App routes have the client-sent identity headers
+the gateway's answer does not overwrite removed.
 Streaming routes set `flush_interval -1` so large file downloads
 don't buffer.
 """
@@ -14,7 +16,11 @@ from __future__ import annotations
 from io import StringIO
 
 from wip_deploy.config_gen.caddy import CaddyConfig
-from wip_deploy.config_gen.routing import ResolvedRoute, verify_path
+from wip_deploy.config_gen.routing import (
+    GATEWAY_IDENTITY_HEADERS,
+    ResolvedRoute,
+    verify_path,
+)
 from wip_deploy.renderers.caddy_common import write_api_fallthrough_404, write_unrouted_404
 
 
@@ -144,7 +150,14 @@ def _write_forward_auth(out: StringIO, cfg: CaddyConfig, route: ResolvedRoute) -
     # The route's allowed groups ride in the verify URI (verify_path), so
     # the gateway can answer 403 for a logged-in user outside them.
     out.write(f"            uri {verify_path(route)}\n")
-    out.write("            copy_headers X-WIP-User X-WIP-Groups X-API-Key\n")
+    # copy_headers overwrites a header the client sent, and removes it when
+    # the gateway's answer lacks it or carries it empty: a browser cannot
+    # pass its own identity through a protected route (checked against
+    # Caddy 2.11.7, the `caddy:2` image of 2026-11). Never add
+    # `request_header -X-WIP-User` beside forward_auth in the same block:
+    # Caddy orders request_header after forward_auth, so it would delete
+    # the identity the gateway just supplied.
+    out.write(f"            copy_headers {' '.join(GATEWAY_IDENTITY_HEADERS)}\n")
     out.write("            @unauth status 401\n")
     out.write("            handle_response @unauth {\n")
     out.write("                redir * /auth/login?return_to={http.request.uri} 302\n")
@@ -209,6 +222,7 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
             out.write(f"    handle {sub}/* {{\n")
             if route.auth_protected:
                 _write_forward_auth(out, cfg, route)
+            _write_identity_strip(out, route)
             _write_reverse_proxy(out, backend, route)
             out.write("    }\n\n")
 
@@ -223,6 +237,7 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
         out.write(f"    {directive} {matcher_path} {{\n")
         if route.auth_protected:
             _write_forward_auth(out, cfg, route)
+        _write_identity_strip(out, route)
         _write_reverse_proxy(out, backend, route)
         out.write("    }\n\n")
 
@@ -240,10 +255,20 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
     _emit_block(f"{route.path}/*")
 
 
+def _write_identity_strip(out, route: ResolvedRoute, indent: str = "        ") -> None:  # type: ignore[no-untyped-def]
+    """Remove the client-sent identity headers the gateway's answer does not
+    overwrite, so an app never reads a user the browser made up. Safe beside
+    forward_auth only because none of these is one the gateway supplies
+    (request_header runs after forward_auth's copy)."""
+    for header in route.client_identity_headers_to_strip():
+        out.write(f"{indent}request_header -{header}\n")
+
+
 def _write_catchall(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
     out.write("    handle {\n")
     if route.auth_protected:
         _write_forward_auth(out, cfg, route)
+    _write_identity_strip(out, route, indent="        ")
     out.write(
         f"        reverse_proxy wip-{route.backend_component}:{route.backend_port}\n"
     )
