@@ -938,9 +938,28 @@ be **attached** under the umbrella through the Registry's API instead of being
 deployed by wip-deploy. Its key is an ordinary Console key (§4.3). The
 deployer knows nothing about the app.
 
-**Not served yet.** Attachments are recorded and checked today. The router's
-app edge, which will serve `/apps/<name>` from them, is not built yet. Until
-it lands, an attachment changes no route.
+**Served by the app edge.** The `app-edge` component (rendered whenever the
+auth gateway is on) reads the active attachments every 10 s with its own
+key, and serves each one at `/apps/<name>`: behind the gateway with the
+record's `allowed_groups`, then to the upstream. The public router hands it
+every `/apps` path that no deployed app's longer route claims. What it
+guarantees:
+
+- **It dials the address it checked.** Each upstream host is resolved and
+  every address checked against the blocklist below, and the edge connects
+  to exactly those addresses. The name is used only for TLS and, with
+  `upstream_host_header`, the Host header. A name that later resolves
+  somewhere else doesn't reach a connection.
+- **Identity:** the app receives `X-WIP-User` / `X-WIP-Groups` from the
+  gateway, never a key. Browser-sent identity headers and the gateway's
+  `wip_session` cookie are removed. The app's own cookies pass through.
+  `X-Forwarded-Proto` / `X-Forwarded-Host` are set from the install's
+  public URL.
+- **No last-known-good copy:** if the Registry hasn't answered for 30 s,
+  every attached app answers 503 until it does.
+- **One bad record can't take the others down.** A record the edge can't
+  serve is skipped and logged. If Caddy still refuses a config, the edge
+  retries without the records that carry their own CA certificate.
 
 ```bash
 curl -k -X POST https://<host>/api/registry/attachments \
@@ -994,10 +1013,14 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   umbrella on another). The authoritative check is the router edge's, when
   it resolves the upstream. A host that doesn't resolve from the Registry
   is accepted with a warning.
-- **Gap on k8s:** a blocked name resolves to its Service's ClusterIP, so an
-  upstream given as a WIP *pod* IP isn't caught by this check. The
-  dependable control there is a NetworkPolicy denying the app edge egress
-  to WIP's namespace and to the API server.
+- **On k8s,** a blocked name resolves to its Service's ClusterIP, so an
+  upstream given as a WIP *pod* IP isn't caught by the name check. The
+  rendered NetworkPolicy `app-edge-egress` takes the edge out of the
+  namespace's broad allows. It lets the edge reach only the Registry, the
+  auth gateway, DNS, pods in other namespaces and addresses outside the
+  cluster. **Caveat:** whether that last `ipBlock` rule also matches
+  in-cluster pod and Service IPs depends on the network plugin, so on some
+  clusters it reaches more.
 - **The app's key** is created in RC or through `/api-keys` (§4.4),
   widened with `reserve` for the namespaces it creates. The app holds the
   plaintext itself.

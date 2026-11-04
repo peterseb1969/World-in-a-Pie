@@ -68,7 +68,7 @@ Options:
   -h, --help           Show this help
 
 Services: registry, def-store, template-store, document-store,
-          reporting-sync, ingest-gateway, mcp-server, auth-gateway
+          reporting-sync, ingest-gateway, mcp-server, auth-gateway, app-edge
 
 Examples:
   # Build all and push to Gitea (native arch only)
@@ -216,7 +216,7 @@ log_info "Build provenance: sha=${GIT_SHA} stamp=${BUILD_STAMP} tag=${TAG}"
 # archive format + remap library in-process)
 AUTH_SERVICES=(registry def-store template-store document-store reporting-sync ingest-gateway)
 ARCHIVE_SERVICES=(document-store)
-PLAIN_SERVICES=(mcp-server auth-gateway)
+PLAIN_SERVICES=(mcp-server auth-gateway app-edge)
 
 build_python_with_libs() {
     local svc="$1"
@@ -323,7 +323,7 @@ START_TIME=$(date +%s)
 
 if [[ -n "$ONLY_SERVICE" ]]; then
     case "$ONLY_SERVICE" in
-        mcp-server|auth-gateway)
+        mcp-server|auth-gateway|app-edge)
             build_python_plain "$ONLY_SERVICE" ;;
         registry|def-store|template-store|document-store|reporting-sync|ingest-gateway)
             build_python_with_libs "$ONLY_SERVICE" ;;

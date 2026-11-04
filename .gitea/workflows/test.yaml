@@ -283,6 +283,28 @@ jobs:
           pytest tests/ -v --tb=short
 
   # Auth gateway (no DB needed)
+  test-app-edge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python venv
+        run: |
+          python3 -m venv .venv
+          echo "$GITHUB_WORKSPACE/.venv/bin" >> $GITHUB_PATH
+
+      - name: Install dependencies
+        run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          # The sync loop is stdlib-only; the tests need only pytest.
+          pip install pytest
+
+      - name: Run tests
+        working-directory: components/app-edge
+        run: |
+          . "$GITHUB_WORKSPACE/.venv/bin/activate"
+          pytest tests/ -v --tb=short
+
   test-auth-gateway:
     runs-on: ubuntu-latest
     steps:

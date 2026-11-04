@@ -261,6 +261,34 @@ You don't need to test these. They're stable. Just use them.
 
 ---
 
+## Attached apps: under the umbrella without wip-deploy
+
+An app its own admin deploys can be **attached** instead of deployed: an
+app-admin records it in the Registry (`POST /api/registry/attachments`,
+`docs/wip-guide.md` §6.5), and the `app-edge` component serves it at
+`/apps/<name>`. What the app must do differs from a deployed app in these
+points:
+
+- **Be reachable from the app edge** at the upstream URL in the record:
+  scheme, host and port, no path. Not on WIP's own hosts, loopback,
+  link-local or cloud metadata addresses; those are refused.
+- **Serve under `/apps/<name>/`,** as a deployed app does, or set
+  `strip_prefix` on the record and serve at the root. `VITE_BASE_PATH` /
+  `APP_BASE_PATH` follow the same rules as above.
+- **Hold its own key.** It's a Console key the app-admin creates in RC,
+  widened with `reserve` for the namespaces the app creates. Read it from a
+  file or env of the app's own deployment. The edge never hands the app a
+  key.
+- **Trust `X-WIP-User` / `X-WIP-Groups` only from the edge,** and only on
+  routes the record marks `auth_required`. The edge removes browser-sent
+  copies. If the app is also reachable directly, bypassing the edge, anyone
+  can send those headers there.
+- **Expect `X-Forwarded-Proto` / `X-Forwarded-Host`** set to the install's
+  public URL, for building absolute URLs and secure cookies. The gateway's
+  `wip_session` cookie never reaches the app.
+- **Attaching is full trust.** The app is served on WIP's origin, so its
+  pages can act as any visitor elsewhere under the umbrella.
+
 ## Local dev with this scaffolded in
 
 With `BASE_PATH` defaulting to `/` and `import.meta.env.BASE_URL` defaulting to `/`:

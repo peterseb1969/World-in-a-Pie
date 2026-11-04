@@ -119,12 +119,33 @@ def app_api_keys(deployment: Deployment, apps: list[App]) -> list[SpecAPIKey]:
     return [k for k in keys if k is not None]
 
 
+# The app edge's key (CASE-1052): its group may read the Registry's app
+# attachments and nothing else. Scoped to the canary's namespace, which
+# nothing creates, so it reads no data; the group is not one that may assert
+# identities. Rendered whenever the edge is active.
+APP_EDGE_GROUP = "wip-app-edge"
+APP_EDGE_KEY = SpecAPIKey(
+    name="wip-app-edge",
+    namespaces=[CANARY_NAMESPACE],
+    groups=[APP_EDGE_GROUP],
+    owner="system:app-edge",
+)
+
+
+def app_edge_active(deployment: Deployment) -> bool:
+    """The app-edge component's activation (its manifest: the gateway on,
+    core not suppressed), for the key that goes with it."""
+    return deployment.spec.auth.gateway and not deployment.spec.modules.suppress_core
+
+
 def effective_api_keys(
     deployment: Deployment, apps: list[App] | None = None
 ) -> list[SpecAPIKey]:
     """The config-file keys an install carries: its spec's, one per enabled
-    app (derived, never stored in the spec), plus the canary."""
-    return [*deployment.spec.auth.api_keys, *app_api_keys(deployment, apps or []), CANARY_KEY]
+    app (derived, never stored in the spec), the app edge's when it is
+    active, plus the canary."""
+    edge = [APP_EDGE_KEY] if app_edge_active(deployment) else []
+    return [*deployment.spec.auth.api_keys, *app_api_keys(deployment, apps or []), *edge, CANARY_KEY]
 
 
 def api_key_secret_names(deployment: Deployment, apps: list[App] | None = None) -> list[str]:

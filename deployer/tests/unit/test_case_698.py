@@ -76,5 +76,6 @@ class TestRotateKeyGuard:
             ],
         )
         assert result.exit_code == 2
-        # Only the deployer's own canary is declared.
-        assert "Declared config keys: wip-canary." in result.output
+        # Only the deployer's own keys are declared: the app edge's (the
+        # install has the gateway on) and the canary.
+        assert "Declared config keys: wip-app-edge, wip-canary." in result.output

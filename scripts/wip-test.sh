@@ -314,7 +314,7 @@ shift
 
 # --- Resolve component to directory ---
 
-PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server auth-gateway)
+PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server auth-gateway app-edge)
 PYTHON_LIBS=(wip-auth wip-archive)
 PYTHON_TOOLS=(deployer agent-scripts scaffold)
 

@@ -204,8 +204,34 @@ async def test_request_validation(client, auth_headers, policy, item):
     assert r.status_code == 422
 
 
+def _real_pem() -> str:
+    import datetime
+
+    from cryptography import x509
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.x509.oid import NameOID
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "test-ca")])
+    now = datetime.datetime.now(datetime.UTC)
+    cert = (
+        x509.CertificateBuilder().subject_name(name).issuer_name(name)
+        .public_key(key.public_key()).serial_number(1)
+        .not_valid_before(now).not_valid_after(now + datetime.timedelta(days=1))
+        .sign(key, hashes.SHA256())
+    )
+    return cert.public_bytes(serialization.Encoding.PEM).decode()
+
+
+async def test_a_ca_pem_that_does_not_parse_is_refused(client, auth_headers, policy):
+    fake = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+    r = await client.post(URL, json=[_item(upstream_tls={"verify": True, "ca_pem": fake})], headers=auth_headers)
+    assert r.status_code == 422
+
+
 async def test_ca_pem_is_held_in_the_record(client, auth_headers, policy):
-    pem = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+    pem = _real_pem()
     await _post(client, auth_headers, _item(upstream_tls={"verify": True, "ca_pem": pem}))
     got = (await client.get(f"{URL}/aa", headers=auth_headers)).json()
     assert got["upstream_tls"] == {"verify": True, "ca_pem": pem}

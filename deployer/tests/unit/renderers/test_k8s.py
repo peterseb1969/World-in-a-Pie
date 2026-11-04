@@ -439,14 +439,17 @@ class TestNetworkPolicies:
         tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
         return tree.files[Path("network-policies.yaml")].content
 
-    def test_emits_five_policies(
+    def test_emits_the_bundle_plus_the_app_edges_egress(
         self, tmp_path: Path, real_discovery: Discovery,
     ) -> None:
         import yaml
         doc = self._network_policies_doc(tmp_path, real_discovery)
         policies = list(yaml.safe_load_all(doc))
-        assert len(policies) == 5
+        # Five namespace-isolation policies, and the app edge's own egress
+        # policy (the gateway is on, so the edge is rendered).
+        assert len(policies) == 6
         assert all(p["kind"] == "NetworkPolicy" for p in policies)
+        assert policies[-1]["metadata"]["name"] == "app-edge-egress"
 
     def test_includes_deny_all_default(
         self, tmp_path: Path, real_discovery: Discovery,

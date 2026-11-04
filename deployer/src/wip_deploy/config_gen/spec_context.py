@@ -27,6 +27,9 @@ class SpecContextNetwork:
     #   (`https://<hostname>:<https_port>`, with default-port stripping).
     # Apps reach this via `from_spec: network.external_base_url`.
     external_base_url: str
+    # This install's own public URL, never a remote WIP's: the URL its
+    # browsers see. The app edge sets X-Forwarded-Proto/Host from it.
+    public_base_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,11 @@ class SpecContextSecurity:
     # Container path of the rendered attach policy (the install's own hosts
     # and app route names), injected as WIP_ATTACH_POLICY_FILE.
     attach_policy_file: str
+    # The identity headers, comma-separated, from config_gen/routing.py's one
+    # definition: what the gateway hands on, and every client identity
+    # header an app may read. The app edge applies CASE-1050's rule with them.
+    gateway_identity_headers: str = ""
+    client_identity_headers: str = ""
 
 
 @dataclass(frozen=True)
@@ -128,6 +136,7 @@ def make_spec_context(
     )
     from wip_deploy.config_gen.attach_policy import ATTACH_POLICY_CONTAINER_PATH
     from wip_deploy.config_gen.namespaces import RESERVATIONS_CONTAINER_PATH
+    from wip_deploy.config_gen.routing import CLIENT_IDENTITY_HEADERS, GATEWAY_IDENTITY_HEADERS
 
     security = SpecContextSecurity(
         variant=deployment.spec.variant,
@@ -135,6 +144,8 @@ def make_spec_context(
         federated_groups_file=FEDERATED_GROUPS_CONTAINER_PATH,
         namespace_reservations_file=RESERVATIONS_CONTAINER_PATH,
         attach_policy_file=ATTACH_POLICY_CONTAINER_PATH,
+        gateway_identity_headers=",".join(GATEWAY_IDENTITY_HEADERS),
+        client_identity_headers=",".join(CLIENT_IDENTITY_HEADERS),
     )
     return SpecContext(network=net, auth=auth, features=features, security=security)
 
@@ -210,6 +221,7 @@ def _compute_network(deployment: Deployment) -> SpecContextNetwork:
     external_base_url = net.remote_wip_url or external
 
     return SpecContextNetwork(
+        public_base_url=external,
         hostname=net.hostname,
         cors_origins=cors,
         internal_base_url=internal_base,

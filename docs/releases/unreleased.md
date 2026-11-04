@@ -3444,9 +3444,16 @@ sync afterwards.
   `GET /attachments[/{name}]` and `POST /attachments/deactivate`. Writes are
   platform admin only; reads are also open to the app edge's key group
   `wip-app-edge`. Never hard-deleted. A write replaces the whole record, so
-  `auth_required` and `allowed_groups` are required on every write. The
-  router does not serve attachments yet; that is the app edge, still to be
-  built. The deployer renders a new file
+  `auth_required` and `allowed_groups` are required on every write.
+  **Served by a new component, `app-edge`** (rendered whenever the auth
+  gateway is on): it reads the attachments every 10 s with its own key
+  `wip-app-edge` (reads attachments only) and serves `/apps/<name>` behind
+  the gateway. It dials the address it checked, removes browser-sent
+  identity headers and the gateway's session cookie, and answers 503 for
+  every attached app once the Registry has been silent for 30 s. The public
+  router hands it every `/apps` path no deployed app's route claims. On k8s
+  a NetworkPolicy, `app-edge-egress`, limits its egress. New install files:
+  none. New secret: `wip-app-edge-api-key`, generated on the next apply. The deployer renders a new file
   beside the namespace reservations, `config/auth/attach-policy.json`
   (`WIP_ATTACH_POLICY_FILE`): the install's own hosts, which an attachment may
   not proxy to, and its apps' route names, which it may not take. An apply

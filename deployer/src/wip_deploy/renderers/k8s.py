@@ -44,6 +44,7 @@ from wip_deploy.config_gen.api_keys import (
     API_KEYS_CONTAINER_DIR,
     FEDERATED_GROUPS_FILENAME,
     KEY_FILE_CONTAINER_DIR,
+    app_edge_active,
     declares_api_keys_file,
     generate_api_keys_json,
     mounts_auth_config_dir,
@@ -202,7 +203,10 @@ def render_k8s(
 
     # NetworkPolicies (CASE-238 MVP: namespace-wide isolation;
     # per-component egress rules are a follow-up).
-    tree.add("network-policies.yaml", _render_network_policies(ns))
+    tree.add(
+        "network-policies.yaml",
+        _render_network_policies(ns, app_edge=app_edge_active(deployment)),
+    )
 
     return tree
 
@@ -251,14 +255,34 @@ def _render_namespace(ns: str) -> str:
 # ────────────────────────────────────────────────────────────────────
 
 
-def _render_network_policies(ns: str) -> str:
+APP_EDGE_COMPONENT = "app-edge"
+
+
+def _render_network_policies(ns: str, *, app_edge: bool = False) -> str:
     """Render the namespace-isolation NetworkPolicy bundle.
 
     CASE-238 MVP — restores the cross-namespace isolation guarantee
     that the legacy `k8s/network-policies.yaml` provided. Per-component
     egress rules are a follow-up case (see file header).
+
+    The app edge proxies users' traffic to upstreams an app-admin chose, so
+    it is the one pod whose egress must not reach WIP's own pods or the API
+    server. Policies are additive, so the edge is left out of the bundle's
+    broad allows (every pod to every pod, 443 to anywhere) and gets its own:
+    the Registry and the auth gateway in this namespace, DNS, pods in other
+    namespaces, and addresses outside the cluster. Whether an ipBlock rule
+    also matches in-cluster pod and Service IPs is up to the network plugin,
+    so on some clusters the ipBlock allow reaches more; the edge's own
+    resolve-time blocklist is the other guard.
     """
     labels = {_LABELS_PART_OF: "wip"}
+    # Every pod but the edge, for the broad allows.
+    not_edge: dict[str, Any] = (
+        {"matchExpressions": [{
+            "key": _LABELS_NAME, "operator": "NotIn", "values": [APP_EDGE_COMPONENT],
+        }]}
+        if app_edge else {}
+    )
 
     deny_all = {
         "apiVersion": "networking.k8s.io/v1",
@@ -283,7 +307,7 @@ def _render_network_policies(ns: str) -> str:
             "labels": labels,
         },
         "spec": {
-            "podSelector": {},
+            "podSelector": not_edge,
             "policyTypes": ["Ingress", "Egress"],
             "ingress": [{"from": [{"podSelector": {}}]}],
             "egress": [{"to": [{"podSelector": {}}]}],
@@ -356,7 +380,7 @@ def _render_network_policies(ns: str) -> str:
             "labels": labels,
         },
         "spec": {
-            "podSelector": {},
+            "podSelector": not_edge,
             "policyTypes": ["Egress"],
             "egress": [
                 {
@@ -375,7 +399,34 @@ def _render_network_policies(ns: str) -> str:
         _dump(allow_egress_dns),
         _dump(allow_egress_https),
     ]
+    if app_edge:
+        parts.append(_dump(_app_edge_egress_policy(ns, labels)))
     return "---\n".join(parts)
+
+
+def _app_edge_egress_policy(ns: str, labels: dict[str, str]) -> dict[str, Any]:
+    def pods(name: str) -> dict[str, Any]:
+        return {"podSelector": {"matchLabels": {_LABELS_NAME: name}}}
+
+    return {
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "NetworkPolicy",
+        "metadata": {"name": "app-edge-egress", "namespace": ns, "labels": labels},
+        "spec": {
+            "podSelector": {"matchLabels": {_LABELS_NAME: APP_EDGE_COMPONENT}},
+            "policyTypes": ["Egress"],
+            "egress": [
+                # Its records, and the login check.
+                {"to": [pods("registry"), pods("auth-gateway")]},
+                # Attached apps running in other namespaces of the cluster.
+                {"to": [{"namespaceSelector": {"matchExpressions": [{
+                    "key": "kubernetes.io/metadata.name", "operator": "NotIn", "values": [ns],
+                }]}}]},
+                # Attached apps outside the cluster.
+                {"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}, {"ipBlock": {"cidr": "::/0"}}]},
+            ],
+        },
+    }
 
 
 # ────────────────────────────────────────────────────────────────────

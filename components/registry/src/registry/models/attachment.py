@@ -48,11 +48,20 @@ class UpstreamTLS(BaseModel):
 
     @field_validator("ca_pem")
     @classmethod
-    def _looks_like_pem(cls, v: str | None) -> str | None:
-        if v is not None and (
-            "-----BEGIN CERTIFICATE-----" not in v or "-----END CERTIFICATE-----" not in v
-        ):
-            raise ValueError("ca_pem must be a PEM certificate (BEGIN/END CERTIFICATE)")
+    def _is_a_certificate(cls, v: str | None) -> str | None:
+        """Parsed, not just pattern-matched: the app edge loads every
+        attachment into one config, and a certificate Caddy cannot parse
+        would make it refuse the whole config."""
+        if v is None:
+            return v
+        from cryptography import x509
+
+        try:
+            certs = x509.load_pem_x509_certificates(v.encode())
+        except ValueError as e:
+            raise ValueError(f"ca_pem is not a PEM X.509 certificate: {e}") from e
+        if not certs:
+            raise ValueError("ca_pem holds no certificate")
         return v
 
 

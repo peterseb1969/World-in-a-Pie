@@ -7,8 +7,9 @@ metadata:
     OIDC authentication gateway (Theme 7). When auth.gateway=True, it
     sits in the request path for auth-required routes: Caddy's
     forward_auth (compose) or NGINX Ingress auth-url (k8s) consults it
-    to verify sessions, then injects X-WIP-User / X-WIP-Groups / X-API-Key
-    headers before the request reaches the backend service.
+    to verify sessions, then copies the user's identity (X-WIP-User /
+    X-WIP-Groups, never an API key) onto the request before it reaches
+    the backend service.
 
 spec:
   image:

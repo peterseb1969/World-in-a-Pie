@@ -102,7 +102,7 @@ class TestResolveFromSpec:
                 files_enabled="true",
                 file_storage_public_endpoint="https://h/garage",
             ),
-            security=SpecContextSecurity(variant="dev", api_keys_file="", federated_groups_file="", namespace_reservations_file="", attach_policy_file=""),
+            security=SpecContextSecurity(variant="dev", api_keys_file="", federated_groups_file="", namespace_reservations_file="", attach_policy_file="", gateway_identity_headers="", client_identity_headers=""),
         )
 
     def test_nested_path(self) -> None:

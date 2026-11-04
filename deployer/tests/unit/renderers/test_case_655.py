@@ -163,19 +163,27 @@ class TestGeneratedJson:
         secrets = _secrets(tmp_path, d, real_discovery)
         content = generate_api_keys_json(d, secrets)
         doc = json.loads(content)
-        entry, canary = doc["keys"]
+        # With the gateway on, the app edge's key comes before the canary.
+        entry, edge, canary = doc["keys"]
+        assert edge["name"] == "wip-app-edge" and edge["groups"] == ["wip-app-edge"]
         assert canary["name"] == CANARY_KEY_NAME
         assert entry["name"] == "web-yac"
         assert entry["key"] == secrets.get("web-yac-api-key")
         assert entry["namespaces"] == ["library", "kb"]
         assert entry["grants"] == {"kb": "write"}
 
-    def test_only_the_canary_when_no_keys_declared(
+    def test_only_the_deployers_own_keys_when_none_declared(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         d = _compose_deployment()
         secrets = _secrets(tmp_path, d, real_discovery)
-        [canary] = json.loads(generate_api_keys_json(d, secrets))["keys"]
+        edge, canary = json.loads(generate_api_keys_json(d, secrets))["keys"]
+        # The app edge's key: reads attachments, sees no namespace.
+        assert edge["name"] == "wip-app-edge"
+        assert edge["key"] == secrets.get("wip-app-edge-api-key")
+        assert edge["groups"] == ["wip-app-edge"]
+        assert edge["namespaces"] == [CANARY_NAMESPACE]
+        assert edge["grants"] == {}
         assert canary["name"] == CANARY_KEY_NAME
         assert canary["key"] == secrets.get(f"{CANARY_KEY_NAME}-api-key")
         assert canary["groups"] == []
