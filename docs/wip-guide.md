@@ -745,7 +745,10 @@ in §5.5.
   - user grants, when the file's user grants are not restored (another OIDC
     issuer without `--include-user-grants`);
   - the key the command runs with. A plan that would remove it is listed under
-    "Refused" and not applied.
+    "Refused" and not applied. The same holds, in `--overwrite` and
+    `--mode mirror`, for a plan that would replace that key by the file's
+    different record of the same name: a re-created admin key restored from
+    an older file would otherwise lock you out.
 
   Review the dry run, then apply with the plan digest it prints
   (`--mode mirror --apply --expect sha256:…`). The apply is refused if the

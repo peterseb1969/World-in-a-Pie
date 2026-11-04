@@ -133,7 +133,8 @@ def test_mirror_sends_mode_and_expect_and_prints_removals(tmp_path):
     path.write_text(json.dumps(ARCHIVE))
     report = dict(
         REPORT, mode="mirror", plan_digest="sha256:abc",
-        refused=[{"id": "my-key", "reason": "the key this request authenticates with"}],
+        refused=[{"id": "my-key", "reason": "remove the key this request authenticates with",
+                  "reason_code": "caller_key"}],
         api_keys={"created": [], "replaced": [], "unchanged": [], "skipped": [], "deleted": ["old-key"]},
         attachments={"created": [], "replaced": [], "unchanged": [], "skipped": [],
                      "deactivated": ["late-app"]},
@@ -145,5 +146,5 @@ def test_mirror_sends_mode_and_expect_and_prints_removals(tmp_path):
     assert params["mode"] == "mirror" and params["expect"] == "sha256:abc"
     assert "deleted: old-key" in result.output
     assert "deactivated: late-app" in result.output
-    assert "Refused:" in result.output and "my-key" in result.output
+    assert "Refused: my-key: the restore would remove the key" in result.output
     assert "Mirror plan digest: sha256:abc" in result.output

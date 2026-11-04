@@ -1539,7 +1539,7 @@ def system_restore_cmd(
     for warning in report.get("warnings", []):
         console.print(f"[yellow]Warning:[/yellow] {warning}")
     for refused in report.get("refused", []):
-        console.print(f"[red]Refused:[/red] the mirror would remove {refused['id']} ({refused['reason']})")
+        console.print(f"[red]Refused:[/red] {refused['id']}: the restore would {refused['reason']}")
     for part, label in (("reservations", "Reservations"), ("api_keys", "API keys"),
                         ("grants", "Grants"), ("attachments", "Attachments")):
         section = report.get(part, {})

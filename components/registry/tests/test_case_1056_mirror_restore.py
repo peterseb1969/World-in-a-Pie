@@ -186,7 +186,7 @@ async def test_a_plan_that_removes_the_callers_key_is_refused(fresh, auth_header
     assert admin not in dry["api_keys"]["deleted"]
 
     body = await _restore(client, caller, archive, expect_status=409, mode="mirror", dry_run=False)
-    assert body["error_code"] == "mirror_refused"
+    assert body["error_code"] == "restore_refused"
     assert await StoredAPIKey.find_one(StoredAPIKey.name == admin) is not None
 
 
@@ -272,3 +272,48 @@ async def test_mode_and_the_overwrite_alias(fresh, auth_headers):
     await _restore(client, auth_headers, archive, expect_status=422, overwrite=True, mode="upsert")
     upsert = await _restore(client, auth_headers, archive, mode="upsert")
     assert upsert["plan_digest"] is None and upsert["api_keys"]["deleted"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["overwrite", "mirror"])
+async def test_a_restore_that_would_replace_the_callers_key_is_refused(fresh, auth_headers, mode):
+    """An admin key re-created under the same name, restored from an older
+    archive that holds the old one: the archive's record would lock the
+    caller out."""
+    client = fresh
+    name, _old = await _key(client, auth_headers, name=_p("ops-admin"), groups=["wip-admins"], namespaces=None)
+    archive = await _backup(client, auth_headers)
+    r = await client.delete(f"{KEYS}/{name}", headers=auth_headers)
+    assert r.status_code == 200, r.text
+    _, new_pt = await _key(client, auth_headers, name=name, groups=["wip-admins"], namespaces=None)
+    caller = {"X-API-Key": new_pt}
+
+    dry = await _restore(client, caller, archive, mode=mode)
+    assert [(x["id"], x["reason_code"]) for x in dry["refused"]] == [(name, "caller_key")]
+    body = await _restore(client, caller, archive, expect_status=409, mode=mode, dry_run=False)
+    assert body["error_code"] == "restore_refused"
+    assert await _authenticates(client, new_pt)
+
+    # The master key is not that key: it may replace it.
+    report = await _restore(client, auth_headers, archive, mode=mode, dry_run=False)
+    assert name in report["api_keys"]["replaced"]
+    assert not await _authenticates(client, new_pt)
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_is_reported_before_a_salt_question(fresh, auth_headers):
+    """A mirror dry run from another stack's archive that would remove the
+    caller's key reports the refusal, not a salt mismatch."""
+    client = fresh
+    archive = await _backup(client, auth_headers)
+    archive["source"]["salt"] = "other-stack"
+    archive["source"]["salt_fingerprint"] = salt_fingerprint("other-stack")
+    admin, admin_pt = await _key(client, auth_headers, groups=["wip-admins"], namespaces=None)
+    caller = {"X-API-Key": admin_pt}
+
+    dry = await _restore(client, caller, archive, mode="mirror")
+    assert [x["id"] for x in dry["refused"]] == [admin]
+    assert dry["salt_adopted"] is False
+    assert any("refusals below are resolved" in w for w in dry["warnings"])
+    body = await _restore(client, caller, archive, expect_status=409, mode="mirror", dry_run=False)
+    assert body["error_code"] == "restore_refused"

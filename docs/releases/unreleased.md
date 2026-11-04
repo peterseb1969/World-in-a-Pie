@@ -33,7 +33,7 @@ upgrading. ClinTrial Explorer, which the 2026-10-12 rollout recorded as using
 the gateway's injected key, is retired. Takes effect on a redeploy with a rebuilt
 auth-gateway image.
 
-### Mirror mode for the system restore; WIP-Toolkit 0.25.5
+### Mirror mode for the system restore; WIP-Toolkit 0.25.6
 
 A system restore could only add and replace records, so a key revoked since
 the backup survived it. `POST /api/registry/system-restore` now takes
@@ -53,7 +53,9 @@ the backup survived it. `POST /api/registry/system-restore` now takes
   - keys named like config keys;
   - user grants the archive's OIDC issuer would not restore;
   - the key the request authenticates with. A plan that removes it is listed
-    under `refused`, and an apply answers 409.
+    under `refused`, and an apply answers 409 `restore_refused`. In `overwrite`
+    and `mirror` mode, the same goes for a plan that would replace that key by
+    the archive's different record of the same name.
 - **The report** gains `deleted` (keys, grants, reservations), `deactivated`
   (attachments), `refused`, `mode`, and `plan_digest`. An apply passing
   `expect=<digest>` is refused (409) if the plan changed since the dry run.
@@ -66,7 +68,7 @@ the backup survived it. `POST /api/registry/system-restore` now takes
   its own, since those are removed.
 - **Not yet:** a namespace-scoped mirror. It needs a backup that declares its
   scope.
-- **WIP-Toolkit 0.25.5:** `system-restore --mode mirror` and `--expect`. The
+- **WIP-Toolkit 0.25.6:** `system-restore --mode mirror` and `--expect`. The
   output shows removals, refusals and the plan digest.
 
 ### The system backup carries app attachments; WIP-Toolkit 0.25.4

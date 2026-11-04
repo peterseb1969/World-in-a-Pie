@@ -17,11 +17,11 @@ from wip_auth import get_current_identity, get_identity_string
 from ..services import key_import, key_salt, key_shadowing
 from ..services.auth import require_admin_key
 from ..services.system_backup import (
-    MIRROR_REFUSED,
     PLAN_CHANGED,
+    RESTORE_REFUSED,
     SALT_MISMATCH,
-    MirrorRefused,
     PlanChanged,
+    RestoreRefused,
     SaltMismatch,
     SystemArchive,
     SystemRestoreReport,
@@ -118,7 +118,9 @@ async def system_restore(
     except records the install's files manage, keys named like config keys,
     the bootstrap grants, user grants the archive's issuer would not restore,
     and the key this request authenticates with: a plan that would remove it
-    is listed under `refused` and not applied (409). Pass the dry run's
+    is listed under `refused` and not applied (409 restore_refused). The same
+    holds in overwrite and mirror mode for a plan that would replace that key
+    by the archive's different record of its name. Pass the dry run's
     plan_digest as `expect` to refuse an apply whose plan has changed. After
     a mirror the stack holds no keys of its own beyond the archive's, so a
     mirror adopts the archive's salt where an upsert would refuse it."""
@@ -143,10 +145,10 @@ async def system_restore(
             caller_key=caller_key,
             expect=expect,
         )
-    except (SaltMismatch, MirrorRefused, PlanChanged) as e:
+    except (SaltMismatch, RestoreRefused, PlanChanged) as e:
         code = (
             SALT_MISMATCH if isinstance(e, SaltMismatch)
-            else MIRROR_REFUSED if isinstance(e, MirrorRefused) else PLAN_CHANGED
+            else RESTORE_REFUSED if isinstance(e, RestoreRefused) else PLAN_CHANGED
         )
         return JSONResponse(status_code=409, content={"detail": str(e), "error_code": code})
 

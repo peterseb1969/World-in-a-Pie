@@ -87,7 +87,10 @@ Restore rules:
     OIDC issuer without `include_user_grants`): this stack's users would be
     left with nothing;
   - the key the request authenticates with: a plan that would remove it is
-    refused (the dry run lists it under `refused`; an apply answers 409).
+    refused (the dry run lists it under `refused`; an apply answers 409
+    `restore_refused`). So is any replacing restore (overwrite or mirror)
+    that would replace that key by the archive's different record of the
+    same name.
   A grant the archive holds for a key the mirror removes is not written.
   The dry run returns a `plan_digest` of what the mirror would remove; an
   apply that passes it as `expect` is refused (409) when the plan has
@@ -362,7 +365,7 @@ class SystemRestoreReport(BaseModel):
 
 
 SALT_MISMATCH = "salt_mismatch"
-MIRROR_REFUSED = "mirror_refused"
+RESTORE_REFUSED = "restore_refused"
 PLAN_CHANGED = "plan_changed"
 
 
@@ -372,9 +375,10 @@ class SaltMismatch(Exception):
     `salt_mismatch`."""
 
 
-class MirrorRefused(Exception):
-    """The mirror plan would remove what it must not; nothing was written.
-    The API answers 409 with error_code `mirror_refused`."""
+class RestoreRefused(Exception):
+    """The restore would remove or replace what it must not (the key of the
+    request); nothing was written. The API answers 409 with error_code
+    `restore_refused`."""
 
 
 class PlanChanged(Exception):
@@ -520,19 +524,22 @@ async def restore_archive(
         await _plan_mirror(archive, config_key_names, user_grants, caller_key)
         if mode == "mirror" else None
     )
-    if plan is not None and not dry_run:
-        if plan.refused:
-            raise MirrorRefused(
-                "The mirror would remove " + "; ".join(f"{r.id} ({r.reason})" for r in plan.refused)
-                + ". Nothing was written."
-            )
-        if expect is not None and expect != plan.digest:
-            raise PlanChanged(
-                "The mirror plan changed since the dry run that returned the expected "
-                "digest. Nothing was written; run the dry run again and review it."
-            )
+    refused = list(plan.refused) if plan is not None else []
+    if overwrite:
+        refused += await _caller_replacement(archive, caller_key, config_key_names)
+    if refused and not dry_run:
+        raise RestoreRefused(
+            "The restore would " + "; ".join(f"{r.reason} ({r.id})" for r in refused)
+            + ". Nothing was written."
+        )
+    if plan is not None and not dry_run and expect is not None and expect != plan.digest:
+        raise PlanChanged(
+            "The mirror plan changed since the dry run that returned the expected "
+            "digest. Nothing was written; run the dry run again and review it."
+        )
 
     adopt: str | None = None
+    salt_note: str | None = None
     if archive.source.salt_fingerprint != salt_fingerprint():
         archive_salt = archive.source.salt
         if archive_salt is None:
@@ -549,18 +556,30 @@ async def restore_archive(
                 "adopted; restored keys could never authenticate here."
             )
         fresh = await is_fresh() if plan is None else await _fresh_after(plan, archive, config_key_names)
-        if not fresh:
+        if refused:
+            # A dry run only (an apply was refused above): report the refusal,
+            # which the operator must resolve first, rather than a salt error
+            # it may be the cause of.
+            fresh = False
+            salt_note = (
+                "The archive was made under another runtime-key salt. Whether this "
+                "stack can adopt it is decided once the refusals below are resolved."
+            )
+        elif not fresh:
             raise SaltMismatch(
                 "The archive's key hashes were made under a different runtime-key salt, "
                 "and this stack already holds API keys of its own (not managed by its "
                 "key file), which adopting the archive's salt would invalidate. Restore "
                 "onto a fresh stack, or revoke this stack's own keys first."
             )
-        adopt = archive_salt
+        else:
+            adopt = archive_salt
 
     report = SystemRestoreReport(dry_run=dry_run, mode=mode, salt_adopted=adopt is not None)
+    report.refused = refused
+    if salt_note:
+        report.warnings.append(salt_note)
     if plan is not None:
-        report.refused = list(plan.refused)
         report.plan_digest = plan.digest
         report.api_keys.deleted = sorted(k.name for k in plan.keys)
         report.grants.deleted = sorted(plan.grant_ids)
@@ -646,7 +665,7 @@ async def _plan_mirror(
             continue
         if caller_key is not None and doc.name == caller_key:
             plan.refused.append(_skip_named(
-                doc.name, "caller_key", "the key this request authenticates with",
+                doc.name, "caller_key", "remove the key this request authenticates with",
             ))
             continue
         plan.keys.append(doc)
@@ -680,6 +699,28 @@ async def _plan_mirror(
     return plan
 
 
+async def _caller_replacement(
+    archive: SystemArchive, caller_key: str | None, config_key_names: frozenset[str],
+) -> list[SkippedRecord]:
+    """A replacing restore (overwrite, mirror) must not swap the key of the
+    request for the archive's different record of that name: a re-created
+    admin key restored from an older archive would lock the operator out."""
+    if caller_key is None or caller_key in config_key_names:
+        return []
+    archived = next((k for k in archive.api_keys if k.name == caller_key), None)
+    if archived is None:
+        return []
+    current = await StoredAPIKey.find_one(StoredAPIKey.name == caller_key)
+    if current is None or current.managed_by is not None:
+        return []
+    if _key_content(current) == _key_content(archived):
+        return []
+    return [_skip_named(
+        caller_key, "caller_key",
+        "replace the key this request authenticates with by the archive's different record",
+    )]
+
+
 def _as_archive_grant(g: NamespaceGrant) -> ArchiveGrant:
     return ArchiveGrant(
         namespace=g.namespace, subject=g.subject, subject_type=g.subject_type,
@@ -693,8 +734,6 @@ async def _fresh_after(
     """Whether, after this mirror, no stored key here depends on this stack's
     salt except the managed ones: each of its own keys is either removed or
     replaced by the archive's record."""
-    if plan.refused:
-        return False
     removed = {k.name for k in plan.keys}
     replaced = {k.name for k in archive.api_keys} - config_key_names
     return all(
