@@ -33,6 +33,42 @@ upgrading. ClinTrial Explorer, which the 2026-10-12 rollout recorded as using
 the gateway's injected key, is retired. Takes effect on a redeploy with a rebuilt
 auth-gateway image.
 
+### Mirror mode for the system restore; WIP-Toolkit 0.25.5
+
+A system restore could only add and replace records, so a key revoked since
+the backup survived it. `POST /api/registry/system-restore` now takes
+`mode=upsert|overwrite|mirror`; `overwrite=true` still means
+`mode=overwrite`.
+
+- **Mirror makes the archive the exact auth state, stack-wide:**
+  - it replaces what differs;
+  - it removes every key, grant and reservation the archive does not hold;
+  - it deactivates attachments, which are never deleted.
+- **No new kind of delete.** A key goes as a revoke takes it (with its grants);
+  a grant and a reservation as their revokes do.
+- **Never removed:**
+  - records the install's files manage, and grants to keys whose grants the
+    key file declares;
+  - the bootstrap grants;
+  - keys named like config keys;
+  - user grants the archive's OIDC issuer would not restore;
+  - the key the request authenticates with. A plan that removes it is listed
+    under `refused`, and an apply answers 409.
+- **The report** gains `deleted` (keys, grants, reservations), `deactivated`
+  (attachments), `refused`, `mode`, and `plan_digest`. An apply passing
+  `expect=<digest>` is refused (409) if the plan changed since the dry run.
+- A grant the archive holds for a key the mirror removes is not written.
+- **Removed keys keep working at the services until their next key sync (up
+  to about 30 s).** The Registry drops them at once.
+- **Not one transaction:** a mirror that fails part-way has done what its
+  report lists, and re-running converges.
+- **A mirror adopts an archive's other salt** even on a stack with keys of
+  its own, since those are removed.
+- **Not yet:** a namespace-scoped mirror. It needs a backup that declares its
+  scope.
+- **WIP-Toolkit 0.25.5:** `system-restore --mode mirror` and `--expect`. The
+  output shows removals, refusals and the plan digest.
+
 ### The system backup carries app attachments; WIP-Toolkit 0.25.4
 
 A restore used to leave attached apps off the umbrella until someone attached

@@ -29,11 +29,12 @@ Restore rules:
   without the salt itself (only its fingerprint, as archives made before the
   salt travelled) is adopted only when the fingerprint is the configured
   salt's, which is the one salt it can name; otherwise it is refused.
-- **Upsert by identity, never delete.** A key is identified by its name, a
-  grant by (namespace, subject, subject_type), a reservation by its prefix.
-  A missing record is created; an identical one is left alone; a different
-  one is replaced only with `overwrite`, otherwise listed and skipped. Records
-  the archive does not hold are kept.
+- **Upsert by identity.** A key is identified by its name, a grant by
+  (namespace, subject, subject_type), a reservation by its prefix, an
+  attachment by its name. A missing record is created; an identical one is
+  left alone; a different one is replaced only with `overwrite`, otherwise
+  listed and skipped. Records the archive does not hold are kept, except in
+  mirror mode (below).
 - **Every restored record arrives unmanaged**, `origin: "restored"`. The key
   import re-adopts any that the install's own files declare, under its own
   takeover rule; a restore invents no ownership rule.
@@ -71,6 +72,29 @@ Restore rules:
   never stops the backup or the rest of the restore. An entry the source's
   deployer manages is skipped: the install that deploys the app re-creates
   it, and on another stack it would point at a host that is not there.
+- **Three modes.** `upsert` (the default) creates what is missing and leaves
+  a record that differs; `overwrite` also replaces it; `mirror` also removes
+  every record the archive does not hold, so the archive becomes the exact
+  auth state. The mirror is stack-wide (every archive is). It adds no new kind
+  of delete; it sequences the existing ones: a key goes as a revoke takes it
+  (with its grants), a grant as a grant revoke, a reservation as a release,
+  and an attachment is deactivated, never deleted. It never removes:
+  - a record the install's files manage, nor a grant to a key whose grants
+    the key file declares;
+  - a key named like a loaded config key;
+  - the bootstrap grants;
+  - user grants when the archive's user grants are not restored (another
+    OIDC issuer without `include_user_grants`): this stack's users would be
+    left with nothing;
+  - the key the request authenticates with: a plan that would remove it is
+    refused (the dry run lists it under `refused`; an apply answers 409).
+  A grant the archive holds for a key the mirror removes is not written.
+  The dry run returns a `plan_digest` of what the mirror would remove; an
+  apply that passes it as `expect` is refused (409) when the plan has
+  changed since. Writes are not one transaction: a run that fails part-way
+  has done the records its report lists, and re-running converges. After a
+  mirror the stack holds no keys of its own beyond the archive's, so a
+  mirror adopts an archive's other salt where an upsert would refuse it.
 - **Dry run by default.** The report lists what would be created, replaced,
   left unchanged and skipped (with the reason), and leads with a warning when
   the target holds auth state of its own: restoring old state brings back old
@@ -78,7 +102,9 @@ Restore rules:
 """
 
 import hashlib
+import json
 import logging
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final, Literal
 
@@ -236,6 +262,8 @@ SkipReason = Literal[
     "upstream_invalid",
     "upstream_blocked",
     "concurrent_write",         # another request attached the name during the restore
+    "mirror_removes_key",       # a grant to a key the archive lacks and the mirror removes
+    "caller_key",               # refused: the mirror would remove the key of this request
 ]
 
 
@@ -291,10 +319,24 @@ class RecordReport(BaseModel):
         "does not resolve from the Registry's network yet. Written anyway; the "
         "router's app edge checks it where it resolves.",
     )
+    deleted: list[str] = Field(
+        default_factory=list,
+        description="Mirror only: records this instance held and the archive does not, "
+        "removed (in a dry run: that would be). Keys, grants and reservations.",
+    )
+    deactivated: list[str] = Field(
+        default_factory=list,
+        description="Mirror only, attachments: active ones the archive does not hold, "
+        "deactivated (attachments are never deleted)",
+    )
+
+
+RestoreMode = Literal["upsert", "overwrite", "mirror"]
 
 
 class SystemRestoreReport(BaseModel):
     dry_run: bool
+    mode: RestoreMode = "upsert"
     salt_adopted: bool = Field(
         default=False,
         description=(
@@ -303,6 +345,16 @@ class SystemRestoreReport(BaseModel):
         ),
     )
     warnings: list[str] = Field(default_factory=list)
+    refused: list[SkippedRecord] = Field(
+        default_factory=list,
+        description="Mirror only: records the plan would remove that it must not (the "
+        "key this request authenticates with). A plan with refusals is not applied.",
+    )
+    plan_digest: str | None = Field(
+        default=None,
+        description="Mirror only: a digest of what the mirror removes. Pass it as "
+        "`expect` on the apply to refuse a plan that changed since this dry run.",
+    )
     reservations: RecordReport = Field(default_factory=RecordReport)
     api_keys: RecordReport = Field(default_factory=RecordReport)
     grants: RecordReport = Field(default_factory=RecordReport)
@@ -310,12 +362,24 @@ class SystemRestoreReport(BaseModel):
 
 
 SALT_MISMATCH = "salt_mismatch"
+MIRROR_REFUSED = "mirror_refused"
+PLAN_CHANGED = "plan_changed"
 
 
 class SaltMismatch(Exception):
     """The archive's hashes were made with another salt than the target's, and
     this stack cannot adopt it. The API answers 409 with error_code
     `salt_mismatch`."""
+
+
+class MirrorRefused(Exception):
+    """The mirror plan would remove what it must not; nothing was written.
+    The API answers 409 with error_code `mirror_refused`."""
+
+
+class PlanChanged(Exception):
+    """The mirror plan differs from the one the caller expected. The API
+    answers 409 with error_code `plan_changed`."""
 
 
 # --- Helpers ---
@@ -436,17 +500,38 @@ async def restore_archive(
     archive: SystemArchive,
     *,
     dry_run: bool = True,
-    overwrite: bool = False,
+    mode: RestoreMode = "upsert",
     include_user_grants: bool = False,
     config_key_names: frozenset[str] = frozenset(),
     restored_by: str = "system",
-) -> tuple[SystemRestoreReport, list[tuple[str | None, StoredAPIKey]]]:
+    caller_key: str | None = None,
+    expect: str | None = None,
+) -> tuple[SystemRestoreReport, list[tuple[str | None, StoredAPIKey]], list[str]]:
     """Restore the archive's records (or report what a restore would do).
 
-    Returns the report and, for each key written, (the hash it replaced or
-    None, the written record), so the caller can bring the Registry's own key
-    provider in step.
+    Returns the report; for each key written, (the hash it replaced or None,
+    the written record); and the hashes of the keys a mirror removed, so the
+    caller can bring the Registry's own key provider in step.
     """
+    overwrite = mode != "upsert"
+    same_issuer = archive.source.oidc_issuer == current_issuer()
+    user_grants = same_issuer or include_user_grants
+    plan = (
+        await _plan_mirror(archive, config_key_names, user_grants, caller_key)
+        if mode == "mirror" else None
+    )
+    if plan is not None and not dry_run:
+        if plan.refused:
+            raise MirrorRefused(
+                "The mirror would remove " + "; ".join(f"{r.id} ({r.reason})" for r in plan.refused)
+                + ". Nothing was written."
+            )
+        if expect is not None and expect != plan.digest:
+            raise PlanChanged(
+                "The mirror plan changed since the dry run that returned the expected "
+                "digest. Nothing was written; run the dry run again and review it."
+            )
+
     adopt: str | None = None
     if archive.source.salt_fingerprint != salt_fingerprint():
         archive_salt = archive.source.salt
@@ -463,7 +548,8 @@ async def restore_archive(
                 "and the archive does not carry the salt itself, so it cannot be "
                 "adopted; restored keys could never authenticate here."
             )
-        if not await is_fresh():
+        fresh = await is_fresh() if plan is None else await _fresh_after(plan, archive, config_key_names)
+        if not fresh:
             raise SaltMismatch(
                 "The archive's key hashes were made under a different runtime-key salt, "
                 "and this stack already holds API keys of its own (not managed by its "
@@ -472,7 +558,14 @@ async def restore_archive(
             )
         adopt = archive_salt
 
-    report = SystemRestoreReport(dry_run=dry_run, salt_adopted=adopt is not None)
+    report = SystemRestoreReport(dry_run=dry_run, mode=mode, salt_adopted=adopt is not None)
+    if plan is not None:
+        report.refused = list(plan.refused)
+        report.plan_digest = plan.digest
+        report.api_keys.deleted = sorted(k.name for k in plan.keys)
+        report.grants.deleted = sorted(plan.grant_ids)
+        report.reservations.deleted = sorted(r.prefix for r in plan.reservations)
+        report.attachments.deactivated = sorted(a.name for a in plan.attachments)
     if adopt:
         report.warnings.append(
             "The archive was made under another runtime-key salt and this stack holds "
@@ -490,7 +583,6 @@ async def restore_archive(
             "Restoring brings back the archive's state, including access revoked "
             "since the backup was taken. Review the lists below before applying."
         )
-    same_issuer = archive.source.oidc_issuer == current_issuer()
     if not same_issuer:
         report.warnings.append(
             f"The archive was made under OIDC issuer {archive.source.oidc_issuer!r}, "
@@ -501,11 +593,149 @@ async def restore_archive(
 
     await _restore_reservations(archive, report, dry_run, overwrite, restored_by)
     written_keys = await _restore_keys(archive, report, dry_run, overwrite, config_key_names)
-    await _restore_grants(
-        archive, report, dry_run, overwrite, same_issuer or include_user_grants
-    )
+    removed_keys = {k.name for k in plan.keys} if plan is not None else set()
+    await _restore_grants(archive, report, dry_run, overwrite, user_grants, removed_keys)
     await _restore_attachments(archive, report, dry_run, overwrite, restored_by)
-    return report, written_keys
+    removed_hashes: list[str] = []
+    if plan is not None and not dry_run:
+        removed_hashes = await _apply_mirror(plan, restored_by)
+    return report, written_keys, removed_hashes
+
+
+# --- Mirror ---
+
+
+@dataclass
+class MirrorPlan:
+    keys: list[StoredAPIKey] = field(default_factory=list)
+    grants: list[NamespaceGrant] = field(default_factory=list)
+    reservations: list[RuntimeReservation] = field(default_factory=list)
+    attachments: list[AppAttachment] = field(default_factory=list)
+    refused: list[SkippedRecord] = field(default_factory=list)
+
+    @property
+    def grant_ids(self) -> list[str]:
+        return [_grant_id(g.namespace, g.subject_type, g.subject) for g in self.grants]
+
+    @property
+    def digest(self) -> str:
+        body = json.dumps({
+            "api_keys": sorted(k.name for k in self.keys),
+            "grants": sorted(self.grant_ids),
+            "reservations": sorted(r.prefix for r in self.reservations),
+            "attachments": sorted(a.name for a in self.attachments),
+        }, sort_keys=True)
+        return "sha256:" + hashlib.sha256(body.encode()).hexdigest()
+
+
+def _key_subjects(name: str) -> set[str]:
+    """Both spellings a grant to key `name` may carry."""
+    return {name, f"apikey:{name}"}
+
+
+async def _plan_mirror(
+    archive: SystemArchive, config_key_names: frozenset[str], user_grants: bool,
+    caller_key: str | None,
+) -> MirrorPlan:
+    """What a mirror removes: every record here the archive does not hold,
+    less the exclusions in the module docstring. Reads only."""
+    plan = MirrorPlan()
+    archived_keys = {k.name for k in archive.api_keys}
+    for doc in await StoredAPIKey.find({"managed_by": None}).to_list():
+        if doc.name in archived_keys or doc.name in config_key_names:
+            continue
+        if caller_key is not None and doc.name == caller_key:
+            plan.refused.append(_skip_named(
+                doc.name, "caller_key", "the key this request authenticates with",
+            ))
+            continue
+        plan.keys.append(doc)
+    removed_subjects = set().union(*(_key_subjects(k.name) for k in plan.keys))
+
+    archived_grants = {_grant_id(g.namespace, g.subject_type, g.subject) for g in archive.grants}
+    for g in await NamespaceGrant.find({"managed_by": None}).to_list():
+        if g.granted_by == BOOTSTRAP_GRANTOR:
+            continue
+        if g.subject_type == "user" and not user_grants:
+            continue
+        removed_with_key = g.subject_type == "api_key" and g.subject in removed_subjects
+        if not removed_with_key:
+            if _grant_id(g.namespace, g.subject_type, g.subject) in archived_grants:
+                continue
+            if await _grant_owned_by_file(_as_archive_grant(g), g):
+                continue
+        plan.grants.append(g)
+
+    archived_prefixes = {r.prefix for r in archive.reservations}
+    plan.reservations = [
+        r for r in await RuntimeReservation.find({"managed_by": None}).to_list()
+        if r.prefix not in archived_prefixes
+    ]
+
+    archived_attachments = {a.name for a in archive.attachments}
+    plan.attachments = [
+        a for a in await AppAttachment.find({"managed_by": None, "status": "active"}).to_list()
+        if a.name not in archived_attachments
+    ]
+    return plan
+
+
+def _as_archive_grant(g: NamespaceGrant) -> ArchiveGrant:
+    return ArchiveGrant(
+        namespace=g.namespace, subject=g.subject, subject_type=g.subject_type,
+        permission=g.permission,
+    )
+
+
+async def _fresh_after(
+    plan: MirrorPlan, archive: SystemArchive, config_key_names: frozenset[str],
+) -> bool:
+    """Whether, after this mirror, no stored key here depends on this stack's
+    salt except the managed ones: each of its own keys is either removed or
+    replaced by the archive's record."""
+    if plan.refused:
+        return False
+    removed = {k.name for k in plan.keys}
+    replaced = {k.name for k in archive.api_keys} - config_key_names
+    return all(
+        doc.name in removed or doc.name in replaced
+        for doc in await StoredAPIKey.find({"managed_by": None}).to_list()
+    )
+
+
+async def _apply_mirror(plan: MirrorPlan, removed_by: str) -> list[str]:
+    """Remove what the plan lists, record by record. Returns the removed keys'
+    hashes for the caller's provider."""
+    for g in plan.grants:
+        await NamespaceGrant.find({
+            "namespace": g.namespace, "subject": g.subject, "subject_type": g.subject_type,
+            "managed_by": None,
+        }).delete()
+    hashes: list[str] = []
+    for k in plan.keys:
+        # As a revoke takes it: the key, then every grant to it (both spellings).
+        await StoredAPIKey.find({"name": k.name, "managed_by": None}).delete()
+        await NamespaceGrant.find({
+            "subject_type": "api_key", "subject": {"$in": sorted(_key_subjects(k.name))},
+        }).delete()
+        hashes.append(k.key_hash)
+    for r in plan.reservations:
+        await RuntimeReservation.find({"prefix": r.prefix, "managed_by": None}).delete()
+    now = datetime.now(UTC)
+    for a in plan.attachments:
+        doc = await AppAttachment.find_one({"name": a.name, "managed_by": None})
+        if doc is not None and doc.status == "active":
+            doc.status = "inactive"
+            doc.updated_at = now
+            doc.updated_by = removed_by
+            await doc.save()
+    logger.warning(
+        "System restore mirror by %s removed keys %s, grants %s, reservations %s; "
+        "deactivated attachments %s",
+        removed_by, sorted(k.name for k in plan.keys), sorted(plan.grant_ids),
+        sorted(r.prefix for r in plan.reservations), sorted(a.name for a in plan.attachments),
+    )
+    return hashes
 
 
 def _attachment_fields(a: AppAttachment | AttachmentRequest) -> dict[str, Any]:
@@ -733,7 +963,7 @@ async def _grant_owned_by_file(g: ArchiveGrant, existing: NamespaceGrant | None)
 
 async def _restore_grants(
     archive: SystemArchive, report: SystemRestoreReport, dry_run: bool, overwrite: bool,
-    user_grants: bool,
+    user_grants: bool, removed_keys: set[str] | None = None,
 ) -> None:
     out = report.grants
     active: dict[str, bool] = {}
@@ -742,6 +972,14 @@ async def _restore_grants(
         gid = _grant_id(g.namespace, g.subject_type, g.subject)
         if g.subject_type == "user" and not user_grants:
             out.skipped.append(_skip_grant(g, "other_oidc_issuer", "user grant from another OIDC issuer"))
+            continue
+        if (
+            removed_keys and g.subject_type == "api_key"
+            and g.subject.removeprefix("apikey:") in removed_keys
+        ):
+            out.skipped.append(_skip_grant(
+                g, "mirror_removes_key", "its key is not in the archive, and the mirror removes it",
+            ))
             continue
         # Ownership first: the import writes a key's declared grants whether
         # or not the namespace exists, and "restore the namespace" would send

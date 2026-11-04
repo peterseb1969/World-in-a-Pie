@@ -206,6 +206,7 @@ async def test_an_archive_without_attachments_still_restores(fresh, auth_headers
     report = await _restore(client, auth_headers, archive)
     assert report["attachments"] == {
         "created": [], "replaced": [], "unchanged": [], "skipped": [], "orphaned": [], "unresolved": [],
+        "deleted": [], "deactivated": [],
     }
 
 

@@ -726,11 +726,34 @@ MCP tool.
 in §5.5.
 
 **How a restore behaves:**
-- **Upsert, never delete.** A key is matched by name, a grant by namespace,
-  subject and subject type, and a reservation by prefix. Missing records are
-  created and identical ones left alone. A record that differs is listed and
-  skipped unless `--overwrite` is given. Records that are not in the file are
-  kept.
+- **Upsert by default.** A key is matched by name, a grant by namespace,
+  subject and subject type, a reservation by prefix, and an attachment by
+  name. Missing records are created and identical ones left alone. A record
+  that differs is listed and skipped unless `--overwrite` (`--mode overwrite`)
+  is given. Records that are not in the file are kept.
+- **`--mode mirror` makes the file the exact state.** It also replaces what
+  differs, and it removes every record the file does not hold:
+  - keys go as a revoke takes them, with their grants;
+  - grants and reservations are deleted;
+  - attachments are deactivated, never deleted.
+
+  It is stack-wide, since every system backup is. It never removes:
+  - records the install's files manage, or grants to a key whose grants the
+    key file declares;
+  - the bootstrap grants;
+  - keys named like config keys;
+  - user grants, when the file's user grants are not restored (another OIDC
+    issuer without `--include-user-grants`);
+  - the key the command runs with. A plan that would remove it is listed under
+    "Refused" and not applied.
+
+  Review the dry run, then apply with the plan digest it prints
+  (`--mode mirror --apply --expect sha256:…`). The apply is refused if the
+  plan has changed since. A removed key stops working at the Registry at
+  once, and at the other services on their next key sync (up to about 30 s).
+  A mirror is not one transaction: if it fails part-way, re-run it. After a
+  mirror the stack holds no keys of its own beyond the file's, so a mirror
+  also adopts a file's other hash salt, where an upsert refuses it.
 - **Restored records are unmanaged** (`origin: restored`). Where the install's
   own key file or reservations file declares the same key, grant or prefix,
   the Registry's import takes it over on its next pass (§4.3).

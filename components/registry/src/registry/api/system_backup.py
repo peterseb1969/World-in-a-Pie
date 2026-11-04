@@ -7,16 +7,21 @@ The archive is sensitive: keep it like the install's own secrets.
 """
 
 import logging
+from typing import Literal
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-from wip_auth import get_identity_string
+from wip_auth import get_current_identity, get_identity_string
 
 from ..services import key_import, key_salt, key_shadowing
 from ..services.auth import require_admin_key
 from ..services.system_backup import (
+    MIRROR_REFUSED,
+    PLAN_CHANGED,
     SALT_MISMATCH,
+    MirrorRefused,
+    PlanChanged,
     SaltMismatch,
     SystemArchive,
     SystemRestoreReport,
@@ -67,7 +72,19 @@ async def system_restore(
     archive: SystemArchive,
     dry_run: bool = Query(True, description="Report what would change, write nothing"),
     overwrite: bool = Query(
-        False, description="Replace records that exist here with different content"
+        False,
+        description="Replace records that exist here with different content. The same "
+        "as mode=overwrite; kept for existing callers",
+    ),
+    mode: Literal["upsert", "overwrite", "mirror"] | None = Query(
+        None,
+        description="upsert (default): create what is missing; overwrite: also replace "
+        "what differs; mirror: also remove what the archive does not hold",
+    ),
+    expect: str | None = Query(
+        None,
+        description="Mirror apply: the plan_digest of the reviewed dry run. Refused (409) "
+        "when the plan has changed since",
     ),
     include_user_grants: bool = Query(
         False,
@@ -78,8 +95,8 @@ async def system_restore(
     """Restore an archive from POST /system-backup.
 
     Upserts by identity (key name; grant namespace, subject and subject type;
-    reservation prefix; attachment name) and never deletes. Restored records
-    arrive unmanaged. A record wip-deploy manages here, a grant to a key whose
+    reservation prefix; attachment name); only mode=mirror removes. Restored
+    records arrive unmanaged. A record wip-deploy manages here, a grant to a key whose
     grants the key file declares, and a key named like a loaded config key are
     never replaced. A grant on a namespace that neither exists nor is reserved
     here is written orphaned and gives nothing until activated. User grants
@@ -94,22 +111,50 @@ async def system_restore(
     archive's salt and re-hashes its managed keys; services verify under it
     from their next key sync. A stack with keys of its own refuses it (409),
     as does an archive that carries only the salt's fingerprint. Runs as a
-    dry run unless dry_run=false."""
+    dry run unless dry_run=false.
+
+    mode=mirror also removes every record the archive does not hold (keys as a
+    revoke takes them, grants, reservations; attachments are deactivated),
+    except records the install's files manage, keys named like config keys,
+    the bootstrap grants, user grants the archive's issuer would not restore,
+    and the key this request authenticates with: a plan that would remove it
+    is listed under `refused` and not applied (409). Pass the dry run's
+    plan_digest as `expect` to refuse an apply whose plan has changed. After
+    a mirror the stack holds no keys of its own beyond the archive's, so a
+    mirror adopts the archive's salt where an upsert would refuse it."""
+    if mode is None:
+        mode = "overwrite" if overwrite else "upsert"
+    elif overwrite and mode == "upsert":
+        raise HTTPException(status_code=422, detail="overwrite=true contradicts mode=upsert")
+    identity = get_current_identity()
+    caller_key = (
+        identity.username if identity is not None and identity.auth_method == "api_key" else None
+    )
     provider = _api_key_provider_or_none()
     config_names = provider.config_key_names() if provider is not None else frozenset()
     try:
-        report, written = await restore_archive(
+        report, written, removed = await restore_archive(
             archive,
             dry_run=dry_run,
-            overwrite=overwrite,
+            mode=mode,
             include_user_grants=include_user_grants,
             config_key_names=config_names,
             restored_by=get_identity_string(),
+            caller_key=caller_key,
+            expect=expect,
         )
-    except SaltMismatch as e:
-        return JSONResponse(
-            status_code=409, content={"detail": str(e), "error_code": SALT_MISMATCH}
+    except (SaltMismatch, MirrorRefused, PlanChanged) as e:
+        code = (
+            SALT_MISMATCH if isinstance(e, SaltMismatch)
+            else MIRROR_REFUSED if isinstance(e, MirrorRefused) else PLAN_CHANGED
         )
+        return JSONResponse(status_code=409, content={"detail": str(e), "error_code": code})
+
+    if removed and provider is not None:
+        # The services drop them on their next key sync (up to ~30 s).
+        async with key_shadowing.provider_lock:
+            for key_hash in removed:
+                provider.remove_key(key_hash)
 
     if report.salt_adopted and not dry_run and provider is not None:
         # Runtime keys verify under the adopted salt from now on, and the

@@ -1461,7 +1461,13 @@ def system_backup_cmd(ctx: click.Context, output_path: str, force: bool) -> None
 @click.option("--apply", "apply_", is_flag=True,
               help="Write the changes (without it, only report what would change)")
 @click.option("--overwrite", is_flag=True,
-              help="Replace records that exist here with different content")
+              help="Replace records that exist here with different content (= --mode overwrite)")
+@click.option("--mode", type=click.Choice(["upsert", "overwrite", "mirror"]), default=None,
+              help="upsert (default), overwrite, or mirror: also remove what the archive "
+                   "does not hold")
+@click.option("--expect", default=None, metavar="DIGEST",
+              help="With --mode mirror --apply: the plan digest the reviewed dry run "
+                   "printed; refused if the plan changed since")
 @click.option("--include-user-grants", is_flag=True,
               help="Restore user grants although the archive comes from another OIDC issuer")
 @click.option("--json", "as_json", is_flag=True, help="Print the report as JSON")
@@ -1471,6 +1477,8 @@ def system_restore_cmd(
     archive_path: str,
     apply_: bool,
     overwrite: bool,
+    mode: str | None,
+    expect: str | None,
     include_user_grants: bool,
     as_json: bool,
 ) -> None:
@@ -1488,11 +1496,21 @@ def system_restore_cmd(
     holds no keys of its own, and refused by one that does. Needs a platform
     admin key.
 
+    --mode mirror also removes every record the archive does not hold (keys
+    with their grants, grants, reservations; attachments are deactivated),
+    never the install's managed records, the bootstrap grants, or the key
+    this command runs with. Review the dry run, then apply with the plan
+    digest it prints.
+
     Examples:
 
       wip-toolkit system-restore auth-state.json
 
       wip-toolkit system-restore auth-state.json --apply
+
+      wip-toolkit system-restore auth-state.json --mode mirror
+
+      wip-toolkit system-restore auth-state.json --mode mirror --apply --expect sha256:...
     """
     try:
         archive = _json.loads(Path(archive_path).read_text())
@@ -1504,6 +1522,10 @@ def system_restore_cmd(
         "overwrite": str(overwrite).lower(),
         "include_user_grants": str(include_user_grants).lower(),
     }
+    if mode is not None:
+        params["mode"] = mode
+    if expect is not None:
+        params["expect"] = expect
     config = ctx.obj["config"]
     with WIPClient(config) as client:
         try:
@@ -1516,6 +1538,8 @@ def system_restore_cmd(
         return
     for warning in report.get("warnings", []):
         console.print(f"[yellow]Warning:[/yellow] {warning}")
+    for refused in report.get("refused", []):
+        console.print(f"[red]Refused:[/red] the mirror would remove {refused['id']} ({refused['reason']})")
     for part, label in (("reservations", "Reservations"), ("api_keys", "API keys"),
                         ("grants", "Grants"), ("attachments", "Attachments")):
         section = report.get(part, {})
@@ -1535,6 +1559,14 @@ def system_restore_cmd(
                 console.print(f"  {verb}: {record_id}{note}")
         for skipped in section.get("skipped", []):
             console.print(f"  skipped: {skipped['id']} ({skipped['reason']})")
+        for verb in ("deleted", "deactivated"):
+            for record_id in section.get(verb, []):
+                console.print(f"  [red]{verb}[/red]: {record_id}")
+    if report.get("plan_digest") and report.get("dry_run", True):
+        console.print(
+            f"Mirror plan digest: {report['plan_digest']} "
+            "(pass it with --expect when you apply)"
+        )
     if report.get("dry_run", True):
         console.print("[dim]Dry run: nothing was written. Pass --apply to restore.[/dim]")
 

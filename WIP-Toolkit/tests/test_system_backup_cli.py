@@ -126,3 +126,24 @@ def test_backup_counts_attachments(tmp_path):
     result = _invoke(_client(dict(ARCHIVE, attachments=[{"name": "aa"}])), "system-backup", out)
     assert result.exit_code == 0, result.output
     assert "1 attachment(s)" in result.output
+
+
+def test_mirror_sends_mode_and_expect_and_prints_removals(tmp_path):
+    path = tmp_path / "auth.json"
+    path.write_text(json.dumps(ARCHIVE))
+    report = dict(
+        REPORT, mode="mirror", plan_digest="sha256:abc",
+        refused=[{"id": "my-key", "reason": "the key this request authenticates with"}],
+        api_keys={"created": [], "replaced": [], "unchanged": [], "skipped": [], "deleted": ["old-key"]},
+        attachments={"created": [], "replaced": [], "unchanged": [], "skipped": [],
+                     "deactivated": ["late-app"]},
+    )
+    client = _client(report)
+    result = _invoke(client, "system-restore", path, "--mode", "mirror", "--expect", "sha256:abc")
+    assert result.exit_code == 0, result.output
+    params = client.post.call_args.kwargs["params"]
+    assert params["mode"] == "mirror" and params["expect"] == "sha256:abc"
+    assert "deleted: old-key" in result.output
+    assert "deactivated: late-app" in result.output
+    assert "Refused:" in result.output and "my-key" in result.output
+    assert "Mirror plan digest: sha256:abc" in result.output
