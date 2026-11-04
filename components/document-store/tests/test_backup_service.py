@@ -25,6 +25,13 @@ from document_store.models.backup_job import (
     BackupJobStatus,
 )
 from document_store.services import backup_service
+from document_store.services.backup_engine import RestoreRequester
+
+_REQUESTER = RestoreRequester(api_key="requester-key", platform_admin=False)
+
+
+def _make_runner(*args, **kwargs):
+    return backup_service.make_direct_restore_runner(*args, requester=_REQUESTER, **kwargs)
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -271,7 +278,7 @@ class TestRestoreRunnerModeRouting:
         engine.run_merge = AsyncMock()
         engine.run_restore = AsyncMock()
 
-        runner = backup_service.make_direct_restore_runner(
+        runner = _make_runner(
             tmp_path / "a.zip",
             {
                 "mode": "merge",
@@ -300,13 +307,32 @@ class TestRestoreRunnerModeRouting:
         assert kwargs["add_missing"] is True
         assert kwargs["dry_run"] is True
 
+    async def test_the_requester_reaches_the_engine(self, tmp_path):
+        """A namespace the restore creates is created as the requester, so the
+        runner must hand the engine who that is."""
+        engine = MagicMock()
+        engine.run_restore = AsyncMock()
+        runner = _make_runner(tmp_path / "a.zip", {"mode": "restore"})
+        with (
+            patch(
+                "document_store.services.backup_engine.DirectRestoreEngine",
+                return_value=engine,
+            ) as engine_cls,
+            patch(
+                "document_store.services.file_storage_client.is_file_storage_enabled",
+                return_value=False,
+            ),
+        ):
+            await runner(lambda _event: None)
+        assert engine_cls.call_args.kwargs["requester"] == _REQUESTER
+
     async def test_fresh_mode_runs_the_remap(self, tmp_path):
         engine = MagicMock()
         engine.run_remap = AsyncMock()
         engine.run_merge = AsyncMock()
         engine.run_restore = AsyncMock()
 
-        runner = backup_service.make_direct_restore_runner(
+        runner = _make_runner(
             tmp_path / "a.zip",
             {"mode": "fresh", "target_namespace": "kb-copy", "dry_run": True},
         )
@@ -334,7 +360,7 @@ class TestRestoreRunnerModeRouting:
         engine.run_remap = AsyncMock()
         engine.run_restore = AsyncMock()
 
-        runner = backup_service.make_direct_restore_runner(
+        runner = _make_runner(
             tmp_path / "a.zip", {"target_namespace": "kb"}
         )
         with (
@@ -366,7 +392,7 @@ class TestRestoreRunnerModeRouting:
         engine.run_remap = AsyncMock()
         engine.run_restore = AsyncMock()
 
-        runner = backup_service.make_direct_restore_runner(
+        runner = _make_runner(
             tmp_path / "a.zip",
             {"mode": mode, "target_namespace": "kb", "allow_failed_verify": True},
         )

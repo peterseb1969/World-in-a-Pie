@@ -30,6 +30,7 @@ import contextlib
 import os
 import time
 from datetime import UTC, datetime
+from typing import ClassVar
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -42,6 +43,7 @@ from document_store.services.backup_engine import (
     DirectBackupEngine,
     DirectRestoreEngine,
     RestoreEngineError,
+    RestoreRequester,
 )
 
 # ---------------------------------------------------------------------------
@@ -817,6 +819,123 @@ class TestUpsertNamespace:
 
             with pytest.raises(RestoreEngineError, match="Failed to upsert"):
                 await engine._upsert_namespace("kb", manifest.namespace_config)
+
+
+def _response(status: int, body: dict | None = None) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = status
+    resp.text = str(body or "")
+    resp.json = MagicMock(return_value=body or {})
+    return resp
+
+
+class TestUpsertNamespaceAsRequester:
+    """The Registry decides who may create a namespace and with which settings,
+    so the restore presents the requester, not the service. A platform admin's
+    restore applies the archive's settings; anyone else's never changes a
+    namespace's settings, and each one not applied is a job warning."""
+
+    CONFIG = NamespaceConfig(
+        prefix="aa-x", description="App", isolation_mode="open",
+        inbound_references="open", deletion_mode="full",
+    )
+    LIVE: ClassVar[dict] = {"prefix": "aa-x", "description": "App", "isolation_mode": "strict",
+                            "inbound_references": "closed", "deletion_mode": "retain"}
+
+    def _engine(self, requester, events):
+        mongo, _ = _make_mongo_mock()
+        return DirectRestoreEngine(
+            mongo, None, events.append,
+            registry_base_url="http://registry:8001",
+            registry_api_key="service-key",
+            requester=requester,
+        )
+
+    @contextlib.contextmanager
+    def _registry(self, *, get=None, put=None):
+        with patch("httpx.AsyncClient") as cls:
+            client = MagicMock()
+            client.get = AsyncMock(return_value=get)
+            client.put = AsyncMock(return_value=put)
+            client.__aenter__ = AsyncMock(return_value=client)
+            client.__aexit__ = AsyncMock(return_value=None)
+            cls.return_value = client
+            yield client
+
+    @staticmethod
+    def _warnings(events):
+        return [e.message for e in events if e.phase == "warning"]
+
+    @pytest.mark.asyncio
+    async def test_an_existing_namespace_keeps_its_settings(self):
+        events: list = []
+        engine = self._engine(RestoreRequester("holder-key", platform_admin=False), events)
+        with self._registry(get=_response(200, self.LIVE)) as reg:
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+        reg.put.assert_not_called()
+        assert reg.get.await_args.kwargs["headers"]["X-API-Key"] == "service-key"
+        warnings = self._warnings(events)
+        assert len(warnings) == 3
+        assert all("NOT applied" in w and "aa-x" in w for w in warnings)
+        assert any("deletion_mode 'full'" in w for w in warnings)
+
+    @pytest.mark.asyncio
+    async def test_a_missing_namespace_is_created_as_the_requester(self):
+        events: list = []
+        engine = self._engine(RestoreRequester("holder-key", platform_admin=False), events)
+        created = {**self.LIVE, "inbound_references": "open"}
+        with self._registry(get=_response(404), put=_response(200, created)) as reg:
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+        put = reg.put.await_args.kwargs
+        assert put["headers"]["X-API-Key"] == "holder-key"
+        assert put["json"] == {"description": "App"}  # no settings: the reservation's apply
+        warnings = self._warnings(events)
+        assert len(warnings) == 2  # inbound_references matched what was created
+        assert not any("inbound_references" in w for w in warnings)
+
+    @pytest.mark.asyncio
+    async def test_a_refused_create_fails_the_restore(self):
+        engine = self._engine(RestoreRequester("plain-key", platform_admin=False), [])
+        refused = _response(403, {"detail": "requires a platform admin key"})
+        with self._registry(get=_response(404), put=refused), \
+                pytest.raises(RestoreEngineError, match="Failed to create namespace 'aa-x': 403"):
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+
+    @pytest.mark.asyncio
+    async def test_a_login_cannot_create_a_namespace(self):
+        engine = self._engine(RestoreRequester(None, platform_admin=False), [])
+        with self._registry(get=_response(404)) as reg, \
+                pytest.raises(RestoreEngineError, match="requester's own API key"):
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+        reg.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_login_restores_into_an_existing_namespace(self):
+        events: list = []
+        engine = self._engine(RestoreRequester(None, platform_admin=False), events)
+        with self._registry(get=_response(200, {**self.LIVE, "isolation_mode": "open",
+                                                "inbound_references": "open",
+                                                "deletion_mode": "full"})) as reg:
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+        reg.put.assert_not_called()
+        assert self._warnings(events) == []
+
+    @pytest.mark.asyncio
+    async def test_a_platform_admin_upserts_with_its_own_key(self):
+        engine = self._engine(RestoreRequester("admin-key", platform_admin=True), [])
+        with self._registry(put=_response(200)) as reg:
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+        reg.get.assert_not_called()
+        put = reg.put.await_args.kwargs
+        assert put["headers"]["X-API-Key"] == "admin-key"
+        assert put["json"]["deletion_mode"] == "full"
+
+    @pytest.mark.asyncio
+    async def test_a_platform_admin_login_upserts_with_the_service_key(self):
+        engine = self._engine(RestoreRequester(None, platform_admin=True), [])
+        with self._registry(put=_response(200)) as reg:
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+        assert reg.put.await_args.kwargs["headers"]["X-API-Key"] == "service-key"
 
 
 class TestInsertBatch:

@@ -69,12 +69,13 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from beanie.odm.enums import SortDirection
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from wip_auth import UserIdentity, check_namespace_permission, require_api_key
+from wip_auth import UserIdentity, check_namespace_permission, get_auth_config, require_api_key
 
 from ..models.backup_job import (
     BackupJob,
@@ -103,6 +104,9 @@ from ..services.archive_store import (
 # Verification during review:
 #   grep -rn "wip_archive" components/document-store/src/document_store/api/
 # must return zero hits.
+
+if TYPE_CHECKING:
+    from ..services.backup_engine import RestoreRequester
 
 logger = logging.getLogger("document_store.api.backup")
 
@@ -195,6 +199,21 @@ def _validate_allow_missing_identity(mode: str, allow_missing_identity: bool) ->
                 "registry rows the way an id-preserving restore does."
             ),
         )
+
+
+def _restore_requester(request: Request, identity: UserIdentity) -> RestoreRequester:
+    """Who starts this restore, as the engine presents them to the Registry
+    when it creates a namespace. The key is the caller's own, read only for
+    a caller that authenticated with it (a gateway-forwarded login carries
+    the proxy's key, not the user's), and lives only in the job's memory."""
+    from ..services.backup_engine import RestoreRequester
+
+    config = get_auth_config()
+    key = request.headers.get(config.api_key_header) if identity.auth_method == "api_key" else None
+    return RestoreRequester(
+        api_key=key or None,
+        platform_admin=identity.has_any_group(list(config.admin_groups)),
+    )
 
 
 async def _authorize_archive_restore(
@@ -366,6 +385,7 @@ async def start_backup(
 )
 async def start_restore(
     namespace: str,
+    http_request: Request,
     archive: UploadFile = File(..., description="Backup archive (.zip) to restore"),
     mode: str = Form(
         "restore",
@@ -701,6 +721,7 @@ async def start_restore(
         archive_path=archive_path,
         options=options,
         job_id=job_id,
+        requester=_restore_requester(http_request, identity),
     )
     try:
         await backup_service.start_async_job(
@@ -1053,6 +1074,7 @@ async def download_archive(
 async def restore_from_job(
     job_id: str,
     request: RestoreFromJobRequest,
+    http_request: Request,
     identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
     """Re-run a restore (or restore a backup you already made) without
@@ -1155,6 +1177,7 @@ async def restore_from_job(
         archive_path=scratch,
         options=options,
         job_id=new_job_id,
+        requester=_restore_requester(http_request, identity),
     )
     try:
         await backup_service.start_async_job(

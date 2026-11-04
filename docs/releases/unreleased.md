@@ -67,12 +67,72 @@ There is now a separate system backup:
 - User grants from another OIDC issuer are skipped unless
   `include_user_grants` is set.
 - A grant on a namespace that does not exist, and is not reserved, is
-  skipped. Restore namespace backups first, then the system backup.
+  written **orphaned** (see the next section). The system and namespace
+  restores work in either order.
 - The dry-run report warns when the target already holds auth state of its
   own: restoring brings back access revoked since the backup.
 
 The archive is sensitive and not encrypted. Store it like `~/.wip-deploy/`.
 See `docs/wip-guide.md` §5.7.
+
+### A restore creates namespaces as the person who asked; orphaned grants; WIP-Toolkit 0.25.1
+
+**A namespace restore no longer bypasses the Registry's rules for creating
+namespaces.** Document-store created and updated a restore's namespaces with
+its own key, the master key. So the Registry never saw who asked:
+- a key that reserved a prefix could restore an archive and get the
+  namespace with the **archive's** settings, not the reservation's (for
+  example `deletion_mode: full` where the reservation says `retain`);
+- any namespace admin who restored into an existing namespace had its
+  `isolation_mode`, `inbound_references` and `allowed_external_refs`
+  rewritten from the archive, which otherwise only a platform admin can do.
+
+Now:
+- **A platform admin's restore** applies the archive's settings, as before.
+- **Anyone else's restore never changes a namespace's settings.** An
+  existing namespace keeps its own. A namespace that does not exist is
+  created with the requester's own API key, so the Registry applies its
+  normal rules: a reservation's holder gets the reservation's settings,
+  anyone else is refused. Every archive setting that is not applied is a
+  warning on the job.
+- **Creating a namespace by restore needs an API key** unless the requester
+  is a platform admin. A login (OIDC) has no key to pass on: such a restore
+  into a namespace that does not exist fails, and the error says to use a key
+  or have an admin create the namespace first. Restoring into an existing
+  namespace works with a login as before.
+- The key is held in the restore job's memory only, never on the job record.
+
+**Orphaned grants.** A system restore no longer skips a grant whose namespace
+neither exists nor is reserved. It writes it with `orphaned: true`:
+- **An orphan gives nothing** until it is activated.
+- **It is activated** when a platform admin creates the namespace (a
+  namespace restore an admin runs does this, as do `PUT`/`POST
+  /namespaces` and the namespace import, which list them in the response's
+  `activated_orphan_grants`), when a namespace admin activates it with `POST
+  /api/registry/namespaces/{prefix}/grants/activate`, or when an admin
+  grants it again.
+- **A key that reserves the prefix later and creates the namespace does not
+  inherit orphans**; they were made for another namespace of that name.
+- **Listing:** grants carry `orphaned` and `orphaned_at`. `GET
+  /api/registry/grants?orphaned=true` lists them across namespaces for
+  platform admins.
+- The system backup carries `orphaned`; a grant orphaned in the archive
+  stays orphaned wherever it lands. The restore report lists orphans in
+  `grants.orphaned`.
+- **WIP-Toolkit 0.25.1:** `system-restore` marks the orphaned grants it
+  creates.
+
+**A runtime reservation stays its owner's approval to create the namespace.**
+Deleting a namespace purges every grant on it, including the `admin` grant of
+the key that reserved it, while the reservation stays. Such a key could then
+not bootstrap its namespace again (403). Now the key that owns a runtime
+reservation may create the namespace without a grant, and gets its `admin`
+grant back when it does. Settings must still equal the reservation's.
+Reservations from the install's file are unchanged: their keys' grants come
+back through the key import.
+
+**Rollout:** rebuild the Registry and document-store images. See
+`docs/wip-guide.md` §5.7.
 
 ### Every service resolves every key through the Registry; only the Registry holds the key file
 

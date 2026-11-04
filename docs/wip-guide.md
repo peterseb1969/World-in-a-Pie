@@ -745,11 +745,25 @@ in §5.5.
   issuer are skipped, since the same email may belong to someone else. Pass
   `--include-user-grants` to restore them anyway. Group and key grants are
   always restored.
-- **Order.** A grant on a namespace that does not exist is skipped, unless
-  the prefix is reserved here; a reserving key needs its grant to create the
-  namespace. Restore the namespace backups first, then the system backup.
-  Re-running the restore is safe, and picks up grants whose namespaces have
-  arrived since.
+- **Either order.** A grant on a namespace that exists, or on a prefix
+  reserved here, is written as it was (a reserving key needs its grant to
+  create the namespace). Any other grant is written **orphaned**: it gives
+  nothing until it is activated, and the report lists it. It is activated
+  when a platform admin creates the namespace, which a namespace restore run
+  by an admin does, or when a namespace admin activates it (`POST
+  /api/registry/namespaces/{prefix}/grants/activate`) or grants it again. A key
+  that reserves the prefix later and creates the namespace does not inherit
+  it. `GET /api/registry/grants?orphaned=true` lists every orphan. So the
+  system backup and the namespace backups can be restored in either order,
+  and re-running the system restore is safe.
+- **A namespace restore creates namespaces as the requester.** A platform
+  admin's namespace restore applies the archive's namespace settings. Anyone
+  else's never changes a namespace's settings: an existing namespace keeps
+  its own, and a missing one is created with the requester's own key, as
+  reserved (so a reservation's holder gets the reservation's settings, and
+  anyone else is refused). Each archive setting not applied is a warning on
+  the job. Creating a namespace this way needs an API key; a login can
+  restore only into a namespace that exists.
 - **Restoring onto an instance in use brings back old access.** If the
   instance already holds keys, grants or reservations of its own, the report
   opens with a warning. Access revoked since the backup comes back too:

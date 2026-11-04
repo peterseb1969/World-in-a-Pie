@@ -26,7 +26,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx as _httpx
 from beanie.odm.operators.update.array import Push
@@ -34,6 +34,9 @@ from wip_archive.exceptions import ArchiveError
 from wip_archive.models import ProgressEvent
 
 from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
+
+if TYPE_CHECKING:
+    from .backup_engine import RestoreRequester
 
 logger = logging.getLogger("document_store.backup_service")
 
@@ -589,6 +592,8 @@ def make_direct_restore_runner(
     archive_path: str | Path,
     options: dict[str, Any] | None = None,
     job_id: str | None = None,
+    *,
+    requester: RestoreRequester,
 ) -> AsyncRunner:
     """Build an :data:`AsyncRunner` that writes ``archive_path`` into MongoDB.
 
@@ -599,6 +604,11 @@ def make_direct_restore_runner(
     They differ in preconditions and in what they do on a collision, so each
     takes its own parameter set — an option reaching the wrong mode is
     rejected at the API surface rather than dropped here.
+
+    ``requester`` is who started the restore: a namespace the restore creates
+    is created as them, so the Registry's rules for who may create it apply.
+    It is required so that no caller can run a restore as the service by
+    leaving it out; the key it holds stays in memory, never on the job.
     """
     opts = dict(options or {})
 
@@ -617,6 +627,7 @@ def make_direct_restore_runner(
             reporting_client=ReportingSyncClient(),
             job_id=job_id,
             actor=job.created_by if job is not None else None,
+            requester=requester,
         )
 
         if opts.get("mode") == "fresh":

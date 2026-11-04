@@ -402,6 +402,40 @@ class RestoreEngineError(Exception):
     """Raised when the restore engine encounters a fatal error."""
 
 
+class RestoreRequester(NamedTuple):
+    """Who started a restore, as the namespace upsert presents them to the
+    Registry.
+
+    The Registry decides who may create a namespace and with which settings:
+    a platform admin freely, a reservation's holder only as reserved, nobody
+    else. It can decide that only when it sees the requester, so for anyone
+    but a platform admin the upsert goes out with the requester's own key,
+    never the service's.
+
+    - ``api_key``: the requester's own key, held in memory for the run and
+      never written to the job record; None for a login (OIDC), which has
+      no key to pass on.
+    - ``platform_admin``: whether the requester is in the platform admin
+      groups. A platform admin logged in without a key is presented by the
+      service's key, which the Registry treats the same way.
+    """
+
+    api_key: str | None
+    platform_admin: bool
+
+
+# An engine run with no requester (tests, tooling inside the service) acts as
+# the service itself. The API's restore runner always passes the requester.
+SERVICE_REQUESTER = RestoreRequester(api_key=None, platform_admin=True)
+
+# Namespace settings a restore carries in its manifest. Only a platform admin
+# changes them; for anyone else a differing value is reported, not applied.
+_NAMESPACE_SETTINGS = (
+    "isolation_mode", "allowed_external_refs", "inbound_references",
+    "deletion_mode", "id_config",
+)
+
+
 # ---------------------------------------------------------------------------
 # DirectBackupEngine
 # ---------------------------------------------------------------------------
@@ -966,10 +1000,12 @@ class DirectRestoreEngine:
         reporting_client: ReportingSyncClient | None = None,
         job_id: str | None = None,
         actor: str | None = None,
+        requester: RestoreRequester = SERVICE_REQUESTER,
     ) -> None:
         self._mongo = mongo_client
         self._storage = storage_client
         self._progress = progress
+        self._requester = requester
         # The event loop the run is on, set by `_off_loop` before work leaves it.
         self._loop: asyncio.AbstractEventLoop | None = None
         # Who and which job, for the provenance record each restore writes.
@@ -4568,7 +4604,15 @@ class DirectRestoreEngine:
         *,
         preserve_id_config: bool = True,
     ) -> None:
-        """Upsert the namespace via Registry HTTP PUT.
+        """Create or update the target namespace as the requester.
+
+        A platform admin's restore upserts the archive's settings, as it
+        always has. Anyone else never changes a namespace's settings: an
+        existing namespace keeps its own, and one that does not exist is
+        created with the requester's own key, so the Registry applies its
+        rules (a reservation's holder gets the reservation's settings, anyone
+        else is refused). Every archive setting that is not applied is a job
+        warning.
 
         ``preserve_id_config`` carries the source's id_config onto the target.
         That is correct for an id-preserving restore (the DR case): the archived
@@ -4580,8 +4624,60 @@ class DirectRestoreEngine:
         the fresh target defaults to UUID7, or keeps its own config if the
         operator pre-created the target namespace.
         """
+        body = self._namespace_body(ns_config, preserve_id_config=preserve_id_config)
+        if self._requester.platform_admin:
+            await self._admin_upsert_namespace(
+                namespace, body, self._requester.api_key or self._registry_api_key
+            )
+            return
+
         import httpx
 
+        url = f"{self._registry_url}/api/registry/namespaces/{namespace}"
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Existence is read with the service's key: the requester may hold
+            # admin on a prefix that does not exist yet, and a read as the
+            # requester could not tell that from having no access.
+            resp = await client.get(url, headers={"X-API-Key": self._registry_api_key})
+            if resp.status_code == 200:
+                live = resp.json()
+            elif resp.status_code == 404:
+                if not self._requester.api_key:
+                    raise RestoreEngineError(
+                        f"Namespace '{namespace}' does not exist, and a restore that "
+                        "creates it does so with the requester's own API key, which a "
+                        "login does not have. Start the restore with an API key, or "
+                        "have a platform admin create the namespace first."
+                    )
+                create = {"description": body["description"]} if "description" in body else {}
+                resp = await client.put(url, json=create, headers={
+                    "X-API-Key": self._requester.api_key,
+                    "Content-Type": "application/json",
+                })
+                if resp.status_code not in (200, 201):
+                    raise RestoreEngineError(
+                        f"Failed to create namespace '{namespace}': "
+                        f"{resp.status_code} — {resp.text}"
+                    )
+                live = resp.json()
+                logger.info("Created namespace %s as the restore's requester", namespace)
+            else:
+                raise RestoreEngineError(
+                    f"Failed to read namespace '{namespace}': {resp.status_code} — {resp.text}"
+                )
+        for field in _NAMESPACE_SETTINGS:
+            if field in body and body[field] != live.get(field):
+                self._emit("warning", (
+                    f"Namespace '{namespace}': {field} {body[field]!r} from the archive "
+                    f"was NOT applied (it is {live.get(field)!r} here); only a platform "
+                    "admin changes a namespace's settings"
+                ))
+
+    @staticmethod
+    def _namespace_body(
+        ns_config: NamespaceConfig | None, *, preserve_id_config: bool
+    ) -> dict[str, Any]:
+        """The namespace settings the archive carries, as an upsert body."""
         body: dict[str, Any] = {}
         if ns_config:
             body["description"] = ns_config.description
@@ -4598,10 +4694,17 @@ class DirectRestoreEngine:
                 body["deletion_mode"] = ns_config.deletion_mode
             if ns_config.inbound_references is not None:
                 body["inbound_references"] = ns_config.inbound_references
+        return body
+
+    async def _admin_upsert_namespace(
+        self, namespace: str, body: dict[str, Any], api_key: str
+    ) -> None:
+        """A platform admin's upsert: the archive's settings, as sent."""
+        import httpx
 
         url = f"{self._registry_url}/api/registry/namespaces/{namespace}"
         headers = {
-            "X-API-Key": self._registry_api_key,
+            "X-API-Key": api_key,
             "Content-Type": "application/json",
         }
         async with httpx.AsyncClient(timeout=30.0) as client:

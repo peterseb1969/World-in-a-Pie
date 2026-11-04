@@ -1027,3 +1027,42 @@ async def test_non_admin_key_is_refused_on_backup_restore_and_download(
         headers=SCOPED_KEY_HEADERS,
     )
     assert resp.status_code == 404, resp.text
+
+
+class TestRestoreRequester:
+    """The key a restore creates namespaces with is the caller's own, read
+    only for a caller that authenticated with it: a gateway-forwarded login
+    arrives with the proxy's key in the header, which is not the user's."""
+
+    @staticmethod
+    def _request(key: str | None):
+        from starlette.requests import Request
+
+        headers = [(b"x-api-key", key.encode())] if key else []
+        return Request({"type": "http", "headers": headers})
+
+    @staticmethod
+    def _identity(method: str, groups: list[str]):
+        from wip_auth import UserIdentity
+
+        return UserIdentity(user_id="u", username="u", groups=groups, auth_method=method)
+
+    def test_an_api_key_caller_is_presented_by_its_key(self):
+        from document_store.api.backup import _restore_requester
+
+        req = _restore_requester(self._request("k1"), self._identity("api_key", []))
+        assert (req.api_key, req.platform_admin) == ("k1", False)
+
+    def test_a_forwarded_login_never_passes_the_proxy_key_on(self):
+        from document_store.api.backup import _restore_requester
+
+        req = _restore_requester(self._request("proxy-key"), self._identity("gateway_oidc", []))
+        assert req.api_key is None
+
+    def test_a_platform_admin_is_recognised(self):
+        from document_store.api.backup import _restore_requester
+        from wip_auth import get_auth_config
+
+        admin_group = next(iter(get_auth_config().admin_groups))
+        req = _restore_requester(self._request(None), self._identity("jwt", [admin_group]))
+        assert (req.api_key, req.platform_admin) == (None, True)
