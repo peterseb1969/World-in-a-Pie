@@ -32,7 +32,9 @@ def _config_record(provider: APIKeyProvider, name: str, plaintext: str) -> APIKe
         namespaces=["default"],
         grants={"default": "read"},
     )
+    # What wip-auth's config loading keeps for a plaintext config key.
     record._plaintext_prehash = api_key_prehash(plaintext, provider.hash_salt)
+    record._plaintext = plaintext
     return record
 
 

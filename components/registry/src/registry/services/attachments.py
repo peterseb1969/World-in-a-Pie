@@ -163,7 +163,7 @@ async def _resolve(host: str) -> set[ipaddress.IPv4Address | ipaddress.IPv6Addre
     out: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
     for info in infos:
         try:
-            out.add(ipaddress.ip_address(info[4][0].split("%", 1)[0]))
+            out.add(ipaddress.ip_address(str(info[4][0]).split("%", 1)[0]))
         except ValueError:
             continue
     return out

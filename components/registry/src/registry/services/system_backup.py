@@ -16,10 +16,15 @@ carried: the install's config re-creates them.
 
 Restore rules:
 
-- **The salt must match.** Hashes are salted with `api_key_hash_salt`
-  (WIP_AUTH_API_KEY_HASH_SALT). The archive records a fingerprint of it, and a
-  restore onto another salt is refused: the salt is deployment config, so the
-  Registry cannot take it over, and every restored hash would be dead.
+- **The salt travels with the archive.** Runtime key hashes are salted with
+  the salt the Registry keeps for the stack (key_salt). The archive carries
+  it and its fingerprint. A restore onto a stack with the same salt proceeds.
+  A restore onto a *fresh* stack adopts the archive's salt: fresh means no
+  stored key that the install's files do not manage (no Console or restored
+  key), so no hash on the stack depends on the old salt except the managed
+  keys, which the import re-hashes from their plaintexts. A stack that is not
+  fresh refuses another salt (409): its own keys would die. An archive
+  without the salt itself (only its fingerprint) can never be adopted.
 - **Upsert by identity, never delete.** A key is identified by its name, a
   grant by (namespace, subject, subject_type), a reservation by its prefix.
   A missing record is created; an identical one is left alone; a different
@@ -56,7 +61,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from wip_auth import get_auth_config
 
@@ -64,12 +69,13 @@ from ..models.api_key import StoredAPIKey
 from ..models.grant import NamespaceGrant
 from ..models.namespace import Namespace
 from ..models.reservation import RuntimeReservation
+from .key_salt import adopt as adopt_salt
+from .key_salt import current_salt
 
 logger = logging.getLogger("registry.system_backup")
 
 ARCHIVE_FORMAT: Final[Literal["wip-system-backup"]] = "wip-system-backup"
 ARCHIVE_VERSION: Final[Literal[1]] = 1
-SALT_SETTING = "WIP_AUTH_API_KEY_HASH_SALT"
 BOOTSTRAP_GRANTOR = "system:bootstrap"
 
 Origin = Literal["file", "console", "restored"]
@@ -85,8 +91,22 @@ class ArchiveSource(BaseModel):
         default=None, description="The OIDC issuer user grants were made under"
     )
     salt_fingerprint: str = Field(
-        ..., description="sha256 of api_key_hash_salt; a restore refuses another salt"
+        ..., description="sha256 of the runtime-key salt the hashes were made under"
     )
+    salt: str | None = Field(
+        default=None,
+        description=(
+            "The runtime-key salt itself, so a restore onto a fresh stack can adopt "
+            "it. Not secret against the archive's holder; the archive is sensitive "
+            "anyway, since it holds every key hash"
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _salt_matches_fingerprint(self) -> "ArchiveSource":
+        if self.salt is not None and salt_fingerprint(self.salt) != self.salt_fingerprint:
+            raise ValueError("source.salt does not match source.salt_fingerprint")
+        return self
 
 
 class ArchiveKey(BaseModel):
@@ -175,6 +195,13 @@ class RecordReport(BaseModel):
 
 class SystemRestoreReport(BaseModel):
     dry_run: bool
+    salt_adopted: bool = Field(
+        default=False,
+        description=(
+            "The archive's runtime-key salt replaces this stack's (fresh stack); "
+            "in a dry run, that it would"
+        ),
+    )
     warnings: list[str] = Field(default_factory=list)
     reservations: RecordReport = Field(default_factory=RecordReport)
     api_keys: RecordReport = Field(default_factory=RecordReport)
@@ -190,7 +217,7 @@ class SaltMismatch(Exception):
 
 def salt_fingerprint(salt: str | None = None) -> str:
     if salt is None:
-        salt = get_auth_config().api_key_hash_salt
+        salt = current_salt()
     return "sha256:" + hashlib.sha256(salt.encode()).hexdigest()
 
 
@@ -238,7 +265,10 @@ async def build_archive() -> SystemArchive:
     reservations = await RuntimeReservation.find_all().to_list()
     return SystemArchive(
         created_at=datetime.now(UTC),
-        source=ArchiveSource(oidc_issuer=current_issuer(), salt_fingerprint=salt_fingerprint()),
+        source=ArchiveSource(
+            oidc_issuer=current_issuer(), salt_fingerprint=salt_fingerprint(),
+            salt=current_salt(),
+        ),
         api_keys=[
             ArchiveKey(
                 name=k.name, key_hash=k.key_hash, owner=k.owner, groups=list(k.groups),
@@ -270,6 +300,12 @@ async def build_archive() -> SystemArchive:
 # --- Restore ---
 
 
+async def is_fresh() -> bool:
+    """Whether no stored API key depends on the stack's runtime salt except
+    the managed ones, which the key import re-hashes from their plaintexts."""
+    return await StoredAPIKey.find_one({"managed_by": None}) is None
+
+
 async def _holds_own_state() -> bool:
     """Whether the target holds auth state beyond what a fresh install has:
     the bootstrap grants and the records its own files manage."""
@@ -297,14 +333,35 @@ async def restore_archive(
     None, the written record), so the caller can bring the Registry's own key
     provider in step.
     """
+    adopt = False
     if archive.source.salt_fingerprint != salt_fingerprint():
-        raise SaltMismatch(
-            "The archive's key hashes were made with a different API key hash salt "
-            f"({SALT_SETTING}); restored keys could never authenticate here. "
-            f"Restore onto an install with the source's {SALT_SETTING}."
-        )
+        if archive.source.salt is None:
+            raise SaltMismatch(
+                "The archive's key hashes were made under a different runtime-key salt, "
+                "and the archive does not carry the salt itself, so it cannot be "
+                "adopted; restored keys could never authenticate here."
+            )
+        if not await is_fresh():
+            raise SaltMismatch(
+                "The archive's key hashes were made under a different runtime-key salt, "
+                "and this stack already holds API keys of its own (not managed by its "
+                "key file), which adopting the archive's salt would invalidate. Restore "
+                "onto a fresh stack, or revoke this stack's own keys first."
+            )
+        adopt = True
 
-    report = SystemRestoreReport(dry_run=dry_run)
+    report = SystemRestoreReport(dry_run=dry_run, salt_adopted=adopt)
+    if adopt:
+        report.warnings.append(
+            "The archive was made under another runtime-key salt and this stack holds "
+            "no API keys of its own: "
+            + ("its salt would be adopted, and the install's managed keys re-hashed."
+               if dry_run else
+               "its salt is adopted, and the install's managed keys are re-hashed. "
+               "Services verify under it from their next key sync.")
+        )
+        if not dry_run:
+            await adopt_salt(archive.source.salt)  # type: ignore[arg-type]
     if await _holds_own_state():
         report.warnings.append(
             "This instance already holds API keys, grants or reservations of its own. "

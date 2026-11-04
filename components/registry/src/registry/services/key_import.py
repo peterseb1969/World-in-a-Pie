@@ -53,7 +53,7 @@ from typing import Any, Literal
 
 from pydantic import TypeAdapter, ValidationError
 
-from wip_auth import APIKeyProvider, APIKeyRecord, get_auth_config
+from wip_auth import APIKeyProvider, APIKeyRecord
 from wip_auth.providers.api_key import api_key_prehash, hash_api_key, prehash_matches
 
 from ..models.api_key import StoredAPIKey
@@ -195,7 +195,9 @@ async def _refresh_provider(
 async def _import_keys(
     entries: list[dict[str, Any]], provider: APIKeyProvider | None, report: ImportReport
 ) -> None:
-    salt = get_auth_config().api_key_hash_salt
+    from .key_salt import current_salt
+
+    salt = current_salt()
     in_file: set[str] = set()
     prehashes: dict[str, bytes] = {}
     for entry in entries:
@@ -452,11 +454,13 @@ async def run_loop(provider: APIKeyProvider | None) -> None:
     """Import, then recompute the shadows, every RECONCILE_INTERVAL_SECONDS
     until cancelled. A pass also re-asserts every managed record, so a
     MongoDB restore under a running Registry heals within one interval."""
-    from . import key_shadowing
+    from . import key_salt, key_shadowing
 
     while True:
         await asyncio.sleep(key_shadowing.RECONCILE_INTERVAL_SECONDS)
         try:
+            # Another Registry replica may have adopted a restored salt.
+            await key_salt.refresh(provider)
             await run_pass(provider)
         except asyncio.CancelledError:
             raise

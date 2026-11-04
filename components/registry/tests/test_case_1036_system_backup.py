@@ -2,7 +2,8 @@
 
 A system backup carries every stored API key (hash, never plaintext), every
 namespace grant and every reservation. A restore upserts by identity, never
-deletes, runs as a dry run unless told otherwise, refuses another hash salt,
+deletes, runs as a dry run unless told otherwise, refuses another hash salt
+on a stack with keys of its own,
 and brings every record back unmanaged (origin "restored"); records the
 install's files own on the target are never replaced. User grants follow the
 OIDC issuer, and a grant without its namespace is kept orphaned.
@@ -17,6 +18,7 @@ from registry.models.api_key import StoredAPIKey
 from registry.models.grant import NamespaceGrant
 from registry.models.reservation import RuntimeReservation
 from registry.services import key_shadowing
+from registry.services.system_backup import salt_fingerprint
 from wip_auth import APIKeyProvider
 from wip_auth.providers.api_key import hash_api_key
 
@@ -156,14 +158,15 @@ async def test_backup_and_restore_need_a_platform_admin(fresh, auth_headers):
 
 
 @pytest.mark.asyncio
-async def test_another_salt_is_refused(fresh, auth_headers):
+async def test_another_salt_is_refused_by_a_stack_with_keys_of_its_own(fresh, auth_headers):
     client = fresh
     await _make_state(client, auth_headers)
     archive = await _backup(client, auth_headers)
-    archive["source"]["salt_fingerprint"] = "sha256:" + "0" * 64
+    archive["source"]["salt"] = "another-stack-salt"
+    archive["source"]["salt_fingerprint"] = salt_fingerprint("another-stack-salt")
     resp = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
     assert resp.status_code == 409
-    assert "WIP_AUTH_API_KEY_HASH_SALT" in resp.json()["detail"]
+    assert "keys of its own" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio

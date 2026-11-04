@@ -9,16 +9,16 @@ import math
 from datetime import UTC, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 
 from wip_auth import (
     APIKeyProvider,
     APIKeyRecord,
     UserIdentity,
-    get_auth_config,
     get_identity_string,
     hash_api_key,
 )
+from wip_auth.key_sync import RUNTIME_SALT_HEADER
 
 from ..models.api_key import (
     APIKeyCreatedResponse,
@@ -33,7 +33,7 @@ from ..models.api_key import (
 )
 from ..models.grant import NamespaceGrant
 from ..models.reservation import RuntimeReservation
-from ..services import key_import, key_shadowing, reservation_store
+from ..services import key_import, key_salt, key_shadowing, reservation_store
 from ..services.auth import require_admin_key, require_groups
 from ..services.managed import key_refusal
 from ..services.reservation_store import ReservationRefused
@@ -267,8 +267,7 @@ async def create_api_key(
 
     # Generate and hash
     plaintext = generate_plaintext_key()
-    config = get_auth_config()
-    key_hash = hash_api_key(plaintext, config.api_key_hash_salt)
+    key_hash = hash_api_key(plaintext, key_salt.current_salt())
 
     # Persist to MongoDB
     doc = StoredAPIKey(
@@ -397,9 +396,13 @@ async def list_api_keys(
     summary="Sync endpoint for service key polling",
 )
 async def sync_api_keys(
+    response: Response,
     identity: UserIdentity = Depends(require_groups(["wip-services", "wip-admins"])),
 ) -> list[APIKeySyncRecord]:
     """Return enabled runtime keys with hashes for service polling.
+
+    The X-WIP-Key-Hash-Salt response header carries the salt the hashes were
+    made under; each service verifies runtime keys under it.
 
     Only returns runtime keys — config keys are already loaded by each service.
     A runtime key with the same plaintext as a config key is shadowed and
@@ -411,6 +414,7 @@ async def sync_api_keys(
     key; the legitimate consumer is each service's key-sync poller, which
     authenticates with its admin/service-scoped Registry key.
     """
+    response.headers[RUNTIME_SALT_HEADER] = key_salt.current_salt()
     docs = await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
     # A managed key the Registry also loads as a config key of the same name
     # is dormant: every service already holds that plaintext as the config key.

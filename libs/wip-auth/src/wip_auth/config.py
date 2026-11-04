@@ -262,6 +262,7 @@ class AuthConfig(BaseSettings):
             legacy._plaintext_prehash = api_key_prehash(
                 self.legacy_api_key, self.api_key_hash_salt
             )
+            legacy._plaintext = self.legacy_api_key
             keys.append(legacy)
             seen_names.add("legacy")
 
@@ -355,6 +356,7 @@ class AuthConfig(BaseSettings):
         record = APIKeyRecord(**key_dict)
         if plaintext:
             record._plaintext_prehash = api_key_prehash(plaintext, self.api_key_hash_salt)
+            record._plaintext = plaintext
         return record
 
 

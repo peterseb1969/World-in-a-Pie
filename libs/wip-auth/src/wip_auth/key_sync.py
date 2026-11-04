@@ -11,6 +11,11 @@ answering for runtime keys and authentication returns 503 until a sync
 succeeds again; a failed sync never extends the deadline. Config keys are
 not a copy of the Registry and keep working. Before the first successful
 sync the runtime keys count as unconfirmed.
+
+The response carries the salt the Registry hashes runtime keys with, in the
+RUNTIME_SALT_HEADER header; the provider verifies runtime keys under it from
+the same sync on. A response without the header (a Registry older than the
+stored salt) leaves the provider's runtime salt as it is.
 """
 
 import asyncio
@@ -23,6 +28,9 @@ from .models import APIKeyRecord
 from .providers.api_key import APIKeyProvider
 
 logger = logging.getLogger("wip_auth.key_sync")
+
+# The response header carrying the Registry's runtime-key salt.
+RUNTIME_SALT_HEADER = "X-WIP-Key-Hash-Salt"
 
 
 class KeySyncService:
@@ -108,6 +116,9 @@ class KeySyncService:
                 for item in resp.json()
             ]
 
+            salt = resp.headers.get(RUNTIME_SALT_HEADER)
+            if salt:
+                self.provider.set_runtime_salt(salt)
             self.provider.replace_runtime_keys(records)
             self.provider.confirm_runtime_keys(self.ttl_seconds)
             logger.debug("Key sync complete: %d runtime key(s)", len(records))

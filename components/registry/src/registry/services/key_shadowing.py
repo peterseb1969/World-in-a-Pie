@@ -121,12 +121,19 @@ async def reconcile(provider: APIKeyProvider) -> dict[str, str]:
     # (key_import), so it cannot shadow itself. Its plaintext shadows an API
     # key of the same value as a loaded config key's does.
     from .key_import import file_prehashes
+    from .key_salt import current_salt
 
     docs = [
         d for d in await StoredAPIKey.find(StoredAPIKey.enabled == True).to_list()  # noqa: E712
         if d.managed_by is None
     ]
-    config_prehashes = {**file_prehashes(), **provider.config_key_prehashes()}
+    # Runtime hashes are made under the runtime salt, so the config keys'
+    # plaintexts are prehashed under it too: under the process's config salt
+    # they would never match once the two differ. The file's prehashes are
+    # made under the runtime salt by the import already.
+    config_prehashes = {
+        **file_prehashes(), **provider.config_key_prehashes(salt=current_salt())
+    }
     runtime = [(d.name, d.key_hash) for d in docs]
     # bcrypt is slow and CPU-bound: keep it off the event loop. The cache is
     # only touched by reconcile, which runs one pass at a time.

@@ -65,11 +65,12 @@ def api_key_prehash(key: str, salt: str = "wip_auth_salt") -> bytes:
 def hash_api_key(key: str, salt: str = "wip_auth_salt") -> str:
     """Hash an API key using bcrypt.
 
-    The salt (`api_key_hash_salt`) is prefixed to the key before bcrypt
-    hashing. Every install uses the default salt unless it sets
-    WIP_AUTH_API_KEY_HASH_SALT (wip-deploy does not), so hashes of one key
-    are not install-specific; two hashes of one key differ only through
-    bcrypt's own per-hash salt.
+    The salt is prefixed to the key before bcrypt hashing. Runtime keys use
+    the salt the Registry keeps for the stack (generated per install, or the
+    old default `wip_auth_salt` on an install that had keys before the
+    Registry kept one); config keys use the process's
+    WIP_AUTH_API_KEY_HASH_SALT. Two hashes of one key under one salt differ
+    only through bcrypt's own per-hash salt.
 
     Args:
         key: The plain-text API key
@@ -137,7 +138,15 @@ class APIKeyProvider:
         default_groups: list[str] | None = None,
     ):
         self.header_name = header_name
+        # Two salts. Config keys are hashed and verified inside this process,
+        # so their salt (hash_salt, from WIP_AUTH_API_KEY_HASH_SALT) only has
+        # to agree with itself. Runtime keys are the Registry's records, all
+        # hashed under the one salt the Registry keeps for the stack; key
+        # sync hands it over with the keys (set_runtime_salt). Until then the
+        # runtime salt is the configured one, which is what every stack used
+        # before the Registry kept its own.
         self.hash_salt = hash_salt
+        self.runtime_salt = hash_salt
         self.default_groups = default_groups or []
 
         # Store enabled keys for iteration-based bcrypt verification
@@ -200,19 +209,44 @@ class APIKeyProvider:
                     return True
             return False
 
+    def set_runtime_salt(self, salt: str) -> None:
+        """Verify runtime keys under `salt` from now on.
+
+        A change forgets every verified runtime key and every rejection: a
+        match made under the old salt says nothing under the new one. Config
+        keys keep their own salt and their cached matches.
+        """
+        with self._lock:
+            if salt == self.runtime_salt:
+                return
+            self.runtime_salt = salt
+            names = self._config_names
+            self._verified_cache = {
+                fp: rec for fp, rec in self._verified_cache.items() if rec.name in names
+            }
+            self._rejected.clear()
+
     def config_key_names(self) -> frozenset[str]:
         """Names of the current config keys (env and key file)."""
         return self._config_names
 
-    def config_key_prehashes(self) -> dict[str, bytes]:
+    def config_key_prehashes(self, salt: str | None = None) -> dict[str, bytes]:
         """api_key_prehash of each loaded, enabled config key that was given
-        as a plaintext, by name. Pre-hashed config entries have none."""
+        as a plaintext, by name. Pre-hashed config entries have none.
+
+        Under the config salt by default; pass `salt` to get the prehashes a
+        comparison with hashes made under another salt (the runtime keys')
+        needs.
+        """
         keys, names = self._keys, self._config_names
-        return {
-            k.name: k.plaintext_prehash
-            for k in keys
-            if k.name in names and k.plaintext_prehash is not None
-        }
+        result: dict[str, bytes] = {}
+        for k in keys:
+            if k.name not in names:
+                continue
+            prehash = k.plaintext_prehash if salt is None else k.plaintext_prehash_under(salt)
+            if prehash is not None:
+                result[k.name] = prehash
+        return result
 
     def reload_config_keys(self, config_keys: list["APIKeyRecord"]) -> None:
         """Replace the config keys atomically, keeping the runtime keys.
@@ -320,6 +354,7 @@ class APIKeyProvider:
         """
         expired = self.runtime_keys_expired()
         config_names = self._config_names
+        config_salt, runtime_salt = self.hash_salt, self.runtime_salt
 
         # Fast path: check cache with SHA-256 fingerprint of plaintext key
         fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
@@ -340,9 +375,11 @@ class APIKeyProvider:
         # Slow path: bcrypt verify against the registered keys — only the
         # config keys once the runtime copy is past its deadline.
         for record in self._keys:
-            if expired and record.name not in config_names:
+            is_config = record.name in config_names
+            if expired and not is_config:
                 continue
-            if verify_api_key(api_key, record.key_hash, self.hash_salt):
+            salt = config_salt if is_config else runtime_salt
+            if verify_api_key(api_key, record.key_hash, salt):
                 if record.is_expired():
                     return None, "API key has expired"
                 self._verified_cache[fingerprint] = record

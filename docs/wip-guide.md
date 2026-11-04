@@ -737,10 +737,23 @@ in §5.5.
 - **The install's files win.** A restore never replaces a record wip-deploy
   manages on this instance, a grant to a key whose grants the key file
   declares, or a key named like a loaded config key, even with `--overwrite`.
-- **The hash salt must match.** A file made under a different
-  `WIP_AUTH_API_KEY_HASH_SALT` is refused, because none of its hashes could
-  authenticate. wip-deploy does not set the salt, so installs share the
-  default.
+- **The hash salt travels with the file.** Runtime API keys are hashed under
+  a salt the Registry keeps for the stack. A new install generates it on the
+  Registry's first start; an install that already had keys keeps the old
+  default, `wip_auth_salt`. It is fixed for the stack's life. The file
+  carries it:
+  - onto a stack with the same salt, the restore proceeds as usual;
+  - onto a **fresh** stack, one holding no keys of its own (only keys its key
+    file manages), the restore adopts the file's salt and re-hashes the managed
+    keys. Services verify under it from their next key sync, within 30 s,
+    with no restart. This is the disaster-recovery path: a stack rebuilt from
+    nothing takes the old stack's keys back;
+  - onto a stack with keys of its own, it is refused (409), because adopting
+    the salt would invalidate them.
+
+  The salt is not secret from whoever holds the file. Its value is that
+  stacks do not share one constant. `WIP_AUTH_API_KEY_HASH_SALT` now only
+  salts each process's own config keys.
 - **User grants follow the OIDC issuer.** User grants made under a different
   issuer are skipped, since the same email may belong to someone else. Pass
   `--include-user-grants` to restore them anyway. Group and key grants are

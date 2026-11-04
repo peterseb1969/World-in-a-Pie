@@ -1481,9 +1481,10 @@ def system_restore_cmd(
     namespace that does not exist (and is not reserved) is written orphaned:
     it gives nothing until a platform admin creates the namespace (restoring
     the namespace backup as an admin does) or a namespace admin activates it,
-    so this and the namespace restores work in either order. Refused when the
-    archive's API key hash salt differs from this instance's. Needs a
-    platform admin key.
+    so this and the namespace restores work in either order. An archive made
+    under another API key hash salt is adopted with its salt by a stack that
+    holds no keys of its own, and refused by one that does. Needs a platform
+    admin key.
 
     Examples:
 

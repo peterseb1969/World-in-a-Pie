@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from wip_auth import get_identity_string
 
-from ..services import key_shadowing
+from ..services import key_import, key_salt, key_shadowing
 from ..services.auth import require_admin_key
 from ..services.system_backup import (
     SaltMismatch,
@@ -79,8 +79,12 @@ async def system_restore(
     skipped: restore the namespace data first, then re-run. User grants from
     another OIDC issuer are skipped unless include_user_grants is set.
 
-    Refused (409) when the archive's API key hash salt differs from this
-    instance's. Runs as a dry run unless dry_run=false."""
+    When the archive was made under another runtime-key salt, a stack that
+    holds no API keys of its own (only keys its key file manages) adopts the
+    archive's salt and re-hashes its managed keys; services verify under it
+    from their next key sync. A stack with keys of its own refuses it (409),
+    as does an archive that carries only the salt's fingerprint. Runs as a
+    dry run unless dry_run=false."""
     provider = _api_key_provider_or_none()
     config_names = provider.config_key_names() if provider is not None else frozenset()
     try:
@@ -94,6 +98,13 @@ async def system_restore(
         )
     except SaltMismatch as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+
+    if report.salt_adopted and not dry_run and provider is not None:
+        # Runtime keys verify under the adopted salt from now on, and the
+        # managed keys, hashed under the old one, are re-hashed from the key
+        # file's plaintexts before anything else reads them.
+        provider.set_runtime_salt(key_salt.current_salt())
+        await key_import.run_pass(provider)
 
     if written and provider is not None:
         # A restored key with a config key's plaintext must be withheld

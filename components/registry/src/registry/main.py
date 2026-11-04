@@ -159,6 +159,11 @@ async def lifespan(app: FastAPI):
             break
 
     if api_key_provider:
+        # Before importing or serving: the salt runtime keys are hashed
+        # under, stored by the Registry for the stack (services/key_salt).
+        from .services import key_salt
+        api_key_provider.set_runtime_salt(await key_salt.ensure())
+
         # Before serving: import the install's key file and reservations
         # file into the Registry's records, so lookups never answer from an
         # import older than the files. A file that cannot be read imports
@@ -179,6 +184,14 @@ async def lifespan(app: FastAPI):
         for doc in runtime_docs:
             api_key_provider.add_key(key_shadowing.runtime_record(doc))
         print(f"Loaded {len(runtime_docs)} runtime API key(s) from MongoDB.")
+        # A legacy SHA-256 hash is unsalted by bcrypt and fast to attack: the
+        # salt is not secret, so only the key's own entropy protects it.
+        for doc in runtime_docs:
+            if not doc.key_hash.startswith(("$2b$", "$2a$", "$2y$")):
+                print(
+                    f"WARNING: API key '{doc.name}' is stored with a legacy (non-bcrypt) "
+                    "hash; re-create it so it is hashed with bcrypt."
+                )
 
         # Before serving: a runtime key sharing a config key's plaintext must
         # be out of the provider and of /api-keys/sync from the first request.

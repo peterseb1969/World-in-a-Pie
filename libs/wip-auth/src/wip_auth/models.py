@@ -103,10 +103,25 @@ class APIKeyRecord(BaseModel):
     # key's hash matches a config key's value. Not a field: it never
     # serializes. None for runtime keys and pre-hashed config entries.
     _plaintext_prehash: bytes | None = PrivateAttr(default=None)
+    # The plaintext itself, for the same config keys: the Registry compares a
+    # config key with runtime hashes made under the runtime-key salt, which
+    # can differ from the salt this process hashes its config keys with. The
+    # process already holds the plaintext (env, key file); it never
+    # serializes and never leaves the process.
+    _plaintext: str | None = PrivateAttr(default=None)
 
     @property
     def plaintext_prehash(self) -> bytes | None:
         return self._plaintext_prehash
+
+    def plaintext_prehash_under(self, salt: str) -> bytes | None:
+        """The prehash of this config key's plaintext under `salt`, or None
+        when the key was given pre-hashed."""
+        if self._plaintext is None:
+            return None
+        from .providers.api_key import api_key_prehash
+
+        return api_key_prehash(self._plaintext, salt)
 
     def is_expired(self) -> bool:
         """Check if the key has expired.

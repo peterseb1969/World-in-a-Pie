@@ -91,10 +91,17 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     from registry.services import key_import
     key_import.reset_for_tests()
 
+    # Every test starts without a stored runtime-key salt, so runtime keys
+    # are hashed under the configured one until a test stores its own.
+    from registry.services import key_salt
+    key_salt.reset_for_tests()
+    await mongo_client[os.environ["DATABASE_NAME"]][key_salt.COLLECTION].delete_many({})
+
     # Configure API key management using the SAME providers the middleware uses
     from wip_auth import APIKeyProvider
     for p in _app_providers:
         if isinstance(p, APIKeyProvider):
+            p.set_runtime_salt(p.hash_salt)
             configure_api_key_management(p)
             break
 

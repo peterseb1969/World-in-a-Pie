@@ -94,6 +94,7 @@ class TestKeySyncService:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.raise_for_status = MagicMock()
+        mock_response.headers = {}
         mock_response.json.return_value = [
             {
                 "name": "app-key",
@@ -284,6 +285,7 @@ class TestRuntimeKeyDeadline:
 
         response = MagicMock()
         response.raise_for_status = MagicMock()
+        response.headers = {}
         response.json.return_value = [
             {"name": "app", "key_hash": provider.iter_keys()[1].key_hash, "groups": ["wip-users"]},
         ]
@@ -341,3 +343,93 @@ class TestRuntimeKeyDeadline:
         clock[0] += 10**6
         assert not provider.runtime_keys_expired()
         assert await self._status(provider, "app-key") == 200
+
+
+class TestRuntimeSalt:
+    """Runtime keys verify under the Registry's salt, config keys under the
+    process's own; key sync hands the runtime salt over."""
+
+    CONFIG_SALT = "config-salt"
+    RUNTIME_SALT = "registry-salt"
+
+    def _provider(self) -> APIKeyProvider:
+        config = APIKeyRecord(
+            name="wip-services",
+            key_hash=hash_api_key("master", self.CONFIG_SALT),
+            groups=["wip-services"],
+        )
+        return APIKeyProvider([config], hash_salt=self.CONFIG_SALT)
+
+    def _runtime(self, salt: str) -> APIKeyRecord:
+        return APIKeyRecord(
+            name="app-key", key_hash=hash_api_key("app-plain", salt), namespaces=["wip"]
+        )
+
+    def test_runtime_keys_use_the_runtime_salt_and_config_keys_their_own(self):
+        provider = self._provider()
+        provider.set_runtime_salt(self.RUNTIME_SALT)
+        provider.replace_runtime_keys([self._runtime(self.RUNTIME_SALT)])
+        assert provider.lookup("app-plain").name == "app-key"
+        assert provider.lookup("master").name == "wip-services"
+
+    def test_without_the_runtime_salt_a_key_hashed_under_it_is_rejected(self):
+        provider = self._provider()
+        provider.replace_runtime_keys([self._runtime(self.RUNTIME_SALT)])
+        assert provider.lookup("app-plain") is None
+
+    def test_a_salt_change_forgets_runtime_matches_but_keeps_config_matches(self):
+        provider = self._provider()
+        provider.replace_runtime_keys([self._runtime(self.CONFIG_SALT)])
+        assert provider.lookup("app-plain") is not None  # cached under the old salt
+        assert provider.lookup("master") is not None
+        assert provider.lookup("wrong") is None  # cached rejection
+
+        provider.set_runtime_salt(self.RUNTIME_SALT)
+        cached = {rec.name for rec in provider._verified_cache.values()}
+        assert cached == {"wip-services"}
+        assert provider._rejected == {}
+        assert provider.lookup("app-plain") is None  # its hash is the old salt's
+
+    def test_config_key_prehashes_under_another_salt(self):
+        from wip_auth.providers.api_key import api_key_prehash
+
+        record = APIKeyRecord(name="k", key_hash=hash_api_key("pt", "a"))
+        record._plaintext = "pt"
+        record._plaintext_prehash = api_key_prehash("pt", "a")
+        provider = APIKeyProvider([record], hash_salt="a")
+        assert provider.config_key_prehashes() == {"k": api_key_prehash("pt", "a")}
+        assert provider.config_key_prehashes(salt="b") == {"k": api_key_prehash("pt", "b")}
+
+    @pytest.mark.asyncio
+    async def test_sync_adopts_the_salt_header_before_the_keys(self):
+        from wip_auth.key_sync import RUNTIME_SALT_HEADER
+
+        provider = self._provider()
+        service = KeySyncService("http://registry:8001", "master", provider)
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.headers = {RUNTIME_SALT_HEADER: self.RUNTIME_SALT}
+        runtime = self._runtime(self.RUNTIME_SALT)
+        response.json.return_value = [
+            {"name": runtime.name, "key_hash": runtime.key_hash, "namespaces": ["wip"]}
+        ]
+        with patch("wip_auth.key_sync.httpx.AsyncClient") as client_cls:
+            client = AsyncMock()
+            client.__aenter__ = AsyncMock(return_value=client)
+            client.__aexit__ = AsyncMock(return_value=False)
+            client.get = AsyncMock(return_value=response)
+            client_cls.return_value = client
+            await service._sync_once()
+
+        assert provider.runtime_salt == self.RUNTIME_SALT
+        assert provider.lookup("app-plain").name == "app-key"
+        assert provider.lookup("master").name == "wip-services"
+
+    def test_a_config_key_from_settings_keeps_its_plaintext_for_the_registry(self):
+        from wip_auth.config import AuthConfig
+        from wip_auth.providers.api_key import api_key_prehash
+
+        config = AuthConfig(legacy_api_key="legacy-pt", api_key_hash_salt="c")
+        (record,) = config.load_api_keys()
+        assert record.plaintext_prehash_under("z") == api_key_prehash("legacy-pt", "z")
+        assert "legacy-pt" not in repr(record) and "legacy-pt" not in record.model_dump_json()

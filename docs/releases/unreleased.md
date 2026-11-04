@@ -33,6 +33,37 @@ upgrading. ClinTrial Explorer, which the 2026-10-12 rollout recorded as using
 the gateway's injected key, is retired. Takes effect on a redeploy with a rebuilt
 auth-gateway image.
 
+### Each install has its own API key hash salt, kept by the Registry; WIP-Toolkit 0.25.2
+
+Every install hashed API keys under the same public default salt
+(`wip_auth_salt`): wip-deploy never set `WIP_AUTH_API_KEY_HASH_SALT`. The
+Registry now keeps the salt for runtime keys (Console, imported and restored
+keys) in its own database and hands it to every service with key sync.
+
+- **New installs** get a random salt on the Registry's first start.
+- **Existing installs keep `wip_auth_salt`.** A Registry that finds keys
+  already stored keeps the configured salt, so no existing hash breaks.
+- **It never changes afterwards,** except when a system restore lands on a
+  fresh stack: one holding no keys of its own, only keys its key file
+  manages. That stack adopts the archive's salt and re-hashes its managed
+  keys from the key file. Services verify under the new salt from their next
+  key sync (within 30 s). A stack with keys of its own refuses another salt
+  (409).
+- **The archive carries the salt,** not only its fingerprint. The salt is not
+  secret from whoever holds the archive. Its value is that stacks no longer
+  share one constant. The archive was already sensitive, since it holds every
+  key hash.
+- **Config keys are unaffected.** Each process still hashes its own config
+  keys under its configured `WIP_AUTH_API_KEY_HASH_SALT`.
+- **Upgrade the Registry and the services together.** A service older than
+  this ignores the sync's salt header. On an existing install that changes
+  nothing, because the salt stays `wip_auth_salt`. On an install created
+  after the upgrade, an old service would reject every runtime key.
+- The Registry warns at startup about any stored key with a legacy
+  (non-bcrypt) hash.
+- **WIP-Toolkit 0.25.2:** the `system-restore` help text states the
+  adoption rule.
+
 ### A system backup of API keys, grants and reservations; WIP-Toolkit 0.25.0
 
 Nothing backed up the Registry's auth state. After a wipe or a move to new
@@ -62,8 +93,9 @@ There is now a separate system backup:
   key import re-adopts any record the install's files declare.
 - A record that differs on the target is replaced only with `overwrite`.
   Records the install's files manage are never replaced.
-- It is refused when the archive's API key hash salt differs from the
-  instance's.
+- An archive made under another API key hash salt is adopted, salt and
+  all, by a stack holding no keys of its own, and refused by one that does
+  (see the next entry).
 - User grants from another OIDC issuer are skipped unless
   `include_user_grants` is set.
 - A grant on a namespace that does not exist, and is not reserved, is
