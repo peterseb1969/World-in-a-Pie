@@ -48,7 +48,7 @@ def policy(tmp_path, monkeypatch):
 
 
 def _item(name="aa", upstream="https://aa.apps.example", **extra):
-    return {"name": name, "upstream": upstream, **extra}
+    return {"name": name, "upstream": upstream, "auth_required": True, "allowed_groups": [], **extra}
 
 
 async def _post(client, headers, *items):
@@ -111,12 +111,16 @@ async def test_a_name_the_install_routes_is_refused(client, auth_headers, policy
         ("http://registry:8001", "install's own hosts"),
         ("http://10.89.0.5:8001", "install's own host"),
         ("http://registry-alias.example", "install's own host"),
-        ("http://169.254.169.254/latest/meta-data", "link-local"),
+        ("http://169.254.169.254", "link-local"),
         ("http://sneaky.example", "link-local"),
         ("http://127.0.0.1:2019", "loopback"),
         ("http://home.example", "loopback"),
         ("http://[::1]:8080", "loopback"),
         ("http://0.0.0.0", "unspecified"),
+        ("http://[fd00:ec2::254]", "cloud metadata"),
+        ("http://100.100.100.200", "cloud metadata"),
+        ("http://[::ffff:127.0.0.1]", "loopback"),
+        ("http://[::ffff:169.254.169.254]", "link-local"),
     ],
 )
 async def test_blocked_upstreams_are_refused(client, auth_headers, policy, upstream, why):
@@ -129,7 +133,13 @@ async def test_blocked_upstreams_are_refused(client, auth_headers, policy, upstr
 
 @pytest.mark.parametrize(
     "upstream",
-    ["ftp://aa.apps.example", "https://user:pw@aa.apps.example", "https://aa.apps.example/?x=1", "aa.apps.example"],
+    [
+        "ftp://aa.apps.example",
+        "https://user:pw@aa.apps.example",
+        "https://aa.apps.example/?x=1",
+        "aa.apps.example",
+        "https://aa.apps.example/some/base/path",
+    ],
 )
 async def test_malformed_upstreams_are_refused(client, auth_headers, policy, upstream):
     res = (await _post(client, auth_headers, _item(upstream=upstream)))["results"][0]
@@ -153,8 +163,12 @@ async def test_items_fail_independently(client, auth_headers, policy):
     assert (body["succeeded"], body["failed"]) == (1, 2)
 
 
-async def test_a_broken_policy_file_refuses_rather_than_guesses(client, auth_headers, policy):
-    policy.write_text("{not json")
+@pytest.mark.parametrize("damage", ["{not json", "", None])
+async def test_a_broken_missing_or_empty_policy_file_refuses(client, auth_headers, policy, damage):
+    if damage is None:
+        policy.unlink()
+    else:
+        policy.write_text(damage)
     res = (await _post(client, auth_headers, _item()))["results"][0]
     assert (res["error_code"], res["details"]["rule"]) == ("validation_failed", "policy_unavailable")
 
@@ -170,6 +184,11 @@ async def test_without_a_policy_file_only_address_classes_are_refused(client, au
 @pytest.mark.parametrize(
     "item",
     [
+        # The fields that decide who may reach the app are required: a
+        # partial write must fail, never fall back to "any logged-in user".
+        {"name": "aa", "upstream": "https://aa.apps.example"},
+        {"name": "aa", "upstream": "https://aa.apps.example", "auth_required": True},
+        {"name": "aa", "upstream": "https://aa.apps.example", "allowed_groups": []},
         {"name": "AA", "upstream": "https://aa.apps.example"},
         {"name": "a", "upstream": "https://aa.apps.example"},
         {"name": "aa", "upstream": "https://aa.apps.example", "allowed_groups": ["x"], "auth_required": False},
@@ -203,3 +222,69 @@ async def test_the_list_is_paginated(client, auth_headers, policy):
     assert (page["total"], page["pages"]) == (3, 2)
     last = (await client.get(URL, params={"page_size": 2, "page": 2}, headers=auth_headers)).json()
     assert [a["name"] for a in last["items"]] == ["app2"]
+
+
+async def test_a_partial_update_cannot_widen_access(client, auth_headers, policy):
+    await _post(client, auth_headers, _item(allowed_groups=["aa-users"]))
+    r = await client.post(URL, json=[{"name": "aa", "upstream": "https://aa.apps.example"}], headers=auth_headers)
+    assert r.status_code == 422
+    doc = await AppAttachment.find_one(AppAttachment.name == "aa")
+    assert doc.allowed_groups == ["aa-users"]
+
+
+async def test_a_concurrent_create_is_a_per_item_conflict(client, auth_headers, policy, monkeypatch):
+    # Another request inserted "aa" between this one's read and its insert.
+    await AppAttachment(name="aa", upstream="https://aa.apps.example", auth_required=True, allowed_groups=[]).insert()
+    real_find_one = AppAttachment.find_one
+
+    def find_nothing(*args, **kwargs):
+        class _Nothing:
+            def __await__(self):
+                async def none():
+                    return None
+                return none().__await__()
+        return _Nothing()
+
+    monkeypatch.setattr(AppAttachment, "find_one", find_nothing)
+    body = await _post(client, auth_headers, _item(), _item(name="bb"))
+    monkeypatch.setattr(AppAttachment, "find_one", real_find_one)
+    assert [r["status"] for r in body["results"]] == ["error", "created"]
+    assert body["results"][0]["error_code"] == "concurrency_conflict"
+
+
+async def test_a_managed_attachment_is_refused(client, auth_headers, policy):
+    await AppAttachment(
+        name="aa", upstream="https://aa.apps.example", auth_required=True, allowed_groups=[],
+        managed_by="wip-deploy",
+    ).insert()
+    res = (await _post(client, auth_headers, _item(display_name="changed")))["results"][0]
+    assert res["error_code"] == "managed_by_deployer"
+    r = await client.post(f"{URL}/deactivate", json=[{"name": "aa"}], headers=auth_headers)
+    assert r.json()["results"][0]["error_code"] == "managed_by_deployer"
+    assert (await AppAttachment.find_one(AppAttachment.name == "aa")).status == "active"
+
+
+async def test_the_app_edge_may_read_and_nothing_else(client, auth_headers, policy):
+    from registry.main import providers as app_providers
+    from wip_auth import APIKeyProvider
+    from wip_auth.models import APIKeyRecord
+    from wip_auth.providers.api_key import hash_api_key
+
+    await _post(client, auth_headers, _item())
+    provider = next(p for p in app_providers if isinstance(p, APIKeyProvider))
+    edge_key = "edge-test-key-1051"
+    record = APIKeyRecord(
+        name="wip-app-edge-test", key_hash=hash_api_key(edge_key), owner="system",
+        groups=["wip-app-edge"], namespaces=["wip-canary-unassigned"],
+    )
+    provider.add_key(record)
+    try:
+        edge = {"X-API-Key": edge_key}
+        listed = await client.get(URL, headers=edge)
+        assert listed.status_code == 200 and listed.json()["items"][0]["name"] == "aa"
+        assert (await client.get(f"{URL}/aa", headers=edge)).status_code == 200
+        assert (await client.post(URL, json=[_item(name="bb")], headers=edge)).status_code == 403
+        assert (await client.post(f"{URL}/deactivate", json=[{"name": "aa"}], headers=edge)).status_code == 403
+        assert (await client.get("/api/registry/api-keys", headers=edge)).status_code == 403
+    finally:
+        provider.remove_key(record.key_hash)

@@ -48,6 +48,15 @@ async def require_admin_key(request: Request) -> str:
     return request.headers.get("X-API-Key", "")
 
 
+async def require_attachment_reader(request: Request) -> UserIdentity:
+    """Gate for reading app attachments: a platform admin, or the router's
+    app edge, whose key's group may read attachments and nothing else. Every
+    attachment write stays behind require_admin_key."""
+    from ..models.attachment import EDGE_READER_GROUP
+
+    return await require_groups([*get_auth_config().admin_groups, EDGE_READER_GROUP])(request)
+
+
 async def require_privileged_key(
     identity: UserIdentity = Depends(require_api_key),
 ) -> UserIdentity:

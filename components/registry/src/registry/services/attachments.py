@@ -17,14 +17,24 @@ it refuses an upstream that resolves, from the Registry's network, to
 - an address of a host the install renders (its services, datastores,
   router, gateway, Dex), as listed in the attach policy file;
 - loopback, link-local (including cloud metadata at 169.254.169.254),
-  unspecified or multicast addresses.
+  unspecified or multicast addresses, and the cloud metadata addresses
+  outside link-local (AWS's IPv6 `fd00:ec2::254`, Alibaba's
+  `100.100.100.200`). An IPv4-mapped IPv6 address is classified as the IPv4
+  address it carries.
 
 Resolved addresses are compared, not names, so an alias or an IP literal of
 a blocked host is refused too. A host that does not resolve from here is
 accepted with a warning: it may well resolve where the edge runs.
 
-The policy file is read on every check (it is small and attaches are rare),
-so a re-rendered file applies at once.
+On k8s a blocked name resolves to its Service's ClusterIP, so an upstream
+given as a WIP pod's IP is not caught here. The dependable control there is
+a NetworkPolicy on the app edge's egress.
+
+The policy file is read on every request (it is small and attaches are
+rare), so a re-rendered file applies at once. Once WIP_ATTACH_POLICY_FILE is
+set, a missing, empty or unparseable file refuses every attach: the deployer
+always renders it, so its absence is a broken mount, and guessing would let
+an attachment proxy into the install.
 """
 
 from __future__ import annotations
@@ -63,25 +73,22 @@ class AttachPolicyUnavailable(Exception):
 
 
 def load_policy() -> AttachPolicy:
-    """The install's attach policy; empty when none is configured.
-
-    A configured but absent file means a hand-run Registry: only the address
-    classes are refused. A file that is present and does not parse raises
-    AttachPolicyUnavailable: guessing could let an attachment proxy into the
-    install."""
+    """The install's attach policy. Empty only when WIP_ATTACH_POLICY_FILE is
+    unset (a hand-run Registry): then only the address classes are refused.
+    Once it is set, a missing, empty or unparseable file raises
+    AttachPolicyUnavailable."""
     path = os.getenv(ATTACH_POLICY_FILE_ENV)
     if not path:
         return AttachPolicy()
     try:
         with open(path) as f:
             raw = f.read()
-    except FileNotFoundError:
-        logger.warning("%s=%s does not exist; no install hosts are blocked", ATTACH_POLICY_FILE_ENV, path)
-        return AttachPolicy()
+    except FileNotFoundError as e:
+        raise AttachPolicyUnavailable(f"{path} does not exist (a broken mount?)") from e
     except OSError as e:
         raise AttachPolicyUnavailable(f"cannot read {path}: {e}") from e
     if not raw.strip():
-        return AttachPolicy()
+        raise AttachPolicyUnavailable(f"{path} is empty")
     try:
         return AttachPolicy.model_validate(json.loads(raw))
     except (ValueError, ValidationError) as e:
@@ -107,11 +114,29 @@ def parse_upstream(upstream: str) -> tuple[str, int]:
         raise UpstreamInvalid("upstream must not carry credentials")
     if parts.query or parts.fragment:
         raise UpstreamInvalid("upstream must not carry a query or fragment")
+    if parts.path not in ("", "/"):
+        raise UpstreamInvalid(
+            f"upstream must not carry a path ({parts.path!r}): the router proxies "
+            "/apps/<name>/... to the upstream's root; use strip_prefix to drop the prefix"
+        )
     return parts.hostname, port or (443 if parts.scheme == "https" else 80)
 
 
+# Cloud metadata services outside the link-local range.
+METADATA_ADDRESSES = frozenset({
+    ipaddress.ip_address("fd00:ec2::254"),  # AWS (IPv6)
+    ipaddress.ip_address("100.100.100.200"),  # Alibaba Cloud
+})
+
+
 def blocked_address_class(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
-    """Why this address may never be an upstream, or None."""
+    """Why this address may never be an upstream, or None. An IPv4-mapped
+    IPv6 address is judged as the IPv4 address it carries, whatever the
+    Python version's own handling of mapped addresses."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    if ip in METADATA_ADDRESSES:
+        return "cloud metadata"
     if ip.is_loopback:
         return "loopback"
     if ip.is_link_local:
@@ -150,7 +175,28 @@ class UpstreamCheck:
     warnings: list[str] = field(default_factory=list)
 
 
-async def check_upstream(upstream: str, policy: AttachPolicy) -> UpstreamCheck:
+InstallAddresses = dict[ipaddress.IPv4Address | ipaddress.IPv6Address, str]
+
+
+async def resolve_install_addresses(policy: AttachPolicy) -> InstallAddresses:
+    """Address → name of every blocked host that resolves from here. Resolved
+    once per request, not once per item."""
+    out: InstallAddresses = {}
+    for name in sorted({h.lower().rstrip(".") for h in policy.blocked_hosts}):
+        for ip in await _resolve(name):
+            out.setdefault(_unmapped(ip), name)
+    return out
+
+
+def _unmapped(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> ipaddress.IPv4Address | ipaddress.IPv6Address:
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        return ip.ipv4_mapped
+    return ip
+
+
+async def check_upstream(
+    upstream: str, policy: AttachPolicy, install_addresses: InstallAddresses
+) -> UpstreamCheck:
     """The attach-time blocklist check (advisory; see the module docstring).
     Raises UpstreamInvalid for a malformed URL."""
     host, _port = parse_upstream(upstream)
@@ -172,14 +218,10 @@ async def check_upstream(upstream: str, policy: AttachPolicy) -> UpstreamCheck:
         if why:
             return UpstreamCheck(blocked=f"{host!r} resolves to {ip}, a {why} address")
 
-    install_addresses: dict[ipaddress.IPv4Address | ipaddress.IPv6Address, str] = {}
-    for name in sorted(blocked_names):
-        for ip in await _resolve(name):
-            install_addresses.setdefault(ip, name)
     for ip in sorted(addresses, key=str):
-        if ip in install_addresses:
+        if _unmapped(ip) in install_addresses:
             return UpstreamCheck(
                 blocked=f"{host!r} resolves to {ip}, the address of the install's own "
-                f"host {install_addresses[ip]!r}"
+                f"host {install_addresses[_unmapped(ip)]!r}"
             )
     return UpstreamCheck()

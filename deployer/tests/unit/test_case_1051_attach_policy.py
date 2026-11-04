@@ -44,6 +44,8 @@ def test_compose_policy_names_the_install_hosts_and_app_routes(discovery: Discov
     hosts = set(policy["blocked_hosts"])
     assert {"registry", "wip-registry", "wip-mongodb", "wip-auth-gateway"} <= hosts
     assert {"caddy", "wip-caddy", "wip-wip-kb", "wip-react-console"} <= hosts
+    # The public hostname: an upstream pointing back at it would loop.
+    assert d.spec.network.hostname.lower() in hosts
     assert policy["reserved_names"] == ["kb", "rc"]
     assert policy["blocked_hosts"] == sorted(policy["blocked_hosts"])
 
@@ -54,6 +56,8 @@ def test_k8s_policy_names_service_dns(discovery: Discovery) -> None:
     policy = json.loads(attach_policy_json(d, discovery.components, discovery.apps))
     assert {"wip-registry", f"wip-registry.{ns}.svc.cluster.local"} <= set(policy["blocked_hosts"])
     assert "wip-caddy" not in policy["blocked_hosts"]
+    assert {"kubernetes.default", "kubernetes.default.svc.cluster.local"} <= set(policy["blocked_hosts"])
+    assert d.spec.network.hostname.lower() in policy["blocked_hosts"]
 
 
 def test_the_registry_reads_it_from_the_auth_config_dir(discovery: Discovery) -> None:

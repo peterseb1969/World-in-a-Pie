@@ -23,6 +23,10 @@ from pymongo import IndexModel
 
 from wip_auth.bulk_models import BulkResponseBase, BulkResultItemBase
 
+# The group of the router's app edge key. It may read attachments and nothing
+# else: no namespace scope, and not a group that may assert identities.
+EDGE_READER_GROUP = "wip-app-edge"
+
 # Lowercase letters, digits and hyphens, starting with a letter: safe as a
 # URL path segment, a Caddyfile token and a DNS label.
 NAME_PATTERN = r"^[a-z][a-z0-9-]{1,40}$"
@@ -56,17 +60,25 @@ class AttachmentFields(BaseModel):
     """What an attachment declares. The route's fields mirror a deployer
     app's `Route`, so an attached app is served exactly like one. Requests
     forbid unknown fields (AttachmentRequest); the stored document keeps
-    Beanie's own model config."""
+    Beanie's own model config.
+
+    A write replaces the whole record. The fields that decide who may reach
+    the app (`auth_required`, `allowed_groups`) are therefore required on
+    every write: a client that sends a partial record must fail, never
+    silently open the app to more users by falling back to a default."""
 
     upstream: str = Field(
         ...,
-        description="Absolute http(s) URL the router proxies to; no credentials in it",
+        description="Absolute http(s) URL the router proxies to: scheme, host and "
+        "optional port only, no path, credentials, query or fragment",
     )
-    auth_required: bool = Field(default=True, description="Behind the auth gateway")
+    auth_required: bool = Field(
+        ..., description="Behind the auth gateway. Required on every write."
+    )
     allowed_groups: list[str] = Field(
-        default_factory=list,
-        description="Groups the gateway lets through (empty: any logged-in user). "
-        "Requires auth_required.",
+        ...,
+        description="Groups the gateway lets through ([]: any logged-in user). "
+        "Requires auth_required. Required on every write.",
     )
     strip_prefix: bool = Field(
         default=False, description="Strip /apps/<name> before proxying"

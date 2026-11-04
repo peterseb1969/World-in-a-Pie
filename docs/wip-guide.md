@@ -946,7 +946,8 @@ it lands, an attachment changes no route.
 curl -k -X POST https://<host>/api/registry/attachments \
   -H "X-API-Key: <admin-key>" -H "Content-Type: application/json" \
   -d '[{"name": "aa", "upstream": "https://aa.apps.example:3000",
-        "allowed_groups": ["aa-users"], "display_name": "AuthorAssist"}]'
+        "auth_required": true, "allowed_groups": ["aa-users"],
+        "display_name": "AuthorAssist"}]'
 curl -k https://<host>/api/registry/attachments -H "X-API-Key: <admin-key>"
 curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   -H "X-API-Key: <admin-key>" -H "Content-Type: application/json" -d '[{"name": "aa"}]'
@@ -960,6 +961,17 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   `ui_only` and `health`. Writes are bulk upserts and always answer 200
   with per-item results. **Never deleted:** deactivate it, and write it
   again to revive it.
+- **A write replaces the whole record.** `auth_required` and
+  `allowed_groups` are required on every write (`[]` means any logged-in
+  user). A client that sends only some fields fails with 422 rather than
+  silently opening the app to more users. Send the full record you read.
+- **The upstream is scheme, host and optional port only:** no path,
+  credentials, query or fragment. The router proxies `/apps/<name>/…` to
+  the upstream's root; `strip_prefix` drops the prefix.
+- **Reading** (`GET /attachments`) is open to platform admins and to the
+  router's app edge, whose key's group `wip-app-edge` may read attachments
+  and nothing else. Every write stays platform admin. A record the deployer
+  manages is refused with `managed_by_deployer`.
 - **Platform admin only. Attaching is full trust.** An attached app is
   served on WIP's own origin, so it receives the sessions of everyone who
   visits it. Its JavaScript can call every other app as the visitor, React
@@ -970,13 +982,22 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   route, active or not, is refused in turn.
 - **Refused upstreams** (`forbidden`, `details.rule: upstream_blocked`):
   anything resolving to one of the install's own hosts (the deployer
-  renders them into `WIP_ATTACH_POLICY_FILE`), or to a loopback,
-  link-local (cloud metadata), unspecified or multicast address. Addresses
+  renders them into `WIP_ATTACH_POLICY_FILE`: its containers and services,
+  its public hostname, and on k8s the API server's names), or to a
+  loopback, link-local (cloud metadata), unspecified or multicast address,
+  or to the cloud metadata addresses outside link-local (`fd00:ec2::254`,
+  `100.100.100.200`). IPv4-mapped IPv6 addresses count as the IPv4 address
+  they carry. A missing, empty or unparseable policy file refuses every
+  attach. Addresses
   are compared, not names. This attach-time check is advisory: the Registry
   may sit on another network than the router (a backend on one cluster, the
   umbrella on another). The authoritative check is the router edge's, when
   it resolves the upstream. A host that doesn't resolve from the Registry
   is accepted with a warning.
+- **Gap on k8s:** a blocked name resolves to its Service's ClusterIP, so an
+  upstream given as a WIP *pod* IP isn't caught by this check. The
+  dependable control there is a NetworkPolicy denying the app edge egress
+  to WIP's namespace and to the API server.
 - **The app's key** is created in RC or through `/api-keys` (§4.4),
   widened with `reserve` for the namespaces it creates. The app holds the
   plaintext itself.

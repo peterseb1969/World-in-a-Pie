@@ -9,7 +9,8 @@ namespace reservations (WIP_ATTACH_POLICY_FILE):
 - `blocked_hosts`: every name at which a rendered container or service is
   reachable on the install's network: compose's service key and container
   name (`<name>`, `wip-<name>`), k8s's short and fully qualified service
-  names, and the public Caddy.
+  names, the public Caddy, the install's own public hostname (an upstream
+  pointing back at it would loop), and on k8s the API server's names.
 - `reserved_names`: the last segment of every enabled app's route prefix
   (`/apps/kb` → `kb`).
 
@@ -69,6 +70,16 @@ def attach_policy_json(
         # The public Caddy, rendered by the compose and dev renderers rather
         # than from a component manifest.
         hosts |= {"caddy", "wip-caddy"}
+    else:
+        hosts |= {
+            "kubernetes",
+            "kubernetes.default",
+            "kubernetes.default.svc",
+            "kubernetes.default.svc.cluster.local",
+        }
+    # The public hostname resolves to the host, not to a container, so it
+    # needs its own entry: /apps/x -> https://<host>/ would be a proxy loop.
+    hosts.add(deployment.spec.network.hostname.lower())
     return json.dumps(
         {"blocked_hosts": sorted(hosts), "reserved_names": app_route_names(deployment, apps)},
         indent=2,

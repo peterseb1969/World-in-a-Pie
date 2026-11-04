@@ -5,13 +5,19 @@ results). Writing an inactive attachment again revives it. There is no hard
 delete: POST /attachments/deactivate retires one, and its route goes away
 from the router's app edge.
 
-Attaching needs platform admin: an attached app is served on WIP's origin and
-is trusted with the sessions of everyone who visits it.
+Writing needs platform admin: an attached app is served on WIP's origin and
+is trusted with the sessions of everyone who visits it. Reading is open to a
+platform admin and to the router's app edge (group `wip-app-edge`).
 
-Per-item error codes: `validation_failed` (details.rule: `upstream_invalid`
-or `policy_unavailable`), `forbidden` (details.rule: `upstream_blocked`),
-`name_collision` (a name the install's own apps route under), `not_found`
-(deactivating a name with no attachment).
+A write replaces the whole record; `auth_required` and `allowed_groups` are
+required on every item, so a partial write fails instead of widening access.
+
+Per-item error codes: `validation_failed` (details.rule: `upstream_invalid`,
+`policy_unavailable` or `duplicate_name`), `forbidden` (details.rule:
+`upstream_blocked`), `name_collision` (a name the install's own apps route
+under), `managed_by_deployer` (a record the deployer owns),
+`concurrency_conflict` (another request created the same name at the same
+moment; retry), `not_found` (deactivating a name with no attachment).
 """
 
 import logging
@@ -20,6 +26,7 @@ from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
+from pymongo.errors import DuplicateKeyError
 
 from wip_auth import get_identity_string
 
@@ -38,8 +45,10 @@ from ..services.attachments import (
     UpstreamInvalid,
     check_upstream,
     load_policy,
+    resolve_install_addresses,
 )
-from ..services.auth import require_admin_key
+from ..services.auth import require_admin_key, require_attachment_reader
+from ..services.managed import MANAGED_BY_DEPLOYER
 
 logger = logging.getLogger("registry.attachments")
 
@@ -54,6 +63,14 @@ def _error(index: int, name: str, code: str, message: str, rule: str | None = No
         error=message,
         error_code=code,
         details={"rule": rule} if rule else None,
+    )
+
+
+def _managed(index: int, doc: AppAttachment) -> AttachmentBulkResultItem:
+    return _error(
+        index, doc.name, MANAGED_BY_DEPLOYER,
+        f"Attachment {doc.name!r} is managed by wip-deploy; change it with wip-deploy, "
+        "not through the API",
     )
 
 
@@ -83,6 +100,7 @@ async def upsert_attachments(
              for i, it in enumerate(items)]
         )
     reserved = set(policy.reserved_names)
+    install_addresses = await resolve_install_addresses(policy)
     who = get_identity_string()
     results: list[AttachmentBulkResultItem] = []
     seen: set[str] = set()
@@ -99,7 +117,7 @@ async def upsert_attachments(
             ))
             continue
         try:
-            check = await check_upstream(item.upstream, policy)
+            check = await check_upstream(item.upstream, policy, install_addresses)
         except UpstreamInvalid as e:
             results.append(_error(i, item.name, "validation_failed", str(e), "upstream_invalid"))
             continue
@@ -115,9 +133,19 @@ async def upsert_attachments(
         fields = item.model_dump(include=set(AttachmentFields.model_fields))
         existing = await AppAttachment.find_one(AppAttachment.name == item.name)
         now = datetime.now(UTC)
+        if existing is not None and existing.managed_by is not None:
+            results.append(_managed(i, existing))
+            continue
         if existing is None:
             doc = AppAttachment(name=item.name, created_by=who, updated_by=who, **fields)
-            await doc.insert()
+            try:
+                await doc.insert()
+            except DuplicateKeyError:
+                results.append(_error(
+                    i, item.name, "concurrency_conflict",
+                    f"Another request created {item.name!r} at the same moment; retry",
+                ))
+                continue
             status = "created"
         else:
             current = existing.model_dump(include=set(AttachmentFields.model_fields))
@@ -164,6 +192,9 @@ async def deactivate_attachments(
         if doc is None:
             results.append(_error(i, item.name, "not_found", f"No attachment named {item.name!r}"))
             continue
+        if doc.managed_by is not None:
+            results.append(_managed(i, doc))
+            continue
         if doc.status == "inactive":
             status = "unchanged"
         else:
@@ -182,7 +213,7 @@ async def list_attachments(
     status: str | None = Query(None, pattern="^(active|inactive)$", description="Only this status"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    _admin: str = Depends(require_admin_key),
+    _reader: object = Depends(require_attachment_reader),
 ) -> AttachmentListResponse:
     """Attachments sorted by name."""
     query = AppAttachment.find(AppAttachment.status == status) if status else AppAttachment.find_all()
@@ -200,7 +231,7 @@ async def list_attachments(
 @router.get("/{name}", response_model=AttachmentResponse, summary="Get one attachment")
 async def get_attachment(
     name: str,
-    _admin: str = Depends(require_admin_key),
+    _reader: object = Depends(require_attachment_reader),
 ) -> AttachmentResponse:
     doc = await AppAttachment.find_one(AppAttachment.name == name)
     if doc is None:

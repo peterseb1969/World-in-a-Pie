@@ -3441,9 +3441,12 @@ sync afterwards.
 - **App attachments in the Registry (not served yet).** `POST
   /api/registry/attachments` records an app put under the umbrella through
   the API: name, upstream, gateway protection and proxy options. Also
-  `GET /attachments[/{name}]` and `POST /attachments/deactivate`. Platform
-  admin only, never hard-deleted. The router does not serve attachments yet;
-  that is the app edge, still to be built. The deployer renders a new file
+  `GET /attachments[/{name}]` and `POST /attachments/deactivate`. Writes are
+  platform admin only; reads are also open to the app edge's key group
+  `wip-app-edge`. Never hard-deleted. A write replaces the whole record, so
+  `auth_required` and `allowed_groups` are required on every write. The
+  router does not serve attachments yet; that is the app edge, still to be
+  built. The deployer renders a new file
   beside the namespace reservations, `config/auth/attach-policy.json`
   (`WIP_ATTACH_POLICY_FILE`): the install's own hosts, which an attachment may
   not proxy to, and its apps' route names, which it may not take. An apply
