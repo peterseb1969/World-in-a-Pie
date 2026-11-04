@@ -199,7 +199,9 @@ def test_tls_verify_off_and_plain_http():
     off = block(es.caddyfile(es.plan([rec(upstream_tls={"verify": False})], []), SETTINGS), "/apps/aa/*")
     assert "tls_insecure_skip_verify" in off
     plain = block(es.caddyfile(es.plan([rec(upstream="http://aa.apps.example:3000")], []), SETTINGS), "/apps/aa/*")
-    assert "transport http" not in plain and "203.0.113.10:3000" in plain
+    # A plain-http upstream gets the dial timeout, but no TLS.
+    assert "dial_timeout 2s" in plain and "\t\t\t\t\ttls\n" not in plain
+    assert "203.0.113.10:3000" in plain
 
 
 def test_unknown_paths_404_and_no_plan_503():
@@ -273,7 +275,8 @@ def test_unreachable_families_are_not_dialled():
 
 def test_a_failed_dial_moves_to_the_next_address():
     body = block(es.caddyfile(es.plan([rec()], []), SETTINGS), "/apps/aa/*")
-    assert "lb_try_duration 5s" in body and "lb_try_interval 250ms" in body
+    for line in ["lb_try_duration 10s", "lb_try_interval 250ms", "fail_duration 30s", "max_fails 1", "dial_timeout 2s"]:
+        assert line in body, line
 
 
 def test_a_refused_config_never_leaves_the_old_one_serving(monkeypatch):

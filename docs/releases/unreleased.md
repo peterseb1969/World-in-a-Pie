@@ -3450,7 +3450,8 @@ sync afterwards.
   `wip-app-edge` (reads attachments only) and serves `/apps/<name>` behind
   the gateway. It dials the address it checked, removes browser-sent
   identity headers and the gateway's session cookie, and answers 503 for
-  every attached app once the Registry has been silent for 30 s. The public
+  every attached app at the first poll (every 10 s) that finds the Registry
+  silent for more than 30 s, in practice 30 to about 45 s. The public
   router hands it every `/apps` path no deployed app's route claims. On k8s
   a NetworkPolicy, `app-edge-egress`, limits its egress. New install files:
   none. New secret: `wip-app-edge-api-key`, generated on the next apply. The deployer renders a new file

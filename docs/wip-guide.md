@@ -955,8 +955,13 @@ guarantees:
   `wip_session` cookie are removed. The app's own cookies pass through.
   `X-Forwarded-Proto` / `X-Forwarded-Host` are set from the install's
   public URL.
-- **No last-known-good copy:** if the Registry hasn't answered for 30 s,
-  every attached app answers 503 until it does.
+- **No last-known-good copy:** the edge polls every 10 s. The first poll
+  that finds the Registry silent for more than 30 s (in practice between 30
+  and about 45 s after its last answer, since a failing poll takes longer)
+  turns every attached app to 503 until the Registry answers again.
+- **A dead upstream address is skipped:** a dial times out after 2 s, the
+  next checked address is tried for up to 10 s, and a failed address is
+  avoided by later requests for 30 s.
 - **One bad record can't take the others down.** A record the edge can't
   serve is skipped and logged. If Caddy still refuses a config, the edge
   retries without the records that carry their own CA certificate.

@@ -387,9 +387,13 @@ def _route_block(t: Target, s: Settings, matcher: str, *, strip: bool) -> list[s
     lines += [
         f"\t\t\t\theader_up X-Forwarded-Proto {s.public_scheme}",
         f"\t\t\t\theader_up X-Forwarded-Host {s.public_host}",
-        # A dial that fails moves on to the next checked address.
-        "\t\t\t\tlb_try_duration 5s",
+        # A dial that fails moves on to the next checked address: the retry
+        # window holds several dial timeouts, and a failed address is avoided
+        # by later requests for a while (passive health).
+        "\t\t\t\tlb_try_duration 10s",
         "\t\t\t\tlb_try_interval 250ms",
+        "\t\t\t\tfail_duration 30s",
+        "\t\t\t\tmax_fails 1",
     ]
     default_port = 443 if t.scheme == "https" else 80
     if r.get("upstream_host_header"):
@@ -400,8 +404,11 @@ def _route_block(t: Target, s: Settings, matcher: str, *, strip: bool) -> list[s
     if r.get("health"):
         lines += [f"\t\t\t\thealth_uri {r['health']}", "\t\t\t\thealth_interval 30s"]
     tls = r.get("upstream_tls") or {}
+    # Every upstream gets a short dial timeout, so a dead address costs
+    # little of the retry window.
+    lines += ["\t\t\t\ttransport http {", "\t\t\t\t\tdial_timeout 2s"]
     if t.scheme == "https":
-        lines += ["\t\t\t\ttransport http {", "\t\t\t\t\ttls"]
+        lines.append("\t\t\t\t\ttls")
         if not _is_ip(t.host):
             lines.append(f"\t\t\t\t\ttls_server_name {t.host}")
         if tls.get("verify", True) is False:
@@ -410,7 +417,7 @@ def _route_block(t: Target, s: Settings, matcher: str, *, strip: bool) -> list[s
             lines.append("\t\t\t\t\ttls_trust_pool inline {")
             lines += [f"\t\t\t\t\t\ttrust_der {der}" for der in _pem_to_der_b64(tls["ca_pem"])]
             lines.append("\t\t\t\t\t}")
-        lines.append("\t\t\t\t}")
+    lines.append("\t\t\t\t}")
     lines += ["\t\t\t}", "\t\t}", "\t}", ""]
     return lines
 
