@@ -27,8 +27,8 @@ carried it, and the proxy copied it onto every protected route. Now:
 **Action:** apps call WIP with their own key (`WIP_API_KEY`, which wip-deploy
 provides). An app whose server forwards the browser's request headers to WIP
 without setting its own key would now get 401. `@wip/proxy` always sets the
-app's own key. Checked: WIP-AA, WIP-Cooking, WIP-KB, WIP-RC. **Not checked:**
-pbs-clintrial, brmri, dnd, song, wip-val; their owners should confirm before
+app's own key. Checked: WIP-AA, WIP-Cooking, WIP-KB, WIP-RC, pbs-clintrial.
+**Not checked:** brmri, dnd, song, wip-val; their owners should confirm before
 upgrading. ClinTrial Explorer, which the 2026-10-12 rollout recorded as using
 the gateway's injected key, is retired. Takes effect on a redeploy with a rebuilt
 auth-gateway image.
