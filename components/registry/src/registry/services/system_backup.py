@@ -24,7 +24,9 @@ Restore rules:
   key), so no hash on the stack depends on the old salt except the managed
   keys, which the import re-hashes from their plaintexts. A stack that is not
   fresh refuses another salt (409): its own keys would die. An archive
-  without the salt itself (only its fingerprint) can never be adopted.
+  without the salt itself (only its fingerprint, as archives made before the
+  salt travelled) is adopted only when the fingerprint is the configured
+  salt's, which is the one salt it can name; otherwise it is refused.
 - **Upsert by identity, never delete.** A key is identified by its name, a
   grant by (namespace, subject, subject_type), a reservation by its prefix.
   A missing record is created; an identical one is left alone; a different
@@ -333,9 +335,17 @@ async def restore_archive(
     None, the written record), so the caller can bring the Registry's own key
     provider in step.
     """
-    adopt = False
+    adopt: str | None = None
     if archive.source.salt_fingerprint != salt_fingerprint():
-        if archive.source.salt is None:
+        archive_salt = archive.source.salt
+        if archive_salt is None:
+            # An archive made before archives carried the salt names it only by
+            # fingerprint. Under the configured salt (every stack's default
+            # before the Registry kept its own) the salt is known all the same.
+            configured = get_auth_config().api_key_hash_salt
+            if archive.source.salt_fingerprint == salt_fingerprint(configured):
+                archive_salt = configured
+        if archive_salt is None:
             raise SaltMismatch(
                 "The archive's key hashes were made under a different runtime-key salt, "
                 "and the archive does not carry the salt itself, so it cannot be "
@@ -348,9 +358,9 @@ async def restore_archive(
                 "key file), which adopting the archive's salt would invalidate. Restore "
                 "onto a fresh stack, or revoke this stack's own keys first."
             )
-        adopt = True
+        adopt = archive_salt
 
-    report = SystemRestoreReport(dry_run=dry_run, salt_adopted=adopt)
+    report = SystemRestoreReport(dry_run=dry_run, salt_adopted=adopt is not None)
     if adopt:
         report.warnings.append(
             "The archive was made under another runtime-key salt and this stack holds "
@@ -361,7 +371,7 @@ async def restore_archive(
                "Services verify under it from their next key sync.")
         )
         if not dry_run:
-            await adopt_salt(archive.source.salt)  # type: ignore[arg-type]
+            await adopt_salt(adopt)
     if await _holds_own_state():
         report.warnings.append(
             "This instance already holds API keys, grants or reservations of its own. "

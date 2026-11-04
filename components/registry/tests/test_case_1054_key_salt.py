@@ -253,3 +253,32 @@ async def test_a_salt_that_does_not_match_its_fingerprint_is_invalid(client, aut
     archive["source"]["salt"] = "tampered"
     resp = await client.post(RESTORE, json=archive, headers=auth_headers)
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_stack_adopts_a_pre_salt_archive_made_under_the_default(
+    client, auth_headers, provider,
+):
+    """An archive from before archives carried the salt names it only by
+    fingerprint; under the configured salt, a fresh stack can still take it."""
+    # The old stack: the configured salt (it had keys before the Registry
+    # kept one), a Console key, and an archive without the salt.
+    _, plaintext = await _new_key(client, auth_headers)
+    assert await key_salt.ensure() == CONFIGURED
+    archive = (await client.post(BACKUP, headers=auth_headers)).json()
+    archive["source"].pop("salt")
+
+    # A new stack with a generated salt.
+    await _wipe(provider)
+    await _drop_salt()
+    new_salt = await key_salt.ensure()
+    assert new_salt != CONFIGURED
+    provider.set_runtime_salt(new_salt)
+    assert not await _authenticates(client, plaintext)
+
+    resp = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["salt_adopted"] is True
+    assert key_salt.current_salt() == CONFIGURED
+    assert provider.runtime_salt == CONFIGURED
+    assert await _authenticates(client, plaintext)

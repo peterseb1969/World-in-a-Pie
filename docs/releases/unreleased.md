@@ -59,6 +59,14 @@ keys) in its own database and hands it to every service with key sync.
   this ignores the sync's salt header. On an existing install that changes
   nothing, because the salt stays `wip_auth_salt`. On an install created
   after the upgrade, an old service would reject every runtime key.
+- **Rolling back below this release** is safe only on installs whose stored
+  salt is still `wip_auth_salt`: those that had keys before the upgrade and
+  never adopted an archive's salt. On any other install, an older Registry
+  or service checks runtime keys against `wip_auth_salt` and rejects every
+  Console, imported and restored key.
+- **Archives made before the salt travelled** carry only its fingerprint. A
+  fresh stack adopts one when that fingerprint is the configured salt's (the
+  old default); any other such archive is refused.
 - The Registry warns at startup about any stored key with a legacy
   (non-bcrypt) hash.
 - **WIP-Toolkit 0.25.2:** the `system-restore` help text states the
