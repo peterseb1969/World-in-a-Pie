@@ -1,0 +1,52 @@
+api_version: wip.dev/v1
+kind: App
+metadata:
+  name: brmri
+  category: optional
+  description: |
+    BRMRI Explorer — PBS sample request management app. Syncs with
+    JIRA BRMRI, provides search/explore UI and AI-assisted queries.
+
+spec:
+  # Namespaces this app owns. The install reserves them, and the app's own key
+  # (admin on them) creates them exactly as reserved. Settings mirror what the
+  # app's bootstrap sends on create (server/lib/bootstrap.ts: description only),
+  # which must equal the reservation. WIP_NAMESPACE is read by the server and
+  # defaults to the same name.
+  namespaces:
+    - role: main
+      name: dev-brmri-explorer
+      env: WIP_NAMESPACE
+      settings: {description: "BRMRI Explorer app data (bootstrap created)"}
+  image:
+    name: brmri-explorer
+    tag: 20260702a
+
+  ports:
+    - {name: http, container_port: 3001}
+    - {name: dev, container_port: 5173}
+
+  env:
+    required:
+      - {name: WIP_BASE_URL, source: {from_component: router}}
+      - {name: JIRA_TOKEN, source: {from_secret: jira-token}}
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
+      - {name: APP_BASE_PATH, source: {literal: /apps/brmri}}
+      - {name: VITE_BASE_PATH, source: {literal: /apps/brmri}}
+      - {name: PORT, source: {literal: "3001"}}
+      - {name: NODE_ENV, source: {literal: production}}
+
+  routes:
+    - {path: /apps/brmri, auth_required: true}
+
+  depends_on: [document-store]
+
+  healthcheck:
+    endpoint: /apps/brmri/health
+    probe: auto
+    start_period_seconds: 15
+
+app_metadata:
+  display_name: BRMRI Explorer
+  route_prefix: /apps/brmri
+  ui_only: false

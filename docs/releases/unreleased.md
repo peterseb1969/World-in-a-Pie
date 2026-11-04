@@ -646,13 +646,14 @@ refused unless it declares `privileged_key: true` (React Console only), and
 `WIP_API_KEY` may not be declared by hand. All ten shipped app manifests are
 migrated.
 
-What an app can no longer do with its key: free-form SQL
-(`POST /api/reporting-sync/query`, the MCP `run_report_query` tool), creating
-a namespace that is not reserved for it, and reading any namespace it has not
-declared. Known effects on the shipped apps:
-- WIP-AA and WIP-Cooking: the agent's `run_report_query` tool is refused.
+What an app can no longer do with its key: create a namespace that is not
+reserved for it, and read any namespace it has not declared. Reporting SQL
+(`POST /api/reporting-sync/query`, the MCP `run_report_query` tool) still
+works; it runs over the namespaces the key can read (see "Namespace-scoped
+keys run reporting SQL over their own namespaces"), and a relation in any other
+namespace fails with `permission denied`. Known effects on the shipped apps:
 - WIP-KB: corpora a user creates at runtime cannot be created or browsed
-  with the app's key, and its UI's SQL and search reads are refused.
+  with the app's key.
 - clintrial, pbs-clintrial, dnd, song, wip-val, dev-kb: their namespaces
   are taken from their manifests, not checked against their source;
   clintrial declares none.
