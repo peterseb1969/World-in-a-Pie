@@ -38,6 +38,17 @@ For a given app source directory (e.g. `~/Development/WIP-KB/`):
      Without a `dev` port, Caddy routes to Express in dev mode, not Vite,
      and HMR + SPA serving fail.
 
+  7. **An HTTP healthcheck's probe binary is in the production image** —
+     the rendered probe runs `curl || wget`; without either, the container
+     reports permanently unhealthy while it serves fine.
+
+  8. **The production image starts without fetching packages** — the
+     start command's runner must be in the image, and a plain `npx` (no
+     `--no-install`) fails the check. Otherwise every start downloads the
+     runner from the npm registry, and an install without registry access
+     cannot start the app. Running it by path (`./node_modules/.bin/<pkg>`)
+     is the recommended form.
+
 ### What's NOT checked
 
   - README "Development with wip-deploy" section — optional discipline;
@@ -53,6 +64,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -506,6 +518,130 @@ def check_healthcheck_probe_binary(
     )
 
 
+_DOCKERFILE_START = re.compile(r"^\s*(CMD|ENTRYPOINT)\s+(.+)$", re.MULTILINE | re.IGNORECASE)
+_PROD_ONLY_INSTALL = re.compile(
+    r"\bnpm\s+(ci|install|i)\b[^\n]*(--omit[= ]dev\b|--production\b|--only[= ]prod)",
+    re.IGNORECASE,
+)
+_NODE_MODULES_COPY = re.compile(r"COPY\s+--from=\S+\s+\S*node_modules", re.IGNORECASE)
+_LOCAL_BIN = re.compile(r"^(?:\./)?node_modules/\.bin/(.+)$")
+
+
+def _start_tokens(stage: str) -> list[str]:
+    """The tokens of the stage's last CMD (or ENTRYPOINT), exec or shell form."""
+    matches = _DOCKERFILE_START.findall(stage)
+    if not matches:
+        return []
+    instruction = next((m for m in reversed(matches) if m[0].upper() == "CMD"), matches[-1])
+    raw: str = str(instruction[1]).strip()
+    if raw.startswith("["):
+        try:
+            tokens = json.loads(raw)
+            return [str(t) for t in tokens] if isinstance(tokens, list) else []
+        except ValueError:
+            return []
+    try:
+        return shlex.split(raw)
+    except ValueError:
+        return raw.split()
+
+
+def check_runtime_fetches_nothing(source_dir: Path) -> CheckResult:
+    """The production image starts without downloading packages.
+
+    `npx <pkg>` downloads <pkg> from the npm registry when the image does not
+    contain it, at every container start. An install without registry access
+    (air-gapped, a firewalled cluster, an npm outage) then cannot start the
+    app, and what runs is whatever version the registry serves. Two shapes
+    fail:
+
+    - `npx` in the start command without `--no-install`: a missing runner
+      becomes a silent download instead of a start failure. `npx
+      --no-install` passes, since it installs nothing, but the hints
+      recommend the runner's path: with the runner missing, `--no-install`
+      still asks the registry before failing (offline, after DNS retries);
+    - the runner is only a devDependency while the final stage installs
+      production dependencies only (`npm ci --omit=dev` or `--production`)
+      and copies no node_modules from a full install: it is certain to be
+      missing.
+
+    Heuristic-grade, like the probe-binary check: the last `FROM` begins the
+    runtime stage, its last CMD (or ENTRYPOINT) is the start command, and the
+    runner is the package `npx` names or a `node_modules/.bin` path.
+    """
+    name = "production image starts without fetching packages"
+    dockerfile = source_dir / "Dockerfile"
+    if not dockerfile.is_file():
+        return CheckResult(name, True, "no production Dockerfile — nothing to check")
+    try:
+        text = dockerfile.read_text()
+    except OSError as exc:
+        return CheckResult(name, False, f"cannot read {dockerfile}: {exc}")
+
+    text = text.replace("\\\n", " ")
+    froms = list(_DOCKERFILE_FROM.finditer(text))
+    stage = text[froms[-1].start():] if froms else text
+    tokens = _start_tokens(stage)
+
+    runner: str | None = None
+    via_npx = False
+    no_install = False
+    if "npx" in tokens:
+        via_npx = True
+        rest = tokens[tokens.index("npx") + 1:]
+        flags = [t for t in rest if t.startswith("-")]
+        no_install = "--no-install" in flags
+        runner = next((t for t in rest if not t.startswith("-")), None)
+    else:
+        for token in tokens:
+            match = _LOCAL_BIN.match(token)
+            if match:
+                runner = match.group(1)
+                break
+    if runner is None:
+        return CheckResult(name, True, "start command runs no npx or node_modules/.bin runner")
+
+    command = " ".join(tokens)
+    if via_npx and not no_install:
+        return CheckResult(
+            name, False,
+            f"start command `{command}` runs npx without --no-install: if "
+            f"{runner} is ever missing from the image, every start downloads it "
+            "from the npm registry",
+            fix_hint=(
+                f"Run it by path, `./node_modules/.bin/{runner} …`, and keep "
+                f"{runner} in the image: list it under `dependencies` in "
+                "package.json, since the image runs it. A missing runner then "
+                "fails the start at once, naming the file, and npm is never "
+                "involved. (`npx --no-install` also installs nothing, but with "
+                "the runner missing it still asks the registry before failing.)"
+            ),
+        )
+
+    deps: dict = {}
+    dev_deps: dict = {}
+    try:
+        pkg = json.loads((source_dir / "package.json").read_text())
+        deps = pkg.get("dependencies") or {}
+        dev_deps = pkg.get("devDependencies") or {}
+    except (OSError, ValueError):
+        pass
+    prod_only = bool(_PROD_ONLY_INSTALL.search(stage)) and not _NODE_MODULES_COPY.search(stage)
+    if runner in dev_deps and runner not in deps and prod_only:
+        return CheckResult(
+            name, False,
+            f"start command `{command}` needs {runner}, a devDependency, but the "
+            "runtime stage installs production dependencies only: the image "
+            f"does not contain {runner}",
+            fix_hint=(
+                f"Move {runner} to `dependencies` in package.json (the image runs "
+                "it), or build the server in the build stage and run it with "
+                "plain `node`."
+            ),
+        )
+    return CheckResult(name, True, f"{runner} runs from the image ({command})")
+
+
 def check_manifest_validates(
     manifest_path: Path | None, repo_root: Path
 ) -> CheckResult:
@@ -600,6 +736,8 @@ def check_app_deployability(
         results.append(check_manifest_declares_dev_port(manifest_path))
         results.append(check_manifest_validates(manifest_path, repo_root))
         results.append(check_healthcheck_probe_binary(source_dir, manifest_path))
+
+    results.append(check_runtime_fetches_nothing(source_dir))
 
     return CheckReport(
         source_dir=source_dir,

@@ -37,7 +37,9 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends wget \
     && rm -rf /var/lib/apt/lists/*
 ENV NODE_ENV=production
-# Reuse the resolved deps from the build stage (includes tsx, used at runtime).
+# Reuse the resolved deps from the build stage. tsx runs the server, so it is
+# a dependency in package.json, not a devDependency: an app that slims this
+# stage to `npm ci --omit=dev` keeps it.
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY package.json tsconfig.json ./
@@ -48,4 +50,8 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD node -e "fetch('http://localhost:'+(process.env.PORT||3001)+(process.env.APP_BASE_PATH||'')+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
-CMD ["npx", "tsx", "server/index.ts"]
+# tsx by path, not through npx: a start never involves npm or the network.
+# Plain `npx tsx` downloads tsx from the npm registry when the image lacks it,
+# and even `npx --no-install tsx` still asks the registry before failing. By
+# path, a missing tsx fails the start at once, naming the file.
+CMD ["./node_modules/.bin/tsx", "server/index.ts"]
