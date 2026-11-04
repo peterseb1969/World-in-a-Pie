@@ -1478,8 +1478,9 @@ def system_restore_cmd(
     Reports what would change unless --apply is given. Records are upserted
     by identity and never deleted; restored records arrive unmanaged. Records
     the install's files manage here are never replaced. A grant on a
-    namespace that does not exist (and is not reserved) is written orphaned:
-    it gives nothing until a platform admin creates the namespace (restoring
+    namespace that does not exist (and is not reserved by the archive's
+    owner) is written orphaned: it counts as no grant until a platform admin
+    creates the namespace (restoring
     the namespace backup as an admin does) or a namespace admin activates it,
     so this and the namespace restores work in either order. An archive made
     under another API key hash salt is adopted with its salt by a stack that

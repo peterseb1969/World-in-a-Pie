@@ -842,8 +842,8 @@ class TestUpsertNamespaceAsRequester:
     LIVE: ClassVar[dict] = {"prefix": "aa-x", "description": "App", "isolation_mode": "strict",
                             "inbound_references": "closed", "deletion_mode": "retain"}
 
-    def _engine(self, requester, events):
-        mongo, _ = _make_mongo_mock()
+    def _engine(self, requester, events, stored=None):
+        mongo, _ = _make_mongo_mock(namespace_config_doc=stored)
         return DirectRestoreEngine(
             mongo, None, events.append,
             registry_base_url="http://registry:8001",
@@ -919,6 +919,25 @@ class TestUpsertNamespaceAsRequester:
             await engine._upsert_namespace("aa-x", self.CONFIG)
         reg.put.assert_not_called()
         assert self._warnings(events) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored_scheme,warned", [("P-", False), ("Q-", True)])
+    async def test_id_config_is_compared_as_stored(self, stored_scheme, warned):
+        """The Registry serves id_config with every entity type's default
+        merged in; the archive holds it as stored. Only a real difference
+        warns."""
+        scheme = {"documents": {"algorithm": "prefixed", "prefix": "P-", "pad": 6}}
+        config = NamespaceConfig(prefix="aa-x", description="App", id_config=scheme)
+        view = {t: {"algorithm": "uuid7"} for t in ("terminologies", "terms", "templates", "files")}
+        view["documents"] = {"algorithm": "prefixed", "prefix": "P-", "pad": 6, "start": 1}
+        stored = {"prefix": "aa-x", "id_config": {
+            "documents": {"algorithm": "prefixed", "prefix": stored_scheme, "pad": 6}}}
+        events: list = []
+        engine = self._engine(RestoreRequester("holder-key", platform_admin=False), events, stored)
+        live = {**self.LIVE, "isolation_mode": "open", "id_config": view}
+        with self._registry(get=_response(200, live)):
+            await engine._upsert_namespace("aa-x", config)
+        assert any("id_config" in w for w in self._warnings(events)) is warned
 
     @pytest.mark.asyncio
     async def test_a_platform_admin_upserts_with_its_own_key(self):

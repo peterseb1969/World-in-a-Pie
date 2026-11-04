@@ -26,6 +26,7 @@ from ..models.grant import (
     NamespaceGrant,
 )
 from ..models.namespace import Namespace
+from ..models.reservation import RuntimeReservation
 from ..services.auth import require_admin_key, require_api_key
 from ..services.errors import error_fields
 from ..services.managed import MANAGED_BY_DEPLOYER, grant_refusal
@@ -157,6 +158,28 @@ async def activate_orphaned_grants(prefix: str, actor: str) -> list[str]:
     return labels
 
 
+async def reservation_owner(identity: UserIdentity, prefix: str) -> str | None:
+    """The calling key's name when it owns the runtime reservation of
+    `prefix`, else None.
+
+    A runtime reservation (one the Registry's API made, not the install's
+    file) names the key that reserved the prefix. It is that key's standing
+    approval to create the namespace, independent of the namespace's
+    lifecycle: deleting the namespace purges every grant on it, the owner's
+    `admin` included, but leaves the reservation, and the owner must still be
+    able to bootstrap it again, by upsert or by restoring its backup. A file
+    reservation names an app, not a key; its key's grants come back through
+    the key import instead.
+    """
+    if identity.auth_method != "api_key":
+        return None
+    doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
+    if doc is None or doc.managed_by is not None:
+        return None
+    name = identity.username.removeprefix("apikey:")
+    return name if doc.app == name else None
+
+
 async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     """Resolve the effective permission for an identity on a namespace.
 
@@ -178,6 +201,14 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
         return "none"
 
     if _is_superadmin(identity):
+        return "admin"
+
+    # The owner of a runtime reservation is admin on its prefix while the
+    # namespace does not exist: the reservation is its standing approval to
+    # create it, by upsert or by a restore (which checks admin first), even
+    # after a deletion purged its grant. Once the namespace exists, its
+    # grants decide again.
+    if ns is None and await reservation_owner(identity, namespace) is not None:
         return "admin"
 
     # A config-file key that declares grants (a spec-declared key) resolves
@@ -484,7 +515,7 @@ async def activate_grants(
 ):
     """Make orphaned grants effective. An orphaned grant is one a system
     restore wrote while its namespace did not exist and was not reserved; it
-    gives nothing until activated here, re-granted, or the namespace is
+    counts as no grant until activated here, re-granted, or the namespace is
     created by a platform admin. Needs admin on the namespace, which must
     exist. Revoking an orphan works like revoking any grant.
 

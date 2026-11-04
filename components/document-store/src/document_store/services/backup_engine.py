@@ -4665,6 +4665,14 @@ class DirectRestoreEngine:
                 raise RestoreEngineError(
                     f"Failed to read namespace '{namespace}': {resp.status_code} — {resp.text}"
                 )
+        if "id_config" in body:
+            # The archive holds id_config as stored; the Registry serves it
+            # with every entity type's default merged in. Compare like with
+            # like: the stored form, as the archive itself was read.
+            stored = await self._mongo[_DB_REGISTRY]["namespaces"].find_one(
+                {"prefix": namespace}, {"id_config": 1}
+            )
+            live = {**live, "id_config": (stored or {}).get("id_config") or {}}
         for field in _NAMESPACE_SETTINGS:
             if field in body and body[field] != live.get(field):
                 self._emit("warning", (

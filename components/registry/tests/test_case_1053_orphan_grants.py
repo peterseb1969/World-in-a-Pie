@@ -278,12 +278,92 @@ async def test_a_non_owner_without_admin_is_refused(client, auth_headers):
 @pytest.mark.asyncio
 async def test_the_owner_admission_needs_an_api_key_identity(client, auth_headers):
     """A login whose name happens to equal the owning key's is not the key."""
-    from registry.api.namespaces import _reservation_owner
+    from registry.api.grants import reservation_owner
     from wip_auth import UserIdentity
 
     prefix, owner = _p("app"), _p("owner")
     await _key(client, auth_headers, owner, [prefix], reserve=[{"prefix": prefix}])
     as_key = UserIdentity(user_id=f"apikey:{owner}", username=owner, auth_method="api_key")
     as_login = UserIdentity(user_id=owner, username=owner, auth_method="jwt")
-    assert await _reservation_owner(as_key, prefix) == owner
-    assert await _reservation_owner(as_login, prefix) is None
+    assert await reservation_owner(as_key, prefix) == owner
+    assert await reservation_owner(as_login, prefix) is None
+
+
+# --- Review CASE-1053#6 ---
+
+
+@pytest.mark.asyncio
+async def test_another_owners_reservation_does_not_inherit_the_archives_grants(client, auth_headers):
+    """The archive's prefix is reserved here by someone else: that is another
+    namespace of the same name, so the archive's grants on it are orphaned
+    and its owner does not inherit them when it creates the namespace."""
+    prefix, reader, owner = _p("foo"), _p("reader"), _p("owner")
+    reader_key = await _key(client, auth_headers, reader, [prefix])
+    owner_key = await _key(client, auth_headers, owner, [prefix], reserve=[{"prefix": prefix}])
+    archive = await _archive_with_grant(client, auth_headers, prefix, reader, "admin")
+    archive["reservations"] = [{"prefix": prefix, "app": "someone-else"}]
+
+    report = await _restore(client, auth_headers, archive, dry_run=False)
+    assert [s["id"] for s in report["reservations"]["skipped"]] == [prefix]
+    assert f"{prefix}/api_key:{reader}" in report["grants"]["orphaned"]
+
+    assert (await client.put(f"{NS}/{prefix}", json={}, headers=owner_key)).status_code == 200
+    assert await _permission(client, reader_key, prefix) == "read"
+
+
+@pytest.mark.asyncio
+async def test_an_archived_namespace_counts_as_existing(client, auth_headers):
+    prefix, reader = _p("arch"), _p("reader")
+    await _key(client, auth_headers, reader, [prefix])
+    assert (await client.put(f"{NS}/{prefix}", json={}, headers=auth_headers)).status_code == 200
+    assert (await client.post(f"{NS}/{prefix}/archive", headers=auth_headers)).status_code == 200
+    archive = await _archive_with_grant(client, auth_headers, prefix, reader)
+    report = await _restore(client, auth_headers, archive, dry_run=False)
+    assert report["grants"]["orphaned"] == []
+    stored = await NamespaceGrant.find_one({"namespace": prefix, "subject": reader})
+    assert stored is not None and not stored.orphaned
+
+
+@pytest.mark.asyncio
+async def test_an_archived_orphan_never_replaces_an_effective_grant(client, auth_headers):
+    """Neither demoted (access taken away) nor promoted (an orphan's higher
+    permission handed out), even with overwrite."""
+    prefix, reader = _p("ns"), _p("reader")
+    reader_key = await _key(client, auth_headers, reader, [prefix])
+    assert (await client.put(f"{NS}/{prefix}", json={}, headers=auth_headers)).status_code == 200
+    await client.post(f"{NS}/{prefix}/grants", headers=auth_headers, json=[
+        {"subject": reader, "subject_type": "api_key", "permission": "write"},
+    ])
+    archive = await _archive_with_grant(client, auth_headers, prefix, reader, "admin")
+    archive["grants"] = [{**g, "orphaned": True} if g["namespace"] == prefix else g for g in archive["grants"]]
+
+    report = await _restore(client, auth_headers, archive, dry_run=False, overwrite=True)
+    reasons = {s["id"]: s["reason"] for s in report["grants"]["skipped"]}
+    assert "effective here" in reasons[f"{prefix}/api_key:{reader}"]
+    assert await _permission(client, reader_key, prefix) == "write"
+
+
+@pytest.mark.asyncio
+async def test_the_owner_is_admin_on_its_absent_prefix_for_every_service(client, auth_headers):
+    """A restore checks admin through check-permission before it creates the
+    namespace, so the owner rule has to hold there too, while the namespace
+    does not exist."""
+    prefix, owner = _p("app"), _p("owner")
+    await _key(client, auth_headers, owner, [prefix], reserve=[{"prefix": prefix}])
+    await NamespaceGrant.find({"namespace": prefix}).delete()  # as a deletion leaves it
+
+    async def check() -> str:
+        resp = await client.get(
+            "/api/registry/my/check-permission",
+            params={"namespace": prefix, "user_id": f"apikey:{owner}", "username": owner,
+                    "auth_method": "api_key"},
+            headers={**auth_headers, "X-Key-Namespaces": prefix},
+        )
+        assert resp.status_code == 200, resp.text
+        return resp.json()["permission"]
+
+    assert await check() == "admin"
+    # Once the namespace exists, its grants decide: an admin created it and
+    # gave the owner nothing, so its scope gives read.
+    await Namespace(prefix=prefix, description="made by an admin").insert()
+    assert await check() == "read"

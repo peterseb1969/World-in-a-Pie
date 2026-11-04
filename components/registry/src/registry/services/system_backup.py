@@ -43,15 +43,17 @@ Restore rules:
   `include_user_grants` is set, since the same email may name someone else.
   Group and key grants are always restored.
 - **A grant without its namespace is kept, orphaned.** A grant on a namespace
-  that exists, or on a prefix reserved here, is written effective: a key that
-  reserves a prefix holds admin on it before the namespace exists, and needs
-  that grant to create it (reservations are restored first for that reason).
-  Any other grant is written `orphaned` and listed: it gives nothing until it
-  is activated, which happens when a platform admin creates the namespace
-  (a data restore an admin runs does), or when a namespace admin activates
-  it. A key that reserves the prefix later and creates the namespace does
-  not inherit it. So the system and data restores work in either order. A
-  grant the archive holds orphaned stays orphaned, wherever it lands.
+  that exists (active or archived), or on a prefix reserved here by the same
+  owner as in the archive, is written effective: a key that reserves a
+  prefix holds admin on it before the namespace exists (reservations are
+  restored first for that reason). Any other grant is written `orphaned` and
+  listed, including one on a prefix another owner reserves here: an orphan
+  is no grant until it is activated, which happens when a platform admin
+  creates the namespace (a data restore an admin runs does), or when a
+  namespace admin activates it. A key that reserves the prefix later and
+  creates the namespace does not inherit it. So the system and data
+  restores work in either order. A grant the archive holds orphaned is
+  written orphaned, and never replaces a grant that is effective here.
 - **Dry run by default.** The report lists what would be created, replaced,
   left unchanged and skipped (with the reason), and leads with a warning when
   the target holds auth state of its own: restoring old state brings back old
@@ -473,17 +475,21 @@ async def _restore_keys(
     return written
 
 
-async def _grantable(namespace: str, report: SystemRestoreReport, dry_run: bool) -> bool:
-    """Whether a grant is written effective: on a namespace that exists, or on
-    a reserved prefix (a key that reserves a prefix holds admin on it before
-    the namespace is created, and needs that grant to create it). Any other
-    grant is written orphaned. A dry run counts the reservations it would
-    restore."""
-    if await Namespace.find_one({"prefix": namespace, "status": "active"}):
+async def _grantable(
+    namespace: str, report: SystemRestoreReport, dry_run: bool, archive_owners: dict[str, str],
+) -> bool:
+    """Whether a grant is written effective: on a namespace that exists here
+    (active or archived), or on a prefix reserved here by the owner the
+    archive's reservation names. A reservation by another owner is another
+    namespace of that name: its owner must not inherit the archive's grants,
+    so they are written orphaned, as on an absent prefix. A dry run counts
+    the reservations it would restore."""
+    if await Namespace.find_one({"prefix": namespace, "status": {"$in": ["active", "archived"]}}):
         return True
     if dry_run and namespace in (*report.reservations.created, *report.reservations.replaced):
         return True
-    return bool(await RuntimeReservation.find_one(RuntimeReservation.prefix == namespace))
+    doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == namespace)
+    return doc is not None and archive_owners.get(namespace) == doc.app
 
 
 async def _grant_owned_by_file(g: ArchiveGrant, existing: NamespaceGrant | None) -> bool:
@@ -501,6 +507,7 @@ async def _restore_grants(
 ) -> None:
     out = report.grants
     active: dict[str, bool] = {}
+    archive_owners = {r.prefix: r.app for r in archive.reservations}
     for g in archive.grants:
         gid = _grant_id(g.namespace, g.subject_type, g.subject)
         if g.subject_type == "user" and not user_grants:
@@ -516,8 +523,16 @@ async def _restore_grants(
             out.skipped.append(SkippedRecord(id=gid, reason="managed by wip-deploy on this instance"))
             continue
         if g.namespace not in active:
-            active[g.namespace] = await _grantable(g.namespace, report, dry_run)
+            active[g.namespace] = await _grantable(g.namespace, report, dry_run, archive_owners)
         orphaned = g.orphaned or not active[g.namespace]
+        if existing is not None and not existing.orphaned and g.orphaned:
+            # An archived orphan was never access on its source. Replacing an
+            # effective grant here with it would take access away, or (with a
+            # higher permission) hand out what nobody granted.
+            out.skipped.append(SkippedRecord(
+                id=gid, reason="orphaned in the archive, effective here; left as it is",
+            ))
+            continue
         if existing is not None:
             if _grant_content(existing) == _grant_content(g, orphaned):
                 out.unchanged.append(gid)

@@ -758,10 +758,14 @@ in §5.5.
   issuer are skipped, since the same email may belong to someone else. Pass
   `--include-user-grants` to restore them anyway. Group and key grants are
   always restored.
-- **Either order.** A grant on a namespace that exists, or on a prefix
-  reserved here, is written as it was (a reserving key needs its grant to
-  create the namespace). Any other grant is written **orphaned**: it gives
-  nothing until it is activated, and the report lists it. It is activated
+- **Either order.** A grant on a namespace that exists (active or archived),
+  or on a prefix reserved here by the archive's owner, is written as it was
+  (a reserving key needs its grant to create the namespace). Any other grant
+  is written **orphaned**, including one on a prefix another owner reserves
+  here: it counts as no grant until it is activated, and the report lists
+  it. (A key whose own `namespaces` list names the prefix still reads it, as
+  any such key does without a grant.) A grant the archive holds orphaned
+  never replaces one that is effective here. It is activated
   when a platform admin creates the namespace, which a namespace restore run
   by an admin does, or when a namespace admin activates it (`POST
   /api/registry/namespaces/{prefix}/grants/activate`) or grants it again. A key
@@ -776,7 +780,12 @@ in §5.5.
   reserved (so a reservation's holder gets the reservation's settings, and
   anyone else is refused). Each archive setting not applied is a warning on
   the job. Creating a namespace this way needs an API key; a login can
-  restore only into a namespace that exists.
+  restore only into a namespace that exists. One consequence for disaster
+  recovery: a reservation holder's restore of a missing namespace gets the
+  reservation's `id_config`, not the archive's, so a prefixed id scheme is
+  not carried over and new ids are minted the reservation's way from then
+  on; the job's warnings say so. Have a platform admin run the restore when
+  the archive's settings must apply.
 - **Restoring onto an instance in use brings back old access.** If the
   instance already holds keys, grants or reservations of its own, the report
   opens with a warning. Access revoked since the backup comes back too:

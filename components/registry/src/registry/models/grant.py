@@ -50,9 +50,11 @@ class NamespaceGrant(Document):
         default=False,
         description=(
             "Written by a system restore onto a namespace that did not exist and "
-            "was not reserved. An orphaned grant gives nothing until it is "
-            "activated: when a platform admin creates the namespace, or when a "
-            "namespace admin activates it"
+            "was not reserved by the archive's owner. An orphaned grant counts "
+            "as no grant until it is activated: when a platform admin creates "
+            "the namespace, or when a namespace admin activates it. (A key whose "
+            "own namespaces list names the prefix still reads it, as any such key "
+            "does without a grant.)"
         ),
     )
     orphaned_at: datetime | None = Field(
@@ -164,7 +166,7 @@ class GrantResponse(BaseModel):
     orphaned: bool = Field(
         default=False,
         description="True for a grant a system restore wrote before its namespace "
-        "existed; it gives nothing until activated",
+        "existed; it counts as no grant until activated",
     )
     orphaned_at: datetime | None = None
 

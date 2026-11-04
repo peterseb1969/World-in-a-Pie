@@ -144,7 +144,14 @@ Now:
 
 **Orphaned grants.** A system restore no longer skips a grant whose namespace
 neither exists nor is reserved. It writes it with `orphaned: true`:
-- **An orphan gives nothing** until it is activated.
+- **An orphan counts as no grant** until it is activated. (A key whose own
+  `namespaces` list names the prefix still reads it, as any such key does
+  without a grant.)
+- **A prefix another owner reserves here counts as absent:** the archive's
+  grants on it are written orphaned, so that owner does not inherit them.
+  An archived namespace counts as existing. A grant the archive holds
+  orphaned never replaces one that is effective here, even with
+  `overwrite`.
 - **It is activated** when a platform admin creates the namespace (a
   namespace restore an admin runs does this, as do `PUT`/`POST
   /namespaces` and the namespace import, which list them in the response's
@@ -157,10 +164,10 @@ neither exists nor is reserved. It writes it with `orphaned: true`:
   /api/registry/grants?orphaned=true` lists them across namespaces for
   platform admins.
 - The system backup carries `orphaned`; a grant orphaned in the archive
-  stays orphaned wherever it lands. The restore report lists orphans in
+  is written orphaned. The restore report lists orphans in
   `grants.orphaned`.
 - **WIP-Toolkit 0.25.1:** `system-restore` marks the orphaned grants it
-  creates.
+  creates. **0.25.3:** its help text says when a grant is written orphaned.
 
 **A runtime reservation stays its owner's approval to create the namespace.**
 Deleting a namespace purges every grant on it, including the `admin` grant of
@@ -168,8 +175,10 @@ the key that reserved it, while the reservation stays. Such a key could then
 not bootstrap its namespace again (403). Now the key that owns a runtime
 reservation may create the namespace without a grant, and gets its `admin`
 grant back when it does. Settings must still equal the reservation's.
-Reservations from the install's file are unchanged: their keys' grants come
-back through the key import.
+Until the namespace exists, the owner also counts as `admin` on its prefix, so
+it can restore the namespace's backup directly (a restore checks admin before
+it starts). Reservations from the install's file are unchanged: their keys'
+grants come back through the key import.
 
 **Rollout:** rebuild the Registry and document-store images. See
 `docs/wip-guide.md` §5.7.

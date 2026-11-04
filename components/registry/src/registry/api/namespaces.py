@@ -31,7 +31,6 @@ from ..models.entry import RegistryEntry
 from ..models.grant import NamespaceGrant
 from ..models.id_algorithm import VALID_ENTITY_TYPES, validate_id_config_write
 from ..models.namespace import WIP_NAMESPACE, Namespace, id_config_view, prefix_error
-from ..models.reservation import RuntimeReservation
 from ..services.auth import require_admin_key, require_api_key
 from ..services.id_prefixes import (
     IdPrefixError,
@@ -45,7 +44,7 @@ from ..services.reservations import (
     SETTING_FIELDS,
     ReservationsUnavailable,
 )
-from .grants import _resolve_permission, activate_orphaned_grants
+from .grants import _resolve_permission, activate_orphaned_grants, reservation_owner
 
 router = APIRouter()
 logger = logging.getLogger("registry.namespaces")
@@ -120,27 +119,6 @@ async def _reserved_settings(prefix: str) -> dict[str, Any] | None:
             ),
         ) from e
     return settings
-
-
-async def _reservation_owner(identity: UserIdentity, prefix: str) -> str | None:
-    """The calling key's name when it owns the runtime reservation of
-    `prefix`, else None.
-
-    A runtime reservation (one the Registry's API made, not the install's
-    file) names the key that reserved the prefix. It is that key's standing
-    approval to create the namespace, independent of the namespace's
-    lifecycle: deleting the namespace purges every grant on it, the owner's
-    `admin` included, but leaves the reservation, and the owner must still be
-    able to bootstrap it again. A file reservation names an app, not a key;
-    its key's grants come back through the key import instead.
-    """
-    if identity.auth_method != "api_key":
-        return None
-    doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
-    if doc is None or doc.managed_by is not None:
-        return None
-    name = identity.username.removeprefix("apikey:")
-    return name if doc.app == name else None
 
 
 async def _restore_owner_grant(prefix: str, owner: str) -> None:
@@ -427,7 +405,7 @@ async def upsert_namespace(
     is_admin = identity.has_any_group(get_auth_config().admin_groups)
     owner: str | None = None
     if not is_admin:
-        owner = await _reservation_owner(identity, prefix)
+        owner = await reservation_owner(identity, prefix)
         await _check_reserved_upsert(identity, prefix, ns, update_data, reserved, owner)
         if ns is not None:
             # Every supplied setting equals the live value: nothing to write.
