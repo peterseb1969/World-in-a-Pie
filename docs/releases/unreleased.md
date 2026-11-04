@@ -177,7 +177,9 @@ reservation may create the namespace without a grant, and gets its `admin`
 grant back when it does. Settings must still equal the reservation's.
 Until the namespace exists, the owner also counts as `admin` on its prefix, so
 it can restore the namespace's backup directly (a restore checks admin before
-it starts). Reservations from the install's file are unchanged: their keys'
+it starts). Both hold only while the prefix is in the key's own namespace
+scope: a key narrowed off its namespace stays narrowed after the namespace is
+deleted, even though narrowing kept the reservation. Reservations from the install's file are unchanged: their keys'
 grants come back through the key import.
 
 **Rollout:** rebuild the Registry and document-store images. See

@@ -170,8 +170,17 @@ async def reservation_owner(identity: UserIdentity, prefix: str) -> str | None:
     able to bootstrap it again, by upsert or by restoring its backup. A file
     reservation names an app, not a key; its key's grants come back through
     the key import instead.
+
+    Only while the prefix is in the key's own namespace scope: narrowing a
+    key off a namespace that exists keeps the reservation for an operator to
+    release, and that narrowing must not come undone when the namespace is
+    later deleted. A key that reserves a prefix always holds it in scope, so
+    an unscoped key is never an owner.
     """
     if identity.auth_method != "api_key":
+        return None
+    scope = (identity.raw_claims or {}).get("namespaces")
+    if not isinstance(scope, list) or prefix not in scope:
         return None
     doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
     if doc is None or doc.managed_by is not None:

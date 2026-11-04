@@ -283,10 +283,17 @@ async def test_the_owner_admission_needs_an_api_key_identity(client, auth_header
 
     prefix, owner = _p("app"), _p("owner")
     await _key(client, auth_headers, owner, [prefix], reserve=[{"prefix": prefix}])
-    as_key = UserIdentity(user_id=f"apikey:{owner}", username=owner, auth_method="api_key")
-    as_login = UserIdentity(user_id=owner, username=owner, auth_method="jwt")
+    scoped = {"namespaces": [prefix]}
+    as_key = UserIdentity(user_id=f"apikey:{owner}", username=owner, auth_method="api_key",
+                          raw_claims=scoped)
+    as_login = UserIdentity(user_id=owner, username=owner, auth_method="jwt", raw_claims=scoped)
+    out_of_scope = UserIdentity(user_id=f"apikey:{owner}", username=owner, auth_method="api_key",
+                                raw_claims={"namespaces": []})
+    unscoped = UserIdentity(user_id=f"apikey:{owner}", username=owner, auth_method="api_key")
     assert await reservation_owner(as_key, prefix) == owner
     assert await reservation_owner(as_login, prefix) is None
+    assert await reservation_owner(out_of_scope, prefix) is None
+    assert await reservation_owner(unscoped, prefix) is None
 
 
 # --- Review CASE-1053#6 ---
@@ -367,3 +374,26 @@ async def test_the_owner_is_admin_on_its_absent_prefix_for_every_service(client,
     # gave the owner nothing, so its scope gives read.
     await Namespace(prefix=prefix, description="made by an admin").insert()
     assert await check() == "read"
+
+
+@pytest.mark.asyncio
+async def test_narrowing_a_key_off_its_namespace_is_not_undone_by_a_deletion(client, auth_headers):
+    """Narrowing keeps the reservation while the namespace exists. After the
+    namespace is deleted the key must not come back as its owner (review
+    CASE-1053#8)."""
+    prefix, owner = _p("app"), _p("owner")
+    owner_key = await _key(client, auth_headers, owner, [prefix], reserve=[{"prefix": prefix}])
+    assert (await client.put(f"{NS}/{prefix}", json={}, headers=owner_key)).status_code == 200
+    narrowed = await client.delete(f"{KEYS}/{owner}/namespaces/{prefix}", headers=auth_headers)
+    assert narrowed.status_code == 200, narrowed.text
+    assert narrowed.json()["reservation"] == "kept"
+    await _drop_namespace(prefix)
+
+    assert (await client.put(f"{NS}/{prefix}", json={}, headers=owner_key)).status_code == 403
+    resp = await client.get(
+        "/api/registry/my/check-permission",
+        params={"namespace": prefix, "user_id": f"apikey:{owner}", "username": owner,
+                "auth_method": "api_key"},
+        headers={**auth_headers, "X-Key-Namespaces": ""},
+    )
+    assert resp.json()["permission"] == "none"
