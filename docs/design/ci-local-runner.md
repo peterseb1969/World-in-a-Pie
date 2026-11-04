@@ -198,6 +198,11 @@ the services `cmd:` key (Open question 4).
      and the runner label points at it with `force_pull: false`, so no
      registry is needed. Pin the base by digest when it is committed.
    - Size: 1.3 GB, pulled once.
+   - *Since 2026-11-04 the image has Node 24, not Debian's Node 20 (end of
+     life since 2026-04-30).* Node and npm are copied from
+     `node:24-trixie-slim`, the same Debian release, so it matches the
+     scaffold's Node major. Python, git and curl are unchanged; the
+     Dockerfile is the reference.
 3. *(Resolved; see Runner setup step 4.)*
 4. **Pi runner and rollback.** The Pi runs `act_runner` v1.0.8 in host mode.
    Only relevant if the rollback path should switch the Pi to container mode:
