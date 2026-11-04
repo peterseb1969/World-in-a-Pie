@@ -1,7 +1,7 @@
 name: Build & Push Images
 
 # Manually triggered: Actions tab -> "Build & Push Images" -> Run workflow.
-# Builds all 8 WIP service images via scripts/build-release.sh (wip-auth /
+# Builds every WIP service image via scripts/build-release.sh (wip-auth /
 # WIP-Toolkit baked in) and pushes them to GHCR as
 # ghcr.io/<owner>/<service>:<tag>.
 #
@@ -95,7 +95,7 @@ jobs:
           # scripts/build-release.sh — update both together.
           FAILED=""
           for svc in registry def-store template-store document-store \
-                     reporting-sync ingest-gateway mcp-server auth-gateway; do
+                     reporting-sync ingest-gateway mcp-server auth-gateway app-edge; do
             echo "::group::$svc"
             if docker buildx imagetools create \
                  -t "$OWNER/$svc:$TAG" \
@@ -111,4 +111,4 @@ jobs:
             echo "::error::Stitch failed for:$FAILED"
             exit 1
           fi
-          echo "Done: $TAG is a multi-arch index (amd64+arm64) for all 8 services."
+          echo "Done: $TAG is a multi-arch index (amd64+arm64) for every service."
