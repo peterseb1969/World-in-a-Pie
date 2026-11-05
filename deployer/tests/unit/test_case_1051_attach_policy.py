@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -147,7 +147,7 @@ def test_the_cli_refuses(discovery: Discovery, monkeypatch) -> None:
     )
 
     class _S:
-        values = {"api-key": "k"}
+        values: ClassVar[dict[str, str]] = {"api-key": "k"}
 
     with pytest.raises(typer.Exit) as e:
         _refuse_attachment_collisions(d, discovery.apps, _S())  # type: ignore[arg-type]

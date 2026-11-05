@@ -266,7 +266,8 @@ async def test_a_key_named_like_a_config_key_is_skipped(fresh, auth_headers):
     report = await _restore(client, auth_headers, archive, dry_run=False)
     reasons = {s["id"]: s["reason"] for s in report["api_keys"]["skipped"]}
     assert "config key" in reasons[config_name]
-    assert report["api_keys"]["skipped"][0]["reason_code"] == "config_key_name"
+    codes = {s["id"]: s["reason_code"] for s in report["api_keys"]["skipped"]}
+    assert codes[config_name] == "config_key_name"
     assert await StoredAPIKey.find_one(StoredAPIKey.name == config_name) is None
 
 

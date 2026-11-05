@@ -28,9 +28,21 @@ def _client(response=None, error=None):
     return client
 
 
+class _Result:
+    """The CLI result with its output's whitespace collapsed. Rich wraps
+    long lines at the console width, and where it breaks depends on the
+    temp path's length on the machine running the tests, so an assertion
+    must never depend on a line break."""
+
+    def __init__(self, result):
+        self.exit_code = result.exit_code
+        self.exception = result.exception
+        self.output = " ".join(result.output.split())
+
+
 def _invoke(client, *args):
     with patch("wip_toolkit.cli.WIPClient", return_value=client):
-        return CliRunner().invoke(main, list(map(str, args)))
+        return _Result(CliRunner().invoke(main, list(map(str, args))))
 
 
 def test_backup_writes_a_private_file(tmp_path):

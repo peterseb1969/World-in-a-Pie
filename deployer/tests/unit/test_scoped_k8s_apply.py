@@ -260,3 +260,29 @@ def test_every_top_level_manifest_is_shared(tmp_path: Path) -> None:
     assert "some-future-file.yaml" in applied
     assert "deployment.deployer-state" not in applied
     assert applied[-1] == "wip-kb.yaml"
+
+
+class TestScopedApplyLeavesTheFrontDoorAlone:
+    """A scoped apply never applies wip-caddy (the renderer's front door), so
+    it neither waits for it nor counts it; a full apply does both."""
+
+    def _rollouts(self, tmp_path: Path, scope: list[str] | None) -> list[str]:
+        deployment = _k8s_deployment(apps=["wip-kb"])
+        deployment.spec.apply.wait = True
+        tree = _synthetic_tree({"wip-kb": "services"})
+        with (
+            patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/kubectl"),
+            patch("wip_deploy.apply._kubectl_run"),
+            patch("wip_deploy.apply.subprocess.run") as run,
+        ):
+            apply_k8s(
+                deployment=deployment, components=[], apps=[_fake_app("wip-kb")],
+                tree=tree, install_dir=tmp_path, services_scope=scope,
+            )
+        return [c.args[0][5] for c in run.call_args_list if c.args[0][:3] == ["kubectl", "rollout", "status"]]
+
+    def test_a_scoped_apply_waits_only_for_its_services(self, tmp_path: Path) -> None:
+        assert self._rollouts(tmp_path, ["wip-kb"]) == ["deployment/wip-wip-kb"]
+
+    def test_a_full_apply_waits_for_the_front_door(self, tmp_path: Path) -> None:
+        assert "deployment/wip-caddy" in self._rollouts(tmp_path, None)
