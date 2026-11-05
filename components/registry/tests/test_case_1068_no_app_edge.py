@@ -127,3 +127,17 @@ async def test_a_restore_without_the_edge_skips_active_attachments(fresh, auth_h
     assert await AppAttachment.find_one(AppAttachment.name == "aa") is None
     bb = await AppAttachment.find_one(AppAttachment.name == "bb")
     assert bb.status == "inactive"
+
+
+@pytest.mark.asyncio
+async def test_an_identical_active_attachment_restores_as_unchanged_without_the_edge(
+    fresh, auth_headers, policy,
+):
+    client = fresh
+    await _post(client, auth_headers, _item())
+    r = await client.post(BACKUP, headers=auth_headers)
+    archive = r.json()
+    _write_policy(policy, app_edge=False)
+    r = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
+    out = r.json()["attachments"]
+    assert out["unchanged"] == ["aa"] and out["skipped"] == []

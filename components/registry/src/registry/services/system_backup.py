@@ -958,12 +958,6 @@ async def _restore_attachments(
         if request is None:
             out.skipped.append(_skip_named(a.name, "invalid_record", why or "invalid"))
             continue
-        if a.status == "active" and not policy.app_edge:
-            out.skipped.append(_skip_named(
-                a.name, "no_app_edge",
-                "this install runs no app edge to serve it (`wip-deploy add-module app-edge`)",
-            ))
-            continue
         if a.name in reserved:
             out.skipped.append(_skip_named(
                 a.name, "app_route", f"/apps/{a.name} is a route of an app this install deploys",
@@ -975,13 +969,20 @@ async def _restore_attachments(
             continue
         fields = _attachment_fields(request)
         status: Literal["active", "inactive"] = "active" if a.status == "active" else "inactive"
-        if existing is not None:
-            if (_attachment_fields(existing), existing.status) == (fields, status):
-                out.unchanged.append(a.name)
-                continue
-            if not overwrite:
-                out.skipped.append(_skip_named(a.name, "differs", _DIFFERS))
-                continue
+        if existing is not None and (_attachment_fields(existing), existing.status) == (fields, status):
+            out.unchanged.append(a.name)
+            continue
+        # After the unchanged check: an identical record here is reported as
+        # unchanged, not skipped; only a write is refused without an edge.
+        if status == "active" and not policy.app_edge:
+            out.skipped.append(_skip_named(
+                a.name, "no_app_edge",
+                "this install runs no app edge to serve it (`wip-deploy add-module app-edge`)",
+            ))
+            continue
+        if existing is not None and not overwrite:
+            out.skipped.append(_skip_named(a.name, "differs", _DIFFERS))
+            continue
         try:
             check = await check_upstream(request.upstream, policy, install_addresses)
         except UpstreamInvalid as e:
