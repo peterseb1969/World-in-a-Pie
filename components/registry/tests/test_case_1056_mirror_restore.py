@@ -317,3 +317,37 @@ async def test_a_refusal_is_reported_before_a_salt_question(fresh, auth_headers)
     assert any("refusals below are resolved" in w for w in dry["warnings"])
     body = await _restore(client, caller, archive, expect_status=409, mode="mirror", dry_run=False)
     assert body["error_code"] == "restore_refused"
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_mirror_that_skips_an_own_key_does_not_adopt_the_salt(
+    fresh, auth_headers, provider,
+):
+    """The archive carries K, but here K also reaches outside the scope, so the
+    restore skips it (out_of_scope_here) and K keeps this stack's hash.
+    Adopting the archive's salt would kill K: the stack is not fresh."""
+    client = fresh
+    await StoredAPIKey.delete_all()
+    old_salt = await key_salt.ensure()
+    provider.set_runtime_salt(old_salt)
+    name = _p("k")
+    await _key(client, auth_headers, name=name, namespaces=["vendor1"])
+    r = await client.post(BACKUP, params={"namespaces": "vendor1"}, headers=auth_headers)
+    assert r.status_code == 200, r.text
+    archive = r.json()
+    assert [k["name"] for k in archive["api_keys"]] == [name]
+
+    # Another stack, another salt; here K holds vendor1 and vendor2.
+    for doc in await StoredAPIKey.find_all().to_list():
+        provider.remove_key(doc.key_hash)
+    await StoredAPIKey.delete_all()
+    key_salt.reset_for_tests()
+    await key_salt._collection().delete_many({})
+    new_salt = await key_salt.ensure()
+    provider.set_runtime_salt(new_salt)
+    _, pt = await _key(client, auth_headers, name=name, namespaces=["vendor1", "vendor2"])
+
+    body = await _restore(client, auth_headers, archive, expect_status=409, mode="mirror", dry_run=False)
+    assert body["error_code"] == "salt_mismatch"
+    assert key_salt.current_salt() == new_salt
+    assert await _authenticates(client, pt)

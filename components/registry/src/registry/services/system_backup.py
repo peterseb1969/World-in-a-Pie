@@ -848,18 +848,57 @@ def _as_archive_grant(g: NamespaceGrant) -> ArchiveGrant:
     )
 
 
+def _key_skip(
+    archive: SystemArchive, k: ArchiveKey, existing: StoredAPIKey | None,
+    config_key_names: frozenset[str],
+) -> SkippedRecord | None:
+    """Why the restore leaves the archive's key record unwritten, or None.
+
+    The one rule for both the key restore and the salt decision
+    (_fresh_after): a key the restore skips keeps this stack's hash, so it
+    must count against adopting another salt.
+    """
+    scope = archive.source.scope
+    if scope is not None and not scope.holds_key(k.namespaces):
+        return _skip_named(k.name, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE)
+    if existing is not None and existing.managed_by is not None:
+        return _skip_named(k.name, "managed_by_deployer", _MANAGED)
+    if k.name in config_key_names:
+        return _skip_named(
+            k.name, "config_key_name", "a config key of this name is loaded on this instance",
+        )
+    if (
+        existing is not None and scope is not None
+        and _key_content(existing) != _key_content(k)
+        and not scope.holds_key(existing.namespaces)
+    ):
+        # The scope bounds what a scoped restore may change. Here the key
+        # also reaches outside it; the archive's record would take that
+        # access away.
+        return _skip_named(
+            k.name, "out_of_scope_here",
+            "here the key holds namespaces outside the archive's scope (or none); "
+            "a scoped restore does not replace it",
+        )
+    return None
+
+
 async def _fresh_after(
     plan: MirrorPlan, archive: SystemArchive, config_key_names: frozenset[str],
 ) -> bool:
     """Whether, after this mirror, no stored key here depends on this stack's
     salt except the managed ones: each of its own keys is either removed or
-    replaced by the archive's record."""
+    written from the archive's record. A key the restore skips (_key_skip)
+    keeps this stack's hash, so it makes the stack not fresh."""
     removed = {k.name for k in plan.keys}
-    replaced = {k.name for k in archive.api_keys} - config_key_names
-    return all(
-        doc.name in removed or doc.name in replaced
-        for doc in await StoredAPIKey.find({"managed_by": None}).to_list()
-    )
+    archived = {k.name: k for k in archive.api_keys}
+    for doc in await StoredAPIKey.find({"managed_by": None}).to_list():
+        if doc.name in removed:
+            continue
+        k = archived.get(doc.name)
+        if k is None or _key_skip(archive, k, doc, config_key_names) is not None:
+            return False
+    return True
 
 
 async def _apply_mirror(plan: MirrorPlan, removed_by: str) -> list[str]:
@@ -1068,34 +1107,16 @@ async def _restore_keys(
     config_key_names: frozenset[str],
 ) -> list[tuple[str | None, StoredAPIKey]]:
     out = report.api_keys
-    scope = archive.source.scope
     written: list[tuple[str | None, StoredAPIKey]] = []
     for k in archive.api_keys:
-        if scope is not None and not scope.holds_key(k.namespaces):
-            out.skipped.append(_skip_named(k.name, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
-            continue
         existing = await StoredAPIKey.find_one(StoredAPIKey.name == k.name)
-        if existing is not None and existing.managed_by is not None:
-            out.skipped.append(_skip_named(k.name, "managed_by_deployer", _MANAGED))
-            continue
-        if k.name in config_key_names:
-            out.skipped.append(_skip_named(
-                k.name, "config_key_name", "a config key of this name is loaded on this instance",
-            ))
+        skip = _key_skip(archive, k, existing, config_key_names)
+        if skip is not None:
+            out.skipped.append(skip)
             continue
         if existing is not None:
             if _key_content(existing) == _key_content(k):
                 out.unchanged.append(k.name)
-                continue
-            if scope is not None and not scope.holds_key(existing.namespaces):
-                # The scope bounds what a scoped restore may change. Here the
-                # key also reaches outside it; the archive's record would take
-                # that access away.
-                out.skipped.append(_skip_named(
-                    k.name, "out_of_scope_here",
-                    "here the key holds namespaces outside the archive's scope (or none); "
-                    "a scoped restore does not replace it",
-                ))
                 continue
             if not overwrite:
                 out.skipped.append(_skip_named(k.name, "differs", _DIFFERS))
