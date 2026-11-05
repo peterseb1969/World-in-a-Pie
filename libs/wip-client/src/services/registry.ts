@@ -292,11 +292,13 @@ export class RegistryService extends BaseService {
    * those namespaces' grants and reservations, the keys whose namespaces all
    * lie in them and the named attachments, and declares that in
    * `source.scope`. A mirror restore of it removes only within the scope.
+   * A list that is given is always sent: an empty one is refused by the
+   * server (422), never turned into a whole-stack backup.
    */
   async systemBackup(options: SystemBackupOptions = {}): Promise<SystemArchive> {
     const params: Record<string, string> = {}
-    if (options.namespaces?.length) params.namespaces = options.namespaces.join(',')
-    if (options.attachments?.length) params.attachments = options.attachments.join(',')
+    if (options.namespaces !== undefined) params.namespaces = options.namespaces.join(',')
+    if (options.attachments !== undefined) params.attachments = options.attachments.join(',')
     return Object.keys(params).length ? this.post('/system-backup', null, params) : this.post('/system-backup')
   }
 

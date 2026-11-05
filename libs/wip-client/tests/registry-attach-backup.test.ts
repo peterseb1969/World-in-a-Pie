@@ -61,6 +61,14 @@ describe('RegistryService: attachments, system backup, orphaned grants', () => {
       expect(url).toContain('attachments=aa')
     })
 
+    it('systemBackup with an empty scope list sends it, never a whole-stack backup', async () => {
+      // An app that builds its namespace list at runtime and ends up with []
+      // must get the server's refusal, not a stack-wide archive.
+      respond(ARCHIVE)
+      await client.registry.systemBackup({ namespaces: [] })
+      expect(call().url).toContain('namespaces=')
+    })
+
     it('systemBackup without options sends no scope', async () => {
       respond(ARCHIVE)
       await client.registry.systemBackup()

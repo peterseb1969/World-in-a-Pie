@@ -635,11 +635,19 @@ export interface SystemArchive {
 export interface SystemArchiveScope {
   namespaces: string[]
   attachments: string[]
-  /** Keys the scope touches but cannot carry (a namespace outside it, or none). */
+  /**
+   * Keys the scope touches but cannot carry (a namespace outside it, or
+   * none): those with a grant or reservation in scope, or namespaces that
+   * overlap it. A scoped mirror never removes them.
+   */
   keys_left_out: string[]
 }
 
-/** Options of `systemBackup`. Either one makes the backup scoped. */
+/**
+ * Options of `systemBackup`. Either one makes the backup scoped. A list that
+ * is given must not be empty: the server refuses an empty one (422) rather
+ * than back up the whole stack.
+ */
 export interface SystemBackupOptions {
   namespaces?: string[]
   /** Attachments have no namespace: a scoped backup carries only those named. */
@@ -671,6 +679,10 @@ export type SystemRestoreSkipReason =
    * authenticates with.
    */
   | 'caller_key'
+  /** A scoped archive's record outside the scope it declares (never written). */
+  | 'outside_archive_scope'
+  /** A scoped restore would replace a key that, here, reaches outside the scope. */
+  | 'out_of_scope_here'
 
 export interface SystemRestoreSkipped {
   /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */

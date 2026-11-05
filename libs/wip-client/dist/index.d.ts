@@ -3002,10 +3002,18 @@ interface SystemArchive {
 interface SystemArchiveScope {
     namespaces: string[];
     attachments: string[];
-    /** Keys the scope touches but cannot carry (a namespace outside it, or none). */
+    /**
+     * Keys the scope touches but cannot carry (a namespace outside it, or
+     * none): those with a grant or reservation in scope, or namespaces that
+     * overlap it. A scoped mirror never removes them.
+     */
     keys_left_out: string[];
 }
-/** Options of `systemBackup`. Either one makes the backup scoped. */
+/**
+ * Options of `systemBackup`. Either one makes the backup scoped. A list that
+ * is given must not be empty: the server refuses an empty one (422) rather
+ * than back up the whole stack.
+ */
 interface SystemBackupOptions {
     namespaces?: string[];
     /** Attachments have no namespace: a scoped backup carries only those named. */
@@ -3022,7 +3030,11 @@ type SystemRestoreSkipReason = 'managed_by_deployer' | 'managed_on_source' | 'in
  * archive's different record (overwrite, mirror) the key this request
  * authenticates with.
  */
- | 'caller_key';
+ | 'caller_key'
+/** A scoped archive's record outside the scope it declares (never written). */
+ | 'outside_archive_scope'
+/** A scoped restore would replace a key that, here, reaches outside the scope. */
+ | 'out_of_scope_here';
 interface SystemRestoreSkipped {
     /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */
     id: string;
@@ -3224,6 +3236,8 @@ declare class RegistryService extends BaseService {
      * those namespaces' grants and reservations, the keys whose namespaces all
      * lie in them and the named attachments, and declares that in
      * `source.scope`. A mirror restore of it removes only within the scope.
+     * A list that is given is always sent: an empty one is refused by the
+     * server (422), never turned into a whole-stack backup.
      */
     systemBackup(options?: SystemBackupOptions): Promise<SystemArchive>;
     /**
