@@ -1,10 +1,15 @@
 # Running the auth-gateway behind Traefik (forwardAuth)
 
-wip-deploy's own targets put Caddy (compose/dev) or nginx-ingress (k8s) in
-front of the auth-gateway. Both of those proxies **own the login redirect**:
-the gateway answers unauthenticated requests with `401` + `X-Auth-Redirect`,
-and the proxy turns that into the browser's trip to `/auth/login` (Caddy via
-`handle_response @401 { redir … }`, nginx via the `auth-signin` annotation).
+**This page is for hand-built Traefik setups** (such as the split
+deployment in `docs/k8s-topology.md`). A wip-deploy install needs none of
+it, on Traefik or any other controller: on every target the auth gateway
+sits behind `wip-caddy`, which owns the login redirect, and on k8s the
+ingress controller only hands requests to `wip-caddy`. See
+`docs/deploy/k8s/README.md`, "The ingress controller".
+
+wip-caddy **owns the login redirect**: the gateway answers unauthenticated
+requests with `401` + `X-Auth-Redirect`, and Caddy turns that into the
+browser's trip to `/auth/login` (`handle_response @401 { redir … }`).
 
 Traefik's `forwardAuth` middleware cannot do that: it passes any non-2xx
 response from the auth server to the client **verbatim**. A bare 401 shows
@@ -25,7 +30,7 @@ forwardAuth request). API callers still get the `401` + `X-Auth-Redirect`
 contract, so programmatic clients never chase HTML redirects.
 
 The default (`AUTH_REDIRECT_MODE=401`) must stay in place behind Caddy and
-nginx-ingress. It is **mandatory** behind nginx: `auth_request` treats any
+nginx-ingress, and so on every wip-deploy install. It is **mandatory** behind nginx: `auth_request` treats any
 status other than 2xx/401/403 from the auth subrequest — a 302 included —
 as an internal error, and every unauthenticated browser hit becomes a 500.
 Don't try to have the gateway sniff the proxy family from headers instead
@@ -47,8 +52,10 @@ http:
         authResponseHeaders:
           - X-WIP-User
           - X-WIP-Groups
-          - X-API-Key
 ```
+
+List only these two. The gateway never returns the install's key to an app
+upstream, and an app calls WIP with its own key.
 
 Attach `wip-auth` to every auth-protected router. Route `/auth/*` to the
 gateway itself **without** the middleware — the gateway is the auth; its

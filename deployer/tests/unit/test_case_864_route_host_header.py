@@ -13,12 +13,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import yaml
-
 from wip_deploy.build import BuildInputs, build_deployment
-from wip_deploy.config_gen import generate_caddy_config, generate_ingress_config
+from wip_deploy.config_gen import generate_caddy_config
 from wip_deploy.renderers.compose_caddy import render_caddyfile
-from wip_deploy.renderers.k8s import _render_ingress
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.component import (
     Component,
@@ -81,63 +78,41 @@ class TestCaddyRenderer:
 
 
 class TestK8sRenderer:
-    def _docs(self, *, host_header: bool) -> list[dict]:
+    """On k8s the front door is wip-caddy (CASE-1067), so the flag is the
+    same Caddy `header_up Host {upstream_hostport}` as on compose. The
+    upstream must be dialled at the Service FQDN: that is the host the env
+    layer hands services, and a SigV4 validator rejects any other spelling
+    (Garage answered every presigned download "AccessDenied: Invalid
+    signature" with the short name, observed live on dev-test, 2026-10-18)."""
+
+    def _block(self, *, host_header: bool) -> str:
         d = _deployment(target="k8s")
-        ing = generate_ingress_config(
-            d, [_storage_component(host_header=host_header)], []
-        )
-        return list(yaml.safe_load_all(_render_ingress(ing, "wip")))
+        text = render_caddyfile(generate_caddy_config(d, [_storage_component(host_header=host_header)], []))
+        block = text[text.index("handle_path /blobstore/*"):]
+        return block[: block.index("\n    }") + 6]
 
-    def test_flag_sets_upstream_vhost_annotation(self) -> None:
-        # The restored Host must be the FQDN form — the exact string the
-        # env layer hands services as the component URL host on k8s
-        # (config_gen/env.py _component_host). The short service name is
-        # a DIFFERENT host to a SigV4 validator: with it, Garage answered
-        # every presigned download "AccessDenied: Invalid signature"
-        # (observed live on dev-test, 2026-10-18).
-        docs = self._docs(host_header=True)
-        ing = next(d for d in docs if d["metadata"]["name"] == "blobstore-ingress")
-        assert ing["metadata"]["annotations"][
-            "nginx.ingress.kubernetes.io/upstream-vhost"
-        ] == "wip-blobstore.wip.svc.cluster.local:3900"
-        # strip_prefix semantics are untouched by the new flag.
-        assert ing["metadata"]["annotations"][
-            "nginx.ingress.kubernetes.io/rewrite-target"
-        ] == "/$2"
+    def test_flag_sets_the_upstream_host(self) -> None:
+        block = self._block(host_header=True)
+        assert "header_up Host {upstream_hostport}" in block
+        assert "reverse_proxy wip-blobstore.wip.svc.cluster.local:3900 {" in block
 
-    def test_without_flag_no_annotation(self) -> None:
-        docs = self._docs(host_header=False)
-        ing = next(d for d in docs if d["metadata"]["name"] == "blobstore-ingress")
-        assert (
-            "nginx.ingress.kubernetes.io/upstream-vhost"
-            not in ing["metadata"]["annotations"]
-        )
+    def test_without_flag_no_host_rewrite(self) -> None:
+        assert "header_up Host" not in self._block(host_header=False)
 
 
 def test_flag_preserved_across_targets() -> None:
     comp = _storage_component(host_header=True)
-    caddy = generate_caddy_config(_deployment(), [comp], [])
-    ing = generate_ingress_config(_deployment(target="k8s"), [comp], [])
-    assert next(r for r in caddy.routes if r.path == "/blobstore").upstream_host_header
-    assert next(r for r in ing.rules if r.path == "/blobstore").upstream_host_header
+    for target in ("compose", "k8s"):
+        caddy = generate_caddy_config(_deployment(target=target), [comp], [])
+        assert next(r for r in caddy.routes if r.path == "/blobstore").upstream_host_header
 
 
-def test_k8s_upstream_vhost_matches_env_component_host() -> None:
-    """The annotation and the env resolver must render the SAME hostport.
-
-    document-store signs presigned URLs against the endpoint the env layer
-    hands it; the ingress restores Host from this annotation. SigV4 signs
-    the Host, so the two renderings of "the upstream" must be
-    byte-identical — this pin fails if either side changes its host form
-    unilaterally.
-    """
+def test_k8s_upstream_host_matches_env_component_host() -> None:
+    """The dialled upstream (which `{upstream_hostport}` names) and the env
+    resolver must render the SAME hostport. document-store signs presigned
+    URLs against the endpoint the env layer hands it; SigV4 signs the Host,
+    so this pin fails if either side changes its host form unilaterally."""
     from wip_deploy.config_gen.env import _component_host
 
-    d = _deployment(target="k8s")
-    ing = generate_ingress_config(d, [_storage_component(host_header=True)], [])
-    docs = list(yaml.safe_load_all(_render_ingress(ing, "wip")))
-    blob = next(doc for doc in docs if doc["metadata"]["name"] == "blobstore-ingress")
-    vhost = blob["metadata"]["annotations"][
-        "nginx.ingress.kubernetes.io/upstream-vhost"
-    ]
-    assert vhost == f"{_component_host('blobstore', 'k8s', namespace='wip')}:3900"
+    cfg = generate_caddy_config(_deployment(target="k8s"), [_storage_component(host_header=True)], [])
+    assert cfg.backend("blobstore", 3900) == f"{_component_host('blobstore', 'k8s', namespace='wip')}:3900"

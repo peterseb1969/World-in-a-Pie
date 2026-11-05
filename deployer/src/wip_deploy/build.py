@@ -72,6 +72,8 @@ class BuildInputs:
     k8s_namespace: str = "wip"
     k8s_storage_class: str = "rook-ceph-block"
     k8s_ingress_class: str = "nginx"
+    k8s_ingress_controller: str = "nginx"
+    k8s_ingress_namespace: str | None = None
     k8s_tls_secret_name: str = "wip-tls"
 
     # Dev platform
@@ -228,8 +230,11 @@ def _build_platform(inputs: BuildInputs) -> dict[str, Any]:
             "namespace": inputs.k8s_namespace,
             "storage_class": inputs.k8s_storage_class,
             "ingress_class": inputs.k8s_ingress_class,
+            "ingress_controller": inputs.k8s_ingress_controller,
             "tls_secret_name": inputs.k8s_tls_secret_name,
         }
+        if inputs.k8s_ingress_namespace:
+            block["k8s"]["ingress_namespace"] = inputs.k8s_ingress_namespace
     elif inputs.target == "dev":
         dev_block: dict[str, Any] = {"mode": inputs.dev_mode}
         if inputs.app_sources:

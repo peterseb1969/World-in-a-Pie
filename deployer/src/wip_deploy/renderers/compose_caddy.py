@@ -1,7 +1,9 @@
-"""Caddyfile emitter.
+"""Caddyfile emitter for wip-caddy, the public front door on every target.
 
 Converts a `CaddyConfig` into Caddyfile syntax. Caddy isn't YAML — it
-has its own directive format — so this is hand-built.
+has its own directive format — so this is hand-built. Compose and dev
+mount it into the wip-caddy container; k8s mounts it from a ConfigMap into
+the wip-caddy Deployment behind the ingress controller.
 
 Auth-protected routes use `forward_auth` to delegate to the gateway,
 whose answer carries the user's identity (X-WIP-User / X-WIP-Groups)
@@ -31,21 +33,31 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     # Global options (email for letsencrypt, etc.). Kept minimal here;
     # letsencrypt mode would add `email admin@example.com`.
     out.write("{\n")
-    out.write("    auto_https disable_redirects\n")
+    if cfg.plain_http_port is not None:
+        # k8s: plain HTTP behind the ingress controller, which owns TLS.
+        # Without this Caddy would try to manage certificates for a site
+        # it never serves over TLS.
+        out.write("    auto_https off\n")
+    else:
+        out.write("    auto_https disable_redirects\n")
     out.write("}\n\n")
 
     # Site block. Explicit :port so Caddy binds where our compose port
     # mapping expects (compose maps host:<https_port> → container:<https_port>).
     # Without the :port, Caddy would default to 443 inside the container
     # regardless of what the host-side mapping says.
-    if cfg.hostname == "localhost":
+    if cfg.plain_http_port is not None:
+        # Any Host: the Ingress already matched the hostname.
+        host_line = f":{cfg.plain_http_port}"
+    elif cfg.hostname == "localhost":
         host_line = f"localhost:{cfg.https_port}"
     else:
         host_line = f"{cfg.hostname}:{cfg.https_port}, localhost:{cfg.https_port}"
 
     out.write(f"{host_line} {{\n")
-    _write_tls(out, cfg)
-    out.write("\n")
+    if cfg.plain_http_port is None:
+        _write_tls(out, cfg)
+        out.write("\n")
 
     # Hardening headers for publicly exposed installs. Site-block level
     # so they apply to every route, app routes included.
@@ -150,6 +162,7 @@ def _write_forward_auth(out: StringIO, cfg: CaddyConfig, route: ResolvedRoute) -
     # The route's allowed groups ride in the verify URI (verify_path), so
     # the gateway can answer 403 for a logged-in user outside them.
     out.write(f"            uri {verify_path(route)}\n")
+    _write_forwarded(out, cfg, "            ")
     # copy_headers overwrites a header the client sent, and removes it when
     # the gateway's answer lacks it or carries it empty: a browser cannot
     # pass its own identity through a protected route (checked against
@@ -167,7 +180,18 @@ def _write_forward_auth(out: StringIO, cfg: CaddyConfig, route: ResolvedRoute) -
 
 
 
-def _write_reverse_proxy(out, backend: str, route) -> None:  # type: ignore[no-untyped-def]
+def _write_forwarded(out: StringIO, cfg: CaddyConfig, indent: str) -> None:
+    """On k8s, set the public scheme and host toward the gateway and the
+    backends. Caddy sees plain HTTP from the ingress controller, so it would
+    otherwise send X-Forwarded-Proto: http; and a client's own X-Forwarded-*
+    is never trusted, since the controller's addresses are unknown here."""
+    if cfg.forwarded_scheme:
+        out.write(f"{indent}header_up X-Forwarded-Proto {cfg.forwarded_scheme}\n")
+    if cfg.forwarded_host:
+        out.write(f"{indent}header_up X-Forwarded-Host {cfg.forwarded_host}\n")
+
+
+def _write_reverse_proxy(out, backend: str, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
     """One reverse_proxy directive, with the route's proxy options.
 
     `upstream_host_header` sets Host to the upstream's host:port —
@@ -176,6 +200,10 @@ def _write_reverse_proxy(out, backend: str, route) -> None:  # type: ignore[no-u
     response buffering.
     """
     opts: list[str] = []
+    if cfg.forwarded_scheme:
+        opts.append(f"            header_up X-Forwarded-Proto {cfg.forwarded_scheme}\n")
+    if cfg.forwarded_host:
+        opts.append(f"            header_up X-Forwarded-Host {cfg.forwarded_host}\n")
     if route.upstream_host_header:
         opts.append("            header_up Host {upstream_hostport}\n")
     if route.streaming:
@@ -216,14 +244,14 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
     # any of its own endpoints that live under the public prefix need it
     # preserved. Emit `handle` blocks for those subpaths first; Caddy's
     # longest-match picks them over the trailing handle_path block.
-    backend = f"wip-{route.backend_component}:{route.backend_port}"
+    backend = cfg.backend(route.backend_component, route.backend_port)
     if route.strip_prefix and route.preserve_prefix_subpaths:
         for sub in route.preserve_prefix_subpaths:
             out.write(f"    handle {sub}/* {{\n")
             if route.auth_protected:
                 _write_forward_auth(out, cfg, route)
             _write_identity_strip(out, route)
-            _write_reverse_proxy(out, backend, route)
+            _write_reverse_proxy(out, backend, route, cfg)
             out.write("    }\n\n")
 
     # `handle_path` strips the route's prefix before forwarding; `handle`
@@ -238,7 +266,7 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
         if route.auth_protected:
             _write_forward_auth(out, cfg, route)
         _write_identity_strip(out, route)
-        _write_reverse_proxy(out, backend, route)
+        _write_reverse_proxy(out, backend, route, cfg)
         out.write("    }\n\n")
 
     # CASE-312: when redirect_bare_path is False, no companion `handle
@@ -269,7 +297,5 @@ def _write_catchall(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-un
     if route.auth_protected:
         _write_forward_auth(out, cfg, route)
     _write_identity_strip(out, route, indent="        ")
-    out.write(
-        f"        reverse_proxy wip-{route.backend_component}:{route.backend_port}\n"
-    )
+    _write_reverse_proxy(out, cfg.backend(route.backend_component, route.backend_port), route, cfg)
     out.write("    }\n")

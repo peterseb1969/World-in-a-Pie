@@ -307,104 +307,121 @@ class TestPodDNS:
 # ────────────────────────────────────────────────────────────────────
 
 
+def _k8s_front_door(
+    tmp_path: Path, discovery: Discovery, components: list[Component] | None = None,
+    **overrides: object,
+) -> tuple[list[dict], list[dict], str]:  # type: ignore[type-arg]
+    """(Ingress docs, wip-caddy docs, wip-caddy's Caddyfile) of a k8s render."""
+    d = _k8s_deployment(**overrides)  # type: ignore[arg-type]
+    s = _secrets(tmp_path, d, discovery)
+    tree = render_k8s(d, components or discovery.components, discovery.apps, s)
+    ingress = list(yaml.safe_load_all(tree.files[Path("ingress.yaml")].content))
+    caddy = list(yaml.safe_load_all(tree.files[Path("services/caddy.yaml")].content))
+    cm = next(x for x in caddy if x["kind"] == "ConfigMap")
+    return ingress, caddy, cm["data"]["Caddyfile"]
+
+
+def _handle_block(caddyfile: str, matcher: str) -> str:
+    """The body of the `handle <matcher> {` block (one level)."""
+    start = caddyfile.index(f"    handle {matcher} {{\n")
+    end = caddyfile.index("\n    }\n", start)
+    return caddyfile[start:end]
+
+
 class TestIngress:
-    def _render_ingress(
-        self, tmp_path: Path, discovery: Discovery, **overrides: object
-    ) -> list[dict]:  # type: ignore[type-arg]
-        d = _k8s_deployment(**overrides)  # type: ignore[arg-type]
-        s = _secrets(tmp_path, d, discovery)
-        tree = render_k8s(d, discovery.components, discovery.apps, s)
-        return list(yaml.safe_load_all(
-            tree.files[Path("ingress.yaml")].content
-        ))
+    """CASE-1067 option B: one catch-all Ingress hands every request to
+    wip-caddy, the same public Caddy compose runs; every route lives in its
+    Caddyfile, so any ingress controller works."""
 
-    def test_api_routes_no_auth_url(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        docs = self._render_ingress(tmp_path, real_discovery)
-        main_ingress = next(
-            d for d in docs if d["metadata"]["name"] == "wip-ingress"
-        )
-        annotations = main_ingress["metadata"].get("annotations", {})
-        assert "nginx.ingress.kubernetes.io/auth-url" not in annotations
+    def test_one_ingress_to_wip_caddy(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        docs, _, _ = _k8s_front_door(tmp_path, real_discovery, apps=["react-console"])
+        assert [d["metadata"]["name"] for d in docs] == ["wip-ingress"]
+        paths = docs[0]["spec"]["rules"][0]["http"]["paths"]
+        assert paths == [{
+            "path": "/",
+            "pathType": "Prefix",
+            "backend": {"service": {"name": "wip-caddy", "port": {"number": 8080}}},
+        }]
+        annotations = docs[0]["metadata"]["annotations"]
+        assert not any("auth-url" in k or "rewrite-target" in k or "app-root" in k for k in annotations)
 
-    def test_app_ingress_has_auth_url(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        docs = self._render_ingress(
-            tmp_path, real_discovery, apps=["react-console"]
-        )
-        rc_ingress = next(
-            d for d in docs if d["metadata"]["name"] == "react-console-ingress"
-        )
-        annotations = rc_ingress["metadata"]["annotations"]
-        assert "nginx.ingress.kubernetes.io/auth-url" in annotations
-        assert "wip-auth-gateway" in annotations[
-            "nginx.ingress.kubernetes.io/auth-url"
-        ]
-
-    def test_tls_configured(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        docs = self._render_ingress(tmp_path, real_discovery)
-        main_ingress = docs[0]
-        tls = main_ingress["spec"]["tls"]
+    def test_tls_configured(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        docs, _, _ = _k8s_front_door(tmp_path, real_discovery)
+        tls = docs[0]["spec"]["tls"]
         assert tls[0]["hosts"] == ["wip-kubi.local"]
         assert tls[0]["secretName"] == "wip-tls"
 
-    def test_root_redirect_ingress_emitted_with_app(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        """CASE-368, CASE-944: the root Ingress redirects only `/` to the
-        app's prefix (app-root; permanent-redirect on it redirected every
-        unrouted path) and catches every unrouted path (Prefix `/`) for the
-        router, whose guards answer them with 404s."""
-        docs = self._render_ingress(
-            tmp_path, real_discovery, apps=["react-console"]
-        )
-        assert not any(d["metadata"]["name"] == "wip-root-redirect" for d in docs)
-        root = next(d for d in docs if d["metadata"]["name"] == "wip-root")
-        ann = root["metadata"]["annotations"]
-        assert ann["nginx.ingress.kubernetes.io/app-root"] == "/apps/rc/"
-        assert "nginx.ingress.kubernetes.io/permanent-redirect" not in ann
-        path = root["spec"]["rules"][0]["http"]["paths"][0]
-        assert path["path"] == "/"
-        assert path["pathType"] == "Prefix"
-        assert path["backend"]["service"] == {"name": "wip-router", "port": {"number": 8080}}
+    def test_traefik_flavour(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        d = _k8s_deployment()
+        assert d.spec.platform.k8s is not None
+        d.spec.platform.k8s.ingress_controller = "traefik"
+        d.spec.platform.k8s.ingress_class = "traefik"
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        ing = yaml.safe_load(tree.files[Path("ingress.yaml")].content)
+        assert ing["spec"]["ingressClassName"] == "traefik"
+        assert ing["metadata"]["annotations"] == {
+            "traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
+            "traefik.ingress.kubernetes.io/router.tls": "true",
+        }
 
-    def test_no_root_redirect_without_apps(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        """No apps + gateway on → redirect to /auth/login (gateway always
-        contributes the /auth rule that backs the placeholder)."""
-        docs = self._render_ingress(tmp_path, real_discovery)
-        root = next((d for d in docs if d["metadata"]["name"] == "wip-root"), None)
-        assert root is not None
-        ann = root["metadata"]["annotations"]
-        assert ann["nginx.ingress.kubernetes.io/app-root"] == "/auth/login"
+    def test_app_route_goes_through_the_gateway(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery, apps=["react-console"])
+        block = _handle_block(caddyfile, "/apps/rc/*")
+        assert "forward_auth wip-auth-gateway.wip-test.svc.cluster.local:4180" in block
+        assert "copy_headers X-WIP-User X-WIP-Groups" in block
+        assert "request_header -X-WIP-Auth-Method" in block
 
-    def test_router_owns_the_catch_all_only_while_it_has_no_private_route(
-        self, real_discovery: Discovery
-    ) -> None:
-        """The router reaches services without the gateway, so the public
-        catch-all may point at it only while each router route also has a
-        public rule (more specific, so it wins). A router-only route makes
-        the catch-all fall back to the redirect target's service."""
-        from wip_deploy.config_gen import nginx_ingress
-        from wip_deploy.config_gen.nginx_ingress import IngressRule, catch_all_backend
+    def test_api_routes_skip_the_gateway(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery)
+        assert "forward_auth" not in _handle_block(caddyfile, "/api/registry/*")
 
-        d = _k8s_deployment(apps=["react-console"])
-        rules = nginx_ingress.generate_ingress_config(
-            d, real_discovery.components, real_discovery.apps
-        ).rules
-        assert catch_all_backend(d, real_discovery.components, real_discovery.apps, rules) == (
-            "wip-router", 8080,
-        )
-        without_registry = [r for r in rules if r.path != "/api/registry"]
-        assert isinstance(without_registry[0], IngressRule)
-        assert catch_all_backend(
-            d, real_discovery.components, real_discovery.apps, without_registry
-        ) is None
+    def test_plain_http_with_set_forwarded_headers(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        """TLS ends at the controller, so wip-caddy listens on plain HTTP and
+        sets the public scheme and host itself, never trusting a client's."""
+        _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery, apps=["react-console"])
+        assert "auto_https off" in caddyfile
+        assert "\n:8080 {\n" in caddyfile
+        assert "tls {" not in caddyfile
+        block = _handle_block(caddyfile, "/apps/rc/*")
+        assert block.count("header_up X-Forwarded-Proto https") == 2  # forward_auth + proxy
+        assert block.count("header_up X-Forwarded-Host wip-kubi.local") == 2
+
+    def test_root_redirect_to_the_app(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery, apps=["react-console"])
+        assert "redir * /apps/rc/ permanent" in _handle_block(caddyfile, "/")
+
+    def test_root_redirect_to_login_without_apps(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery)
+        assert "redir * /auth/login permanent" in _handle_block(caddyfile, "/")
+
+    def test_unrouted_paths_get_real_404s(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        """CASE-944 / CASE-513: never Caddy's empty 200."""
+        _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery)
+        assert "@api_unrouted path /api /api/*" in caddyfile
+        assert caddyfile.rstrip().endswith("}")
+        assert "respond 404" in caddyfile or "} 404" in caddyfile
+
+    def test_wip_caddy_workload(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        _, caddy, _ = _k8s_front_door(tmp_path, real_discovery)
+        kinds = {x["kind"]: x for x in caddy}
+        assert set(kinds) == {"ConfigMap", "Service", "Deployment"}
+        dep = kinds["Deployment"]
+        assert dep["metadata"]["name"] == "wip-caddy"
+        assert dep["metadata"]["labels"]["app.kubernetes.io/part-of"] == "wip"
+        container = dep["spec"]["template"]["spec"]["containers"][0]
+        assert container["image"] == "docker.io/library/caddy:2"
+        assert container["volumeMounts"][0]["mountPath"] == "/etc/caddy/Caddyfile"
+        assert kinds["Service"]["spec"]["ports"][0]["port"] == 8080
+
+    def test_a_changed_route_rolls_wip_caddy(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        """subPath mounts never see a ConfigMap change; the Caddyfile hash
+        on the pod template rolls the pod instead."""
+        def hash_of(apps: list[str]) -> str:
+            _, caddy, _ = _k8s_front_door(tmp_path, real_discovery, apps=apps)
+            dep = next(x for x in caddy if x["kind"] == "Deployment")
+            return dep["spec"]["template"]["metadata"]["annotations"]["wip.dev/config-hash"]
+        assert hash_of([]) != hash_of(["react-console"])
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -478,6 +495,36 @@ class TestNetworkPolicies:
         assert rules[0]["namespaceSelector"]["matchLabels"][
             "kubernetes.io/metadata.name"
         ] == "ingress"
+        # The controller reaches wip-caddy only: every route goes through it.
+        assert p["spec"]["podSelector"] == {"matchLabels": {"app.kubernetes.io/name": "caddy"}}
+
+    def test_traefik_controller_namespace_defaults_to_kube_system(
+        self, tmp_path: Path, real_discovery: Discovery,
+    ) -> None:
+        import yaml
+        d = _k8s_deployment()
+        assert d.spec.platform.k8s is not None
+        d.spec.platform.k8s.ingress_controller = "traefik"
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        policies = list(yaml.safe_load_all(tree.files[Path("network-policies.yaml")].content))
+        p = next(p for p in policies if p["metadata"]["name"] == "allow-ingress-controller")
+        assert p["spec"]["ingress"][0]["from"][0]["namespaceSelector"]["matchLabels"][
+            "kubernetes.io/metadata.name"
+        ] == "kube-system"
+
+    def test_controller_namespace_override(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        import yaml
+        d = _k8s_deployment()
+        assert d.spec.platform.k8s is not None
+        d.spec.platform.k8s.ingress_namespace = "ingress-nginx"
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
+        policies = list(yaml.safe_load_all(tree.files[Path("network-policies.yaml")].content))
+        p = next(p for p in policies if p["metadata"]["name"] == "allow-ingress-controller")
+        assert p["spec"]["ingress"][0]["from"][0]["namespaceSelector"]["matchLabels"][
+            "kubernetes.io/metadata.name"
+        ] == "ingress-nginx"
 
     def test_includes_dns_egress(
         self, tmp_path: Path, real_discovery: Discovery,
@@ -537,71 +584,30 @@ class TestPreservePrefixSubpaths:
         },
     })
 
-    def _ingress_docs(
-        self, tmp_path: Path, real_discovery: Discovery,
-    ) -> list[dict]:  # type: ignore[type-arg]
-        d = _k8s_deployment(modules=["blobstore", "reporting-sync", "ingest-gateway"])
+    def _caddyfile(self, tmp_path: Path, real_discovery: Discovery) -> str:
         components = [*real_discovery.components, self._BLOBSTORE]
-        s = _secrets(tmp_path, d, real_discovery)
-        tree = render_k8s(d, components, real_discovery.apps, s)
-        return list(yaml.safe_load_all(tree.files[Path("ingress.yaml")].content))
-
-    def test_strip_ingress_excludes_preserved_subpaths(
-        self, tmp_path: Path, real_discovery: Discovery,
-    ) -> None:
-        """When preserve_prefix_subpaths is set, the strip regex uses
-        a negative lookahead to exclude those segments. Otherwise
-        nginx-ingress's cross-Ingress merging lets the strip rule
-        absorb requests that should hit the admin Ingress."""
-        docs = self._ingress_docs(tmp_path, real_discovery)
-        ing = next(d for d in docs if d["metadata"]["name"] == "blobstore-ingress")
-        path = ing["spec"]["rules"][0]["http"]["paths"][0]
-        # Excludes "health" and "admin" segments via negative lookahead.
-        assert "(?!" in path["path"]
-        assert "health" in path["path"]
-        assert "admin" in path["path"]
-        assert path["pathType"] == "ImplementationSpecific"
-        # Capture group 1 is the rest of the path (lookahead is
-        # non-capturing).
-        assert ing["metadata"]["annotations"][
-            "nginx.ingress.kubernetes.io/rewrite-target"
-        ] == "/$1"
-
-    def test_preserved_subpaths_get_a_separate_ingress(
-        self, tmp_path: Path, real_discovery: Discovery,
-    ) -> None:
-        """Preserve-prefix paths live in a SEPARATE Ingress so the
-        rewrite-target annotation on the strip Ingress doesn't apply
-        to them. Otherwise NGINX would rewrite /blobstore/health/live to
-        /$2 (empty) and 404."""
-        docs = self._ingress_docs(tmp_path, real_discovery)
-        admin = next(
-            d for d in docs if d["metadata"]["name"] == "blobstore-ingress-admin"
+        _, _, caddyfile = _k8s_front_door(
+            tmp_path, real_discovery, components,
+            modules=["blobstore", "reporting-sync", "ingest-gateway"],
         )
-        # No rewrite-target annotation on the admin Ingress.
-        assert (
-            "nginx.ingress.kubernetes.io/rewrite-target"
-            not in admin["metadata"]["annotations"]
-        )
-        # Two prefix-typed paths (admin + health).
-        paths = admin["spec"]["rules"][0]["http"]["paths"]
-        assert len(paths) == 2
-        path_strs = {p["path"] for p in paths}
-        assert "/blobstore/health" in path_strs
-        assert "/blobstore/admin" in path_strs
-        for p in paths:
-            assert p["pathType"] == "Prefix"
+        return caddyfile
 
-    def test_routes_without_preserve_paths_emit_only_strip_ingress(
+    def test_preserved_subpaths_keep_their_prefix(
         self, tmp_path: Path, real_discovery: Discovery,
     ) -> None:
-        """Components without preserve_prefix_subpaths shouldn't get a
-        spurious -admin Ingress emitted."""
-        docs = self._ingress_docs(tmp_path, real_discovery)
-        # Sanity: the wip-ingress (main API ingress) doesn't have an admin sibling.
-        admin_names = {
-            d["metadata"]["name"] for d in docs
-            if d["metadata"]["name"].endswith("-admin")
-        }
-        # Only the blobstore admin Ingress should be present.
-        assert admin_names == {"blobstore-ingress-admin"}
+        """The preserved subpaths are `handle` blocks (prefix kept) and the
+        rest of the store is `handle_path` (prefix stripped); Caddy's
+        longest match picks the subpaths. Same Caddyfile as compose."""
+        caddyfile = self._caddyfile(tmp_path, real_discovery)
+        assert "    handle /blobstore/health/* {" in caddyfile
+        assert "    handle /blobstore/admin/* {" in caddyfile
+        assert "    handle_path /blobstore/* {" in caddyfile
+
+    def test_no_nginx_regex_paths(self, tmp_path: Path, real_discovery: Discovery) -> None:
+        components = [*real_discovery.components, self._BLOBSTORE]
+        docs, _, _ = _k8s_front_door(
+            tmp_path, real_discovery, components,
+            modules=["blobstore", "reporting-sync", "ingest-gateway"],
+        )
+        assert len(docs) == 1
+        assert all(p["pathType"] == "Prefix" for p in docs[0]["spec"]["rules"][0]["http"]["paths"])

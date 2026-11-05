@@ -93,24 +93,28 @@ def test_the_router_hands_the_rest_of_apps_to_the_edge(compose_tree) -> None:
 
 
 def test_k8s_ingress_and_network_policy(tmp_path: Path, discovery: Discovery) -> None:
+    """wip-caddy hands /apps paths no deployer app claims to the edge, with
+    no gateway in front (the edge runs its own forward_auth); the edge
+    accepts traffic from wip-caddy only and its egress is limited."""
     d = _k8s_deployment(apps=["wip-kb"])
     ns = d.spec.platform.k8s.namespace
     tree = render_k8s(d, discovery.components, discovery.apps, _k8s_secrets(tmp_path, d, discovery))
 
-    ingress = [doc for doc in yaml.safe_load_all(tree.files[Path("ingress.yaml")].content) if doc]
-    to_edge = [
-        (doc, p) for doc in ingress for rule in doc["spec"]["rules"]
-        for p in rule["http"]["paths"] if p["backend"]["service"]["name"] == "wip-app-edge"
-    ]
-    assert to_edge
-    for doc, path in to_edge:
-        assert path["path"].startswith("/apps")
-        assert "nginx.ingress.kubernetes.io/auth-url" not in (doc["metadata"].get("annotations") or {})
+    docs = yaml.safe_load_all(tree.files[Path("services/caddy.yaml")].content)
+    caddyfile = next(x for x in docs if x["kind"] == "ConfigMap")["data"]["Caddyfile"]
+    edge = caddyfile[caddyfile.index("    handle /apps/* {"):]
+    edge = edge[: edge.index("\n    }\n")]
+    assert f"reverse_proxy wip-app-edge.{ns}.svc.cluster.local:8080" in edge
+    assert "forward_auth" not in edge
+    # Deployer apps' own routes are longer, so Caddy's longest match wins.
+    assert "    handle /apps/kb/* {" in caddyfile
 
     policies = {doc["metadata"]["name"]: doc for doc in yaml.safe_load_all(tree.files[Path("network-policies.yaml")].content) if doc}
-    edge = policies["app-edge-egress"]["spec"]
-    assert edge["podSelector"] == {"matchLabels": {"app.kubernetes.io/name": "app-edge"}}
-    targets = [t for rule in edge["egress"] for t in rule["to"]]
+    edge_policy = policies["app-edge-egress"]["spec"]
+    assert edge_policy["podSelector"] == {"matchLabels": {"app.kubernetes.io/name": "app-edge"}}
+    assert edge_policy["policyTypes"] == ["Ingress", "Egress"]
+    assert edge_policy["ingress"] == [{"from": [{"podSelector": {"matchLabels": {"app.kubernetes.io/name": "caddy"}}}]}]
+    targets = [t for rule in edge_policy["egress"] for t in rule["to"]]
     assert {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "registry"}}} in targets
     assert {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "auth-gateway"}}} in targets
     other_ns = next(t for t in targets if "namespaceSelector" in t)

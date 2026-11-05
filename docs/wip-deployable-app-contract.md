@@ -203,11 +203,13 @@ These are platform-side guarantees the contract assumes. They're invariants toda
     - {path: /apps/<name>, auth_required: true, allowed_groups: [wip-admins]}
   ```
 
-  The gateway answers 403 to a logged-in user in none of the groups, before any request reaches your app: a short "no access" page for browsers, JSON for API callers. Behind NGINX (k8s) only the status reaches the browser. No session is still a login redirect, and an empty or absent list lets any logged-in user in. Group names may use letters, digits, `.`, `_` and `-`; the field requires `auth_required: true`. Keep `ALLOWED_GROUPS` only if your app also runs its own OIDC client.
+  The gateway answers 403 to a logged-in user in none of the groups, before any request reaches your app: a short "no access" page for browsers, JSON for API callers. No session is still a login redirect, and an empty or absent list lets any logged-in user in. Group names may use letters, digits, `.`, `_` and `-`; the field requires `auth_required: true`. Keep `ALLOWED_GROUPS` only if your app also runs its own OIDC client.
 
-- **Trust the identity headers only on routes you declare `auth_required: true`** — `X-WIP-User`, `X-WIP-Groups` and `X-WIP-Auth-Method` come from the gateway on a protected route. On a route you declare `auth_required: false` the gateway never runs, so whatever arrives in those headers was sent by the client:
-  - **compose and dev:** the router removes them on every app route, so an unprotected route receives none;
-  - **k8s:** ingress-nginx cannot remove a request header without a configuration snippet, which controllers disable by default, so an unprotected route receives the client's copies unchanged. `X-WIP-Auth-Method` arrives unchecked on protected routes too. Attached apps are not affected: the app edge strips them on every target.
+- **Trust the identity headers only on routes you declare `auth_required: true`** — `X-WIP-User` and `X-WIP-Groups` come from the gateway on a protected route. On a route you declare `auth_required: false` the gateway never runs, so there is no identity to read. The front door, `wip-caddy` on every target (on k8s behind the cluster's ingress controller), removes client-sent copies:
+  - on an unprotected app route, `X-WIP-User`, `X-WIP-Groups` and `X-WIP-Auth-Method` are all removed, so your app receives none;
+  - on a protected one, the gateway's answer replaces `X-WIP-User` and `X-WIP-Groups` (or removes them), and `X-WIP-Auth-Method` is removed.
+
+  Attached apps get the same from the app edge.
 
   So: read identity (author attribution, `/api/me`, an admin check on `x-wip-groups`) only in handlers served under an `auth_required: true` route, and never let an unprotected route's handler fall through to code that does. Don't decide anything on `X-WIP-Auth-Method`. The scaffold's `requireAdmin()` reads `x-wip-groups`: mount it only under a protected route.
 

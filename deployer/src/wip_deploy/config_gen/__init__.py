@@ -6,7 +6,8 @@ parse generator output.
 
 Dependency direction:
   spec_context  ←  env, routing
-  routing       ←  caddy, nginx_ingress
+  routing       ←  caddy (the public Caddy, every target)
+  caddy         ←  ingress (k8s: one catch-all Ingress to wip-caddy)
   env, routing  ←  (renderers, later)
   dex           ←  (renderers, later)
 """
@@ -28,9 +29,8 @@ from wip_deploy.config_gen.env import (
     resolve_component_env,
     resolve_env_source,
 )
-from wip_deploy.config_gen.nginx_ingress import (
+from wip_deploy.config_gen.ingress import (
     IngressConfig,
-    IngressRule,
     generate_ingress_config,
 )
 from wip_deploy.config_gen.routing import (
@@ -81,6 +81,5 @@ __all__ = [  # noqa: RUF022
     "generate_caddy_config",
     # NGINX Ingress
     "IngressConfig",
-    "IngressRule",
     "generate_ingress_config",
 ]

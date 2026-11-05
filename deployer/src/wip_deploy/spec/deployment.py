@@ -515,7 +515,22 @@ class K8sPlatform(WIPModel):
     namespace: str = Field(default="wip", pattern=r"^[a-z][a-z0-9-]*$")
     storage_class: str = "rook-ceph-block"
     ingress_class: str = "nginx"
+    # The ingress controller in front of the install. It only terminates TLS
+    # for the hostname and hands every request to wip-caddy, the public
+    # Caddy compose runs too: all routing, forward_auth and header stripping
+    # live there. The flavour picks the few annotations the one Ingress
+    # carries (body size, timeouts, buffering, HTTPS only).
+    ingress_controller: Literal["nginx", "traefik"] = "nginx"
+    # The namespace the controller's pods run in, for the NetworkPolicy that
+    # lets them reach wip-caddy. None: the flavour's usual one ("ingress",
+    # MicroK8s's nginx addon; "kube-system", k3s's Traefik).
+    ingress_namespace: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]*$")
     tls_secret_name: str = "wip-tls"
+
+    def controller_namespace(self) -> str:
+        if self.ingress_namespace:
+            return self.ingress_namespace
+        return {"nginx": "ingress", "traefik": "kube-system"}[self.ingress_controller]
     # ndots written into every pod's /etc/resolv.conf. kubelet's default is 5,
     # which means any name with fewer than 5 dots is tried against the three
     # search domains BEFORE being tried as written. Inter-service URLs are

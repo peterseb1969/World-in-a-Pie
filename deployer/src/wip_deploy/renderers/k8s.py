@@ -28,6 +28,7 @@ Design decisions:
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -50,10 +51,16 @@ from wip_deploy.config_gen.api_keys import (
     mounts_auth_config_dir,
 )
 from wip_deploy.config_gen.attach_policy import ATTACH_POLICY_FILENAME, attach_policy_json
+from wip_deploy.config_gen.caddy import (
+    PUBLIC_CADDY_IMAGE,
+    PUBLIC_CADDY_K8S_PORT,
+    generate_caddy_config,
+)
 from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import Literal
 from wip_deploy.config_gen.garage import garage_component, render_garage_toml
 from wip_deploy.config_gen.images import image_ref as _image_ref
+from wip_deploy.config_gen.ingress import IngressConfig
 from wip_deploy.config_gen.mongodb import (
     ENTRYPOINT_CONTAINER_PATH as MONGO_ENTRYPOINT_CONTAINER_PATH,
 )
@@ -78,6 +85,7 @@ from wip_deploy.config_gen.nats import (
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.config_gen.spec_context import federated_groups_policy
 from wip_deploy.renderers.base import FileTree
+from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import (
     DEX_COMPONENT,
     dex_config_hash,
@@ -198,14 +206,26 @@ def render_k8s(
             tree.add(f"services/{name}.yaml", content)
 
     # Ingress
-    ingress_cfg = generate_ingress_config(deployment, components, apps)
-    tree.add("ingress.yaml", _render_ingress(ingress_cfg, ns))
+    # The front door: wip-caddy (the same Caddyfile compose runs) behind one
+    # catch-all Ingress, whatever the controller.
+    tree.add(
+        f"services/{PUBLIC_CADDY_NAME}.yaml",
+        _render_public_caddy(
+            render_caddyfile(generate_caddy_config(deployment, components, apps)),
+            deployment, ns,
+        ),
+    )
+    tree.add("ingress.yaml", _render_ingress(generate_ingress_config(deployment), ns))
 
     # NetworkPolicies (CASE-238 MVP: namespace-wide isolation;
     # per-component egress rules are a follow-up).
     tree.add(
         "network-policies.yaml",
-        _render_network_policies(ns, app_edge=app_edge_active(deployment)),
+        _render_network_policies(
+            ns,
+            app_edge=app_edge_active(deployment),
+            controller_ns=k8s.controller_namespace(),
+        ),
     )
 
     return tree
@@ -233,7 +253,7 @@ def _render_namespace(ns: str) -> str:
 # MVP scope: namespace-wide isolation. Five policies:
 #   - deny-all-default          → block all traffic by default
 #   - allow-same-namespace      → pod ↔ pod inside ns works
-#   - allow-ingress-controller  → nginx-ingress (in 'ingress' ns) reaches us
+#   - allow-ingress-controller  → the ingress controller reaches wip-caddy only
 #   - allow-egress-dns          → kube-dns lookups for cluster DNS
 #   - allow-egress-https        → outbound HTTPS (Anthropic, etc.)
 #
@@ -258,7 +278,9 @@ def _render_namespace(ns: str) -> str:
 APP_EDGE_COMPONENT = "app-edge"
 
 
-def _render_network_policies(ns: str, *, app_edge: bool = False) -> str:
+def _render_network_policies(
+    ns: str, *, app_edge: bool = False, controller_ns: str = "ingress"
+) -> str:
     """Render the namespace-isolation NetworkPolicy bundle.
 
     CASE-238 MVP — restores the cross-namespace isolation guarantee
@@ -318,9 +340,12 @@ def _render_network_policies(ns: str, *, app_edge: bool = False) -> str:
         },
     }
 
-    # NGINX ingress controller runs in the 'ingress' namespace on
-    # MicroK8s. The kubernetes.io/metadata.name label is auto-added
-    # by k8s 1.21+ on every namespace.
+    # The ingress controller reaches wip-caddy, the front door, and nothing
+    # else: every route goes through wip-caddy's forward_auth and header
+    # strip. Its namespace comes from platform.k8s (ingress for MicroK8s's
+    # nginx addon, kube-system for k3s's Traefik). The
+    # kubernetes.io/metadata.name label is auto-added by k8s 1.21+ on
+    # every namespace.
     allow_ingress_controller = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -330,7 +355,7 @@ def _render_network_policies(ns: str, *, app_edge: bool = False) -> str:
             "labels": labels,
         },
         "spec": {
-            "podSelector": {},
+            "podSelector": {"matchLabels": {_LABELS_NAME: PUBLIC_CADDY_NAME}},
             "policyTypes": ["Ingress"],
             "ingress": [
                 {
@@ -338,7 +363,7 @@ def _render_network_policies(ns: str, *, app_edge: bool = False) -> str:
                         {
                             "namespaceSelector": {
                                 "matchLabels": {
-                                    "kubernetes.io/metadata.name": "ingress",
+                                    "kubernetes.io/metadata.name": controller_ns,
                                 },
                             },
                         },
@@ -418,7 +443,10 @@ def _app_edge_egress_policy(ns: str, labels: dict[str, str]) -> dict[str, Any]:
         "metadata": {"name": "app-edge-egress", "namespace": ns, "labels": labels},
         "spec": {
             "podSelector": {"matchLabels": {_LABELS_NAME: APP_EDGE_COMPONENT}},
-            "policyTypes": ["Egress"],
+            "policyTypes": ["Ingress", "Egress"],
+            # Its only caller is wip-caddy, which hands it the /apps paths no
+            # deployer app claims.
+            "ingress": [{"from": [pods(PUBLIC_CADDY_NAME)]}],
             "egress": [
                 # Its records, and the login check.
                 {"to": [pods("registry"), pods("auth-gateway")]},
@@ -1020,359 +1048,114 @@ def _resolve_check_port(owner: Component | App, explicit: str | None) -> int:
 # ────────────────────────────────────────────────────────────────────
 
 
-def _render_ingress(ingress_cfg: Any, ns: str) -> str:
-    """Render IngressConfig into one or more Ingress resources.
+def _render_ingress(cfg: IngressConfig, ns: str) -> str:
+    """The install's one Ingress: the hostname, its TLS Secret, and every
+    path to wip-caddy.
 
-    API routes get a single shared Ingress (no auth annotations).
-    Each auth-protected app gets its own Ingress (with auth-url annotations).
-    The auth gateway itself gets a direct Ingress (no auth-url — it IS the auth).
+    Every route, forward_auth, the identity-header strip and the root
+    redirect live in wip-caddy's Caddyfile (the same one compose runs), so
+    this object carries nothing per route: only `networking.k8s.io/v1`
+    fields every conforming controller reads, plus the flavour's few
+    annotations (config_gen/ingress.controller_annotations).
     """
-    from wip_deploy.config_gen.nginx_ingress import IngressConfig
+    return _dump({
+        "apiVersion": "networking.k8s.io/v1",
+        "kind": "Ingress",
+        "metadata": {
+            "name": "wip-ingress",
+            "namespace": ns,
+            "labels": {_LABELS_PART_OF: "wip"},
+            "annotations": dict(cfg.annotations),
+        },
+        "spec": {
+            "ingressClassName": cfg.ingress_class,
+            "tls": [{"hosts": [cfg.hostname], "secretName": cfg.tls_secret_name}],
+            "rules": [{
+                "host": cfg.hostname,
+                "http": {"paths": [{
+                    "path": "/",
+                    "pathType": "Prefix",
+                    "backend": {"service": {
+                        "name": cfg.backend_service,
+                        "port": {"number": cfg.backend_port},
+                    }},
+                }]},
+            }],
+        },
+    })
 
-    # auth-response-headers copies the gateway's identity answer onto the
-    # request. ingress-nginx sets each one with proxy_set_header from the
-    # auth subrequest, so a client-sent value is replaced, and an empty one
-    # is not passed on (nginx drops a proxy_set_header whose value is
-    # empty). Not tested on a live controller. ingress-nginx has no
-    # annotation that removes other request headers without a
-    # configuration snippet, so the client-identity strip the Caddy
-    # renderer does on app routes has no k8s counterpart here.
-    from wip_deploy.config_gen.routing import GATEWAY_IDENTITY_HEADERS, verify_query
 
-    cfg: IngressConfig = ingress_cfg
-    docs: list[dict[str, Any]] = []
+# The public front door's name: Service wip-caddy, pods labelled caddy.
+PUBLIC_CADDY_NAME = "caddy"
 
-    # Classify rules. strip_prefix rules need per-rule Ingresses because
-    # the rewrite-target annotation is per-Ingress and applying it across
-    # mixed paths would strip prefixes from routes that don't want it.
-    # upstream_host_header also forces a per-rule Ingress: the
-    # upstream-vhost annotation is per-Ingress, like rewrite-target.
-    strip_rules = [r for r in cfg.rules if r.strip_prefix or r.upstream_host_header]
-    non_strip = [r for r in cfg.rules if not (r.strip_prefix or r.upstream_host_header)]
-    api_rules = [r for r in non_strip if not r.auth_protected and r.backend_service != "wip-auth-gateway"]
-    auth_gateway_rules = [r for r in non_strip if r.backend_service == "wip-auth-gateway"]
-    app_rules = [r for r in non_strip if r.auth_protected]
 
-    tls_block = [{
-        "hosts": [cfg.hostname],
-        "secretName": cfg.tls_secret_name,
-    }]
+def _render_public_caddy(caddyfile: str, deployment: Deployment, ns: str) -> str:
+    """wip-caddy on k8s: its Caddyfile ConfigMap, Service and Deployment.
 
-    base_annotations: dict[str, str] = {
-        "nginx.ingress.kubernetes.io/ssl-redirect": "true",
-        "nginx.ingress.kubernetes.io/proxy-body-size": cfg.proxy_body_size,
-        # Stock timeouts (60s) are fine for normal API calls but kill
-        # long uploads (restores, bulk ingest). 1 hour is what Caddy
-        # does by default via its idle_timeout; matching here.
-        "nginx.ingress.kubernetes.io/proxy-read-timeout": "3600",
-        "nginx.ingress.kubernetes.io/proxy-send-timeout": "3600",
+    The same Caddyfile generator as compose's wip-caddy, in plain-HTTP mode
+    behind the ingress controller. The Caddyfile is mounted by subPath, which
+    a running pod never sees change, so its hash is a template annotation:
+    a changed route rolls the pod.
+    """
+    labels = {_LABELS_NAME: PUBLIC_CADDY_NAME, _LABELS_PART_OF: "wip"}
+    svc = f"wip-{PUBLIC_CADDY_NAME}"
+    port = PUBLIC_CADDY_K8S_PORT
+    pod_spec: dict[str, Any] = {
+        "containers": [{
+            "name": PUBLIC_CADDY_NAME,
+            "image": PUBLIC_CADDY_IMAGE,
+            "command": ["caddy", "run", "--config", "/etc/caddy/Caddyfile", "--adapter", "caddyfile"],
+            "ports": [{"name": "http", "containerPort": port, "protocol": "TCP"}],
+            "volumeMounts": [{
+                "name": "config",
+                "mountPath": "/etc/caddy/Caddyfile",
+                "subPath": "Caddyfile",
+                "readOnly": True,
+            }],
+            # Any answer is a live listener: bare `/` may redirect, and an
+            # unrouted path is a 404 (caddy_common.write_unrouted_404).
+            "readinessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 5},
+            "livenessProbe": {"tcpSocket": {"port": port}, "periodSeconds": 10, "failureThreshold": 6},
+        }],
+        "volumes": [{"name": "config", "configMap": {"name": f"{svc}-config"}}],
     }
-
-    # Main ingress: auth gateway routes + API routes + Dex
-    main_paths: list[dict[str, Any]] = []
-
-    for r in auth_gateway_rules:
-        main_paths.append(_ingress_path(r))
-
-    for r in api_rules:
-        path_entry = _ingress_path(r)
-        main_paths.append(path_entry)
-
-    if main_paths:
-        main_annotations = dict(base_annotations)
-        # Streaming support for routes that need it
-        if any(r.streaming for r in api_rules + auth_gateway_rules):
-            main_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
-
-        docs.append({
-            "apiVersion": "networking.k8s.io/v1",
-            "kind": "Ingress",
-            "metadata": {
-                "name": "wip-ingress",
-                "namespace": ns,
-                "labels": {_LABELS_PART_OF: "wip"},
-                "annotations": main_annotations,
-            },
+    k8s_plat = deployment.spec.platform.k8s
+    ndots = k8s_plat.pod_dns_ndots if k8s_plat else 1
+    if ndots is not None:
+        pod_spec["dnsConfig"] = {"options": [{"name": "ndots", "value": str(ndots)}]}
+    digest = hashlib.sha256(caddyfile.encode()).hexdigest()[:16]
+    docs = [
+        {
+            "apiVersion": "v1",
+            "kind": "ConfigMap",
+            "metadata": {"name": f"{svc}-config", "namespace": ns, "labels": labels},
+            "data": {"Caddyfile": caddyfile},
+        },
+        {
+            "apiVersion": "v1",
+            "kind": "Service",
+            "metadata": {"name": svc, "namespace": ns, "labels": labels},
             "spec": {
-                "ingressClassName": cfg.ingress_class,
-                "tls": tls_block,
-                "rules": [{
-                    "host": cfg.hostname,
-                    "http": {"paths": main_paths},
-                }],
-            },
-        })
-
-    # Per-app ingresses (with auth-url annotations)
-    for r in app_rules:
-        app_annotations = dict(base_annotations)
-        if cfg.gateway_auth_url:
-            app_annotations["nginx.ingress.kubernetes.io/auth-url"] = (
-                cfg.gateway_auth_url + verify_query(r.allowed_groups)
-            )
-            app_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (
-                f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
-            )
-            app_annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = (
-                ",".join(GATEWAY_IDENTITY_HEADERS)
-            )
-        if r.streaming:
-            app_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
-
-        # Service name without wip- prefix for the ingress name
-        ingress_name = f"{r.backend_service.removeprefix('wip-')}-ingress"
-        docs.append({
-            "apiVersion": "networking.k8s.io/v1",
-            "kind": "Ingress",
-            "metadata": {
-                "name": ingress_name,
-                "namespace": ns,
-                "labels": {_LABELS_PART_OF: "wip"},
-                "annotations": app_annotations,
-            },
-            "spec": {
-                "ingressClassName": cfg.ingress_class,
-                "tls": tls_block,
-                "rules": [{
-                    "host": cfg.hostname,
-                    "http": {"paths": [_ingress_path(r)]},
-                }],
-            },
-        })
-
-    # Per-rule ingresses for strip_prefix routes. Uses nginx-ingress's
-    # regex-path idiom (`/prefix(/|$)(.*)` → `rewrite-target: /$2`) so
-    # the backend sees the request as if it had hit the service at its
-    # root — needed for object stores (Garage) whose presigned URLs
-    # are computed over a path that doesn't include the public prefix.
-    for r in strip_rules:
-        strip_annotations = dict(base_annotations)
-        if r.strip_prefix:
-            strip_annotations["nginx.ingress.kubernetes.io/use-regex"] = "true"
-            strip_annotations["nginx.ingress.kubernetes.io/rewrite-target"] = "/$2"
-        if r.upstream_host_header:
-            # The Host the backend sees must equal the Host services sign
-            # presigned URLs against — the internal endpoint host:port,
-            # byte for byte. On k8s the env layer hands services the
-            # fully-qualified service DNS (wip-<name>.<ns>.svc.cluster.local,
-            # config_gen/env.py _component_host), so the restored Host must
-            # be that same FQDN form: the short service name validated as a
-            # different host and Garage/MinIO refused the SigV4 signature.
-            strip_annotations["nginx.ingress.kubernetes.io/upstream-vhost"] = (
-                f"{r.backend_service}.{ns}.svc.cluster.local:{r.backend_port}"
-            )
-        if cfg.gateway_auth_url and r.auth_protected:
-            strip_annotations["nginx.ingress.kubernetes.io/auth-url"] = (
-                cfg.gateway_auth_url + verify_query(r.allowed_groups)
-            )
-            strip_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (
-                f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
-            )
-            strip_annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = (
-                ",".join(GATEWAY_IDENTITY_HEADERS)
-            )
-        if r.streaming:
-            strip_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
-
-        ingress_name = f"{r.backend_service.removeprefix('wip-')}-ingress"
-
-        # CASE-248: when the route declares preserve_prefix_subpaths,
-        # the strip rule's regex EXCLUDES those subpaths via a negative
-        # lookahead, so the admin Ingress's Prefix paths win for them.
-        # Without the exclusion, nginx-ingress's cross-Ingress merging
-        # would let the strip regex (with rewrite-target annotation)
-        # absorb requests that should reach the admin paths.
-        # The lookahead requires segment boundary (`/` or end-of-string)
-        # so e.g. a bucket named "healthy" still routes through the strip.
-        if r.preserve_prefix_subpaths:
-            excluded = []
-            for sub in r.preserve_prefix_subpaths:
-                # Strip the route prefix → admin segment name (e.g.
-                # "/garage/health" → "health"). Skip if the subpath
-                # isn't actually under the route prefix.
-                if not sub.startswith(r.path + "/"):
-                    continue
-                excluded.append(sub[len(r.path) + 1:])
-            if excluded:
-                excl_alt = "|".join(excluded)
-                # /garage/(?!health(/|$)|admin(/|$))(.*) — strip everything
-                # under the prefix EXCEPT the listed preserved segments.
-                strip_path = (
-                    f"{r.path}/(?!(?:{excl_alt})(?:/|$))(.*)"
-                )
-                strip_rewrite = "/$1"
-            else:
-                strip_path = f"{r.path}(/|$)(.*)"
-                strip_rewrite = "/$2"
-        else:
-            strip_path = f"{r.path}(/|$)(.*)"
-            strip_rewrite = "/$2"
-
-        if r.strip_prefix:
-            # Override the rewrite-target if we computed a custom one.
-            strip_annotations["nginx.ingress.kubernetes.io/rewrite-target"] = strip_rewrite
-            path_entry = {"path": strip_path, "pathType": "ImplementationSpecific"}
-        else:
-            # upstream_host_header without strip: plain Prefix path,
-            # no rewrite — the per-rule Ingress exists only to carry
-            # the upstream-vhost annotation.
-            path_entry = {"path": r.path, "pathType": "Prefix"}
-
-        docs.append({
-            "apiVersion": "networking.k8s.io/v1",
-            "kind": "Ingress",
-            "metadata": {
-                "name": ingress_name,
-                "namespace": ns,
-                "labels": {_LABELS_PART_OF: "wip"},
-                "annotations": strip_annotations,
-            },
-            "spec": {
-                "ingressClassName": cfg.ingress_class,
-                "tls": tls_block,
-                "rules": [{
-                    "host": cfg.hostname,
-                    "http": {"paths": [{
-                        **path_entry,
-                        "backend": {
-                            "service": {
-                                "name": r.backend_service,
-                                "port": {"number": r.backend_port},
-                            },
-                        },
-                    }]},
-                }],
-            },
-        })
-
-        # Preserve-prefix subpaths get their own Ingress (no rewrite
-        # annotation). With the strip regex now excluding these
-        # segments, the admin Ingress's Prefix paths cleanly own
-        # e.g. /<prefix>/health/* and /<prefix>/admin/* — no cross-Ingress fight.
-        if r.preserve_prefix_subpaths:
-            preserve_annotations = dict(base_annotations)
-            if cfg.gateway_auth_url and r.auth_protected:
-                preserve_annotations["nginx.ingress.kubernetes.io/auth-url"] = (
-                    cfg.gateway_auth_url + verify_query(r.allowed_groups)
-                )
-                preserve_annotations["nginx.ingress.kubernetes.io/auth-signin"] = (
-                    f"https://{cfg.hostname}/auth/login?return_to=$escaped_request_uri"
-                )
-                preserve_annotations["nginx.ingress.kubernetes.io/auth-response-headers"] = (
-                    ",".join(GATEWAY_IDENTITY_HEADERS)
-                )
-            if r.streaming:
-                preserve_annotations["nginx.ingress.kubernetes.io/proxy-buffering"] = "off"
-
-            preserve_paths = [{
-                "path": sub,
-                "pathType": "Prefix",
-                "backend": {
-                    "service": {
-                        "name": r.backend_service,
-                        "port": {"number": r.backend_port},
-                    },
-                },
-            } for sub in r.preserve_prefix_subpaths]
-
-            docs.append({
-                "apiVersion": "networking.k8s.io/v1",
-                "kind": "Ingress",
-                "metadata": {
-                    "name": f"{ingress_name}-admin",
-                    "namespace": ns,
-                    "labels": {_LABELS_PART_OF: "wip"},
-                    "annotations": preserve_annotations,
-                },
-                "spec": {
-                    "ingressClassName": cfg.ingress_class,
-                    "tls": tls_block,
-                    "rules": [{
-                        "host": cfg.hostname,
-                        "http": {"paths": preserve_paths},
-                    }],
-                },
-            })
-
-    # The host's root Ingress (CASE-368, CASE-944). Two jobs:
-    #  - Redirect bare `/` to the resolved target. `app-root` redirects `/`
-    #    only; the earlier `permanent-redirect` annotation on an Exact `/`
-    #    rule made nginx redirect EVERY unrouted path, so an unknown API
-    #    path answered 301 text/html and ended at the login page.
-    #  - Catch every path no other rule takes (Prefix `/`, the least
-    #    specific rule) and send it to the router, whose terminal guards
-    #    answer unrouted /api with the apps' JSON 404 and anything else with
-    #    a 404. Without a safe router (see catch_all_backend) it stays an
-    #    Exact `/` rule on the service that owns the redirect target.
-    backend = cfg.catch_all_backend
-    if backend is None and cfg.root_redirect_target:
-        backend = _root_redirect_backend(cfg.root_redirect_target, cfg.rules)
-    if backend is not None:
-        root_annotations = dict(base_annotations)
-        if cfg.root_redirect_target:
-            root_annotations["nginx.ingress.kubernetes.io/app-root"] = cfg.root_redirect_target
-        docs.append({
-            "apiVersion": "networking.k8s.io/v1",
-            "kind": "Ingress",
-            "metadata": {
-                "name": "wip-root",
-                "namespace": ns,
-                "labels": {_LABELS_PART_OF: "wip"},
-                "annotations": root_annotations,
-            },
-            "spec": {
-                "ingressClassName": cfg.ingress_class,
-                "tls": tls_block,
-                "rules": [{
-                    "host": cfg.hostname,
-                    "http": {"paths": [{
-                        "path": "/",
-                        "pathType": "Prefix" if cfg.catch_all_backend else "Exact",
-                        "backend": {
-                            "service": {
-                                "name": backend[0],
-                                "port": {"number": backend[1]},
-                            },
-                        },
-                    }]},
-                }],
-            },
-        })
-
-    return _dump_multi(docs)
-
-
-def _root_redirect_backend(
-    target: str, rules: list[Any]
-) -> tuple[str, int] | None:
-    """Pick the (never-hit) placeholder backend for the root-redirect Ingress.
-
-    The rule whose path is the longest prefix of the redirect target owns
-    that target (e.g. target `/apps/rc/` → rule `/apps/rc`; `/auth/login` →
-    rule `/auth`). Returns (service_name, port), or None if no rule matches
-    (defensive — the target is derived from an enabled app or the gateway,
-    both of which always contribute a rule).
-    """
-    best: Any = None
-    for r in rules:
-        if target.startswith(r.path) and (best is None or len(r.path) > len(best.path)):
-            best = r
-    if best is None:
-        return None
-    return best.backend_service, best.backend_port
-
-
-def _ingress_path(rule: Any) -> dict[str, Any]:
-    return {
-        "path": rule.path,
-        "pathType": "Prefix",
-        "backend": {
-            "service": {
-                "name": rule.backend_service,
-                "port": {"number": rule.backend_port},
+                "type": "ClusterIP",
+                "selector": {_LABELS_NAME: PUBLIC_CADDY_NAME},
+                "ports": [{"name": "http", "port": port, "targetPort": port, "protocol": "TCP"}],
             },
         },
-    }
+        {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "metadata": {"name": svc, "namespace": ns, "labels": labels},
+            "spec": {
+                "replicas": 1,
+                "selector": {"matchLabels": {_LABELS_NAME: PUBLIC_CADDY_NAME}},
+                "template": {
+                    "metadata": {"labels": labels, "annotations": {CONFIG_HASH_KEY: digest}},
+                    "spec": pod_spec,
+                },
+            },
+        },
+    ]
+    return _dump_multi(docs)
 
 
 # ────────────────────────────────────────────────────────────────────

@@ -106,6 +106,13 @@ class TestExpectedWorkloads:
         names = {n for _, n in workloads}
         assert not any(n.startswith("wip-clintrial") for n in names)
 
+    def test_waits_for_the_front_door(self, real_discovery: Discovery) -> None:
+        """wip-caddy is rendered without a manifest, and every request goes
+        through it (CASE-1067): the apply must wait for it too."""
+        d = _k8s_deployment()
+        workloads = _expected_workloads(real_discovery.components, real_discovery.apps, d)
+        assert ("Deployment", "wip-caddy") in workloads
+
 
 # ────────────────────────────────────────────────────────────────────
 # _count_k8s_workloads

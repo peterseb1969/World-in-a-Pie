@@ -134,9 +134,10 @@ export function requireAuth(): RequestHandler {
  *
  * Mount it only under a route the app's manifest declares auth_required:
  * true. There the gateway sets x-wip-groups. On an auth_required: false
- * route nothing does, and on k8s the router cannot remove a client-sent
- * copy, so a browser could claim any group (wip-deployable-app-contract.md,
- * "Trust the identity headers only on routes you declare auth_required").
+ * route nothing does: the front door removes a client-sent copy, so there is
+ * no identity there, and with no OIDC session this check would treat the
+ * caller as dev mode (wip-deployable-app-contract.md, "Trust the identity
+ * headers only on routes you declare auth_required").
  */
 export function requireAdmin(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {

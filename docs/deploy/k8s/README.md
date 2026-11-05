@@ -27,7 +27,7 @@ Deploy WIP to a Kubernetes cluster with `wip-deploy --target k8s` — the same s
 |---|---|
 | A **working cluster** + `kubectl` **context pointed at it** | `wip-deploy` applies to the **active context** — check `kubectl config current-context` before every install. |
 | A **StorageClass** (RWO PVCs) | For MongoDB / PostgreSQL / Garage / NATS. Get the name from `kubectl get storageclass`. |
-| An **IngressClass** + a working ingress controller | e.g. `nginx`. Get the name from `kubectl get ingressclass`. |
+| An **IngressClass** + a working ingress controller | ingress-nginx or Traefik (k3s's default). Get the class name from `kubectl get ingressclass`. See [the ingress controller](#the-ingress-controller) below. |
 | An **FQDN that resolves to the ingress** | Point DNS at the ingress controller's external IP / load balancer (see the hostname note in step 5). |
 | **git** + **Python 3.11+** | For the repo and the `wip-deploy` CLI. |
 
@@ -95,6 +95,7 @@ wip-deploy install \
   --tag 20260628a \
   --storage-class <your-storageclass> \
   --ingress-class <your-ingressclass> \
+  --ingress-controller nginx \
   --app react-console --image-tag react-console=20260629a \
   --app wip-kb --image-tag wip-kb=20260629a
 ```
@@ -105,11 +106,45 @@ wip-deploy install \
 - **Apps** work exactly as in the [podman guide](../podman/README.md#installing-apps-react-console-wip-kb): `--app <name>` + `--image-tag <name>=<tag>` (key = the image name, e.g. `wip-kb`; a mismatched key is silently dropped).
 - It applies to the **active kubectl context** — re-confirm step 2.
 
+### The ingress controller
+
+The install's front door is **`wip-caddy`**, the same public Caddy the podman/compose install runs. It holds every route, the auth gateway's `forward_auth`, the identity-header strip and the root redirect. The cluster's ingress controller only terminates TLS for `--hostname` and hands every request to `wip-caddy` through **one** Ingress (`wip-ingress`, path `/`). Inside the install, `wip-router` stays the internal API aggregator for apps, and `wip-app-edge` serves attached apps behind `wip-caddy`.
+
+`--ingress-controller` (`nginx` or `traefik`, default `nginx`) picks the few annotations that one Ingress carries. `--ingress-namespace` names the namespace the controller's pods run in. The NetworkPolicy lets only those pods reach `wip-caddy`. The default is `ingress` for nginx (MicroK8s's addon) and `kube-system` for Traefik (k3s); a stock ingress-nginx install runs in `ingress-nginx`.
+
+| | nginx | Traefik |
+|---|---|---|
+| Annotations on `wip-ingress` | unlimited body size, 1-hour read/send timeouts, no response buffering, HTTPS redirect | `router.entrypoints: websecure`, `router.tls: "true"` |
+| Set on the controller yourself | nothing | see below |
+
+Traefik's request read timeout and its header-alias handling are **entry-point settings of the controller**, not something an Ingress can set. On k3s, set them with a `HelmChartConfig` in `kube-system`:
+
+```yaml
+apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    ports:
+      websecure:
+        transport:
+          respondingTimeouts:
+            readTimeout: 3600s      # default 60s for the WHOLE request, body included: kills restores and large uploads
+    additionalArguments:
+      - "--entryPoints.websecure.http.aliasHeadersStrategy=delete"   # X_WIP_User spellings never pass as X-WIP-User
+      - "--entryPoints.web.http.redirections.entryPoint.to=websecure" # HTTP -> HTTPS
+```
+
+Check the value keys against your Traefik chart's version before applying.
+
 ## 6. Verify
 
 ```bash
 kubectl -n wip get pods                 # all Running / Ready
-kubectl -n wip get ingress              # host + address present
+kubectl -n wip get ingress              # one Ingress, wip-ingress: host + address present
+kubectl -n wip get deploy wip-caddy     # the front door is up
 curl -k https://wip.example.internal/api/registry/health
 # → {"status":"healthy","database":"connected","auth_enabled":true}
 ```

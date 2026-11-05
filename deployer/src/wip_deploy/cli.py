@@ -363,6 +363,22 @@ def _ingress_class_opt() -> typer.models.OptionInfo:
     return typer.Option("--ingress-class", help="K8s IngressClass name.")
 
 
+def _ingress_controller_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--ingress-controller",
+        help="K8s ingress controller in front of the install: nginx (ingress-nginx) "
+        "or traefik. It terminates TLS and hands every request to wip-caddy.",
+    )
+
+
+def _ingress_namespace_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--ingress-namespace",
+        help="Namespace the ingress controller runs in (for the NetworkPolicy). "
+        "Default: ingress for nginx (MicroK8s), kube-system for traefik (k3s).",
+    )
+
+
 def _tls_secret_opt() -> typer.models.OptionInfo:
     return typer.Option("--tls-secret-name", help="K8s TLS Secret name.")
 
@@ -675,6 +691,8 @@ def validate(
     namespace: Annotated[str, _namespace_opt()] = "wip",
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
+    ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
+    ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -722,6 +740,8 @@ def validate(
         namespace=namespace,
         storage_class=storage_class,
         ingress_class=ingress_class,
+        ingress_controller=ingress_controller,
+        ingress_namespace=ingress_namespace,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -799,6 +819,8 @@ def show_spec(
     namespace: Annotated[str, _namespace_opt()] = "wip",
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
+    ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
+    ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -848,6 +870,8 @@ def show_spec(
         namespace=namespace,
         storage_class=storage_class,
         ingress_class=ingress_class,
+        ingress_controller=ingress_controller,
+        ingress_namespace=ingress_namespace,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -898,6 +922,8 @@ def render(
     namespace: Annotated[str, _namespace_opt()] = "wip",
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
+    ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
+    ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -956,6 +982,8 @@ def render(
         namespace=namespace,
         storage_class=storage_class,
         ingress_class=ingress_class,
+        ingress_controller=ingress_controller,
+        ingress_namespace=ingress_namespace,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -1056,6 +1084,8 @@ def install(
     namespace: Annotated[str, _namespace_opt()] = "wip",
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
+    ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
+    ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -1168,6 +1198,8 @@ def install(
         namespace=namespace,
         storage_class=storage_class,
         ingress_class=ingress_class,
+        ingress_controller=ingress_controller,
+        ingress_namespace=ingress_namespace,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -5857,6 +5889,8 @@ def _assemble(
     namespace: str,
     storage_class: str,
     ingress_class: str,
+    ingress_controller: str,
+    ingress_namespace: str | None,
     tls_secret_name: str,
     dev_mode: str,
     registry: str | None,
@@ -5960,6 +5994,8 @@ def _assemble(
         k8s_namespace=namespace,
         k8s_storage_class=storage_class,
         k8s_ingress_class=ingress_class,
+        k8s_ingress_controller=ingress_controller,
+        k8s_ingress_namespace=ingress_namespace,
         k8s_tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,

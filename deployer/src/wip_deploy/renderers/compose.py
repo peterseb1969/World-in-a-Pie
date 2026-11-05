@@ -51,6 +51,7 @@ from wip_deploy.config_gen.api_keys import (
     mounts_auth_config_dir,
 )
 from wip_deploy.config_gen.attach_policy import ATTACH_POLICY_RENDER_PATH, attach_policy_json
+from wip_deploy.config_gen.caddy import PUBLIC_CADDY_IMAGE
 from wip_deploy.config_gen.config_hash import CONFIG_HASH_KEY, config_hash
 from wip_deploy.config_gen.env import (
     Literal,
@@ -400,7 +401,7 @@ def _caddy_service_block(deployment: Deployment) -> dict[str, Any]:
     net = deployment.spec.network
     return {
         "container_name": "wip-caddy",
-        "image": "docker.io/library/caddy:2",
+        "image": PUBLIC_CADDY_IMAGE,
         "ports": [f"{net.https_port}:{net.https_port}"],
         "volumes": [
             "./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro",

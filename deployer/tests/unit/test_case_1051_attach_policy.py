@@ -55,7 +55,9 @@ def test_k8s_policy_names_service_dns(discovery: Discovery) -> None:
     ns = d.spec.platform.k8s.namespace
     policy = json.loads(attach_policy_json(d, discovery.components, discovery.apps))
     assert {"wip-registry", f"wip-registry.{ns}.svc.cluster.local"} <= set(policy["blocked_hosts"])
-    assert "wip-caddy" not in policy["blocked_hosts"]
+    # wip-caddy is the front door on k8s too (CASE-1067): an attachment
+    # pointing at it would loop.
+    assert {"wip-caddy", f"wip-caddy.{ns}.svc.cluster.local"} <= set(policy["blocked_hosts"])
     assert {"kubernetes.default", "kubernetes.default.svc.cluster.local"} <= set(policy["blocked_hosts"])
     assert d.spec.network.hostname.lower() in policy["blocked_hosts"]
 

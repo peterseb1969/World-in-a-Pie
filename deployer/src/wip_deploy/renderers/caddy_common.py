@@ -27,8 +27,8 @@ def write_api_fallthrough_404(out: StringIO) -> None:
     redirect. A named matcher, because `handle` takes one matcher token and
     `/api/*` alone does not match bare `/api`.
 
-    The k8s ingress gets the same answers from the router: its catch-all
-    Ingress sends every unrouted path there (nginx_ingress.catch_all_backend).
+    On k8s the same Caddyfile runs as wip-caddy behind the ingress
+    controller, so the answers are the same on every target.
     """
     out.write("    @api_unrouted path /api /api/*\n")
     out.write("    handle @api_unrouted {\n")

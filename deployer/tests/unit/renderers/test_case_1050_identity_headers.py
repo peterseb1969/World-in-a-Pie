@@ -116,12 +116,13 @@ def test_caddy_leaves_platform_routes_alone(caddyfile: str) -> None:
 
 
 def test_k8s_copies_identity_only(tmp_path: Path, real_discovery: Discovery) -> None:
+    """On k8s too the front door is wip-caddy: every protected route copies
+    exactly the gateway's two identity headers, never X-API-Key."""
     d = _k8s_deployment(apps=["wip-kb", "react-console"])
     s = _k8s_secrets(tmp_path, d, real_discovery)
     tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
-    docs = [doc for doc in yaml.safe_load_all(tree.files[Path("ingress.yaml")].content) if doc]
-    copied = {
-        (doc["metadata"].get("annotations") or {}).get("nginx.ingress.kubernetes.io/auth-response-headers")
-        for doc in docs
-    } - {None}
-    assert copied == {"X-WIP-User,X-WIP-Groups"}
+    docs = yaml.safe_load_all(tree.files[Path("services/caddy.yaml")].content)
+    caddyfile = next(x for x in docs if x["kind"] == "ConfigMap")["data"]["Caddyfile"]
+    copied = {line.strip() for line in caddyfile.splitlines() if "copy_headers" in line}
+    assert copied == {"copy_headers X-WIP-User X-WIP-Groups"}
+    assert "X-API-Key" not in caddyfile

@@ -1737,6 +1737,12 @@ def _expected_workloads(
         kind = "StatefulSet" if a.spec.storage else "Deployment"
         out.append((kind, f"wip-{a.metadata.name}"))
 
+    # The front door on k8s, rendered by the renderer rather than from a
+    # manifest: every request goes through it, so an install is not up
+    # until it is.
+    if deployment.spec.target == "k8s":
+        out.append(("Deployment", "wip-caddy"))
+
     return out
 
 

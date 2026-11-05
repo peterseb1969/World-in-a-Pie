@@ -392,7 +392,7 @@ class PostInstallHook(BaseModel):
 
 ### Key design decisions
 
-**Routes are target-agnostic declarations.** A component declares `path`, `auth_required`, `streaming`. The compose renderer emits `reverse_proxy` (with `forward_auth` when `auth_required=true` and `spec.auth.gateway=true`). The k8s renderer emits an Ingress path (with `nginx.ingress.kubernetes.io/auth-url` annotation when `auth_required=true` and `spec.auth.gateway=true`). Same declaration, two idioms. Routing decisions never live in renderers.
+**Routes are target-agnostic declarations.** A component declares `path`, `auth_required`, `streaming`. The compose renderer emits `reverse_proxy` (with `forward_auth` when `auth_required=true` and `spec.auth.gateway=true`). On k8s the same Caddyfile runs as `wip-caddy` behind one catch-all Ingress (since CASE-1067: the per-route nginx Ingresses with `auth-url` annotations could not strip identity headers and tied k8s to ingress-nginx). Same declaration, one idiom on every target. Routing decisions never live in renderers.
 
 **EnvSource is declarative.** A component can source an env var from a literal, from a spec field by dotted path, from a named secret, or from another component's URL. It cannot run shell or arbitrary logic. This forbids a class of ad-hoc growth.
 
@@ -438,7 +438,7 @@ Pure functions. Input: `(Deployment, list[Component], list[App], ResolvedSecrets
 |---|---|---|
 | `dex.py` | Dex YAML: issuer, users (bcrypt-hashed), static clients | `DexConfig` |
 | `caddy.py` | Caddyfile: routes with `forward_auth` where applicable | `CaddyConfig` |
-| `nginx_ingress.py` | K8s Ingress rules with `auth-url` annotations | `list[IngressRule]` |
+| `ingress.py` | K8s: the one catch-all Ingress to `wip-caddy`, annotations per controller flavour | `IngressConfig` |
 | `env.py` | Per-component env map, with target-aware URL resolution | `dict[component_name, dict[key, val]]` |
 | `routing.py` | Shared: compute the auth/route map once; feed Caddy + NGINX | `list[ResolvedRoute]` |
 | `router.py` | The `wip-router` component's config — apps' stable handle to the WIP API | router config |

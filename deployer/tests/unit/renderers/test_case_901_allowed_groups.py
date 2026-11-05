@@ -99,18 +99,16 @@ def test_caddy_without_groups_is_unchanged(tmp_path: Path, real_discovery: Disco
 
 
 def test_k8s_ingress_auth_url_carries_its_groups(tmp_path: Path, real_discovery: Discovery) -> None:
+    """On k8s the groups ride in wip-caddy's forward_auth URI, as on compose."""
     d = _k8s_deployment(apps=["react-console"])
     s = _k8s_secrets(tmp_path, d, real_discovery)
     tree = render_k8s(d, real_discovery.components, _with_rc_groups(real_discovery, ["wip-admins"]), s)
-    docs = list(yaml.safe_load_all(tree.files[Path("ingress.yaml")].content))
+    docs = yaml.safe_load_all(tree.files[Path("services/caddy.yaml")].content)
+    caddyfile = next(x for x in docs if x["kind"] == "ConfigMap")["data"]["Caddyfile"]
 
-    rc = next(doc for doc in docs if doc["metadata"]["name"] == "react-console-ingress")
-    auth_url = rc["metadata"]["annotations"]["nginx.ingress.kubernetes.io/auth-url"]
-    assert auth_url.endswith("/auth/verify?allowed_groups=wip-admins")
+    rc = caddyfile[caddyfile.index("    handle /apps/rc/* {"):]
+    rc = rc[: rc.index("\n    }\n")]
+    assert "uri /auth/verify?allowed_groups=wip-admins" in rc
 
-    others = [
-        doc["metadata"]["annotations"]["nginx.ingress.kubernetes.io/auth-url"]
-        for doc in docs
-        if doc is not rc and "nginx.ingress.kubernetes.io/auth-url" in (doc["metadata"].get("annotations") or {})
-    ]
-    assert all("allowed_groups" not in url for url in others)
+    uris = [line.strip() for line in caddyfile.splitlines() if line.strip().startswith("uri /auth/verify")]
+    assert sum("allowed_groups" in u for u in uris) == 1

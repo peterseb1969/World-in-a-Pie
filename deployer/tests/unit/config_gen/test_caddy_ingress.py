@@ -1,8 +1,8 @@
-"""Cross-target invariant tests for Caddy and NGINX Ingress generators.
+"""Cross-target invariant tests for the public Caddy and the k8s Ingress.
 
-These are the drift-prevention layer. Each invariant asserts the same
-semantic property holds on both targets — "auth-protected route goes
-through the gateway" must be expressed in both idioms identically.
+These are the drift-prevention layer. wip-caddy is the front door on every
+target (on k8s behind one catch-all Ingress), so its config must carry the
+same routes, with the same flags, on compose and k8s.
 """
 
 from __future__ import annotations
@@ -71,57 +71,42 @@ class TestCaddy:
 
 
 class TestIngress:
-    def test_rejects_non_k8s_target(
-        self, compose_deployment: Deployment, real_discovery: Discovery
-    ) -> None:
+    def test_rejects_non_k8s_target(self, compose_deployment: Deployment) -> None:
         with pytest.raises(ValueError, match="target=k8s"):
-            generate_ingress_config(
-                compose_deployment, real_discovery.components, real_discovery.apps
-            )
+            generate_ingress_config(compose_deployment)
 
-    def test_basic_fields(
-        self, k8s_deployment: Deployment, real_discovery: Discovery
-    ) -> None:
-        cfg = generate_ingress_config(
-            k8s_deployment, real_discovery.components, real_discovery.apps
-        )
+    def test_basic_fields(self, k8s_deployment: Deployment) -> None:
+        cfg = generate_ingress_config(k8s_deployment)
         assert cfg.hostname == "wip-kubi.local"
         assert cfg.ingress_class == "nginx"
+        assert cfg.controller == "nginx"
         assert cfg.tls_secret_name == "wip-tls"
         assert cfg.namespace == "wip"
 
-    def test_gateway_auth_url_when_enabled(
-        self, k8s_deployment: Deployment, real_discovery: Discovery
-    ) -> None:
-        """auth-url must include the auth-gateway's container port (4180).
-        Without the port, nginx defaults to :80 which nothing listens on —
-        requests sit until the 60s timeout, then return 500."""
-        cfg = generate_ingress_config(
-            k8s_deployment, real_discovery.components, real_discovery.apps
-        )
-        assert cfg.gateway_auth_url == (
-            "http://wip-auth-gateway.wip.svc.cluster.local:4180/auth/verify"
-        )
+    def test_every_request_goes_to_wip_caddy(self, k8s_deployment: Deployment) -> None:
+        cfg = generate_ingress_config(k8s_deployment)
+        assert (cfg.backend_service, cfg.backend_port) == ("wip-caddy", 8080)
 
-    def test_gateway_auth_url_none_when_disabled(
-        self, k8s_deployment: Deployment, real_discovery: Discovery
-    ) -> None:
+    def test_nginx_annotations(self, k8s_deployment: Deployment) -> None:
+        a = generate_ingress_config(k8s_deployment).annotations
+        assert a["nginx.ingress.kubernetes.io/proxy-body-size"] == "0"
+        assert a["nginx.ingress.kubernetes.io/proxy-read-timeout"] == "3600"
+        assert a["nginx.ingress.kubernetes.io/proxy-buffering"] == "off"
+        assert a["nginx.ingress.kubernetes.io/ssl-redirect"] == "true"
+        # No routing, no auth: wip-caddy owns both.
+        assert not any("auth-url" in k or "rewrite-target" in k for k in a)
+
+    def test_traefik_annotations(self, k8s_deployment: Deployment) -> None:
         d = k8s_deployment.model_copy(deep=True)
-        d.spec.auth.gateway = False
-        cfg = generate_ingress_config(
-            d, real_discovery.components, real_discovery.apps
-        )
-        assert cfg.gateway_auth_url is None
-
-    def test_rules_include_backend_service_prefix(
-        self, k8s_deployment: Deployment, real_discovery: Discovery
-    ) -> None:
-        cfg = generate_ingress_config(
-            k8s_deployment, real_discovery.components, real_discovery.apps
-        )
-        backends = {r.backend_service for r in cfg.rules}
-        assert "wip-registry" in backends
-        assert "wip-document-store" in backends
+        assert d.spec.platform.k8s is not None
+        d.spec.platform.k8s.ingress_controller = "traefik"
+        a = generate_ingress_config(d).annotations
+        assert a == {
+            "traefik.ingress.kubernetes.io/router.entrypoints": "websecure",
+            "traefik.ingress.kubernetes.io/router.tls": "true",
+        }
+        # Never a Middleware reference: the route must not depend on a CRD.
+        assert not any("middlewares" in k for k in a)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -130,32 +115,52 @@ class TestIngress:
 
 
 class TestCrossTargetInvariants:
+    def test_k8s_front_door_has_compose_routes(
+        self,
+        compose_deployment: Deployment,
+        k8s_deployment: Deployment,
+        real_discovery: Discovery,
+    ) -> None:
+        """wip-caddy is one generator on both targets: the same routes,
+        auth, streaming and strip flags, for the same spec."""
+        compose = generate_caddy_config(
+            compose_deployment, real_discovery.components, real_discovery.apps
+        )
+        k8s = generate_caddy_config(
+            k8s_deployment, real_discovery.components, real_discovery.apps
+        )
+        assert compose.routes == k8s.routes
+        assert compose.gateway_enabled and k8s.gateway_enabled
+
+    def test_k8s_front_door_is_plain_http_with_set_forwarded_headers(
+        self,
+        compose_deployment: Deployment,
+        k8s_deployment: Deployment,
+        real_discovery: Discovery,
+    ) -> None:
+        compose = generate_caddy_config(
+            compose_deployment, real_discovery.components, real_discovery.apps
+        )
+        k8s = generate_caddy_config(
+            k8s_deployment, real_discovery.components, real_discovery.apps
+        )
+        assert compose.plain_http_port is None and compose.forwarded_scheme is None
+        assert k8s.plain_http_port == 8080
+        assert (k8s.forwarded_scheme, k8s.forwarded_host) == ("https", "wip-kubi.local")
+
     def test_gateway_protects_app_routes_on_both_targets(
         self,
         compose_deployment: Deployment,
         k8s_deployment: Deployment,
         real_discovery: Discovery,
     ) -> None:
-        """Auth-protected routes are identified as such on both compose
-        and k8s, expressed in each target's idiom."""
         for d in (compose_deployment, k8s_deployment):
             d = d.model_copy(deep=True)
             d.spec.apps = [AppRef(name="dnd")]
-
-            if d.spec.target == "compose":
-                caddy = generate_caddy_config(
-                    d, real_discovery.components, real_discovery.apps
-                )
-                dnd_route = next(r for r in caddy.routes if r.path == "/apps/dnd")
-                assert dnd_route.auth_protected is True
-                assert caddy.gateway_enabled is True
-            else:
-                ing = generate_ingress_config(
-                    d, real_discovery.components, real_discovery.apps
-                )
-                dnd_rule = next(r for r in ing.rules if r.path == "/apps/dnd")
-                assert dnd_rule.auth_protected is True
-                assert ing.gateway_auth_url is not None
+            caddy = generate_caddy_config(d, real_discovery.components, real_discovery.apps)
+            dnd_route = next(r for r in caddy.routes if r.path == "/apps/dnd")
+            assert dnd_route.auth_protected is True
+            assert caddy.gateway_enabled is True
 
     def test_streaming_flag_preserved_across_targets(
         self,
@@ -163,20 +168,11 @@ class TestCrossTargetInvariants:
         k8s_deployment: Deployment,
         real_discovery: Discovery,
     ) -> None:
-        """document-store has streaming=True in its manifest; both targets
-        must carry that through."""
-        caddy = generate_caddy_config(
-            compose_deployment, real_discovery.components, real_discovery.apps
-        )
-        ing = generate_ingress_config(
-            k8s_deployment, real_discovery.components, real_discovery.apps
-        )
-
-        caddy_ds = next(r for r in caddy.routes if r.path == "/api/document-store")
-        ing_ds = next(r for r in ing.rules if r.path == "/api/document-store")
-
-        assert caddy_ds.streaming is True
-        assert ing_ds.streaming is True
+        """document-store has streaming=True in its manifest."""
+        for d in (compose_deployment, k8s_deployment):
+            caddy = generate_caddy_config(d, real_discovery.components, real_discovery.apps)
+            ds = next(r for r in caddy.routes if r.path == "/api/document-store")
+            assert ds.streaming is True
 
     def test_strip_prefix_flag_preserved_across_targets(
         self,
@@ -185,24 +181,11 @@ class TestCrossTargetInvariants:
         real_discovery: Discovery,
     ) -> None:
         """CASE-54: garage has strip_prefix=True on /garage so the store
-        sees the request at its root. Both targets must carry that through
-        (garage is an optional module, so we need the maximal deployments
-        to have it active)."""
-        caddy = generate_caddy_config(
-            maximal_compose_deployment, real_discovery.components, real_discovery.apps
-        )
-        ing = generate_ingress_config(
-            maximal_k8s_deployment, real_discovery.components, real_discovery.apps
-        )
-
-        caddy_garage = next(r for r in caddy.routes if r.path == "/garage")
-        ing_garage = next(r for r in ing.rules if r.path == "/garage")
-
-        assert caddy_garage.strip_prefix is True
-        assert ing_garage.strip_prefix is True
-        # Non-strip routes stay non-strip.
-        caddy_ds = next(r for r in caddy.routes if r.path == "/api/document-store")
-        assert caddy_ds.strip_prefix is False
+        sees the request at its root."""
+        for d in (maximal_compose_deployment, maximal_k8s_deployment):
+            caddy = generate_caddy_config(d, real_discovery.components, real_discovery.apps)
+            assert next(r for r in caddy.routes if r.path == "/garage").strip_prefix is True
+            assert next(r for r in caddy.routes if r.path == "/api/document-store").strip_prefix is False
 
     def test_inactive_components_absent_from_both_targets(
         self,
@@ -212,15 +195,6 @@ class TestCrossTargetInvariants:
     ) -> None:
         """Inactive optional components (e.g., reporting-sync in standard)
         contribute no routes on either target."""
-        caddy = generate_caddy_config(
-            compose_deployment, real_discovery.components, real_discovery.apps
-        )
-        ing = generate_ingress_config(
-            k8s_deployment, real_discovery.components, real_discovery.apps
-        )
-
-        caddy_paths = {r.path for r in caddy.routes}
-        ing_paths = {r.path for r in ing.rules}
-
-        assert "/api/reporting-sync" not in caddy_paths
-        assert "/api/reporting-sync" not in ing_paths
+        for d in (compose_deployment, k8s_deployment):
+            caddy = generate_caddy_config(d, real_discovery.components, real_discovery.apps)
+            assert "/api/reporting-sync" not in {r.path for r in caddy.routes}
