@@ -7,6 +7,40 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### The app edge is an optional module; `@wip/client` 0.79.0
+
+The app edge, which serves apps attached through the Registry's API, used to
+run on every install with the auth gateway. It is now the optional module
+`app-edge`:
+
+- **New installs:** the gateway presets (`standard`, `full`, `analytics`)
+  include it. `install --no-auth-gateway` leaves it out with a note; an
+  explicit `--add app-edge` without the gateway is refused.
+- **Existing installs keep their edge.** The saved spec's format moves to
+  version 2. On first load, every version-1 install that ran the edge (the
+  gateway on, core not suppressed) gets `app-edge` in its module list, so
+  the next apply keeps serving its attached apps. Nothing else changes.
+- **Turning it off:** `wip-deploy remove-module app-edge`. Attached apps go
+  offline: their records stay, but nothing serves them. The Registry then
+  refuses attachment writes (`invalid_state`, `details.rule: no_app_edge`),
+  and a system restore skips active attachments
+  (`reason_code: no_app_edge`). Reads and deactivation still work.
+  `add-module app-edge` brings it back. See wip-guide §6.5.
+- **`@wip/client` 0.79.0:** `SystemRestoreSkipReason` gains `no_app_edge`,
+  and the attachment error codes document `invalid_state` /
+  `no_app_edge`. Types only; no runtime change.
+- **Upgrade the Registry and the deployer together.** The deployer now
+  writes `app_edge` into the attach policy file. An older Registry rejects
+  any field it doesn't know and then refuses **every** attach. Redeploy with
+  the image set built from this commit (`redeploy --tag …`) in the same
+  apply.
+- **Rollback:** an older deployer refuses a version-2 saved spec ("expects
+  1"), so after any apply with this deployer, `redeploy` with an older
+  checkout fails on that install. To roll back, set
+  `"wip_deploy_format_version": 1` in `~/.wip-deploy/<name>/deployment.deployer-state`
+  by hand; the extra `app-edge` entry is then reported as an unknown module
+  by the older deployer, so remove it from `modules.optional` as well.
+
 ### k8s: wip-caddy is the front door, behind one Ingress; Traefik works
 
 On k8s every route used to be an ingress-nginx Ingress, carrying the

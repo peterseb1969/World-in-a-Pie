@@ -736,7 +736,7 @@ class TestStatusDiff:
 
         import json
         payload = json.loads((tmp_path / "deployment.deployer-state").read_text())
-        assert payload["wip_deploy_format_version"] == 1
+        assert payload["wip_deploy_format_version"] == 2
         assert "deployment" in payload
         assert payload["deployment"]["metadata"]["name"] == "diff-test"
 

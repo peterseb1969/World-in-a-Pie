@@ -66,7 +66,9 @@ Restore rules:
   (the router's app edge checks again where it resolves). An upstream that
   does not resolve from here is written and listed as `unresolved`: in
   disaster recovery the app often comes back after the stack. When the
-  attach policy file is unusable, every attachment is skipped. Each entry is
+  attach policy file is unusable, every attachment is skipped; when it says
+  the install runs no app edge, every active one is (`no_app_edge`: nothing
+  would serve it), while an inactive one is restored as a record. Each entry is
   checked on its own: one that fails the attach rules (a record stored
   before a rule existed, or an edited archive) is skipped and listed, and
   never stops the backup or the rest of the restore. An entry the source's
@@ -293,6 +295,7 @@ SkipReason = Literal[
     "config_key_name",          # a config key of this name is loaded here
     "app_route",                # an app this install deploys routes under /apps/<name>
     "attach_policy_unavailable",
+    "no_app_edge",              # active in the archive; this install runs no app edge to serve it
     "upstream_invalid",
     "upstream_blocked",
     "concurrent_write",         # another request attached the name during the restore
@@ -932,6 +935,12 @@ async def _restore_attachments(
         request, why = _validated_attachment(a)
         if request is None:
             out.skipped.append(_skip_named(a.name, "invalid_record", why or "invalid"))
+            continue
+        if a.status == "active" and not policy.app_edge:
+            out.skipped.append(_skip_named(
+                a.name, "no_app_edge",
+                "this install runs no app edge to serve it (`wip-deploy add-module app-edge`)",
+            ))
             continue
         if a.name in reserved:
             out.skipped.append(_skip_named(

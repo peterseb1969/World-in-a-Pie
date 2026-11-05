@@ -32,6 +32,9 @@ STANDARD: dict[str, Any] = {
             "reporting-sync",
             "garage",
             "mcp-server",
+            # Serves apps attached through the Registry's API; needs the
+            # gateway, so an install that turns it off drops the edge too.
+            "app-edge",
         ]
     },
     "auth": {"mode": "hybrid", "gateway": True},

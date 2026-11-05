@@ -76,6 +76,12 @@ class ModulesSpec(WIPModel):
         return out
 
 
+# The optional module that serves apps attached through the Registry's API.
+# Named here, in the spec layer, because the validator, the key and policy
+# derivations and the saved-spec migration all decide on it.
+APP_EDGE_MODULE = "app-edge"
+
+
 class AddedNamespace(WIPModel):
     """A namespace the operator gives an app on this install only, beyond
     what its manifest declares (`wip-deploy app-namespace add`). Reserved for

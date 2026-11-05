@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
-from wip_deploy.spec.deployment import Deployment
+from wip_deploy.spec.deployment import APP_EDGE_MODULE, Deployment
 
 # ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +62,29 @@ def _validate_modules_exist(
                 )
             )
     return errs
+
+
+def _validate_app_edge_prerequisites(deployment: Deployment) -> list[ValidationError]:
+    """The app edge needs the auth gateway (it runs forward_auth per
+    attachment) and core (its records live in the Registry). As an optional
+    module its activation is its name in modules.optional alone, so the
+    requirement is enforced here, loudly, rather than by silently not
+    rendering a module the operator asked for."""
+    spec = deployment.spec
+    if APP_EDGE_MODULE not in spec.modules.optional:
+        return []
+    missing = []
+    if not spec.auth.gateway:
+        missing.append("the auth gateway (auth.gateway is off)")
+    if spec.modules.suppress_core:
+        missing.append("core (modules.suppress_core is on)")
+    if not missing:
+        return []
+    return [ValidationError(
+        f"module {APP_EDGE_MODULE!r} needs {' and '.join(missing)}; "
+        f"remove it (`wip-deploy remove-module {APP_EDGE_MODULE}`, or "
+        f"`--remove {APP_EDGE_MODULE}` on install) or turn the gateway on"
+    )]
 
 
 def _validate_apps_exist(
@@ -305,6 +328,7 @@ def validate_all(
     the first."""
     report = ValidationReport()
     report.errors.extend(_validate_modules_exist(deployment, components))
+    report.errors.extend(_validate_app_edge_prerequisites(deployment))
     report.errors.extend(_validate_apps_exist(deployment, apps))
     report.errors.extend(
         _validate_oidc_clients_require_oidc(deployment, components, apps)

@@ -73,7 +73,7 @@ def _compose_deployment(*, api_keys: list[SpecAPIKey] | None = None) -> Deployme
         metadata=DeploymentMetadata(name="t"),
         spec=DeploymentSpec(
             target="compose",
-            modules={"optional": ["mcp-server", "reporting-sync"]},  # type: ignore[arg-type]
+            modules={"optional": ["mcp-server", "reporting-sync", "app-edge"]},  # type: ignore[arg-type]
             auth=AuthSpec(mode="oidc", gateway=True, api_keys=api_keys or []),
             network=NetworkSpec(hostname="wip.local"),
             images=ImagesSpec(registry="ghcr.io/test", tag="test"),
@@ -163,7 +163,7 @@ class TestGeneratedJson:
         secrets = _secrets(tmp_path, d, real_discovery)
         content = generate_api_keys_json(d, secrets)
         doc = json.loads(content)
-        # With the gateway on, the app edge's key comes before the canary.
+        # With the app edge enabled, its key comes before the canary.
         entry, edge, canary = doc["keys"]
         assert edge["name"] == "wip-app-edge" and edge["groups"] == ["wip-app-edge"]
         assert canary["name"] == CANARY_KEY_NAME

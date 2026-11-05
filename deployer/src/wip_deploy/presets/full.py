@@ -14,6 +14,7 @@ FULL: dict[str, Any] = {
             "ingest-gateway",
             "garage",
             "mcp-server",
+            "app-edge",
         ]
     },
     # CASE-367: same shape as CASE-374's fix in standard.py — `oidc`

@@ -31,6 +31,12 @@ On k8s a blocked name resolves to its Service's ClusterIP, so an upstream
 given as a WIP pod's IP is not caught here. The dependable control there is
 a NetworkPolicy on the app edge's egress.
 
+**No edge.** The app edge is an optional module. When the policy says the
+install runs none (`app_edge: false`), nothing would serve an attachment, so
+attachment writes are refused and a restore skips the archive's active ones.
+Reads and deactivation still work, so records from before the edge was
+removed stay manageable.
+
 The policy file is read on every request (it is small and attaches are
 rare), so a re-rendered file applies at once. Once WIP_ATTACH_POLICY_FILE is
 set, a missing, empty or unparseable file refuses every attach: the deployer
@@ -66,6 +72,15 @@ class AttachPolicy(BaseModel):
     reserved_names: list[str] = Field(
         default_factory=list,
         description="Route names of the install's own apps (/apps/<name>)",
+    )
+    app_edge: bool = Field(
+        default=True,
+        description=(
+            "Whether the install runs the app edge, which serves attachments. "
+            "Absent means it does: policy files rendered before the edge was "
+            "an optional module carry no such field, and their installs all "
+            "ran it."
+        ),
     )
 
 

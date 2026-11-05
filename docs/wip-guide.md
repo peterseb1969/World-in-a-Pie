@@ -70,7 +70,7 @@ wip-toolkit status --integrity   # adds the heavy referential-integrity scan
 |---|---|
 | `headless` | API services only, no UI |
 | `core` | + console + API keys |
-| `analytics` | + OIDC (Dex) + reporting-sync + Postgres |
+| `analytics` | + OIDC (Dex) + reporting-sync + Postgres + the app edge (§6.5) |
 | `standard` (default) | + Garage + MCP server — fully exercisable platform |
 | `full` | + ingest-gateway (async bulk via NATS JetStream) |
 
@@ -1025,12 +1025,30 @@ be **attached** under the umbrella through the Registry's API instead of being
 deployed by wip-deploy. Its key is an ordinary Console key (§4.3). The
 deployer knows nothing about the app.
 
-**Served by the app edge.** The `app-edge` component (rendered whenever the
-auth gateway is on) reads the active attachments every 10 s with its own
-key, and serves each one at `/apps/<name>`: behind the gateway with the
-record's `allowed_groups`, then to the upstream. The public router hands it
-every `/apps` path that no deployed app's longer route claims. What it
-guarantees:
+**Served by the app edge.** The `app-edge` component reads the active
+attachments every 10 s with its own key, and serves each one at
+`/apps/<name>`: behind the gateway with the record's `allowed_groups`, then
+to the upstream. The public router hands it every `/apps` path that no
+deployed app's longer route claims.
+
+**The edge is an optional module.** The presets with the auth gateway
+(`standard`, `full`, `analytics`) include it. `wip-deploy remove-module
+app-edge` turns it off, and `wip-deploy add-module app-edge` turns it back on.
+It needs the auth gateway and core; the deployer refuses it otherwise, and
+`install --no-auth-gateway` leaves a preset's edge out with a note. Without
+the edge:
+
+- an `/apps/<name>` that no deployed app routes answers 404;
+- the Registry refuses every attachment write (`invalid_state`,
+  `details.rule: no_app_edge`), reviving included. Listing, reading and
+  deactivating still work, so records from before the edge was removed stay
+  manageable;
+- records already active stay active but are not served, so their apps go
+  offline until the edge is back;
+- a system restore skips the archive's active attachments
+  (`reason_code: no_app_edge`) and restores its inactive ones as records.
+
+What the edge guarantees:
 
 - **It dials the address it checked.** Each upstream host is resolved and
   every address checked against the blocklist below, and the edge connects

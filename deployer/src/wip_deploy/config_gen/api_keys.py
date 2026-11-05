@@ -25,7 +25,7 @@ from typing import Literal
 
 from wip_deploy.secrets_backend.base import ResolvedSecrets
 from wip_deploy.spec import App, AppRef, Component, Deployment
-from wip_deploy.spec.deployment import CANARY_KEY_NAME, SpecAPIKey
+from wip_deploy.spec.deployment import APP_EDGE_MODULE, CANARY_KEY_NAME, SpecAPIKey
 
 # The key file has a directory of its own, mounted only into the manifests
 # that declare it (the Registry), so the plaintext reaches no other
@@ -122,7 +122,7 @@ def app_api_keys(deployment: Deployment, apps: list[App]) -> list[SpecAPIKey]:
 # The app edge's key (CASE-1052): its group may read the Registry's app
 # attachments and nothing else. Scoped to the canary's namespace, which
 # nothing creates, so it reads no data; the group is not one that may assert
-# identities. Rendered whenever the edge is active.
+# identities. Rendered whenever the edge module is enabled.
 APP_EDGE_GROUP = "wip-app-edge"
 APP_EDGE_KEY = SpecAPIKey(
     name="wip-app-edge",
@@ -133,9 +133,13 @@ APP_EDGE_KEY = SpecAPIKey(
 
 
 def app_edge_active(deployment: Deployment) -> bool:
-    """The app-edge component's activation (its manifest: the gateway on,
-    core not suppressed), for the key that goes with it."""
-    return deployment.spec.auth.gateway and not deployment.spec.modules.suppress_core
+    """Whether the app edge runs: the optional module is enabled.
+
+    This is exactly what `is_component_active` decides for an optional
+    component, so the edge's key, its k8s egress policy and the component
+    cannot disagree. The spec validator guarantees the gateway is on and core
+    is not suppressed whenever the module is listed."""
+    return APP_EDGE_MODULE in deployment.spec.modules.optional
 
 
 def effective_api_keys(

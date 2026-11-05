@@ -1,7 +1,7 @@
 """The app edge component (CASE-1052).
 
 The edge serves the apps attached through the Registry's API. The deployer
-renders it whenever the auth gateway is on, gives it a key that may read
+renders it when the `app-edge` module is enabled, gives it a key that may read
 attachments and nothing else, hands it every /apps path no deployer app's
 longer route claims, and on k8s keeps its egress away from WIP's own pods.
 """
@@ -34,20 +34,22 @@ def _edge(discovery: Discovery):
     return next(c for c in discovery.components if c.metadata.name == "app-edge")
 
 
-def test_active_with_the_gateway_only(discovery: Discovery) -> None:
-    d = _minimal_compose()
-    assert d.spec.auth.gateway
+EDGE_MODULES = ["mcp-server", "app-edge"]
+
+
+def test_active_when_the_module_is_enabled(discovery: Discovery) -> None:
+    d = _minimal_compose(modules=EDGE_MODULES)
     assert is_component_active(_edge(discovery), d)
     assert APP_EDGE_KEY in effective_api_keys(d)
 
-    d.spec.auth.gateway = False
-    d.spec.auth.mode = "api-key-only"
+    d = _minimal_compose()
+    assert d.spec.auth.gateway
     assert not is_component_active(_edge(discovery), d)
     assert APP_EDGE_KEY not in effective_api_keys(d)
 
 
 def test_its_key_reads_attachments_and_nothing_else(tmp_path: Path, discovery: Discovery) -> None:
-    d = _minimal_compose()
+    d = _minimal_compose(modules=EDGE_MODULES)
     s = _compose_secrets(tmp_path, d, discovery)
     keys = {k["name"]: k for k in json.loads(generate_api_keys_json(d, s))["keys"]}
     edge = keys["wip-app-edge"]
@@ -60,7 +62,7 @@ def test_its_key_reads_attachments_and_nothing_else(tmp_path: Path, discovery: D
 
 @pytest.fixture(scope="module")
 def compose_tree(tmp_path_factory: pytest.TempPathFactory, discovery: Discovery):
-    d = _minimal_compose(apps=["wip-kb"])
+    d = _minimal_compose(modules=EDGE_MODULES, apps=["wip-kb"])
     s = _compose_secrets(tmp_path_factory.mktemp("edge"), d, discovery)
     return render_compose(d, discovery.components, discovery.apps, s)
 
@@ -96,7 +98,7 @@ def test_k8s_ingress_and_network_policy(tmp_path: Path, discovery: Discovery) ->
     """wip-caddy hands /apps paths no deployer app claims to the edge, with
     no gateway in front (the edge runs its own forward_auth); the edge
     accepts traffic from wip-caddy only and its egress is limited."""
-    d = _k8s_deployment(apps=["wip-kb"])
+    d = _k8s_deployment(modules=EDGE_MODULES, apps=["wip-kb"])
     ns = d.spec.platform.k8s.namespace
     tree = render_k8s(d, discovery.components, discovery.apps, _k8s_secrets(tmp_path, d, discovery))
 
@@ -129,8 +131,6 @@ def test_k8s_ingress_and_network_policy(tmp_path: Path, discovery: Discovery) ->
 
 def test_without_the_edge_the_policies_are_unchanged(tmp_path: Path, discovery: Discovery) -> None:
     d = _k8s_deployment(apps=["wip-kb"])
-    d.spec.auth.gateway = False
-    d.spec.auth.mode = "api-key-only"
     tree = render_k8s(d, discovery.components, discovery.apps, _k8s_secrets(tmp_path, d, discovery))
     policies = {doc["metadata"]["name"]: doc for doc in yaml.safe_load_all(tree.files[Path("network-policies.yaml")].content) if doc}
     assert "app-edge-egress" not in policies

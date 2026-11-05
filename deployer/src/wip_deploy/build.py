@@ -24,6 +24,7 @@ from wip_deploy.spec import (
     DeploymentMetadata,
     DeploymentSpec,
 )
+from wip_deploy.spec.deployment import APP_EDGE_MODULE
 
 
 @dataclass
@@ -62,7 +63,7 @@ class BuildInputs:
     # Spec-declared API keys (parsed dicts, one per --api-key JSON
     # value). Persist in the install's state like everything else, so
     # redeploy/rebuild keep them and the rendered key file survives.
-    api_keys: list[dict] = field(default_factory=list)
+    api_keys: list[dict[str, Any]] = field(default_factory=list)
 
     # Compose platform
     compose_data_dir: Path | None = None
@@ -167,6 +168,18 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
         if inputs.auth_mode == "api-key-only":
             spec_dict["auth"]["users"] = []
 
+    # The app edge needs the gateway. A preset that lists it (standard, full,
+    # analytics) drops it when --no-auth-gateway turns the gateway off; the
+    # CLI says so (`preset_edge_dropped`). An explicit --add app-edge stays,
+    # so the spec validator refuses the combination loudly.
+    modules_optional: list[str] = spec_dict["modules"]["optional"]
+    if (
+        not spec_dict["auth"].get("gateway", False)
+        and APP_EDGE_MODULE in modules_optional
+        and APP_EDGE_MODULE not in inputs.add
+    ):
+        modules_optional.remove(APP_EDGE_MODULE)
+
     # Spec-declared API keys — each entry a dict (parsed from the CLI's
     # --api-key JSON); AuthSpec validates shape, name uniqueness, and
     # grants ⊆ namespaces.
@@ -270,3 +283,16 @@ def _build_secrets(inputs: BuildInputs) -> dict[str, Any]:
         )
 
     return block
+
+
+def preset_edge_dropped(inputs: BuildInputs, deployment: Deployment) -> bool:
+    """True when the preset listed the app edge and the build dropped it
+    because the gateway is off (the CLI prints a note)."""
+    if inputs.apps_only:
+        return False
+    preset_modules = get_preset(inputs.preset).get("modules", {}).get("optional", [])
+    return (
+        APP_EDGE_MODULE in preset_modules
+        and APP_EDGE_MODULE not in inputs.remove
+        and APP_EDGE_MODULE not in deployment.spec.modules.optional
+    )

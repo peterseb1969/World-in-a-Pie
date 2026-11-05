@@ -2,7 +2,7 @@ api_version: wip.dev/v1
 kind: Component
 metadata:
   name: app-edge
-  category: infrastructure
+  category: optional
   description: |
     Serves the apps attached under the umbrella through the Registry's API.
     A Caddy whose config a sync loop rebuilds from the Registry's attachment
@@ -26,11 +26,11 @@ spec:
     # attachment, with that record's allowed groups.
     - {path: /apps, auth_required: false, redirect_bare_path: false}
 
-  activation:
-    # The edge's routes are gateway-protected and its records live in the
-    # Registry: no gateway, or an apps-only install, means no edge.
-    requires_auth_gateway: true
-    requires_core: true
+  # An optional module (`wip-deploy add-module app-edge` / `remove-module
+  # app-edge`), in the gateway presets by default. It needs the auth gateway
+  # and core: the deployer's spec validator refuses it without them (an
+  # optional component's activation is its name in modules.optional, so an
+  # `activation` block here would not be enforced).
 
   env:
     required:

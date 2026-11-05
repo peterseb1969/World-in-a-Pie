@@ -7,7 +7,7 @@ Does not include file storage — add `--add files` if you need it.
 from typing import Any
 
 ANALYTICS: dict[str, Any] = {
-    "modules": {"optional": ["reporting-sync", "mcp-server"]},
+    "modules": {"optional": ["reporting-sync", "mcp-server", "app-edge"]},
     # CASE-367: same shape as CASE-374's fix in standard.py — `oidc`
     # plumbs to WIP_AUTH_MODE=jwt_only, which rejects X-API-Key. Server-
     # side app callers (when apps are added via --app) would fail; flip

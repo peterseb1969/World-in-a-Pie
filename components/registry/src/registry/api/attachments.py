@@ -17,7 +17,9 @@ Per-item error codes: `validation_failed` (details.rule: `upstream_invalid`,
 `upstream_blocked`), `name_collision` (a name the install's own apps route
 under), `managed_by_deployer` (a record the deployer owns),
 `concurrency_conflict` (another request created the same name at the same
-moment; retry), `not_found` (deactivating a name with no attachment).
+moment; retry), `not_found` (deactivating a name with no attachment),
+`invalid_state` (details.rule `no_app_edge`: the install runs no app edge, so
+every write is refused; deactivating still works).
 """
 
 import logging
@@ -53,6 +55,11 @@ from ..services.managed import MANAGED_BY_DEPLOYER
 logger = logging.getLogger("registry.attachments")
 
 router = APIRouter()
+
+NO_APP_EDGE_MESSAGE = (
+    "This install runs no app edge, so nothing would serve the attachment. "
+    "An operator enables it with `wip-deploy add-module app-edge`."
+)
 
 
 def _error(index: int, name: str, code: str, message: str, rule: str | None = None) -> AttachmentBulkResultItem:
@@ -97,6 +104,11 @@ async def upsert_attachments(
     except AttachPolicyUnavailable as e:
         return _envelope(
             [_error(i, it.name, "validation_failed", f"Attach policy unavailable: {e}", "policy_unavailable")
+             for i, it in enumerate(items)]
+        )
+    if not policy.app_edge:
+        return _envelope(
+            [_error(i, it.name, "invalid_state", NO_APP_EDGE_MESSAGE, "no_app_edge")
              for i, it in enumerate(items)]
         )
     reserved = set(policy.reserved_names)

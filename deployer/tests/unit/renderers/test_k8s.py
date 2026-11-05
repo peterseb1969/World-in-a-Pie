@@ -451,7 +451,7 @@ class TestNetworkPolicies:
     def _network_policies_doc(
         self, tmp_path: Path, real_discovery: Discovery,
     ) -> str:
-        d = _k8s_deployment()
+        d = _k8s_deployment(modules=["mcp-server", "app-edge"])
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_k8s(d, real_discovery.components, real_discovery.apps, s)
         return tree.files[Path("network-policies.yaml")].content
@@ -463,7 +463,7 @@ class TestNetworkPolicies:
         doc = self._network_policies_doc(tmp_path, real_discovery)
         policies = list(yaml.safe_load_all(doc))
         # Five namespace-isolation policies, and the app edge's own egress
-        # policy (the gateway is on, so the edge is rendered).
+        # policy (the app-edge module is enabled).
         assert len(policies) == 6
         assert all(p["kind"] == "NetworkPolicy" for p in policies)
         assert policies[-1]["metadata"]["name"] == "app-edge-egress"

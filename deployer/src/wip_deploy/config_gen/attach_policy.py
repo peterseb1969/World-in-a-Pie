@@ -13,6 +13,8 @@ namespace reservations (WIP_ATTACH_POLICY_FILE):
   pointing back at it would loop), and on k8s the API server's names.
 - `reserved_names`: the last segment of every enabled app's route prefix
   (`/apps/kb` → `kb`).
+- `app_edge`: whether the app-edge module runs. Without it nothing serves an
+  attachment, so the Registry refuses new and revived ones.
 
 The Registry compares resolved addresses, so a blocked host's IP or alias is
 refused too. The attach-time check is advisory: the router's app edge checks
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import json
 
+from wip_deploy.config_gen.api_keys import app_edge_active
 from wip_deploy.spec import App, Component, Deployment
 from wip_deploy.spec.activation import is_component_active
 
@@ -81,6 +84,10 @@ def attach_policy_json(
     # needs its own entry: /apps/x -> https://<host>/ would be a proxy loop.
     hosts.add(deployment.spec.network.hostname.lower())
     return json.dumps(
-        {"blocked_hosts": sorted(hosts), "reserved_names": app_route_names(deployment, apps)},
+        {
+            "app_edge": app_edge_active(deployment),
+            "blocked_hosts": sorted(hosts),
+            "reserved_names": app_route_names(deployment, apps),
+        },
         indent=2,
     ) + "\n"

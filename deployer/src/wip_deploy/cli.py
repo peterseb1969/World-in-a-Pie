@@ -27,7 +27,7 @@ from wip_deploy.apply import (
     changed_outside_scope,
     read_live_secrets,
 )
-from wip_deploy.build import BuildInputs, build_deployment
+from wip_deploy.build import BuildInputs, build_deployment, preset_edge_dropped
 from wip_deploy.config_gen.api_keys import (
     app_key_secrets,
     effective_api_keys,
@@ -65,6 +65,7 @@ from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component, NamespaceAccess, NamespaceSettings
 from wip_deploy.spec.deployment import (
+    APP_EDGE_MODULE,
     AddedNamespace,
     AppRef,
     AuthSpec,
@@ -4903,6 +4904,21 @@ def remove_module(
         m for m in deployment.spec.modules.optional if m != module_name
     ]
 
+    if module_name == APP_EDGE_MODULE:
+        typer.echo(
+            typer.style(
+                "⚠ Without the app edge, apps attached through the Registry's "
+                "API go offline: their records stay as they are but nothing "
+                "serves /apps/<name> for them, and the Registry refuses "
+                "attachment writes. Deactivate records you no longer "
+                "want (POST /api/registry/attachments/deactivate, or in RC); "
+                f"`wip-deploy add-module {APP_EDGE_MODULE}` brings the active "
+                "ones back.",
+                fg=typer.colors.YELLOW,
+            ),
+            err=True,
+        )
+
     from wip_deploy.apply import stop_and_remove_container
     stop_and_remove_container(module_name)
 
@@ -6071,6 +6087,14 @@ def _assemble(
         typer.echo(f"spec construction failed:\n{e}", err=True)
         raise typer.Exit(2) from e
 
+    if preset_edge_dropped(inputs, deployment):
+        typer.echo(
+            f"note: preset {preset!r} includes the app edge (module 'app-edge'), "
+            "which needs the auth gateway; with the gateway off it is left out, "
+            "so this install cannot serve attached apps.",
+            err=True,
+        )
+
     if skip_discovery:
         return deployment, [], []
 
@@ -6183,7 +6207,44 @@ def _default_install_dir(name: str) -> Path:
 # ────────────────────────────────────────────────────────────────────
 
 
-_DEPLOYMENT_JSON_VERSION = 1
+# Version 2: the app edge became an optional module. A version-1 file is
+# upgraded on load (`_upgrade_state_payload`) and written as version 2 by the
+# next persist, so each step runs once per install.
+_DEPLOYMENT_JSON_VERSION = 2
+
+
+def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Bring an older deployer-state envelope up to the current format, in
+    memory. Unknown or newer versions are returned unchanged, for the caller's
+    version check to refuse."""
+    if payload.get("wip_deploy_format_version") == 1:
+        payload = _state_v1_to_v2(payload)
+    return payload
+
+
+def _state_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
+    """Version 1 had no app-edge module: every install with the auth gateway
+    on and core not suppressed ran the edge. Such an install gets `app-edge`
+    in modules.optional, so the next apply keeps serving its attached apps;
+    any other install never had an edge and gets none. After this, the module
+    list alone decides, and a later `remove-module app-edge` sticks."""
+    try:
+        spec = payload["deployment"]["spec"]
+        had_edge = bool(spec["auth"]["gateway"]) and not spec.get("modules", {}).get(
+            "suppress_core", False
+        )
+    except (KeyError, TypeError):
+        # Malformed: leave it for model validation to report.
+        return {**payload, "wip_deploy_format_version": 2}
+    if had_edge:
+        modules = dict(spec.get("modules") or {})
+        optional = list(modules.get("optional") or [])
+        if APP_EDGE_MODULE not in optional:
+            optional.append(APP_EDGE_MODULE)
+        modules["optional"] = optional
+        spec = {**spec, "modules": modules}
+        payload = {**payload, "deployment": {**payload["deployment"], "spec": spec}}
+    return {**payload, "wip_deploy_format_version": 2}
 
 
 # File name uses a non-yaml/json extension so kubectl's recursive
@@ -6262,8 +6323,9 @@ def _load_state_repo_root(install_dir: Path) -> Path | None:
 
 
 def _load_deployment(install_dir: Path) -> Deployment:
-    """Load a previously-persisted Deployment. Refuses missing or
-    older-version files with an actionable error."""
+    """Load a previously-persisted Deployment, upgrading an older format
+    version in memory. Refuses missing or unknown-version files with an
+    actionable error."""
     target = install_dir / _DEPLOYMENT_STATE_FILENAME
     # Fall back to the legacy filename so installs done with the
     # earlier CASE-294 build can still --diff. _persist_deployment
@@ -6284,6 +6346,7 @@ def _load_deployment(install_dir: Path) -> Deployment:
     except json.JSONDecodeError as e:
         typer.echo(f"error: {target} is not valid JSON: {e}", err=True)
         raise typer.Exit(2) from e
+    payload = _upgrade_state_payload(payload)
     version = payload.get("wip_deploy_format_version")
     if version != _DEPLOYMENT_JSON_VERSION:
         typer.echo(
@@ -6319,6 +6382,7 @@ def _try_load_previous_deployment(install_dir: Path) -> Deployment | None:
         payload = json.loads(target.read_text())
     except json.JSONDecodeError:
         return None
+    payload = _upgrade_state_payload(payload)
     if payload.get("wip_deploy_format_version") != _DEPLOYMENT_JSON_VERSION:
         return None
     try:
