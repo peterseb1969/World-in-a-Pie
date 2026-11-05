@@ -1,7 +1,7 @@
 # WIP on Kubernetes — what runs where, and how the two clusters talk
 
 **Audience:** an agent (or person) who knows nothing about this deployment. Read sections 1–3 before touching either cluster.
-**State described:** 2026-11-04, checked live with read-only `kubectl` over VPN (see §10 for what was and was not checked).
+**State described:** 2026-11-04, checked live with read-only `kubectl` and unauthenticated HTTPS probes from the Roche network (see §10 for what was and was not checked).
 **Not this:** the local podman stack on a laptop (`wip-deploy install --target dev`, containers named `wip-*`, install dir `~/.wip-deploy/wip-local`) is a different thing. Nothing here applies to it, and it is not reachable from either cluster.
 
 Each fact carries a tag: **[live]** read from the running cluster on 2026-11-04; **[export]** read from a manifest export dated 2026-10-30; **[notes]** recorded by an earlier session and not re-checked; **[inferred]** reasoned, not tested.
@@ -18,7 +18,7 @@ WIP runs on **two separate Rancher-managed Kubernetes clusters** that share **no
 | Namespace | `pbs-rancher-dev` | `pbs-app-dev` |
 | Role | the WIP backend: services and datastores | the apps, their login, and the auth gateway |
 | Public host | `wip.stgcaas-gw.emea.roche.com` | `wip-apps.caasqarcp.roche.com` |
-| Ingress | Traefik, plain HTTP routing, no TLS block | Traefik with a `forwardAuth` middleware |
+| Ingress | Traefik, path routing; valid Roche wildcard certificate on the host (see §3.3) | Traefik with a `forwardAuth` middleware |
 
 ```
 Browser ──https──> wip-apps.caasqarcp.roche.com           [AWS Traefik, TLS ends here]
@@ -43,8 +43,8 @@ Three facts to keep in your head:
 
 ## 2. Before you touch anything
 
-### 2.1 You must be on the VPN
-Without the VPN, `kubectl` fails with `x509: certificate signed by unknown authority` on both contexts, which looks like a kubeconfig/CA problem and is not. Switch the VPN on and retry before debugging anything else. [live: failed off-VPN, worked on-VPN, same file]
+### 2.1 You must be on the Roche network (office network or VPN)
+Off the Roche network, `kubectl` fails with `x509: certificate signed by unknown authority` on both contexts, which looks like a kubeconfig/CA problem and is not. Get onto the Roche network (the office network needs nothing more; elsewhere switch the VPN on) and retry before debugging anything else. [live: failed from outside, worked from the VPN and from the office, same file]
 
 ### 2.2 Access
 ```bash
@@ -97,7 +97,7 @@ All Services are `ClusterIP`. Nothing is exposed except through Ingress. [live]
 No Caddy router, no auth-gateway, no Dex, no ingest-gateway, no Garage/MinIO (so no file storage), and **no NetworkPolicies**. The router, a root ingress, the network policies and the Namespace object were rendered by `wip-deploy` but deliberately held back (§7.1).
 
 ### 3.3 Ingress [live]
-Host `wip.stgcaas-gw.emea.roche.com`, class `traefik`, **no TLS block** — TLS ends upstream of the cluster.
+Host `wip.stgcaas-gw.emea.roche.com`, class `traefik`. `wip-ingress` has **no `tls` block**; `wip-mcp-ingress` has a `tls` entry that lists the host but names no secret. [live] The host presents a valid certificate for `*.stgcaas.emea.roche.com` issued by `Roche G3 Issuing CA 3`, and it verifies on a Mac with the system trust store, no `-k` needed. [live] So TLS is terminated somewhere in front of the application pods, with a corporate wildcard certificate; whether that is Traefik's default certificate or a gateway upstream of the cluster was not established. [inferred]
 - `wip-ingress` routes `/api/def-store`, `/api/document-store`, `/api/registry`, `/api/reporting-sync`, `/api/template-store` directly to the matching Service. The path prefix appears to be preserved (the services mount at `/api/<service>`) [inferred; no prefix-strip middleware exists for these routes].
 - `wip-mcp-ingress` routes `/mcp` to `wip-mcp-server`, through the Traefik `Middleware` `strip-mcp-prefix`. `/mcp` is deliberately absent from `wip-ingress`.
 - The ingress carries nginx-style annotations (body-size, timeouts). Traefik most likely ignores them, which fits the documented failure of large uploads through it. [inferred]
@@ -162,7 +162,7 @@ All three read `WIP_API_KEY` from **one secret: `wip-secrets`, key `api-key`**. 
 ### 5.1 Between the clusters
 **Only HTTPS from an AWS app pod to the on-prem public ingress.** No manifest declares any cross-cluster pod-to-pod link, mesh, VPN or private-link route for WIP traffic. [export/live] Nothing on-prem calls AWS at runtime. [export] The in-cluster name `wip-router.pbs-rancher-dev.svc.cluster.local` is **unreachable from AWS**; apps must use the external URL. [notes] Whether AWS pods can resolve and reach `wip.stgcaas-gw.emea.roche.com` is demonstrated by the apps working, but DNS/egress/firewall rules were not inspected. [inferred]
 
-Because TLS verification is off on this hop, a wrong or intercepted certificate would not be noticed. That is a known weakness, not a feature.
+Because TLS verification is off on this hop, a wrong or intercepted certificate would not be noticed. That is a known weakness, not a feature. The on-prem certificate does verify from a Mac against the system trust store, so the setting may have been added because the app images do not trust the Roche CA; that was not checked. [inferred]
 
 ### 5.2 Request paths, hop by hop
 
@@ -178,7 +178,9 @@ Because TLS verification is off on this hop, a wrong or intercepted certificate 
 3. The service validates the API key itself.
 
 **(c) MCP**
-Client → `https://wip.stgcaas-gw.emea.roche.com/mcp` → `wip-mcp-ingress` (prefix stripped) → `wip-mcp-server:8007` → the five services over in-cluster HTTP with the master key. The documented client URL is `/mcp/mcp`; **not verified**.
+Client → `https://wip.stgcaas-gw.emea.roche.com/mcp/mcp` → `wip-mcp-ingress` (first `/mcp` stripped) → `wip-mcp-server:8007` → the five services over in-cluster HTTP. The server runs `python -m wip_mcp --http`, a network transport, so every request except `/health` must carry an `X-API-Key` that the Registry accepts. [live: command line; code read]
+- **Probed live from the office network, no key sent (2026-11-05):** `GET /mcp/health` → `200 {"status":"ok","service":"mcp-server"}`; `POST /mcp/mcp` (an MCP `initialize`) → `401 Missing or invalid API key`; the pod's log shows that request as `POST /mcp 401`, which confirms the prefix strip. The certificate verifies with the system trust store. [live]
+- **Not tested:** a request that carries a valid key. Also unknown is whether the deployed image (`20261026b`) already acts with the *caller's* key on each tool call (the current code does) or still with the server's own master key (the older behaviour). **Fixed 2026-11-05 — `MCP_ALLOWED_HOST` now holds the public host `wip.stgcaas-gw.emea.roche.com`** (set in `patch_render.py`, applied to this one Deployment; a re-render without the script would put `wip-mcp-server` back). What follows describes the state before the fix: the Deployment set `MCP_ALLOWED_HOST=wip-mcp-server` (the in-cluster name, from the component manifest) [live env], so the MCP SDK's DNS-rebinding protection rejects a keyed request whose `Host` is `wip.stgcaas-gw.emea.roche.com` with `HTTP 421 Invalid Host header`. The variable holds a single host, so reaching the server through the public name needs it set to that name. The keyless probes above returned 401 only because the key check runs before the host check, so they could not show this. A client that authenticates therefore gets 421 until `MCP_ALLOWED_HOST` names the public host. [code read: `server.py` `build_network_app` and the component manifest; the 421 itself was reported by a client, not reproduced from here]
 
 **(d) OIDC login**
 Dex runs only on AWS. The public issuer is `https://wip-apps.caasqarcp.roche.com/dex` (what the browser sees). The auth-gateway fetches discovery and signing keys from the in-cluster issuer `http://wip-dex.pbs-app-dev.svc.cluster.local:5556/dex`. The two issuer URLs are deliberately different. On-prem services do not validate tokens.
@@ -245,7 +247,7 @@ Split MongoDB, NATS and PostgreSQL into a separate Rancher project/namespace (4 
 
 ---
 
-## 9. How to re-verify this document (all read-only, VPN on)
+## 9. How to re-verify this document (all read-only, on the Roche network)
 
 ```bash
 export KUBECONFIG=~/Development/Rancher/.secrets/kubeconfig-merged.yaml
@@ -269,4 +271,4 @@ When this document and the cluster disagree, **the cluster is right**; correct t
 
 **Checked live, read-only:** workloads, images, replicas, restart counts and reasons, Services, Ingress paths, Traefik Middleware names, the ResourceQuota, NetworkPolicy absence, `WIP_AUTH_MODE` on the five on-prem services, selected literal env values and the Secret *names* behind `WIP_API_KEY` on the three AWS apps, and the auth-gateway's issuer settings.
 
-**Not checked:** DNS, egress and firewall rules between AWS pods and the on-prem host (needs exec or a probe pod); that the Middleware is actually attached to the app routes (taken from the export); the Dex ConfigMap against any document; the `/mcp/mcp` client URL; runtime logs of cross-cluster traffic; PVC details; Rancher project network isolation; container logs for the 2026-10-28 restarts; the content of any Secret (deliberately).
+**Not checked:** DNS, egress and firewall rules between AWS pods and the on-prem host (needs exec or a probe pod); that the Middleware is actually attached to the app routes (taken from the export); the Dex ConfigMap against any document; an MCP request carrying a valid key (only the keyless `/health` and 401 paths were probed); runtime logs of cross-cluster traffic; PVC details; Rancher project network isolation; container logs for the 2026-10-28 restarts; the content of any Secret (deliberately).
