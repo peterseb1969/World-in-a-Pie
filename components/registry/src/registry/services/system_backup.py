@@ -148,7 +148,8 @@ class ArchiveScope(BaseModel):
     own records outside the scope are skipped (`outside_archive_scope`, so an
     edited archive cannot reach past it), a key whose copy here reaches
     outside the scope is not replaced (`out_of_scope_here`), and a mirror
-    removes only in-scope records, never a key in `keys_left_out`."""
+    removes only in-scope records: never a key in `keys_left_out`, nor one
+    with a grant outside the scope (removing it would delete that grant)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -769,6 +770,15 @@ async def _plan_mirror(
     plan = MirrorPlan(scope=scope)
     in_ns = set(scope.namespaces) if scope else None
     archived_keys = {k.name for k in archive.api_keys}
+    # Keys with a grant outside the scope. Such a grant gives no access while
+    # the key's namespaces lie inside the scope, but it is a record outside
+    # it, and removing the key would delete it with the key.
+    granted_outside: set[str] = set()
+    if in_ns is not None:
+        for g in await NamespaceGrant.find(
+            {"subject_type": "api_key", "namespace": {"$nin": sorted(in_ns)}}
+        ).to_list():
+            granted_outside.add(g.subject.removeprefix("apikey:"))
     for doc in await StoredAPIKey.find({"managed_by": None}).to_list():
         if doc.name in archived_keys or doc.name in config_key_names:
             continue
@@ -776,7 +786,9 @@ async def _plan_mirror(
             # The archive's own word first: a key the source left out (it held
             # a namespace outside the scope there) is never removed, even when
             # this stack's copy of it holds only in-scope namespaces.
-            doc.name in scope.keys_left_out or not scope.holds_key(doc.namespaces)
+            doc.name in scope.keys_left_out
+            or not scope.holds_key(doc.namespaces)
+            or doc.name in granted_outside
         ):
             continue
         if caller_key is not None and doc.name == caller_key:

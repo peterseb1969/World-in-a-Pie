@@ -207,3 +207,49 @@ async def test_a_scoped_archive_never_writes_any_record_outside_its_scope(fresh,
         assert codes.get(ident) == "outside_archive_scope", (section, report[section])
         assert ident not in report[section]["created"]
     assert await StoredAPIKey.find_one(StoredAPIKey.name == outside_key) is None
+
+
+# ── CASE-1073 B: grants outside the scope ─────────────────────────────
+
+
+async def _grant(client, headers, ns, subject, subject_type="api_key", permission="admin"):
+    r = await client.post(f"{NS}/{ns}/grants", headers=headers, json=[
+        {"subject": subject, "subject_type": subject_type, "permission": permission},
+    ])
+    assert r.json()["results"][0]["status"] in ("created", "updated"), r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("spelling", ["bare", "apikey:"])
+async def test_a_scoped_mirror_keeps_a_key_with_a_grant_outside_the_scope(fresh, auth_headers, spelling):
+    """The key exists only here, holds [a], and has a grant on z. Its grant on
+    z gives no access today (a key's access is bounded by its namespaces), but
+    it is a record outside the scope: removing the key would delete it."""
+    client = fresh
+    a, z = await _two_namespaces(client, auth_headers)
+    archive = await _backup(client, auth_headers, namespaces=a)
+    k = _p("here-only")
+    await _key(client, auth_headers, k, [a])
+    await _grant(client, auth_headers, z, k if spelling == "bare" else f"apikey:{k}")
+
+    report = await _restore(client, auth_headers, archive, mode="mirror")
+    assert k not in report["api_keys"]["deleted"]
+    assert not [g for g in report["grants"]["deleted"] if g.startswith(f"{z}/")]
+    applied = await _restore(client, auth_headers, archive, mode="mirror", dry_run=False,
+                             expect=report["plan_digest"])
+    assert k not in applied["api_keys"]["deleted"]
+    assert await StoredAPIKey.find_one(StoredAPIKey.name == k) is not None
+    assert await NamespaceGrant.find_one({"namespace": z}) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_scoped_mirror_still_removes_a_key_whose_grants_are_all_inside(fresh, auth_headers):
+    client = fresh
+    a, _ = await _two_namespaces(client, auth_headers)
+    archive = await _backup(client, auth_headers, namespaces=a)
+    k = _p("here-only")
+    await _key(client, auth_headers, k, [a])
+    await _grant(client, auth_headers, a, k)
+
+    report = await _restore(client, auth_headers, archive, mode="mirror")
+    assert k in report["api_keys"]["deleted"]

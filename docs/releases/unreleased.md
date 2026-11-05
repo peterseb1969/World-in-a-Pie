@@ -61,7 +61,7 @@ run on every install with the auth gateway. It is now the optional module
   never matched). The reach warning now names each missing kind: pods and
   Services without `nodes=` still leave the control plane reachable.
 
-### A scoped system restore changes nothing outside its scope; `@wip/client` 0.80.0
+### A scoped system restore changes nothing outside its scope; `@wip/client` 0.80.0 and 0.81.0
 
 A scoped system backup (`system-backup?namespaces=…&attachments=…`) promises
 that its restore leaves everything outside the scope untouched. Four gaps
@@ -84,7 +84,16 @@ broke that promise:
   names is refused with 422. `@wip/client` 0.80.0's `systemBackup` sends any
   list it is given, so `{ namespaces: [] }` gets that refusal instead of a
   whole-stack archive. The type `SystemRestoreSkipReason` gains both new
-  codes.
+  codes. `@wip/client` 0.81.0 also treats `namespaces: null` (or
+  `attachments: null`) as not given, where 0.80.0 threw a `TypeError`.
+- **A scoped mirror never removes a key with a grant outside the scope.**
+  Such a grant gives no access while the key's namespaces lie inside the
+  scope (a key's access is bounded by its own namespace list), but removing
+  the key would delete the grant with it.
+- **A scoped mirror that skips one of this stack's keys never adopts the
+  archive's hash salt** (it answers 409 `salt_mismatch`). Before, the skipped
+  key kept its hash under a salt that no longer matched it, and stopped
+  authenticating.
 
 ### k8s: wip-caddy is the front door, behind one Ingress; Traefik works
 
