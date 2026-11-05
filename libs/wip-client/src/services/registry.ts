@@ -297,8 +297,9 @@ export class RegistryService extends BaseService {
    */
   async systemBackup(options: SystemBackupOptions = {}): Promise<SystemArchive> {
     const params: Record<string, string> = {}
-    if (options.namespaces !== undefined) params.namespaces = options.namespaces.join(',')
-    if (options.attachments !== undefined) params.attachments = options.attachments.join(',')
+    // null (a JavaScript caller's "not given") is treated like undefined.
+    if (options.namespaces != null) params.namespaces = options.namespaces.join(',')
+    if (options.attachments != null) params.attachments = options.attachments.join(',')
     return Object.keys(params).length ? this.post('/system-backup', null, params) : this.post('/system-backup')
   }
 

@@ -69,6 +69,16 @@ describe('RegistryService: attachments, system backup, orphaned grants', () => {
       expect(call().url).toContain('namespaces=')
     })
 
+    it('systemBackup treats a null list like one not given', async () => {
+      respond(ARCHIVE)
+      await client.registry.systemBackup({
+        namespaces: null as unknown as string[], attachments: ['aa'],
+      })
+      const { url } = call()
+      expect(url).not.toContain('namespaces=')
+      expect(url).toContain('attachments=aa')
+    })
+
     it('systemBackup without options sends no scope', async () => {
       respond(ARCHIVE)
       await client.registry.systemBackup()

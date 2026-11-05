@@ -1394,8 +1394,8 @@ var RegistryService = class extends BaseService {
    */
   async systemBackup(options = {}) {
     const params = {};
-    if (options.namespaces !== void 0) params.namespaces = options.namespaces.join(",");
-    if (options.attachments !== void 0) params.attachments = options.attachments.join(",");
+    if (options.namespaces != null) params.namespaces = options.namespaces.join(",");
+    if (options.attachments != null) params.attachments = options.attachments.join(",");
     return Object.keys(params).length ? this.post("/system-backup", null, params) : this.post("/system-backup");
   }
   /**
