@@ -3,7 +3,7 @@ import { createWipClient } from '../src/client'
 import type { WipClient } from '../src/client'
 import { WipConflictError, WipValidationError, wipErrorCode } from '../src/errors'
 import { MANAGED_BY_DEPLOYER, PLAN_CHANGED, RESTORE_REFUSED, SALT_MISMATCH } from '../src/types/registry'
-import type { SystemArchive } from '../src/types/registry'
+import type { AttachmentNotServedReason, SystemArchive } from '../src/types/registry'
 
 // The Registry surfaces RC builds its attach, system-backup and orphaned-grant
 // pages on: attachments, the system backup and restore, orphaned grants.
@@ -180,6 +180,14 @@ describe('RegistryService: attachments, system backup, orphaned grants', () => {
       respond({ name: 'aa', path: '/apps/aa' })
       await client.registry.getAttachment('aa')
       expect(call().url).toContain('/api/registry/attachments/aa')
+    })
+
+    it('an attachment says whether it is served, and why not', async () => {
+      respond({ name: 'aa', path: '/apps/aa', status: 'active', served: false, not_served_reason: 'no_app_edge' })
+      const a = await client.registry.getAttachment('aa')
+      expect(a.served).toBe(false)
+      const reason: AttachmentNotServedReason | null | undefined = a.not_served_reason
+      expect(reason).toBe('no_app_edge')
     })
   })
 

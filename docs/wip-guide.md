@@ -1051,7 +1051,13 @@ the edge:
   deactivating still work, so records from before the edge was removed stay
   manageable;
 - records already active stay active but are not served, so their apps go
-  offline until the edge is back;
+  offline until the edge is back. Reads say so: every attachment in a list or
+  get carries `served` (true when it is active and an edge runs) and, when
+  false, `not_served_reason`: `inactive`, `no_app_edge`, or
+  `policy_unavailable` (the attach policy file cannot be used, so the edge
+  serves nothing). `served` is not a reachability check: the Registry never
+  calls an upstream, and the edge can still refuse a record when it resolves
+  it;
 - a system restore skips the archive's active attachments
   (`reason_code: no_app_edge`) and restores its inactive ones as records.
 

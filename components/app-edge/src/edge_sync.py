@@ -490,6 +490,9 @@ class RegistryUnavailable(Exception):
 
 
 def fetch_attachments(s: Settings, timeout: float = 5.0) -> list[dict[str, Any]]:
+    # Every active record, whatever its `served` field says. `served` is the
+    # Registry's view of whether an edge runs; this edge knows it runs, and
+    # must not stop serving because the Registry cannot read the policy file.
     out: list[dict[str, Any]] = []
     page = 1
     while True:

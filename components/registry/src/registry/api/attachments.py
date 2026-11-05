@@ -41,6 +41,7 @@ from ..models.attachment import (
     AttachmentListResponse,
     AttachmentRequest,
     AttachmentResponse,
+    EdgeState,
 )
 from ..services.attachments import (
     AttachPolicyUnavailable,
@@ -220,6 +221,18 @@ async def deactivate_attachments(
     return _envelope(results)
 
 
+def _edge_state() -> EdgeState:
+    """Whether this install serves attachments, from the attach policy. A read
+    never fails on the policy: an unusable file reads as not served, which is
+    true, since the app edge then serves nothing either. The app edge itself
+    never consults this: it knows from its own policy that it runs."""
+    try:
+        policy = load_policy()
+    except AttachPolicyUnavailable:
+        return "policy_unavailable"
+    return "serving" if policy.app_edge else "no_app_edge"
+
+
 @router.get("", response_model=AttachmentListResponse, summary="List attachments")
 async def list_attachments(
     status: str | None = Query(None, pattern="^(active|inactive)$", description="Only this status"),
@@ -227,12 +240,14 @@ async def list_attachments(
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
     _reader: object = Depends(require_attachment_reader),
 ) -> AttachmentListResponse:
-    """Attachments sorted by name."""
+    """Attachments sorted by name. Each carries `served` and, when not served,
+    `not_served_reason`."""
+    edge = _edge_state()
     query = AppAttachment.find(AppAttachment.status == status) if status else AppAttachment.find_all()
     total = await query.count()
     docs = await query.sort("+name").skip((page - 1) * page_size).limit(page_size).to_list()
     return AttachmentListResponse(
-        items=[AttachmentResponse.of(d) for d in docs],
+        items=[AttachmentResponse.of(d, edge) for d in docs],
         total=total,
         page=page,
         page_size=page_size,
@@ -248,4 +263,4 @@ async def get_attachment(
     doc = await AppAttachment.find_one(AppAttachment.name == name)
     if doc is None:
         raise HTTPException(status_code=404, detail=f"No attachment named {name!r}")
-    return AttachmentResponse.of(doc)
+    return AttachmentResponse.of(doc, _edge_state())

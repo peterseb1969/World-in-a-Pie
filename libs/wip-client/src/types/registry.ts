@@ -562,7 +562,22 @@ export interface Attachment extends Required<Omit<AttachmentRequest, 'upstream_t
   created_by: string
   updated_at: string
   updated_by: string
+  /**
+   * The install is configured to serve this attachment: it is active and an
+   * app edge runs. Not a reachability check (the Registry never calls an
+   * upstream). Absent from Registries older than this field.
+   */
+  served?: boolean
+  /** Why `served` is false; null when served. */
+  not_served_reason?: AttachmentNotServedReason | null
 }
+
+/**
+ * `inactive`: the record is deactivated. `no_app_edge`: this install runs no
+ * app edge. `policy_unavailable`: the attach policy file cannot be used, so
+ * the edge serves nothing.
+ */
+export type AttachmentNotServedReason = 'inactive' | 'no_app_edge' | 'policy_unavailable'
 
 /**
  * Per-item error codes of attachment writes (`error_code`, with

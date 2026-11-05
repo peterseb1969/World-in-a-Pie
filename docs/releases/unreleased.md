@@ -7,6 +7,23 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Attachment reads say whether the app is served; `@wip/client` 0.82.0
+
+`GET /api/registry/attachments` and `GET /api/registry/attachments/{name}`
+showed `status: active` for a record nothing serves (an install without the
+app edge). Each attachment now carries:
+
+- `served`: true when the record is active and an app edge runs;
+- `not_served_reason` when false: `inactive`, `no_app_edge`, or
+  `policy_unavailable`. An unusable attach policy file reads as not served,
+  which is true, since the edge then serves nothing; a read never fails on it.
+
+`served` is the install's configuration, not a reachability check: the Registry
+never calls an upstream, and the edge can still refuse a record when it
+resolves it. The app edge itself ignores the field. **`@wip/client` 0.82.0**
+types both fields (optional, for older Registries) and adds
+`AttachmentNotServedReason`.
+
 ### The app edge is an optional module; `@wip/client` 0.79.0
 
 The app edge, which serves apps attached through the Registry's API, used to

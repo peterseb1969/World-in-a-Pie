@@ -191,6 +191,13 @@ class AttachmentRequest(AttachmentFields):
         return self
 
 
+# Whether this install serves attachments at all, from the attach policy:
+# "serving" (an app edge runs), "no_app_edge" (the policy says none runs), or
+# "policy_unavailable" (the file cannot be used; the edge then serves nothing).
+EdgeState = Literal["serving", "no_app_edge", "policy_unavailable"]
+NotServedReason = Literal["inactive", "no_app_edge", "policy_unavailable"]
+
+
 class AttachmentResponse(AttachmentFields):
     name: str
     path: str
@@ -200,9 +207,28 @@ class AttachmentResponse(AttachmentFields):
     created_by: str
     updated_at: datetime
     updated_by: str
+    served: bool = Field(
+        ...,
+        description="The install is configured to serve this attachment: it is active and "
+        "an app edge runs. Not a reachability check: the Registry never calls an "
+        "upstream, and the edge may still refuse the record when it resolves it.",
+    )
+    not_served_reason: NotServedReason | None = Field(
+        default=None,
+        description="Why `served` is false: `inactive` (the record is deactivated), "
+        "`no_app_edge` (this install runs no app edge), or `policy_unavailable` (the "
+        "attach policy file cannot be used, so the edge serves nothing). Null when served.",
+    )
 
     @classmethod
-    def of(cls, doc: AppAttachment) -> "AttachmentResponse":
+    def of(cls, doc: AppAttachment, edge: EdgeState) -> "AttachmentResponse":
+        reason: NotServedReason | None
+        if doc.status == "inactive":
+            reason = "inactive"
+        elif edge == "serving":
+            reason = None
+        else:
+            reason = edge
         return cls(
             **doc.model_dump(include=set(AttachmentFields.model_fields)),
             name=doc.name,
@@ -213,6 +239,8 @@ class AttachmentResponse(AttachmentFields):
             created_by=doc.created_by,
             updated_at=doc.updated_at,
             updated_by=doc.updated_by,
+            served=reason is None,
+            not_served_reason=reason,
         )
 
 
