@@ -445,6 +445,13 @@ def caddyfile(p: Plan | None, s: Settings, *, unavailable: str | None = None) ->
         "{",
         f"\tadmin {ADMIN_ADDRESS}",
         "\tauto_https off",
+        # Keep the front door's X-Forwarded-For, so an attached app sees the
+        # client and not wip-caddy's address. Only wip-caddy reaches the edge
+        # (k8s: the edge's ingress rule; compose: no published port), always
+        # from a private address.
+        "\tservers {",
+        "\t\ttrusted_proxies static private_ranges",
+        "\t}",
         "}",
         f":{LISTEN_PORT} {{",
         "\thandle /edge/health {",

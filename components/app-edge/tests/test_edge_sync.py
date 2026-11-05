@@ -205,6 +205,14 @@ def test_tls_verify_off_and_plain_http():
     assert "203.0.113.10:3000" in plain
 
 
+def test_the_front_doors_forwarded_for_is_kept():
+    # Without trust Caddy replaces X-Forwarded-For with its peer, wip-caddy,
+    # and every attached app sees the front door as its only client.
+    trust = "\tservers {\n\t\ttrusted_proxies static private_ranges\n\t}\n}\n"
+    for cfg in (es.caddyfile(es.plan([rec()], []), SETTINGS), es.caddyfile(None, SETTINGS)):
+        assert cfg.startswith("{\n") and trust in cfg[: cfg.index(f":{es.LISTEN_PORT} {{")]
+
+
 def test_unknown_paths_404_and_no_plan_503():
     cfg = es.caddyfile(es.plan([], []), SETTINGS)
     assert 'respond "No app is attached at this path" 404' in cfg

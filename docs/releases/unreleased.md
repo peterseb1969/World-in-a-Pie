@@ -61,6 +61,31 @@ run on every install with the auth gateway. It is now the optional module
   by hand; the extra `app-edge` entry is then reported as an unknown module
   by the older deployer, so remove it from `modules.optional` as well.
 
+### Client addresses survive the front door and the app edge
+
+Every Caddy hop used to replace `X-Forwarded-For` with its own peer's
+address. Backends therefore keyed their per-IP rate limit on the front
+door's peer: on k8s that is the ingress controller pod, so every user shared
+one bucket. Attached apps saw wip-caddy as their only client.
+
+- **k8s:** wip-caddy trusts the cluster's pod ranges (`--cluster-cidr
+  pods=…`), where the ingress controller runs, and keeps its
+  `X-Forwarded-For`. Without pod ranges nothing changes. Set them on an
+  existing install with `wip-deploy redeploy --cluster-cidr pods=…`.
+- **Every target:** the app edge trusts private addresses (only wip-caddy
+  reaches it) and passes the chain on to attached apps.
+- **Compose and dev are unchanged at the front door:** wip-caddy faces the
+  client and still trusts no one, so a client cannot choose its address.
+- **The controller must see the client too.** A `LoadBalancer` Service with
+  `externalTrafficPolicy: Cluster` (the Kubernetes default, which k3s's
+  Traefik keeps unless its values set otherwise) rewrites the
+  source address, so the controller and everything behind it see a node
+  address. Set `externalTrafficPolicy: Local` on the controller's Service
+  (for k3s, through a `HelmChartConfig` for `traefik`) to keep real client
+  addresses.
+- **Needs a new app-edge image** for the edge half; the wip-caddy half is
+  configuration only.
+
 ### Scoped verbs after the k8s front-door change; cluster ranges on existing installs
 
 - **The first scoped verb on a k8s install last applied before wip-caddy

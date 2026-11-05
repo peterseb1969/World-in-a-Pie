@@ -40,6 +40,12 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
         out.write("    auto_https off\n")
     else:
         out.write("    auto_https disable_redirects\n")
+    if cfg.trusted_proxies:
+        # Keep the ingress controller's X-Forwarded-For (and append the
+        # controller) instead of replacing it with the controller's address.
+        out.write("    servers {\n")
+        out.write(f"        trusted_proxies static {' '.join(cfg.trusted_proxies)}\n")
+        out.write("    }\n")
     out.write("}\n\n")
 
     # Site block. Explicit :port so Caddy binds where our compose port
