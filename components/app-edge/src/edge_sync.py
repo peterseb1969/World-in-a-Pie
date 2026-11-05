@@ -66,6 +66,7 @@ PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
 HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
 
 Address = ipaddress.IPv4Address | ipaddress.IPv6Address
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 METADATA_ADDRESSES = frozenset({
     ipaddress.ip_address("fd00:ec2::254"),
@@ -122,8 +123,16 @@ class PolicyUnavailable(Exception):
 def load_blocked_hosts(path: str | None) -> list[str]:
     """The install's own hosts. Unset path: none (a hand-run edge). A set
     path that is missing, empty or unparseable fails closed."""
+    return load_policy(path)[0]
+
+
+def load_policy(path: str | None) -> tuple[list[str], list[Network]]:
+    """The install's own hosts and, on k8s, the cluster's own node ranges
+    (`blocked_cidrs`, absent when the install sets none). Unset path: none.
+    A set path that is missing, empty or unparseable fails closed, and so does
+    a range that is not a network."""
     if not path:
-        return []
+        return [], []
     try:
         with open(path) as f:
             raw = f.read()
@@ -132,10 +141,12 @@ def load_blocked_hosts(path: str | None) -> list[str]:
     if not raw.strip():
         raise PolicyUnavailable(f"{path} is empty")
     try:
-        hosts = json.loads(raw)["blocked_hosts"]
-    except (ValueError, KeyError, TypeError) as e:
+        doc = json.loads(raw)
+        hosts = doc["blocked_hosts"]
+        cidrs = [ipaddress.ip_network(str(c), strict=False) for c in doc.get("blocked_cidrs", [])]
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
         raise PolicyUnavailable(f"{path} does not parse: {e}") from e
-    return [str(h).lower().rstrip(".") for h in hosts]
+    return [str(h).lower().rstrip(".") for h in hosts], cidrs
 
 
 def unmapped(ip: Address) -> Address:
@@ -278,6 +289,7 @@ def plan(
     records: list[dict[str, Any]],
     blocked_hosts: list[str],
     families: set[int] | None = None,
+    blocked_cidrs: list[Network] | None = None,
 ) -> Plan:
     """Resolve and check every record's upstream; keep the servable ones.
     Every resolved address is checked; only those of a family the container
@@ -322,6 +334,10 @@ def plan(
                 break
             if unmapped(ip) in install:
                 reason = f"{host} resolves to {ip}, the install's own host {install[unmapped(ip)]}"
+                break
+            inside = next((n for n in blocked_cidrs or [] if unmapped(ip) in n), None)
+            if inside is not None:
+                reason = f"{host} resolves to {ip}, inside the cluster's node range {inside}"
                 break
         if reason:
             out.skipped[name] = reason
@@ -534,7 +550,7 @@ def tick(s: Settings, state: State, now: float) -> str:
     """One poll. Returns the config that should be loaded."""
     try:
         records = fetch_attachments(s)
-        blocked = load_blocked_hosts(s.policy_file)
+        blocked, blocked_cidrs = load_policy(s.policy_file)
     except PolicyUnavailable as e:
         logger.error("Attach policy unavailable, serving no attached app: %s", e)
         return caddyfile(None, s, unavailable="the install's attach policy is unavailable")
@@ -544,7 +560,7 @@ def tick(s: Settings, state: State, now: float) -> str:
             return caddyfile(None, s, unavailable=e.reason)
         return state.loaded or caddyfile(None, s)
     state.last_ok = now
-    p = plan(records, blocked)
+    p = plan(records, blocked, blocked_cidrs=blocked_cidrs)
     state.plan = p
     # Reported when it changes, not on every poll.
     if p.skipped != state.reported:

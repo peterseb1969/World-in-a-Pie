@@ -75,6 +75,8 @@ class BuildInputs:
     k8s_ingress_class: str = "nginx"
     k8s_ingress_controller: str = "nginx"
     k8s_ingress_namespace: str | None = None
+    # "pods=CIDR" / "services=CIDR" / "nodes=CIDR" (--cluster-cidr, repeatable)
+    k8s_cluster_cidrs: list[str] | None = None
     k8s_tls_secret_name: str = "wip-tls"
 
     # Dev platform
@@ -248,6 +250,16 @@ def _build_platform(inputs: BuildInputs) -> dict[str, Any]:
         }
         if inputs.k8s_ingress_namespace:
             block["k8s"]["ingress_namespace"] = inputs.k8s_ingress_namespace
+        if inputs.k8s_cluster_cidrs:
+            ranges: dict[str, list[str]] = {}
+            for item in inputs.k8s_cluster_cidrs:
+                kind, sep, cidr = item.partition("=")
+                if not sep or kind not in ("pods", "services", "nodes") or not cidr:
+                    raise ValueError(
+                        f"--cluster-cidr {item!r}: expected pods=CIDR, services=CIDR or nodes=CIDR"
+                    )
+                ranges.setdefault(kind, []).append(cidr)
+            block["k8s"]["cluster_ranges"] = ranges
     elif inputs.target == "dev":
         dev_block: dict[str, Any] = {"mode": inputs.dev_mode}
         if inputs.app_sources:

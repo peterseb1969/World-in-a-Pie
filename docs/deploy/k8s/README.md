@@ -112,6 +112,8 @@ The install's front door is **`wip-caddy`**, the same public Caddy the podman/co
 
 `--ingress-controller` (`nginx` or `traefik`, default `nginx`) picks the few annotations that one Ingress carries. `--ingress-namespace` names the namespace the controller's pods run in. The NetworkPolicy lets only those pods reach `wip-caddy`. The default is `ingress` for nginx (MicroK8s's addon) and `kube-system` for Traefik (k3s); a stock ingress-nginx install runs in `ingress-nginx`.
 
+`--cluster-cidr pods=<CIDR>`, `services=<CIDR>`, `nodes=<CIDR>` (repeatable) give the cluster's own ranges. The app edge may not reach them through its "anywhere" egress rule, and the node ranges join the attach blocklist. Use the cluster's own node addresses, not a LAN it shares with other machines. Without them `wip-deploy` warns that the edge can reach the control plane.
+
 | | nginx | Traefik |
 |---|---|---|
 | Annotations on `wip-ingress` | unlimited body size, 1-hour read/send timeouts, no response buffering, HTTPS redirect | `router.entrypoints: websecure`, `router.tls: "true"` |

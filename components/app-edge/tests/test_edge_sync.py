@@ -10,6 +10,7 @@ routes expire a fixed time after the last successful read.
 from __future__ import annotations
 
 import ipaddress
+import json
 
 import pytest
 
@@ -314,3 +315,30 @@ def test_the_self_test_covers_every_option():
                    'request_header Cookie "(^|;\\s*)wip_session']:
         assert needle in full, needle
     assert "unavailable" in configs["unavailable"]
+
+
+# ── the cluster's node ranges (CASE-1062) ──────────────────────────────────
+
+
+def test_an_upstream_in_a_node_range_is_skipped():
+    nodes = [ipaddress.ip_network("192.168.1.20/32")]
+    p = es.plan([rec(name="api", upstream="https://192.168.1.20:6443"),
+                 rec(name="aa", upstream="http://192.168.1.30:30080")], [], blocked_cidrs=nodes)
+    assert "node range" in p.skipped["api"]
+    assert [t.record["name"] for t in p.targets] == ["aa"]
+
+
+def test_the_policy_carries_the_node_ranges(tmp_path):
+    f = tmp_path / "policy.json"
+    f.write_text(json.dumps({"blocked_hosts": ["wip-registry"], "blocked_cidrs": ["192.168.1.20/32"]}))
+    hosts, cidrs = es.load_policy(str(f))
+    assert hosts == ["wip-registry"] and cidrs == [ipaddress.ip_network("192.168.1.20/32")]
+    f.write_text(json.dumps({"blocked_hosts": ["wip-registry"]}))
+    assert es.load_policy(str(f))[1] == []
+
+
+def test_a_bad_node_range_fails_closed(tmp_path):
+    f = tmp_path / "policy.json"
+    f.write_text(json.dumps({"blocked_hosts": [], "blocked_cidrs": ["nope"]}))
+    with pytest.raises(es.PolicyUnavailable):
+        es.load_policy(str(f))

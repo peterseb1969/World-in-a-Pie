@@ -104,6 +104,25 @@ upgrading. ClinTrial Explorer, which the 2026-10-12 rollout recorded as using
 the gateway's injected key, is retired. Takes effect on a redeploy with a rebuilt
 auth-gateway image.
 
+### The app edge on k8s may not reach the cluster's own ranges: `--cluster-cidr`
+
+The app edge's egress rule for attached apps outside the cluster (`ipBlock
+0.0.0.0/0`, `::/0`) also reached the cluster's control plane and kubelets on
+the node addresses and, depending on the network plugin, pod and Service IPs.
+- **`--cluster-cidr pods=… services=… nodes=…`** (repeatable,
+  `platform.k8s.cluster_ranges`) sets the cluster's own ranges. They are
+  excepted from that rule.
+- **The node ranges also join the attach policy** (`blocked_cidrs`). The
+  Registry refuses an attachment, and the edge an upstream, that resolves
+  into them. List the cluster's own node addresses, not a shared LAN.
+- **Without ranges, `wip-deploy` warns.** The deployer cannot discover them.
+- **Unchanged:** the edge still reaches every other Kubernetes namespace's
+  pods. That is documented as part of "attaching is full trust".
+- **Rollout:** rebuild the Registry and the app edge with the deployer that
+  renders `blocked_cidrs`. An older Registry refuses a policy file carrying
+  the new field, and attaching fails closed until it is upgraded. The file
+  carries it only when node ranges are set.
+
 ### A system backup scoped to one app's namespaces; WIP-Toolkit 0.25.7, `@wip/client` 0.78.0
 
 - `POST /api/registry/system-backup?namespaces=a,b&attachments=x` takes a

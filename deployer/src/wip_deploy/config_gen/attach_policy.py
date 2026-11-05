@@ -83,11 +83,16 @@ def attach_policy_json(
     # The public hostname resolves to the host, not to a container, so it
     # needs its own entry: /apps/x -> https://<host>/ would be a proxy loop.
     hosts.add(deployment.spec.network.hostname.lower())
-    return json.dumps(
-        {
-            "app_edge": app_edge_active(deployment),
-            "blocked_hosts": sorted(hosts),
-            "reserved_names": app_route_names(deployment, apps),
-        },
-        indent=2,
-    ) + "\n"
+    policy: dict[str, object] = {
+        "app_edge": app_edge_active(deployment),
+        "blocked_hosts": sorted(hosts),
+        "reserved_names": app_route_names(deployment, apps),
+    }
+    # The cluster's own node addresses: an upstream there is the API server or
+    # a kubelet, never an attached app of this cluster (those are reached by
+    # Service name). Only when set, so an install without ranges renders the
+    # same file as before.
+    k8s = deployment.spec.platform.k8s
+    if deployment.spec.target == "k8s" and k8s is not None and k8s.cluster_ranges.nodes:
+        policy["blocked_cidrs"] = list(k8s.cluster_ranges.nodes)
+    return json.dumps(policy, indent=2) + "\n"

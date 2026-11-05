@@ -55,7 +55,7 @@ import socket
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 logger = logging.getLogger("registry.attachments")
 
@@ -82,6 +82,21 @@ class AttachPolicy(BaseModel):
             "ran it."
         ),
     )
+    blocked_cidrs: list[str] = Field(
+        default_factory=list,
+        description="k8s: the cluster's own node ranges. An upstream there is the "
+        "API server or a kubelet, never an attached app",
+    )
+
+    @field_validator("blocked_cidrs")
+    @classmethod
+    def _cidrs(cls, v: list[str]) -> list[str]:
+        for c in v:
+            ipaddress.ip_network(c, strict=False)  # ValueError -> the policy is unusable
+        return v
+
+    def blocked_networks(self) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+        return [ipaddress.ip_network(c, strict=False) for c in self.blocked_cidrs]
 
 
 class AttachPolicyUnavailable(Exception):
@@ -246,6 +261,13 @@ async def check_upstream(
         why = blocked_address_class(ip)
         if why:
             return UpstreamCheck(blocked=f"{host!r} resolves to {ip}, a {why} address")
+    networks = policy.blocked_networks()
+    for ip in sorted(addresses, key=str):
+        inside = next((n for n in networks if _unmapped(ip) in n), None)
+        if inside is not None:
+            return UpstreamCheck(
+                blocked=f"{host!r} resolves to {ip}, inside the cluster's node range {inside}"
+            )
 
     for ip in sorted(addresses, key=str):
         if _unmapped(ip) in install_addresses:

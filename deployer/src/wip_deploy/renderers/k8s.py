@@ -225,6 +225,7 @@ def render_k8s(
             ns,
             app_edge=app_edge_active(deployment),
             controller_ns=k8s.controller_namespace(),
+            cluster_ranges=k8s.cluster_ranges.all(),
         ),
     )
 
@@ -279,7 +280,8 @@ APP_EDGE_COMPONENT = "app-edge"
 
 
 def _render_network_policies(
-    ns: str, *, app_edge: bool = False, controller_ns: str = "ingress"
+    ns: str, *, app_edge: bool = False, controller_ns: str = "ingress",
+    cluster_ranges: list[str] | None = None,
 ) -> str:
     """Render the namespace-isolation NetworkPolicy bundle.
 
@@ -429,13 +431,30 @@ def _render_network_policies(
         _dump(allow_egress_https),
     ]
     if app_edge:
-        parts.append(_dump(_app_edge_egress_policy(ns, labels)))
+        parts.append(_dump(_app_edge_egress_policy(ns, labels, cluster_ranges or [])))
     return "---\n".join(parts)
 
 
-def _app_edge_egress_policy(ns: str, labels: dict[str, str]) -> dict[str, Any]:
+def _anywhere_except(cidr: str, ranges: list[str]) -> dict[str, Any]:
+    """An ipBlock for one IP family's "anywhere", excepting the cluster's own
+    ranges of that family (platform.k8s.cluster_ranges)."""
+    import ipaddress
+
+    family = ipaddress.ip_network(cidr).version
+    excepted = [r for r in ranges if ipaddress.ip_network(r).version == family]
+    block: dict[str, Any] = {"cidr": cidr}
+    if excepted:
+        block["except"] = excepted
+    return {"ipBlock": block}
+
+
+def _app_edge_egress_policy(
+    ns: str, labels: dict[str, str], cluster_ranges: list[str] | None = None,
+) -> dict[str, Any]:
     def pods(name: str) -> dict[str, Any]:
         return {"podSelector": {"matchLabels": {_LABELS_NAME: name}}}
+
+    ranges = cluster_ranges or []
 
     return {
         "apiVersion": "networking.k8s.io/v1",
@@ -454,8 +473,11 @@ def _app_edge_egress_policy(ns: str, labels: dict[str, str]) -> dict[str, Any]:
                 {"to": [{"namespaceSelector": {"matchExpressions": [{
                     "key": "kubernetes.io/metadata.name", "operator": "NotIn", "values": [ns],
                 }]}}]},
-                # Attached apps outside the cluster.
-                {"to": [{"ipBlock": {"cidr": "0.0.0.0/0"}}, {"ipBlock": {"cidr": "::/0"}}]},
+                # Attached apps outside the cluster, but not the cluster's own
+                # pod, Service and node ranges: without the except this rule
+                # reaches the API server's endpoint and the kubelets on the
+                # node addresses, and (plugin-dependent) pod and Service IPs.
+                {"to": [_anywhere_except("0.0.0.0/0", ranges), _anywhere_except("::/0", ranges)]},
             ],
         },
     }

@@ -1128,19 +1128,26 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   rendered NetworkPolicy `app-edge-egress` takes the edge out of the
   namespace's broad allows. It lets the edge reach only the Registry, the
   auth gateway, DNS, pods in other namespaces and addresses outside the
-  cluster. **Two caveats:**
-  - The rule for addresses outside the cluster (`ipBlock 0.0.0.0/0`, `::/0`)
-    also reaches the API server's real endpoint and the kubelets: node
-    addresses on ports such as 6443/16443 and 10250 are outside the
-    cluster's pod network as far as that rule is concerned. The edge's
-    blocklist catches the `kubernetes…` names and their ClusterIP, but not
-    those addresses.
-  - Whether the same rule also matches in-cluster pod and Service IPs
-    depends on the network plugin.
-
-  Until the rule can exclude the cluster's own ranges, an attached app's
-  upstream given as a node or pod address isn't stopped at the network
-  layer. Attaching is platform admin only (above).
+  cluster.
+  - **Give the cluster's own ranges at install:** `--cluster-cidr
+    pods=<CIDR> --cluster-cidr services=<CIDR> --cluster-cidr nodes=<CIDR>`
+    (repeatable; `platform.k8s.cluster_ranges`). They are excepted from the
+    "outside the cluster" rule (`ipBlock 0.0.0.0/0`, `::/0`), which
+    otherwise also reaches the API server's endpoint and the kubelets on the
+    node addresses (ports such as 6443/16443 and 10250) and, depending on
+    the network plugin, pod and Service IPs. The node ranges also join the
+    attach blocklist: the Registry and the edge refuse an upstream that
+    resolves into them. Without ranges, `wip-deploy` warns.
+  - **Node ranges are the cluster's own node addresses** (for example
+    `192.168.1.20/32`), never a LAN it shares with other machines: an app
+    another cluster on that LAN serves through a NodePort would be refused
+    too. Pod and Service ranges never block an upstream, since attached
+    apps in other namespaces live there.
+  - **The edge still reaches every other Kubernetes namespace's pods,** on
+    any port, including kube-system and other tenants' services. That is
+    part of "attaching is full trust" (above): an attachment can publish an
+    in-cluster service that has no authentication of its own. Attaching is
+    platform admin only.
 - **The app's key** is created in RC or through `/api-keys` (§4.4),
   widened with `reserve` for the namespaces it creates. The app holds the
   plaintext itself.

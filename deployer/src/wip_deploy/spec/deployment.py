@@ -517,6 +517,41 @@ class ComposePlatform(WIPModel):
     platform_variant: Literal["default", "pi4", "windows"] = "default"
 
 
+class K8sClusterRanges(WIPModel):
+    """The cluster's own address ranges, which the deployer cannot discover
+    without cluster access. The app edge reaches attached apps anywhere
+    (`ipBlock` 0.0.0.0/0 and ::/0); these ranges are excepted from that, so it
+    cannot reach the cluster's control plane, kubelets, or pod and Service
+    addresses through it. Attached apps in other namespaces stay reachable
+    through the edge's namespace rule.
+
+    `nodes` are the cluster's OWN node addresses (e.g. 192.168.1.20/32), never
+    a LAN it shares with other machines: the edge's blocklist also refuses an
+    upstream inside them, which would refuse an app another cluster on the
+    same LAN serves through a NodePort.
+    """
+
+    pods: list[str] = Field(default_factory=list)
+    services: list[str] = Field(default_factory=list)
+    nodes: list[str] = Field(default_factory=list)
+
+    @field_validator("pods", "services", "nodes")
+    @classmethod
+    def _networks(cls, v: list[str]) -> list[str]:
+        import ipaddress
+
+        out = []
+        for cidr in v:
+            try:
+                out.append(str(ipaddress.ip_network(cidr, strict=True)))
+            except ValueError as e:
+                raise ValueError(f"{cidr!r} is not a network address with a prefix length: {e}") from e
+        return out
+
+    def all(self) -> list[str]:
+        return [*self.pods, *self.services, *self.nodes]
+
+
 class K8sPlatform(WIPModel):
     namespace: str = Field(default="wip", pattern=r"^[a-z][a-z0-9-]*$")
     storage_class: str = "rook-ceph-block"
@@ -532,6 +567,9 @@ class K8sPlatform(WIPModel):
     # MicroK8s's nginx addon; "kube-system", k3s's Traefik).
     ingress_namespace: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]*$")
     tls_secret_name: str = "wip-tls"
+    # The cluster's own pod, Service and node ranges (K8sClusterRanges). Empty:
+    # the app edge can reach the cluster's control plane, and the CLI warns.
+    cluster_ranges: K8sClusterRanges = Field(default_factory=K8sClusterRanges)
 
     def controller_namespace(self) -> str:
         if self.ingress_namespace:

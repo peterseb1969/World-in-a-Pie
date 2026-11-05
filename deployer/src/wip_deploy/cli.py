@@ -380,6 +380,15 @@ def _ingress_namespace_opt() -> typer.models.OptionInfo:
     )
 
 
+def _cluster_cidr_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--cluster-cidr",
+        help="K8s: one of the cluster's own ranges, as pods=CIDR, services=CIDR or "
+        "nodes=CIDR (repeatable). The app edge may not reach them; give the cluster's "
+        "own node addresses, not a LAN it shares with other machines.",
+    )
+
+
 def _tls_secret_opt() -> typer.models.OptionInfo:
     return typer.Option("--tls-secret-name", help="K8s TLS Secret name.")
 
@@ -694,6 +703,7 @@ def validate(
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
+    cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -743,6 +753,7 @@ def validate(
         ingress_class=ingress_class,
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
+        cluster_cidrs=cluster_cidr,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -822,6 +833,7 @@ def show_spec(
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
+    cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -873,6 +885,7 @@ def show_spec(
         ingress_class=ingress_class,
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
+        cluster_cidrs=cluster_cidr,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -925,6 +938,7 @@ def render(
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
+    cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -985,6 +999,7 @@ def render(
         ingress_class=ingress_class,
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
+        cluster_cidrs=cluster_cidr,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -1087,6 +1102,7 @@ def install(
     ingress_class: Annotated[str, _ingress_class_opt()] = "nginx",
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
+    cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -1201,6 +1217,7 @@ def install(
         ingress_class=ingress_class,
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
+        cluster_cidrs=cluster_cidr,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -2960,6 +2977,7 @@ def redeploy(
         # CASE-556: an override that matches no enabled component/app is
         # never consulted — warn here as install does.
         _warn_unmatched_tag_overrides(deployment, components, apps_list)
+        _warn_app_edge_reach(deployment)
 
     scope = [s.strip() for s in (services or []) if s.strip()]
     if scope:
@@ -5907,6 +5925,7 @@ def _assemble(
     ingress_class: str,
     ingress_controller: str,
     ingress_namespace: str | None,
+    cluster_cidrs: list[str] | None,
     tls_secret_name: str,
     dev_mode: str,
     registry: str | None,
@@ -6012,6 +6031,7 @@ def _assemble(
         k8s_ingress_class=ingress_class,
         k8s_ingress_controller=ingress_controller,
         k8s_ingress_namespace=ingress_namespace,
+        k8s_cluster_cidrs=cluster_cidrs,
         k8s_tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -6102,8 +6122,32 @@ def _assemble(
     discovery = _discover_or_exit(root)
 
     _warn_unmatched_tag_overrides(deployment, discovery.components, discovery.apps)
+    _warn_app_edge_reach(deployment)
 
     return deployment, discovery.components, discovery.apps
+
+
+def _warn_app_edge_reach(deployment: Deployment) -> None:
+    """On k8s the app edge reaches attached apps anywhere; without the
+    cluster's own ranges (--cluster-cidr) that includes the control plane and
+    the kubelets on the node addresses. Warn (stderr), never refuse: the
+    deployer cannot discover the ranges itself."""
+    from wip_deploy.config_gen.api_keys import app_edge_active
+
+    k8s = deployment.spec.platform.k8s
+    if deployment.spec.target != "k8s" or k8s is None or not app_edge_active(deployment):
+        return
+    if k8s.cluster_ranges.all():
+        return
+    typer.secho(
+        "warning: no --cluster-cidr given: the app edge can reach the cluster's control "
+        "plane and kubelets (node addresses) and, depending on the network plugin, pod "
+        "and Service addresses. Pass the cluster's own ranges, e.g. --cluster-cidr "
+        "pods=10.42.0.0/16 --cluster-cidr services=10.43.0.0/16 --cluster-cidr "
+        "nodes=192.168.1.20/32.",
+        fg=typer.colors.YELLOW,
+        err=True,
+    )
 
 
 def _warn_unmatched_tag_overrides(
