@@ -139,10 +139,16 @@ Origin = Literal["file", "console", "restored"]
 
 
 class ArchiveScope(BaseModel):
-    """What a scoped backup covers, declared rather than inferred: a mirror of
-    a scoped archive removes only within it. A grant or reservation is in
-    scope by its namespace or prefix; a key only when it holds a non-empty
-    list of namespaces, every one in scope; an attachment only when named."""
+    """What a scoped backup covers, declared rather than inferred. A grant or
+    reservation is in scope by its namespace or prefix; a key only when it
+    holds a non-empty list of namespaces, every one in scope; an attachment
+    only when named.
+
+    A restore of a scoped archive changes nothing outside it: the archive's
+    own records outside the scope are skipped (`outside_archive_scope`, so an
+    edited archive cannot reach past it), a key whose copy here reaches
+    outside the scope is not replaced (`out_of_scope_here`), and a mirror
+    removes only in-scope records, never a key in `keys_left_out`."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -154,9 +160,11 @@ class ArchiveScope(BaseModel):
     )
     keys_left_out: list[str] = Field(
         default_factory=list,
-        description="Keys with a grant or reservation in scope that the archive does "
-        "not carry, because they hold a namespace outside it or none: a scoped "
-        "mirror never removes them",
+        description="Keys the scope touches that the archive does not carry, because "
+        "they hold a namespace outside it or none: every key with a grant or "
+        "reservation in scope, every key whose namespaces overlap the scope without "
+        "fitting in it, and every key with no namespace list. A scoped mirror never "
+        "removes them",
     )
 
     def holds_key(self, namespaces: list[str] | None) -> bool:
@@ -301,6 +309,8 @@ SkipReason = Literal[
     "concurrent_write",         # another request attached the name during the restore
     "mirror_removes_key",       # a grant to a key the archive lacks and the mirror removes
     "caller_key",               # refused: the mirror would remove the key of this request
+    "outside_archive_scope",    # a scoped archive's record outside its own declared scope
+    "out_of_scope_here",        # a scoped restore would replace a key that reaches outside the scope here
 ]
 
 
@@ -337,6 +347,9 @@ def _skip_grant(g: "ArchiveGrant", code: SkipReason, reason: str) -> SkippedReco
 
 _MANAGED = "managed by wip-deploy on this instance"
 _DIFFERS = "differs on this instance; pass overwrite to replace it"
+_OUTSIDE_ARCHIVE_SCOPE = (
+    "outside the scope the archive declares; a scoped archive is restored only within it"
+)
 
 
 class RecordReport(BaseModel):
@@ -488,10 +501,15 @@ async def build_archive(
         attachments = [a for a in attachments if a.name in set(scope.attachments)]
         carried = [k for k in keys if scope.holds_key(k.namespaces)]
         carried_names = {k.name for k in carried}
-        # Keys this scope touches (a grant to them, or a reservation they own)
-        # but cannot carry: named so the operator sees what stays behind.
+        # Keys this scope touches but cannot carry: a grant to them or a
+        # reservation they own in scope, or namespaces of their own that reach
+        # into it (overlapping, or none at all). Named so the operator sees what
+        # stays behind, and so a scoped mirror never removes them: only the
+        # source knows how far a key reached, and a copy elsewhere may since
+        # have been narrowed into the scope.
         touched = {g.subject.removeprefix("apikey:") for g in grants if g.subject_type == "api_key"}
         touched |= {r.app for r in reservations if r.managed_by is None}
+        touched |= {k.name for k in keys if not k.namespaces or set(k.namespaces) & in_ns}
         stored = {k.name for k in keys}
         scope.keys_left_out = sorted((touched & stored) - carried_names)
         keys = carried
@@ -925,7 +943,11 @@ async def _restore_attachments(
     reserved = set(policy.reserved_names)
     install_addresses = await resolve_install_addresses(policy)
 
+    scope = archive.source.scope
     for a in archive.attachments:
+        if scope is not None and a.name not in scope.attachments:
+            out.skipped.append(_skip_named(a.name, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
+            continue
         if a.managed_by is not None:
             out.skipped.append(_skip_named(
                 a.name, "managed_on_source",
@@ -1007,7 +1029,11 @@ async def _restore_reservations(
     restored_by: str,
 ) -> None:
     out = report.reservations
+    scope = archive.source.scope
     for r in archive.reservations:
+        if scope is not None and r.prefix not in scope.namespaces:
+            out.skipped.append(_skip_reservation(r.prefix, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
+            continue
         existing = await RuntimeReservation.find_one(RuntimeReservation.prefix == r.prefix)
         if existing is not None:
             if existing.managed_by is not None:
@@ -1041,8 +1067,12 @@ async def _restore_keys(
     config_key_names: frozenset[str],
 ) -> list[tuple[str | None, StoredAPIKey]]:
     out = report.api_keys
+    scope = archive.source.scope
     written: list[tuple[str | None, StoredAPIKey]] = []
     for k in archive.api_keys:
+        if scope is not None and not scope.holds_key(k.namespaces):
+            out.skipped.append(_skip_named(k.name, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
+            continue
         existing = await StoredAPIKey.find_one(StoredAPIKey.name == k.name)
         if existing is not None and existing.managed_by is not None:
             out.skipped.append(_skip_named(k.name, "managed_by_deployer", _MANAGED))
@@ -1055,6 +1085,16 @@ async def _restore_keys(
         if existing is not None:
             if _key_content(existing) == _key_content(k):
                 out.unchanged.append(k.name)
+                continue
+            if scope is not None and not scope.holds_key(existing.namespaces):
+                # The scope bounds what a scoped restore may change. Here the
+                # key also reaches outside it; the archive's record would take
+                # that access away.
+                out.skipped.append(_skip_named(
+                    k.name, "out_of_scope_here",
+                    "here the key holds namespaces outside the archive's scope (or none); "
+                    "a scoped restore does not replace it",
+                ))
                 continue
             if not overwrite:
                 out.skipped.append(_skip_named(k.name, "differs", _DIFFERS))
@@ -1113,10 +1153,14 @@ async def _restore_grants(
     user_grants: bool, removed_keys: set[str] | None = None,
 ) -> None:
     out = report.grants
+    scope = archive.source.scope
     active: dict[str, bool] = {}
     archive_owners = {r.prefix: r.app for r in archive.reservations}
     for g in archive.grants:
         gid = _grant_id(g.namespace, g.subject_type, g.subject)
+        if scope is not None and g.namespace not in scope.namespaces:
+            out.skipped.append(_skip_grant(g, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
+            continue
         if g.subject_type == "user" and not user_grants:
             out.skipped.append(_skip_grant(g, "other_oidc_issuer", "user grant from another OIDC issuer"))
             continue

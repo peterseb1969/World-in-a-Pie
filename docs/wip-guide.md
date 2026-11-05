@@ -764,11 +764,18 @@ in §5.5.
   have no namespace, so name the ones to carry. The backup lists the keys the
   scope touches but cannot carry (a namespace outside it, or none); the file
   still carries their grants inside the scope, and the restore warns about
-  them. **A mirror of a scoped file removes only within its scope**: keys
-  outside it, grants and reservations on other namespaces, and unnamed
-  attachments are never touched. A scoped file under another hash salt is
-  adopted only by a stack with no keys of its own, so in practice it is
-  restored onto the stack it came from, or one sharing its salt.
+  them. **A restore of a scoped file changes nothing outside its scope**:
+  - a mirror never removes keys outside the scope, grants and reservations
+    on other namespaces, or unnamed attachments;
+  - a key whose copy on this stack reaches outside the scope (or holds no
+    namespace list) is never replaced (`out_of_scope_here`);
+  - the file's own records outside its declared scope are skipped
+    (`outside_archive_scope`).
+
+  An empty `--namespace` or `--attachment` is refused. A scoped file under
+  another hash salt is adopted only by a stack with no keys of its own, so in
+  practice it is restored onto the stack it came from, or one sharing its
+  salt.
 - **Restored records are unmanaged** (`origin: restored`). Where the install's
   own key file or reservations file declares the same key, grant or prefix,
   the Registry's import takes it over on its next pass (§4.3).

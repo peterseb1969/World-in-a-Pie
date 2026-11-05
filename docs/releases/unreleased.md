@@ -41,6 +41,31 @@ run on every install with the auth gateway. It is now the optional module
   by hand; the extra `app-edge` entry is then reported as an unknown module
   by the older deployer, so remove it from `modules.optional` as well.
 
+### A scoped system restore changes nothing outside its scope; `@wip/client` 0.80.0
+
+A scoped system backup (`system-backup?namespaces=…&attachments=…`) promises
+that its restore leaves everything outside the scope untouched. Four gaps
+broke that promise:
+
+- **A scoped mirror could remove keys that reach outside the scope.**
+  `keys_left_out` named only keys with a grant or reservation in scope. It
+  now also names every key the archive doesn't carry whose namespaces overlap
+  the scope, or that has no namespace list. A scoped mirror never removes
+  those keys. **Archives made before this change don't carry the wider list:
+  take a new scoped backup before mirroring.**
+- **A scoped overwrite or mirror could narrow a key.** A key the archive
+  carries but which, on this stack, also holds namespaces outside the scope
+  (or none) is no longer replaced. It is skipped with
+  `reason_code: out_of_scope_here`.
+- **An edited scoped archive could write past its scope.** Its keys, grants,
+  reservations and attachments outside the declared scope are skipped with
+  `reason_code: outside_archive_scope`.
+- **An empty scope was a scope.** `?namespaces=` or `?attachments=` with no
+  names is refused with 422. `@wip/client` 0.80.0's `systemBackup` sends any
+  list it is given, so `{ namespaces: [] }` gets that refusal instead of a
+  whole-stack archive. The type `SystemRestoreSkipReason` gains both new
+  codes.
+
 ### k8s: wip-caddy is the front door, behind one Ingress; Traefik works
 
 On k8s every route used to be an ingress-nginx Ingress, carrying the

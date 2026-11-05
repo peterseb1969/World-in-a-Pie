@@ -69,11 +69,24 @@ async def system_backup(
     namespaces, the keys whose namespaces all lie in them, and the named
     attachments. Keys the scope touches but cannot carry (a namespace outside
     it, or none) are listed in `source.scope.keys_left_out`. A mirror restore
-    of a scoped archive removes only within its scope."""
-    def _names(raw: str | None) -> list[str] | None:
-        return None if raw is None else [n.strip() for n in raw.split(",") if n.strip()]
+    of a scoped archive removes only within its scope. An empty list for
+    either parameter is refused (422); leave it out for the whole stack."""
+    def _names(param: str, raw: str | None) -> list[str] | None:
+        if raw is None:
+            return None
+        names = [n.strip() for n in raw.split(",") if n.strip()]
+        if not names:
+            # An empty list is a mistake (a list built at runtime that came out
+            # empty), never a request for some scope: refuse it rather than
+            # make an archive that declares it covers nothing.
+            raise HTTPException(
+                status_code=422,
+                detail=f"`{param}` is empty; name at least one, or leave it out for "
+                "the whole stack",
+            )
+        return names
 
-    archive = await build_archive(_names(namespaces), _names(attachments))
+    archive = await build_archive(_names("namespaces", namespaces), _names("attachments", attachments))
     logger.warning(
         "System backup taken by %s%s: %d key(s), %d grant(s), %d reservation(s), "
         "%d attachment(s)",
