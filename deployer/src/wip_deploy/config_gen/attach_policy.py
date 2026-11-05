@@ -13,8 +13,9 @@ namespace reservations (WIP_ATTACH_POLICY_FILE):
   pointing back at it would loop), and on k8s the API server's names.
 - `reserved_names`: the last segment of every enabled app's route prefix
   (`/apps/kb` → `kb`).
-- `app_edge`: whether the app-edge module runs. Without it nothing serves an
-  attachment, so the Registry refuses new and revived ones.
+- `app_edge: false`, only when the app-edge module does not run: nothing
+  serves an attachment then, so the Registry refuses attachment writes.
+  Absent means the edge runs.
 
 The Registry compares resolved addresses, so a blocked host's IP or alias is
 refused too. The attach-time check is advisory: the router's app edge checks
@@ -84,10 +85,15 @@ def attach_policy_json(
     # needs its own entry: /apps/x -> https://<host>/ would be a proxy loop.
     hosts.add(deployment.spec.network.hostname.lower())
     policy: dict[str, object] = {
-        "app_edge": app_edge_active(deployment),
         "blocked_hosts": sorted(hosts),
         "reserved_names": app_route_names(deployment, apps),
     }
+    # Written only when false: a Registry from before the field existed
+    # refuses a policy file with a field it does not know, and so every
+    # attach. Absent means the edge runs, so that Registry keeps working
+    # until the edge is actually removed.
+    if not app_edge_active(deployment):
+        policy["app_edge"] = False
     # The cluster's own node addresses: an upstream there is the API server or
     # a kubelet, never an attached app of this cluster (those are reached by
     # Service name). Only when set, so an install without ranges renders the

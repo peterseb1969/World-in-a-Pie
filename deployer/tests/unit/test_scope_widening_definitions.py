@@ -116,11 +116,14 @@ def test_dev_stamps_a_config_hash_on_apps_and_services(discovery: Discovery) -> 
         assert CONFIG_HASH_KEY in (services[name].get("labels") or {}), name
 
 
-def test_a_service_new_to_the_render_is_not_named(tmp_path: Path, discovery: Discovery) -> None:
+def test_a_service_new_to_the_render_is_named(tmp_path: Path, discovery: Discovery) -> None:
+    """A scoped apply creates only the services it names (compose `up
+    <svcs>`; a config-only empty scope runs no `up` at all), so a service new
+    to the render joins the scope, or it would never come up (CASE-1072)."""
     d = _deployment("compose")
     d.spec.apps = []
     _on_disk(_render(d, discovery, discovery.apps), tmp_path)
     d.spec.apps = [AppRef(name="wip-kb")]
-    assert "wip-kb" not in changed_outside_scope(
+    assert "wip-kb" in changed_outside_scope(
         _render(d, discovery, discovery.apps), tmp_path, "compose", [],
     )

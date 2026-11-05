@@ -296,7 +296,9 @@ class TestScopeWidening:
         tree.add("services/wip-kb.yaml", workload("wip-kb", "k2"))
         tree.add("infrastructure/mongodb.yaml", workload("mongodb", "m2", "StatefulSet"))
         tree.add("services/new-app.yaml", workload("new-app", "n1"))
-        assert changed_outside_scope(tree, tmp_path, "k8s", ["wip-kb"]) == ["mongodb", "router"]
+        # A workload new to the render is named too: a scoped apply would
+        # otherwise never create it (CASE-1072).
+        assert changed_outside_scope(tree, tmp_path, "k8s", ["wip-kb"]) == ["mongodb", "new-app", "router"]
 
     def test_scoped_verb_widens_its_apply(self, tmp_path: Path, discovery: Discovery) -> None:
         d = _applied(tmp_path, discovery)

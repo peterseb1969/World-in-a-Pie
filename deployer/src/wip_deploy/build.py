@@ -231,8 +231,26 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
     )
 
 
+def parse_cluster_cidrs(items: list[str]) -> dict[str, list[str]]:
+    """`--cluster-cidr kind=CIDR` items as K8sClusterRanges fields."""
+    ranges: dict[str, list[str]] = {}
+    for item in items:
+        kind, sep, cidr = item.partition("=")
+        if not sep or kind not in ("pods", "services", "nodes") or not cidr:
+            raise ValueError(
+                f"--cluster-cidr {item!r}: expected pods=CIDR, services=CIDR or nodes=CIDR"
+            )
+        ranges.setdefault(kind, []).append(cidr)
+    return ranges
+
+
 def _build_platform(inputs: BuildInputs) -> dict[str, Any]:
     block: dict[str, Any] = {}
+    if inputs.k8s_cluster_cidrs and inputs.target != "k8s":
+        raise ValueError(
+            f"--cluster-cidr is for the k8s target only (this is {inputs.target!r}): "
+            "the cluster ranges bound the app edge's NetworkPolicy"
+        )
     if inputs.target == "compose":
         if inputs.compose_data_dir is None:
             raise ValueError("target=compose requires a data_dir")
@@ -251,15 +269,7 @@ def _build_platform(inputs: BuildInputs) -> dict[str, Any]:
         if inputs.k8s_ingress_namespace:
             block["k8s"]["ingress_namespace"] = inputs.k8s_ingress_namespace
         if inputs.k8s_cluster_cidrs:
-            ranges: dict[str, list[str]] = {}
-            for item in inputs.k8s_cluster_cidrs:
-                kind, sep, cidr = item.partition("=")
-                if not sep or kind not in ("pods", "services", "nodes") or not cidr:
-                    raise ValueError(
-                        f"--cluster-cidr {item!r}: expected pods=CIDR, services=CIDR or nodes=CIDR"
-                    )
-                ranges.setdefault(kind, []).append(cidr)
-            block["k8s"]["cluster_ranges"] = ranges
+            block["k8s"]["cluster_ranges"] = parse_cluster_cidrs(inputs.k8s_cluster_cidrs)
     elif inputs.target == "dev":
         dev_block: dict[str, Any] = {"mode": inputs.dev_mode}
         if inputs.app_sources:

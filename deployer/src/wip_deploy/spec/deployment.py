@@ -543,9 +543,16 @@ class K8sClusterRanges(WIPModel):
         out = []
         for cidr in v:
             try:
-                out.append(str(ipaddress.ip_network(cidr, strict=True)))
+                net = ipaddress.ip_network(cidr, strict=True)
             except ValueError as e:
                 raise ValueError(f"{cidr!r} is not a network address with a prefix length: {e}") from e
+            # The edge and the Registry compare an address in its IPv4 form,
+            # so an IPv4-mapped IPv6 range would never match anything.
+            mapped = getattr(net.network_address, "ipv4_mapped", None)
+            if mapped is not None:
+                hint = f" (write {mapped}/{net.prefixlen - 96})" if net.prefixlen >= 96 else ""
+                raise ValueError(f"{cidr!r} is an IPv4-mapped IPv6 range; give it as IPv4{hint}")
+            out.append(str(net))
         return out
 
     def all(self) -> list[str]:

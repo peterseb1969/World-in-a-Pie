@@ -1144,11 +1144,20 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
     node addresses (ports such as 6443/16443 and 10250) and, depending on
     the network plugin, pod and Service IPs. The node ranges also join the
     attach blocklist: the Registry and the edge refuse an upstream that
-    resolves into them. Without ranges, `wip-deploy` warns.
+    resolves into them. `wip-deploy` warns about each kind left out.
+    On an existing install, `wip-deploy redeploy --name <install>
+    --cluster-cidr …` replaces the saved ranges (pass every kind to keep).
+    Give IPv4 ranges as IPv4: an IPv4-mapped IPv6 range is refused, since
+    it would never match.
   - **Node ranges are the cluster's own node addresses** (for example
     `192.168.1.20/32`), never a LAN it shares with other machines: an app
     another cluster on that LAN serves through a NodePort would be refused
-    too. Pod and Service ranges never block an upstream, since attached
+    too. **Where the API endpoint is not a node address,** name it as
+    well: a load balancer's virtual IP in front of an HA control plane, or
+    a managed cluster's API endpoint. On kubeadm the API server runs as a
+    hostNetwork pod in `kube-system`; whether the "other namespaces" rule
+    matches hostNetwork pods depends on the network plugin, so give the node
+    addresses there too. Pod and Service ranges never block an upstream, since attached
     apps in other namespaces live there.
   - **The edge still reaches every other Kubernetes namespace's pods,** on
     any port, including kube-system and other tenants' services. That is

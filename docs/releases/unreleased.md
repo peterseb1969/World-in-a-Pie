@@ -29,17 +29,37 @@ run on every install with the auth gateway. It is now the optional module
 - **`@wip/client` 0.79.0:** `SystemRestoreSkipReason` gains `no_app_edge`,
   and the attachment error codes document `invalid_state` /
   `no_app_edge`. Types only; no runtime change.
-- **Upgrade the Registry and the deployer together.** The deployer now
-  writes `app_edge` into the attach policy file. An older Registry rejects
-  any field it doesn't know and then refuses **every** attach. Redeploy with
-  the image set built from this commit (`redeploy --tag …`) in the same
-  apply.
+- **Upgrade the Registry and the deployer together before removing the
+  edge.** The attach policy file carries `app_edge: false` only when the
+  edge is off, so with the edge on, the file stays readable by an older
+  Registry. Once you `remove-module app-edge`, an older Registry rejects the
+  field it doesn't know and refuses **every** attach. This holds for every
+  verb that renders, scoped ones (`add-app`, `app-deploy`, `user add`)
+  included: run them against an install whose Registry image matches, or
+  pass the image set in the same apply (`redeploy --tag …`).
 - **Rollback:** an older deployer refuses a version-2 saved spec ("expects
   1"), so after any apply with this deployer, `redeploy` with an older
   checkout fails on that install. To roll back, set
   `"wip_deploy_format_version": 1` in `~/.wip-deploy/<name>/deployment.deployer-state`
   by hand; the extra `app-edge` entry is then reported as an unknown module
   by the older deployer, so remove it from `modules.optional` as well.
+
+### Scoped verbs after the k8s front-door change; cluster ranges on existing installs
+
+- **The first scoped verb on a k8s install last applied before wip-caddy
+  became the front door applies the whole install once,** with prune
+  (`add-app`, `app-deploy`, `user add` and the like say so). The old
+  per-route Ingresses would otherwise stay and shadow the front door.
+- **A scoped verb also applies services new to the render** (an upgrade
+  brought a new component, or a module was added), on compose and k8s; it
+  used to leave them uncreated.
+- **`remove-module` removes the container only after the apply succeeded,**
+  so a refused or failed apply leaves the module running.
+- **`redeploy --cluster-cidr kind=CIDR`** (repeatable) replaces an existing
+  k8s install's saved cluster ranges. `--cluster-cidr` on a non-k8s target is
+  refused instead of ignored, and an IPv4-mapped IPv6 range is refused (it
+  never matched). The reach warning now names each missing kind: pods and
+  Services without `nodes=` still leave the control plane reachable.
 
 ### A scoped system restore changes nothing outside its scope; `@wip/client` 0.80.0
 

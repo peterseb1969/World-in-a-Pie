@@ -100,7 +100,9 @@ def test_every_consumer_follows_the_module(modules: list[str], discovery: Discov
     assert app_edge_active(d) is on
     assert (APP_EDGE_KEY in effective_api_keys(d)) is on
     policy = json.loads(attach_policy_json(d, discovery.components, discovery.apps))
-    assert policy["app_edge"] is on
+    # Written only when false, so an older Registry can still read the file.
+    assert policy.get("app_edge", True) is on
+    assert ("app_edge" in policy) is (not on)
 
 
 def test_module_off_renders_no_edge_and_apps_404(tmp_path: Path, discovery: Discovery) -> None:
@@ -150,7 +152,7 @@ def test_module_on_renders_todays_edge(tmp_path: Path, discovery: Discovery) -> 
     assert compose["services"][APP_EDGE_MODULE]["container_name"] == "wip-app-edge"
     assert "reverse_proxy wip-app-edge:8080" in tree.files[Path("config/caddy/Caddyfile")].content
     policy = json.loads(tree.files[Path("config/auth/attach-policy.json")].content)
-    assert policy["app_edge"] is True
+    assert "app_edge" not in policy
 
 
 # ── Presets and install flags ─────────────────────────────────────────

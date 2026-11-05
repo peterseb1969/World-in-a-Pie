@@ -123,7 +123,8 @@ def test_the_cli_warns_without_ranges(capsys):
     from wip_deploy.cli import _warn_app_edge_reach
 
     _warn_app_edge_reach(_with_ranges())
-    assert "no --cluster-cidr" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "Missing: nodes" in err and "pods (" in err and "services (" in err
     _warn_app_edge_reach(_with_ranges(**RANGES))
     assert capsys.readouterr().err == ""
     # No edge, nothing to warn about.

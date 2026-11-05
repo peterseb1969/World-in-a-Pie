@@ -1925,8 +1925,13 @@ def changed_outside_scope(
     the secret values and mounted files it reads. A scoped apply that
     skipped them would leave them running the old configuration (a switched
     API key, a secret, the router's routes, MongoDB's user set) until
-    something else restarts them. A service new to this render is not
-    named: the apply creates it either way.
+    something else restarts them.
+
+    A service new to this render (an upgrade brought a new component, or a
+    module was added) is named too: a scoped apply creates only the services
+    it names (`up <svcs>` on compose, the named manifests on k8s), so it
+    would never come up. With no previous render on disk nothing is named;
+    that is a first apply, not a scoped change.
     """
     new = _workload_definitions(
         {p: e.content for p, e in tree.files.items()}, target,
@@ -1937,8 +1942,10 @@ def changed_outside_scope(
         if on_disk.is_file():
             old_files[path] = on_disk.read_text()
     old = _workload_definitions(old_files, target)
+    if not old:
+        return []
     in_scope = set(scope)
     return sorted(
         name for name, h in new.items()
-        if name not in in_scope and name in old and old[name] != h
+        if name not in in_scope and (name not in old or old[name] != h)
     )

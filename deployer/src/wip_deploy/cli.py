@@ -2506,14 +2506,25 @@ def _apply_and_persist_mutation(
         )
         raise typer.Exit(2) from e
 
+    if services_scope and _k8s_render_predates_front_door(deployment, target_dir):
+        # The previous render routed with per-route Ingresses straight to the
+        # backends. Only a full apply prunes them; a scoped one would leave
+        # them shadowing the front door, blocked by the new NetworkPolicy.
+        typer.echo(
+            "This install was last applied before wip-caddy became the k8s front "
+            "door: applying the whole install once (with prune) instead of only "
+            + ", ".join(services_scope) + "."
+        )
+        services_scope = None
+
     if services_scope is not None:
         widened = changed_outside_scope(
             tree, target_dir, deployment.spec.target, services_scope,
         )
         if widened:
             typer.echo(
-                "Also restarting " + ", ".join(widened)
-                + ": this change alters configuration they read at start."
+                "Also applying " + ", ".join(widened)
+                + ": this change adds them or alters configuration they read at start."
             )
             services_scope = [*services_scope, *widened]
 
@@ -2882,6 +2893,15 @@ def redeploy(
     ] = None,
     tag: Annotated[str | None, _tag_opt()] = None,
     image_tag: Annotated[list[str] | None, _image_tag_opt()] = None,
+    cluster_cidr: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--cluster-cidr",
+            help="K8s: replace the install's saved cluster ranges with these, as "
+            "pods=CIDR, services=CIDR or nodes=CIDR (repeatable). Ranges not given "
+            "are cleared, so pass every kind you want kept.",
+        ),
+    ] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Re-render an existing install from its saved spec, recreating only what changed.
@@ -2978,6 +2998,30 @@ def redeploy(
         # never consulted — warn here as install does.
         _warn_unmatched_tag_overrides(deployment, components, apps_list)
         _warn_app_edge_reach(deployment)
+    ranges_changed = False
+    if cluster_cidr:
+        k8s_platform = deployment.spec.platform.k8s
+        if deployment.spec.target != "k8s" or k8s_platform is None:
+            typer.echo(
+                f"error: --cluster-cidr is for k8s installs only (this one is "
+                f"{deployment.spec.target!r})",
+                err=True,
+            )
+            raise typer.Exit(2)
+        from wip_deploy.build import parse_cluster_cidrs
+        from wip_deploy.spec.deployment import K8sClusterRanges
+
+        try:
+            ranges = K8sClusterRanges.model_validate(parse_cluster_cidrs(cluster_cidr))
+        except ValueError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(2) from e
+        if ranges != k8s_platform.cluster_ranges:
+            k8s_platform.cluster_ranges = ranges
+            ranges_changed = True
+        else:
+            typer.echo("⊙ cluster ranges are already these — no change.")
+        _warn_app_edge_reach(deployment)
 
     scope = [s.strip() for s in (services or []) if s.strip()]
     if scope:
@@ -3019,6 +3063,8 @@ def redeploy(
         )
 
     rolled = f" (rolled {', '.join(tag_changes)})" if tag_changes else ""
+    if ranges_changed:
+        rolled += " (new cluster ranges)"
     label = (
         f"Redeployed {', '.join(scope)} on {resolved_name}{rolled}"
         if scope
@@ -4937,9 +4983,6 @@ def remove_module(
             err=True,
         )
 
-    from wip_deploy.apply import stop_and_remove_container
-    stop_and_remove_container(module_name)
-
     _apply_and_persist_mutation(
         deployment,
         components,
@@ -4948,6 +4991,13 @@ def remove_module(
         f"Removed module {module_name!r} from {resolved_name}",
         repo_root=repo_root,
     )
+
+    # Only once the apply succeeded: a validation or render failure leaves
+    # the module running, matching the saved spec that still lists it. The
+    # rendered compose no longer has the service, so the apply left its
+    # container alone; removing it here keeps it from lingering as an orphan.
+    from wip_deploy.apply import stop_and_remove_container
+    stop_and_remove_container(module_name)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -6127,6 +6177,19 @@ def _assemble(
     return deployment, discovery.components, discovery.apps
 
 
+def _k8s_render_predates_front_door(deployment: Deployment, install_dir: Path) -> bool:
+    """A k8s install whose rendered tree on disk exists but has no wip-caddy:
+    it was last applied before wip-caddy became the front door."""
+    from wip_deploy.renderers.k8s import PUBLIC_CADDY_NAME
+
+    if deployment.spec.target != "k8s":
+        return False
+    rendered = Path(install_dir)
+    return (rendered / "namespace.yaml").is_file() and not (
+        rendered / "services" / f"{PUBLIC_CADDY_NAME}.yaml"
+    ).is_file()
+
+
 def _warn_app_edge_reach(deployment: Deployment) -> None:
     """On k8s the app edge reaches attached apps anywhere; without the
     cluster's own ranges (--cluster-cidr) that includes the control plane and
@@ -6137,14 +6200,25 @@ def _warn_app_edge_reach(deployment: Deployment) -> None:
     k8s = deployment.spec.platform.k8s
     if deployment.spec.target != "k8s" or k8s is None or not app_edge_active(deployment):
         return
-    if k8s.cluster_ranges.all():
+    ranges = k8s.cluster_ranges
+    # Each kind closes its own gap, so a missing one is warned about on its
+    # own: giving pods and Services still leaves the control plane open.
+    gaps = []
+    if not ranges.nodes:
+        gaps.append(
+            "nodes (e.g. --cluster-cidr nodes=192.168.1.20/32): the control plane and "
+            "the kubelets on the node addresses"
+        )
+    if not ranges.pods:
+        gaps.append("pods (e.g. --cluster-cidr pods=10.42.0.0/16): pod addresses")
+    if not ranges.services:
+        gaps.append("services (e.g. --cluster-cidr services=10.43.0.0/16): Service addresses")
+    if not gaps:
         return
     typer.secho(
-        "warning: no --cluster-cidr given: the app edge can reach the cluster's control "
-        "plane and kubelets (node addresses) and, depending on the network plugin, pod "
-        "and Service addresses. Pass the cluster's own ranges, e.g. --cluster-cidr "
-        "pods=10.42.0.0/16 --cluster-cidr services=10.43.0.0/16 --cluster-cidr "
-        "nodes=192.168.1.20/32.",
+        "warning: the app edge can reach parts of the cluster itself; "
+        "pass the missing ranges. Missing: " + "; ".join(gaps) + ". "
+        "Whether it reaches pod and Service addresses depends on the network plugin.",
         fg=typer.colors.YELLOW,
         err=True,
     )
