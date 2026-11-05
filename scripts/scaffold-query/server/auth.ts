@@ -135,9 +135,11 @@ export function requireAuth(): RequestHandler {
  * Mount it only under a route the app's manifest declares auth_required:
  * true. There the gateway sets x-wip-groups. On an auth_required: false
  * route nothing does: the front door removes a client-sent copy, so there is
- * no identity there, and with no OIDC session this check would treat the
- * caller as dev mode (wip-deployable-app-contract.md, "Trust the identity
- * headers only on routes you declare auth_required").
+ * no gateway identity there. The check then falls back to the OIDC session:
+ * with OIDC configured and no session it refuses (403), and with no OIDC
+ * configured it treats the caller as dev mode and lets everyone through
+ * (wip-deployable-app-contract.md, "Trust the identity headers only on
+ * routes you declare auth_required").
  */
 export function requireAdmin(): RequestHandler {
   return (req: Request, res: Response, next: NextFunction): void => {

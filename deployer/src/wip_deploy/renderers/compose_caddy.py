@@ -287,7 +287,14 @@ def _write_identity_strip(out, route: ResolvedRoute, indent: str = "        ") -
     """Remove the client-sent identity headers the gateway's answer does not
     overwrite, so an app never reads a user the browser made up. Safe beside
     forward_auth only because none of these is one the gateway supplies
-    (request_header runs after forward_auth's copy)."""
+    (request_header runs after forward_auth's copy).
+
+    Only the hyphenated spellings are named. Caddy itself drops a header
+    spelled with underscores (X_WIP_User, X-WIP_Groups) before any route
+    sees it, so such a header never reaches an app; checked against Caddy
+    2.11.7, the `caddy:2` image of 2026-11, while Traefik 3.7 forwards them.
+    If a later Caddy forwards them, add those spellings here and in the app
+    edge's strip."""
     for header in route.client_identity_headers_to_strip():
         out.write(f"{indent}request_header -{header}\n")
 
