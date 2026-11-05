@@ -195,7 +195,7 @@ Client sends request with ID "X"
       → Determine namespace: from `namespace` parameter, or from single-namespace API key, or skip resolution (pass raw value through)
       → Contains ":"? → split into parent:child (term notation)
       → Build composite key from endpoint context (entity type) + determined namespace
-      → Check resolution cache (TTL 5 min)
+      → Check resolution cache (TTL 30 s, reads only)
       → Cache miss: Registry lookup by composite_key_hash
         → Found: cache result, substitute canonical ID, proceed
         → Not found: return 404 "Entity not found"
@@ -493,13 +493,13 @@ namespace, rather than `not_found`.
 
 **Bulk operations:** The batch resolve endpoint handles 100+ IDs in a single call. For a bulk import of 1000 documents all referencing the same template, one batch call resolves all unique referenced IDs — typically just a handful.
 
-**Cache invalidation:** Synonyms are immutable once created (no updates, only add/remove). A TTL cache (5 minutes) is sufficient — stale cache entries resolve to the same canonical ID or to a removed synonym (which correctly fails).
+**Cache invalidation:** Synonyms are immutable once created (no updates, only add/remove). A TTL cache is sufficient for reads — stale cache entries resolve to the same canonical ID or to a removed synonym (which correctly fails). A namespace deleted and re-created under the same name is the exception: a cached read keeps answering the deleted entity until the entry expires, so the TTL is 30 s, and writes never read the cache.
 
 **Canonical ID fast path:** If the ID is already in canonical format (matches entity prefix pattern), no Registry call is made. Existing code paths that use canonical IDs see zero overhead.
 
 **Registry entry size:** Auto-synonyms add one embedded `Synonym` object per entity. At ~200 bytes per synonym, 10,000 entities adds ~2MB to the Registry collection. Negligible.
 
-**Registry as a dependency:** With synonym resolution, non-canonical API calls require Registry to be available. This is an accepted trade-off: Registry is a core service that must always be running. The TTL cache (5 min) provides resilience against brief Registry outages. For distributed deployments where Registry runs on a separate machine, developers should prefer canonical IDs in performance-critical paths and rely on synonyms for ergonomic/interactive use.
+**Registry as a dependency:** With synonym resolution, non-canonical API calls require Registry to be available. That is the architecture, not a trade-off: the Registry is the identity authority, and when it is down WIP is down. The read cache makes the Registry fast; it never answers for it when it is unreachable. For distributed deployments where Registry runs on a separate machine, developers should prefer canonical IDs in performance-critical paths and rely on synonyms for ergonomic/interactive use.
 
 ---
 

@@ -556,7 +556,7 @@ All service APIs accept **human-readable synonyms** wherever a canonical ID (UUI
 
 When a non-UUID identifier is passed (e.g., `template_id="PATIENT"` instead of `template_id="019abc..."`), the service resolves it via the Registry's synonym lookup before processing. Canonical UUIDs pass through without any Registry call.
 
-Resolution happens at the API boundary (in the service's route handler) using `resolve_entity_id()` from `wip-auth`. A 5-minute TTL cache minimises latency for repeated lookups.
+Resolution happens at the API boundary (in the service's route handler) using `resolve_entity_id()` from `wip-auth`. Reads use a 30-second TTL cache to minimise latency for repeated lookups; writes always ask the Registry.
 
 ### Supported ID Fields
 

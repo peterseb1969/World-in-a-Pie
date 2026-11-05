@@ -3201,7 +3201,7 @@ can be told apart from an empty namespace.
 
 ### Writes resolve names against the Registry, never the cache
 
-Services cache name-to-id resolutions for 5 minutes. A namespace deleted and
+Services cached name-to-id resolutions for 5 minutes. A namespace deleted and
 re-created under the same name kept resolving `ns:VALUE` to the deleted
 entities for those minutes, so writes failed with "<deleted id> not found"
 (for example creating a term in a re-created terminology). The rule that
@@ -3211,8 +3211,9 @@ had not opted in.
 wip-auth now marks every request other than GET, HEAD and OPTIONS as a write,
 and resolution in a write always asks the Registry (the fresh answer also
 replaces the stale cache entry, so reads heal with it). Reads still use the
-cache and can lag a re-created namespace by up to 5 minutes until the next
-write refreshes the entry.
+cache, now for 30 seconds instead of 5 minutes, so a read can lag a
+re-created namespace by at most 30 seconds (less when a write refreshes the
+entry first).
 
 **No action required** beyond running images with this wip-auth.
 

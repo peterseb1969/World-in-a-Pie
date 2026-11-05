@@ -43,7 +43,13 @@ _UUID_PATTERN = re.compile(
 
 # TTL cache: {cache_key: (canonical_id, expire_time)}
 _resolution_cache: dict[str, tuple[str, float]] = {}
-_CACHE_TTL = 300  # 5 minutes
+# How long a read may answer from a cached resolution. It bounds how long a
+# read can lag a namespace deleted and re-created under the same name (the
+# cached id is the deleted entity's): 30 s keeps that window short while
+# repeated reads still skip the Registry. Writes never read the cache (below).
+# The cache only makes the Registry fast; it never answers for it when the
+# Registry is unreachable.
+_CACHE_TTL = 30
 
 # True while handling a request that may write (any method but GET, HEAD,
 # OPTIONS); set per request by WriteRequestMiddleware, which setup_auth

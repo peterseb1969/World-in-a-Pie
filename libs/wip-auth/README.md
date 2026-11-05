@@ -272,7 +272,7 @@ async def list_terms(terminology_id: str, namespace: str = "wip"):
 
 ### Caching
 
-Results are cached in-process with a 5-minute TTL. Use `clear_resolution_cache()` in tests.
+Results are cached in-process with a 30-second TTL, for reads only: every request other than GET, HEAD and OPTIONS resolves against the Registry. The cache never answers when the Registry is unreachable. Use `clear_resolution_cache()` in tests.
 
 ---
 

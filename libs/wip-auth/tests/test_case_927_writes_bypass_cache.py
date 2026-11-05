@@ -1,8 +1,8 @@
 """Writes resolve against the Registry, never the cache (CASE-927).
 
-The resolution cache keeps a mapping for 5 minutes. A namespace deleted and
-re-created under the same name kept resolving `ns:VALUE` to the deleted
-terminology's id for those minutes, so writes (creating a term under it) failed
+The resolution cache keeps a mapping for 30 seconds (5 minutes before). A
+namespace deleted and re-created under the same name kept resolving `ns:VALUE`
+to the deleted terminology's id for that long, so writes (creating a term under it) failed
 with "terminology <deleted id> not found". The rule "writes must hit the
 Registry" was opt-in per route (bypass_cache) and routes forgot it. Now every
 request other than GET/HEAD/OPTIONS bypasses the cache read automatically.
@@ -117,3 +117,22 @@ def test_the_middleware_marks_writes(method, write):
 def test_the_flag_does_not_leak_out_of_the_request():
     _probe_app().post("/probe")
     assert _write_request.get() is False
+
+
+@pytest.mark.asyncio
+async def test_a_read_lags_a_re_created_namespace_by_at_most_30_seconds(registry, monkeypatch):
+    """Reads still use the cache, so after a namespace is deleted and
+    re-created a read may answer the deleted id, but for at most the TTL."""
+    import wip_auth.resolve as resolve_module
+
+    current, calls = registry
+    clock = [1000.0]
+    monkeypatch.setattr(resolve_module.time, "monotonic", lambda: clock[0])
+    assert await resolve_entity_id("paint:COLOR", "terminology", "paint") == OLD_ID
+    current[0] = NEW_ID  # deleted and re-created
+
+    clock[0] += 29
+    assert await resolve_entity_id("paint:COLOR", "terminology", "paint") == OLD_ID
+    clock[0] += 2  # 31 s after the first lookup
+    assert await resolve_entity_id("paint:COLOR", "terminology", "paint") == NEW_ID
+    assert len(calls) == 2
