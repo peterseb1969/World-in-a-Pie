@@ -50,6 +50,7 @@ from wip_deploy.config_gen.garage import (
     garage_component,
 )
 from wip_deploy.renderers.base import FileTree
+from wip_deploy.renderers.k8s import PUBLIC_CADDY_NAME
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
@@ -1299,7 +1300,7 @@ def apply_k8s(
                 c for c in components if c.metadata.name in scoped_names
             ]
             apps = [a for a in apps if a.metadata.name in scoped_names]
-            up_count = len(_expected_workloads(components, apps, deployment, front_door=False))
+            up_count = len(_expected_workloads(components, apps, deployment))
         else:
             _kubectl_apply_tree(install_dir, ns)
             up_count = _count_k8s_workloads(tree)
@@ -1313,7 +1314,6 @@ def apply_k8s(
                 components=components,
                 apps=apps,
                 deployment=deployment,
-                front_door=not services_scope,
             )
 
         if deployment.spec.apply.wait and not healthy:
@@ -1414,6 +1414,11 @@ def _kubectl_apply_scoped(
     top. They are found, not listed, so a file the renderer adds later is
     applied too; a fixed list once left the key file behind, and every
     app added on k8s ran with a key no service knew.
+
+    The front door (wip-caddy) is shared too, though it is a workload under
+    services/: every app's route lives in its Caddyfile ConfigMap, so adding
+    or changing an app changes it. Its Deployment carries the Caddyfile's
+    hash, so an unchanged file is a no-op and a changed one rolls the pod.
     """
     namespace_yaml = install_dir / "namespace.yaml"
     if namespace_yaml.exists():
@@ -1422,6 +1427,10 @@ def _kubectl_apply_scoped(
     for shared in sorted(install_dir.glob("*.yaml")):
         if shared.name != "namespace.yaml":
             _kubectl_run(["apply", "-n", ns, "-f", str(shared)])
+
+    front_door = install_dir / "services" / f"{PUBLIC_CADDY_NAME}.yaml"
+    if front_door.exists() and PUBLIC_CADDY_NAME not in services:
+        _kubectl_run(["apply", "-n", ns, "-f", str(front_door)])
 
     for svc in services:
         candidates = (
@@ -1682,16 +1691,14 @@ def _wait_k8s_rollout(
     components: list[Component],
     apps: list[App],
     deployment: Deployment,
-    front_door: bool = True,
 ) -> bool:
     """Poll every active workload via `kubectl rollout status`.
 
     Returns True if all rollouts complete within the total timeout,
     False on first timeout. Respects `spec.apply.timeout_seconds` as a
-    *total* budget across all workloads, not per-workload. `front_door`
-    as in `_expected_workloads`.
+    *total* budget across all workloads, not per-workload.
     """
-    workloads = _expected_workloads(components, apps, deployment, front_door=front_door)
+    workloads = _expected_workloads(components, apps, deployment)
     if not workloads:
         return True
 
@@ -1718,16 +1725,15 @@ def _wait_k8s_rollout(
 
 
 def _expected_workloads(
-    components: list[Component], apps: list[App], deployment: Deployment,
-    *, front_door: bool = True,
+    components: list[Component], apps: list[App], deployment: Deployment
 ) -> list[tuple[str, str]]:
     """List of `(kind, name)` pairs for every active workload.
 
     Kind is StatefulSet when the component has storage, else Deployment
-    — matches the rendering logic in `renderers/k8s.py`. On k8s a full
-    apply also lists wip-caddy, the front door the renderer adds; a scoped
-    apply passes `front_door=False`, since it never applies wip-caddy and
-    must wait for and count only the services it was given.
+    — matches the rendering logic in `renderers/k8s.py`. On k8s it also
+    lists wip-caddy, the front door the renderer adds. A scoped apply lists
+    it too: it applies wip-caddy (every app's route is in its Caddyfile), so
+    a one-app verb is done only once a changed front door has rolled.
     """
     out: list[tuple[str, str]] = []
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
@@ -1747,7 +1753,7 @@ def _expected_workloads(
     # The front door on k8s, rendered by the renderer rather than from a
     # manifest: every request goes through it, so an install is not up
     # until it is.
-    if front_door and deployment.spec.target == "k8s":
+    if deployment.spec.target == "k8s":
         out.append(("Deployment", "wip-caddy"))
 
     return out

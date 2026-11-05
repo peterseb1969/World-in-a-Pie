@@ -34,6 +34,9 @@ routes. Now:
   is gone. Read identity only under `auth_required: true` routes, as before.
 - **NetworkPolicies:** the ingress controller now reaches `wip-caddy` only,
   not every pod. The app edge accepts traffic from `wip-caddy` only.
+- **One-app verbs carry the front door.** `add-app`, `app-deploy` and a
+  scoped `redeploy` apply `wip-caddy` alongside the named app, since every
+  app's route is in its Caddyfile; a changed Caddyfile rolls the pod.
 - **Upgrading an existing k8s install:** the redeploy replaces the
   per-route Ingresses (`wip-ingress`, `<app>-ingress`, `wip-root`, …) with
   the single `wip-ingress` and adds the `wip-caddy` Deployment; the apply's

@@ -101,6 +101,19 @@ class TestKubectlApplyScoped:
             assert "-R" not in args, args
             assert not any(a.startswith("--prune") for a in args), args
 
+    def test_the_front_door_is_shared(self, tmp_path: Path) -> None:
+        # Every app's route is in wip-caddy's Caddyfile ConfigMap, so a
+        # one-app apply must carry it, or the app is never routed.
+        _write_install_dir(
+            tmp_path,
+            {"wip-kb": "services", "caddy": "services", "react-console": "services"},
+        )
+        with patch("wip_deploy.apply._kubectl_run") as mock_run:
+            _kubectl_apply_scoped(tmp_path, "kb", ["wip-kb"])
+        applied = _applied_files(mock_run)
+        assert applied == ["namespace.yaml", *SHARED, "caddy.yaml", "wip-kb.yaml"]
+        assert "react-console.yaml" not in applied
+
     def test_infrastructure_manifest_is_found(self, tmp_path: Path) -> None:
         _write_install_dir(tmp_path, {"statefulapp": "infrastructure"})
         with patch("wip_deploy.apply._kubectl_run") as mock_run:
@@ -163,6 +176,7 @@ class TestApplyK8sScoped:
                 "wip-kb": "services",
                 "react-console": "services",
                 "mongodb": "infrastructure",
+                "caddy": "services",
             }
         )
         with (
@@ -182,8 +196,10 @@ class TestApplyK8sScoped:
         assert "wip-kb.yaml" in applied
         assert "react-console.yaml" not in applied
         assert "mongodb.yaml" not in applied
-        # The summary reflects the scoped set, not the whole tree.
-        assert result.services_up == 1
+        assert "caddy.yaml" in applied
+        # The summary reflects the scoped set (the app and the front door it
+        # waits on), not the whole tree.
+        assert result.services_up == 2
 
     def test_no_scope_applies_full_tree(self, tmp_path: Path) -> None:
         deployment = _k8s_deployment(apps=["wip-kb"])
@@ -262,9 +278,10 @@ def test_every_top_level_manifest_is_shared(tmp_path: Path) -> None:
     assert applied[-1] == "wip-kb.yaml"
 
 
-class TestScopedApplyLeavesTheFrontDoorAlone:
-    """A scoped apply never applies wip-caddy (the renderer's front door), so
-    it neither waits for it nor counts it; a full apply does both."""
+class TestScopedApplyWaitsForTheFrontDoor:
+    """A scoped apply applies wip-caddy (the renderer's front door: every
+    app's route is in its Caddyfile), so it waits for it beside its own
+    services, never for other services; a full apply waits for it too."""
 
     def _rollouts(self, tmp_path: Path, scope: list[str] | None) -> list[str]:
         deployment = _k8s_deployment(apps=["wip-kb"])
@@ -281,8 +298,8 @@ class TestScopedApplyLeavesTheFrontDoorAlone:
             )
         return [c.args[0][5] for c in run.call_args_list if c.args[0][:3] == ["kubectl", "rollout", "status"]]
 
-    def test_a_scoped_apply_waits_only_for_its_services(self, tmp_path: Path) -> None:
-        assert self._rollouts(tmp_path, ["wip-kb"]) == ["deployment/wip-wip-kb"]
+    def test_a_scoped_apply_waits_for_its_services_and_the_front_door(self, tmp_path: Path) -> None:
+        assert self._rollouts(tmp_path, ["wip-kb"]) == ["deployment/wip-wip-kb", "deployment/wip-caddy"]
 
     def test_a_full_apply_waits_for_the_front_door(self, tmp_path: Path) -> None:
         assert "deployment/wip-caddy" in self._rollouts(tmp_path, None)
