@@ -570,7 +570,8 @@ export interface Attachment extends Required<Omit<AttachmentRequest, 'upstream_t
  * `policy_unavailable` or `duplicate_name`), `forbidden` (rule
  * `upstream_blocked`), `name_collision` (a name the install's own apps route
  * under), MANAGED_BY_DEPLOYER, `concurrency_conflict` (retry), `not_found`
- * (deactivate only).
+ * (deactivate only), `invalid_state` (rule `no_app_edge`: the install runs
+ * no app edge, so every write is refused; deactivating still works).
  */
 export interface AttachmentBulkResult {
   index: number
@@ -657,6 +658,8 @@ export type SystemRestoreSkipReason =
   | 'config_key_name'
   | 'app_route'
   | 'attach_policy_unavailable'
+  /** An active attachment, skipped: the install runs no app edge to serve it. */
+  | 'no_app_edge'
   | 'upstream_invalid'
   | 'upstream_blocked'
   | 'concurrent_write'

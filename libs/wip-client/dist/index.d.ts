@@ -2942,7 +2942,8 @@ interface Attachment extends Required<Omit<AttachmentRequest, 'upstream_tls' | '
  * `policy_unavailable` or `duplicate_name`), `forbidden` (rule
  * `upstream_blocked`), `name_collision` (a name the install's own apps route
  * under), MANAGED_BY_DEPLOYER, `concurrency_conflict` (retry), `not_found`
- * (deactivate only).
+ * (deactivate only), `invalid_state` (rule `no_app_edge`: the install runs
+ * no app edge, so every write is refused; deactivating still works).
  */
 interface AttachmentBulkResult {
     index: number;
@@ -3011,7 +3012,9 @@ interface SystemBackupOptions {
     attachments?: string[];
 }
 /** Why a restore left a record out. Branch on this, not on `reason`. */
-type SystemRestoreSkipReason = 'managed_by_deployer' | 'managed_on_source' | 'invalid_record' | 'differs' | 'orphaned_here' | 'orphaned_in_archive' | 'other_oidc_issuer' | 'config_key_name' | 'app_route' | 'attach_policy_unavailable' | 'upstream_invalid' | 'upstream_blocked' | 'concurrent_write'
+type SystemRestoreSkipReason = 'managed_by_deployer' | 'managed_on_source' | 'invalid_record' | 'differs' | 'orphaned_here' | 'orphaned_in_archive' | 'other_oidc_issuer' | 'config_key_name' | 'app_route' | 'attach_policy_unavailable'
+/** An active attachment, skipped: the install runs no app edge to serve it. */
+ | 'no_app_edge' | 'upstream_invalid' | 'upstream_blocked' | 'concurrent_write'
 /** Mirror: a grant to a key the archive lacks, which the mirror removes. */
  | 'mirror_removes_key'
 /**
