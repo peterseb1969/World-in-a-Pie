@@ -78,6 +78,41 @@ server log.
 - **`wip-archive` 0.25.0:** `ArchiveWriter.discard_blob(file_id)` drops a blob
   written earlier.
 
+### Apps on origins of their own: `network.app_origins`, the new default for compose and dev; `@wip/react` 0.26.0
+
+Served under `/apps/<name>` on WIP's origin, every app received the visitor's
+session cookie, and an app's JavaScript could call any other app as the
+visitor. With `network.app_origins: subdomain` each app is served at
+`https://<label>.<hostname>[:port]/apps/<label>/` with a session of its own:
+
+- **The gateway hands each app origin its own session.** `/auth/app-login` on
+  WIP's origin mints a one-time code (30 s, single use, bound to the app);
+  `/auth/handoff` on the app origin turns it into `wip_app_session`
+  (host-only, HttpOnly, naming the app, 15 minutes by default,
+  `APP_SESSION_MAX_AGE`). `/auth/verify` on an app origin accepts only that
+  app's session, so an app's server cannot replay a visitor's session at
+  another app. Logging in once still covers every app; Dex is unchanged.
+- **wip-caddy** serves each deployer app on its own site, attached apps on a
+  wildcard site handed to the app edge (certificates on demand, only for
+  names the edge confirms), and answers `/apps/<label>/…` on WIP's origin
+  with 301 to the app's origin.
+- **`@wip/react` 0.26.0:** `WipProvider` renews the app session in the
+  background (`useAppSessionRenewal`), so a long-open app's `fetch` calls keep
+  working; a page reload signs in again when the WIP login has ended.
+- **Defaults:** new `compose` and `dev` installs use `subdomain`; k8s stays on
+  `path` (its rendering comes in a later change, and `subdomain` is refused
+  there). An existing install keeps its mode: switch with `wip-deploy
+  redeploy --name <install> --app-origins subdomain`.
+- **Action required for `subdomain`:**
+  - `*.<hostname>` must resolve to the install (nothing to do for
+    `localhost`);
+  - apps must keep every browser request under their base path (the app
+    contract's rule) and should move to `@wip/react` 0.26.0;
+  - non-browser clients of app URLs (a CLI posting to an app's `server-api`)
+    must use the app's origin: a `POST` does not follow the 301.
+- `tls letsencrypt` with attached apps (on-demand certificates from a public
+  CA) has not been tried yet.
+
 ### Registry: three fixes from the registry-auth review; `@wip/client` 0.83.0
 
 - **A key-file change takes effect at the Registry without a restart.** An

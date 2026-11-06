@@ -205,6 +205,13 @@ These are platform-side guarantees the contract assumes. They're invariants toda
 
   The gateway answers 403 to a logged-in user in none of the groups, before any request reaches your app: a short "no access" page for browsers, JSON for API callers. No session is still a login redirect, and an empty or absent list lets any logged-in user in. Group names may use letters, digits, `.`, `_` and `-`; the field requires `auth_required: true`. Keep `ALLOWED_GROUPS` only if your app also runs its own OIDC client.
 
+- **Your app may be served on an origin of its own** — when the install sets `network.app_origins: subdomain` (the default for new compose and dev installs), the app is served at `https://<label>.<hostname>[:port]/apps/<label>/`, where `<label>` is the last segment of your route prefix (`/apps/rc` → `rc.<hostname>`). Your base path does not change, so the app needs no rebuild, and `https://<hostname>/apps/<label>/…` answers 301 to the new origin. What follows for the app:
+  - **Every browser request stays on your own origin**, under `BASE_URL` (the client-fetch rule above). A browser call to WIP's origin (`/api/…`, `/wip/…` on the bare host) is now a cross-origin request with no session: it fails. Server-side calls through `@wip/proxy` are unaffected.
+  - **Your server never sees a session cookie.** The gateway gives your origin a short-lived `wip_app_session` and removes it before the request reaches you; read identity from `X-WIP-User` / `X-WIP-Groups` as before.
+  - **Use `@wip/react`'s `WipProvider`** (0.26.0 or later), or call `useAppSessionRenewal` yourself: it renews the session in the background, so a long-open tab's `fetch` calls keep working. Without it, an app open longer than the session lifetime (15 minutes by default) sees its API calls fail until the page is reloaded.
+  - **`/auth/logout` and `/auth/userinfo` work on your origin** (relative links as before). The other `/auth/*` paths belong to WIP's origin.
+  - **Non-browser clients of your app's URLs** (a CLI, another service) must use the new origin or follow redirects: a `POST` does not follow the 301.
+
 - **Trust the identity headers only on routes you declare `auth_required: true`** — `X-WIP-User` and `X-WIP-Groups` come from the gateway on a protected route. On a route you declare `auth_required: false` the gateway never runs, so there is no identity to read. The front door, `wip-caddy` on every target (on k8s behind the cluster's ingress controller), removes client-sent copies:
   - on an unprotected app route, `X-WIP-User`, `X-WIP-Groups` and `X-WIP-Auth-Method` are all removed, so your app receives none;
   - on a protected one, the gateway's answer replaces `X-WIP-User` and `X-WIP-Groups` (or removes them), and `X-WIP-Auth-Method` is removed.
