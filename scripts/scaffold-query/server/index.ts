@@ -9,11 +9,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const PORT = parseInt(process.env.PORT || '3001')
-// Path-prefix-ready for k8s/ingress (CASE-370). Net-zero for local dev:
-// APP_BASE_PATH unset → BASE_PATH '' → the router mounts at '/' and the session
-// cookie path is '/', identical to before.
-const BASE_PATH = (process.env.APP_BASE_PATH || '').replace(/\/+$/, '')
-const COOKIE_PATH = BASE_PATH ? BASE_PATH + '/' : '/'
+// The app is served at the root of its own origin
+// (https://<label>.<hostname>/): the router mounts at '/' and the session
+// cookie's path is '/'.
+const COOKIE_PATH = '/'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const router = express.Router()
@@ -101,8 +100,7 @@ if (process.env.NODE_ENV === 'production') {
   // API prefixes never fall through to the SPA: a JSON client asking for a
   // route this server does not serve gets a 404 it can parse, not a page of
   // HTML that dies in JSON.parse and reads as a parse bug. Any method.
-  // req.path is relative to the router's mount, so BASE_PATH needs no
-  // handling here. Add your app's own API prefixes to this list.
+  // Add your app's own API prefixes to this list.
   const API_PREFIXES = /^\/(api|auth|wip|server-api|mcp)(\/|$)/
   router.use((req, res, next) => {
     if (API_PREFIXES.test(req.path)) {
@@ -114,8 +112,7 @@ if (process.env.NODE_ENV === 'production') {
   })
 }
 
-// Mount everything under the base path (CASE-370); '/' for local dev.
-app.use(BASE_PATH || '/', router)
+app.use('/', router)
 
 // --- Start ---
 // Listen first, then connect the askBar agent in the background: the MCP
@@ -125,7 +122,7 @@ app.use(BASE_PATH || '/', router)
 async function main() {
   await initAuth()
   app.listen(PORT, () => {
-    console.log(`Server listening on http://localhost:${PORT}${BASE_PATH || ''}`)
+    console.log(`Server listening on http://localhost:${PORT}`)
   })
   startAgent()
 }

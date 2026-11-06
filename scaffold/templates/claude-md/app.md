@@ -67,8 +67,8 @@ Do this as early as you can. Under the master key every call is allowed, so a ca
 **Read this before scaffolding any app code:** `docs/wip-deployable-app-contract.md` (bundled into this project by the scaffold). Four-line summary:
 
 1. **Source repo** needs `Dockerfile.dev` + correct `vite.config.ts` (`server.host: '0.0.0.0'`, dev proxy targets *your* Express port, not 3001). Client fetches use `import.meta.env.BASE_URL`, never bare paths.
-2. **WIP repo `apps/<name>/wip-app.yaml`** declares both http and dev ports, `WIP_BASE_URL` via `from_component: router`, `APP_BASE_PATH` literal, and a healthcheck that doesn't depend on WIP being reachable.
-3. **Verify** with `wip-deploy install --target dev --app <name> --app-source <name>=~/Development/WIP-<name>` — SPA must load at `https://localhost:8443/apps/<name>/` on the first try, container healthy, no manual env patching.
+2. **WIP repo `apps/<name>/wip-app.yaml`** declares both http and dev ports, `WIP_BASE_URL` via `from_component: router`, `app_metadata.label`, route and healthcheck paths from `/` (the app is served at the root of its own origin, with no base path), and a healthcheck that doesn't depend on WIP being reachable.
+3. **Verify** with `wip-deploy install --target dev --app <name> --app-source <name>=~/Development/WIP-<name>` — SPA must load at `https://<label>.wip.localhost:8443/` on the first try, container healthy, no manual env patching.
 4. **If something breaks**, find the failure signature in the paper's "What breaks when you skip step N" annex. Once `/check-app-deployability` ships, run it before considering your scaffold done.
 
 The contract is target-agnostic — compose, k8s, and apps-only installs satisfy the same contract.
@@ -178,9 +178,9 @@ The WIP libs are tarballs in `libs/`. `@tanstack/react-query` is the peer depend
 
 ## Dev Setup Gotchas
 
-**TLS:** WIP uses a self-signed cert on whichever hostname the install runs at — `https://localhost:8443` for compose dev, `https://<ingress-hostname>` for k8s (e.g. `https://kb.internal`). Node.js `fetch()` rejects self-signed certs; add `NODE_TLS_REJECT_UNAUTHORIZED=0` to your `dev:server` script (NOT `start`/production). The python wip_mcp client uses `WIP_VERIFY_TLS=false` (already set in `.mcp.json`). Production with proper certs needs no workaround.
+**TLS:** WIP uses a self-signed cert on whichever hostname the install runs at — `https://wip.localhost:8443` for compose dev, `https://<ingress-hostname>` for k8s (e.g. `https://kb.internal`). Node.js `fetch()` rejects self-signed certs; add `NODE_TLS_REJECT_UNAUTHORIZED=0` to your `dev:server` script (NOT `start`/production). The python wip_mcp client uses `WIP_VERIFY_TLS=false` (already set in `.mcp.json`). Production with proper certs needs no workaround.
 
-**@wip/client baseUrl:** In browser apps behind the `@wip/proxy` mount, use ``baseUrl: `${import.meta.env.BASE_URL}wip` `` — a deployed app lives under `/apps/<name>/`, so a bare `'/wip'` works only for an app served at `/`. Do NOT use a bare relative path without the client resolving it — `new URL('/wip/...')` throws without a protocol.
+**@wip/client baseUrl:** In browser apps behind the `@wip/proxy` mount, use ``baseUrl: `${import.meta.env.BASE_URL}wip` `` — the app is served at the root of its own origin, so that is `/wip`. Do NOT use a bare relative path without the client resolving it — `new URL('/wip/...')` throws without a protocol.
 
 **@wip/react providers:** Hooks require BOTH `QueryClientProvider` (from `@tanstack/react-query`) AND `WipProvider` (from `@wip/react`). Missing either breaks every hook: outside `WipProvider`, `useWipClient` throws "useWipClient must be used within a <WipProvider>"; outside `QueryClientProvider`, TanStack's hooks throw that no QueryClient is set.
 

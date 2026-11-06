@@ -13,7 +13,7 @@
 # Why this file matters (CASE-370): without Dockerfile.dev the dev_simple
 # renderer falls back to the production Dockerfile, NODE_ENV is forced to
 # development, and the SPA static-asset block (guarded behind
-# NODE_ENV === 'production') is disabled → 404 at /apps/<name>/.
+# NODE_ENV === 'production') is disabled → 404 at the app's origin.
 #
 # CHOKIDAR_USEPOLLING: reliable file-change detection on macOS bind mounts.
 FROM node:24-alpine
