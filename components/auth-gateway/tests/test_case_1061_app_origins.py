@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 from itsdangerous import TimestampSigner
 
 from auth_gateway import app_origins
-from auth_gateway.config import check_app_origins_mode, settings
+from auth_gateway.config import settings
 from auth_gateway.main import app
 
 WIP = "wip.local:8443"
@@ -30,8 +30,7 @@ AA = "aa.wip.local:8443"
 
 
 @pytest.fixture(autouse=True)
-def subdomain(monkeypatch):
-    monkeypatch.setattr(settings, "app_origins", "subdomain")
+def public_url(monkeypatch):
     monkeypatch.setattr(settings, "public_url", "https://wip.local:8443")
     monkeypatch.setattr(settings, "app_session_max_age", 900)
     app_origins._used_codes.clear()
@@ -56,7 +55,7 @@ def _get(client, path, host, cookies=None, **headers):
     return client.get(path, headers={"X-Forwarded-Host": host, **headers}, follow_redirects=False)
 
 
-def _handshake(client, label="rc", return_to="/apps/rc/x?y=1", **session):
+def _handshake(client, label="rc", return_to="/x?y=1", **session):
     """app-login on WIP's origin, then handoff on the app origin. Returns
     the handoff response and the app session cookie it set."""
     login = _get(client, f"/auth/app-login?app={label}&return_to={return_to}", WIP,
@@ -78,7 +77,7 @@ def _code_from(location: str) -> str:
 def test_the_handshake_gives_the_app_origin_a_session_of_its_own(client):
     handoff, cookie = _handshake(client)
     assert handoff.status_code == 302
-    assert handoff.headers["location"] == "/apps/rc/x?y=1"
+    assert handoff.headers["location"] == "/x?y=1"
     set_cookie = handoff.headers["set-cookie"].lower()
     assert "httponly" in set_cookie and "secure" in set_cookie and "samesite=lax" in set_cookie
     assert "domain=" not in set_cookie  # host-only: no other origin receives it
@@ -154,7 +153,7 @@ def test_a_return_path_off_the_origin_is_dropped(client):
 
 
 def test_app_login_without_a_session_logs_in_first(client):
-    r = _get(client, "/auth/app-login?app=rc&return_to=/apps/rc/", WIP)
+    r = _get(client, "/auth/app-login?app=rc&return_to=/", WIP)
     assert r.status_code == 302
     login = urlsplit(r.headers["location"])
     assert login.path == "/auth/login"
@@ -199,21 +198,17 @@ def test_userinfo_on_an_app_origin_reads_the_app_session(client):
     assert _get(client, "/auth/userinfo", RC, {"wip_session": _wip_session()}).status_code == 401
 
 
-# ── path mode is unchanged ──────────────────────────────────────────────
+# ── apps at their origin's root (CASE-1103) ─────────────────────────────
 
 
-def test_in_path_mode_there_is_no_app_origin(client, monkeypatch):
-    monkeypatch.setattr(settings, "app_origins", "path")
-    off = _get(client, "/auth/app-login?app=rc", WIP, {"wip_session": _wip_session()})
-    assert (off.status_code, off.json()["error"]) == (400, "app_origins_off")
-    # A host that looks like an app origin is just a host: the WIP session decides.
-    r = _get(client, "/auth/verify", RC, {"wip_session": _wip_session()})
-    assert r.status_code == 200
+def test_a_handoff_without_a_usable_return_path_lands_at_the_apps_root(client):
+    code = app_origins.mint_code("rc", {"email": "u@x", "groups": [], "exp": time.time() + 3600})
+    r = _get(client, f"/auth/handoff?code={code}&return_to=//evil.example/", RC)
+    assert r.status_code == 302 and r.headers["location"] == "/"
 
 
-def test_a_mistyped_mode_refuses_to_start():
-    with pytest.raises(SystemExit):
-        check_app_origins_mode("subdomains")
+def test_a_login_without_a_return_path_lands_on_wips_bare_host():
+    assert settings.default_redirect == "/"
 
 
 def test_the_wip_session_cookie_is_secure_on_an_https_install():

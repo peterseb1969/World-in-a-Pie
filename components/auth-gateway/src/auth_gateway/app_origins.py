@@ -1,9 +1,8 @@
-"""Apps on origins of their own (WIP_APP_ORIGINS=subdomain).
+"""Every app on an origin of its own.
 
-Served under /apps/<label> on WIP's own origin, every app shares the
-visitor's wip_session cookie: an app's server receives it, and an app's
-JavaScript can call any other app as the visitor. With app origins each app
-lives at https://<label>.<hostname>[:port] and gets a session of its own:
+Each app is served at the root of https://<label>.<hostname>[:port] and gets
+a session of its own, so an app's server never receives the visitor's
+wip_session, and an app's JavaScript cannot call another app as the visitor:
 
 1. A request on an app origin without a valid app session is sent to
    /auth/app-login on WIP's origin (the proxy turns verify's 401 into that
@@ -43,16 +42,12 @@ from .config import settings
 
 APP_COOKIE = "wip_app_session"
 CODE_MAX_AGE = 30
-# One DNS label: what /apps/<label> names, and what <label>.<hostname> carries.
+# One DNS label: what <label>.<hostname> carries.
 LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 RENEWED_PATH = "/auth/renewed"
 
 _used_codes: dict[str, float] = {}
 _used_lock = threading.Lock()
-
-
-def enabled() -> bool:
-    return settings.app_origins == "subdomain"
 
 
 def _public() -> tuple[str, str, int | None]:
@@ -93,8 +88,6 @@ def request_label(headers: Any) -> str | None:
     """The app label of the origin a request was made to. The proxy sets
     X-Forwarded-Host from the request's own Host (it never forwards a
     client's), so it names the origin the browser addressed."""
-    if not enabled():
-        return None
     return label_of(headers.get("X-Forwarded-Host") or headers.get("Host"))
 
 

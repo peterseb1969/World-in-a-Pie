@@ -58,8 +58,8 @@ EXPIRY_POLLS = 3
 LISTEN_PORT = int(os.getenv("LISTEN_PORT", "8080"))
 ADMIN_ADDRESS = "localhost:2019"
 SESSION_COOKIE = "wip_session"
-# The session of an app origin (network.app_origins=subdomain): read by the
-# gateway's forward_auth, never handed to the app.
+# The session of an app origin: read by the gateway's forward_auth, never
+# handed to the app.
 APP_SESSION_COOKIE = "wip_app_session"
 CADDYFILE_PATH = "/tmp/edge.Caddyfile"
 
@@ -120,9 +120,6 @@ class Settings:
     gateway_headers: tuple[str, ...]
     client_headers: tuple[str, ...]
     policy_file: str | None
-    # "path": attached apps under /apps/<name> on WIP's origin. "subdomain":
-    # each on <name>.<hostname>, matched by host as well as path.
-    app_origins: str = "path"
 
     @property
     def public_hostname(self) -> str:
@@ -141,7 +138,6 @@ class Settings:
             gateway_headers=_header_list(os.environ["GATEWAY_IDENTITY_HEADERS"]),
             client_headers=_header_list(os.environ["CLIENT_IDENTITY_HEADERS"]),
             policy_file=os.getenv("WIP_ATTACH_POLICY_FILE") or None,
-            app_origins=os.getenv("WIP_APP_ORIGINS", "path"),
         )
 
 
@@ -311,15 +307,8 @@ def _record_ok(record: dict[str, Any]) -> str | None:
     for g in record.get("allowed_groups") or []:
         if not GROUP_RE.match(str(g)):
             return "invalid group"
-    for p in [*(record.get("preserve_prefix_subpaths") or []), *([record["health"]] if record.get("health") else [])]:
-        if not PATH_RE.match(str(p)):
-            return "invalid path"
-    own = f"/apps/{record['name']}/"
-    for sub in record.get("preserve_prefix_subpaths") or []:
-        # A subpath outside the attachment's own prefix would take another
-        # attachment's traffic to this upstream, under this one's auth.
-        if not str(sub).startswith(own) or ".." in str(sub):
-            return f"preserve_prefix_subpaths entry {sub!r} is outside {own}"
+    if record.get("health") and not PATH_RE.match(str(record["health"])):
+        return "invalid path"
     if record.get("allowed_groups") and not record.get("auth_required"):
         return "allowed_groups without auth_required"
     return None
@@ -406,19 +395,16 @@ def _pem_to_der_b64(pem: str) -> list[str]:
     return out
 
 
-def _route_block(t: Target, s: Settings, matcher: str, *, strip: bool) -> list[str]:
+def _route_block(t: Target, s: Settings, matcher: str) -> list[str]:
     r = t.record
     name = r["name"]
-    subdomain = s.app_origins == "subdomain"
-    # On an app origin the gateway reads the app from the host the browser
-    # addressed (wip-caddy's catch-all site hands every other name to the edge),
-    # and a login is the handshake on WIP's origin.
-    forwarded_host = "{http.request.hostport}" if subdomain else s.public_host
+    # The gateway reads the app from the host the browser addressed
+    # (wip-caddy's catch-all site hands every other name to the edge), and a
+    # login is the handshake on WIP's origin.
+    forwarded_host = "{http.request.hostport}"
     login = (
         f"{s.public_scheme}://{s.public_host}/auth/app-login?app={name}"
         "&return_to={http.request.uri_escaped}"
-        if subdomain
-        else "/auth/login?return_to={http.request.uri_escaped}"
     )
     lines = [f"\thandle {matcher} {{", "\t\troute {"]
     if r.get("auth_required"):
@@ -450,8 +436,6 @@ def _route_block(t: Target, s: Settings, matcher: str, *, strip: bool) -> list[s
         f'\t\t\trequest_header Cookie "(^|;\\s*){APP_SESSION_COOKIE}=[^;]*" ""',
         '\t\t\trequest_header Cookie "^;\\s*" ""',
     ]
-    if strip:
-        lines.append(f"\t\t\turi strip_prefix /apps/{name}")
     dials = " ".join(_dial(ip, t.port) for ip in t.addresses)
     lines.append(f"\t\t\treverse_proxy {dials} {{")
     lines += [
@@ -494,7 +478,7 @@ def _route_block(t: Target, s: Settings, matcher: str, *, strip: bool) -> list[s
 
 def caddyfile(p: Plan | None, s: Settings, *, unavailable: str | None = None) -> str:
     """The edge's whole config. `unavailable` (or no plan yet) answers every
-    /apps path with 503 and that reason."""
+    attached app's origin with 503 and that reason."""
     lines = [
         "{",
         f"\tadmin {ADMIN_ADDRESS}",
@@ -513,41 +497,17 @@ def caddyfile(p: Plan | None, s: Settings, *, unavailable: str | None = None) ->
         "\t}",
         "",
     ]
-    if s.app_origins == "subdomain":
-        lines += _subdomain_sites(p, s, unavailable)
-        lines += ["\thandle {", '\t\trespond "No app is attached at this origin" 404', "\t}", "}", ""]
-        return "\n".join(lines)
-    if p is None or unavailable:
-        reason = unavailable or "the app edge has not read the Registry yet"
-        lines += [
-            "\thandle /apps/* {",
-            f'\t\trespond "Attached apps are unavailable: {reason}" 503',
-            "\t}",
-        ]
-    else:
-        for t in p.targets:
-            r = t.record
-            name = r["name"]
-            base = f"/apps/{name}"
-            strip = bool(r.get("strip_prefix"))
-            if r.get("redirect_bare_path", True):
-                lines += [f"\thandle {base} {{", f"\t\tredir * {base}/ permanent", "\t}", ""]
-            if strip:
-                for sub in r.get("preserve_prefix_subpaths") or []:
-                    lines += _route_block(t, s, f"{sub}/*", strip=False)
-            if not r.get("redirect_bare_path", True):
-                lines += _route_block(t, s, base, strip=strip)
-            lines += _route_block(t, s, f"{base}/*", strip=strip)
-    lines += ["\thandle {", '\t\trespond "No app is attached at this path" 404', "\t}", "}", ""]
+    lines += _app_sites(p, s, unavailable)
+    lines += ["\thandle {", '\t\trespond "No app is attached at this origin" 404', "\t}", "}", ""]
     return "\n".join(lines)
 
 
-def _subdomain_sites(p: Plan | None, s: Settings, unavailable: str | None) -> list[str]:
-    """network.app_origins=subdomain: each attached app on <name>.<hostname>.
-    Its routes keep their /apps/<name> paths and are matched by host as well,
-    so one app's origin never serves another app. /edge/ask answers wip-caddy's
-    on-demand TLS: 200 only for an active attachment's host, so an arbitrary
-    Host never gets a certificate."""
+def _app_sites(p: Plan | None, s: Settings, unavailable: str | None) -> list[str]:
+    """Each attached app at the root of <name>.<hostname>: every path on that
+    host goes to its upstream as the browser sent it, so one app's origin
+    never serves another app. /edge/ask answers wip-caddy's on-demand TLS:
+    200 only for an active attachment's host, so an arbitrary Host never gets
+    a certificate."""
     if p is None or unavailable:
         reason = unavailable or "the app edge has not read the Registry yet"
         return [
@@ -556,32 +516,14 @@ def _subdomain_sites(p: Plan | None, s: Settings, unavailable: str | None) -> li
         ]
     lines: list[str] = []
     for i, t in enumerate(p.targets):
-        r = t.record
-        name = r["name"]
-        host = f"{name}.{s.public_hostname}"
-        base = f"/apps/{name}"
-        strip = bool(r.get("strip_prefix"))
+        host = f"{t.record['name']}.{s.public_hostname}"
         m = f"t{i}"
         lines += [
             f"\t@{m}_ask {{", "\t\tpath /edge/ask", f"\t\tquery domain={host}", "\t}",
             f"\thandle @{m}_ask {{", "\t\trespond 200", "\t}", "",
-            f"\t@{m}_root {{", f"\t\thost {host}", "\t\tpath /", "\t}",
-            f"\thandle @{m}_root {{", f"\t\tredir * {base}/ permanent", "\t}", "",
-            f"\t@{m}_all {{", f"\t\thost {host}", f"\t\tpath {base}/*", "\t}",
+            f"\t@{m} host {host}",
         ]
-        if r.get("redirect_bare_path", True):
-            lines += [
-                f"\t@{m}_bare {{", f"\t\thost {host}", f"\t\tpath {base}", "\t}",
-                f"\thandle @{m}_bare {{", f"\t\tredir * {base}/ permanent", "\t}", "",
-            ]
-        else:
-            lines += [f"\t@{m}_bare {{", f"\t\thost {host}", f"\t\tpath {base}", "\t}"]
-            lines += _route_block(t, s, f"@{m}_bare", strip=strip)
-        if strip:
-            for j, sub in enumerate(r.get("preserve_prefix_subpaths") or []):
-                lines += [f"\t@{m}_sub{j} {{", f"\t\thost {host}", f"\t\tpath {sub}/*", "\t}"]
-                lines += _route_block(t, s, f"@{m}_sub{j}", strip=False)
-        lines += _route_block(t, s, f"@{m}_all", strip=strip)
+        lines += _route_block(t, s, f"@{m}")
     lines += ["\thandle /edge/ask {", "\t\trespond 404", "\t}", ""]
     return lines
 
@@ -805,23 +747,16 @@ def self_test_configs() -> dict[str, str]:
     full = Plan(targets=[
         target(
             name="aa", upstream="https://aa.example:9443", allowed_groups=["aa-users"],
-            strip_prefix=True, preserve_prefix_subpaths=["/apps/aa/health"],
             upstream_host_header=True, streaming=True, health="/health",
             upstream_tls={"verify": True, "ca_pem": SELF_TEST_CA},
         ),
-        target(name="bb", upstream="http://bb.example:3000", auth_required=False, redirect_bare_path=False),
+        target(name="bb", upstream="http://bb.example:3000", auth_required=False),
         target(name="cc", upstream="https://cc.example", upstream_tls={"verify": False}),
     ])
-    import dataclasses
-
-    sub = dataclasses.replace(s, app_origins="subdomain")
     return {
         "full": caddyfile(full, s),
         "empty": caddyfile(Plan(), s),
         "unavailable": caddyfile(None, s, unavailable="the Registry is not answering"),
-        "full-subdomain": caddyfile(full, sub),
-        "empty-subdomain": caddyfile(Plan(), sub),
-        "unavailable-subdomain": caddyfile(None, sub, unavailable="the Registry is not answering"),
     }
 
 

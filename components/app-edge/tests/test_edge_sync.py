@@ -71,7 +71,7 @@ def test_the_dialled_addresses_are_the_checked_ones():
     p = es.plan([rec()], ["wip-registry"])
     assert [t.record["name"] for t in p.targets] == ["aa"]
     cfg = es.caddyfile(p, SETTINGS)
-    body = block(cfg, "/apps/aa/*")
+    body = block(cfg, "@t0")
     assert "reverse_proxy [2001:db8::10]:443 203.0.113.10:443 {" in body
     assert "tls_server_name aa.apps.example" in body
     assert "aa.apps.example:443" not in body  # the name is never dialled
@@ -110,11 +110,8 @@ def test_one_blocked_address_among_several_skips_the_record(monkeypatch):
 def test_records_the_edge_cannot_quote_safely_are_skipped():
     p = es.plan([
         rec(name="bad name"), rec(name="bb", allowed_groups=["a b"]), rec(name="cc", health="/x;y"),
-        rec(name="dd", strip_prefix=True, preserve_prefix_subpaths=["/apps/other/api"]),
-        rec(name="ee", strip_prefix=True, preserve_prefix_subpaths=["/apps/ee/../other"]),
     ], [])
-    assert set(p.skipped) == {"bad name", "bb", "cc", "dd", "ee"}
-    assert "outside /apps/dd/" in p.skipped["dd"]
+    assert set(p.skipped) == {"bad name", "bb", "cc"}
 
 
 def test_policy_file_fails_closed(tmp_path):
@@ -135,12 +132,12 @@ def test_policy_file_fails_closed(tmp_path):
 
 def test_protected_route_order_and_headers():
     cfg = es.caddyfile(es.plan([rec(allowed_groups=["aa-users"])], []), SETTINGS)
-    body = block(cfg, "/apps/aa/*")
+    body = block(cfg, "@t0")
     order = [
         "forward_auth wip-auth-gateway:4180 {",
         "uri /auth/verify?allowed_groups=aa-users",
         "header_up X-Forwarded-Proto https",
-        "header_up X-Forwarded-Host wip.example:8443",
+        "header_up X-Forwarded-Host {http.request.hostport}",
         "copy_headers X-WIP-User X-WIP-Groups",
         "request_header -X-WIP-Auth-Method",
         'request_header Cookie "(^|;\\s*)wip_session=[^;]*" ""',
@@ -157,7 +154,7 @@ def test_protected_route_order_and_headers():
 
 def test_unprotected_route_strips_every_client_identity_header():
     cfg = es.caddyfile(es.plan([rec(auth_required=False)], []), SETTINGS)
-    body = block(cfg, "/apps/aa/*")
+    body = block(cfg, "@t0")
     assert "forward_auth" not in body
     for h in SETTINGS.client_headers:
         assert f"request_header -{h}\n" in body
@@ -165,18 +162,20 @@ def test_unprotected_route_strips_every_client_identity_header():
 
 
 def test_forwarded_headers_are_set_toward_the_app_too():
-    body = block(es.caddyfile(es.plan([rec()], []), SETTINGS), "/apps/aa/*")
+    body = block(es.caddyfile(es.plan([rec()], []), SETTINGS), "@t0")
     proxy = body[body.index("reverse_proxy"):]
     assert "header_up X-Forwarded-Proto https" in proxy
-    assert "header_up X-Forwarded-Host wip.example:8443" in proxy
+    # The app's own origin, as the browser addressed it.
+    assert "header_up X-Forwarded-Host {http.request.hostport}" in proxy
 
 
-def test_bare_path_redirect_and_strip_prefix():
-    cfg = es.caddyfile(es.plan([rec(strip_prefix=True, preserve_prefix_subpaths=["/apps/aa/health"])], []), SETTINGS)
-    assert "\thandle /apps/aa {\n\t\tredir * /apps/aa/ permanent" in cfg
-    main = block(cfg, "/apps/aa/*")
-    assert main.index("forward_auth") < main.index("uri strip_prefix /apps/aa") < main.index("reverse_proxy")
-    assert "strip_prefix" not in block(cfg, "/apps/aa/health/*")
+def test_every_path_on_the_origin_goes_through_unchanged():
+    """An attached app is served at its origin's root: one host-matched
+    block, no redirect, nothing stripped."""
+    cfg = es.caddyfile(es.plan([rec()], []), SETTINGS)
+    assert "\t@t0 host aa.wip.example\n" in cfg
+    assert "redir * /" not in cfg
+    assert "strip_prefix" not in cfg and "/apps" not in cfg
 
 
 def test_proxy_options():
@@ -185,7 +184,7 @@ def test_proxy_options():
         upstream="https://aa.apps.example:9443", upstream_host_header=True, streaming=True,
         health="/health", upstream_tls={"verify": True, "ca_pem": pem},
     )], []), SETTINGS)
-    body = block(cfg, "/apps/aa/*")
+    body = block(cfg, "@t0")
     for line in [
         "header_up Host aa.apps.example:9443",
         "flush_interval -1",
@@ -197,9 +196,9 @@ def test_proxy_options():
 
 
 def test_tls_verify_off_and_plain_http():
-    off = block(es.caddyfile(es.plan([rec(upstream_tls={"verify": False})], []), SETTINGS), "/apps/aa/*")
+    off = block(es.caddyfile(es.plan([rec(upstream_tls={"verify": False})], []), SETTINGS), "@t0")
     assert "tls_insecure_skip_verify" in off
-    plain = block(es.caddyfile(es.plan([rec(upstream="http://aa.apps.example:3000")], []), SETTINGS), "/apps/aa/*")
+    plain = block(es.caddyfile(es.plan([rec(upstream="http://aa.apps.example:3000")], []), SETTINGS), "@t0")
     # A plain-http upstream gets the dial timeout, but no TLS.
     assert "dial_timeout 2s" in plain and "\t\t\t\t\ttls\n" not in plain
     assert "203.0.113.10:3000" in plain
@@ -213,9 +212,9 @@ def test_the_front_doors_forwarded_for_is_kept():
         assert cfg.startswith("{\n") and trust in cfg[: cfg.index(f":{es.LISTEN_PORT} {{")]
 
 
-def test_unknown_paths_404_and_no_plan_503():
+def test_unknown_origins_404_and_no_plan_503():
     cfg = es.caddyfile(es.plan([], []), SETTINGS)
-    assert 'respond "No app is attached at this path" 404' in cfg
+    assert 'respond "No app is attached at this origin" 404' in cfg
     down = es.caddyfile(None, SETTINGS, unavailable="the Registry is not answering")
     assert '"Attached apps are unavailable: the Registry is not answering" 503' in down
 
@@ -236,7 +235,7 @@ def test_routes_expire_after_three_failed_polls(monkeypatch):
     good, built_from = es.tick(SETTINGS, state, now=100.0)
     assert built_from is not None
     state.loaded = good
-    assert "/apps/aa/*" in good
+    assert "@t0 host aa.wip.example" in good
 
     calls["ok"] = False
     # Within 3 * POLL_SECONDS of the last success: the loaded config stays.
@@ -245,7 +244,7 @@ def test_routes_expire_after_three_failed_polls(monkeypatch):
     assert es.tick(SETTINGS, state, now=100.0 + 2.9 * es.POLL_SECONDS) == (good, built_from)
     expired, none = es.tick(SETTINGS, state, now=100.0 + 3.1 * es.POLL_SECONDS)
     assert none is None
-    assert "the Registry is not answering" in expired and "/apps/aa/*" not in expired
+    assert "the Registry is not answering" in expired and "@t0 host" not in expired
 
 
 def test_never_read_means_unavailable(monkeypatch):
@@ -279,14 +278,14 @@ def test_a_skipped_record_is_reported_once(monkeypatch, caplog):
 def test_unreachable_families_are_not_dialled():
     import socket
     p = es.plan([rec()], [], families={socket.AF_INET})
-    body = block(es.caddyfile(p, SETTINGS), "/apps/aa/*")
+    body = block(es.caddyfile(p, SETTINGS), "@t0")
     assert "reverse_proxy 203.0.113.10:443 {" in body and "2001:db8" not in body
     v6only = es.plan([rec(upstream="https://[2001:db8::20]")], [], families={socket.AF_INET})
     assert v6only.targets == [] and "no route" in v6only.skipped["aa"]
 
 
 def test_a_failed_dial_moves_to_the_next_address():
-    body = block(es.caddyfile(es.plan([rec()], []), SETTINGS), "/apps/aa/*")
+    body = block(es.caddyfile(es.plan([rec()], []), SETTINGS), "@t0")
     for line in ["lb_try_duration 10s", "lb_try_interval 250ms", "fail_duration 30s", "max_fails 1", "dial_timeout 2s"]:
         assert line in body, line
 
@@ -320,7 +319,7 @@ def test_a_refused_key_is_named_as_such(monkeypatch):
 def test_the_self_test_covers_every_option():
     configs = es.self_test_configs()
     full = configs["full"]
-    for needle in ["tls_trust_pool inline", "trust_der ", "tls_insecure_skip_verify", "uri strip_prefix",
+    for needle in ["tls_trust_pool inline", "trust_der ", "tls_insecure_skip_verify",
                    "flush_interval -1", "health_uri", "lb_try_duration", "allowed_groups=aa-users",
                    'request_header Cookie "(^|;\\s*)wip_session']:
         assert needle in full, needle
@@ -369,7 +368,7 @@ def _refuse_everything_but(marker):
 
 
 def _expired_state(monkeypatch):
-    """A state whose last good poll served /apps/aa, then a Registry outage
+    """A state whose last good poll served aa, then a Registry outage
     past the deadline."""
     calls = {"ok": True}
 
@@ -393,7 +392,7 @@ def test_past_the_deadline_a_refused_unavailable_config_serves_no_old_route(monk
     loads, load = _refuse_everything_but(None)
     monkeypatch.setattr(es, "load", load)
     assert es.apply(config, built_from, SETTINGS) is None
-    assert loads and not any("/apps/aa/*" in c for c in loads)
+    assert loads and not any("@t0 host" in c for c in loads)
 
 
 def test_an_unavailable_policy_never_falls_back_to_old_routes(monkeypatch):
@@ -410,7 +409,7 @@ def test_an_unavailable_policy_never_falls_back_to_old_routes(monkeypatch):
     loads, load = _refuse_everything_but(None)
     monkeypatch.setattr(es, "load", load)
     es.apply(config, built_from, SETTINGS)
-    assert not any("/apps/aa/*" in c for c in loads)
+    assert not any("@t0 host" in c for c in loads)
 
 
 def test_within_the_grace_window_the_loaded_config_stays(monkeypatch):

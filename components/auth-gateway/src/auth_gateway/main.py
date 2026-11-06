@@ -35,7 +35,6 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from . import app_origins
 from .config import (
-    check_app_origins_mode,
     check_production_security,
     check_redirect_mode,
     settings,
@@ -51,9 +50,6 @@ check_production_security()
 # Refuse to start on a mistyped AUTH_REDIRECT_MODE — a typo silently
 # falling back to 401 behaviour would surface far from its cause.
 check_redirect_mode()
-
-# Refuse to start on a mistyped WIP_APP_ORIGINS, for the same reason.
-check_app_origins_mode()
 
 app = FastAPI(title="WIP Auth Gateway", version="0.1.0")
 
@@ -389,7 +385,7 @@ async def userinfo(request: Request):
 
 
 # ---------------------------------------------------------------------------
-# App origins (WIP_APP_ORIGINS=subdomain): the handshake, see app_origins.py
+# App origins: the handshake, see app_origins.py
 # ---------------------------------------------------------------------------
 
 @app.get("/auth/app-login")
@@ -397,10 +393,6 @@ async def app_login(request: Request, app: str = "", return_to: str = "/", silen
     """On WIP's origin: hand the logged-in user to an app origin with a
     one-time code. Not logged in: a normal login first, then back here; or,
     for @wip/react's silent renew, straight back with login_required."""
-    if not app_origins.enabled():
-        return JSONResponse(status_code=400, content={
-            "error": "app_origins_off", "detail": "this install serves apps under /apps/<name>",
-        })
     if not app_origins.LABEL_RE.fullmatch(app):
         return JSONResponse(status_code=400, content={"error": "invalid_app"})
     if not app_origins.same_origin_path(return_to):
@@ -442,11 +434,11 @@ async def handoff(request: Request, code: str = "", return_to: str = "/"):
             return RedirectResponse(url=f"{return_to}?error=handoff_failed", status_code=302)
         return HTMLResponse(
             "<!doctype html><p>This sign-in link has expired. "
-            f'<a href="{app_origins.app_login_url(label, "/apps/" + label + "/")}">Sign in again</a>.</p>',
+            f'<a href="{app_origins.app_login_url(label, "/")}">Sign in again</a>.</p>',
             status_code=400,
         )
     value, max_age = app_origins.session_cookie(identity, label)
-    target = return_to if app_origins.same_origin_path(return_to) else f"/apps/{label}/"
+    target = return_to if app_origins.same_origin_path(return_to) else "/"
     response = RedirectResponse(url=target, status_code=302)
     response.set_cookie(
         app_origins.APP_COOKIE, value, max_age=max_age, path="/", httponly=True,

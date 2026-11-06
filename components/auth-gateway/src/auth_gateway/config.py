@@ -65,7 +65,9 @@ class Settings:
     wip_hostname: str = os.getenv("WIP_HOSTNAME", "localhost")
 
     # Default redirect after login if no return_to was provided.
-    default_redirect: str = os.getenv("DEFAULT_REDIRECT", "/apps/rc/")
+    # Where a login without a return_to lands: WIP's bare host, which sends
+    # the browser on to the first app's origin.
+    default_redirect: str = os.getenv("DEFAULT_REDIRECT", "/")
 
     # Group policy for logins federated through a Dex connector (JSON,
     # rendered by the deployer when the install declares a connector):
@@ -105,13 +107,10 @@ class Settings:
     # browser's Accept header to the auth subrequest.
     auth_redirect_mode: str = os.getenv("AUTH_REDIRECT_MODE", "401")
 
-    # Where apps are served (app_origins.py). "path": under /apps/<label> on
-    # this install's own origin, sharing the wip_session cookie. "subdomain":
-    # each app on its own origin, https://<label>.<hostname>[:port], with a
-    # session cookie of its own (wip_app_session) that names the app; the
-    # gateway hands it over through a redirect handshake, so one login still
-    # covers every app.
-    app_origins: str = os.getenv("WIP_APP_ORIGINS", "path")
+    # Every app is served on its own origin (app_origins.py),
+    # https://<label>.<hostname>[:port], with a session cookie of its own
+    # (wip_app_session) that names the app; the gateway hands it over through
+    # a redirect handshake, so one login still covers every app.
     # This install's public URL, scheme://hostname[:port]; app origins are
     # built from it. Defaults to CALLBACK_URL's origin.
     public_url: str = os.getenv("WIP_PUBLIC_URL", "")
@@ -136,18 +135,6 @@ def check_redirect_mode(mode: str | None = None) -> None:
             "login redirect; wip-caddy, nginx auth_request) or 'redirect' (gateway "
             "302s browsers to the login URL; Traefik-style forwardAuth). "
             "Refusing to start.",
-            value,
-        )
-        sys.exit(1)
-
-
-def check_app_origins_mode(mode: str | None = None) -> None:
-    """Refuse to start on an invalid WIP_APP_ORIGINS: a typo read as "path"
-    would serve every app on WIP's origin with the shared session."""
-    value = mode if mode is not None else settings.app_origins
-    if value not in ("path", "subdomain"):
-        logger.critical(
-            "Invalid WIP_APP_ORIGINS %r — must be 'path' or 'subdomain'. Refusing to start.",
             value,
         )
         sys.exit(1)
