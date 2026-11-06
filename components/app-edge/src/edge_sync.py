@@ -410,7 +410,9 @@ def _route_block(t: Target, s: Settings, matcher: str, *, strip: bool) -> list[s
             f"\t\t\t\tcopy_headers {' '.join(s.gateway_headers)}",
             "\t\t\t\t@unauth status 401",
             "\t\t\t\thandle_response @unauth {",
-            "\t\t\t\t\tredir * /auth/login?return_to={http.request.uri} 302",
+            # uri_escaped: the unescaped {http.request.uri} lost every query
+            # parameter after the first once the browser came back from login.
+            "\t\t\t\t\tredir * /auth/login?return_to={http.request.uri_escaped} 302",
             "\t\t\t\t}",
             "\t\t\t}",
         ]

@@ -142,6 +142,27 @@ run on every install with the auth gateway. It is now the optional module
   by hand; the extra `app-edge` entry is then reported as an unknown module
   by the older deployer, so remove it from `modules.optional` as well.
 
+### Login returns only to this install; query strings survive login; `--tls external` is k8s-only
+
+- **Login can't end on another site.** `/auth/login?return_to=…` used to send
+  the browser wherever `return_to` pointed once the login completed. That
+  turned any WIP login link into a phishing tool. It now accepts:
+  - a same-origin path; or
+  - an absolute `http(s)` URL on the install's own host (`WIP_HOSTNAME`, any
+    port), which is what `AUTH_REDIRECT_MODE=redirect` builds.
+
+  Anything else lands on the default page. Login and logout also refuse
+  paths with control characters: browsers delete tabs and newlines, so
+  `/\t/evil.example` would arrive as `//evil.example`.
+- **The whole URL comes back after login.** The front door and the app edge
+  put the original URI into the login redirect unescaped, so
+  `…/search?q=foo&page=3` came back without `&page=3`. They now use Caddy's
+  `{http.request.uri_escaped}`. The edge half needs the new app-edge image.
+- **`--tls external` is refused on compose and dev.** There wip-caddy is the
+  public listener, and the `tls off` it rendered is not a directive Caddy 2
+  accepts, so wip-caddy never started with it. Use `internal` or
+  `letsencrypt`. On k8s, `external` is unchanged.
+
 ### Client addresses survive the front door and the app edge
 
 Every Caddy hop used to replace `X-Forwarded-For` with its own peer's

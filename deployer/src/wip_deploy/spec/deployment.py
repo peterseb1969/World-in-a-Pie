@@ -742,6 +742,22 @@ class DeploymentSpec(WIPModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def external_tls_requires_k8s(self) -> DeploymentSpec:
+        # On k8s the ingress controller terminates TLS and wip-caddy speaks
+        # plain HTTP behind it. Compose and dev have no such front: wip-caddy
+        # is the public listener, and `tls off` (what this mode rendered
+        # there) is not a directive Caddy 2 accepts, so wip-caddy never
+        # started. Serving plain HTTP behind someone else's TLS proxy would be
+        # a feature of its own, with its own forwarded-header trust.
+        if self.network.tls == "external" and self.target != "k8s":
+            raise ValueError(
+                f"tls='external' requires target='k8s' (compose/dev terminate "
+                f"TLS in wip-caddy: use tls='internal' or tls='letsencrypt'); "
+                f"got target={self.target!r}"
+            )
+        return self
+
 
 class Deployment(WIPModel):
     api_version: Literal["wip.dev/v1"] = "wip.dev/v1"

@@ -201,6 +201,14 @@ class TestTLSDefaults:
         with pytest.raises(ValidationError, match="tls='self-signed' requires target='k8s'"):
             build_deployment(_minimal_compose_inputs(tls="self-signed"))
 
+    @pytest.mark.parametrize("target", ["compose", "dev"])
+    def test_external_rejected_off_k8s(self, target: str) -> None:
+        # wip-caddy is the public listener there, and the `tls off` this
+        # mode used to render is not a directive Caddy 2 accepts (CASE-1080).
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError, match="tls='external' requires target='k8s'"):
+            build_deployment(_minimal_compose_inputs(target=target, tls="external"))
+
 
 # ────────────────────────────────────────────────────────────────────
 # Secrets default by target

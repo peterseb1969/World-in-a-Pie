@@ -180,11 +180,9 @@ async def login(request: Request, return_to: str = ""):
     """Build OIDC authorization URL and redirect to Dex."""
     from .oidc import get_auth_url
 
-    if not return_to:
-        return_to = settings.default_redirect
-
-    # Store return URL in session so callback can redirect back.
-    request.session["return_to"] = return_to
+    # Store return URL in session so callback can redirect back. Only a
+    # place on this install: a login link must never end on another site.
+    request.session["return_to"] = _safe_return_to(return_to)
 
     auth_url = await get_auth_url(request)
     return RedirectResponse(url=auth_url)
@@ -235,7 +233,7 @@ async def callback(request: Request):
     if user_info.get("refresh_token"):
         request.session["refresh_token"] = user_info["refresh_token"]
 
-    return_to = request.session.pop("return_to", settings.default_redirect)
+    return_to = _safe_return_to(request.session.pop("return_to", ""))
     logger.info("Login successful: %s (groups: %s)", user_info["email"], user_info.get("groups"))
     return RedirectResponse(url=return_to, status_code=302)
 
@@ -251,12 +249,50 @@ def _same_origin_path(return_to: str) -> bool:
     normalize to the same thing) also starts with "/" but sends the browser
     off-site — an open redirect on the logout door. Absolute URLs and empty
     values are rejected too; the caller falls back to the site root.
+
+    Control characters are refused as well: browsers delete tabs and
+    newlines from a URL, so "/\\t/evil.host" would arrive as "//evil.host".
     """
     return bool(
         return_to
         and return_to.startswith("/")
         and not return_to.startswith(("//", "/\\"))
+        and not _has_control_characters(return_to)
     )
+
+
+def _has_control_characters(value: str) -> bool:
+    return any(ord(c) < 0x20 or ord(c) == 0x7F for c in value)
+
+
+def _safe_return_to(return_to: str) -> str:
+    """Where a login may send the browser once it completes.
+
+    A same-origin path (logout's rule), or an absolute http(s) URL on this
+    install's own host (WIP_HOSTNAME, any port): the gateway's redirect mode
+    builds that form itself from the forwarded headers. Anything else, empty
+    included, becomes the default redirect, so a crafted login link cannot
+    end on another site after a genuine login.
+    """
+    if _same_origin_path(return_to):
+        return return_to
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(return_to)
+        hostname = parts.hostname
+    except ValueError:
+        return settings.default_redirect
+    if (
+        parts.scheme in ("http", "https")
+        and hostname is not None
+        and hostname == settings.wip_hostname.lower()
+        and parts.username is None
+        and parts.password is None
+        and not _has_control_characters(return_to)
+    ):
+        return return_to
+    return settings.default_redirect
 
 
 @app.get("/auth/logout")

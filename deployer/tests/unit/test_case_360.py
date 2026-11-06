@@ -268,15 +268,6 @@ class TestExportCaCLI:
         assert "only applies to --tls internal" in r.output
         assert "letsencrypt" in r.output
 
-    def test_external_install_exits_2_with_explanation(
-        self, isolated_home: Path
-    ) -> None:
-        _seed_install(isolated_home, name="ext-inst", tls="external")
-        r = runner.invoke(app, ["export-ca", "--name", "ext-inst"])
-        assert r.exit_code == 2, r.output
-        assert "only applies to --tls internal" in r.output
-        assert "external" in r.output
-
     def test_happy_path_writes_to_out(
         self, isolated_home: Path, tmp_path: Path
     ) -> None:

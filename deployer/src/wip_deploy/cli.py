@@ -5658,13 +5658,6 @@ def export_ca(
                 "trusts the Let's Encrypt root.",
                 err=True,
             )
-        elif spec.network.tls == "external":
-            typer.echo(
-                "  --tls external means TLS terminates upstream of Caddy. "
-                "The cert is your upstream terminator's responsibility — "
-                "ask it for its CA chain.",
-                err=True,
-            )
         raise typer.Exit(2)
 
     try:

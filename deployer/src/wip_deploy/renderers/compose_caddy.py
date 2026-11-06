@@ -142,9 +142,8 @@ def _write_tls(out: StringIO, cfg: CaddyConfig) -> None:
     elif cfg.tls_mode == "letsencrypt":
         # Handled via global email directive + auto_https.
         pass
-    elif cfg.tls_mode == "external":
-        # TLS terminated upstream; Caddy runs plain HTTP.
-        out.write("    tls off\n")
+    # "external" is k8s-only (DeploymentSpec.external_tls_requires_k8s), and
+    # k8s renders a plain-HTTP site without this block.
 
 
 def _write_forward_auth(out: StringIO, cfg: CaddyConfig, route: ResolvedRoute) -> None:
@@ -179,7 +178,10 @@ def _write_forward_auth(out: StringIO, cfg: CaddyConfig, route: ResolvedRoute) -
     out.write(f"            copy_headers {' '.join(GATEWAY_IDENTITY_HEADERS)}\n")
     out.write("            @unauth status 401\n")
     out.write("            handle_response @unauth {\n")
-    out.write("                redir * /auth/login?return_to={http.request.uri} 302\n")
+    # uri_escaped, not uri: Caddy inserts {http.request.uri} unescaped, so a
+    # second query parameter ("…?q=foo&page=3") became a parameter of the
+    # login URL and was lost, and an encoded %26 came back as a real "&".
+    out.write("                redir * /auth/login?return_to={http.request.uri_escaped} 302\n")
     out.write("            }\n")
     out.write("        }\n")
 

@@ -605,7 +605,7 @@ class TestCaddyfile:
         rc_block = caddyfile[rc_start : rc_start + 500]
         assert "@unauth status 401" in rc_block
         assert "handle_response @unauth" in rc_block
-        assert "redir * /auth/login?return_to={http.request.uri} 302" in rc_block
+        assert "redir * /auth/login?return_to={http.request.uri_escaped} 302" in rc_block
         # The broken form must not resurface anywhere in the file.
         assert "redir /auth/login" not in caddyfile
 
