@@ -559,9 +559,17 @@ def _dev_service_block(
         base_path = environment.get("APP_BASE_PATH")
         if base_path and "VITE_BASE_PATH" not in environment:
             environment["VITE_BASE_PATH"] = base_path
-        environment.setdefault(
-            "__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS", deployment.spec.network.hostname,
-        )
+        # Vite takes this as ONE host. On an app origin every request
+        # carries the app's own host (WIP's origin only redirects there), so
+        # that is the one; otherwise the install's hostname.
+        allowed_host = deployment.spec.network.hostname
+        if deployment.spec.network.app_origins == "subdomain":
+            from wip_deploy.config_gen.caddy import app_label
+
+            label = app_label(owner.app_metadata.route_prefix)
+            if label:
+                allowed_host = f"{label}.{deployment.spec.network.hostname}"
+        environment.setdefault("__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS", allowed_host)
     # CASE-373 Phase 1 — app containers receive NODE_EXTRA_CA_CERTS
     # pointing at the bind-mounted CA when an imported bundle has
     # seeded `secrets/external-ca.crt`. Set on apps only (backend

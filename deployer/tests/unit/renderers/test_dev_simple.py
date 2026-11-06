@@ -425,6 +425,30 @@ class TestBuildContext:
         rc = doc["services"]["react-console"]
         assert rc["environment"]["__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"] == "wip-pi.internal"
 
+    def test_on_an_app_origin_vite_allows_the_apps_own_host(
+        self, tmp_path: Path, real_discovery: Discovery
+    ) -> None:
+        """With app origins every request reaches the app as
+        rc.<hostname> (WIP's origin only redirects there); Vite takes one
+        host, and refused that one (seen live on wip-pi, CASE-1061)."""
+        fake_app = tmp_path / "fake-rc-checkout-app-origin"
+        fake_app.mkdir()
+        (fake_app / "Dockerfile").write_text("FROM node:20\n")
+        d = _dev_deployment(
+            apps=["react-console"],
+            app_sources={"react-console": fake_app},
+            hostname="wip-pi.internal",
+        )
+        d.spec.network.app_origins = "subdomain"
+        s = _secrets(tmp_path, d, real_discovery)
+        tree = render_dev_simple(
+            d, real_discovery.components, real_discovery.apps, s,
+            repo_root=REPO_ROOT,
+        )
+        doc = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
+        rc = doc["services"]["react-console"]
+        assert rc["environment"]["__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"] == "rc.wip-pi.internal"
+
     def test_no_override_does_not_add_vite_allowed_host(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
