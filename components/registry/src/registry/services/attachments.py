@@ -141,6 +141,11 @@ def parse_upstream(upstream: str) -> tuple[str, int]:
         raise UpstreamInvalid(f"upstream {upstream!r} must be an http:// or https:// URL")
     if not parts.hostname:
         raise UpstreamInvalid(f"upstream {upstream!r} names no host")
+    from ..models.attachment import upstream_host_error
+
+    host_error = upstream_host_error(parts.hostname)
+    if host_error:
+        raise UpstreamInvalid(f"upstream {upstream!r}: {host_error}")
     if parts.username is not None or parts.password is not None:
         raise UpstreamInvalid("upstream must not carry credentials")
     if parts.query or parts.fragment:
@@ -188,7 +193,9 @@ async def _resolve(host: str) -> set[ipaddress.IPv4Address | ipaddress.IPv6Addre
         infos = await asyncio.wait_for(
             loop.getaddrinfo(host, None, type=socket.SOCK_STREAM), timeout=3.0
         )
-    except (OSError, TimeoutError):
+    except (OSError, TimeoutError, UnicodeError):
+        # UnicodeError: the idna codec refuses a name (an empty or over-long
+        # label) before any lookup; such a name resolves to nothing.
         return set()
     out: set[ipaddress.IPv4Address | ipaddress.IPv6Address] = set()
     for info in infos:

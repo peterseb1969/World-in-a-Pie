@@ -14,8 +14,11 @@ An attachment is keyed by `name` and is never hard-deleted: it is
 deactivated, and revived by writing it again.
 """
 
+import ipaddress
+import re
 from datetime import UTC, datetime
 from typing import ClassVar, Literal
+from urllib.parse import urlsplit
 
 from beanie import Document
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -195,7 +198,47 @@ class AttachmentRequest(AttachmentFields):
 # "serving" (an app edge runs), "no_app_edge" (the policy says none runs), or
 # "policy_unavailable" (the file cannot be used; the edge then serves nothing).
 EdgeState = Literal["serving", "no_app_edge", "policy_unavailable"]
-NotServedReason = Literal["inactive", "no_app_edge", "policy_unavailable"]
+NotServedReason = Literal["inactive", "upstream_invalid", "no_app_edge", "policy_unavailable"]
+
+_HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def upstream_host_error(host: str) -> str | None:
+    """Why `host` cannot be an attachment upstream's host, or None when it can.
+
+    An IP literal, or a DNS name of RFC 1123 labels: 1 to 63 letters, digits
+    and inner hyphens each, 253 characters at most, an optional trailing dot.
+    The app edge applies the same rule (edge_sync._host_error; a contract
+    test holds the two together), so a record the Registry accepts is one
+    the edge can serve. An underscore, an empty or over-long label, or a
+    non-ASCII name is refused; an internationalised name is given in its
+    ASCII (xn--) form.
+    """
+    try:
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+    name = host[:-1] if host.endswith(".") else host
+    if not name.isascii():
+        return f"host {host!r} is not ASCII; give an internationalised name in its xn-- form"
+    if not name or len(name) > 253 or not all(
+        _HOST_LABEL.fullmatch(label) for label in name.split(".")
+    ):
+        return (
+            f"host {host!r} is not a valid DNS name: labels of 1 to 63 letters, "
+            "digits and inner hyphens (no underscores, no empty labels)"
+        )
+    return None
+
+
+def _stored_host_error(upstream: str) -> str | None:
+    """upstream_host_error for a stored record, which may predate the rule."""
+    try:
+        host = urlsplit(upstream).hostname
+    except ValueError:
+        return "the upstream is not a valid URL"
+    return upstream_host_error(host) if host else "the upstream names no host"
 
 
 class AttachmentResponse(AttachmentFields):
@@ -216,8 +259,10 @@ class AttachmentResponse(AttachmentFields):
     not_served_reason: NotServedReason | None = Field(
         default=None,
         description="Why `served` is false: `inactive` (the record is deactivated), "
-        "`no_app_edge` (this install runs no app edge), or `policy_unavailable` (the "
-        "attach policy file cannot be used, so the edge serves nothing). Null when served.",
+        "`upstream_invalid` (a record stored before today's host rule: the edge refuses "
+        "its upstream host), `no_app_edge` (this install runs no app edge), or "
+        "`policy_unavailable` (the attach policy file cannot be used, so the edge serves "
+        "nothing). Null when served.",
     )
 
     @classmethod
@@ -225,6 +270,8 @@ class AttachmentResponse(AttachmentFields):
         reason: NotServedReason | None
         if doc.status == "inactive":
             reason = "inactive"
+        elif _stored_host_error(doc.upstream):
+            reason = "upstream_invalid"
         elif edge == "serving":
             reason = None
         else:

@@ -63,7 +63,36 @@ CADDYFILE_PATH = "/tmp/edge.Caddyfile"
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
 GROUP_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
-HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+_HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
+
+def _host_error(host: str) -> str | None:
+    """Why `host` cannot be an attachment upstream's host, or None when it can.
+
+    An IP literal, or a DNS name of RFC 1123 labels: 1 to 63 letters, digits
+    and inner hyphens each, 253 characters at most, an optional trailing dot.
+    The Registry applies the same rule at write time
+    (registry.models.attachment.upstream_host_error; a contract test holds
+    the two together), so a record it accepts is one the edge can serve. An underscore, an empty or over-long label, or a
+    non-ASCII name is refused; an internationalised name is given in its
+    ASCII (xn--) form.
+    """
+    try:
+        ipaddress.ip_address(host)
+        return None
+    except ValueError:
+        pass
+    name = host[:-1] if host.endswith(".") else host
+    if not name.isascii():
+        return f"host {host!r} is not ASCII; give an internationalised name in its xn-- form"
+    if not name or len(name) > 253 or not all(
+        _HOST_LABEL.fullmatch(label) for label in name.split(".")
+    ):
+        return (
+            f"host {host!r} is not a valid DNS name: labels of 1 to 63 letters, "
+            "digits and inner hyphens (no underscores, no empty labels)"
+        )
+    return None
 
 Address = ipaddress.IPv4Address | ipaddress.IPv6Address
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -181,7 +210,7 @@ def resolve(host: str) -> set[Address]:
         pass
     try:
         infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
-    except OSError:
+    except (OSError, UnicodeError):
         return set()
     out: set[Address] = set()
     for info in infos:
@@ -250,7 +279,7 @@ def _upstream(record: dict[str, Any]) -> tuple[str, str, int]:
     if parts.path not in ("", "/"):
         raise ValueError("a path")
     host = parts.hostname
-    if not (HOST_RE.match(host) or _is_ip(host)):
+    if _host_error(host):
         raise ValueError("an unusable host")
     return parts.scheme, host, parts.port or (443 if parts.scheme == "https" else 80)
 

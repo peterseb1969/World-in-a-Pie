@@ -7,6 +7,38 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Registry: three fixes from the registry-auth review; `@wip/client` 0.83.0
+
+- **A key-file change takes effect at the Registry without a restart.** An
+  import that a reservation lookup ran (an app's namespace upsert, `GET
+  /reservations`, a key create with `reserve`) updated MongoDB but not the
+  Registry's own key provider, and later imports found nothing to change.
+  Until a restart, a removed managed key (a `wip-admins` one included) kept
+  authenticating at the Registry, a rotated key's old value worked and its
+  new one did not, and a new key was refused there. Other services were not
+  affected. Now every import uses the Registry's provider, and every import
+  makes the provider agree with MongoDB's managed records, which also covers
+  another replica's import.
+- **No API key may be named `apikey:<name>`.** That spelling is how a key is
+  addressed for callers on an older wip-auth, so a key named `apikey:ci` was
+  read as the key `ci`: it held `ci`'s grants and reservations, and grants
+  made to it were stored under `ci`. Key create refuses such a name (422);
+  a key file declaring one is not imported (the previous import stands, and
+  the reason is logged); a system restore skips such an archived key
+  (`reason_code: invalid_record`). **A key already stored under such a name
+  is named in a CRITICAL log line at Registry start: revoke it and create it
+  again under another name.**
+- **Attachment upstream hosts follow the app edge's rule.** The Registry
+  accepted any host and the edge refused all but letters, digits, dots and
+  hyphens, so an upstream like `http://my_app:3000` read `served: true`
+  while `/apps/<name>` answered 404. An empty or over-long label
+  (`a..b.example`) made the whole bulk write fail with 500 after earlier
+  items were written. Now the host must be an IP literal or RFC 1123 DNS
+  name, at both ends; a refused one fails its own item (`validation_failed`,
+  `details.rule: upstream_invalid`). A record stored before the rule reads
+  `served: false`, `not_served_reason: upstream_invalid`: re-attach it with a
+  valid host. `@wip/client` 0.83.0 types the new reason.
+
 ### k8s: an install acts on the cluster it lives on; older installs must be pinned once
 
 wip-deploy's k8s verbs ran plain `kubectl`, so they acted on whatever

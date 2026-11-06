@@ -1057,9 +1057,10 @@ the edge:
 - records already active stay active but are not served, so their apps go
   offline until the edge is back. Reads say so: every attachment in a list or
   get carries `served` (true when it is active and an edge runs) and, when
-  false, `not_served_reason`: `inactive`, `no_app_edge`, or
-  `policy_unavailable` (the attach policy file cannot be used, so the edge
-  serves nothing). `served` is not a reachability check: the Registry never
+  false, `not_served_reason`: `inactive`, `upstream_invalid` (a record
+  stored before the host rule below: the edge refuses its host),
+  `no_app_edge`, or `policy_unavailable` (the attach policy file cannot be
+  used, so the edge serves nothing). `served` is not a reachability check: the Registry never
   calls an upstream, and the edge can still refuse a record when it resolves
   it;
 - a system restore skips the archive's active attachments
@@ -1114,6 +1115,12 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
 - **The upstream is scheme, host and optional port only:** no path,
   credentials, query or fragment. The router proxies `/apps/<name>/…` to
   the upstream's root; `strip_prefix` drops the prefix.
+- **The host is an IP literal or a DNS name of RFC 1123 labels:** letters,
+  digits and inner hyphens, 1 to 63 characters each. An underscore (common
+  in container names), an empty label or a non-ASCII name is refused with
+  `validation_failed`, `details.rule: upstream_invalid`; give an
+  internationalised name in its `xn--` form. The app edge applies the same
+  rule, so a record the Registry accepts is one the edge can serve.
 - **Reading** (`GET /attachments`) is open to platform admins and to the
   router's app edge, whose key's group `wip-app-edge` may read attachments
   and nothing else. Every write stays platform admin. A record the deployer

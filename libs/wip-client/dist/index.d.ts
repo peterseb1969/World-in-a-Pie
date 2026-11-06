@@ -2945,11 +2945,12 @@ interface Attachment extends Required<Omit<AttachmentRequest, 'upstream_tls' | '
     not_served_reason?: AttachmentNotServedReason | null;
 }
 /**
- * `inactive`: the record is deactivated. `no_app_edge`: this install runs no
- * app edge. `policy_unavailable`: the attach policy file cannot be used, so
- * the edge serves nothing.
+ * `inactive`: the record is deactivated. `upstream_invalid`: a record stored
+ * before the Registry's upstream host rule; the app edge refuses its host.
+ * `no_app_edge`: this install runs no app edge. `policy_unavailable`: the
+ * attach policy file cannot be used, so the edge serves nothing.
  */
-type AttachmentNotServedReason = 'inactive' | 'no_app_edge' | 'policy_unavailable';
+type AttachmentNotServedReason = 'inactive' | 'upstream_invalid' | 'no_app_edge' | 'policy_unavailable';
 /**
  * Per-item error codes of attachment writes (`error_code`, with
  * `details.rule` where noted): `validation_failed` (rule `upstream_invalid`,
