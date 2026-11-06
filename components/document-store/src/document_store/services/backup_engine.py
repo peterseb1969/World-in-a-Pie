@@ -4929,6 +4929,13 @@ class DirectRestoreEngine:
             # removed still carries it; it is a soft delete under another name.
             if entity_type == "documents":
                 retire_archived_row(row)
+            # A file's bytes live under its file id: every upload writes them
+            # there, and every restore uploads the archive's blob there (a
+            # fresh restore under the re-minted id). The row must point at the
+            # same key, or it serves another file's bytes (the source's, on
+            # the same install) or none, and deleting it deletes the other's.
+            if entity_type == "files" and row.get("file_id"):
+                row["storage_key"] = row["file_id"]
         try:
             await collection.insert_many(batch, ordered=False)
         except BulkWriteError as exc:

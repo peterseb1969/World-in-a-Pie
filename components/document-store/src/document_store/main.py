@@ -190,6 +190,19 @@ async def lifespan(app: FastAPI):
         file_storage_client = get_file_storage_client()
         if await file_storage_client.health_check():
             print("File storage (object store) is healthy.")
+            # File rows a fresh restore wrote with the source's storage_key.
+            from .services.file_storage_keys import repair_storage_keys
+            try:
+                repaired, left = await repair_storage_keys(
+                    File.get_motor_collection(), file_storage_client
+                )
+                if repaired or left:
+                    print(
+                        f"Re-pointed {repaired} file row(s) at their own objects; "
+                        f"{len(left)} left as they are (no object under their own id)."
+                    )
+            except Exception as e:
+                print(f"WARNING: file storage-key repair failed: {e}")
             # Ensure bucket exists
             try:
                 await file_storage_client.ensure_bucket_exists()

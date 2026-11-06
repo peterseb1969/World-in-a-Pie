@@ -45,6 +45,22 @@ B's and C's data, and an admin of A alone could delete a backup of `[A, B]`.
 - **Admin on every namespace** is now needed to delete a job.
 - Single-namespace jobs behave exactly as before.
 
+### A fresh restore's files keep their own bytes; damaged rows are repaired at startup
+
+A fresh restore re-mints every file id and copies the bytes under the new id,
+but the file row kept the **source's** `storage_key`. On the same install a
+restored file served the source's bytes, and deleting it deleted the
+source's object. On another install it served nothing. A merge that
+re-minted files did the same.
+
+- **Every file row a restore writes** now has `storage_key = file_id`, on
+  every restore mode.
+- **At startup**, the document-store re-points rows written before the fix
+  (`storage_key` ≠ `file_id`) at the object under their own id, when that
+  object exists. A row without one is left as it is and named in the log. The
+  repair runs once storage is reachable, and finds nothing on an install that
+  never ran a fresh restore with files.
+
 ### Registry: three fixes from the registry-auth review; `@wip/client` 0.83.0
 
 - **A key-file change takes effect at the Registry without a restart.** An

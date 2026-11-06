@@ -93,7 +93,7 @@ def _archive(entities, referents=None):
     return reader
 
 
-async def _run_remap(mongo, entities, events=None, referents=None):
+async def _run_remap(mongo, entities, events=None, referents=None, storage=None, blobs=None):
     """Run a remap whose Registry calls reach the mounted Registry app."""
     transport = ASGITransport(app=registry_app)
     # Captured before patching: the factory below replaces this very symbol,
@@ -111,10 +111,14 @@ async def _run_remap(mongo, entities, events=None, referents=None):
         if events is not None:
             events.append(event)
 
-    engine = DirectRestoreEngine(mongo, None, callback)
+    reader = _archive(entities, referents)
+    if blobs is not None:
+        reader.list_blobs = MagicMock(return_value=list(blobs))
+        reader.read_blob = MagicMock(side_effect=lambda file_id: blobs.get(file_id))
+    engine = DirectRestoreEngine(mongo, storage, callback)
     with patch(
         "document_store.services.backup_engine.ArchiveReader",
-        return_value=_archive(entities, referents),
+        return_value=reader,
     ), patch("httpx.AsyncClient", _client):
         await engine.run_remap(MagicMock(), TARGET)
 
@@ -551,6 +555,60 @@ class TestRemapAgainstARealRegistry:
 
 
 _BOSS_KEY = {"@template": "BOSS", "code": "B-1"}
+
+
+class _Storage:
+    """An object store in memory, keyed by storage_key."""
+
+    def __init__(self, objects=None):
+        self.objects: dict[str, bytes] = dict(objects or {})
+
+    async def upload(self, storage_key, content, content_type=None):
+        self.objects[storage_key] = content
+
+
+class TestRestoredFilesOwnTheirBytes:
+    """A fresh restore re-mints every file id and copies the bytes under the
+    new id. The row must point there too: storage_key is the file id. A row
+    that kept the source's key served the original's bytes on the same
+    install (and deleting it deleted the original's object), and served
+    nothing on another install. (CASE-1093.)"""
+
+    ORIGINAL = b"the original's bytes"
+
+    def _file(self):
+        import hashlib
+        return {
+            "file_id": "OLD-FILE", "namespace": SOURCE, "storage_key": "OLD-FILE",
+            "filename": "a.txt", "content_type": "text/plain",
+            "size_bytes": len(self.ORIGINAL),
+            "checksum": hashlib.sha256(self.ORIGINAL).hexdigest(), "status": "active",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_restored_file_points_at_its_own_copy(self, live_registry):
+        # Same install: the source file's object is in the store already.
+        storage = _Storage({"OLD-FILE": self.ORIGINAL})
+        await _run_remap(
+            live_registry, {"files": [self._file()]},
+            storage=storage, blobs={"OLD-FILE": self.ORIGINAL},
+        )
+        (row,) = await _rows(live_registry, "files")
+        assert row["file_id"] != "OLD-FILE"
+        assert row["storage_key"] == row["file_id"]
+        assert storage.objects[row["storage_key"]] == self.ORIGINAL
+        # The source's object is still there and still the source's alone.
+        assert storage.objects["OLD-FILE"] == self.ORIGINAL
+
+    @pytest.mark.asyncio
+    async def test_on_another_install_the_restored_file_has_its_bytes(self, live_registry):
+        storage = _Storage()  # nothing of the source's here
+        await _run_remap(
+            live_registry, {"files": [self._file()]},
+            storage=storage, blobs={"OLD-FILE": self.ORIGINAL},
+        )
+        (row,) = await _rows(live_registry, "files")
+        assert storage.objects.get(row["storage_key"]) == self.ORIGINAL
 
 
 class TestOutOfArchiveReferents:
