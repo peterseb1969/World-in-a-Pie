@@ -390,6 +390,26 @@ def _cluster_cidr_opt() -> typer.models.OptionInfo:
     )
 
 
+def _keep_app_origins(
+    deployment: Deployment, previous: Deployment | None, requested: str | None,
+) -> None:
+    """An install over an existing one keeps where its apps are served unless
+    --app-origins says otherwise: moving apps to their own origins changes
+    every app URL, so it is asked for explicitly (here, or with redeploy)."""
+    if previous is not None and requested is None:
+        deployment.spec.network.app_origins = previous.spec.network.app_origins
+
+
+def _app_origins_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--app-origins",
+        help="Where apps are served: 'subdomain' (each app on its own origin, "
+        "https://<app>.<hostname>, with a session of its own; needs DNS for "
+        "*.<hostname>) or 'path' (under /apps/<app> on WIP's origin). Default: "
+        "subdomain on compose and dev, path on k8s; an existing install keeps its own.",
+    )
+
+
 def _tls_secret_opt() -> typer.models.OptionInfo:
     return typer.Option("--tls-secret-name", help="K8s TLS Secret name.")
 
@@ -705,6 +725,7 @@ def validate(
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
+    app_origins: Annotated[str | None, _app_origins_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -755,6 +776,7 @@ def validate(
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
         cluster_cidrs=cluster_cidr,
+        app_origins=app_origins,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -835,6 +857,7 @@ def show_spec(
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
+    app_origins: Annotated[str | None, _app_origins_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -887,6 +910,7 @@ def show_spec(
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
         cluster_cidrs=cluster_cidr,
+        app_origins=app_origins,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -940,6 +964,7 @@ def render(
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
+    app_origins: Annotated[str | None, _app_origins_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -1001,6 +1026,7 @@ def render(
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
         cluster_cidrs=cluster_cidr,
+        app_origins=app_origins,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -1104,6 +1130,7 @@ def install(
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
+    app_origins: Annotated[str | None, _app_origins_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -1219,6 +1246,7 @@ def install(
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
         cluster_cidrs=cluster_cidr,
+        app_origins=app_origins,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -1256,6 +1284,7 @@ def install(
     # --registry error used to fire first and mask exactly this
     # situation on a live production install.
     previous = _try_load_previous_deployment(target_dir)
+    _keep_app_origins(deployment, previous, app_origins)
     if previous is not None:
         dropped_apps, dropped_modules = _diff_spec_for_drops(previous, deployment)
         drifted = _diff_spec_for_identity_drift(previous, deployment)
@@ -2930,6 +2959,15 @@ def redeploy(
             "(default: $KUBECONFIG, else ~/.kube/config).",
         ),
     ] = None,
+    app_origins: Annotated[
+        str | None,
+        typer.Option(
+            "--app-origins",
+            help="Move the install's apps: 'subdomain' serves each on its own origin "
+            "(https://<app>.<hostname>, needs DNS for *.<hostname>; the old /apps/<app> "
+            "URLs answer 301), 'path' serves them under /apps/<app> on WIP's origin.",
+        ),
+    ] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Re-render an existing install from its saved spec, recreating only what changed.
@@ -3054,6 +3092,23 @@ def redeploy(
             typer.echo("⊙ cluster ranges are already these — no change.")
         _warn_app_edge_reach(deployment)
 
+    origins_changed = False
+    if app_origins is not None:
+        if app_origins not in ("path", "subdomain"):
+            typer.echo("error: --app-origins is 'path' or 'subdomain'", err=True)
+            raise typer.Exit(2)
+        if app_origins == "subdomain" and deployment.spec.target == "k8s":
+            typer.echo(
+                "error: app origins are not rendered for k8s yet; this install stays on path",
+                err=True,
+            )
+            raise typer.Exit(2)
+        if deployment.spec.network.app_origins == app_origins:
+            typer.echo(f"⊙ apps are already served by {app_origins} — no change.")
+        else:
+            deployment.spec.network.app_origins = app_origins  # type: ignore[assignment]
+            origins_changed = True
+
     cluster_pinned = False
     if kubeconfig and not kube_context:
         typer.echo("error: --kubeconfig goes with --kube-context", err=True)
@@ -3135,6 +3190,8 @@ def redeploy(
         rolled += " (new cluster ranges)"
     if cluster_pinned:
         rolled += " (cluster pinned)"
+    if origins_changed:
+        rolled += f" (apps served by {app_origins})"
     label = (
         f"Redeployed {', '.join(scope)} on {resolved_name}{rolled}"
         if scope
@@ -6053,6 +6110,7 @@ def _assemble(
     cluster_cidrs: list[str] | None,
     tls_secret_name: str,
     dev_mode: str,
+    app_origins: str | None = None,
     registry: str | None,
     tag: str | None,
     tag_overrides: dict[str, str],
@@ -6158,6 +6216,7 @@ def _assemble(
         k8s_ingress_namespace=ingress_namespace,
         k8s_cluster_cidrs=cluster_cidrs,
         k8s_tls_secret_name=tls_secret_name,
+        app_origins=app_origins,
         dev_mode=dev_mode,
         registry=registry,
         tag=tag,

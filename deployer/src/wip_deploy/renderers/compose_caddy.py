@@ -17,7 +17,12 @@ from __future__ import annotations
 
 from io import StringIO
 
-from wip_deploy.config_gen.caddy import CaddyConfig
+from wip_deploy.config_gen.caddy import (
+    APP_ORIGIN_GATEWAY_PATHS,
+    APP_SESSION_COOKIE,
+    AppSite,
+    CaddyConfig,
+)
 from wip_deploy.config_gen.routing import (
     GATEWAY_IDENTITY_HEADERS,
     ResolvedRoute,
@@ -40,6 +45,13 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
         out.write("    auto_https off\n")
     else:
         out.write("    auto_https disable_redirects\n")
+    if cfg.app_origins == "subdomain" and cfg.edge_backend:
+        # Attached apps' origins are not known at render time: wip-caddy gets
+        # their certificates on demand, and only for a name the app edge says
+        # is an active attachment, so an arbitrary Host cannot mint one.
+        out.write("    on_demand_tls {\n")
+        out.write(f"        ask http://{cfg.edge_backend}/edge/ask\n")
+        out.write("    }\n")
     if cfg.trusted_proxies:
         # Keep the ingress controller's X-Forwarded-For (and append the
         # controller) instead of replacing it with the controller's address.
@@ -105,6 +117,9 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
             continue
         _write_route(out, route, cfg)
 
+    if cfg.app_origins == "subdomain":
+        _write_app_path_redirect(out, cfg)
+
     # Terminal /api/* guard (CASE-513): a stale aggregate path that matches
     # no /api/<service>/* route 404s loudly instead of falling to Caddy's
     # default empty-200. Less specific than every service handle, so Caddy's
@@ -123,6 +138,12 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
         write_unrouted_404(out)
 
     out.write("}\n")
+
+    if cfg.app_origins == "subdomain":
+        for site in cfg.app_sites:
+            _write_app_site(out, cfg, site)
+        if cfg.edge_backend:
+            _write_attached_apps_site(out, cfg)
 
     # Internal /api/* routing for SSR proxies used to live here as a
     # second `:8080` site block. That's now owned by the wip-router
@@ -146,7 +167,9 @@ def _write_tls(out: StringIO, cfg: CaddyConfig) -> None:
     # k8s renders a plain-HTTP site without this block.
 
 
-def _write_forward_auth(out: StringIO, cfg: CaddyConfig, route: ResolvedRoute) -> None:
+def _write_forward_auth(
+    out: StringIO, cfg: CaddyConfig, route: ResolvedRoute, login: str | None = None,
+) -> None:
     """Emit the forward_auth block shared by routes and the catch-all.
 
     The `@unauth status 401` + `handle_response` pair converts the
@@ -181,7 +204,9 @@ def _write_forward_auth(out: StringIO, cfg: CaddyConfig, route: ResolvedRoute) -
     # uri_escaped, not uri: Caddy inserts {http.request.uri} unescaped, so a
     # second query parameter ("…?q=foo&page=3") became a parameter of the
     # login URL and was lost, and an encoded %26 came back as a real "&".
-    out.write("                redir * /auth/login?return_to={http.request.uri_escaped} 302\n")
+    # On an app origin `login` is the handshake on WIP's origin, absolute.
+    target = login or "/auth/login?return_to={http.request.uri_escaped}"
+    out.write(f"                redir * {target} 302\n")
     out.write("            }\n")
     out.write("        }\n")
 
@@ -224,7 +249,7 @@ def _write_reverse_proxy(out, backend: str, route, cfg: CaddyConfig) -> None:  #
     else:
         out.write(f"        reverse_proxy {backend}\n")
 
-def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
+def _write_route(out, route, cfg: CaddyConfig, login: str | None = None) -> None:  # type: ignore[no-untyped-def]
     # Bare-path redirect: /apps/rc (no trailing slash) must 301 to
     # /apps/rc/, otherwise the bare path falls through the /apps/rc/*
     # glob and 404s. CASE-49 / CASE-53 regression — the old setup-wip.sh
@@ -257,8 +282,10 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
         for sub in route.preserve_prefix_subpaths:
             out.write(f"    handle {sub}/* {{\n")
             if route.auth_protected:
-                _write_forward_auth(out, cfg, route)
+                _write_forward_auth(out, cfg, route, login)
             _write_identity_strip(out, route)
+            if login is not None:
+                _write_app_cookie_strip(out)
             _write_reverse_proxy(out, backend, route, cfg)
             out.write("    }\n\n")
 
@@ -272,8 +299,10 @@ def _write_route(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyp
     def _emit_block(matcher_path: str) -> None:
         out.write(f"    {directive} {matcher_path} {{\n")
         if route.auth_protected:
-            _write_forward_auth(out, cfg, route)
+            _write_forward_auth(out, cfg, route, login)
         _write_identity_strip(out, route)
+        if login is not None:
+            _write_app_cookie_strip(out)
         _write_reverse_proxy(out, backend, route, cfg)
         out.write("    }\n\n")
 
@@ -314,3 +343,82 @@ def _write_catchall(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-un
     _write_identity_strip(out, route, indent="        ")
     _write_reverse_proxy(out, cfg.backend(route.backend_component, route.backend_port), route, cfg)
     out.write("    }\n")
+
+
+# ── app origins (network.app_origins=subdomain) ─────────────────────────────
+
+_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+
+
+def _write_app_path_redirect(out: StringIO, cfg: CaddyConfig) -> None:
+    """/apps/<label>/... on WIP's origin answers 301 to the app's own origin,
+    deployer and attached apps alike, so bookmarks keep working."""
+    port = "" if cfg.https_port == 443 else f":{cfg.https_port}"
+    out.write(f"    @app_path path_regexp app_path ^/apps/({_LABEL})(/.*)?$\n")
+    out.write("    handle @app_path {\n")
+    out.write(f"        redir * https://{{re.app_path.1}}.{cfg.hostname}{port}{{uri}} permanent\n")
+    out.write("    }\n\n")
+
+
+def _write_app_site_head(out: StringIO, cfg: CaddyConfig, host: str, *, on_demand: bool) -> None:
+    out.write(f"\n{host}:{cfg.https_port} {{\n")
+    if cfg.tls_mode == "internal":
+        out.write("    tls {\n")
+        out.write("        issuer internal {\n")
+        out.write("            lifetime 720h\n")
+        out.write("        }\n")
+        if on_demand:
+            out.write("        on_demand\n")
+        out.write("    }\n")
+    elif on_demand:
+        out.write("    tls {\n        on_demand\n    }\n")
+    if cfg.emit_hardening_headers:
+        out.write("    header {\n")
+        out.write('        Strict-Transport-Security "max-age=31536000"\n')
+        out.write('        X-Content-Type-Options "nosniff"\n')
+        out.write('        X-Frame-Options "SAMEORIGIN"\n')
+        out.write('        Referrer-Policy "strict-origin-when-cross-origin"\n')
+        out.write("    }\n")
+    # The session handshake, silent renew, logout and userinfo are the
+    # gateway's on every app origin; a login itself happens on WIP's origin.
+    out.write(f"    @gateway path {' '.join(APP_ORIGIN_GATEWAY_PATHS)}\n")
+    out.write("    handle @gateway {\n")
+    out.write(f"        reverse_proxy {cfg.gateway_service}:{cfg.gateway_port}\n")
+    out.write("    }\n\n")
+
+
+def _write_app_site(out: StringIO, cfg: CaddyConfig, site: AppSite) -> None:
+    """A deployer app on its own origin. Its routes keep their /apps/<label>
+    paths, so the app needs no rebuild; the bare origin goes to the app."""
+    host = f"{site.label}.{cfg.hostname}"
+    _write_app_site_head(out, cfg, host, on_demand=False)
+    out.write("    handle / {\n")
+    out.write(f"        redir * /apps/{site.label}/ permanent\n")
+    out.write("    }\n\n")
+    login = (
+        f"{cfg.origin(cfg.hostname)}/auth/app-login?app={site.label}"
+        "&return_to={http.request.uri_escaped}"
+    )
+    for route in sorted(site.routes, key=lambda r: (-len(r.path), r.path)):
+        _write_route(out, route, cfg, login)
+    write_unrouted_404(out)
+    out.write("}\n")
+
+
+def _write_attached_apps_site(out: StringIO, cfg: CaddyConfig) -> None:
+    """Every other <label>.<hostname>: attached apps, served by the app edge
+    (which applies forward_auth itself). Certificates on demand, only for
+    the names the edge confirms."""
+    _write_app_site_head(out, cfg, f"*.{cfg.hostname}", on_demand=True)
+    out.write("    handle {\n")
+    out.write(f"        reverse_proxy {cfg.edge_backend}\n")
+    out.write("    }\n")
+    out.write("}\n")
+
+
+def _write_app_cookie_strip(out: StringIO, indent: str = "        ") -> None:
+    """Remove the app session cookie before the request reaches the app: the
+    gateway's forward_auth has read it already, and an app's server never
+    receives its visitors' sessions."""
+    out.write(f'{indent}request_header Cookie "(^|;\\s*){APP_SESSION_COOKIE}=[^;]*" ""\n')
+    out.write(f'{indent}request_header Cookie "^;\\s*" ""\n')

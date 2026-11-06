@@ -43,6 +43,9 @@ spec:
       # instead of trusting the incoming ones, so the gateway's login
       # redirect is right and a client cannot spoof either header.
       - {name: PUBLIC_BASE_URL, source: {from_spec: network.public_base_url}}
+      # Where attached apps are served (path | subdomain): under /apps/<name>,
+      # or each on <name>.<hostname>, matched by host.
+      - {name: WIP_APP_ORIGINS, source: {from_spec: network.app_origins}}
       # The install's own hosts, which an upstream may never resolve to.
       - {name: WIP_ATTACH_POLICY_FILE, source: {from_spec: security.attach_policy_file}}
       # The deployer's one definition of the identity headers (see

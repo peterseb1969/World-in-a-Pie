@@ -376,6 +376,14 @@ class AuthSpec(WIPModel):
 
 
 TLSMode = Literal["internal", "letsencrypt", "external", "self-signed"]
+# Where apps are served. "path": under /apps/<label> on the install's own
+# origin, sharing the gateway's session cookie with every other app.
+# "subdomain": each app on its own origin, https://<label>.<hostname>[:port],
+# with a session of its own handed over by the gateway (auth_gateway/
+# app_origins.py), so an app can neither receive nor use the visitor's
+# session anywhere else. New compose and dev installs default to subdomain;
+# an install saved before the field existed reads as path.
+AppOrigins = Literal["path", "subdomain"]
 
 
 class NetworkSpec(WIPModel):
@@ -383,6 +391,7 @@ class NetworkSpec(WIPModel):
     tls: TLSMode = "internal"
     https_port: int = Field(default=8443, ge=1, le=65535)
     http_port: int = Field(default=8080, ge=1, le=65535)
+    app_origins: AppOrigins = "path"
     # CASE-358: URL of a remote WIP install this deployment talks to.
     # When set, `SpecContext.network.external_base_url` resolves here
     # instead of this install's own _public_base. Used by apps that
@@ -755,6 +764,17 @@ class DeploymentSpec(WIPModel):
                 f"tls='external' requires target='k8s' (compose/dev terminate "
                 f"TLS in wip-caddy: use tls='internal' or tls='letsencrypt'); "
                 f"got target={self.target!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def app_origins_not_yet_on_k8s(self) -> DeploymentSpec:
+        # The k8s Ingress and its certificate do not carry app origins yet:
+        # an app would have an origin nothing serves.
+        if self.network.app_origins == "subdomain" and self.target == "k8s":
+            raise ValueError(
+                "network.app_origins='subdomain' is not rendered for target='k8s' yet; "
+                "use app_origins='path' there"
             )
         return self
 
