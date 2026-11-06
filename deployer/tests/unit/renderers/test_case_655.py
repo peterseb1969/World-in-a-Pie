@@ -319,7 +319,7 @@ class TestDevRender:
                 auth=AuthSpec(
                     mode="oidc", gateway=True, api_keys=[WEB_YAC]
                 ),
-                network=NetworkSpec(hostname="localhost"),
+                network=NetworkSpec(hostname="wip.localhost"),
                 images=ImagesSpec(tag="dev"),
                 platform=PlatformSpec(
                     dev=DevPlatform(mode="simple", source_mount=True)

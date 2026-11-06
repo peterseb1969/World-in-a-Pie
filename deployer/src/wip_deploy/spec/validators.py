@@ -235,6 +235,26 @@ def _validate_oidc_client_ids_unique(
     return errs
 
 
+def _validate_app_labels_unique(deployment: Deployment, apps: list[App]) -> list[ValidationError]:
+    """Each enabled app's label names its origin, <label>.<hostname>: two
+    apps cannot share one."""
+    enabled = {ref.name for ref in deployment.spec.apps if ref.enabled}
+    owners: dict[str, str] = {}
+    errs: list[ValidationError] = []
+    for app in apps:
+        if app.metadata.name not in enabled:
+            continue
+        label = app.app_metadata.label
+        if label in owners:
+            errs.append(ValidationError(
+                f"apps {owners[label]!r} and {app.metadata.name!r} both have label {label!r}; "
+                f"each app is served on its own origin, {label}.<hostname>"
+            ))
+        else:
+            owners[label] = app.metadata.name
+    return errs
+
+
 # ────────────────────────────────────────────────────────────────────
 # Orchestrator
 # ────────────────────────────────────────────────────────────────────
@@ -341,4 +361,5 @@ def validate_all(
     report.errors.extend(_validate_images_resolvable(deployment, components, apps))
     report.errors.extend(_validate_namespace_reservations(deployment, apps))
     report.errors.extend(_validate_app_key_names(deployment, apps))
+    report.errors.extend(_validate_app_labels_unique(deployment, apps))
     return report

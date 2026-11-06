@@ -22,7 +22,7 @@ spec:
   ports:
     - {name: http, container_port: 3012}
     # CASE-375: Vite dev-server. Used only when --app-source is active.
-    # The dev_simple renderer routes /apps/dnd/* to this port instead of
+    # The dev_simple renderer routes the app's origin to this port instead of
     # 3012 (which only serves the API in dev). Ignored on compose/k8s and
     # on dev without the override. 3010 keeps the dev port unique on
     # multi-app dev installs (KB 5173, RC 5174, AA 5180).
@@ -31,7 +31,6 @@ spec:
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/dnd}}
       - {name: PORT, source: {literal: "3012"}}
       - {name: NODE_ENV, source: {literal: production}}
     optional:
@@ -41,7 +40,7 @@ spec:
       - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
 
   routes:
-    - {path: /apps/dnd, auth_required: true}
+    - {path: /, auth_required: true}
 
   # mcp-server is a SOFT dependency — dnd's AI query feature degrades
   # gracefully if MCP is unavailable. Only document-store is a hard
@@ -49,9 +48,8 @@ spec:
   depends_on: [document-store]
 
   healthcheck:
-    # Locally answerable (no WIP dependency), and includes the base path —
-    # the app mounts ALL routes under APP_BASE_PATH (no prefix stripping).
-    endpoint: /apps/dnd/health
+    # Locally answerable (no WIP dependency).
+    endpoint: /health
     probe: auto
     start_period_seconds: 15
 
@@ -64,5 +62,5 @@ spec:
 
 app_metadata:
   display_name: D&D Compendium
-  route_prefix: /apps/dnd
+  label: dnd
   ui_only: false

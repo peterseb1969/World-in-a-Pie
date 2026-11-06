@@ -100,7 +100,7 @@ def _seed_install(
             target=target,  # type: ignore[arg-type]
             auth=AuthSpec(mode="api-key-only", gateway=False),
             network=NetworkSpec(
-                hostname="localhost", tls=tls, https_port=net_https,  # type: ignore[arg-type]
+                hostname="wip.localhost", tls=tls, https_port=net_https,  # type: ignore[arg-type]
             ),
             images=ImagesSpec(),
             platform=platform,

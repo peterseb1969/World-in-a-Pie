@@ -65,7 +65,7 @@ def _deployment(tmp_path: Path, target: str = "compose") -> Deployment:
         BuildInputs(
             target=target,  # type: ignore[arg-type]
             variant="dev" if target == "compose" else "prod",
-            hostname="localhost" if target == "compose" else "wip.example",
+            hostname="wip.localhost" if target == "compose" else "wip.example",
             tls="internal",
             compose_data_dir=tmp_path / "data",
             k8s_namespace="wip-test",

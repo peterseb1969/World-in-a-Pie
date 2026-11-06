@@ -231,7 +231,7 @@ def check_dockerfile_dev(source_dir: Path) -> CheckResult:
             "Without Dockerfile.dev, the dev_simple renderer falls back to "
             "the production Dockerfile. NODE_ENV gets forced to development; "
             "the SPA static-asset block (guarded behind NODE_ENV === "
-            "'production') is disabled → 404 at /apps/<name>/. "
+            "'production') is disabled → 404 at the app's origin. "
             "Copy the canonical pattern from apps/react-console or "
             "apps/clintrial-explorer."
         ),
@@ -348,7 +348,7 @@ def check_vite_proxy_port_matches_manifest(
             fix_hint=(
                 f"Common cause: scaffold copy-paste from another app. "
                 f"Edit {cfg} so every proxy target is {expected!r}. "
-                f"Without this, /apps/<name>/api/* + /server-api/* + /wip/* "
+                f"Without this, the app's /api/* + /server-api/* + /wip/* "
                 f"all return 500 (Vite proxy → wrong port → ECONNREFUSED)."
             ),
         )
@@ -414,7 +414,7 @@ def check_manifest_declares_dev_port(
         f"manifest {manifest_path} is missing port name(s): {missing}",
         fix_hint=(
             "Add `- {name: dev, container_port: <vite-port>}` (CASE-55) "
-            "to spec.ports. Without it, Caddy routes /apps/<name>/* to "
+            "to spec.ports. Without it, Caddy routes the app's origin to "
             "Express in dev mode → 404 at the SPA URL."
         ),
     )

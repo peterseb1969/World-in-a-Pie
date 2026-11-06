@@ -30,8 +30,6 @@ class SpecContextNetwork:
     # This install's own public URL, never a remote WIP's: the URL its
     # browsers see. The app edge sets X-Forwarded-Proto/Host from it.
     public_base_url: str = ""
-    # "path" | "subdomain" (NetworkSpec.app_origins): where apps are served.
-    app_origins: str = "path"
 
 
 @dataclass(frozen=True)
@@ -228,7 +226,6 @@ def _compute_network(deployment: Deployment) -> SpecContextNetwork:
         cors_origins=cors,
         internal_base_url=internal_base,
         external_base_url=external_base_url,
-        app_origins=net.app_origins,
     )
 
 

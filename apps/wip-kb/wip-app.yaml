@@ -42,7 +42,7 @@ spec:
   ports:
     - {name: http, container_port: 3012}
     # CASE-375: Vite dev-server. Used only when --app-source is active.
-    # The dev_simple renderer routes /apps/kb/* to this port instead of
+    # The dev_simple renderer routes the app's origin to this port instead of
     # 3012 (which only serves the API/SSR in dev). Ignored on compose/k8s
     # and on dev without the override. Default Vite port (5173) — note
     # that react-console uses 5174 to avoid colliding with WIP-KB on a
@@ -54,7 +54,6 @@ spec:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
       - {name: PORT, source: {literal: "3012"}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/kb}}
       - {name: NODE_ENV, source: {literal: production}}
     optional:
       # askBar / NL-query feature uses Anthropic. Degrades gracefully
@@ -72,15 +71,14 @@ spec:
   routes:
     # CASE-439: served KB client (manifest + files) must be fetchable headlessly
     # with an API key / anonymously — exempt it from gateway browser-auth. More
-    # specific than /apps/kb, so nginx longest-prefix routes it to the no-auth
-    # shared ingress; the app already restricts these to read-only whitelisted files.
-    - {path: /apps/kb/server-api/kb-client, auth_required: false}
+    # specific than /, so it wins over the auth'd route; the app already restricts these to read-only whitelisted files.
+    - {path: /server-api/kb-client, auth_required: false}
     # CASE-464: KB write-gateway verbs — headless callers with an API key. NOT
     # unauthenticated in effect: every verb requires X-API-Key and executes its
     # WIP calls with the caller's key (un-privileged pass-through; a bad key
     # fails at the platform).
-    - {path: /apps/kb/server-api/kb, auth_required: false}
-    - {path: /apps/kb, auth_required: true}
+    - {path: /server-api/kb, auth_required: false}
+    - {path: /, auth_required: true}
 
   # WIP-KB writes documents to the kb namespace via the WIP API proxy.
   # document-store is the hard start-order requirement; def-store and
@@ -88,11 +86,11 @@ spec:
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /apps/kb/api/health
+    endpoint: /api/health
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: WIP Knowledge Base
-  route_prefix: /apps/kb
+  label: kb
   ui_only: false

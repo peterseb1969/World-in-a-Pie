@@ -43,7 +43,7 @@ def _write_deployment_state(install_dir: Path, *, target: str = "compose") -> No
                 "apps": [],
                 "modules": {"optional": []},
                 "auth": {"mode": "api-key-only", "gateway": False, "users": []},
-                "network": {"hostname": "localhost"},
+                "network": {"hostname": "wip.localhost"},
                 "images": {"tag_overrides": {}},
                 "platform": platform,
                 "secrets": {"backend": "file", "location": "/tmp/wip-test-secrets"},

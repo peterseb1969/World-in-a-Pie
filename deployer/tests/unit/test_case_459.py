@@ -47,7 +47,7 @@ _DEPLOYMENT_DICT = {
         "apps": [{"name": "wip-kb", "enabled": True}],
         "modules": {"optional": []},
         "auth": {"mode": "api-key-only", "gateway": False, "users": []},
-        "network": {"hostname": "localhost"},
+        "network": {"hostname": "wip.localhost"},
         "images": {"tag_overrides": {"wip-kb": "sha-old"}},
         "platform": {"compose": {"data_dir": "/tmp/wip-test-data"}},
         "secrets": {"backend": "file", "location": "/tmp/wip-test-secrets"},

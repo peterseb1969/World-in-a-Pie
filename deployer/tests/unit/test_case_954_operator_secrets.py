@@ -37,7 +37,7 @@ def discovery() -> Discovery:
 
 def _deployment(tmp_path: Path, *, garage: bool = True) -> Deployment:
     d = build_deployment(BuildInputs(
-        target="compose", variant="dev", hostname="localhost", tls="internal",
+        target="compose", variant="dev", hostname="wip.localhost", tls="internal",
         registry="ghcr.io/test", compose_data_dir=tmp_path / "data",
     ))
     d.spec.apps = [AppRef(name="react-console")]

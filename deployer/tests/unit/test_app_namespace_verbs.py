@@ -125,7 +125,7 @@ def test_adding_a_namespace_twice_is_refused_by_the_model() -> None:
 
 def _install(tmp_path: Path, *refs: AppRef) -> Path:
     d = build_deployment(BuildInputs(
-        target="compose", variant="dev", hostname="localhost", tls="internal",
+        target="compose", variant="dev", hostname="wip.localhost", tls="internal",
         compose_data_dir=tmp_path / "data",
     ))
     secrets = d.spec.secrets.model_copy(update={"location": str(tmp_path / "secrets")})

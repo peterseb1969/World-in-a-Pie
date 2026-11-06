@@ -51,7 +51,7 @@ def _dev_deployment(
     source_mount: bool = True,
     app_sources: dict[str, Path] | None = None,
     apps_from_registry: list[str] | None = None,
-    hostname: str = "localhost",
+    hostname: str = "wip.localhost",
 ) -> Deployment:
     return Deployment(
         metadata=DeploymentMetadata(name="dev-test"),
@@ -326,10 +326,10 @@ class TestBuildContext:
             repo_root=REPO_ROOT,
         )
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
-        # Route block for /apps/rc/* must target the dev port (5174),
-        # not the prod :3011.
-        rc_idx = caddyfile.index("handle /apps/rc/*")
-        rc_block = caddyfile[rc_idx: rc_idx + 600]
+        # rc's site (its own origin) must target the dev port (5174), not
+        # the prod :3011.
+        site = caddyfile[caddyfile.index("\nrc.wip.localhost:"):]
+        rc_block = site[site.index("    handle {\n"):][:700]
         assert "reverse_proxy wip-react-console:5174" in rc_block, rc_block
         assert "wip-react-console:3011" not in rc_block, rc_block
 
@@ -349,8 +349,8 @@ class TestBuildContext:
             repo_root=REPO_ROOT,
         )
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
-        rc_idx = caddyfile.index("handle /apps/rc/*")
-        rc_block = caddyfile[rc_idx: rc_idx + 600]
+        site = caddyfile[caddyfile.index("\nrc.wip.localhost:"):]
+        rc_block = site[site.index("    handle {\n"):][:700]
         assert "reverse_proxy wip-react-console:3011" in rc_block
 
     def test_app_source_override_forces_node_env_development(
@@ -377,14 +377,11 @@ class TestBuildContext:
         rc = doc["services"]["react-console"]
         assert rc["environment"]["NODE_ENV"] == "development"
 
-    def test_app_source_override_mirrors_vite_base_path(
+    def test_app_source_override_sets_no_base_path(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """CASE-55 follow-up: apps in --app-source should get
-        VITE_BASE_PATH set to APP_BASE_PATH so Vite's `base` and proxy
-        prefixes match the Caddy-exposed path. Without this, Vite
-        renders assets at bare paths (/@vite/client) instead of
-        /apps/rc/@vite/client, and Caddy 404s them."""
+        """An app is served at the root of its own origin: the dev loop tells
+        Vite no base path, so its default `/` matches what Caddy serves."""
         fake_app = tmp_path / "fake-rc-checkout-vite-base"
         fake_app.mkdir()
         (fake_app / "Dockerfile").write_text("FROM node:20\n")
@@ -398,39 +395,15 @@ class TestBuildContext:
             repo_root=REPO_ROOT,
         )
         doc = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
-        rc = doc["services"]["react-console"]
-        assert rc["environment"]["APP_BASE_PATH"] == "/apps/rc"
-        assert rc["environment"]["VITE_BASE_PATH"] == "/apps/rc"
-
-    def test_app_source_override_allows_the_install_hostname_in_vite(
-        self, tmp_path: Path, real_discovery: Discovery
-    ) -> None:
-        """The Vite dev server refuses hosts it does not allow (localhost and
-        IPs by default): an install reached by name answered every app
-        request with "Blocked request. This host is not allowed"."""
-        fake_app = tmp_path / "fake-rc-checkout-vite-host"
-        fake_app.mkdir()
-        (fake_app / "Dockerfile").write_text("FROM node:20\n")
-        d = _dev_deployment(
-            apps=["react-console"],
-            app_sources={"react-console": fake_app},
-            hostname="wip-pi.internal",
-        )
-        s = _secrets(tmp_path, d, real_discovery)
-        tree = render_dev_simple(
-            d, real_discovery.components, real_discovery.apps, s,
-            repo_root=REPO_ROOT,
-        )
-        doc = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
-        rc = doc["services"]["react-console"]
-        assert rc["environment"]["__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS"] == "wip-pi.internal"
+        env = doc["services"]["react-console"]["environment"]
+        assert "APP_BASE_PATH" not in env and "VITE_BASE_PATH" not in env
 
     def test_on_an_app_origin_vite_allows_the_apps_own_host(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """With app origins every request reaches the app as
-        rc.<hostname> (WIP's origin only redirects there); Vite takes one
-        host, and refused that one (seen live on wip-pi, CASE-1061)."""
+        """The Vite dev server refuses hosts it does not allow (localhost and
+        IPs by default). Every request reaches the app as rc.<hostname>, and
+        Vite takes one host (seen refused live on wip-pi, CASE-1061)."""
         fake_app = tmp_path / "fake-rc-checkout-app-origin"
         fake_app.mkdir()
         (fake_app / "Dockerfile").write_text("FROM node:20\n")
@@ -439,7 +412,6 @@ class TestBuildContext:
             app_sources={"react-console": fake_app},
             hostname="wip-pi.internal",
         )
-        d.spec.network.app_origins = "subdomain"
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_dev_simple(
             d, real_discovery.components, real_discovery.apps, s,
@@ -705,7 +677,7 @@ class TestTargetValidation:
                 modules={"optional": ["mcp-server"]},  # type: ignore[arg-type]
                 apps=[],
                 auth=AuthSpec(mode="oidc", gateway=True),
-                network=NetworkSpec(hostname="localhost"),
+                network=NetworkSpec(hostname="wip.localhost"),
                 images=ImagesSpec(),
                 platform=PlatformSpec(compose=ComposePlatform(data_dir=tmp_path)),
                 secrets=SecretsSpec(backend="file", location="/tmp/s"),

@@ -37,7 +37,7 @@ _DEV_DEPLOYMENT = {
         "apps": [],
         "modules": {"optional": []},
         "auth": {"mode": "api-key-only", "gateway": False, "users": []},
-        "network": {"hostname": "localhost"},
+        "network": {"hostname": "wip.localhost"},
         "platform": {"dev": {}},
         "secrets": {"backend": "file", "location": "/tmp/wip-test-secrets"},
         "apply": {},

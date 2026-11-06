@@ -55,15 +55,15 @@ REPO_ROOT = Path(__file__).parent.parent.parent.parent.resolve()
 
 class TestNetworkSpecExternalCAMount:
     def test_defaults_to_false(self) -> None:
-        net = NetworkSpec(hostname="localhost")
+        net = NetworkSpec(hostname="wip.localhost")
         assert net.external_ca_mount is False
 
     def test_accepts_true(self) -> None:
-        net = NetworkSpec(hostname="localhost", external_ca_mount=True)
+        net = NetworkSpec(hostname="wip.localhost", external_ca_mount=True)
         assert net.external_ca_mount is True
 
     def test_round_trips_through_model_dump(self) -> None:
-        net = NetworkSpec(hostname="localhost", external_ca_mount=True)
+        net = NetworkSpec(hostname="wip.localhost", external_ca_mount=True)
         rehydrated = NetworkSpec.model_validate(net.model_dump())
         assert rehydrated.external_ca_mount is True
 
@@ -135,7 +135,7 @@ def deployment_with_ca() -> Deployment:
             target="compose",
             auth=AuthSpec(mode="api-key-only", gateway=False),
             network=NetworkSpec(
-                hostname="localhost", tls="internal", external_ca_mount=True,
+                hostname="wip.localhost", tls="internal", external_ca_mount=True,
             ),
             images=ImagesSpec(),
             platform=PlatformSpec(compose=ComposePlatform(data_dir=Path("/tmp/d"))),
@@ -151,7 +151,7 @@ def deployment_without_ca() -> Deployment:
         spec=DeploymentSpec(
             target="compose",
             auth=AuthSpec(mode="api-key-only", gateway=False),
-            network=NetworkSpec(hostname="localhost", tls="internal"),
+            network=NetworkSpec(hostname="wip.localhost", tls="internal"),
             images=ImagesSpec(),
             platform=PlatformSpec(compose=ComposePlatform(data_dir=Path("/tmp/d"))),
             secrets=SecretsSpec(backend="file", location="/tmp/s"),
@@ -187,7 +187,7 @@ class TestComposeRendererInjection:
             ),
             spec=ComponentSpec(image=ImageRef(name="test-app", tag="latest")),
             app_metadata=AppMetadata(
-                display_name="Test", route_prefix="/apps/test"
+                display_name="Test", label="test"
             ),
         )
 

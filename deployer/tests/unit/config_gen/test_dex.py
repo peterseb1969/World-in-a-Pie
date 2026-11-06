@@ -136,7 +136,7 @@ class TestClients:
             assert isinstance(client.secret, SecretRef)
             assert client.secret.name.startswith("dex-client-")
 
-    def test_app_redirect_uris_include_app_route_prefix(
+    def test_app_redirect_uris_are_on_the_apps_own_origin(
         self, compose_deployment: Deployment, real_discovery: Discovery
     ) -> None:
         from wip_deploy.spec import AppRef
@@ -147,8 +147,8 @@ class TestClients:
         cfg = generate_dex_config(d, real_discovery.components, real_discovery.apps)
         assert cfg is not None
         dnd_client = next(c for c in cfg.clients if c.client_id == "dnd")
-        # App's route_prefix is /apps/dnd → redirect includes it
-        assert any("/apps/dnd/auth/callback" in uri for uri in dnd_client.redirect_uris)
+        # The app is served at its origin's root, so its callback is there.
+        assert dnd_client.redirect_uris == ["https://dnd.wip.local:8443/auth/callback"]
 
 
 class TestDeterminism:

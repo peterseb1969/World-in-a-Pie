@@ -56,18 +56,18 @@ runner = CliRunner()
 
 class TestRemoteWipUrlValidator:
     def test_defaults_to_none(self) -> None:
-        net = NetworkSpec(hostname="localhost")
+        net = NetworkSpec(hostname="wip.localhost")
         assert net.remote_wip_url is None
 
     def test_accepts_https_with_port(self) -> None:
         net = NetworkSpec(
-            hostname="localhost", remote_wip_url="https://wip-pi.local:8443"
+            hostname="wip.localhost", remote_wip_url="https://wip-pi.local:8443"
         )
         assert net.remote_wip_url == "https://wip-pi.local:8443"
 
     def test_accepts_https_default_port(self) -> None:
         net = NetworkSpec(
-            hostname="localhost", remote_wip_url="https://wip.example.com"
+            hostname="wip.localhost", remote_wip_url="https://wip.example.com"
         )
         assert net.remote_wip_url == "https://wip.example.com"
 
@@ -75,7 +75,7 @@ class TestRemoteWipUrlValidator:
         """http for LAN-only deployments where the operator doesn't
         want TLS. Unusual but not invalid."""
         net = NetworkSpec(
-            hostname="localhost", remote_wip_url="http://wip.lan:8080"
+            hostname="wip.localhost", remote_wip_url="http://wip.lan:8080"
         )
         assert net.remote_wip_url == "http://wip.lan:8080"
 
@@ -93,7 +93,7 @@ class TestRemoteWipUrlValidator:
     )
     def test_rejects_malformed(self, url: str, expected_error: str) -> None:
         with pytest.raises(ValueError, match=expected_error):
-            NetworkSpec(hostname="localhost", remote_wip_url=url)
+            NetworkSpec(hostname="wip.localhost", remote_wip_url=url)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -134,7 +134,7 @@ class TestSpecContextExternalBaseUrl:
         """With remote_wip_url set, external_base_url returns it verbatim.
         Even when the install's own hostname differs."""
         d = _compose_deployment(
-            hostname="localhost", remote_wip_url="https://wip-pi.local:8443"
+            hostname="wip.localhost", remote_wip_url="https://wip-pi.local:8443"
         )
         ctx = make_spec_context(d, [])
         assert ctx.network.external_base_url == "https://wip-pi.local:8443"
@@ -146,13 +146,13 @@ class TestSpecContextExternalBaseUrl:
         hostname. Otherwise the Mac's Caddy would try to bind to
         wip-pi.local and OIDC redirects would point at the wrong place."""
         d = _compose_deployment(
-            hostname="localhost", remote_wip_url="https://wip-pi.local:8443"
+            hostname="wip.localhost", remote_wip_url="https://wip-pi.local:8443"
         )
         ctx = make_spec_context(d, [])
-        assert ctx.network.hostname == "localhost"
-        # cors_origins includes the localhost variant when hostname is
-        # localhost — unchanged by remote_wip_url.
-        assert "localhost" in ctx.network.cors_origins
+        assert ctx.network.hostname == "wip.localhost"
+        # cors_origins names the install's own hostname — unchanged by
+        # remote_wip_url.
+        assert "wip.localhost" in ctx.network.cors_origins
         assert "wip-pi.local" not in ctx.network.cors_origins
         # OIDC issuer URL is derived from network.hostname, not remote_wip_url.
         assert "localhost" in ctx.auth.issuer_url_public
@@ -183,7 +183,7 @@ class TestBuildInputsPlumbing:
             name="t",
             preset="standard",
             target="dev",
-            hostname="localhost",
+            hostname="wip.localhost",
             tls="internal",
             remote_wip_url="https://wip-pi.local:8443",
             dev_mode="simple",
@@ -196,7 +196,7 @@ class TestBuildInputsPlumbing:
             name="t",
             preset="standard",
             target="dev",
-            hostname="localhost",
+            hostname="wip.localhost",
             tls="internal",
             dev_mode="simple",
         )
@@ -223,7 +223,7 @@ class TestRemoteWipCLI:
                 "show-spec",
                 "--preset", "standard",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--remote-wip", "https://wip-pi.local:8443",
                 "--format", "json",
                 "--repo-root", str(self.REPO_ROOT),
@@ -247,7 +247,7 @@ class TestRemoteWipCLI:
                 "show-spec",
                 "--preset", "standard",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--remote-wip", "https://wip-pi.local:8443",
                 "--format", "yaml",
                 "--repo-root", str(self.REPO_ROOT),
@@ -266,7 +266,7 @@ class TestRemoteWipCLI:
                 "show-spec",
                 "--preset", "standard",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--format", "yaml",
                 "--repo-root", str(self.REPO_ROOT),
             ],
@@ -283,7 +283,7 @@ class TestRemoteWipCLI:
                 "show-spec",
                 "--preset", "standard",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--remote-wip", "wip-pi.local:8443",  # missing scheme
                 "--format", "yaml",
                 "--repo-root", str(self.REPO_ROOT),

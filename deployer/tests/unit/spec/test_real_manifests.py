@@ -65,7 +65,7 @@ def test_app_manifest_parses(manifest_path: Path) -> None:
     data = _load_yaml(manifest_path)
     app = App.model_validate(data)
     assert app.metadata.name, f"empty name in {manifest_path}"
-    assert app.app_metadata.route_prefix.startswith("/")
+    assert app.app_metadata.label
 
 
 # ────────────────────────────────────────────────────────────────────

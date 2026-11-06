@@ -55,7 +55,7 @@ def _write_deployment_state(install_dir: Path, apps: list[dict], modules: list[s
                 "apps": apps,
                 "modules": {"optional": modules},
                 "auth": {"mode": "api-key-only", "gateway": False, "users": []},
-                "network": {"hostname": "localhost"},
+                "network": {"hostname": "wip.localhost"},
                 "images": {},
                 "platform": {
                     "compose": {"data_dir": "/tmp/wip-test-data"},

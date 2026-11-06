@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from wip_deploy.config_gen.env import SecretRef
+from wip_deploy.config_gen.routing import app_origin
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
@@ -187,8 +188,7 @@ def _dex_clients(
                 client_id=a.spec.oidc_client.client_id,
                 name=a.app_metadata.display_name,
                 redirect_paths=a.spec.oidc_client.redirect_paths,
-                issuer_base=issuer_base,
-                app_route_prefix=a.app_metadata.route_prefix,
+                issuer_base=app_origin(deployment, a.app_metadata.label),
             )
         )
 
@@ -203,12 +203,10 @@ def _client_entry(
     name: str,
     redirect_paths: list[str],
     issuer_base: str,
-    app_route_prefix: str | None = None,
 ) -> DexClientEntry:
-    # For apps, prefix redirect paths with the app's route so callbacks
-    # land back at the app, not at the gateway root.
-    prefix = app_route_prefix or ""
-    redirect_uris = [f"{issuer_base}{prefix}{p}" for p in redirect_paths]
+    # `issuer_base` is the origin the callbacks land on: WIP's for a
+    # component, the app's own for an app.
+    redirect_uris = [f"{issuer_base}{p}" for p in redirect_paths]
     # OIDC client secrets live in the secret backend by a well-known name.
     secret = SecretRef(f"dex-client-{client_id}")
     return DexClientEntry(

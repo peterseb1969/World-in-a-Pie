@@ -25,7 +25,7 @@ def _install(tmp_path: Path, api_keys: list[dict]) -> Path:
         BuildInputs(
             target="compose",
             variant="dev",
-            hostname="localhost",
+            hostname="wip.localhost",
             tls="internal",
             compose_data_dir=tmp_path / "data",
             api_keys=api_keys,

@@ -138,7 +138,7 @@ def _state(install_dir: Path, modules: list[str]) -> None:
             "spec": {
                 "target": "compose", "apps": [], "modules": {"optional": modules},
                 "auth": {"mode": "hybrid", "gateway": True},
-                "network": {"hostname": "localhost"}, "images": {},
+                "network": {"hostname": "wip.localhost"}, "images": {},
                 "platform": {"compose": {"data_dir": "/tmp/d"}},
                 "secrets": {"backend": "file", "location": "/tmp/s"}, "apply": {},
             },
@@ -210,7 +210,7 @@ def test_plain_ranges_of_both_families_pass() -> None:
 def test_cluster_ranges_are_refused_off_k8s() -> None:
     with pytest.raises(ValueError, match="k8s target only"):
         build_deployment(BuildInputs(
-            target="compose", variant="dev", hostname="localhost", tls="internal",
+            target="compose", variant="dev", hostname="wip.localhost", tls="internal",
             compose_data_dir=Path("/tmp/d"), k8s_cluster_cidrs=["nodes=192.168.1.20/32"],
         ))
 

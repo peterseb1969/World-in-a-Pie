@@ -72,7 +72,7 @@ class TestBuildInputsPlumbing:
             name="test",
             preset="standard",
             target="dev",
-            hostname="localhost",
+            hostname="wip.localhost",
             apps=["react-console"],
             apps_from_registry=["react-console"],
         )
@@ -88,7 +88,7 @@ class TestBuildInputsPlumbing:
             name="test",
             preset="standard",
             target="dev",
-            hostname="localhost",
+            hostname="wip.localhost",
             apps=[],
         )
         deployment = build_deployment(inputs)
@@ -131,7 +131,7 @@ class TestCLIAppFromRegistry:
             [
                 "show-spec",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--app-from-registry", "react-console",
                 "--name", "test-show-spec",
                 "--format", "json",
@@ -154,7 +154,7 @@ class TestCLIAppFromRegistry:
             [
                 "show-spec",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--app-from-registry", "react-console",
                 "--name", "test-implicit-enable",
                 "--format", "json",

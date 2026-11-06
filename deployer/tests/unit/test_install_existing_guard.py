@@ -51,7 +51,7 @@ runner = CliRunner()
 
 def _make_deployment(
     *,
-    hostname: str = "localhost",
+    hostname: str = "wip.localhost",
     tls: str = "internal",
     https_port: int = 8443,
     http_port: int = 8080,
@@ -109,9 +109,9 @@ class TestDiffSpecForIdentityDrift:
 
     def test_hostname_change_is_drift(self) -> None:
         prev = _make_deployment(hostname="cloud.example.com")
-        curr = _make_deployment(hostname="localhost")
+        curr = _make_deployment(hostname="wip.localhost")
         drift = _diff_spec_for_identity_drift(prev, curr)
-        assert drift == [("network.hostname", "cloud.example.com", "localhost")]
+        assert drift == [("network.hostname", "cloud.example.com", "wip.localhost")]
 
     def test_registry_reverting_to_none_is_drift(self) -> None:
         prev = _make_deployment(registry="ghcr.io/peterseb1969")
@@ -225,7 +225,7 @@ class TestInstallExistingGuardCLI:
         _persist(
             tmp_path,
             _make_deployment(
-                hostname="localhost",
+                hostname="wip.localhost",
                 registry=None,
                 auth_mode="api-key-only",
             ),
@@ -236,7 +236,7 @@ class TestInstallExistingGuardCLI:
                 "install",
                 "--name", "guard-test",
                 "--install-dir", str(tmp_path),
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--auth-mode", "api-key-only",
                 "--no-auth-gateway",
                 # compose + no registry fails validation — AFTER the guard

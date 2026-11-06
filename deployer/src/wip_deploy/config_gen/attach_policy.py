@@ -52,9 +52,7 @@ def app_route_names(deployment: Deployment, apps: list[App]) -> list[str]:
     for app in apps:
         if app.metadata.name not in enabled:
             continue
-        prefix = app.app_metadata.route_prefix.rstrip("/")
-        if prefix.startswith("/apps/"):
-            names.add(prefix.removeprefix("/apps/").split("/", 1)[0])
+        names.add(app.app_metadata.label)
     return sorted(names)
 
 

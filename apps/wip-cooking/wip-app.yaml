@@ -37,7 +37,6 @@ spec:
     required:
       - {name: WIP_BASE_URL,   source: {from_component: router}}
       - {name: PORT,           source: {literal: "3017"}}
-      - {name: APP_BASE_PATH,  source: {literal: /apps/wip-cooking}}
       - {name: NODE_ENV,       source: {literal: production}}
     optional:
       # AskBar is hidden in v1; wiring kept. Both degrade gracefully unset.
@@ -45,18 +44,18 @@ spec:
       - {name: MCP_URL,           source: {literal: "http://wip-mcp-server:8007/mcp"}}
 
   routes:
-    - {path: /apps/wip-cooking, auth_required: true}
+    - {path: /, auth_required: true}
 
   # Recipes/steps write through the WIP API proxy; document-store is the
   # hard start-order requirement.
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /apps/wip-cooking/api/health   # locally answerable; no WIP dependency
+    endpoint: /api/health   # locally answerable; no WIP dependency
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: WIP-Cooking
-  route_prefix: /apps/wip-cooking
+  label: wip-cooking
   ui_only: false

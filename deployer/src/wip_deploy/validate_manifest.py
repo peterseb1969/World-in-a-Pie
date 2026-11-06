@@ -17,10 +17,9 @@ Scope (v1, per CASE-353):
        - `from_component` / `from_component_host` / `from_component_port`
          → name must match a discovered component
        - `depends_on[]` → names must match discovered components
-       - `routes[].path` → must not collide with another app's
-         `app_metadata.route_prefix` (excluding self when the manifest
-         is already in the repo under the same name)
-       - `app_metadata.route_prefix` → must be a non-empty path
+       - `app_metadata.label` → must not be another app's (excluding
+         self when the manifest is already in the repo under the same
+         name): the label names the app's origin, <label>.<hostname>
 
 Explicitly out of scope (v1):
 
@@ -281,69 +280,20 @@ def _check_depends_on(
 def _check_route_collisions(
     app: App, other_apps: list[App]
 ) -> list[ManifestValidationError]:
-    """Route path collisions across apps.
-
-    Two collision shapes:
-      1. Two apps declaring the same route path (`spec.routes[].path`).
-      2. An app's route_prefix overlapping with another's. The deployer
-         doesn't enforce uniqueness at the prefix level today, but
-         identical prefixes are an unambiguous error.
-
-    Conservative for v1: only flags exact-path equality between this
-    app's routes and other apps' routes, and exact route_prefix
-    equality. Sub-prefix-overlap (e.g., /apps/kb vs /apps/kb-internal)
-    is not flagged — the renderers handle the resolution order
-    deterministically, and false positives would be more annoying
-    than the rare real-world overlap.
-    """
+    """Two apps with one label: each app is served on its own origin,
+    <label>.<hostname>, so its routes cannot collide with another app's, but
+    two apps with the same label would claim the same origin."""
     errors: list[ManifestValidationError] = []
-
-    # Build a map of {path → owning app name} from the other apps.
-    other_paths: dict[str, str] = {}
-    other_prefixes: dict[str, str] = {}
-    for other in other_apps:
-        for route in other.spec.routes:
-            other_paths.setdefault(route.path, other.metadata.name)
-        other_prefixes.setdefault(
-            other.app_metadata.route_prefix, other.metadata.name
-        )
-
-    # This app's routes vs other apps' routes.
-    for i, route in enumerate(app.spec.routes):
-        if route.path in other_paths:
-            owner = other_paths[route.path]
-            errors.append(
-                ManifestValidationError(
-                    field=f"spec.routes[{i}].path",
-                    message=(
-                        f"route {route.path!r} collides with app "
-                        f"{owner!r}"
-                    ),
-                    hint=(
-                        f"choose a different path or coordinate with "
-                        f"the {owner!r} maintainer"
-                    ),
-                )
-            )
-
-    # This app's route_prefix vs other apps' route_prefixes.
-    own_prefix = app.app_metadata.route_prefix
-    if own_prefix in other_prefixes:
-        owner = other_prefixes[own_prefix]
+    owners = {other.app_metadata.label: other.metadata.name for other in other_apps}
+    own = app.app_metadata.label
+    if own in owners:
         errors.append(
             ManifestValidationError(
-                field="app_metadata.route_prefix",
-                message=(
-                    f"route_prefix {own_prefix!r} is already owned by "
-                    f"app {owner!r}"
-                ),
-                hint=(
-                    "choose a unique prefix (apps typically live under "
-                    "`/apps/<slug>`)"
-                ),
+                field="app_metadata.label",
+                message=f"label {own!r} is already app {owners[own]!r}'s",
+                hint="choose a unique label; it names the app's origin, <label>.<hostname>",
             )
         )
-
     return errors
 
 

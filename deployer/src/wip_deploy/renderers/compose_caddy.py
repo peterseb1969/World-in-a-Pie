@@ -19,7 +19,6 @@ import dataclasses
 from io import StringIO
 
 from wip_deploy.config_gen.caddy import (
-    APP_ORIGIN_GATEWAY_PATHS,
     APP_SESSION_COOKIE,
     AppSite,
     CaddyConfig,
@@ -30,6 +29,7 @@ from wip_deploy.config_gen.routing import (
     verify_path,
 )
 from wip_deploy.renderers.caddy_common import write_api_fallthrough_404, write_unrouted_404
+from wip_deploy.spec.app import APP_ORIGIN_GATEWAY_PATHS
 
 
 def render_caddyfile(cfg: CaddyConfig) -> str:
@@ -46,7 +46,7 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
         out.write("    auto_https off\n")
     else:
         out.write("    auto_https disable_redirects\n")
-    if cfg.app_origins == "subdomain" and cfg.edge_backend and cfg.plain_http_port is None:
+    if cfg.edge_backend and cfg.plain_http_port is None:
         # Attached apps' origins are not known at render time: wip-caddy gets
         # their certificates on demand, and only for a name the app edge says
         # is an active attachment, so an arbitrary Host cannot mint one.
@@ -65,13 +65,10 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     # mapping expects (compose maps host:<https_port> → container:<https_port>).
     # Without the :port, Caddy would default to 443 inside the container
     # regardless of what the host-side mapping says.
-    if cfg.plain_http_port is not None and cfg.app_origins == "subdomain":
+    if cfg.plain_http_port is not None:
         # Behind the Ingress, app origins share the port: WIP's own site
         # answers its hostname only, each app its own (see the app sites).
         host_line = f"http://{cfg.hostname}:{cfg.plain_http_port}"
-    elif cfg.plain_http_port is not None:
-        # Any Host: the Ingress already matched the hostname.
-        host_line = f":{cfg.plain_http_port}"
     elif cfg.hostname == "localhost":
         host_line = f"localhost:{cfg.https_port}"
     else:
@@ -122,9 +119,6 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
             continue
         _write_route(out, route, cfg)
 
-    if cfg.app_origins == "subdomain":
-        _write_app_path_redirect(out, cfg)
-
     # Terminal /api/* guard (CASE-513): a stale aggregate path that matches
     # no /api/<service>/* route 404s loudly instead of falling to Caddy's
     # default empty-200. Less specific than every service handle, so Caddy's
@@ -144,15 +138,14 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
 
     out.write("}\n")
 
-    if cfg.app_origins == "subdomain":
-        for site in cfg.app_sites:
-            _write_app_site(out, cfg, site)
-        if cfg.edge_backend:
-            _write_attached_apps_site(out, cfg)
-        elif cfg.plain_http_port is not None:
-            # Behind the Ingress every *.<hostname> reaches wip-caddy: an
-            # unknown one answers 404, never Caddy's empty 200.
-            out.write(f"\n:{cfg.plain_http_port} {{\n    respond 404\n}}\n")
+    for site in cfg.app_sites:
+        _write_app_site(out, cfg, site)
+    if cfg.edge_backend:
+        _write_attached_apps_site(out, cfg)
+    elif cfg.plain_http_port is not None:
+        # Behind the Ingress every *.<hostname> reaches wip-caddy: an
+        # unknown one answers 404, never Caddy's empty 200.
+        out.write(f"\n:{cfg.plain_http_port} {{\n    respond 404\n}}\n")
 
     # Internal /api/* routing for SSR proxies used to live here as a
     # second `:8080` site block. That's now owned by the wip-router
@@ -345,33 +338,25 @@ def _write_identity_strip(out, route: ResolvedRoute, indent: str = "        ") -
         out.write(f"{indent}request_header -{header}\n")
 
 
-def _write_catchall(out, route, cfg: CaddyConfig) -> None:  # type: ignore[no-untyped-def]
+def _write_catchall(out, route, cfg: CaddyConfig, login: str | None = None) -> None:  # type: ignore[no-untyped-def]
     out.write("    handle {\n")
     if route.auth_protected:
-        _write_forward_auth(out, cfg, route)
+        _write_forward_auth(out, cfg, route, login)
     _write_identity_strip(out, route, indent="        ")
+    if login is not None:
+        _write_app_cookie_strip(out)
     _write_reverse_proxy(out, cfg.backend(route.backend_component, route.backend_port), route, cfg)
     out.write("    }\n")
 
 
-# ── app origins (network.app_origins=subdomain) ─────────────────────────────
-
-_LABEL = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
-
-
-def _write_app_path_redirect(out: StringIO, cfg: CaddyConfig) -> None:
-    """/apps/<label>/... on WIP's origin answers 301 to the app's own origin,
-    deployer and attached apps alike, so bookmarks keep working."""
-    port = "" if cfg.https_port == 443 else f":{cfg.https_port}"
-    out.write(f"    @app_path path_regexp app_path ^/apps/({_LABEL})(/.*)?$\n")
-    out.write("    handle @app_path {\n")
-    out.write(f"        redir * https://{{re.app_path.1}}.{cfg.hostname}{port}{{uri}} permanent\n")
-    out.write("    }\n\n")
-
+# ── app origins ──────────────────────────────────────────────────────────────
 
 def _write_app_site_head(out: StringIO, cfg: CaddyConfig, address: str, *, on_demand: bool) -> None:
     out.write(f"\n{address} {{\n")
-    if cfg.tls_mode == "internal":
+    if cfg.plain_http_port is not None:
+        # k8s: plain HTTP behind the ingress controller, which owns TLS.
+        pass
+    elif cfg.tls_mode == "internal":
         out.write("    tls {\n")
         out.write("        issuer internal {\n")
         out.write("            lifetime 720h\n")
@@ -402,8 +387,9 @@ def _write_app_site_head(out: StringIO, cfg: CaddyConfig, address: str, *, on_de
 
 
 def _write_app_site(out: StringIO, cfg: CaddyConfig, site: AppSite) -> None:
-    """A deployer app on its own origin. Its routes keep their /apps/<label>
-    paths, so the app needs no rebuild; the bare origin goes to the app."""
+    """A deployer app on its own origin, served at its root: its routes are
+    paths on that origin, and its `/` route, when it has one, takes every
+    path no other route of the app matches."""
     host = f"{site.label}.{cfg.hostname}"
     if cfg.forwarded_host:
         # k8s: the gateway reads the app from the forwarded host, which this
@@ -414,16 +400,20 @@ def _write_app_site(out: StringIO, cfg: CaddyConfig, site: AppSite) -> None:
         else f"{host}:{cfg.https_port}"
     )
     _write_app_site_head(out, cfg, address, on_demand=False)
-    out.write("    handle / {\n")
-    out.write(f"        redir * /apps/{site.label}/ permanent\n")
-    out.write("    }\n\n")
     login = (
         f"{cfg.origin(cfg.hostname)}/auth/app-login?app={site.label}"
         "&return_to={http.request.uri_escaped}"
     )
+    root = None
     for route in sorted(site.routes, key=lambda r: (-len(r.path), r.path)):
+        if route.path == "/":
+            root = route
+            continue
         _write_route(out, route, cfg, login)
-    write_unrouted_404(out)
+    if root is not None:
+        _write_catchall(out, root, cfg, login)
+    else:
+        write_unrouted_404(out)
     out.write("}\n")
 
 

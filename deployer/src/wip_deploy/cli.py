@@ -275,7 +275,8 @@ def _hostname_opt() -> typer.models.OptionInfo:
         "--hostname",
         help=(
             "External hostname as seen by browsers. Defaults to "
-            "'localhost' when --target dev (no /etc/hosts magic). `install` "
+            "'wip.localhost' when --target dev (every *.localhost resolves to this "
+            "machine, and apps get origins under it). `install` "
             "requires it for compose and k8s; validate, show-spec and render "
             "preview with 'wip.local'."
         ),
@@ -314,8 +315,9 @@ def _discover_or_exit(root: Path) -> Discovery:
 def _resolve_hostname(hostname: str | None, target: str) -> str:
     """Resolve --hostname's default based on target.
 
-    - target=dev defaults to 'localhost' (browser-reachable on the
-      same machine, no /etc/hosts entry required).
+    - target=dev defaults to 'wip.localhost': browser-reachable on the
+      same machine with no /etc/hosts entry (every *.localhost resolves
+      to it), and dotted, so each app gets its origin <app>.wip.localhost.
     - target=compose|k8s defaults to 'wip.local', for the preview verbs
       (validate, show-spec, render) only; `install` refuses to run
       without an explicit --hostname there.
@@ -325,7 +327,7 @@ def _resolve_hostname(hostname: str | None, target: str) -> str:
     if hostname is not None:
         return hostname
     if target == "dev":
-        return "localhost"
+        return "wip.localhost"
     return "wip.local"
 
 
@@ -398,26 +400,6 @@ def _cluster_cidr_opt() -> typer.models.OptionInfo:
         help="K8s: one of the cluster's own ranges, as pods=CIDR, services=CIDR or "
         "nodes=CIDR (repeatable). The app edge may not reach them; give the cluster's "
         "own node addresses, not a LAN it shares with other machines.",
-    )
-
-
-def _keep_app_origins(
-    deployment: Deployment, previous: Deployment | None, requested: str | None,
-) -> None:
-    """An install over an existing one keeps where its apps are served unless
-    --app-origins says otherwise: moving apps to their own origins changes
-    every app URL, so it is asked for explicitly (here, or with redeploy)."""
-    if previous is not None and requested is None:
-        deployment.spec.network.app_origins = previous.spec.network.app_origins
-
-
-def _app_origins_opt() -> typer.models.OptionInfo:
-    return typer.Option(
-        "--app-origins",
-        help="Where apps are served: 'subdomain' (each app on its own origin, "
-        "https://<app>.<hostname>, with a session of its own; needs DNS for "
-        "*.<hostname>) or 'path' (under /apps/<app> on WIP's origin). Default: "
-        "subdomain; an existing install keeps its own.",
     )
 
 
@@ -736,7 +718,6 @@ def validate(
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
-    app_origins: Annotated[str | None, _app_origins_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -787,7 +768,6 @@ def validate(
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
         cluster_cidrs=cluster_cidr,
-        app_origins=app_origins,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -868,7 +848,6 @@ def show_spec(
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
-    app_origins: Annotated[str | None, _app_origins_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -921,7 +900,6 @@ def show_spec(
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
         cluster_cidrs=cluster_cidr,
-        app_origins=app_origins,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -975,7 +953,6 @@ def render(
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
-    app_origins: Annotated[str | None, _app_origins_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -1037,7 +1014,6 @@ def render(
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
         cluster_cidrs=cluster_cidr,
-        app_origins=app_origins,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -1141,7 +1117,6 @@ def install(
     ingress_controller: Annotated[str, _ingress_controller_opt()] = "nginx",
     ingress_namespace: Annotated[str | None, _ingress_namespace_opt()] = None,
     cluster_cidr: Annotated[list[str] | None, _cluster_cidr_opt()] = None,
-    app_origins: Annotated[str | None, _app_origins_opt()] = None,
     tls_secret_name: Annotated[str, _tls_secret_opt()] = "wip-tls",
     dev_mode: Annotated[str, _dev_mode_opt()] = "simple",
     registry: Annotated[str | None, _registry_opt()] = None,
@@ -1257,7 +1232,6 @@ def install(
         ingress_controller=ingress_controller,
         ingress_namespace=ingress_namespace,
         cluster_cidrs=cluster_cidr,
-        app_origins=app_origins,
         tls_secret_name=tls_secret_name,
         dev_mode=dev_mode,
         registry=registry,
@@ -1295,8 +1269,6 @@ def install(
     # --registry error used to fire first and mask exactly this
     # situation on a live production install.
     previous = _try_load_previous_deployment(target_dir)
-    _keep_app_origins(deployment, previous, app_origins)
-    _warn_app_origins_unusable(deployment)
     if previous is not None:
         dropped_apps, dropped_modules = _diff_spec_for_drops(previous, deployment)
         drifted = _diff_spec_for_identity_drift(previous, deployment)
@@ -1317,7 +1289,7 @@ def install(
             f"error: --hostname is required for --target {target}: it becomes "
             "the Ingress host, the OIDC issuer and the TLS certificate's name, "
             "so it must be the name browsers use (e.g. --hostname "
-            "wip.example.org). Only --target dev defaults it (to localhost).",
+            "wip.example.org). Only --target dev defaults it (to wip.localhost).",
             err=True,
         )
         raise typer.Exit(2)
@@ -2534,7 +2506,6 @@ def _apply_and_persist_mutation(
     `_ensure_secrets_via_spec`).
     """
     _validate_or_exit(deployment, components, apps_list)
-    _warn_app_origins_unusable(deployment)
 
     _select_cluster_or_exit(deployment, mutating=True)
     secrets = _ensure_secrets_via_spec(
@@ -2972,15 +2943,6 @@ def redeploy(
             "(default: $KUBECONFIG, else ~/.kube/config).",
         ),
     ] = None,
-    app_origins: Annotated[
-        str | None,
-        typer.Option(
-            "--app-origins",
-            help="Move the install's apps: 'subdomain' serves each on its own origin "
-            "(https://<app>.<hostname>, needs DNS for *.<hostname>; the old /apps/<app> "
-            "URLs answer 301), 'path' serves them under /apps/<app> on WIP's origin.",
-        ),
-    ] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Re-render an existing install from its saved spec, recreating only what changed.
@@ -3105,23 +3067,6 @@ def redeploy(
             typer.echo("⊙ cluster ranges are already these — no change.")
         _warn_app_edge_reach(deployment)
 
-    origins_changed = False
-    if app_origins is not None:
-        if app_origins not in ("path", "subdomain"):
-            typer.echo("error: --app-origins is 'path' or 'subdomain'", err=True)
-            raise typer.Exit(2)
-        from wip_deploy.spec.deployment import app_origins_problem
-
-        problem = app_origins_problem(deployment.spec.network.hostname)
-        if app_origins == "subdomain" and problem:
-            typer.echo(f"error: --app-origins subdomain: {problem}", err=True)
-            raise typer.Exit(2)
-        if deployment.spec.network.app_origins == app_origins:
-            typer.echo(f"⊙ apps are already served by {app_origins} — no change.")
-        else:
-            deployment.spec.network.app_origins = app_origins  # type: ignore[assignment]
-            origins_changed = True
-
     cluster_pinned = False
     if kubeconfig and not kube_context:
         typer.echo("error: --kubeconfig goes with --kube-context", err=True)
@@ -3203,8 +3148,6 @@ def redeploy(
         rolled += " (new cluster ranges)"
     if cluster_pinned:
         rolled += " (cluster pinned)"
-    if origins_changed:
-        rolled += f" (apps served by {app_origins})"
     label = (
         f"Redeployed {', '.join(scope)} on {resolved_name}{rolled}"
         if scope
@@ -6125,7 +6068,6 @@ def _assemble(
     cluster_cidrs: list[str] | None,
     tls_secret_name: str,
     dev_mode: str,
-    app_origins: str | None = None,
     registry: str | None,
     tag: str | None,
     tag_overrides: dict[str, str],
@@ -6231,7 +6173,6 @@ def _assemble(
         k8s_ingress_namespace=ingress_namespace,
         k8s_cluster_cidrs=cluster_cidrs,
         k8s_tls_secret_name=tls_secret_name,
-        app_origins=app_origins,
         dev_mode=dev_mode,
         registry=registry,
         tag=tag,
@@ -6391,25 +6332,6 @@ def _record_cluster_for_install(deployment: Deployment, previous: Deployment | N
     )
 
 
-def _warn_app_origins_unusable(deployment: Deployment) -> None:
-    """An install saved with app origins under a hostname that cannot carry
-    them (made before the check): it keeps working, but every app's silent
-    session renewal reads as a logout. Say so on every verb that applies."""
-    from wip_deploy.spec.deployment import app_origins_problem
-
-    if deployment.spec.network.app_origins != "subdomain":
-        return
-    problem = app_origins_problem(deployment.spec.network.hostname)
-    if problem:
-        typer.secho(
-            f"warning: this install serves apps on their own origins, but {problem}. "
-            "Switch back with `wip-deploy redeploy --app-origins path`, or re-install "
-            "with a dotted --hostname.",
-            fg=typer.colors.YELLOW,
-            err=True,
-        )
-
-
 def _warn_app_edge_reach(deployment: Deployment) -> None:
     """On k8s the app edge reaches attached apps anywhere; without the
     cluster's own ranges (--cluster-cidr) that includes the control plane and
@@ -6548,7 +6470,7 @@ def _default_install_dir(name: str) -> Path:
 # Version 2: the app edge became an optional module. A version-1 file is
 # upgraded on load (`_upgrade_state_payload`) and written as version 2 by the
 # next persist, so each step runs once per install.
-_DEPLOYMENT_JSON_VERSION = 2
+_DEPLOYMENT_JSON_VERSION = 3
 
 
 def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -6557,7 +6479,28 @@ def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
     version check to refuse."""
     if payload.get("wip_deploy_format_version") == 1:
         payload = _state_v1_to_v2(payload)
+    if payload.get("wip_deploy_format_version") == 2:
+        payload = _state_v2_to_v3(payload)
     return payload
+
+
+def _state_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
+    """Version 2 chose where apps were served (network.app_origins: path or
+    subdomain). Every app is now served at the root of its own origin, so the
+    choice is dropped; an install saved with path moves to app origins on
+    its next apply, and one whose hostname cannot carry them is refused
+    there, naming why."""
+    try:
+        network = dict(payload["deployment"]["spec"]["network"])
+    except (KeyError, TypeError):
+        return {**payload, "wip_deploy_format_version": 3}
+    network.pop("app_origins", None)
+    spec = {**payload["deployment"]["spec"], "network": network}
+    return {
+        **payload,
+        "deployment": {**payload["deployment"], "spec": spec},
+        "wip_deploy_format_version": 3,
+    }
 
 
 def _state_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:

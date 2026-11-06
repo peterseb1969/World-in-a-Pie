@@ -158,7 +158,8 @@ class TestCrossTargetInvariants:
             d = d.model_copy(deep=True)
             d.spec.apps = [AppRef(name="dnd")]
             caddy = generate_caddy_config(d, real_discovery.components, real_discovery.apps)
-            dnd_route = next(r for r in caddy.routes if r.path == "/apps/dnd")
+            site = next(a for a in caddy.app_sites if a.label == "dnd")
+            dnd_route = next(r for r in site.routes if r.path == "/")
             assert dnd_route.auth_protected is True
             assert caddy.gateway_enabled is True
 

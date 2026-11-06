@@ -8,8 +8,8 @@ metadata:
     canonical `wip-kb` app for testing. Same WIP-KB codebase, but sourced from
     the lib-dev branch checkout (/Users/peter/Development/dev-KB) and pointed at
     its OWN namespaces (corpus `kb-libdev`, library `library`) so it shares the
-    backend with `wip-kb` without colliding on data. Routes under /apps/dev-kb
-    to keep /apps/kb on the canonical instance.
+    backend with `wip-kb` without colliding on data. Served on its own
+    origin (label dev-kb), apart from the canonical instance's kb.
 
 spec:
   # Namespaces this app owns. The install reserves them, and the app's own key
@@ -34,7 +34,7 @@ spec:
   ports:
     - {name: http, container_port: 3012}
     # Vite dev-server (CASE-375). Used only when --app-source is active; the
-    # dev_simple renderer routes /apps/dev-kb/* to this port. Same internal
+    # dev_simple renderer routes the app's origin to this port. Same internal
     # port as wip-kb is fine — separate container.
     - {name: dev, container_port: 5173}
 
@@ -42,7 +42,6 @@ spec:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
       - {name: PORT, source: {literal: "3012"}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/dev-kb}}
       - {name: NODE_ENV, source: {literal: production}}
       # Parallel-instance namespaces (CASE-518). Server corpus + library and
       # client corpus/library — set explicitly so this instance writes/reads its
@@ -57,20 +56,20 @@ spec:
       - {name: MCP_URL, source: {literal: "http://wip-mcp-server:8007/mcp"}}
 
   routes:
-    # Mirror wip-kb's auth exemptions for the served kb-client + write-gateway,
-    # rebased under /apps/dev-kb (longest-prefix wins over the auth'd /apps/dev-kb).
-    - {path: /apps/dev-kb/server-api/kb-client, auth_required: false}
-    - {path: /apps/dev-kb/server-api/kb, auth_required: false}
-    - {path: /apps/dev-kb, auth_required: true}
+    # Mirror wip-kb's auth exemptions for the served kb-client + write-gateway
+    # (the longer paths win over the auth'd /).
+    - {path: /server-api/kb-client, auth_required: false}
+    - {path: /server-api/kb, auth_required: false}
+    - {path: /, auth_required: true}
 
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /apps/dev-kb/api/health
+    endpoint: /api/health
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: WIP KB (lib-dev)
-  route_prefix: /apps/dev-kb
+  label: dev-kb
   ui_only: false

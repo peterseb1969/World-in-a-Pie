@@ -59,7 +59,7 @@ class TestValidateHappyPath:
             "validate",
             "--preset", "headless",
             "--target", "compose",
-            "--hostname", "localhost",
+            "--hostname", "wip.localhost",
             "--repo-root", str(REPO_ROOT),
         )
         assert r.exit_code == 0, r.output
@@ -128,7 +128,7 @@ class TestValidateActivationRules:
             "validate",
             "--preset", "headless",
             "--target", "compose",
-            "--hostname", "localhost",
+            "--hostname", "wip.localhost",
             "--repo-root", str(REPO_ROOT),
         )
         assert r.exit_code == 0, r.output
@@ -384,7 +384,7 @@ class TestAppSourceFlag:
             "show-spec",
             "--preset", "standard",
             "--target", "dev",
-            "--hostname", "localhost",
+            "--hostname", "wip.localhost",
             "--format", "json",
             "--app-source", f"react-console={rc_src}",
             "--repo-root", str(REPO_ROOT),
@@ -416,7 +416,7 @@ class TestAppSourceFlag:
             "show-spec",
             "--preset", "standard",
             "--target", "dev",
-            "--hostname", "localhost",
+            "--hostname", "wip.localhost",
             "--format", "json",
             "--app", "react-console",
             "--app-source", f"react-console={rc_src}",
@@ -440,9 +440,9 @@ class TestResolveHostname:
         assert _resolve_hostname("custom.host", "dev") == "custom.host"
         assert _resolve_hostname("custom.host", "compose") == "custom.host"
 
-    def test_dev_target_defaults_to_localhost(self) -> None:
+    def test_dev_target_defaults_to_wip_localhost(self) -> None:
         from wip_deploy.cli import _resolve_hostname
-        assert _resolve_hostname(None, "dev") == "localhost"
+        assert _resolve_hostname(None, "dev") == "wip.localhost"
 
     def test_compose_target_defaults_to_wip_local(self) -> None:
         from wip_deploy.cli import _resolve_hostname
@@ -740,7 +740,7 @@ class TestStatusDiff:
 
         import json
         payload = json.loads((tmp_path / "deployment.deployer-state").read_text())
-        assert payload["wip_deploy_format_version"] == 2
+        assert payload["wip_deploy_format_version"] == 3
         assert "deployment" in payload
         assert payload["deployment"]["metadata"]["name"] == "diff-test"
 

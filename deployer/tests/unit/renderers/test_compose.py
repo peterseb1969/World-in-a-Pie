@@ -241,16 +241,15 @@ class TestComposeYaml:
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         """CASE-368: with an app enabled, the Caddyfile redirects bare `/`
-        to the app's prefix. Uses `handle /` (exact root) + an explicit `*`
-        matcher on redir so Caddy doesn't parse the leading-/ destination
-        as a matcher."""
+        to the root of the app's origin. Uses `handle /` (exact root) + an
+        explicit `*` matcher on redir."""
         d = _minimal_compose(apps=["react-console"])
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
         assert "handle / {" in caddyfile
-        assert "redir * /apps/rc/ permanent" in caddyfile
+        assert "redir * https://rc.wip.local:8443/ permanent" in caddyfile
 
     def test_root_redirect_to_login_without_apps(
         self, tmp_path: Path, real_discovery: Discovery
@@ -572,22 +571,23 @@ class TestCaddyfile:
     def test_app_routes_have_forward_auth(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """App routes (/apps/*) are gateway-protected."""
+        """An app's routes, on its own origin, are gateway-protected."""
         d = _minimal_compose(apps=["react-console"])
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
-        rc_start = caddyfile.index("handle /apps/rc/*")
-        rc_block = caddyfile[rc_start : rc_start + 400]
+        site = caddyfile[caddyfile.index("\nrc.wip.local:8443 {"):]
+        rc_block = site[site.index("    handle {\n"):][:400]
         assert "forward_auth wip-auth-gateway:4180" in rc_block
 
     def test_forward_auth_wraps_401_in_login_redirect(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         """Gateway returns 401 on unauthenticated requests. Caddy must
-        catch that and redirect the browser to /auth/login — otherwise
-        users see a bare 401 page instead of the login flow.
+        catch that and redirect the browser to the login handshake on WIP's
+        origin — otherwise users see a bare 401 page instead of the login
+        flow.
 
         The redir MUST carry the explicit `*` matcher: Caddyfile parses
         a first argument starting with `/` as a path matcher, so the
@@ -601,11 +601,14 @@ class TestCaddyfile:
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
-        rc_start = caddyfile.index("handle /apps/rc/*")
-        rc_block = caddyfile[rc_start : rc_start + 500]
+        site = caddyfile[caddyfile.index("\nrc.wip.local:8443 {"):]
+        rc_block = site[site.index("    handle {\n"):][:700]
         assert "@unauth status 401" in rc_block
         assert "handle_response @unauth" in rc_block
-        assert "redir * /auth/login?return_to={http.request.uri_escaped} 302" in rc_block
+        assert (
+            "redir * https://wip.local:8443/auth/app-login?app=rc"
+            "&return_to={http.request.uri_escaped} 302"
+        ) in rc_block
         # The broken form must not resurface anywhere in the file.
         assert "redir /auth/login" not in caddyfile
 
@@ -613,26 +616,21 @@ class TestCaddyfile:
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
         """CASE-53 regression: every route must emit a bare-path handler
-        that 301s to the trailing-slash form. Without this, `/apps/rc`
-        (without slash) falls through Caddy's /apps/rc/* glob and 404s.
-        The old setup-wip.sh had this per-app; the v2 port missed it.
+        that 301s to the trailing-slash form. Without this, `/api/registry`
+        (without slash) falls through Caddy's /api/registry/* glob and 404s.
         """
         d = _minimal_compose(apps=["react-console"])
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
-        # Apps — the symptom in the case. Note the `*` matcher before
-        # the destination: Caddyfile's `redir` parses a leading `/arg` as
-        # a matcher, not a destination, so `redir /apps/rc/ permanent`
-        # would silently produce Location: "permanent". The `*` matcher
-        # disambiguates match-all.
-        assert "handle /apps/rc {" in caddyfile
-        rc_bare = caddyfile[caddyfile.index("handle /apps/rc {"):]
-        assert "redir * /apps/rc/ permanent" in rc_bare[:120]
-
-        # API routes get the same treatment (consistency)
+        # Note the `*` matcher before the destination: Caddyfile's `redir`
+        # parses a leading `/arg` as a matcher, not a destination, so
+        # `redir /api/registry/ permanent` would silently produce
+        # Location: "permanent". The `*` matcher disambiguates match-all.
         assert "handle /api/registry {" in caddyfile
+        bare = caddyfile[caddyfile.index("handle /api/registry {"):]
+        assert "redir * /api/registry/ permanent" in bare[:120]
         api_bare = caddyfile[caddyfile.index("handle /api/registry {"):]
         assert "redir * /api/registry/ permanent" in api_bare[:120]
 

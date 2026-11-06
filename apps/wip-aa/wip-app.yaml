@@ -39,7 +39,7 @@ spec:
   ports:
     - {name: http, container_port: 3014}
     # CASE-375: Vite dev-server. Used only when --app-source is active.
-    # The dev_simple renderer routes /apps/aa/* to this port instead of
+    # The dev_simple renderer routes the app's origin to this port instead of
     # 3014 (which only serves the API in dev). Ignored on compose/k8s.
     # 5180 avoids wip-kb (5173) and react-console (5174) on multi-app
     # dev installs.
@@ -49,7 +49,6 @@ spec:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
       - {name: PORT, source: {literal: "3014"}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/aa}}
       - {name: NODE_ENV, source: {literal: production}}
     optional:
       # AskBar NL-query + AI manuscript import use Anthropic. Both
@@ -63,18 +62,18 @@ spec:
       - {name: MCP_TRANSPORT, source: {literal: "http"}}
 
   routes:
-    - {path: /apps/aa, auth_required: true}
+    - {path: /, auth_required: true}
 
   # AuthorAssist reads/writes documents in the aa namespace via the WIP
   # API proxy. document-store is the hard start-order requirement.
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /apps/aa/api/health
+    endpoint: /api/health
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: AuthorAssist
-  route_prefix: /apps/aa
+  label: aa
   ui_only: false

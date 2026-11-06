@@ -175,8 +175,9 @@ def is_public_hostname(hostname: str) -> bool:
     TLD suffixes, and dotless single-label names all count as private.
     Anything else — a dotted DNS name or a global IP — counts as public.
     """
-    h = hostname.strip().lower()
-    if not h or h == "localhost":
+    h = hostname.strip().lower().rstrip(".")
+    # Every *.localhost name is loopback (RFC 6761), and the dev default.
+    if not h or h == "localhost" or h.endswith(".localhost"):
         return False
     try:
         addr = ipaddress.ip_address(h)

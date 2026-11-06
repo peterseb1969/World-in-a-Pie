@@ -123,7 +123,7 @@ def test_a_mapping_change_alters_only_the_policy_file(discovery: Discovery) -> N
 
 def _install(tmp_path: Path, *, with_connector: bool) -> Path:
     d = build_deployment(BuildInputs(
-        target="compose", variant="dev", hostname="localhost", tls="internal",
+        target="compose", variant="dev", hostname="wip.localhost", tls="internal",
         compose_data_dir=tmp_path / "data",
     ))
     secrets = d.spec.secrets.model_copy(update={"location": str(tmp_path / "secrets")})

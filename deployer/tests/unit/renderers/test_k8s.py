@@ -321,9 +321,17 @@ def _k8s_front_door(
     return ingress, caddy, cm["data"]["Caddyfile"]
 
 
+def _rc_site(caddyfile: str) -> str:
+    """React Console's site: its own origin, on plain HTTP behind the Ingress."""
+    start = caddyfile.index("\nhttp://rc.wip-kubi.local:8080 {")
+    return caddyfile[start:caddyfile.index("\n}\n", start) + 3]
+
+
 def _handle_block(caddyfile: str, matcher: str) -> str:
-    """The body of the `handle <matcher> {` block (one level)."""
-    start = caddyfile.index(f"    handle {matcher} {{\n")
+    """The body of the `handle <matcher> {` block (one level); the catch-all
+    `handle {` for matcher ""."""
+    head = f"    handle {matcher} {{\n" if matcher else "    handle {\n"
+    start = caddyfile.index(head)
     end = caddyfile.index("\n    }\n", start)
     return caddyfile[start:end]
 
@@ -348,7 +356,7 @@ class TestIngress:
     def test_tls_configured(self, tmp_path: Path, real_discovery: Discovery) -> None:
         docs, _, _ = _k8s_front_door(tmp_path, real_discovery)
         tls = docs[0]["spec"]["tls"]
-        assert tls[0]["hosts"] == ["wip-kubi.local"]
+        assert tls[0]["hosts"] == ["wip-kubi.local", "*.wip-kubi.local"]
         assert tls[0]["secretName"] == "wip-tls"
 
     def test_traefik_flavour(self, tmp_path: Path, real_discovery: Discovery) -> None:
@@ -367,7 +375,7 @@ class TestIngress:
 
     def test_app_route_goes_through_the_gateway(self, tmp_path: Path, real_discovery: Discovery) -> None:
         _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery, apps=["react-console"])
-        block = _handle_block(caddyfile, "/apps/rc/*")
+        block = _handle_block(_rc_site(caddyfile), "")
         assert "forward_auth wip-auth-gateway.wip-test.svc.cluster.local:4180" in block
         assert "copy_headers X-WIP-User X-WIP-Groups" in block
         assert "request_header -X-WIP-Auth-Method" in block
@@ -381,15 +389,16 @@ class TestIngress:
         sets the public scheme and host itself, never trusting a client's."""
         _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery, apps=["react-console"])
         assert "auto_https off" in caddyfile
-        assert "\n:8080 {\n" in caddyfile
+        assert "\nhttp://wip-kubi.local:8080 {\n" in caddyfile
         assert "tls {" not in caddyfile
-        block = _handle_block(caddyfile, "/apps/rc/*")
+        block = _handle_block(_rc_site(caddyfile), "")
         assert block.count("header_up X-Forwarded-Proto https") == 2  # forward_auth + proxy
-        assert block.count("header_up X-Forwarded-Host wip-kubi.local") == 2
+        # The gateway reads the app from the forwarded host: the app's own.
+        assert block.count("header_up X-Forwarded-Host rc.wip-kubi.local") == 2
 
     def test_root_redirect_to_the_app(self, tmp_path: Path, real_discovery: Discovery) -> None:
         _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery, apps=["react-console"])
-        assert "redir * /apps/rc/ permanent" in _handle_block(caddyfile, "/")
+        assert "redir * https://rc.wip-kubi.local:8443/ permanent" in _handle_block(caddyfile, "/")
 
     def test_root_redirect_to_login_without_apps(self, tmp_path: Path, real_discovery: Discovery) -> None:
         _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery)

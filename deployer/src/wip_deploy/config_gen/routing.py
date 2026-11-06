@@ -59,11 +59,16 @@ class ResolvedRoute:
     # Groups the gateway lets through on this route (empty = any logged-in
     # user). Only meaningful when auth_protected.
     allowed_groups: tuple[str, ...] = ()
-    # The route belongs to an app, not a platform component. App routes
-    # have client-sent identity headers removed (see
-    # client_identity_headers_to_strip), so an app never reads a forged
-    # user from the browser.
-    is_app: bool = False
+    # The label of the app the route belongs to, or None for a platform
+    # component. An app's routes are paths on its own origin,
+    # https://<label>.<hostname>, and have client-sent identity headers
+    # removed (see client_identity_headers_to_strip), so an app never reads a
+    # forged user from the browser.
+    app: str | None = None
+
+    @property
+    def is_app(self) -> bool:
+        return self.app is not None
 
     def client_identity_headers_to_strip(self) -> tuple[str, ...]:
         """The client-sent identity headers the renderer removes on this
@@ -115,7 +120,8 @@ def resolve_root_redirect(
     deployment: Deployment,
     apps: list[App],
 ) -> str | None:
-    """Target path for a bare-host (`/`) redirect, or None to emit none.
+    """Where a bare-host (`/`) request on WIP's origin is sent, or None to
+    emit no redirect.
 
     CASE-368: a fresh install left `https://<host>/` with no handler, and
     Caddy answers an unhandled path with 200 and an empty body, a confusing
@@ -123,10 +129,11 @@ def resolve_root_redirect(
     once here so every target's wip-caddy agrees (same cross-target
     invariant as resolve_routes).
 
-    v1 policy:
-      - First enabled app (in `spec.apps` / `--app` declaration order) → its
-        route_prefix, trailing-slashed. Deterministic; couples to declaration
-        order by design (the operator lists their primary app first).
+    Policy:
+      - First enabled app (in `spec.apps` / `--app` declaration order) → the
+        root of its origin, https://<label>.<hostname>[:port]/.
+        Deterministic; couples to declaration order by design (the operator
+        lists their primary app first).
       - No apps enabled, gateway on → `/auth/login` (the user has to auth
         first anyway).
       - No apps enabled, gateway off → None: nothing meaningful to point at,
@@ -138,10 +145,17 @@ def resolve_root_redirect(
             continue
         app = by_name.get(ref.name)
         if app is not None:
-            return app.app_metadata.route_prefix.rstrip("/") + "/"
+            return app_origin(deployment, app.app_metadata.label) + "/"
     if deployment.spec.auth.gateway:
         return "/auth/login"
     return None
+
+
+def app_origin(deployment: Deployment, label: str) -> str:
+    """https://<label>.<hostname>[:port], on the install's public port."""
+    net = deployment.spec.network
+    port = "" if net.https_port == 443 else f":{net.https_port}"
+    return f"https://{label}.{net.hostname}{port}"
 
 
 def _routes_for(
@@ -152,9 +166,9 @@ def _routes_for(
     if not owner.spec.routes:
         return []
     port = _pick_port(owner, app_sources_with_dev_port)
-    is_app = isinstance(owner, App)
+    app = owner.app_metadata.label if isinstance(owner, App) else None
     return [
-        _resolve_one(owner.metadata.name, r, port.container_port, gateway_on, is_app=is_app)
+        _resolve_one(owner.metadata.name, r, port.container_port, gateway_on, app=app)
         for r in owner.spec.routes
     ]
 
@@ -180,7 +194,7 @@ def _pick_port(owner: Component | App, app_sources_with_dev_port: set[str]) -> P
 
 
 def _resolve_one(
-    component_name: str, route: Route, port: int, gateway_on: bool, *, is_app: bool = False
+    component_name: str, route: Route, port: int, gateway_on: bool, *, app: str | None = None
 ) -> ResolvedRoute:
     return ResolvedRoute(
         path=route.path,
@@ -193,7 +207,7 @@ def _resolve_one(
         preserve_prefix_subpaths=tuple(route.preserve_prefix_subpaths),
         upstream_host_header=route.upstream_host_header,
         allowed_groups=tuple(route.allowed_groups),
-        is_app=is_app,
+        app=app,
     )
 
 

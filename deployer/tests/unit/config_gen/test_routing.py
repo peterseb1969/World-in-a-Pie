@@ -43,8 +43,7 @@ class TestAppRoutes:
         d.spec.apps = [AppRef(name="dnd")]
 
         routes = resolve_routes(d, real_discovery.components, real_discovery.apps)
-        paths = {r.path for r in routes}
-        assert "/apps/dnd" in paths
+        assert ("/", "dnd") in {(r.path, r.app) for r in routes}
 
     def test_disabled_app_routes_omitted(
         self, compose_deployment: Deployment, real_discovery: Discovery
@@ -55,8 +54,7 @@ class TestAppRoutes:
         d.spec.apps = [AppRef(name="dnd", enabled=False)]
 
         routes = resolve_routes(d, real_discovery.components, real_discovery.apps)
-        paths = {r.path for r in routes}
-        assert "/apps/dnd" not in paths
+        assert "dnd" not in {r.app for r in routes}
 
 
 class TestAuthProtection:
@@ -79,7 +77,7 @@ class TestAuthProtection:
         d = compose_deployment.model_copy(deep=True)
         d.spec.apps = [AppRef(name="react-console")]
         routes = resolve_routes(d, real_discovery.components, real_discovery.apps)
-        rc = next(r for r in routes if r.path == "/apps/rc")
+        rc = next(r for r in routes if r.app == "rc")
         assert rc.auth_protected is True
 
     def test_gateway_off_disables_all_protection(
@@ -109,13 +107,13 @@ class TestRootRedirect:
     """resolve_root_redirect — bare-host `/` target (CASE-368). Three
     branches: apps present, no-apps+gateway, no-apps+no-gateway."""
 
-    def test_first_enabled_app_prefix(
+    def test_first_enabled_app_origin(
         self, compose_deployment: Deployment, real_discovery: Discovery
     ) -> None:
         d = compose_deployment.model_copy(deep=True)
         d.spec.apps = [AppRef(name="react-console")]
         target = resolve_root_redirect(d, real_discovery.apps)
-        assert target == "/apps/rc/"
+        assert target == "https://rc.wip.local:8443/"
 
     def test_redirect_follows_declaration_order(
         self, compose_deployment: Deployment, real_discovery: Discovery
@@ -124,7 +122,7 @@ class TestRootRedirect:
         d = compose_deployment.model_copy(deep=True)
         d.spec.apps = [AppRef(name="dnd"), AppRef(name="react-console")]
         target = resolve_root_redirect(d, real_discovery.apps)
-        assert target == "/apps/dnd/"
+        assert target == "https://dnd.wip.local:8443/"
 
     def test_disabled_first_app_skipped(
         self, compose_deployment: Deployment, real_discovery: Discovery
@@ -135,7 +133,7 @@ class TestRootRedirect:
             AppRef(name="react-console"),
         ]
         target = resolve_root_redirect(d, real_discovery.apps)
-        assert target == "/apps/rc/"
+        assert target == "https://rc.wip.local:8443/"
 
     def test_no_apps_with_gateway_redirects_to_login(
         self, compose_deployment: Deployment, real_discovery: Discovery

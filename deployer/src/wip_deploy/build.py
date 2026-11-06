@@ -50,7 +50,6 @@ class BuildInputs:
     https_port: int | None = None
     http_port: int | None = None
     # "path" | "subdomain"; None → subdomain, the default for new installs.
-    app_origins: str | None = None
     # CASE-358: URL of a remote WIP this install points at. Plumbs to
     # NetworkSpec.remote_wip_url. None for standard same-host installs.
     remote_wip_url: str | None = None
@@ -199,7 +198,6 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
         "tls": tls,
         "https_port": inputs.https_port if inputs.https_port is not None else default_https,
         "http_port": inputs.http_port if inputs.http_port is not None else default_http,
-        "app_origins": _app_origins(inputs),
     }
     if inputs.remote_wip_url is not None:
         spec_dict["network"]["remote_wip_url"] = inputs.remote_wip_url
@@ -295,17 +293,3 @@ def _build_secrets(inputs: BuildInputs) -> dict[str, Any]:
         )
 
     return block
-
-
-def _app_origins(inputs: BuildInputs) -> str:
-    """subdomain for a new install, unless its hostname cannot carry app
-    origins (no dot, or an IP address: see app_origins_problem), where the
-    default is path and an explicit subdomain is refused."""
-    from wip_deploy.spec.deployment import app_origins_problem
-
-    problem = app_origins_problem(inputs.hostname)
-    if inputs.app_origins is None:
-        return "path" if problem else "subdomain"
-    if inputs.app_origins == "subdomain" and problem:
-        raise ValueError(f"app_origins='subdomain': {problem}")
-    return inputs.app_origins

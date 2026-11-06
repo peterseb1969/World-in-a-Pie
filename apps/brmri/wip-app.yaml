@@ -31,22 +31,20 @@ spec:
       - {name: WIP_BASE_URL, source: {from_component: router}}
       - {name: JIRA_TOKEN, source: {from_secret: jira-token}}
       - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/brmri}}
-      - {name: VITE_BASE_PATH, source: {literal: /apps/brmri}}
       - {name: PORT, source: {literal: "3001"}}
       - {name: NODE_ENV, source: {literal: production}}
 
   routes:
-    - {path: /apps/brmri, auth_required: true}
+    - {path: /, auth_required: true}
 
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /apps/brmri/health
+    endpoint: /health
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: BRMRI Explorer
-  route_prefix: /apps/brmri
+  label: brmri
   ui_only: false

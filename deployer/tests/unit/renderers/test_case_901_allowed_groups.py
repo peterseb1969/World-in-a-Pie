@@ -81,11 +81,11 @@ def _caddyfile(tmp_path: Path, discovery: Discovery, groups: list[str]) -> str:
 
 def test_caddy_route_carries_its_groups(tmp_path: Path, real_discovery: Discovery) -> None:
     caddyfile = _caddyfile(tmp_path, real_discovery, ["wip-admins"])
-    rc = caddyfile[caddyfile.index("handle /apps/rc/*"):][:500]
+    site = caddyfile[caddyfile.index("\nrc.wip.local:"):]
+    rc = site[site.index("    handle {\n"):][:500]
     assert "uri /auth/verify?allowed_groups=wip-admins\n" in rc
-    # Only that route's check carries them (its bare-path block just
-    # redirects to the trailing slash); every other protected block,
-    # the catch-all included, keeps the plain URI.
+    # Only that route's check carries them; every other protected block keeps
+    # the plain URI.
     assert caddyfile.count("allowed_groups=") == 1
 
 
@@ -106,7 +106,8 @@ def test_k8s_ingress_auth_url_carries_its_groups(tmp_path: Path, real_discovery:
     docs = yaml.safe_load_all(tree.files[Path("services/caddy.yaml")].content)
     caddyfile = next(x for x in docs if x["kind"] == "ConfigMap")["data"]["Caddyfile"]
 
-    rc = caddyfile[caddyfile.index("    handle /apps/rc/* {"):]
+    site = caddyfile[caddyfile.index("\nhttp://rc."):]
+    rc = site[site.index("    handle {\n"):]
     rc = rc[: rc.index("\n    }\n")]
     assert "uri /auth/verify?allowed_groups=wip-admins" in rc
 

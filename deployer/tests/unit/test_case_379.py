@@ -119,16 +119,15 @@ def _make_manifest(tmp_path: Path, *, name: str, http_port: int, dev_port: int |
             "env": {
                 "required": [
                     {"name": "PORT", "source": {"literal": str(http_port)}},
-                    {"name": "APP_BASE_PATH", "source": {"literal": f"/apps/{name}"}},
                     {"name": "NODE_ENV", "source": {"literal": "production"}},
                 ],
             },
-            "routes": [{"path": f"/apps/{name}", "auth_required": True}],
-            "healthcheck": {"endpoint": f"/apps/{name}/api/health"},
+            "routes": [{"path": "/", "auth_required": True}],
+            "healthcheck": {"endpoint": "/api/health"},
         },
         "app_metadata": {
             "display_name": name.replace("-", " ").title(),
-            "route_prefix": f"/apps/{name}",
+            "label": name,
             "ui_only": False,
         },
     }

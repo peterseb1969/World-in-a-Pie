@@ -21,9 +21,10 @@ spec:
     - {name: http, container_port: 8080}
 
   routes:
-    # Everything under /apps that no deployer app's longer route claims.
-    # Not behind the gateway here: the edge runs forward_auth itself, per
-    # attachment, with that record's allowed groups.
+    # Not a route of WIP's origin: it names the edge's port for the
+    # catch-all site that serves every attached app's origin (config_gen/
+    # caddy.py). Not behind the gateway: the edge runs forward_auth itself,
+    # per attachment, with that record's allowed groups.
     - {path: /apps, auth_required: false, redirect_bare_path: false}
 
   # An optional module (`wip-deploy add-module app-edge` / `remove-module
@@ -43,9 +44,6 @@ spec:
       # instead of trusting the incoming ones, so the gateway's login
       # redirect is right and a client cannot spoof either header.
       - {name: PUBLIC_BASE_URL, source: {from_spec: network.public_base_url}}
-      # Where attached apps are served (path | subdomain): under /apps/<name>,
-      # or each on <name>.<hostname>, matched by host.
-      - {name: WIP_APP_ORIGINS, source: {from_spec: network.app_origins}}
       # The install's own hosts, which an upstream may never resolve to.
       - {name: WIP_ATTACH_POLICY_FILE, source: {from_spec: security.attach_policy_file}}
       # The deployer's one definition of the identity headers (see

@@ -59,7 +59,7 @@ class TestAuthSpec:
 
 class TestNetworkSpec:
     def test_internal_tls_works_with_localhost(self) -> None:
-        NetworkSpec(hostname="localhost", tls="internal")
+        NetworkSpec(hostname="wip.localhost", tls="internal")
 
     def test_internal_tls_works_with_dot_local(self) -> None:
         NetworkSpec(hostname="wip-kubi.local", tls="internal")
@@ -75,7 +75,7 @@ class TestNetworkSpec:
 
     def test_letsencrypt_rejects_localhost(self) -> None:
         with pytest.raises(PydanticValidationError):
-            NetworkSpec(hostname="localhost", tls="letsencrypt")
+            NetworkSpec(hostname="wip.localhost", tls="letsencrypt")
 
 
 # ────────────────────────────────────────────────────────────────────

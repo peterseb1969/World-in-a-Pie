@@ -45,7 +45,7 @@ def _deployment(tmp_path: Path) -> Deployment:
         BuildInputs(
             target="compose",
             variant="dev",
-            hostname="localhost",
+            hostname="wip.localhost",
             tls="internal",
             compose_data_dir=tmp_path / "data",
             k8s_namespace="wip-test",

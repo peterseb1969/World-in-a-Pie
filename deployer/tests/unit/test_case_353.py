@@ -67,11 +67,11 @@ def _valid_manifest_body(name: str = "test-app") -> dict:
             "image": {"name": name, "tag": "v0.0.1"},
             "ports": [{"name": "http", "container_port": 3099}],
             "env": {"required": [], "optional": []},
-            "routes": [{"path": f"/apps/{name}", "auth_required": True}],
+            "routes": [{"path": "/", "auth_required": True}],
         },
         "app_metadata": {
             "display_name": "Test App",
-            "route_prefix": f"/apps/{name}",
+            "label": name,
             "ui_only": True,
         },
     }
@@ -239,33 +239,32 @@ class TestReferenceFailures:
 
 
 # ────────────────────────────────────────────────────────────────────
-# Route collision detection
+# Label collision detection
 # ────────────────────────────────────────────────────────────────────
 
 
-class TestRouteCollisions:
-    def test_route_path_collision_flagged(
-        self, tmp_path: Path, repo_root: Path
-    ) -> None:
-        body = _valid_manifest_body("ref-route-collide")
-        # /apps/rc is react-console's route — colliding deliberately.
-        body["spec"]["routes"] = [{"path": "/apps/rc", "auth_required": True}]
-        manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
-        _app_obj, errors = validate_manifest(manifest, repo_root)
-        assert any(
-            "react-console" in e.message and "routes[0].path" in e.field
-            for e in errors
-        )
+class TestLabelCollisions:
+    """Each app is served on its own origin, <label>.<hostname>: two apps
+    can share route paths, never a label."""
 
-    def test_route_prefix_collision_flagged(
+    def test_same_routes_as_another_app_pass(
         self, tmp_path: Path, repo_root: Path
     ) -> None:
-        body = _valid_manifest_body("ref-prefix-collide")
-        body["app_metadata"]["route_prefix"] = "/apps/rc"
+        body = _valid_manifest_body("ref-route-shared")
+        body["spec"]["routes"] = [{"path": "/", "auth_required": True}]
+        manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
+        _app_obj, errors = validate_manifest(manifest, repo_root)
+        assert errors == []
+
+    def test_label_collision_flagged(
+        self, tmp_path: Path, repo_root: Path
+    ) -> None:
+        body = _valid_manifest_body("ref-label-collide")
+        body["app_metadata"]["label"] = "rc"
         manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
         _app_obj, errors = validate_manifest(manifest, repo_root)
         assert any(
-            "route_prefix" in e.field and "react-console" in e.message
+            e.field == "app_metadata.label" and "react-console" in e.message
             for e in errors
         )
 
@@ -276,20 +275,10 @@ class TestRouteCollisions:
         as a discovered app), the discovered app is excluded from the
         collision-check set — the app isn't colliding with itself."""
         body = _valid_manifest_body("react-console")
-        # Use react-console's actual routes + prefix.
-        body["spec"]["routes"] = [{"path": "/apps/rc", "auth_required": True}]
-        body["app_metadata"]["route_prefix"] = "/apps/rc"
+        body["app_metadata"]["label"] = "rc"
         manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
         _app_obj, errors = validate_manifest(manifest, repo_root)
-        # No route_prefix or route-path collision — same-name self-exclusion.
-        collision_errors = [
-            e for e in errors
-            if "route_prefix" in e.field or "routes" in e.field
-        ]
-        assert collision_errors == [], (
-            f"unexpected collision errors when validating self: "
-            f"{[e.format() for e in collision_errors]}"
-        )
+        assert [e for e in errors if e.field == "app_metadata.label"] == []
 
 
 # ────────────────────────────────────────────────────────────────────

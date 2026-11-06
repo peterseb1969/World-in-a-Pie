@@ -300,7 +300,7 @@ class TestAssembleIntegration:
             [
                 "show-spec",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--app", "react-console",
                 "--name", "test-356",
                 "--format", "json",
@@ -330,7 +330,7 @@ class TestAssembleIntegration:
             [
                 "show-spec",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 # NO --app react-console
                 "--name", "test-356-not-enabled",
                 "--format", "json",
@@ -361,7 +361,7 @@ class TestAssembleIntegration:
             [
                 "show-spec",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--app-source", f"react-console={override}",
                 "--name", "test-356-shadow",
                 "--format", "json",
@@ -389,7 +389,7 @@ class TestAssembleIntegration:
             [
                 "show-spec",
                 "--target", "dev",
-                "--hostname", "localhost",
+                "--hostname", "wip.localhost",
                 "--app-source", f"react-console={path}",
                 "--name", "test-356-same",
                 "--format", "json",

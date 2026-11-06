@@ -116,11 +116,11 @@ def test_module_off_renders_no_edge_and_apps_404(tmp_path: Path, discovery: Disc
     assert "wip-app-edge" not in {k["name"] for k in keys}
 
     caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
-    assert "handle /apps/* {" not in caddyfile
+    assert "https://:8443" not in caddyfile  # no site for attached apps
     assert "wip-app-edge" not in caddyfile
-    # The deployer app's own route stays; any other /apps path reaches the
-    # terminal 404, never Caddy's empty 200.
-    assert "handle /apps/kb/* {" in caddyfile
+    # The deployer app keeps its own site; an unrouted path on WIP's origin
+    # reaches the terminal 404, never Caddy's empty 200.
+    assert "\nkb.wip.local:8443 {" in caddyfile
     assert "    handle {\n        respond 404\n    }\n" in caddyfile
 
     policy = json.loads(tree.files[Path("config/auth/attach-policy.json")].content)
@@ -205,7 +205,7 @@ def _v1(*, gateway: bool, suppress_core: bool = False, optional: list[str] | Non
                     if gateway
                     else {"mode": "api-key-only", "gateway": False, "users": []}
                 ),
-                "network": {"hostname": "localhost"},
+                "network": {"hostname": "wip.localhost"},
                 "images": {},
                 "platform": {"compose": {"data_dir": "/tmp/d"}},
                 "secrets": {"backend": "file", "location": "/tmp/s"},
@@ -217,14 +217,14 @@ def _v1(*, gateway: bool, suppress_core: bool = False, optional: list[str] | Non
 
 def test_v1_with_the_gateway_keeps_its_edge() -> None:
     out = _upgrade_state_payload(_v1(gateway=True))
-    assert out["wip_deploy_format_version"] == 2
+    assert out["wip_deploy_format_version"] == 3
     assert out["deployment"]["spec"]["modules"]["optional"] == ["mcp-server", APP_EDGE_MODULE]
 
 
 @pytest.mark.parametrize("kw", [{"gateway": False}, {"gateway": True, "suppress_core": True}])
 def test_v1_without_an_edge_gets_none(kw: dict) -> None:
     out = _upgrade_state_payload(_v1(**kw))
-    assert out["wip_deploy_format_version"] == 2
+    assert out["wip_deploy_format_version"] == 3
     assert APP_EDGE_MODULE not in out["deployment"]["spec"]["modules"]["optional"]
 
 
@@ -239,7 +239,9 @@ def test_the_upgrade_does_not_mutate_its_input_and_does_not_duplicate() -> None:
 def test_a_v2_spec_without_the_edge_stays_without_it() -> None:
     payload = _v1(gateway=True)
     payload["wip_deploy_format_version"] = 2
-    assert _upgrade_state_payload(payload) == payload
+    out = _upgrade_state_payload(payload)
+    assert out["wip_deploy_format_version"] == 3
+    assert out["deployment"]["spec"]["modules"] == payload["deployment"]["spec"]["modules"]
 
 
 def test_an_unknown_version_is_left_for_the_loader_to_refuse(tmp_path: Path) -> None:
@@ -250,7 +252,7 @@ def test_an_unknown_version_is_left_for_the_loader_to_refuse(tmp_path: Path) -> 
     assert _try_load_previous_deployment(tmp_path) is None
 
 
-def test_both_loaders_upgrade_and_the_next_persist_writes_v2(tmp_path: Path) -> None:
+def test_both_loaders_upgrade_and_the_next_persist_writes_the_current_version(tmp_path: Path) -> None:
     (tmp_path / "deployment.deployer-state").write_text(json.dumps(_v1(gateway=True)))
     loaded = _load_deployment(tmp_path)
     assert APP_EDGE_MODULE in loaded.spec.modules.optional
@@ -259,7 +261,7 @@ def test_both_loaders_upgrade_and_the_next_persist_writes_v2(tmp_path: Path) -> 
 
     _persist_deployment(loaded, tmp_path)
     saved = json.loads((tmp_path / "deployment.deployer-state").read_text())
-    assert saved["wip_deploy_format_version"] == 2
+    assert saved["wip_deploy_format_version"] == 3
     assert APP_EDGE_MODULE in saved["deployment"]["spec"]["modules"]["optional"]
 
     # The operator removes it; it stays removed on the next load.

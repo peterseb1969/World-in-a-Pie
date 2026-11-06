@@ -30,8 +30,6 @@ spec:
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/song}}
-      - {name: VITE_BASE_PATH, source: {literal: /apps/song}}
       - {name: PORT, source: {literal: "3016"}}
       - {name: NODE_ENV, source: {literal: production}}
     optional:
@@ -40,17 +38,17 @@ spec:
       - {name: MCP_URL, source: {literal: "http://wip-router:8080/mcp"}}
 
   routes:
-    - {path: /apps/song, auth_required: true}
+    - {path: /, auth_required: true}
 
   depends_on: [document-store]
 
   healthcheck:
     # Locally answerable; must not require WIP to be reachable (contract).
-    endpoint: /apps/song/api/health
+    endpoint: /api/health
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: WIP-Song
-  route_prefix: /apps/song
+  label: song
   ui_only: false

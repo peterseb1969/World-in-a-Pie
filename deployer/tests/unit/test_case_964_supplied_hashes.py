@@ -47,7 +47,7 @@ def discovery() -> Discovery:
 def _deployment(tmp_path: Path, *extra: DexUser):
     d = build_deployment(
         BuildInputs(
-            target="compose", variant="dev", hostname="localhost",
+            target="compose", variant="dev", hostname="wip.localhost",
             tls="internal", compose_data_dir=tmp_path / "data",
         )
     )

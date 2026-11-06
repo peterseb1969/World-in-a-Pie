@@ -42,8 +42,12 @@ def caddyfile(render) -> str:  # type: ignore[no-untyped-def]
     return next(d for d in docs if d["kind"] == "ConfigMap")["data"]["Caddyfile"]
 
 
-def _block(caddyfile: str, matcher: str) -> str:
-    start = caddyfile.index(f"    handle {matcher} {{\n")
+def _block(caddyfile: str, matcher: str, *, site: str | None = None) -> str:
+    """The `handle <matcher>` block (the catch-all `handle {` for matcher
+    ""), within the app site whose host starts with `site` when given."""
+    begin = caddyfile.index(site) if site else 0
+    head = f"    handle {matcher} {{\n" if matcher else "    handle {\n"
+    start = caddyfile.index(head, begin)
     return caddyfile[start: caddyfile.index("\n    }\n", start)]
 
 
@@ -56,7 +60,7 @@ def test_no_ingress_needs_snippets(render) -> None:  # type: ignore[no-untyped-d
 
 
 def test_a_protected_app_route_gets_the_gateways_identity(caddyfile: str) -> None:
-    block = _block(caddyfile, "/apps/kb/*")
+    block = _block(caddyfile, "", site="\nhttp://kb.")
     assert f"copy_headers {' '.join(GATEWAY_IDENTITY_HEADERS)}" in block
     assert "request_header -X-WIP-Auth-Method" in block
     # Never strip what the gateway just supplied.
@@ -67,7 +71,7 @@ def test_a_protected_app_route_gets_the_gateways_identity(caddyfile: str) -> Non
 def test_an_unprotected_app_route_strips_every_client_identity_header(caddyfile: str) -> None:
     """WIP-KB's server-api/kb subpath is auth_required: false. A client's
     copies of the identity headers are removed before the app sees them."""
-    block = _block(caddyfile, "/apps/kb/server-api/kb/*")
+    block = _block(caddyfile, "/server-api/kb/*", site="\nhttp://kb.")
     assert "forward_auth" not in block
     for header in CLIENT_IDENTITY_HEADERS:
         assert f"request_header -{header}" in block

@@ -23,7 +23,7 @@ spec:
     # Vite dev server. When `wip-deploy install --target dev --app-source
     # react-console=<path>` is used and the app's Dockerfile.dev runs
     # `npm run dev`, the frontend lives here (not on :3011, which only
-    # serves the API/SSR in dev). Caddy routes /apps/rc/* to this port
+    # serves the API/SSR in dev). Caddy routes the app's origin to this port
     # in that mode. Ignored on compose/k8s targets and on dev without
     # the override (apps come up on :3011 from the prod image).
     - {name: dev, container_port: 5174}
@@ -33,7 +33,6 @@ spec:
       - {name: WIP_BASE_URL, source: {from_component: router}}
       - {name: WIP_API_KEY, source: {from_secret: api-key}}
       - {name: PORT, source: {literal: "3011"}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/rc}}
       - {name: NODE_ENV, source: {literal: production}}
       # RC is an admin console: it calls WIP with the platform key, so any
       # user who reaches it can write everywhere. Only wip-admins may open it.
@@ -60,7 +59,7 @@ spec:
     # The gateway refuses everyone outside wip-admins at the door (403),
     # before any app code runs. ALLOWED_GROUPS above stays as the app-side
     # check for when RC runs its own OIDC client instead of the gateway.
-    - {path: /apps/rc, auth_required: true, allowed_groups: [wip-admins]}
+    - {path: /, auth_required: true, allowed_groups: [wip-admins]}
 
   # reporting-sync is a SOFT dependency — react-console functions with
   # reporting unavailable, just greys out the reporting tab. Only
@@ -71,11 +70,11 @@ spec:
   # react-console image ships wget but not curl; future images may add
   # curl. Either way, auto works.
   healthcheck:
-    endpoint: /apps/rc/health
+    endpoint: /health
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: React Console
-  route_prefix: /apps/rc
+  label: rc
   ui_only: false

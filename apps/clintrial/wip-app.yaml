@@ -21,31 +21,27 @@ spec:
     - {name: http, container_port: 3001}
     # Vite dev server (CASE-57). Used only when `wip-deploy install
     # --target dev --app-source clintrial=<path>` is active; Caddy
-    # then routes /apps/clintrial/* to this port instead of :3001.
+    # then routes the app's origin to this port instead of :3001.
     # Ignored on compose/k8s and on dev without the override.
     - {name: dev, container_port: 5174}
 
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/clintrial}}
-      - {name: VITE_BASE_PATH, source: {literal: /apps/clintrial}}
       - {name: PORT, source: {literal: "3001"}}
       - {name: NODE_ENV, source: {literal: production}}
 
   routes:
-    - {path: /apps/clintrial, auth_required: true}
+    - {path: /, auth_required: true}
 
   depends_on: [document-store]
 
   healthcheck:
-    # Express server mounts routes under the APP_BASE_PATH, so /health
-    # lives at /apps/clintrial/health. Probing raw /health returns 404.
-    endpoint: /apps/clintrial/health
+    endpoint: /health
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: ClinTrial Explorer
-  route_prefix: /apps/clintrial
+  label: clintrial
   ui_only: false

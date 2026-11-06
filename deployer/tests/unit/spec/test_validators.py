@@ -44,7 +44,7 @@ def _make_app(
         spec=ComponentSpec(**spec_kwargs),  # type: ignore[arg-type]
         app_metadata=AppMetadata(
             display_name=name.title(),
-            route_prefix=f"/apps/{name}",
+            label=name,
         ),
     )
 

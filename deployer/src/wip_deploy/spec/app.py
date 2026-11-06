@@ -1,6 +1,6 @@
 """App manifest model.
 
-An App is a Component with additional UI-facing metadata (route prefix,
+An App is a Component with additional UI-facing metadata (its label and
 display name). Loaded from `apps/<name>/wip-app.yaml`.
 
 Apps replace the `docker-compose.app.*.yml` label-scraping mechanism from
@@ -21,9 +21,28 @@ from wip_deploy.spec.component import ComponentMetadata, ComponentSpec
 _ALL_NAMESPACE_NATS_ROLES = ("event-subscriber", "replay-subscriber")
 
 
+# One DNS label: the app's origin is https://<label>.<hostname>[:port].
+APP_LABEL_PATTERN = r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$"
+
+# Never set: an app is served at the root of its own origin, so there is no
+# base path for it to be told about.
+_BASE_PATH_VARS = ("APP_BASE_PATH", "VITE_BASE_PATH")
+
+# The gateway paths every app origin serves itself, ahead of the app's own
+# routes: the session handshake and silent renew, logout, userinfo
+# (auth_gateway/app_origins.py). Nothing else under /auth: a login always
+# happens on WIP's own origin. An app cannot route these.
+APP_ORIGIN_GATEWAY_PATHS: tuple[str, ...] = (
+    "/auth/handoff", "/auth/renew", "/auth/renewed", "/auth/logout", "/auth/userinfo",
+)
+
+
 class AppMetadata(WIPModel):
     display_name: str = Field(min_length=1)
-    route_prefix: str = Field(pattern=r"^/.*")
+    label: str = Field(
+        pattern=APP_LABEL_PATTERN,
+        description="The app's origin is https://<label>.<hostname>[:port]",
+    )
     ui_only: bool = True
 
 
@@ -35,6 +54,47 @@ class App(WIPModel):
     metadata: ComponentMetadata
     spec: ComponentSpec
     app_metadata: AppMetadata
+
+    @model_validator(mode="after")
+    def served_at_root(self) -> App:
+        """An app is served at the root of its own origin: its routes and
+        its healthcheck are paths on that origin, and it is never told a base
+        path. A route or probe under /apps/<label>, or an APP_BASE_PATH /
+        VITE_BASE_PATH in its env, is the form apps had before, and an image
+        built for it does not work on its origin's root."""
+        name = self.metadata.name
+        old = [r.path for r in self.spec.routes if r.path == "/apps" or r.path.startswith("/apps/")]
+        hc = self.spec.healthcheck
+        if hc is not None:
+            old += [p for p in (hc.endpoint, hc.liveness_endpoint)
+                    if p and (p == "/apps" or p.startswith("/apps/"))]
+        if old:
+            raise ValueError(
+                f"app {name!r}: {', '.join(old)} is under /apps/. An app is served at "
+                "the root of its own origin (https://<label>.<hostname>/): declare its "
+                "routes and healthcheck from /"
+            )
+        taken = [
+            r.path for r in self.spec.routes
+            if any(r.path == g or r.path.startswith(g + "/") or g.startswith(r.path.rstrip("/") + "/")
+                   for g in APP_ORIGIN_GATEWAY_PATHS)
+            and r.path != "/"
+        ]
+        if taken:
+            raise ValueError(
+                f"app {name!r}: route {', '.join(taken)} would cover the gateway's "
+                f"{', '.join(APP_ORIGIN_GATEWAY_PATHS)}, which every app origin serves "
+                "itself; route a narrower path"
+            )
+        env = [e.name for e in (*self.spec.env.required, *self.spec.env.optional)]
+        base = [v for v in _BASE_PATH_VARS if v in env]
+        if base:
+            raise ValueError(
+                f"app {name!r}: {', '.join(base)} is not set on an app: it is served at "
+                "the root of its own origin. Remove it from env, and build the image "
+                "with the base path /"
+            )
+        return self
 
     @model_validator(mode="after")
     def nats_roles_only(self) -> App:

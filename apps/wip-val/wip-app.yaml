@@ -34,7 +34,6 @@ spec:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
       - {name: PORT, source: {literal: "3015"}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/wip-val}}
       - {name: NODE_ENV, source: {literal: production}}
     optional:
       # askBar / NL-query feature uses Anthropic. Degrades gracefully
@@ -43,18 +42,18 @@ spec:
       - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
 
   routes:
-    - {path: /apps/wip-val, auth_required: true}
+    - {path: /, auth_required: true}
 
   # WIP-VAL reads/writes templates, terminologies, documents, and files in the
   # wip-val namespace via the WIP API proxy.
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /apps/wip-val/api/health
+    endpoint: /api/health
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: WIP Validation
-  route_prefix: /apps/wip-val
+  label: wip-val
   ui_only: false

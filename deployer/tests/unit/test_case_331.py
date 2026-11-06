@@ -73,7 +73,7 @@ def _make_deployment(
             apps=[AppRef(name=n, enabled=e) for n, e in apps],
             modules=ModulesSpec(optional=modules),
             auth=AuthSpec(mode="api-key-only", gateway=False),
-            network=NetworkSpec(hostname="localhost"),
+            network=NetworkSpec(hostname="wip.localhost"),
             images=ImagesSpec(),
             platform=PlatformSpec(
                 compose=ComposePlatform(data_dir=Path("/tmp/wip-test-data")),

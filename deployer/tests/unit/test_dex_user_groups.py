@@ -37,7 +37,7 @@ def _install(tmp_path: Path) -> Path:
         BuildInputs(
             target="compose",
             variant="dev",
-            hostname="localhost",
+            hostname="wip.localhost",
             tls="internal",
             compose_data_dir=tmp_path / "data",
         )

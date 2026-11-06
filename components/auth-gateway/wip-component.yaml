@@ -47,9 +47,8 @@ spec:
       - {name: SESSION_SECRET, source: {from_secret: gateway-session-secret}}
       - {name: WIP_HOSTNAME, source: {from_spec: network.hostname}}
       - {name: CALLBACK_URL, source: {from_spec: auth.callback_url}}
-      # Where apps are served (path | subdomain), and the public URL app
-      # origins are built from: https://<label>.<hostname>[:port].
-      - {name: WIP_APP_ORIGINS, source: {from_spec: network.app_origins}}
+      # The public URL app origins are built from:
+      # https://<label>.<hostname>[:port].
       - {name: WIP_PUBLIC_URL, source: {from_spec: network.public_base_url}}
       # Security posture — arms the gateway's default-session-secret
       # startup guard. From the deployment's --variant.

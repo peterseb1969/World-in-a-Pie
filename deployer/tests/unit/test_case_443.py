@@ -42,7 +42,7 @@ def _deployment(target: str = "compose") -> Deployment:
                 "apps": [],
                 "modules": {"optional": []},
                 "auth": {"mode": "api-key-only", "gateway": False, "users": []},
-                "network": {"hostname": "localhost"},
+                "network": {"hostname": "wip.localhost"},
                 "images": {},
                 "platform": platform,
                 "secrets": {"backend": "file", "location": "/tmp/wip-test-secrets"},

@@ -63,8 +63,8 @@ class IngressConfig:
     backend_service: str = PUBLIC_CADDY_SERVICE
     backend_port: int = PUBLIC_CADDY_K8S_PORT
     annotations: dict[str, str] = field(default_factory=dict)
-    # With app origins (network.app_origins=subdomain): "*.<hostname>", so
-    # every app's origin reaches wip-caddy, which tells them apart by Host.
+    # "*.<hostname>": every app's origin reaches wip-caddy, which tells them
+    # apart by Host.
     app_hosts: tuple[str, ...] = ()
 
 
@@ -88,7 +88,5 @@ def generate_ingress_config(deployment: Deployment) -> IngressConfig:
 
 def app_origin_hosts(deployment: Deployment) -> tuple[str, ...]:
     """The names app origins add to the Ingress and its certificate:
-    `*.<hostname>` in subdomain mode, none otherwise."""
-    if deployment.spec.network.app_origins != "subdomain":
-        return ()
+    `*.<hostname>`."""
     return (f"*.{deployment.spec.network.hostname}",)

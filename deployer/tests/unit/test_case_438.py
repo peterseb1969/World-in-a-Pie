@@ -76,7 +76,7 @@ def _app(name: str, pin: str | None) -> App:
         ),
         spec=ComponentSpec(image=ImageRef(name=name, tag=pin)),
         app_metadata=AppMetadata(
-            display_name="T", route_prefix=f"/apps/{name}"
+            display_name="T", label=name
         ),
     )
 

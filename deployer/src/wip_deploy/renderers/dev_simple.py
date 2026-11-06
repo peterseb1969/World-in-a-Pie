@@ -540,14 +540,6 @@ def _dev_service_block(
     # but wrong here — it makes `npm ci` skip devDeps, breaking the dev
     # command. Override to development whenever --app-source is active.
     #
-    # Also mirror APP_BASE_PATH → VITE_BASE_PATH so Vite's `base` and
-    # proxy-key prefixes match the Caddy-exposed path (e.g. /apps/rc).
-    # Prod images bake VITE_BASE_PATH via Dockerfile build ARG; the dev
-    # loop needs the same contract. Without this, Vite renders assets
-    # at bare paths (/@vite/client) instead of prefixed
-    # (/apps/rc/@vite/client) → 404 through Caddy. Only mirror when
-    # VITE_BASE_PATH isn't already set — respect an explicit override.
-    #
     # The Vite dev server answers only the hosts it allows: localhost and IP
     # addresses unless the app's config lists more. Behind the router every
     # request carries the install's hostname, so an install reached by name
@@ -556,19 +548,9 @@ def _dev_service_block(
     # allowed hosts itself (Vite >= 5.4.12 / 6.0.9), so no app config changes.
     if isinstance(owner, App) and owner.metadata.name in app_sources:
         environment["NODE_ENV"] = "development"
-        base_path = environment.get("APP_BASE_PATH")
-        if base_path and "VITE_BASE_PATH" not in environment:
-            environment["VITE_BASE_PATH"] = base_path
-        # Vite takes this as ONE host. On an app origin every request
-        # carries the app's own host (WIP's origin only redirects there), so
-        # that is the one; otherwise the install's hostname.
-        allowed_host = deployment.spec.network.hostname
-        if deployment.spec.network.app_origins == "subdomain":
-            from wip_deploy.config_gen.caddy import app_label
-
-            label = app_label(owner.app_metadata.route_prefix)
-            if label:
-                allowed_host = f"{label}.{deployment.spec.network.hostname}"
+        # Vite takes this as ONE host: every request carries the app's own
+        # origin's host.
+        allowed_host = f"{owner.app_metadata.label}.{deployment.spec.network.hostname}"
         environment.setdefault("__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS", allowed_host)
     # CASE-373 Phase 1 — app containers receive NODE_EXTRA_CA_CERTS
     # pointing at the bind-mounted CA when an imported bundle has

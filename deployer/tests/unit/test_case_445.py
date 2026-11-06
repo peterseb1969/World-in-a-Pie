@@ -46,7 +46,7 @@ def _make_deployment(
     tmp_path: Path,
     *,
     variant: str = "dev",
-    hostname: str = "localhost",
+    hostname: str = "wip.localhost",
     tls: str = "internal",
     target: str = "compose",
 ) -> Deployment:

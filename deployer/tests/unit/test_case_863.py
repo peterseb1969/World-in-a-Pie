@@ -47,7 +47,7 @@ def _write_deployment_state(
                 "apps": [],
                 "modules": {"optional": []},
                 "auth": {"mode": "api-key-only", "gateway": False, "users": []},
-                "network": {"hostname": "localhost"},
+                "network": {"hostname": "wip.localhost"},
                 "images": images,
                 "platform": {"compose": {"data_dir": "/tmp/wip-test-data"}},
                 "secrets": {"backend": "file", "location": "/tmp/wip-test-secrets"},

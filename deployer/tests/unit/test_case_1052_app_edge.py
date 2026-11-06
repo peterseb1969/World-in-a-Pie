@@ -84,32 +84,33 @@ def test_compose_service_and_env(compose_tree) -> None:
     assert "config/keys" not in vols
 
 
-def test_the_router_hands_the_rest_of_apps_to_the_edge(compose_tree) -> None:
+def test_the_router_hands_every_other_origin_to_the_edge(compose_tree) -> None:
     caddyfile = compose_tree.files[Path("config/caddy/Caddyfile")].content
-    start = caddyfile.index("    handle /apps/* {\n")
-    block = caddyfile[start:caddyfile.index("\n    }\n", start)]
+    start = caddyfile.index("\nhttps://:8443 {")
+    block = caddyfile[start:caddyfile.index("\n}\n", start)]
     assert "reverse_proxy wip-app-edge:8080" in block
     assert "forward_auth" not in block  # the edge runs it per attachment
-    # Deployer apps' longer routes come first in the file and win by length.
-    assert caddyfile.index("handle /apps/kb/*") < start
+    # Deployer apps have sites of their own, named, ahead of the catch-all.
+    assert caddyfile.index("\nkb.") < start
 
 
 def test_k8s_ingress_and_network_policy(tmp_path: Path, discovery: Discovery) -> None:
-    """wip-caddy hands /apps paths no deployer app claims to the edge, with
-    no gateway in front (the edge runs its own forward_auth); the edge
-    accepts traffic from wip-caddy only and its egress is limited."""
+    """wip-caddy hands every origin no deployer app has to the edge, with no
+    gateway in front (the edge runs its own forward_auth); the edge accepts
+    traffic from wip-caddy only and its egress is limited."""
     d = _k8s_deployment(modules=EDGE_MODULES, apps=["wip-kb"])
     ns = d.spec.platform.k8s.namespace
     tree = render_k8s(d, discovery.components, discovery.apps, _k8s_secrets(tmp_path, d, discovery))
 
     docs = yaml.safe_load_all(tree.files[Path("services/caddy.yaml")].content)
     caddyfile = next(x for x in docs if x["kind"] == "ConfigMap")["data"]["Caddyfile"]
-    edge = caddyfile[caddyfile.index("    handle /apps/* {"):]
+    edge = caddyfile[caddyfile.index("\n:8080 {"):]
+    edge = edge[edge.index("    handle {\n"):]
     edge = edge[: edge.index("\n    }\n")]
     assert f"reverse_proxy wip-app-edge.{ns}.svc.cluster.local:8080" in edge
     assert "forward_auth" not in edge
-    # Deployer apps' own routes are longer, so Caddy's longest match wins.
-    assert "    handle /apps/kb/* {" in caddyfile
+    # Deployer apps have sites of their own, ahead of the catch-all.
+    assert "\nhttp://kb." in caddyfile
 
     policies = {doc["metadata"]["name"]: doc for doc in yaml.safe_load_all(tree.files[Path("network-policies.yaml")].content) if doc}
     edge_policy = policies["app-edge-egress"]["spec"]

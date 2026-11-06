@@ -31,11 +31,9 @@ spec:
   # spec below as declared by the app's own manifest.yaml (its repo
   # root carries the authoritative fragment; this file adds the
   # platform envelope around it).
-  # Deliberately NO `dev` port: the app's docker-entrypoint-dev.sh always
-  # takes its deployed branch when APP_BASE_PATH is set (the platform
-  # always sets it) — it rebuilds to bake the base path and serves the
-  # production server on 3014; Vite never listens on 5182 inside a
-  # wip-deploy install. Declaring a dev port makes the dev renderer route
+  # Deliberately NO `dev` port: the app's docker-entrypoint-dev.sh serves
+  # the production server on 3014 inside a wip-deploy install; Vite never
+  # listens on 5182 there. Declaring a dev port makes the dev renderer route
   # Caddy to it and every request answers 502. The app repo's
   # manifest.yaml fragment still lists 5182 for bare local `npm run dev`
   # outside the platform.
@@ -46,7 +44,6 @@ spec:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
       - {name: PORT, source: {literal: "3014"}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/pbs-clintrial}}
       - {name: NODE_ENV, source: {literal: production}}
     optional:
       - {name: MCP_URL, source: {literal: "http://wip-router:8080/mcp"}}
@@ -54,7 +51,7 @@ spec:
       - {name: OIDC_ISSUER, source: {from_component: dex}}
 
   routes:
-    - {path: /apps/pbs-clintrial, auth_required: true}
+    - {path: /, auth_required: true}
 
   # Queries documents and the reporting layer; document-store is the
   # hard start-order requirement, the rest follows the platform's
@@ -62,11 +59,11 @@ spec:
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /apps/pbs-clintrial/api/health
+    endpoint: /api/health
     probe: auto
     start_period_seconds: 15
 
 app_metadata:
   display_name: PBS ClinTrial
-  route_prefix: /apps/pbs-clintrial
+  label: pbs-clintrial
   ui_only: false

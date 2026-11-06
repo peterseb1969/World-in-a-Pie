@@ -37,8 +37,8 @@ def real_discovery() -> Discovery:
 
 def _route(*, is_app: bool, protected: bool) -> ResolvedRoute:
     return ResolvedRoute(
-        path="/apps/x", backend_component="x", backend_port=1, auth_protected=protected,
-        streaming=False, strip_prefix=False, redirect_bare_path=True, is_app=is_app,
+        path="/x", backend_component="x", backend_port=1, auth_protected=protected,
+        streaming=False, strip_prefix=False, redirect_bare_path=True, app="x" if is_app else None,
     )
 
 
@@ -71,8 +71,12 @@ def test_the_gateway_manifest_holds_no_key(real_discovery: Discovery) -> None:
 # ── compose (Caddy) ───────────────────────────────────────────────────────
 
 
-def _block(caddyfile: str, matcher: str) -> str:
-    start = caddyfile.index(f"    handle {matcher} {{\n")
+def _block(caddyfile: str, matcher: str, *, site: str | None = None) -> str:
+    """The `handle <matcher>` block (the catch-all `handle {` for matcher
+    ""), within the app site `site` when given."""
+    begin = caddyfile.index(f"\n{site}.") if site else 0
+    head = f"    handle {matcher} {{\n" if matcher else "    handle {\n"
+    start = caddyfile.index(head, begin)
     return caddyfile[start:caddyfile.index("\n    }\n", start)]
 
 
@@ -92,14 +96,14 @@ def test_caddy_copies_identity_only(caddyfile: str) -> None:
 
 
 def test_caddy_strips_client_identity_on_an_unprotected_app_route(caddyfile: str) -> None:
-    block = _block(caddyfile, "/apps/kb/server-api/kb/*")
+    block = _block(caddyfile, "/server-api/kb/*", site="kb")
     assert "forward_auth" not in block
     for header in CLIENT_IDENTITY_HEADERS:
         assert f"request_header -{header}\n" in block
 
 
 def test_caddy_protected_app_route_strips_only_what_the_gateway_does_not_set(caddyfile: str) -> None:
-    block = _block(caddyfile, "/apps/kb/*")
+    block = _block(caddyfile, "", site="kb")
     assert "forward_auth" in block
     assert "request_header -X-WIP-Auth-Method\n" in block
     # Removing the gateway's own headers here would delete them: Caddy runs

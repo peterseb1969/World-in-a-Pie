@@ -90,7 +90,7 @@ def _app(name: str, pin: str | None = None) -> App:
     return App(
         metadata=ComponentMetadata(name=name, category="optional", description="t"),
         spec=ComponentSpec(image=ImageRef(name=name, tag=pin)),
-        app_metadata=AppMetadata(display_name="T", route_prefix=f"/apps/{name}"),
+        app_metadata=AppMetadata(display_name="T", label=name),
     )
 
 
@@ -200,7 +200,7 @@ def _write_state(install_dir: Path, *, apps: list[str], overrides: dict) -> Path
                 "apps": [{"name": a, "enabled": True} for a in apps],
                 "modules": {"optional": []},
                 "auth": {"mode": "api-key-only", "gateway": False, "users": []},
-                "network": {"hostname": "localhost"},
+                "network": {"hostname": "wip.localhost"},
                 "images": {
                     "registry": "ghcr.io/t", "tag": "OLD", "tag_overrides": overrides,
                 },
