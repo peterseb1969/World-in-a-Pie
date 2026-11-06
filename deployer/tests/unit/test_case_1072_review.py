@@ -35,6 +35,7 @@ from wip_deploy.discovery import Discovery, discover
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.spec.deployment import K8sClusterRanges
 
+from ._kube import unit_cluster
 from .renderers.test_compose import REPO_ROOT, _minimal_compose
 from .renderers.test_k8s import _k8s_deployment
 
@@ -69,6 +70,7 @@ def test_a_render_without_wip_caddy_predates_the_front_door(tmp_path: Path) -> N
 
 def _mutate(tmp_path: Path, discovery: Discovery, scope: list[str]) -> MagicMock:
     d = _k8s_deployment(apps=["wip-kb"])
+    d.spec.platform.k8s.kube = unit_cluster()
     with (
         patch("wip_deploy.cli._validate_or_exit"),
         patch("wip_deploy.cli._ensure_secrets_via_spec", return_value=MagicMock()),

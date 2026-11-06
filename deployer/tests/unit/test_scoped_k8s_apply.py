@@ -231,6 +231,10 @@ class TestScopeForwarding:
     def _run(self, deployment: Deployment, scope: list[str] | None) -> MagicMock:
         from wip_deploy.cli import _apply_and_persist_mutation
 
+        from ._kube import unit_cluster
+
+        if deployment.spec.platform.k8s is not None:
+            deployment.spec.platform.k8s.kube = unit_cluster()
         result = MagicMock(healthy=True, post_install_skipped=[])
         with (
             patch("wip_deploy.cli._validate_or_exit"),

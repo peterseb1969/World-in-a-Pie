@@ -49,6 +49,8 @@ from wip_deploy.secrets import SecretDrift, ensure_secrets, secret_digest
 from wip_deploy.secrets_backend import FileSecretBackend
 from wip_deploy.spec import Deployment
 
+from ._kube import unit_cluster
+
 REPO_ROOT = Path(__file__).resolve().parents[3]
 runner = CliRunner()
 
@@ -70,6 +72,8 @@ def _deployment(tmp_path: Path, target: str = "compose") -> Deployment:
             registry="ghcr.io/peterseb1969",
         )
     )
+    if d.spec.platform.k8s is not None:
+        d.spec.platform.k8s.kube = unit_cluster()
     secrets = d.spec.secrets.model_copy(update={"location": str(tmp_path / "secrets")})
     return d.model_copy(update={"spec": d.spec.model_copy(update={"secrets": secrets})})
 

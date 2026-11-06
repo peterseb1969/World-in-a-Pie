@@ -41,6 +41,7 @@ from wip_deploy.export_ca import (
     ExportCAError,
     export_caddy_internal_ca,
 )
+from wip_deploy.kube import kubectl
 from wip_deploy.nuke import NukeError, nuke_install_dir, nuke_purge_all
 from wip_deploy.presets import PRESETS
 from wip_deploy.renderers import (
@@ -1314,6 +1315,8 @@ def install(
     if legacy_state.exists():
         legacy_state.unlink()
 
+    _record_cluster_for_install(deployment, previous)
+    _select_cluster_or_exit(deployment, mutating=True)
     secrets = _ensure_secrets_via_spec(
         deployment, components, apps_list, install_dir=target_dir,
     )
@@ -1506,6 +1509,7 @@ def status(
             namespace = saved_ns
 
     if namespace is not None:
+        _select_cluster_for_namespace_verb(resolved_dir, namespace, mutating=False)
         try:
             rows = read_k8s_status(namespace)
         except StatusError as e:
@@ -2065,6 +2069,8 @@ def stop(
             namespace = saved_ns
 
     target = "k8s" if namespace is not None else "compose"
+    if namespace is not None:
+        _select_cluster_for_namespace_verb(resolved_dir, namespace, mutating=True)
 
     try:
         stop_install(
@@ -2131,6 +2137,8 @@ def start(
             namespace = saved_ns
 
     target = "k8s" if namespace is not None else "compose"
+    if namespace is not None:
+        _select_cluster_for_namespace_verb(resolved_dir, namespace, mutating=True)
 
     try:
         start_install(
@@ -2486,6 +2494,7 @@ def _apply_and_persist_mutation(
     """
     _validate_or_exit(deployment, components, apps_list)
 
+    _select_cluster_or_exit(deployment, mutating=True)
     secrets = _ensure_secrets_via_spec(
         deployment, components, apps_list,
         install_dir=target_dir, regenerate=regenerate,
@@ -2902,6 +2911,25 @@ def redeploy(
             "are cleared, so pass every kind you want kept.",
         ),
     ] = None,
+    kube_context: Annotated[
+        str | None,
+        typer.Option(
+            "--kube-context",
+            help="K8s: record the cluster this install lives on as this kubectl "
+            "context (and its cluster's identity), then apply there. Every later "
+            "verb acts on that cluster only. Needed once for an install made "
+            "before clusters were recorded, and after a kubeconfig moves or a "
+            "cluster is rebuilt.",
+        ),
+    ] = None,
+    kubeconfig: Annotated[
+        str | None,
+        typer.Option(
+            "--kubeconfig",
+            help="With --kube-context: the kubeconfig the context lives in "
+            "(default: $KUBECONFIG, else ~/.kube/config).",
+        ),
+    ] = None,
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
     """Re-render an existing install from its saved spec, recreating only what changed.
@@ -2951,6 +2979,9 @@ def redeploy(
 
       # Hotfix one service on top of the rolled tag
       wip-deploy redeploy --name dev-test --tag 20261013a --image-tag registry=20261014-fix
+
+      # Pin a k8s install to the cluster it lives on (once, for an older install)
+      wip-deploy redeploy --name wip-k3s --kube-context k3s --kubeconfig ~/.kube/k3s.yaml
     """
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
         _load_and_discover_for_mutation(name, install_dir, repo_root)
@@ -3023,6 +3054,43 @@ def redeploy(
             typer.echo("⊙ cluster ranges are already these — no change.")
         _warn_app_edge_reach(deployment)
 
+    cluster_pinned = False
+    if kubeconfig and not kube_context:
+        typer.echo("error: --kubeconfig goes with --kube-context", err=True)
+        raise typer.Exit(2)
+    if kube_context:
+        k8s_platform = deployment.spec.platform.k8s
+        if deployment.spec.target != "k8s" or k8s_platform is None:
+            typer.echo(
+                f"error: --kube-context is for k8s installs only (this one is "
+                f"{deployment.spec.target!r})",
+                err=True,
+            )
+            raise typer.Exit(2)
+        from wip_deploy.kube import KubeError, record
+
+        try:
+            pinned = record(kube_context, kubeconfig)
+        except KubeError as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(2) from e
+        previous_cluster = k8s_platform.kube
+        if previous_cluster is not None and previous_cluster.cluster_uid != pinned.cluster_uid:
+            typer.secho(
+                f"warning: re-pinning from cluster {previous_cluster.cluster_uid} "
+                f"(context {previous_cluster.context!r}) to cluster "
+                f"{pinned.cluster_uid}: this applies the whole install there.",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+        if pinned != previous_cluster:
+            k8s_platform.kube = pinned
+            cluster_pinned = True
+        typer.echo(
+            f"Cluster: context {pinned.context!r} (cluster {pinned.cluster_uid}, "
+            f"kubeconfig {pinned.kubeconfig})"
+        )
+
     scope = [s.strip() for s in (services or []) if s.strip()]
     if scope:
         if deployment.spec.target == "k8s":
@@ -3065,6 +3133,8 @@ def redeploy(
     rolled = f" (rolled {', '.join(tag_changes)})" if tag_changes else ""
     if ranges_changed:
         rolled += " (new cluster ranges)"
+    if cluster_pinned:
+        rolled += " (cluster pinned)"
     label = (
         f"Redeployed {', '.join(scope)} on {resolved_name}{rolled}"
         if scope
@@ -3504,6 +3574,7 @@ def secrets_pull(
             err=True,
         )
         raise typer.Exit(2)
+    _select_cluster_or_exit(deployment, mutating=True)
     store = _file_secret_store(deployment)
     live = read_live_secrets(k8s.namespace)
     if not live:
@@ -5150,6 +5221,17 @@ def nuke(
     # Best-effort read; falls through to compose semantics if absent or
     # unreadable, which matches the historical default.
     saved_target, saved_namespace = _read_saved_target_and_namespace(target_dir)
+    if saved_target == "k8s":
+        nuked = _try_load_previous_deployment(target_dir)
+        if nuked is None:
+            typer.echo(
+                f"error: the saved spec in {target_dir} cannot be read, so the cluster "
+                f"this install lives on is unknown. Check the context, then delete "
+                f"namespace {saved_namespace!r} with kubectl by hand.",
+                err=True,
+            )
+            raise typer.Exit(2)
+        _select_cluster_or_exit(nuked, mutating=True)
 
     typer.echo(f"Install dir:   {target_dir}")
     if saved_target == "k8s":
@@ -6190,6 +6272,66 @@ def _k8s_render_predates_front_door(deployment: Deployment, install_dir: Path) -
     ).is_file()
 
 
+def _select_cluster_or_exit(deployment: Deployment, *, mutating: bool) -> None:
+    """Make the install's recorded cluster the target of every kubectl call
+    in this process (kube.select). A refusal (another cluster behind the
+    context, or no record on a verb that changes the cluster) exits 2 before
+    anything is applied. Compose and dev: nothing to select."""
+    k8s = deployment.spec.platform.k8s
+    if deployment.spec.target != "k8s" or k8s is None:
+        return
+    from wip_deploy.kube import KubeError, select
+
+    try:
+        warning = select(k8s.kube, namespace=k8s.namespace, mutating=mutating)
+    except KubeError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
+    if warning:
+        typer.secho(f"warning: {warning}", fg=typer.colors.YELLOW, err=True)
+
+
+def _select_cluster_for_namespace_verb(
+    install_dir: Path, namespace: str, *, mutating: bool
+) -> None:
+    """status, stop and start take --namespace with or without an install on
+    this host. With one, its record decides, as for every verb. With none, the
+    operator named the namespace by hand and nothing records a cluster: the
+    shell's context is used, with a warning."""
+    previous = _try_load_previous_deployment(install_dir)
+    if previous is not None and previous.spec.target == "k8s":
+        _select_cluster_or_exit(previous, mutating=mutating)
+        return
+    from wip_deploy.kube import select_shell
+
+    typer.secho(f"warning: {select_shell(namespace)}", fg=typer.colors.YELLOW, err=True)
+
+
+def _record_cluster_for_install(deployment: Deployment, previous: Deployment | None) -> None:
+    """The cluster a k8s `install` acts on. Over an existing install it is
+    the one that install records (none recorded: the selection refuses, as
+    for every verb that changes the cluster); a new install records the
+    shell's current context and says so."""
+    k8s = deployment.spec.platform.k8s
+    if deployment.spec.target != "k8s" or k8s is None:
+        return
+    if previous is not None and previous.spec.target == "k8s":
+        prev_k8s = previous.spec.platform.k8s
+        k8s.kube = prev_k8s.kube if prev_k8s is not None else None
+        return
+    from wip_deploy.kube import KubeError, record
+
+    try:
+        k8s.kube = record()
+    except KubeError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
+    typer.echo(
+        f"Cluster:     context {k8s.kube.context!r} (cluster {k8s.kube.cluster_uid}, "
+        f"kubeconfig {k8s.kube.kubeconfig}); every later verb acts on this cluster only"
+    )
+
+
 def _warn_app_edge_reach(deployment: Deployment) -> None:
     """On k8s the app edge reaches attached apps anywhere; without the
     cluster's own ranges (--cluster-cidr) that includes the control plane and
@@ -6618,6 +6760,7 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
     its return code. K8s target only.
     """
     deployment = _load_deployment(install_dir)
+    _select_cluster_or_exit(deployment, mutating=False)
     if deployment.spec.target != "k8s":
         typer.echo(
             f"error: --diff currently supports k8s target only "
@@ -6654,7 +6797,7 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
             if deployment.spec.platform.k8s
             else None
         )
-        cmd = ["kubectl", "diff", "-f", str(td_path), "-R"]
+        cmd = [*kubectl(), "diff", "-f", str(td_path), "-R"]
         if ns:
             cmd.extend(["-n", ns])
 

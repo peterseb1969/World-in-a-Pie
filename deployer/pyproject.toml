@@ -34,6 +34,9 @@ where = ["src"]
 testpaths = ["tests"]
 python_files = "test_*.py"
 addopts = "-ra --strict-markers"
+markers = [
+    "fake_kubectl_binary: the test puts its own fake kubectl on PATH; the conftest's no-cluster guard on wip_deploy.kube stays off",
+]
 
 [tool.ruff]
 target-version = "py311"

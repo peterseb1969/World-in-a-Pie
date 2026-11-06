@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 import pytest
 
+from ._kube import UNIT_CLUSTER_UID
+
 
 @pytest.fixture(autouse=True)
 def _no_live_cluster_secrets() -> Iterator[None]:
@@ -44,3 +46,32 @@ def _no_live_registry_attachments() -> Iterator[None]:
         return_value=AttachmentCheck(),
     ):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _no_live_cluster(request: pytest.FixtureRequest) -> Iterator[None]:
+    """No unit test may reach a real cluster through wip_deploy.kube, not even
+    to read where the shell's kubectl points. The cluster check answers with
+    UNIT_CLUSTER_UID, any other kubectl call through kube refuses, and library
+    calls (apply_k8s, nuke, status) run as after a CLI selection of the
+    shell's context. A test that puts its own fake kubectl on PATH opts out
+    with the `fake_kubectl_binary` marker."""
+    from wip_deploy import kube
+
+    kube.reset_for_tests()
+    if request.node.get_closest_marker("fake_kubectl_binary"):
+        yield
+        kube.reset_for_tests()
+        return
+
+    def no_cluster(*_args: object, **_kwargs: object) -> None:
+        raise kube.KubeError("unit tests reach no cluster")
+
+    with (
+        patch("wip_deploy.kube._run", side_effect=no_cluster),
+        patch("wip_deploy.kube.cluster_uid", return_value=UNIT_CLUSTER_UID),
+        patch("wip_deploy.kube.current_context", return_value="unit-test"),
+    ):
+        kube.select_shell("unit-test")
+        yield
+    kube.reset_for_tests()

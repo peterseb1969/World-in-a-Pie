@@ -49,6 +49,7 @@ from wip_deploy.config_gen.garage import (
     SECRET_KEY_SECRET,
     garage_component,
 )
+from wip_deploy.kube import kubectl
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.k8s import PUBLIC_CADDY_NAME
 from wip_deploy.spec import Deployment
@@ -1338,7 +1339,7 @@ def apply_k8s(
                 _provision_garage_if_active(
                     deployment, components,
                     exec_prefix=[
-                        "kubectl", "exec", "-i", "-n", ns, garage_pod, "--",
+                        *kubectl(), "exec", "-i", "-n", ns, garage_pod, "--",
                     ],
                     cwd=None,
                 )
@@ -1476,7 +1477,7 @@ def _kubectl_run(args: list[str]) -> subprocess.CompletedProcess[str]:
     """Shell out to kubectl and raise ApplyError on non-zero exit."""
     try:
         return subprocess.run(
-            ["kubectl", *args],
+            [*kubectl(), *args],
             check=True,
             capture_output=True,
             text=True,
@@ -1516,7 +1517,7 @@ def _ensure_self_signed_tls_secret(
     _ensure_namespace(ns)
 
     existing = subprocess.run(
-        ["kubectl", "get", "secret", secret_name, "-n", ns],
+        [*kubectl(), "get", "secret", secret_name, "-n", ns],
         capture_output=True, text=True,
     )
     if existing.returncode == 0:
@@ -1553,7 +1554,7 @@ def _ensure_self_signed_tls_secret(
         try:
             subprocess.run(
                 [
-                    "kubectl", "create", "secret", "tls", secret_name,
+                    *kubectl(), "create", "secret", "tls", secret_name,
                     "--cert", str(crt_path), "--key", str(key_path),
                     "-n", ns,
                 ],
@@ -1582,7 +1583,7 @@ def _verify_tls_secret_san(
     is already confirmed on PATH by the caller.
     """
     pem = subprocess.run(
-        ["kubectl", "get", "secret", secret_name, "-n", ns,
+        [*kubectl(), "get", "secret", secret_name, "-n", ns,
          "-o", r"jsonpath={.data.tls\.crt}"],
         capture_output=True, text=True,
     )
@@ -1666,7 +1667,7 @@ def _hostname_in_sans(hostname: str, sans: set[str]) -> bool:
 def _ensure_namespace(ns: str) -> None:
     """Create the namespace if missing. Idempotent."""
     result = subprocess.run(
-        ["kubectl", "create", "namespace", ns],
+        [*kubectl(), "create", "namespace", ns],
         capture_output=True, text=True,
     )
     if result.returncode == 0:
@@ -1710,7 +1711,7 @@ def _wait_k8s_rollout(
         try:
             subprocess.run(
                 [
-                    "kubectl", "rollout", "status",
+                    *kubectl(), "rollout", "status",
                     "-n", ns,
                     f"{kind.lower()}/{name}",
                     f"--timeout={remaining}s",
@@ -1779,7 +1780,7 @@ def _run_post_install_k8s(
             try:
                 subprocess.run(
                     [
-                        "kubectl", "exec", "-n", ns, pod,
+                        *kubectl(), "exec", "-n", ns, pod,
                         "--", "sh", "-c", hook.run,
                     ],
                     check=True,
@@ -1799,7 +1800,7 @@ def _pod_for_component(ns: str, component_name: str) -> str:
     try:
         result = subprocess.run(
             [
-                "kubectl", "get", "pod",
+                *kubectl(), "get", "pod",
                 "-n", ns,
                 "-l", f"app.kubernetes.io/name={component_name}",
                 "--field-selector=status.phase=Running",
@@ -1865,7 +1866,7 @@ def read_live_secrets(ns: str) -> dict[str, str] | None:
     if not shutil.which("kubectl"):
         return None
     proc = subprocess.run(
-        ["kubectl", "get", "secret", "wip-secrets", "-n", ns, "-o", "json"],
+        [*kubectl(), "get", "secret", "wip-secrets", "-n", ns, "-o", "json"],
         capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:

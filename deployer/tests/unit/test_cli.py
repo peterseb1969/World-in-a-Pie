@@ -694,6 +694,8 @@ class TestStatusDiff:
             SecretsSpec,
         )
 
+        from ._kube import unit_cluster
+
         return Deployment(
             metadata=DeploymentMetadata(name="diff-test"),
             spec=DeploymentSpec(
@@ -702,7 +704,9 @@ class TestStatusDiff:
                 auth=AuthSpec(mode="oidc", gateway=True),
                 network=NetworkSpec(hostname="wip.local"),
                 images=ImagesSpec(registry="ghcr.io/test", tag="v0.1.0"),
-                platform=PlatformSpec(k8s=K8sPlatform(namespace="wip-test")),
+                platform=PlatformSpec(
+                    k8s=K8sPlatform(namespace="wip-test", kube=unit_cluster()),
+                ),
                 secrets=SecretsSpec(backend="file", location="/tmp/s"),
             ),
         )

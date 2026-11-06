@@ -4,7 +4,7 @@
 
 # WIP on Kubernetes (GHCR images, one deployer spec)
 
-Deploy WIP to a Kubernetes cluster with `wip-deploy --target k8s` — the same spec layer as compose, rendered to k8s manifests and applied to your **current kubectl context**. Public GHCR images; no image builds.
+Deploy WIP to a Kubernetes cluster with `wip-deploy --target k8s` — the same spec layer as compose, rendered to k8s manifests and applied to the cluster your **current kubectl context** reaches at install time. The install records that cluster, and every later verb acts on it, whatever the shell then points at. Public GHCR images; no image builds.
 
 > **Not deploying to a cluster?** Single host → **[podman quickstart](../podman/README.md)**. Hot-reload development → **[dev guide](../dev/README.md)**.
 
@@ -25,7 +25,7 @@ Deploy WIP to a Kubernetes cluster with `wip-deploy --target k8s` — the same s
 
 | Requirement | Notes |
 |---|---|
-| A **working cluster** + `kubectl` **context pointed at it** | `wip-deploy` applies to the **active context** — check `kubectl config current-context` before every install. |
+| A **working cluster** + `kubectl` **context pointed at it** | `wip-deploy install` records the **active context** (with its kubeconfig and the cluster's identity): check `kubectl config current-context` before you install. Later verbs use the recorded cluster, not the active context. |
 | A **StorageClass** (RWO PVCs) | For MongoDB / PostgreSQL / Garage / NATS. Get the name from `kubectl get storageclass`. |
 | An **IngressClass** + a working ingress controller | ingress-nginx or Traefik (k3s's default). Get the class name from `kubectl get ingressclass`. See [the ingress controller](#the-ingress-controller) below. |
 | An **FQDN that resolves to the ingress** | Point DNS at the ingress controller's external IP / load balancer (see the hostname note in step 5). |
@@ -66,7 +66,7 @@ wip-deploy --help
 ## 2. Point kubectl at the target cluster
 
 ```bash
-kubectl config current-context     # ← wip-deploy install applies HERE
+kubectl config current-context     # ← wip-deploy install applies HERE, and records it
 kubectl get nodes                  # sanity: reachable, and note the node arch
 ```
 
@@ -104,7 +104,8 @@ wip-deploy install \
 - **`--namespace`** must match `^[a-z][a-z0-9-]*$` (no leading digit).
 - **TLS** is self-signed by default (the deployer generates a cert + a `Secret` named `wip-tls`; override with `--tls-secret-name`, or `--tls external` to bring your own). Browsers/`curl` need `-k` or CA trust.
 - **Apps** work exactly as in the [podman guide](../podman/README.md#installing-apps-react-console-wip-kb): `--app <name>` + `--image-tag <name>=<tag>` (key = the image name, e.g. `wip-kb`; a mismatched key is silently dropped).
-- It applies to the **active kubectl context** — re-confirm step 2.
+- It applies to the **active kubectl context** (re-confirm step 2) and records that cluster: the kubeconfig (`$KUBECONFIG`, else `~/.kube/config`), the context, and the cluster's identity (the UID of its `kube-system` namespace). Every later verb (`redeploy`, `add-app`, `app-deploy`, `user`, `stop`, `start`, `nuke`, `secrets pull`) runs kubectl with that kubeconfig and context, and first checks that the context still reaches the same cluster; if it reaches another one, the verb refuses before changing anything. `status` and `status --diff` check it too.
+- **An install made before clusters were recorded** refuses every verb that changes the cluster until you pin it once: `wip-deploy redeploy --name wip --kube-context <context> [--kubeconfig <path>]`, naming the cluster it lives on. The same command re-pins after a kubeconfig moves or the cluster is rebuilt. `status` still reads, with a warning.
 
 ### The ingress controller
 
@@ -227,7 +228,9 @@ Dex logins (`admin`, `editor`, `viewer` by default) and their passwords are cove
 | `ImagePullBackOff` | The tag doesn't exist **for the node arch** (arm64 needs multi-arch). Check the [Packages page](https://github.com/peterseb1969?tab=packages); roll to a tag that exists. |
 | Namespace rejected | Must match `^[a-z][a-z0-9-]*$` — no leading digit (`2606` → `wip-2606`). |
 | Pods `Pending` on PVCs | Wrong/absent `--storage-class`. `kubectl get storageclass`; reinstall with a valid RWO class. |
-| Applied to the wrong cluster | `wip-deploy install` uses the active `kubectl` context — always check `kubectl config current-context` first. |
+| Applied to the wrong cluster | `wip-deploy install` records the active `kubectl` context, so check `kubectl config current-context` before installing. Later verbs refuse when the recorded context reaches another cluster. |
+| "this install records no cluster" | The install predates the record. Pin it once: `wip-deploy redeploy --name <install> --kube-context <context> [--kubeconfig <path>]`. |
+| "that context now reaches cluster …" | The recorded context points at another cluster: the kubeconfig was edited, or the cluster was rebuilt. If the install should live there, re-pin with `redeploy --kube-context`; otherwise fix the kubeconfig. |
 | Health `200` with empty body | Unrouted path — use the exact `/api/registry/health`. |
 
 ---

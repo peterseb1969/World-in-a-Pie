@@ -7,6 +7,38 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### k8s: an install acts on the cluster it lives on; older installs must be pinned once
+
+wip-deploy's k8s verbs ran plain `kubectl`, so they acted on whatever
+context the shell pointed at. A `redeploy` run without the install's
+`KUBECONFIG` once applied a whole install to another cluster. Now:
+
+- **`install` records the cluster** in the saved spec (`platform.k8s.kube`):
+  the kubeconfig (`$KUBECONFIG`, else `~/.kube/config`), the context, and
+  the cluster's identity, the UID of its `kube-system` namespace. A server
+  URL cannot tell clusters apart: local clusters and tunnels all serve on
+  127.0.0.1.
+- **Every verb runs kubectl with the recorded kubeconfig and context**, and
+  first checks that the context still reaches the recorded cluster. If it
+  reaches another one, the verb refuses before changing anything and names
+  both clusters. A plain `wip-deploy redeploy --name <install>` works
+  without setting `KUBECONFIG`.
+- **Action required: an install made before this change records no
+  cluster.** It refuses `redeploy`, `add-app`, `app-deploy`, `user`, `stop`,
+  `start`, `nuke`, `secrets pull` and the other verbs that change the
+  cluster until it is pinned once, naming the cluster it lives on:
+  `wip-deploy redeploy --name <install> --kube-context <context>
+  [--kubeconfig <path>]`. That command also re-pins after a kubeconfig
+  moves or the cluster is rebuilt. `status` and `status --diff` keep
+  working, with a warning. The first verb never records the context it
+  happens to find: in the incident that prompted this, the first verb
+  after the upgrade was the one aimed at the wrong cluster.
+- `status`, `stop` and `start` given only `--namespace`, with no install on
+  this host, use the shell's context and warn.
+- **Rollback:** an older deployer refuses a saved spec that carries
+  `platform.k8s.kube`. Remove that block from `deployment.deployer-state`
+  before running an older deployer.
+
 ### `@wip/proxy` 0.7.0: the API key is trimmed, and a malformed one is refused at startup
 
 An inline `apiKey` (typically from an environment variable fed by a

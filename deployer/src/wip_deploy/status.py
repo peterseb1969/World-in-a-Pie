@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from wip_deploy.apply import ApplyError, _compose_ps, _detect_compose_cmd
+from wip_deploy.kube import kubectl
 
 # ────────────────────────────────────────────────────────────────────
 
@@ -109,7 +110,7 @@ def read_k8s_status(namespace: str) -> list[ServiceStatus]:
 
     try:
         result = subprocess.run(
-            ["kubectl", "get", "pods", "-n", namespace, "-o", "json"],
+            [*kubectl(), "get", "pods", "-n", namespace, "-o", "json"],
             check=True,
             capture_output=True,
             text=True,

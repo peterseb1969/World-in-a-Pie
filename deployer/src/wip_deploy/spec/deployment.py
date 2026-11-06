@@ -559,6 +559,26 @@ class K8sClusterRanges(WIPModel):
         return [*self.pods, *self.services, *self.nodes]
 
 
+class K8sCluster(WIPModel):
+    """The cluster an install lives on, recorded when it is installed or
+    pinned. Every kubectl call runs with this kubeconfig and context, never
+    the shell's, and a verb first checks that the context still reaches the
+    same cluster.
+
+    The cluster is identified by the UID of its `kube-system` namespace,
+    which is created with the cluster and never changes. A server URL cannot
+    tell clusters apart: local clusters (kind, k3d, minikube, MicroK8s) and
+    tunnels all serve on 127.0.0.1, and a rebuilt cluster comes back on the
+    same address.
+    """
+
+    # KUBECONFIG as resolved when recorded: one path, or several joined with
+    # the OS path separator, exactly as kubectl reads the variable.
+    kubeconfig: str = Field(min_length=1)
+    context: str = Field(min_length=1)
+    cluster_uid: str = Field(min_length=1)
+
+
 class K8sPlatform(WIPModel):
     namespace: str = Field(default="wip", pattern=r"^[a-z][a-z0-9-]*$")
     storage_class: str = "rook-ceph-block"
@@ -592,6 +612,10 @@ class K8sPlatform(WIPModel):
     # bare shortnames still resolve through the search list. Set to None to
     # emit no dnsConfig at all and inherit whatever kubelet defaults to.
     pod_dns_ndots: int | None = 1
+    # The cluster this install lives on (K8sCluster). None: an install made
+    # before the record existed; it refuses every verb that changes the
+    # cluster until `redeploy --kube-context` pins it.
+    kube: K8sCluster | None = None
 
 
 class DevPlatform(WIPModel):

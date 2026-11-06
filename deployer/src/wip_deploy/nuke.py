@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from wip_deploy.apply import PODMAN_COMPOSE_PARALLEL
+from wip_deploy.kube import kubectl
 
 # The persisted install spec, plus its pre-rename name.
 STATE_FILENAMES = ("deployment.deployer-state", "deployment.json")
@@ -221,7 +222,7 @@ def nuke_k8s_install_dir(
     try:
         subprocess.run(
             [
-                "kubectl",
+                *kubectl(),
                 "delete",
                 "namespace",
                 namespace,
@@ -263,7 +264,7 @@ def _list_pvs_in_namespace(namespace: str) -> list[str]:
     try:
         result = subprocess.run(
             [
-                "kubectl",
+                *kubectl(),
                 "get",
                 "pv",
                 "-o",
@@ -298,7 +299,7 @@ def _delete_pvs(pv_names: list[str]) -> list[str]:
     for pv in pv_names:
         try:
             subprocess.run(
-                ["kubectl", "delete", "pv", pv, "--ignore-not-found=true"],
+                [*kubectl(), "delete", "pv", pv, "--ignore-not-found=true"],
                 check=True,
             )
             removed.append(pv)
