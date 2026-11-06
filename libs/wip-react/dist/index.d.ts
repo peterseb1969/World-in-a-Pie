@@ -4,11 +4,49 @@ import { WipClient, TerminologyListResponse, Terminology, Term, TermListResponse
 import * as _tanstack_react_query from '@tanstack/react-query';
 import { UseQueryOptions, UseMutationOptions } from '@tanstack/react-query';
 
+/**
+ * Keeps an app origin's session fresh while the app is open.
+ *
+ * When WIP serves apps on origins of their own (`https://<app>.<host>`), each
+ * app holds a short-lived session for its origin that the auth gateway hands
+ * over by redirecting through WIP's origin. A page load renews it without a
+ * trace, but an app's background `fetch` cannot follow that redirect, so an
+ * expired session would make API calls fail. This hook renews the session
+ * before it expires: it loads `/auth/renew` in a hidden iframe, the gateway
+ * runs the handshake there, and `/auth/renewed` reports back with
+ * `postMessage`.
+ *
+ * - Renewed: the next renew is scheduled at half the remaining lifetime.
+ * - The page is not on an app origin (apps served under `/apps/<name>`):
+ *   nothing to renew, so it stops.
+ * - The WIP login has ended (logout elsewhere, or expiry): `onSessionLost`
+ *   runs; by default the page reloads, which signs in again.
+ * - No answer (no gateway, e.g. a dev server): it tries again later and never
+ *   reloads the page.
+ */
+interface AppSessionOptions {
+    /** Renew at least this often (ms). Default: 5 minutes. */
+    intervalMs?: number;
+    /** How long to wait for the gateway's answer (ms). Default: 15 seconds. */
+    timeoutMs?: number;
+    /** The WIP login has ended. Default: reload the page. */
+    onSessionLost?: (reason: string) => void;
+}
+declare const APP_SESSION_RENEW_PATH = "/auth/renew";
+declare const APP_SESSION_MESSAGE = "wip-app-session";
+declare function useAppSessionRenewal(options?: AppSessionOptions | false): void;
+
 interface WipProviderProps {
     client: WipClient;
     children: ReactNode;
+    /**
+     * Keep the app origin's session fresh while the app is open (see
+     * useAppSessionRenewal). On by default; harmless where apps are served
+     * under /apps/<name> (it stops after one check). `false` turns it off.
+     */
+    appSession?: AppSessionOptions | false;
 }
-declare function WipProvider({ client, children }: WipProviderProps): react_jsx_runtime.JSX.Element;
+declare function WipProvider({ client, children, appSession }: WipProviderProps): react_jsx_runtime.JSX.Element;
 declare function useWipClient(): WipClient;
 
 interface WipFooterProps {
@@ -618,4 +656,4 @@ declare function useBulkImport<T>(options: UseBulkImportOptions<T>): {
     mutateAsync: _tanstack_react_query.UseMutateAsyncFunction<BulkImportProgress, Error, T[], unknown>;
 };
 
-export { STALE_TIMES, WipFooter, type WipFooterProps, WipProvider, type WipProviderProps, useActivateTemplate, useActivity, useAddEdgeTypeEndpoints, useAddSynonym, useArchiveNamespace, useBatchJob, useBatchJobs, useBulkImport, useCancelBatchJob, useClearCompletedJobs, useCreateDocument, useCreateDocuments, useCreateNamespace, useCreateTemplate, useCreateTerm, useCreateTermRelations, useCreateTerminology, useDeactivateEntry, useDeleteDocument, useDeleteFile, useDeleteFiles, useDeleteNamespace, useDeleteTemplate, useDeleteTerm, useDeleteTermRelations, useDeleteTerminology, useDeprecateTerm, useDocument, useDocumentRelationships, useDocumentVersions, useDocuments, useDownloadUrl, useFile, useFiles, useFormSchema, useHardDeleteFile, useIntegrityCheck, useMergeEntries, useNamespaces, useQueryDocuments, useReactivateTemplate, useRegistrySearch, useRehashIdentities, useRemoveSynonym, useReportQuery, useRestoreNamespace, useSyncStatus, useTableView, useTemplate, useTemplateByValue, useTemplates, useTerm, useTerminologies, useTerminology, useTerms, useTraverseDocuments, useTriggerBatchSync, useTriggerBatchSyncAll, useTriggerTermRelationSync, useTriggerTermSync, useTriggerTerminologySync, useUpdateDocument, useUpdateDocuments, useUpdateFileMetadata, useUpdateNamespace, useUpdateTemplate, useUpdateTerm, useUpdateTerminology, useUploadFile, useWipClient, wipKeys };
+export { APP_SESSION_MESSAGE, APP_SESSION_RENEW_PATH, type AppSessionOptions, STALE_TIMES, WipFooter, type WipFooterProps, WipProvider, type WipProviderProps, useActivateTemplate, useActivity, useAddEdgeTypeEndpoints, useAddSynonym, useAppSessionRenewal, useArchiveNamespace, useBatchJob, useBatchJobs, useBulkImport, useCancelBatchJob, useClearCompletedJobs, useCreateDocument, useCreateDocuments, useCreateNamespace, useCreateTemplate, useCreateTerm, useCreateTermRelations, useCreateTerminology, useDeactivateEntry, useDeleteDocument, useDeleteFile, useDeleteFiles, useDeleteNamespace, useDeleteTemplate, useDeleteTerm, useDeleteTermRelations, useDeleteTerminology, useDeprecateTerm, useDocument, useDocumentRelationships, useDocumentVersions, useDocuments, useDownloadUrl, useFile, useFiles, useFormSchema, useHardDeleteFile, useIntegrityCheck, useMergeEntries, useNamespaces, useQueryDocuments, useReactivateTemplate, useRegistrySearch, useRehashIdentities, useRemoveSynonym, useReportQuery, useRestoreNamespace, useSyncStatus, useTableView, useTemplate, useTemplateByValue, useTemplates, useTerm, useTerminologies, useTerminology, useTerms, useTraverseDocuments, useTriggerBatchSync, useTriggerBatchSyncAll, useTriggerTermRelationSync, useTriggerTermSync, useTriggerTerminologySync, useUpdateDocument, useUpdateDocuments, useUpdateFileMetadata, useUpdateNamespace, useUpdateTemplate, useUpdateTerm, useUpdateTerminology, useUploadFile, useWipClient, wipKeys };

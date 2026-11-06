@@ -1,11 +1,90 @@
-import { createContext, useContext, useState, useCallback } from 'react';
+import { createContext, useRef, useEffect, useContext, useState, useCallback } from 'react';
 import { jsx, jsxs } from 'react/jsx-runtime';
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { templateToFormSchema, bulkImport } from '@wip/client';
 
 // src/provider.tsx
+var APP_SESSION_RENEW_PATH = "/auth/renew";
+var APP_SESSION_MESSAGE = "wip-app-session";
+function isRenewMessage(data) {
+  return typeof data === "object" && data !== null && data.type === APP_SESSION_MESSAGE;
+}
+function useAppSessionRenewal(options = {}) {
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const enabled = options !== false;
+  useEffect(() => {
+    if (!enabled || typeof window === "undefined" || typeof document === "undefined") return;
+    const opts = () => optionsRef.current === false ? {} : optionsRef.current;
+    const interval = () => opts().intervalMs ?? 5 * 6e4;
+    let stopped = false;
+    let timer;
+    let pending;
+    let lastSuccess = Date.now();
+    const schedule = (ms) => {
+      if (stopped) return;
+      clearTimeout(timer);
+      timer = setTimeout(renew, ms);
+    };
+    const finish = () => {
+      if (!pending) return;
+      clearTimeout(pending.timeout);
+      pending.frame.remove();
+      pending = void 0;
+    };
+    function renew() {
+      if (stopped || pending) return;
+      const frame = document.createElement("iframe");
+      frame.style.display = "none";
+      frame.setAttribute("aria-hidden", "true");
+      frame.src = APP_SESSION_RENEW_PATH;
+      const timeout = setTimeout(() => {
+        finish();
+        schedule(interval());
+      }, opts().timeoutMs ?? 15e3);
+      pending = { frame, timeout };
+      document.body.appendChild(frame);
+    }
+    const onMessage = (event) => {
+      if (event.origin !== window.location.origin || !isRenewMessage(event.data)) return;
+      if (!pending) return;
+      finish();
+      const { ok, expires_in: expiresIn, reason } = event.data;
+      if (ok && reason === "not_an_app_origin") {
+        stopped = true;
+        return;
+      }
+      if (ok) {
+        lastSuccess = Date.now();
+        const half = expiresIn > 0 ? expiresIn * 1e3 / 2 : interval();
+        schedule(Math.max(Math.min(interval(), half), 1e4));
+        return;
+      }
+      stopped = true;
+      const lost = opts().onSessionLost;
+      if (lost) lost(reason);
+      else window.location.reload();
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && Date.now() - lastSuccess >= interval()) {
+        renew();
+      }
+    };
+    window.addEventListener("message", onMessage);
+    document.addEventListener("visibilitychange", onVisible);
+    schedule(interval());
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      finish();
+      window.removeEventListener("message", onMessage);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [enabled]);
+}
 var WipClientContext = createContext(null);
-function WipProvider({ client, children }) {
+function WipProvider({ client, children, appSession = {} }) {
+  useAppSessionRenewal(appSession);
   return /* @__PURE__ */ jsx(WipClientContext.Provider, { value: client, children });
 }
 function useWipClient() {
@@ -959,6 +1038,6 @@ function useBulkImport(options) {
   };
 }
 
-export { STALE_TIMES, WipFooter, WipProvider, useActivateTemplate, useActivity, useAddEdgeTypeEndpoints, useAddSynonym, useArchiveNamespace, useBatchJob, useBatchJobs, useBulkImport, useCancelBatchJob, useClearCompletedJobs, useCreateDocument, useCreateDocuments, useCreateNamespace, useCreateTemplate, useCreateTerm, useCreateTermRelations, useCreateTerminology, useDeactivateEntry, useDeleteDocument, useDeleteFile, useDeleteFiles, useDeleteNamespace, useDeleteTemplate, useDeleteTerm, useDeleteTermRelations, useDeleteTerminology, useDeprecateTerm, useDocument, useDocumentRelationships, useDocumentVersions, useDocuments, useDownloadUrl, useFile, useFiles, useFormSchema, useHardDeleteFile, useIntegrityCheck, useMergeEntries, useNamespaces, useQueryDocuments, useReactivateTemplate, useRegistrySearch, useRehashIdentities, useRemoveSynonym, useReportQuery, useRestoreNamespace, useSyncStatus, useTableView, useTemplate, useTemplateByValue, useTemplates, useTerm, useTerminologies, useTerminology, useTerms, useTraverseDocuments, useTriggerBatchSync, useTriggerBatchSyncAll, useTriggerTermRelationSync, useTriggerTermSync, useTriggerTerminologySync, useUpdateDocument, useUpdateDocuments, useUpdateFileMetadata, useUpdateNamespace, useUpdateTemplate, useUpdateTerm, useUpdateTerminology, useUploadFile, useWipClient, wipKeys };
+export { APP_SESSION_MESSAGE, APP_SESSION_RENEW_PATH, STALE_TIMES, WipFooter, WipProvider, useActivateTemplate, useActivity, useAddEdgeTypeEndpoints, useAddSynonym, useAppSessionRenewal, useArchiveNamespace, useBatchJob, useBatchJobs, useBulkImport, useCancelBatchJob, useClearCompletedJobs, useCreateDocument, useCreateDocuments, useCreateNamespace, useCreateTemplate, useCreateTerm, useCreateTermRelations, useCreateTerminology, useDeactivateEntry, useDeleteDocument, useDeleteFile, useDeleteFiles, useDeleteNamespace, useDeleteTemplate, useDeleteTerm, useDeleteTermRelations, useDeleteTerminology, useDeprecateTerm, useDocument, useDocumentRelationships, useDocumentVersions, useDocuments, useDownloadUrl, useFile, useFiles, useFormSchema, useHardDeleteFile, useIntegrityCheck, useMergeEntries, useNamespaces, useQueryDocuments, useReactivateTemplate, useRegistrySearch, useRehashIdentities, useRemoveSynonym, useReportQuery, useRestoreNamespace, useSyncStatus, useTableView, useTemplate, useTemplateByValue, useTemplates, useTerm, useTerminologies, useTerminology, useTerms, useTraverseDocuments, useTriggerBatchSync, useTriggerBatchSyncAll, useTriggerTermRelationSync, useTriggerTermSync, useTriggerTerminologySync, useUpdateDocument, useUpdateDocuments, useUpdateFileMetadata, useUpdateNamespace, useUpdateTemplate, useUpdateTerm, useUpdateTerminology, useUploadFile, useWipClient, wipKeys };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

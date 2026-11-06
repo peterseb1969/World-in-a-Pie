@@ -158,6 +158,37 @@ function MyComponent() {
 }
 ```
 
+### App origins: the session renews itself
+
+When WIP serves each app on its own origin (`https://<app>.<host>`, the
+install's `network.app_origins: subdomain`), the app holds a short-lived
+session for that origin, handed over by the auth gateway. A page load renews
+it invisibly, but a background `fetch` cannot follow the gateway's redirect,
+so `WipProvider` keeps the session fresh while the app is open: it calls
+`useAppSessionRenewal`, which loads `/auth/renew` in a hidden iframe every few
+minutes (and when a hidden tab becomes visible again) and listens for the
+gateway's answer.
+
+- Where apps are served under `/apps/<name>`, it finds no app origin after the
+  first check and stops.
+- When the WIP login has ended (logout, or expiry), the page reloads, which
+  signs in again. Pass `onSessionLost` to do something else first, such as
+  saving a draft.
+- When nothing answers (a dev server without the gateway), it tries again
+  later and never reloads.
+
+```tsx
+<WipProvider client={wipClient} appSession={{ onSessionLost: () => saveDraftThenReload() }}>
+  {children}
+</WipProvider>
+
+// Turn it off (and call useAppSessionRenewal yourself, or not at all):
+<WipProvider client={wipClient} appSession={false}>…</WipProvider>
+```
+
+The app's own requests must stay on its origin (every URL under its base path,
+as the app contract requires); nothing else is needed.
+
 ---
 
 ## Components

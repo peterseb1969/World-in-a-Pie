@@ -1,6 +1,14 @@
 // Provider
 export { WipProvider, useWipClient, type WipProviderProps } from './provider.js'
 
+// App origins: keep the app's own session fresh (CASE-1061)
+export {
+  useAppSessionRenewal,
+  APP_SESSION_RENEW_PATH,
+  APP_SESSION_MESSAGE,
+  type AppSessionOptions,
+} from './app-session.js'
+
 // Brand-attribution component (CASE-308)
 export { WipFooter, type WipFooterProps } from './WipFooter.js'
 
