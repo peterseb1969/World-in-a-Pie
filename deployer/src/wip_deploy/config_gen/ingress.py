@@ -63,6 +63,9 @@ class IngressConfig:
     backend_service: str = PUBLIC_CADDY_SERVICE
     backend_port: int = PUBLIC_CADDY_K8S_PORT
     annotations: dict[str, str] = field(default_factory=dict)
+    # With app origins (network.app_origins=subdomain): "*.<hostname>", so
+    # every app's origin reaches wip-caddy, which tells them apart by Host.
+    app_hosts: tuple[str, ...] = ()
 
 
 def generate_ingress_config(deployment: Deployment) -> IngressConfig:
@@ -79,4 +82,13 @@ def generate_ingress_config(deployment: Deployment) -> IngressConfig:
         tls_secret_name=k8s.tls_secret_name,
         namespace=k8s.namespace,
         annotations=controller_annotations(k8s.ingress_controller),
+        app_hosts=app_origin_hosts(deployment),
     )
+
+
+def app_origin_hosts(deployment: Deployment) -> tuple[str, ...]:
+    """The names app origins add to the Ingress and its certificate:
+    `*.<hostname>` in subdomain mode, none otherwise."""
+    if deployment.spec.network.app_origins != "subdomain":
+        return ()
+    return (f"*.{deployment.spec.network.hostname}",)

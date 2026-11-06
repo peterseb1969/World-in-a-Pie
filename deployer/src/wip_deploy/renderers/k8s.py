@@ -1095,18 +1095,21 @@ def _render_ingress(cfg: IngressConfig, ns: str) -> str:
         },
         "spec": {
             "ingressClassName": cfg.ingress_class,
-            "tls": [{"hosts": [cfg.hostname], "secretName": cfg.tls_secret_name}],
-            "rules": [{
-                "host": cfg.hostname,
-                "http": {"paths": [{
-                    "path": "/",
-                    "pathType": "Prefix",
-                    "backend": {"service": {
-                        "name": cfg.backend_service,
-                        "port": {"number": cfg.backend_port},
-                    }},
-                }]},
-            }],
+            "tls": [{"hosts": [cfg.hostname, *cfg.app_hosts], "secretName": cfg.tls_secret_name}],
+            "rules": [
+                {
+                    "host": host,
+                    "http": {"paths": [{
+                        "path": "/",
+                        "pathType": "Prefix",
+                        "backend": {"service": {
+                            "name": cfg.backend_service,
+                            "port": {"number": cfg.backend_port},
+                        }},
+                    }]},
+                }
+                for host in (cfg.hostname, *cfg.app_hosts)
+            ],
         },
     })
 

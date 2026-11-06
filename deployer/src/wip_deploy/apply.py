@@ -1281,10 +1281,13 @@ def apply_k8s(
     # CASE-247: tls=self-signed pre-flight — generate cert + Secret if
     # missing, before the Ingress lands and tries to bind to it.
     if deployment.spec.network.tls == "self-signed":
+        from wip_deploy.config_gen.ingress import app_origin_hosts
+
         _ensure_self_signed_tls_secret(
             ns=ns,
             secret_name=k8s.tls_secret_name,
             hostname=deployment.spec.network.hostname,
+            extra_names=app_origin_hosts(deployment),
         )
 
     # CASE-455: see apply_compose — post-`kubectl apply` failures are
@@ -1495,7 +1498,7 @@ def _kubectl_run(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _ensure_self_signed_tls_secret(
-    *, ns: str, secret_name: str, hostname: str,
+    *, ns: str, secret_name: str, hostname: str, extra_names: tuple[str, ...] = (),
 ) -> None:
     """Idempotently ensure a kubernetes.io/tls Secret exists in `ns`.
 
@@ -1527,6 +1530,13 @@ def _ensure_self_signed_tls_secret(
         # silently and surfaced as a late browser TLS error instead of an
         # actionable pre-flight stop. Verify SAN coverage before trusting it.
         _verify_tls_secret_san(ns=ns, secret_name=secret_name, hostname=hostname)
+        for name in extra_names:
+            # An app origin's name ("*.<hostname>"): a sample under it must
+            # be covered too, or every app origin would fail its handshake.
+            _verify_tls_secret_san(
+                ns=ns, secret_name=secret_name,
+                hostname=name.replace("*", "app", 1) if name.startswith("*.") else name,
+            )
         return  # Secret present and SAN covers hostname; idempotent re-install.
 
     import tempfile
@@ -1540,7 +1550,8 @@ def _ensure_self_signed_tls_secret(
                     "-sha256", "-days", "365", "-nodes",
                     "-keyout", str(key_path), "-out", str(crt_path),
                     "-subj", f"/CN={hostname}",
-                    "-addext", f"subjectAltName=DNS:{hostname}",
+                    "-addext",
+                    "subjectAltName=" + ",".join(f"DNS:{n}" for n in (hostname, *extra_names)),
                 ],
                 check=True, capture_output=True, text=True,
             )

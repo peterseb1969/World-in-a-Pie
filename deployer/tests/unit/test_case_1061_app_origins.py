@@ -12,9 +12,14 @@ app_origins.py). wip-caddy then renders:
 - with the app edge, a catch-all site for attached apps, handed to the edge,
   with certificates on demand only for names the edge confirms.
 
-New compose and dev installs default to subdomain; k8s stays on path (its
-Ingress does not carry app origins yet), and an existing install keeps its
-own mode unless asked.
+On k8s (phase 2) wip-caddy sits behind the Ingress on plain HTTP: WIP's site
+answers its hostname only, each app its own host with the forwarded host set
+to it (the gateway reads the app from it), attached apps reach the edge
+through a catch-all, and the Ingress and the self-signed certificate carry
+*.<hostname>.
+
+New installs default to subdomain, and an existing install keeps its own
+mode unless asked.
 """
 
 from __future__ import annotations
@@ -64,15 +69,9 @@ def _site(caddyfile: str, host: str) -> str:
 # ── defaults and refusals ─────────────────────────────────────────────────
 
 
-def test_new_compose_installs_serve_apps_on_their_own_origins() -> None:
-    assert _build().spec.network.app_origins == "subdomain"
-    assert _build(target="dev").spec.network.app_origins == "subdomain"
-
-
-def test_k8s_stays_on_path_and_refuses_subdomain() -> None:
-    assert _build(target="k8s").spec.network.app_origins == "path"
-    with pytest.raises(ValueError, match="not rendered for target='k8s'"):
-        _build(target="k8s", app_origins="subdomain")
+def test_new_installs_serve_apps_on_their_own_origins() -> None:
+    for target in ("compose", "dev", "k8s"):
+        assert _build(target=target).spec.network.app_origins == "subdomain", target
 
 
 def test_an_explicit_choice_wins() -> None:
@@ -178,12 +177,106 @@ def test_redeploy_moves_an_install_to_app_origins(tmp_path: Path) -> None:
     assert apply.call_args.args[0].spec.network.app_origins == "subdomain"
 
 
-def test_redeploy_refuses_subdomain_on_k8s_and_a_bad_value(tmp_path: Path) -> None:
-    k8s = _build(target="k8s")
-    _persist_deployment(k8s, tmp_path / "k8s", repo_root=REPO_ROOT)
-    r = runner.invoke(app, ["redeploy", "--install-dir", str(tmp_path / "k8s"), "--app-origins", "subdomain"])
-    assert r.exit_code == 2 and "not rendered for k8s" in r.output
+def test_redeploy_refuses_a_bad_value(tmp_path: Path) -> None:
     compose = _build()
     _persist_deployment(compose, tmp_path / "c", repo_root=REPO_ROOT)
     r = runner.invoke(app, ["redeploy", "--install-dir", str(tmp_path / "c"), "--app-origins", "both"])
     assert r.exit_code == 2
+
+
+# ── k8s (phase 2) ────────────────────────────────────────────────────────
+
+
+def test_k8s_wip_caddy_serves_each_origin_on_plain_http(discovery: Discovery) -> None:
+    caddyfile = _caddy(_build(target="k8s"), discovery)
+    assert "on_demand" not in caddyfile  # the Ingress terminates TLS
+    assert "\nhttp://wip.example:8080 {" in caddyfile
+    rc = caddyfile[caddyfile.index("\nhttp://rc.wip.example:8080 {"):]
+    rc = rc[: rc.index("\n}\n")]
+    # The gateway reads the app from the forwarded host: this site's own.
+    assert "header_up X-Forwarded-Host rc.wip.example" in rc
+    assert "header_up X-Forwarded-Host wip.example\n" not in rc
+    # https on 443: no port in the handshake URL.
+    assert "redir * https://wip.example/auth/app-login?app=rc" in rc
+    assert "tls {" not in rc
+    attached = caddyfile[caddyfile.index("\n:8080 {"):]
+    assert "reverse_proxy wip-app-edge." in attached
+    # An attached app's handshake reaches the gateway, naming its origin
+    # (seen live on wip-k3s: without this the handoff reached the edge, 404).
+    assert "@gateway path /auth/handoff /auth/renew" in attached
+    assert "header_up X-Forwarded-Host {host}" in attached
+
+
+def test_k8s_without_the_edge_answers_unknown_app_hosts_404(discovery: Discovery) -> None:
+    d = build_deployment(BuildInputs(
+        target="k8s", hostname="wip.example", preset="standard", apps=["react-console"],
+        remove=["app-edge"], k8s_namespace="wip", registry="ghcr.io/x",
+    ))
+    caddyfile = _caddy(d, discovery)
+    assert caddyfile.rstrip().endswith(":8080 {\n    respond 404\n}")
+
+
+def test_k8s_path_mode_keeps_the_any_host_site(discovery: Discovery) -> None:
+    caddyfile = _caddy(_build(target="k8s", app_origins="path"), discovery)
+    assert "\n:8080 {" in caddyfile and "rc.wip.example" not in caddyfile
+
+
+def test_the_ingress_and_its_certificate_carry_the_app_origins() -> None:
+    import yaml
+
+    from wip_deploy.config_gen.ingress import generate_ingress_config
+    from wip_deploy.renderers.k8s import _render_ingress
+
+    ingress = yaml.safe_load(_render_ingress(generate_ingress_config(_build(target="k8s")), "wip"))
+    assert ingress["spec"]["tls"][0]["hosts"] == ["wip.example", "*.wip.example"]
+    assert [r["host"] for r in ingress["spec"]["rules"]] == ["wip.example", "*.wip.example"]
+    path_mode = yaml.safe_load(_render_ingress(
+        generate_ingress_config(_build(target="k8s", app_origins="path")), "wip"))
+    assert [r["host"] for r in path_mode["spec"]["rules"]] == ["wip.example"]
+
+
+def test_the_self_signed_certificate_names_the_app_origins() -> None:
+    from unittest.mock import MagicMock
+
+    from wip_deploy.apply import _ensure_self_signed_tls_secret
+
+    with (
+        patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/openssl"),
+        patch("wip_deploy.apply.subprocess.run") as run,
+    ):
+        run.side_effect = [
+            MagicMock(returncode=0, stderr=""),  # create namespace
+            MagicMock(returncode=1, stderr="NotFound"),  # no secret yet
+            MagicMock(returncode=0, stderr=""),  # openssl req
+            MagicMock(returncode=0, stderr=""),  # create secret
+        ]
+        _ensure_self_signed_tls_secret(
+            ns="wip", secret_name="wip-tls", hostname="wip.example",
+            extra_names=("*.wip.example",),
+        )
+    openssl = next(c[0][0] for c in run.call_args_list if c[0][0][0] == "openssl")
+    assert "subjectAltName=DNS:wip.example,DNS:*.wip.example" in openssl
+
+
+def test_an_existing_certificate_without_the_app_origins_is_refused() -> None:
+    import base64
+    from unittest.mock import MagicMock
+
+    from wip_deploy.apply import ApplyError, _ensure_self_signed_tls_secret
+
+    cert = base64.b64encode(b"pem").decode()
+    san = lambda text: MagicMock(returncode=0, stdout=f"X509v3 Subject Alternative Name:\n    {text}\n", stderr="")  # noqa: E731
+    with (
+        patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/openssl"),
+        patch("wip_deploy.apply.subprocess.run") as run,
+    ):
+        run.side_effect = [
+            MagicMock(returncode=0, stderr=""), MagicMock(returncode=0, stderr=""),
+            MagicMock(returncode=0, stdout=cert, stderr=""), san("DNS:wip.example"),
+            MagicMock(returncode=0, stdout=cert, stderr=""), san("DNS:wip.example"),
+        ]
+        with pytest.raises(ApplyError, match="does not cover hostname 'app.wip.example'"):
+            _ensure_self_signed_tls_secret(
+                ns="wip", secret_name="wip-tls", hostname="wip.example",
+                extra_names=("*.wip.example",),
+            )

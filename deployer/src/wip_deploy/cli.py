@@ -406,7 +406,7 @@ def _app_origins_opt() -> typer.models.OptionInfo:
         help="Where apps are served: 'subdomain' (each app on its own origin, "
         "https://<app>.<hostname>, with a session of its own; needs DNS for "
         "*.<hostname>) or 'path' (under /apps/<app> on WIP's origin). Default: "
-        "subdomain on compose and dev, path on k8s; an existing install keeps its own.",
+        "subdomain; an existing install keeps its own.",
     )
 
 
@@ -3096,12 +3096,6 @@ def redeploy(
     if app_origins is not None:
         if app_origins not in ("path", "subdomain"):
             typer.echo("error: --app-origins is 'path' or 'subdomain'", err=True)
-            raise typer.Exit(2)
-        if app_origins == "subdomain" and deployment.spec.target == "k8s":
-            typer.echo(
-                "error: app origins are not rendered for k8s yet; this install stays on path",
-                err=True,
-            )
             raise typer.Exit(2)
         if deployment.spec.network.app_origins == app_origins:
             typer.echo(f"⊙ apps are already served by {app_origins} — no change.")

@@ -381,8 +381,8 @@ TLSMode = Literal["internal", "letsencrypt", "external", "self-signed"]
 # "subdomain": each app on its own origin, https://<label>.<hostname>[:port],
 # with a session of its own handed over by the gateway (auth_gateway/
 # app_origins.py), so an app can neither receive nor use the visitor's
-# session anywhere else. New compose and dev installs default to subdomain;
-# an install saved before the field existed reads as path.
+# session anywhere else. New installs default to subdomain; an install saved
+# before the field existed reads as path.
 AppOrigins = Literal["path", "subdomain"]
 
 
@@ -764,17 +764,6 @@ class DeploymentSpec(WIPModel):
                 f"tls='external' requires target='k8s' (compose/dev terminate "
                 f"TLS in wip-caddy: use tls='internal' or tls='letsencrypt'); "
                 f"got target={self.target!r}"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def app_origins_not_yet_on_k8s(self) -> DeploymentSpec:
-        # The k8s Ingress and its certificate do not carry app origins yet:
-        # an app would have an origin nothing serves.
-        if self.network.app_origins == "subdomain" and self.target == "k8s":
-            raise ValueError(
-                "network.app_origins='subdomain' is not rendered for target='k8s' yet; "
-                "use app_origins='path' there"
             )
         return self
 

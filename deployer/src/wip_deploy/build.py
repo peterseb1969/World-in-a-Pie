@@ -50,8 +50,7 @@ class BuildInputs:
     # 8443 for compose/dev (Caddy as non-root). Explicit ports pass through.
     https_port: int | None = None
     http_port: int | None = None
-    # "path" | "subdomain"; None → subdomain on compose and dev, path on k8s
-    # (which does not render app origins yet).
+    # "path" | "subdomain"; None → subdomain, the default for new installs.
     app_origins: str | None = None
     # CASE-358: URL of a remote WIP this install points at. Plumbs to
     # NetworkSpec.remote_wip_url. None for standard same-host installs.
@@ -213,8 +212,7 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
         "tls": tls,
         "https_port": inputs.https_port if inputs.https_port is not None else default_https,
         "http_port": inputs.http_port if inputs.http_port is not None else default_http,
-        "app_origins": inputs.app_origins
-        or ("path" if inputs.target == "k8s" else "subdomain"),
+        "app_origins": inputs.app_origins or "subdomain",
     }
     if inputs.remote_wip_url is not None:
         spec_dict["network"]["remote_wip_url"] = inputs.remote_wip_url

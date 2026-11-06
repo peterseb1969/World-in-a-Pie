@@ -15,6 +15,7 @@ don't buffer.
 
 from __future__ import annotations
 
+import dataclasses
 from io import StringIO
 
 from wip_deploy.config_gen.caddy import (
@@ -45,7 +46,7 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
         out.write("    auto_https off\n")
     else:
         out.write("    auto_https disable_redirects\n")
-    if cfg.app_origins == "subdomain" and cfg.edge_backend:
+    if cfg.app_origins == "subdomain" and cfg.edge_backend and cfg.plain_http_port is None:
         # Attached apps' origins are not known at render time: wip-caddy gets
         # their certificates on demand, and only for a name the app edge says
         # is an active attachment, so an arbitrary Host cannot mint one.
@@ -64,7 +65,11 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     # mapping expects (compose maps host:<https_port> → container:<https_port>).
     # Without the :port, Caddy would default to 443 inside the container
     # regardless of what the host-side mapping says.
-    if cfg.plain_http_port is not None:
+    if cfg.plain_http_port is not None and cfg.app_origins == "subdomain":
+        # Behind the Ingress, app origins share the port: WIP's own site
+        # answers its hostname only, each app its own (see the app sites).
+        host_line = f"http://{cfg.hostname}:{cfg.plain_http_port}"
+    elif cfg.plain_http_port is not None:
         # Any Host: the Ingress already matched the hostname.
         host_line = f":{cfg.plain_http_port}"
     elif cfg.hostname == "localhost":
@@ -144,6 +149,10 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
             _write_app_site(out, cfg, site)
         if cfg.edge_backend:
             _write_attached_apps_site(out, cfg)
+        elif cfg.plain_http_port is not None:
+            # Behind the Ingress every *.<hostname> reaches wip-caddy: an
+            # unknown one answers 404, never Caddy's empty 200.
+            out.write(f"\n:{cfg.plain_http_port} {{\n    respond 404\n}}\n")
 
     # Internal /api/* routing for SSR proxies used to live here as a
     # second `:8080` site block. That's now owned by the wip-router
@@ -383,14 +392,28 @@ def _write_app_site_head(out: StringIO, cfg: CaddyConfig, address: str, *, on_de
     # gateway's on every app origin; a login itself happens on WIP's origin.
     out.write(f"    @gateway path {' '.join(APP_ORIGIN_GATEWAY_PATHS)}\n")
     out.write("    handle @gateway {\n")
-    out.write(f"        reverse_proxy {cfg.gateway_service}:{cfg.gateway_port}\n")
+    if cfg.forwarded_host:
+        out.write(f"        reverse_proxy {cfg.gateway_service}:{cfg.gateway_port} {{\n")
+        _write_forwarded(out, cfg, "            ")
+        out.write("        }\n")
+    else:
+        out.write(f"        reverse_proxy {cfg.gateway_service}:{cfg.gateway_port}\n")
     out.write("    }\n\n")
 
 
 def _write_app_site(out: StringIO, cfg: CaddyConfig, site: AppSite) -> None:
     """A deployer app on its own origin. Its routes keep their /apps/<label>
     paths, so the app needs no rebuild; the bare origin goes to the app."""
-    _write_app_site_head(out, cfg, f"{site.label}.{cfg.hostname}:{cfg.https_port}", on_demand=False)
+    host = f"{site.label}.{cfg.hostname}"
+    if cfg.forwarded_host:
+        # k8s: the gateway reads the app from the forwarded host, which this
+        # site sets to its own origin rather than WIP's.
+        cfg = dataclasses.replace(cfg, forwarded_host=host)
+    address = (
+        f"http://{host}:{cfg.plain_http_port}" if cfg.plain_http_port is not None
+        else f"{host}:{cfg.https_port}"
+    )
+    _write_app_site_head(out, cfg, address, on_demand=False)
     out.write("    handle / {\n")
     out.write(f"        redir * /apps/{site.label}/ permanent\n")
     out.write("    }\n\n")
@@ -413,6 +436,26 @@ def _write_attached_apps_site(out: StringIO, cfg: CaddyConfig) -> None:
     own for a name a managed wildcard covers, so a wildcard site would hand
     the deployer apps' origins to on-demand issuance too, which the edge
     refuses for them (seen live: rc.<hostname> then failed its handshake)."""
+    if cfg.plain_http_port is not None:
+        # k8s: the Ingress terminates TLS for *.<hostname>. The gateway's
+        # handshake paths go to the gateway, which reads the app from the
+        # forwarded host: the Host the browser addressed, set here since no
+        # single name fits this site. Everything else goes to the edge, which
+        # sets the forwarded host the same way.
+        out.write(f"\n:{cfg.plain_http_port} {{\n")
+        out.write(f"    @gateway path {' '.join(APP_ORIGIN_GATEWAY_PATHS)}\n")
+        out.write("    handle @gateway {\n")
+        out.write(f"        reverse_proxy {cfg.gateway_service}:{cfg.gateway_port} {{\n")
+        if cfg.forwarded_scheme:
+            out.write(f"            header_up X-Forwarded-Proto {cfg.forwarded_scheme}\n")
+        out.write("            header_up X-Forwarded-Host {host}\n")
+        out.write("        }\n")
+        out.write("    }\n")
+        out.write("    handle {\n")
+        out.write(f"        reverse_proxy {cfg.edge_backend}\n")
+        out.write("    }\n")
+        out.write("}\n")
+        return
     _write_app_site_head(out, cfg, f"https://:{cfg.https_port}", on_demand=True)
     out.write("    handle {\n")
     out.write(f"        reverse_proxy {cfg.edge_backend}\n")
