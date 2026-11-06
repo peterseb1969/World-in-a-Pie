@@ -7,6 +7,23 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `@wip/proxy` 0.7.0: the API key is trimmed, and a malformed one is refused at startup
+
+An inline `apiKey` (typically from an environment variable fed by a
+Secret) was sent exactly as given. A trailing newline, which `jq -r … >
+file` plus `kubectl create secret --from-file` adds, made Node refuse the
+`X-API-Key` header (`ERR_INVALID_CHAR`), so every proxied call returned 500
+while the app's own server-side calls, which trimmed the key, worked.
+
+- **Both key sources are trimmed**, the inline `apiKey` now like
+  `apiKeyFile` already was. An inline key that is only whitespace counts as
+  missing (the file fallback and the usual errors apply).
+- **A key with whitespace or a control character inside it is refused when
+  the proxy is created**, naming the option, instead of failing on the first
+  request. With `onMissingKey: 'unavailable'` it gives the unavailable proxy.
+  WIP keys are URL-safe base64 or hex and never contain either.
+- **Apps pick this up when they re-vendor** `wip-proxy-0.7.0.tgz`.
+
 ### Attachment reads say whether the app is served; `@wip/client` 0.82.0
 
 `GET /api/registry/attachments` and `GET /api/registry/attachments/{name}`

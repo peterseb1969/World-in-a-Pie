@@ -183,28 +183,48 @@ export function prefixPattern(prefix: string): RegExp {
 export function resolveApiKey(options: WipProxyOptions): string {
   let fileFailure: string | null = null
   if (options.apiKeyFile) {
+    let key: string | null = null
     try {
-      const key = readFileSync(options.apiKeyFile, 'utf8').trim()
-      if (key) return key
-      fileFailure = `apiKeyFile '${options.apiKeyFile}' is empty`
+      key = readFileSync(options.apiKeyFile, 'utf8').trim()
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err)
       fileFailure = `apiKeyFile '${options.apiKeyFile}' is unreadable (${reason})`
     }
+    if (key) return checkedKey(key, `apiKeyFile '${options.apiKeyFile}'`)
+    if (key !== null) fileFailure = `apiKeyFile '${options.apiKeyFile}' is empty`
   }
-  if (options.apiKey) {
+  // Trimmed like the file: a key from an environment variable often carries a
+  // trailing newline (a Secret written from `jq -r … > file`), which Node
+  // refuses in a header value, so every proxied call would fail.
+  const inline = options.apiKey?.trim()
+  if (inline) {
     if (fileFailure) {
       console.warn(
         `wipProxy: ${fileFailure} — falling back to the inline apiKey. ` +
         'Key rotation via the file will not apply until the path resolves.'
       )
     }
-    return options.apiKey
+    return checkedKey(inline, 'apiKey')
   }
   if (fileFailure) {
     throw new Error(`wipProxy: ${fileFailure} and no inline apiKey is set`)
   }
   throw new Error('wipProxy: one of apiKey or apiKeyFile is required')
+}
+
+/**
+ * A trimmed key that still holds whitespace or a control character is not a
+ * WIP key (those are URL-safe base64 or hex): refuse it here, at
+ * construction, rather than on the first request as ERR_INVALID_CHAR or 401.
+ */
+function checkedKey(key: string, source: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (/[\s\u0000-\u001f\u007f]/.test(key)) {
+    throw new Error(
+      `wipProxy: ${source} contains whitespace or a control character; WIP keys never do`,
+    )
+  }
+  return key
 }
 
 export { WIP_API_PREFIXES } from './api-proxy.js'
