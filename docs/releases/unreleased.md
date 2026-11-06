@@ -27,6 +27,11 @@ Five fixes to what a merge restore writes:
   equal the target's is left alone and reported.
 - **The reporting-table check runs before documents move,** as it does in a
   plain restore. A merge plans templates separately, so it never ran.
+- **A template version a merge adds keeps the target's `template_id`.**
+  Across installs one template carries different ids. With `add_missing`, a
+  version new to the target was inserted under the archive's id while its
+  earlier version matched under the target's, so the template had two ids
+  and the merged documents pinned a version that did not exist under it.
 
 ### Registry: three fixes from the registry-auth review; `@wip/client` 0.83.0
 

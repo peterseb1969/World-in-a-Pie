@@ -3486,6 +3486,16 @@ class DirectRestoreEngine:
                 )
             elif entity_type == "templates":
                 rows = [remapper.remap_template(row) for row in rows]
+                # A template_id is stable across versions, and remap_template
+                # rewrites a template's references, not its own id. A version
+                # added here whose earlier version matched the target under
+                # another id takes that id: otherwise the template has two
+                # ids and the merged documents (remapped to the target's id)
+                # pin a version that does not exist under it.
+                for row in rows:
+                    own = row.get("template_id")
+                    if own and str(own) in remapper.template_map:
+                        row["template_id"] = remapper.template_map[str(own)]
 
             db_name, coll_name = COLLECTION_MAP[entity_type]
             collection = self._mongo[db_name][coll_name]
