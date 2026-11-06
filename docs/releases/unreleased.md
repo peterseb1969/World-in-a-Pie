@@ -7,6 +7,27 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Merge restores: reference counts, dates, partial failures, identical copies, the reporting gate
+
+Five fixes to what a merge restore writes:
+
+- **File reference counts follow the merge.** After the documents, every
+  file's `reference_count` in the namespace is recounted from the latest
+  version of each active document, as document writes keep it. Before, a
+  file only merged-in documents used kept a count of 0 and could be deleted
+  without `force`.
+- **An overwrite in place stores dates as dates.** On a `versioned: false`
+  template the replaced row kept the archive's timestamps as strings, which
+  timestamp filters then skipped.
+- **A batch that fails partway never leaves two active versions.** The
+  older versions of the overwriting rows that did land are retired, and the
+  error says how many landed.
+- **An identical archive copy adds no version.** Under `overwrite` and
+  `newer`, a clash whose data, resolved references and `metadata.custom`
+  equal the target's is left alone and reported.
+- **The reporting-table check runs before documents move,** as it does in a
+  plain restore. A merge plans templates separately, so it never ran.
+
 ### Registry: three fixes from the registry-auth review; `@wip/client` 0.83.0
 
 - **A key-file change takes effect at the Registry without a restart.** An

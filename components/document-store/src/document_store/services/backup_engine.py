@@ -751,6 +751,29 @@ class DirectBackupEngine:
 # ---------------------------------------------------------------------------
 
 
+_CONTENT_FIELDS = ("data", "term_references", "references", "file_references")
+
+
+def _same_document_content(archive_row: dict[str, Any], target_row: dict[str, Any]) -> bool:
+    """The parts of a document that version, compared as document writes
+    compare them (document_service._document_has_changed): data, the three
+    resolved-reference lists and metadata.custom. Equal means a write would
+    add a version that changes nothing."""
+    import json
+
+    def norm(value: Any) -> str:
+        return json.dumps(value, sort_keys=True, default=str)
+
+    for name in _CONTENT_FIELDS:
+        if norm(archive_row.get(name) or ([] if name != "data" else {})) != norm(
+            target_row.get(name) or ([] if name != "data" else {})
+        ):
+            return False
+    custom_a = (archive_row.get("metadata") or {}).get("custom") or {}
+    custom_t = (target_row.get("metadata") or {}).get("custom") or {}
+    return norm(custom_a) == norm(custom_t)
+
+
 def _rehydrate_timestamps(row: dict[str, Any]) -> None:
     """Convert top-level ``*_at`` ISO strings back to datetime, in place.
 
@@ -3739,6 +3762,14 @@ class DirectRestoreEngine:
             db_name, coll_name = COLLECTION_MAP[entity_type]
             collection = self._mongo[db_name][coll_name]
 
+            if entity_type == "documents":
+                # The structural gate a plain restore runs after templates:
+                # the reporting tables the namespace's templates imply must
+                # exist and be correctly shaped before any document moves. A
+                # merge plans templates separately (definitions), so it runs
+                # here, once, ahead of the documents.
+                await self._reporting_phase_structure(namespace)
+
             if entity_type == "documents" and streamed is not None:
                 inserted = 0
                 batch: list[dict[str, Any]] = []
@@ -3783,17 +3814,14 @@ class DirectRestoreEngine:
                     f"[{namespace}] inserted {len(rows)} {entity_type}",
                 )
 
-            # Same structural gate a plain restore runs: the reporting tables
-            # the new templates imply must exist and be correctly shaped
-            # before any document moves.
-            if entity_type == "templates":
-                await self._reporting_phase_structure(namespace)
-
             if entity_type == "documents" and on_clash in ("overwrite", "newer"):
                 await self._overwrite_documents(
                     namespace, plan, doc_groups,
                     on_clash=on_clash, older_versions=older_versions,
                 )
+
+        if plans.get("documents") is not None or plans.get("files") is not None:
+            await self._recount_file_references(namespace)
 
         entries_plan = plans.get("registry_entries")
         if entries_plan and entries_plan.to_insert:
@@ -3892,18 +3920,21 @@ class DirectRestoreEngine:
                 for clash in clashes
             )
 
+        # The plan read the target through a projection, so it cannot tell an
+        # identical clash from a differing one. The full target heads are read
+        # here, for the clashes only, so an archive copy equal to the target's
+        # adds no version: a new version that changes nothing is noise.
+        target_heads = await self._full_target_heads(collection, namespace, clashes)
+
         appended = 0
         replaced = 0
         kept = 0
+        identical = 0
         undecidable = 0
         retired = 0
         new_rows: list[dict[str, Any]] = []
 
-        async def _flush(rows: list[dict[str, Any]]) -> int:
-            """Insert one batch of appended heads, then retire what they
-            supersede — after the insert, so a failed insert never leaves a
-            document with no active version."""
-            await self._insert_batch(collection, rows, "documents")
+        async def _retire_superseded(rows: list[dict[str, Any]]) -> int:
             if older_versions != "retire":
                 return 0
             now = datetime.now(UTC)
@@ -3925,8 +3956,34 @@ class DirectRestoreEngine:
                 count += result.modified_count
             return count
 
+        async def _flush(rows: list[dict[str, Any]]) -> int:
+            """Insert one batch of appended heads, then retire what they
+            supersede — after the insert, so a failed insert never leaves a
+            document with no active version. A batch that fails partway still
+            retires what the rows that did land supersede, so no document is
+            left with two active versions, and the error says how many
+            landed."""
+            try:
+                await self._insert_batch(collection, rows, "documents")
+            except RestoreEngineError as exc:
+                landed = await self._landed_rows(collection, namespace, rows)
+                await _retire_superseded(landed)
+                raise RestoreEngineError(
+                    f"{exc} — in '{namespace}', {len(landed)} of {len(rows)} "
+                    "overwriting version(s) in that batch were written (their "
+                    "older versions retired as the policy says); the merge "
+                    "stopped there."
+                ) from exc
+            return await _retire_superseded(rows)
+
         for clash, latest in sources:
             target_head = max(clash.targets, key=lambda r: r.get("version", 1))
+            full_head = target_heads.get(
+                (target_head.get("document_id"), target_head.get("version", 1))
+            )
+            if full_head is not None and _same_document_content(latest, full_head):
+                identical += 1
+                continue
 
             if on_clash == "newer":
                 verdict = self._archive_is_newer(latest, target_head)
@@ -3944,6 +4001,9 @@ class DirectRestoreEngine:
 
             if versioned.get(clash.entity.get("template_id") or "", True) is False:
                 row["version"] = target_head.get("version", 1)
+                # Archive rows carry ISO strings; the services store dates.
+                # _insert_batch re-hydrates for every other write path.
+                _rehydrate_timestamps(row)
                 await collection.replace_one(
                     {
                         "namespace": namespace,
@@ -3975,6 +4035,8 @@ class DirectRestoreEngine:
             summary += ", older versions kept active"
         if on_clash == "newer":
             summary += f", {kept} kept because the target's copy is not older"
+        if identical:
+            summary += f", {identical} left alone because the archive's copy is identical"
         self._emit("phase_documents", summary)
 
         if undecidable:
@@ -3983,6 +4045,86 @@ class DirectRestoreEngine:
                 f"[{namespace}] {undecidable} document(s) could not be compared "
                 "by update time (a missing or unparseable updated_at on one "
                 "side) — the target's copy was kept for those.",
+            )
+
+    async def _full_target_heads(
+        self, collection: Any, namespace: str, clashes: list[Any],
+    ) -> dict[tuple[Any, int], dict[str, Any]]:
+        """The target's current rows for these clashes, unprojected, keyed by
+        (document_id, version)."""
+        wanted = []
+        for clash in clashes:
+            head = max(clash.targets, key=lambda r: r.get("version", 1))
+            wanted.append({"document_id": head.get("document_id"), "version": head.get("version", 1)})
+        found: dict[tuple[Any, int], dict[str, Any]] = {}
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start:start + 500]
+            async for row in collection.find({"namespace": namespace, "$or": chunk}):
+                found[(row.get("document_id"), row.get("version", 1))] = row
+        return found
+
+    async def _landed_rows(
+        self, collection: Any, namespace: str, rows: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Which of these rows a failed batch insert did write."""
+        keys = [{"document_id": r["document_id"], "version": r["version"]} for r in rows]
+        present: set[tuple[Any, Any]] = set()
+        for start in range(0, len(keys), 500):
+            async for row in collection.find(
+                {"namespace": namespace, "$or": keys[start:start + 500]},
+                {"document_id": 1, "version": 1},
+            ):
+                present.add((row.get("document_id"), row.get("version")))
+        return [r for r in rows if (r["document_id"], r["version"]) in present]
+
+    async def _recount_file_references(self, namespace: str) -> None:
+        """Set every file's reference_count in the namespace from the
+        documents, as document writes maintain it: each reference in the
+        latest version of each active document counts once. A merge writes
+        documents as raw rows, so the counts are recomputed afterwards rather
+        than adjusted; this also corrects the archive's counts on files it
+        inserted."""
+        files_db, files_coll = COLLECTION_MAP["files"]
+        docs_db, docs_coll = COLLECTION_MAP["documents"]
+        files = self._mongo[files_db][files_coll]
+        docs = self._mongo[docs_db][docs_coll]
+
+        latest: dict[str, tuple[int, list[dict[str, Any]]]] = {}
+        async for row in docs.find(
+            {"namespace": namespace, "status": "active", "file_references.0": {"$exists": True}},
+            {"document_id": 1, "version": 1, "file_references": 1},
+        ):
+            doc_id = str(row.get("document_id"))
+            version = row.get("version", 1)
+            if doc_id not in latest or version > latest[doc_id][0]:
+                latest[doc_id] = (version, row.get("file_references") or [])
+        # Documents whose latest version references no file still supersede
+        # an older version that did.
+        async for row in docs.find(
+            {"namespace": namespace, "status": "active", "document_id": {"$in": list(latest)}},
+            {"document_id": 1, "version": 1},
+        ):
+            doc_id = str(row.get("document_id"))
+            if row.get("version", 1) > latest[doc_id][0]:
+                latest[doc_id] = (row.get("version", 1), [])
+
+        counts: dict[str, int] = {}
+        for _version, refs in latest.values():
+            for ref in refs:
+                file_id = ref.get("file_id")
+                if file_id:
+                    counts[str(file_id)] = counts.get(str(file_id), 0) + 1
+
+        changed = 0
+        async for f in files.find({"namespace": namespace}, {"file_id": 1, "reference_count": 1}):
+            want = counts.get(str(f.get("file_id")), 0)
+            if f.get("reference_count") != want:
+                await files.update_one({"_id": f["_id"]}, {"$set": {"reference_count": want}})
+                changed += 1
+        if changed:
+            self._emit(
+                "phase_files",
+                f"[{namespace}] {changed} file reference count(s) recounted from the documents",
             )
 
     async def _template_versioned_flags(

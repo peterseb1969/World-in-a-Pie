@@ -75,7 +75,12 @@ label/aliases differ, the target's win and the difference is reported.
 **Pass 2 — documents, under `on_clash`.** `skip` (default) keeps the
 target's version of a clashing identity. `overwrite` appends the archive's
 latest version on top of the target's head, preserving both histories (on a
-`versioned:false` template it replaces the single version in place).
+`versioned:false` template it replaces the single version in place). A
+clash whose archive copy equals the target's (data, the resolved references
+and `metadata.custom`, as document writes compare them) is left alone under
+either policy: a new version that changes nothing is noise. After the
+documents, every file's `reference_count` in the namespace is recounted from
+the latest version of each active document.
 `newer` does what `overwrite` does only where the archive's copy has a more
 recent `updated_at`; ties and missing/unparseable timestamps keep the
 target's and are reported as job warnings — across installs `newer` is only
