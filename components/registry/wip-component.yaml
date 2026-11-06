@@ -120,6 +120,6 @@ spec:
   post_install:
     - name: initialize-wip-namespaces
       run: |
-        curl -sfX POST http://wip-registry:8001/api/registry/namespaces/initialize-wip \
+        curl -sfX POST -o /dev/null http://wip-registry:8001/api/registry/namespaces/initialize-wip \
           -H "X-API-Key: ${MASTER_API_KEY}"
       after: healthy
