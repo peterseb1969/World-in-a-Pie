@@ -147,8 +147,19 @@ broke that promise:
   `attachments: null`) as not given, where 0.80.0 threw a `TypeError`.
 - **A scoped mirror never removes a key with a grant outside the scope.**
   Such a grant gives no access while the key's namespaces lie inside the
-  scope (a key's access is bounded by its own namespace list), but removing
-  the key would delete the grant with it.
+  scope (an ordinary key's access is bounded by its own namespace list), but
+  removing the key would delete the grant with it.
+- **A key in a stack-wide group is never inside a scope.** A `wip-admins` or
+  `wip-services` key (or one in a configured admin group) reaches every
+  namespace whatever its namespace list says, yet a key with `namespaces:
+  [a]` counted as inside a scope of `a`. A scoped backup carried it, a scoped
+  mirror removed it (taking stack-wide admin away), and a scoped overwrite
+  replaced it, adding or taking away the group. Now a scoped backup never
+  carries such a key and names it in `keys_left_out`; a scoped restore skips
+  it (`outside_archive_scope` from the archive, `out_of_scope_here` when this
+  stack's copy holds the group) and a scoped mirror never removes it. **A
+  scoped archive made before this change may carry such a key: its restore
+  now skips it.**
 - **A scoped mirror that skips one of this stack's keys never adopts the
   archive's hash salt** (it answers 409 `salt_mismatch`). Before, the skipped
   key kept its hash under a salt that no longer matched it, and stopped

@@ -141,8 +141,14 @@ Origin = Literal["file", "console", "restored"]
 class ArchiveScope(BaseModel):
     """What a scoped backup covers, declared rather than inferred. A grant or
     reservation is in scope by its namespace or prefix; a key only when it
-    holds a non-empty list of namespaces, every one in scope; an attachment
-    only when named.
+    holds a non-empty list of namespaces, every one in scope, and is in no
+    stack-wide group; an attachment only when named.
+
+    A key in a stack-wide group (wip-admins, wip-services, or a configured
+    admin group) reaches every namespace whatever its own list says: the
+    Registry grants such a key admin, or trusts it as a service, before its
+    namespace list is consulted. So it is never inside a scope, and a scoped
+    restore neither writes, replaces nor removes one.
 
     A restore of a scoped archive changes nothing outside it: the archive's
     own records outside the scope are skipped (`outside_archive_scope`, so an
@@ -162,14 +168,30 @@ class ArchiveScope(BaseModel):
     keys_left_out: list[str] = Field(
         default_factory=list,
         description="Keys the scope touches that the archive does not carry, because "
-        "they hold a namespace outside it or none: every key with a grant or "
+        "they reach outside it: every key with a grant or "
         "reservation in scope, every key whose namespaces overlap the scope without "
-        "fitting in it, and every key with no namespace list. A scoped mirror never "
-        "removes them",
+        "fitting in it, every key with no namespace list, and every key in a "
+        "stack-wide group (wip-admins, wip-services), which reaches every namespace. "
+        "A scoped mirror never removes them",
     )
 
-    def holds_key(self, namespaces: list[str] | None) -> bool:
-        return bool(namespaces) and set(namespaces or []) <= set(self.namespaces)
+    def holds_key(self, namespaces: list[str] | None, groups: list[str]) -> bool:
+        return (
+            bool(namespaces)
+            and set(namespaces or []) <= set(self.namespaces)
+            and not stack_wide(groups)
+        )
+
+
+# The Registry's own stack-wide groups (api/grants.py: wip-admins is admin on
+# every namespace, and wip-services keys may hold every namespace), plus the
+# admin groups the other services honour through wip-auth.
+_STACK_WIDE_GROUPS: Final = frozenset({"wip-admins", "wip-services"})
+
+
+def stack_wide(groups: list[str]) -> bool:
+    """Whether a key in these groups reaches every namespace, whatever its list."""
+    return bool(set(groups) & (_STACK_WIDE_GROUPS | set(get_auth_config().admin_groups)))
 
 
 class ArchiveSource(BaseModel):
@@ -500,7 +522,7 @@ async def build_archive(
         grants = [g for g in grants if g.namespace in in_ns]
         reservations = [r for r in reservations if r.prefix in in_ns]
         attachments = [a for a in attachments if a.name in set(scope.attachments)]
-        carried = [k for k in keys if scope.holds_key(k.namespaces)]
+        carried = [k for k in keys if scope.holds_key(k.namespaces, k.groups)]
         carried_names = {k.name for k in carried}
         # Keys this scope touches but cannot carry: a grant to them or a
         # reservation they own in scope, or namespaces of their own that reach
@@ -510,7 +532,10 @@ async def build_archive(
         # have been narrowed into the scope.
         touched = {g.subject.removeprefix("apikey:") for g in grants if g.subject_type == "api_key"}
         touched |= {r.app for r in reservations if r.managed_by is None}
-        touched |= {k.name for k in keys if not k.namespaces or set(k.namespaces) & in_ns}
+        touched |= {
+            k.name for k in keys
+            if not k.namespaces or set(k.namespaces) & in_ns or stack_wide(k.groups)
+        }
         stored = {k.name for k in keys}
         scope.keys_left_out = sorted((touched & stored) - carried_names)
         keys = carried
@@ -787,7 +812,7 @@ async def _plan_mirror(
             # a namespace outside the scope there) is never removed, even when
             # this stack's copy of it holds only in-scope namespaces.
             doc.name in scope.keys_left_out
-            or not scope.holds_key(doc.namespaces)
+            or not scope.holds_key(doc.namespaces, doc.groups)
             or doc.name in granted_outside
         ):
             continue
@@ -871,7 +896,7 @@ def _key_skip(
     must count against adopting another salt.
     """
     scope = archive.source.scope
-    if scope is not None and not scope.holds_key(k.namespaces):
+    if scope is not None and not scope.holds_key(k.namespaces, k.groups):
         return _skip_named(k.name, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE)
     if existing is not None and existing.managed_by is not None:
         return _skip_named(k.name, "managed_by_deployer", _MANAGED)
@@ -882,15 +907,15 @@ def _key_skip(
     if (
         existing is not None and scope is not None
         and _key_content(existing) != _key_content(k)
-        and not scope.holds_key(existing.namespaces)
+        and not scope.holds_key(existing.namespaces, existing.groups)
     ):
         # The scope bounds what a scoped restore may change. Here the key
-        # also reaches outside it; the archive's record would take that
-        # access away.
+        # also reaches outside it (a namespace outside it, none, or a
+        # stack-wide group); the archive's record would take that access away.
         return _skip_named(
             k.name, "out_of_scope_here",
-            "here the key holds namespaces outside the archive's scope (or none); "
-            "a scoped restore does not replace it",
+            "here the key reaches outside the archive's scope (a namespace outside "
+            "it, none, or a stack-wide group); a scoped restore does not replace it",
         )
     return None
 

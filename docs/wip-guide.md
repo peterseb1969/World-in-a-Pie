@@ -761,14 +761,18 @@ in §5.5.
   --namespace aa --namespace aa-data --attachment aa` carries the grants and
   reservations of those namespaces, the keys whose namespaces all lie in them,
   and the named attachments, and the file declares that scope. Attachments
-  have no namespace, so name the ones to carry. The backup lists the keys the
-  scope touches but cannot carry (a namespace outside it, or none); the file
+  have no namespace, so name the ones to carry. A key in a stack-wide group
+  (`wip-admins`, `wip-services`) reaches every namespace, so it is never in a
+  scope, whatever its namespace list. The backup lists the keys the
+  scope touches but cannot carry (a namespace outside it, none, or a
+  stack-wide group); the file
   still carries their grants inside the scope, and the restore warns about
   them. **A restore of a scoped file changes nothing outside its scope**:
   - a mirror never removes keys outside the scope, grants and reservations
     on other namespaces, or unnamed attachments;
   - a key whose copy on this stack reaches outside the scope (or holds no
-    namespace list) is never replaced (`out_of_scope_here`);
+    namespace list, or is in a stack-wide group) is never replaced
+    (`out_of_scope_here`);
   - the file's own records outside its declared scope are skipped
     (`outside_archive_scope`).
 

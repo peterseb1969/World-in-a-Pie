@@ -66,9 +66,11 @@ async def system_backup(
 
     With `namespaces` and/or `attachments` the backup is scoped and declares
     its scope in `source.scope`: the grants and reservations of those
-    namespaces, the keys whose namespaces all lie in them, and the named
-    attachments. Keys the scope touches but cannot carry (a namespace outside
-    it, or none) are listed in `source.scope.keys_left_out`. A mirror restore
+    namespaces, the keys whose namespaces all lie in them (never a key in a
+    stack-wide group such as wip-admins, which reaches every namespace), and
+    the named attachments. Keys the scope touches but cannot carry (a
+    namespace outside it, none, or a stack-wide group) are listed in
+    `source.scope.keys_left_out`. A mirror restore
     of a scoped archive removes only within its scope. An empty list for
     either parameter is refused (422); leave it out for the whole stack."""
     def _names(param: str, raw: str | None) -> list[str] | None:

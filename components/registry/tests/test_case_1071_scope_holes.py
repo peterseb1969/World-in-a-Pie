@@ -253,3 +253,106 @@ async def test_a_scoped_mirror_still_removes_a_key_whose_grants_are_all_inside(f
 
     report = await _restore(client, auth_headers, archive, mode="mirror")
     assert k in report["api_keys"]["deleted"]
+
+
+# ── Keys in a stack-wide group ────────────────────────────────────────
+#
+# A wip-admins key is admin on every namespace before its namespace list is
+# consulted, and a wip-services key is trusted as a service everywhere. Such a
+# key reaches outside every scope, whatever its list says, so a scoped backup
+# never carries it and a scoped restore never writes, replaces or removes it.
+
+STACK_WIDE = pytest.mark.parametrize("group", ["wip-admins", "wip-services"])
+
+
+async def _groups(name: str) -> list[str] | None:
+    doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
+    return None if doc is None else sorted(doc.groups)
+
+
+async def _set_groups(name: str, groups: list[str]) -> None:
+    await StoredAPIKey.find_one(StoredAPIKey.name == name).update({"$set": {"groups": groups}})
+
+
+def test_the_stack_wide_groups_are_the_registrys_privileged_groups():
+    from registry.api.grants import _PRIVILEGED_GROUPS
+    from registry.services.system_backup import _STACK_WIDE_GROUPS
+
+    assert _STACK_WIDE_GROUPS == _PRIVILEGED_GROUPS
+
+
+@pytest.mark.asyncio
+@STACK_WIDE
+async def test_a_scoped_backup_never_carries_a_stack_wide_key(fresh, auth_headers, group):
+    client = fresh
+    a, _ = await _two_namespaces(client, auth_headers)
+    k = _p("stack-wide")
+    await _key(client, auth_headers, k, [a], groups=[group])
+
+    archive = await _backup(client, auth_headers, namespaces=a)
+    assert k not in {x["name"] for x in archive["api_keys"]}
+    assert k in archive["source"]["scope"]["keys_left_out"]
+
+
+@pytest.mark.asyncio
+@STACK_WIDE
+async def test_a_scoped_mirror_never_removes_a_stack_wide_key(fresh, auth_headers, group):
+    client = fresh
+    a, _ = await _two_namespaces(client, auth_headers)
+    archive = await _backup(client, auth_headers, namespaces=a)
+    k = _p("stack-wide-here")
+    await _key(client, auth_headers, k, [a], groups=[group])  # only on this stack
+
+    report = await _restore(client, auth_headers, archive, mode="mirror")
+    assert k not in report["api_keys"]["deleted"]
+    applied = await _restore(client, auth_headers, archive, mode="mirror", dry_run=False,
+                             expect=report["plan_digest"])
+    assert k not in applied["api_keys"]["deleted"]
+    assert await _groups(k) == [group]
+
+
+@pytest.mark.asyncio
+@STACK_WIDE
+@pytest.mark.parametrize("mode", ["overwrite", "mirror"])
+async def test_a_scoped_restore_never_takes_a_stack_wide_group_away(fresh, auth_headers, group, mode):
+    client = fresh
+    a, _ = await _two_namespaces(client, auth_headers)
+    k = _p("keeps-group")
+    await _key(client, auth_headers, k, [a])
+    archive = await _backup(client, auth_headers, namespaces=a)
+    assert k in {x["name"] for x in archive["api_keys"]}
+    await _set_groups(k, [group])  # here the key is stack-wide
+
+    report = await _restore(client, auth_headers, archive, mode=mode)
+    applied = await _restore(client, auth_headers, archive, mode=mode, dry_run=False,
+                             expect=report["plan_digest"])
+    assert k not in applied["api_keys"]["replaced"]
+    skipped = {x["name"]: x["reason_code"] for x in applied["api_keys"]["skipped"]}
+    assert skipped[k] == "out_of_scope_here"
+    assert await _groups(k) == [group]
+
+
+@pytest.mark.asyncio
+@STACK_WIDE
+@pytest.mark.parametrize("mode", ["upsert", "overwrite", "mirror"])
+async def test_a_scoped_archive_carrying_a_stack_wide_key_never_writes_it(fresh, auth_headers, group, mode):
+    """An archive made before this rule (or edited) may carry such a key. Its
+    restore never grants the group: not to a new key, not to an existing one."""
+    client = fresh
+    a, _ = await _two_namespaces(client, auth_headers)
+    k = _p("gains-group")
+    await _key(client, auth_headers, k, [a])
+    archive = await _backup(client, auth_headers, namespaces=a)
+    for x in archive["api_keys"]:
+        if x["name"] == k:
+            x["groups"] = [group]
+    new = _p("new-stack-wide")
+    archive["api_keys"].append({**next(x for x in archive["api_keys"] if x["name"] == k), "name": new})
+
+    report = await _restore(client, auth_headers, archive, mode=mode)
+    params = {"expect": report["plan_digest"]} if mode == "mirror" else {}
+    applied = await _restore(client, auth_headers, archive, mode=mode, dry_run=False, **params)
+    skipped = {x["name"]: x["reason_code"] for x in applied["api_keys"]["skipped"]}
+    assert skipped[k] == skipped[new] == "outside_archive_scope"
+    assert await _groups(k) == []
+    assert await _groups(new) is None
