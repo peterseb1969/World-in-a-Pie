@@ -379,6 +379,14 @@ _ensure_component_test_deps() {
         return 0
     fi
     [[ "$dir" == "$REPO_ROOT/components/"* ]] || return 0
+    # A stdlib-only component (app-edge) has no requirements.txt; its CI job
+    # installs pytest alone, which the shared venv already has. Without this
+    # the install below failed on the missing file and, the marker never
+    # being written, warned on every run.
+    if [[ ! -f "$dir/requirements.txt" ]]; then
+        touch "$marker"
+        return 0
+    fi
     echo "  Provisioning $name test deps (CI recipe, one-time)..."
     if (cd "$dir" && pip install -q -r requirements.txt) \
         && (cd "$REPO_ROOT/components/registry" && pip install -q -r requirements.txt) \
