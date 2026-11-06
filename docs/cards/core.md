@@ -2,7 +2,7 @@
 docs/Vision.md sha256:495ad324988ae160 reviewed:4eefa609
 wip://ponifs sha256:99d480622b5d13d1 reviewed:e752beeb
 wip://development-guide sha256:d44cd305a3b84d3e reviewed:a66e110f
-scaffold/templates/claude-md/app.md sha256:ce6f1c0aa58c6a8b reviewed:70de3aa3
+scaffold/templates/claude-md/app.md sha256:d1d9161ab26b0295 reviewed:e106cfec
 docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca reviewed:809f9059
 -->
 # WIP core card — reread on every wake

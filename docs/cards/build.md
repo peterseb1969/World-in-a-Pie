@@ -1,14 +1,14 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-docs/technology-stack.md sha256:35a66855d47b3bc4 reviewed:ea985986
+docs/technology-stack.md sha256:5590feb0be212b0e reviewed:bb2cdf88
 docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
-docs/WIP_DevGuardrails.md sha256:30130d07053d7ac5 reviewed:fe514f02
-libs/wip-client/README.md sha256:99630dea3cc016b1 reviewed:8374a83a
-libs/wip-react/README.md sha256:8c054e997a8fb76f reviewed:d7a4b3ff
+docs/WIP_DevGuardrails.md sha256:0357beaebcec2918 reviewed:bb2cdf88
+libs/wip-client/README.md sha256:d05822e09876c562 reviewed:f13546dc
+libs/wip-react/README.md sha256:eba9b7ae31c577b0 reviewed:bb2cdf88
 libs/wip-proxy/README.md sha256:585feea2b45e5889 reviewed:a8c4e42f
-docs/wip-deployable-app-contract.md sha256:76651f8d5d582497 reviewed:d7a4b3ff
+docs/wip-deployable-app-contract.md sha256:7c74283ddc4de260 reviewed:bb2cdf88
 docs/playbooks/app-builder/build-app.md sha256:4d59d990ca82e372 reviewed:43aca6a0
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
-scaffold/templates/claude-md/app.md sha256:ce6f1c0aa58c6a8b reviewed:70de3aa3
+scaffold/templates/claude-md/app.md sha256:d1d9161ab26b0295 reviewed:e106cfec
 -->
 # WIP build card — Phase 4: writing the app
 
@@ -39,13 +39,13 @@ scaffold/templates/claude-md/app.md sha256:ce6f1c0aa58c6a8b reviewed:70de3aa3
 - Create the client once at the root. Behind the proxy pass **no `auth`**: the proxy injects the key.
 
 ## `baseUrl` rules
-- Browser, behind your `@wip/proxy` mount: `` `${import.meta.env.BASE_URL}wip` `` (`'/wip'` is only correct when the app is served at `/`).
+- Browser, behind your `@wip/proxy` mount: `` `${import.meta.env.BASE_URL}wip` `` (apps are served at `/`, so that is `/wip`).
 - Node (server, scripts): absolute URL only (`WIP_BASE_URL`, e.g. `https://localhost:8443`); relative or empty throws.
 - Every other client fetch (`/api/...`, `/server-api/...`) is prefixed with `import.meta.env.BASE_URL`.
 - Per-deployment values (e.g. namespace) come from `GET <base>/api/app-config` at boot, never `VITE_*`; no API key in any `VITE_*` var.
 
-## App origins (`https://<label>.<host>/apps/<label>/`)
-- Same base path, no rebuild. A browser call outside `BASE_URL` (WIP's bare-host `/api/…`, `/wip/…`) has no session there: it fails.
+## App origins (`https://<label>.<host>/`)
+- Served at the origin's root, no base path. A browser call to WIP's origin has no session there: it fails.
 - Keep `WipProvider` (`@wip/react` >= 0.26.0): it renews the session. With `appSession={false}` call `useAppSessionRenewal` yourself; `onSessionLost` runs before its reload.
 - `/auth/logout`, `/auth/userinfo`: relative links.
 
@@ -65,7 +65,7 @@ router.use(express.json())   // body parsers AFTER the proxy
 - `onMissingKey: 'unavailable'`: no key → `/wip` answers 503 instead of the app dying on start.
 - Your key spans several namespaces: set `defaultNamespace` or pass `namespace`, or value-form template queries return 422.
 - File downloads: `GET <mount>/files/:fileId/content` through the proxy; storage URLs never reach the browser.
-- All routes live on an `express.Router()` mounted under `APP_BASE_PATH`.
+- All routes are mounted at `/`.
 
 ## TLS in dev
 - WIP serves a self-signed cert, which Node `fetch` rejects. Put `NODE_TLS_REJECT_UNAUTHORIZED=0` in the `dev:server` script **only**, never in `start`/production.
