@@ -38,7 +38,7 @@ def test_without_declared_paths_top_level_fields_classify_as_before():
 
 
 def test_without_declared_paths_a_nested_template_path_is_refused():
-    with pytest.raises(ValueError, match="address.country"):
+    with pytest.raises(ValueError, match=r"address\.country"):
         referent_identity_fields(IDENTITY, FIELDS)
 
 

@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Event consumers survive a cancelled run; retried events stay deduplicated for an hour
+
+Four fixes in wip-auth's event bus, which every service with NATS uses:
+
+- **A consumer run that ended cancelled** (cancelled from somewhere other than
+  its supervisor) ended the supervisor for good. The reporting-sync or ingest
+  worker then stayed down until the service restarted. It is now counted as
+  a failure and restarted with backoff, like a run that raises.
+- **Each stream's duplicate window** (how long JetStream remembers a
+  `Nats-Msg-Id`) was the server default of 2 minutes, but queued events may
+  wait up to an hour before a retry. Services now raise it to the queue's max
+  age (default one hour), capped at the stream's own max age. An existing
+  window is only ever raised. `WIP_EVENTS` converges on the first service
+  start after the upgrade.
+- **A publish that failed because the connection dropped** no longer counts
+  toward the rejection limit, so it can't push an event over that limit and
+  get it dropped as `rejected`.
+- **`stop()`** awaits every task. Before, each finished task leaving the list
+  made it skip the next.
+
 ### Nested identity paths follow the resolved-referent rule; `wip-archive` 0.26.0
 
 A term- or reference-typed identity field feeds the identity hash the
