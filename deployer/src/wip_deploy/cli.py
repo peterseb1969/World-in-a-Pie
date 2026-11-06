@@ -1285,6 +1285,7 @@ def install(
     # situation on a live production install.
     previous = _try_load_previous_deployment(target_dir)
     _keep_app_origins(deployment, previous, app_origins)
+    _warn_app_origins_unusable(deployment)
     if previous is not None:
         dropped_apps, dropped_modules = _diff_spec_for_drops(previous, deployment)
         drifted = _diff_spec_for_identity_drift(previous, deployment)
@@ -2522,6 +2523,7 @@ def _apply_and_persist_mutation(
     `_ensure_secrets_via_spec`).
     """
     _validate_or_exit(deployment, components, apps_list)
+    _warn_app_origins_unusable(deployment)
 
     _select_cluster_or_exit(deployment, mutating=True)
     secrets = _ensure_secrets_via_spec(
@@ -3096,6 +3098,12 @@ def redeploy(
     if app_origins is not None:
         if app_origins not in ("path", "subdomain"):
             typer.echo("error: --app-origins is 'path' or 'subdomain'", err=True)
+            raise typer.Exit(2)
+        from wip_deploy.spec.deployment import app_origins_problem
+
+        problem = app_origins_problem(deployment.spec.network.hostname)
+        if app_origins == "subdomain" and problem:
+            typer.echo(f"error: --app-origins subdomain: {problem}", err=True)
             raise typer.Exit(2)
         if deployment.spec.network.app_origins == app_origins:
             typer.echo(f"⊙ apps are already served by {app_origins} — no change.")
@@ -6376,6 +6384,25 @@ def _record_cluster_for_install(deployment: Deployment, previous: Deployment | N
         f"Cluster:     context {k8s.kube.context!r} (cluster {k8s.kube.cluster_uid}, "
         f"kubeconfig {k8s.kube.kubeconfig}); every later verb acts on this cluster only"
     )
+
+
+def _warn_app_origins_unusable(deployment: Deployment) -> None:
+    """An install saved with app origins under a hostname that cannot carry
+    them (made before the check): it keeps working, but every app's silent
+    session renewal reads as a logout. Say so on every verb that applies."""
+    from wip_deploy.spec.deployment import app_origins_problem
+
+    if deployment.spec.network.app_origins != "subdomain":
+        return
+    problem = app_origins_problem(deployment.spec.network.hostname)
+    if problem:
+        typer.secho(
+            f"warning: this install serves apps on their own origins, but {problem}. "
+            "Switch back with `wip-deploy redeploy --app-origins path`, or re-install "
+            "with a dotted --hostname.",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
 
 
 def _warn_app_edge_reach(deployment: Deployment) -> None:

@@ -63,7 +63,11 @@ app.add_middleware(
     session_cookie="wip_session",
     max_age=settings.session_max_age,
     same_site="lax",
-    https_only=False,  # Allow HTTP for internal forward_auth subrequests
+    # Secure whenever browsers reach WIP over https (every install the
+    # deployer renders). The attribute only governs what the browser sends
+    # back; the gateway reads the cookie from the forward_auth subrequest's
+    # header either way, so the internal plain-HTTP hop is unaffected.
+    https_only=app_origins.cookie_secure(),
 )
 
 

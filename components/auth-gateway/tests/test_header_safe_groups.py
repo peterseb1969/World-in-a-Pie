@@ -66,7 +66,7 @@ def test_a_login_with_a_non_latin1_group_still_verifies(monkeypatch):
         return user
 
     monkeypatch.setattr(oidc, "exchange_code", fake_exchange)
-    client = TestClient(app)
+    client = TestClient(app, base_url="https://testserver")  # Secure session cookie
     assert client.get("/auth/callback", params={"code": "c", "state": "s"}, follow_redirects=False).status_code == 302
     r = client.get("/auth/verify")
     assert r.status_code == 200

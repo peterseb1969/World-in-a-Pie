@@ -214,3 +214,13 @@ def test_in_path_mode_there_is_no_app_origin(client, monkeypatch):
 def test_a_mistyped_mode_refuses_to_start():
     with pytest.raises(SystemExit):
         check_app_origins_mode("subdomains")
+
+
+def test_the_wip_session_cookie_is_secure_on_an_https_install():
+    """CASE-1105: browsers stored wip_session without Secure although WIP is
+    served over https. The flag follows the public URL's scheme."""
+    from starlette.middleware.sessions import SessionMiddleware
+
+    session = next(m for m in app.user_middleware if m.cls is SessionMiddleware)
+    assert session.kwargs["https_only"] is True
+    assert session.kwargs["same_site"] == "lax"

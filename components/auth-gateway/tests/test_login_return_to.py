@@ -72,7 +72,7 @@ def login_flow(monkeypatch):
     monkeypatch.setattr(oidc, "exchange_code", fake_exchange)
 
     def run(return_to: str | None) -> str:
-        client = TestClient(app)
+        client = TestClient(app, base_url="https://testserver")  # Secure session cookie
         params = {} if return_to is None else {"return_to": return_to}
         r = client.get("/auth/login", params=params, follow_redirects=False)
         assert r.status_code in (302, 307), r.text

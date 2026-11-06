@@ -212,7 +212,7 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
         "tls": tls,
         "https_port": inputs.https_port if inputs.https_port is not None else default_https,
         "http_port": inputs.http_port if inputs.http_port is not None else default_http,
-        "app_origins": inputs.app_origins or "subdomain",
+        "app_origins": _app_origins(inputs),
     }
     if inputs.remote_wip_url is not None:
         spec_dict["network"]["remote_wip_url"] = inputs.remote_wip_url
@@ -321,3 +321,17 @@ def preset_edge_dropped(inputs: BuildInputs, deployment: Deployment) -> bool:
         and APP_EDGE_MODULE not in inputs.remove
         and APP_EDGE_MODULE not in deployment.spec.modules.optional
     )
+
+
+def _app_origins(inputs: BuildInputs) -> str:
+    """subdomain for a new install, unless its hostname cannot carry app
+    origins (no dot, or an IP address: see app_origins_problem), where the
+    default is path and an explicit subdomain is refused."""
+    from wip_deploy.spec.deployment import app_origins_problem
+
+    problem = app_origins_problem(inputs.hostname)
+    if inputs.app_origins is None:
+        return "path" if problem else "subdomain"
+    if inputs.app_origins == "subdomain" and problem:
+        raise ValueError(f"app_origins='subdomain': {problem}")
+    return inputs.app_origins

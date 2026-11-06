@@ -280,3 +280,56 @@ def test_an_existing_certificate_without_the_app_origins_is_refused() -> None:
                 ns="wip", secret_name="wip-tls", hostname="wip.example",
                 extra_names=("*.wip.example",),
             )
+
+
+# ── hostnames that cannot carry app origins (CASE-1105) ─────────────────
+#
+# An app's session is renewed in a frame on its origin that calls WIP's
+# origin; the browser sends WIP's SameSite=Lax cookie only when both are the
+# same site. A dotless hostname or an IP address is its own site, apart from
+# <app>.<hostname>: every renewal then read as a logout, and the app
+# reloaded every five minutes (seen on a localhost install).
+
+
+@pytest.mark.parametrize("host", ["localhost", "wip-pi-internal", "192.168.1.20", "::1", "[::1]"])
+def test_a_hostname_without_a_registrable_part_cannot_carry_app_origins(host: str) -> None:
+    from wip_deploy.spec.deployment import app_origins_problem
+
+    assert app_origins_problem(host) is not None
+
+
+@pytest.mark.parametrize("host", ["wip.localhost", "wip-pi.internal", "wip.example."])
+def test_a_dotted_hostname_can(host: str) -> None:
+    from wip_deploy.spec.deployment import app_origins_problem
+
+    assert app_origins_problem(host) is None
+
+
+def test_a_new_localhost_install_defaults_to_path_and_refuses_subdomain() -> None:
+    def dev(**kw):  # type: ignore[no-untyped-def]
+        return build_deployment(BuildInputs(target="dev", hostname="localhost", **kw))
+
+    assert dev().spec.network.app_origins == "path"
+    with pytest.raises(ValueError, match="has no dot"):
+        dev(app_origins="subdomain")
+    assert build_deployment(BuildInputs(
+        target="dev", hostname="wip.localhost",
+    )).spec.network.app_origins == "subdomain"
+
+
+def test_redeploy_refuses_subdomain_on_a_dotless_hostname(tmp_path: Path) -> None:
+    d = build_deployment(BuildInputs(target="dev", hostname="localhost"))
+    _persist_deployment(d, tmp_path, repo_root=REPO_ROOT)
+    r = runner.invoke(app, ["redeploy", "--install-dir", str(tmp_path), "--app-origins", "subdomain"])
+    assert r.exit_code == 2 and "has no dot" in r.output
+
+
+def test_an_install_saved_that_way_still_loads_and_warns(tmp_path: Path, capsys) -> None:  # type: ignore[no-untyped-def]
+    from wip_deploy.cli import _load_deployment, _warn_app_origins_unusable
+
+    d = build_deployment(BuildInputs(target="dev", hostname="localhost"))
+    d.spec.network.app_origins = "subdomain"  # as saved before the check existed
+    _persist_deployment(d, tmp_path, repo_root=REPO_ROOT)
+    loaded = _load_deployment(tmp_path)  # never refused: redeploy --app-origins path must work
+    _warn_app_origins_unusable(loaded)
+    assert "--app-origins path" in capsys.readouterr().err

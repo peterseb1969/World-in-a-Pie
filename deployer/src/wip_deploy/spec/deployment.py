@@ -386,6 +386,37 @@ TLSMode = Literal["internal", "letsencrypt", "external", "self-signed"]
 AppOrigins = Literal["path", "subdomain"]
 
 
+def app_origins_problem(hostname: str) -> str | None:
+    """Why app origins cannot work under `hostname`, or None when they can.
+
+    An app origin's session is renewed in a frame on the app's origin that
+    calls WIP's origin, and the browser sends WIP's SameSite=Lax session
+    cookie only when the two are the same site (registrable domain). A
+    hostname without a dot (`localhost`) or an IP address has no registrable
+    part of its own: `aa.localhost` is then another site than `localhost`,
+    the cookie stays home, and every renewal reads as a logout.
+    """
+    import ipaddress
+
+    host = hostname.strip().rstrip(".")
+    try:
+        ipaddress.ip_address(host.strip("[]"))
+        return (
+            f"hostname {hostname!r} is an IP address: app origins need a name with a "
+            "dot, such as wip.localhost (every *.localhost resolves to this machine)"
+        )
+    except ValueError:
+        pass
+    if "." not in host:
+        return (
+            f"hostname {hostname!r} has no dot, so <app>.{host} and {host} are different "
+            "sites and the app session cannot be renewed; use a name with a dot, such as "
+            "wip.localhost (every *.localhost resolves to this machine), or "
+            "app_origins='path'"
+        )
+    return None
+
+
 class NetworkSpec(WIPModel):
     hostname: str = Field(min_length=1)
     tls: TLSMode = "internal"
