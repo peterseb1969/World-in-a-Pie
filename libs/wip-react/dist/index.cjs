@@ -8,6 +8,32 @@ var client = require('@wip/client');
 // src/provider.tsx
 var APP_SESSION_RENEW_PATH = "/auth/renew";
 var APP_SESSION_MESSAGE = "wip-app-session";
+var RELOADED_AT = "wip-app-session-reloaded-at";
+function readMark() {
+  try {
+    return Number(window.sessionStorage.getItem(RELOADED_AT) || 0);
+  } catch {
+    return 0;
+  }
+}
+function writeMark(value) {
+  try {
+    if (value === null) window.sessionStorage.removeItem(RELOADED_AT);
+    else window.sessionStorage.setItem(RELOADED_AT, String(value));
+  } catch {
+  }
+}
+function reloadUnlessLooping(intervalMs, reason) {
+  const last = readMark();
+  if (last && Date.now() - last < 2 * intervalMs) {
+    console.warn(
+      `[wip] the app session could not be renewed (${reason}) right after a reload: WIP's origin and this app's origin are probably different sites (a hostname without a dot, such as localhost), so the renewal cannot carry WIP's login. Not reloading again; the session lasts until it expires.`
+    );
+    return;
+  }
+  writeMark(Date.now());
+  window.location.reload();
+}
 function isRenewMessage(data) {
   return typeof data === "object" && data !== null && data.type === APP_SESSION_MESSAGE;
 }
@@ -58,6 +84,7 @@ function useAppSessionRenewal(options = {}) {
       }
       if (ok) {
         lastSuccess = Date.now();
+        writeMark(null);
         const half = expiresIn > 0 ? expiresIn * 1e3 / 2 : interval();
         schedule(Math.max(Math.min(interval(), half), 1e4));
         return;
@@ -65,7 +92,7 @@ function useAppSessionRenewal(options = {}) {
       stopped = true;
       const lost = opts().onSessionLost;
       if (lost) lost(reason);
-      else window.location.reload();
+      else reloadUnlessLooping(interval(), reason);
     };
     const onVisible = () => {
       if (document.visibilityState === "visible" && Date.now() - lastSuccess >= interval()) {

@@ -16,7 +16,9 @@ import { useEffect, useRef } from 'react'
  * - The page is not on an app origin (apps served under `/apps/<name>`):
  *   nothing to renew, so it stops.
  * - The WIP login has ended (logout elsewhere, or expiry): `onSessionLost`
- *   runs; by default the page reloads, which signs in again.
+ *   runs; by default the page reloads, which signs in again. If the first
+ *   renewal after that reload fails too, the default does not reload again
+ *   (the renewal cannot reach WIP's login at all) and warns once instead.
  * - No answer (no gateway, e.g. a dev server): it tries again later and never
  *   reloads the page.
  */
@@ -31,6 +33,47 @@ export interface AppSessionOptions {
 
 export const APP_SESSION_RENEW_PATH = '/auth/renew'
 export const APP_SESSION_MESSAGE = 'wip-app-session'
+// When the default handler last reloaded this tab (sessionStorage, ms).
+const RELOADED_AT = 'wip-app-session-reloaded-at'
+
+function readMark(): number {
+  try {
+    return Number(window.sessionStorage.getItem(RELOADED_AT) || 0)
+  } catch {
+    return 0
+  }
+}
+
+function writeMark(value: number | null): void {
+  try {
+    if (value === null) window.sessionStorage.removeItem(RELOADED_AT)
+    else window.sessionStorage.setItem(RELOADED_AT, String(value))
+  } catch {
+    // No storage (a private window): the guard below simply never trips.
+  }
+}
+
+/**
+ * The default `onSessionLost`: reload, which signs in again. But a renewal
+ * that fails again right after such a reload is not a logout: the renewal
+ * frame cannot reach WIP's session at all (WIP's origin and the app's are
+ * different sites, e.g. on a `localhost` install). Reloading again would loop
+ * every interval, so it stops and says why once.
+ */
+function reloadUnlessLooping(intervalMs: number, reason: string): void {
+  const last = readMark()
+  if (last && Date.now() - last < 2 * intervalMs) {
+    console.warn(
+      `[wip] the app session could not be renewed (${reason}) right after a reload: ` +
+        "WIP's origin and this app's origin are probably different sites (a hostname " +
+        "without a dot, such as localhost), so the renewal cannot carry WIP's login. " +
+        'Not reloading again; the session lasts until it expires.',
+    )
+    return
+  }
+  writeMark(Date.now())
+  window.location.reload()
+}
 
 interface RenewMessage {
   type: string
@@ -102,6 +145,7 @@ export function useAppSessionRenewal(options: AppSessionOptions | false = {}): v
       }
       if (ok) {
         lastSuccess = Date.now()
+        writeMark(null)
         const half = expiresIn > 0 ? (expiresIn * 1000) / 2 : interval()
         schedule(Math.max(Math.min(interval(), half), 10_000))
         return
@@ -109,7 +153,7 @@ export function useAppSessionRenewal(options: AppSessionOptions | false = {}): v
       stopped = true
       const lost = opts().onSessionLost
       if (lost) lost(reason)
-      else window.location.reload()
+      else reloadUnlessLooping(interval(), reason)
     }
 
     // Timers are throttled in a hidden tab: renew on return when overdue.

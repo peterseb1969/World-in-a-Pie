@@ -173,7 +173,11 @@ gateway's answer.
   first check and stops.
 - When the WIP login has ended (logout, or expiry), the page reloads, which
   signs in again. Pass `onSessionLost` to do something else first, such as
-  saving a draft.
+  saving a draft. If the first renewal after that reload fails too, the
+  default does not reload again and warns once in the console: the renewal
+  cannot reach WIP's login at all, which happens when WIP's origin and the
+  app's are different sites (a hostname without a dot, such as `localhost`;
+  the deployer refuses app origins there).
 - When nothing answers (a dev server without the gateway), it tries again
   later and never reloads.
 

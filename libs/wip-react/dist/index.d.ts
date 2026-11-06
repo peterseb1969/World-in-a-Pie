@@ -20,7 +20,9 @@ import { UseQueryOptions, UseMutationOptions } from '@tanstack/react-query';
  * - The page is not on an app origin (apps served under `/apps/<name>`):
  *   nothing to renew, so it stops.
  * - The WIP login has ended (logout elsewhere, or expiry): `onSessionLost`
- *   runs; by default the page reloads, which signs in again.
+ *   runs; by default the page reloads, which signs in again. If the first
+ *   renewal after that reload fails too, the default does not reload again
+ *   (the renewal cannot reach WIP's login at all) and warns once instead.
  * - No answer (no gateway, e.g. a dev server): it tries again later and never
  *   reloads the page.
  */

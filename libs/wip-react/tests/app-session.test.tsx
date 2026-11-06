@@ -96,3 +96,49 @@ describe('useAppSessionRenewal', () => {
     expect(frames()).toHaveLength(0)
   })
 })
+
+describe('the default handler never reloads in a loop (CASE-1105)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+    window.sessionStorage.clear()
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+    document.body.innerHTML = ''
+    window.sessionStorage.clear()
+  })
+
+  function failOnce() {
+    const { unmount } = renderHook(() => useAppSessionRenewal({ intervalMs: 60_000 }))
+    act(() => { vi.advanceTimersByTime(60_000) })
+    answer({ ok: false, expires_in: 0, reason: 'login_required' })
+    unmount()
+  }
+
+  it('reloads once, then warns instead of reloading again', () => {
+    const reload = vi.fn()
+    vi.spyOn(window, 'location', 'get').mockReturnValue({ ...window.location, reload } as Location)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+
+    failOnce()
+    expect(reload).toHaveBeenCalledTimes(1)
+    // "After the reload": the first renewal fails again within two intervals.
+    failOnce()
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('different sites'))
+  })
+
+  it('a successful renewal clears the guard, so a later logout reloads again', () => {
+    const reload = vi.fn()
+    vi.spyOn(window, 'location', 'get').mockReturnValue({ ...window.location, reload } as Location)
+
+    failOnce()
+    const { unmount } = renderHook(() => useAppSessionRenewal({ intervalMs: 60_000 }))
+    act(() => { vi.advanceTimersByTime(60_000) })
+    answer({ ok: true, expires_in: 900, reason: '' })
+    unmount()
+    failOnce()
+    expect(reload).toHaveBeenCalledTimes(2)
+  })
+})
