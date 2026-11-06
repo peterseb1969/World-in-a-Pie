@@ -1,7 +1,7 @@
 # Running the auth-gateway behind Traefik (forwardAuth)
 
-**This page is for hand-built Traefik setups** (such as the split
-deployment in `docs/k8s-topology.md`). A wip-deploy install needs none of
+**This page is for hand-built Traefik setups** (such as a split
+deployment with the apps on one cluster and the backend on another). A wip-deploy install needs none of
 it, on Traefik or any other controller: on every target the auth gateway
 sits behind `wip-caddy`, which owns the login redirect, and on k8s the
 ingress controller only hands requests to `wip-caddy`. See
