@@ -7,6 +7,27 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### App origins need a dotted hostname; `wip_session` is `Secure`; `@wip/react` 0.26.1
+
+- **`localhost` (and any hostname without a dot, or an IP address) can't
+  carry app origins.** `aa.localhost` and `localhost` are different sites, so
+  the browser didn't send WIP's `SameSite=Lax` login cookie from the app's
+  renewal frame: every renewal read as a logout and the app reloaded every
+  five minutes. The deployer now refuses `subdomain` for such a hostname
+  (`install --app-origins subdomain`, `redeploy --app-origins subdomain`),
+  and a new install with one defaults to `path`. An install already saved
+  that way still loads and warns on every verb: switch back with
+  `wip-deploy redeploy --name <install> --app-origins path`, or re-install
+  with a dotted hostname. For app origins locally use `--hostname
+  wip.localhost`.
+- **`wip_session` is `Secure`** whenever WIP's public URL is https (every
+  install the deployer renders). Before, browsers stored it without the
+  flag.
+- **`@wip/react` 0.26.1:** if the first renewal after the default reload
+  fails too, it no longer reloads in a loop. It stops and warns once that
+  WIP's origin and the app's are probably different sites. A successful
+  renewal re-arms it.
+
 ### Merge restores: reference counts, dates, partial failures, identical copies, the reporting gate
 
 Five fixes to what a merge restore writes:
