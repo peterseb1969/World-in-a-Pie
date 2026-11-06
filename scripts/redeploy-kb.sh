@@ -134,5 +134,5 @@ fi
 
 echo
 echo "✅ Deployed $IMAGE:$TAG"
-echo "   served-page check is OIDC-gated (302) — hard-refresh https://kb.internal/apps/kb/ to confirm in-browser."
+echo "   served-page check is OIDC-gated (302) — hard-refresh https://kb.kb.internal/apps/kb/ to confirm in-browser."
 echo "   rollback:  $0 --rollback ${ROLLBACK_REF##*:}"
