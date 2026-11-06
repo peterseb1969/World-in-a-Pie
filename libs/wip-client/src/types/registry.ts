@@ -525,24 +525,21 @@ export interface UpstreamTLS {
 }
 
 /**
- * An app attached under the umbrella, served at `/apps/<name>` by the
- * router's app edge. A write REPLACES the whole record: `auth_required` and
+ * An app attached under the umbrella, served at the root of its own origin,
+ * `https://<name>.<hostname>[:port]/`, by the router's app edge: every path
+ * goes to the upstream as the browser sent it. A write REPLACES the whole record: `auth_required` and
  * `allowed_groups` are required on every write (no defaults), so send the
  * full record you read. A missing or ill-typed field fails the whole request
  * with 422 (WipValidationError), not per item. Platform admin only.
  */
 export interface AttachmentRequest {
-  /** `^[a-z][a-z0-9-]{1,40}$`; the path is always `/apps/<name>`. */
+  /** `^[a-z][a-z0-9-]{1,40}$`; the app's origin is `<name>.<hostname>`. */
   name: string
   /** Scheme, host and optional port only: no path, credentials, query or fragment. */
   upstream: string
   auth_required: boolean
   /** Groups the gateway lets through; [] = any logged-in user. Needs auth_required. */
   allowed_groups: string[]
-  strip_prefix?: boolean
-  /** Each under `/apps/<name>/`. */
-  preserve_prefix_subpaths?: string[]
-  redirect_bare_path?: boolean
   upstream_host_header?: boolean
   streaming?: boolean
   upstream_tls?: UpstreamTLS
@@ -553,7 +550,6 @@ export interface AttachmentRequest {
 }
 
 export interface Attachment extends Required<Omit<AttachmentRequest, 'upstream_tls' | 'health'>> {
-  path: string
   status: 'active' | 'inactive'
   upstream_tls: UpstreamTLS
   health: string | null
@@ -588,8 +584,8 @@ export type AttachmentNotServedReason =
  * Per-item error codes of attachment writes (`error_code`, with
  * `details.rule` where noted): `validation_failed` (rule `upstream_invalid`,
  * `policy_unavailable` or `duplicate_name`), `forbidden` (rule
- * `upstream_blocked`), `name_collision` (a name the install's own apps route
- * under), MANAGED_BY_DEPLOYER, `concurrency_conflict` (retry), `not_found`
+ * `upstream_blocked`), `name_collision` (the label of one of the install's
+ * own apps), MANAGED_BY_DEPLOYER, `concurrency_conflict` (retry), `not_found`
  * (deactivate only), `invalid_state` (rule `no_app_edge`: the install runs
  * no app edge, so every write is refused; deactivating still works).
  */
@@ -597,7 +593,6 @@ export interface AttachmentBulkResult {
   index: number
   status: 'created' | 'updated' | 'unchanged' | 'deactivated' | 'error'
   name?: string | null
-  path?: string | null
   /** e.g. the upstream does not resolve from the Registry's network yet. */
   warnings?: string[]
   error?: string | null

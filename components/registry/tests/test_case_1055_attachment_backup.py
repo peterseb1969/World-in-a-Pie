@@ -90,7 +90,7 @@ async def test_round_trip_puts_attachments_back_with_their_status(fresh, auth_he
     await _attach(
         client, auth_headers,
         _item("aa", "https://aa.apps.example", allowed_groups=["wip-users"], display_name="AA",
-              strip_prefix=True, preserve_prefix_subpaths=["/apps/aa/static"]),
+              streaming=True, health="/healthz"),
         _item("bb", "http://bb.apps.example:8080"),
     )
     r = await client.post(f"{ATTACH}/deactivate", json=[{"name": "bb"}], headers=auth_headers)
@@ -111,8 +111,8 @@ async def test_round_trip_puts_attachments_back_with_their_status(fresh, auth_he
     aa = await AppAttachment.find_one(AppAttachment.name == "aa")
     bb = await AppAttachment.find_one(AppAttachment.name == "bb")
     assert (aa.status, bb.status) == ("active", "inactive")
-    assert aa.allowed_groups == ["wip-users"] and aa.strip_prefix
-    assert aa.preserve_prefix_subpaths == ["/apps/aa/static"]
+    assert aa.allowed_groups == ["wip-users"] and aa.streaming
+    assert aa.health == "/healthz"
     assert aa.managed_by is None
 
     again = await _restore(client, auth_headers, archive, dry_run=False)
@@ -158,7 +158,7 @@ async def test_attach_rules_hold_on_restore(fresh, auth_headers, policy, monkeyp
     report = await _restore(client, auth_headers, archive, dry_run=False)
     out = report["attachments"]
     skipped = {s["id"]: s["reason"] for s in out["skipped"]}
-    assert "route of an app this install deploys" in skipped["kb"]
+    assert "the label of an app this install deploys" in skipped["kb"]
     assert "upstream refused" in skipped["meta"]
     assert "upstream refused" in skipped["moved"]
     codes = {s["id"]: (s["reason_code"], s["name"]) for s in out["skipped"]}
@@ -223,7 +223,7 @@ async def test_an_invalid_entry_is_skipped_and_the_rest_restores(fresh, auth_hea
     assert r.status_code == 201, r.text
     archive = await _backup(client, auth_headers)
     archive["attachments"].append(
-        dict(archive["attachments"][0], name="bad", preserve_prefix_subpaths=["/apps/other/x"])
+        dict(archive["attachments"][0], name="bad", allowed_groups=["not a group"])
     )
     archive["attachments"].append(dict(archive["attachments"][0], name="odd", status="paused"))
     await AppAttachment.delete_all()
@@ -231,7 +231,7 @@ async def test_an_invalid_entry_is_skipped_and_the_rest_restores(fresh, auth_hea
 
     report = await _restore(client, auth_headers, archive, dry_run=False)
     skipped = {s["id"]: s["reason"] for s in report["attachments"]["skipped"]}
-    assert "fails the attach rules" in skipped["bad"] and "preserve_prefix_subpaths" in skipped["bad"]
+    assert "fails the attach rules" in skipped["bad"] and "allowed_groups" in skipped["bad"]
     assert "neither 'active' nor 'inactive'" in skipped["odd"]
     codes = {s["id"]: s["reason_code"] for s in report["attachments"]["skipped"]}
     assert codes["bad"] == codes["odd"] == "invalid_record"
@@ -243,13 +243,12 @@ async def test_an_invalid_entry_is_skipped_and_the_rest_restores(fresh, auth_hea
 async def test_a_stored_record_that_predates_a_rule_does_not_stop_the_backup(
     fresh, auth_headers, policy,
 ):
-    """The stored record has no subpath rule; the attach request does. A
-    record written before the rule is archived as stored, and skipped on
-    restore."""
+    """The stored record has no upstream rule; the attach does (no path on
+    the upstream). A record written before the rule is archived as stored,
+    and skipped on restore."""
     client = fresh
     await AppAttachment(
-        name="old", upstream="https://aa.apps.example", auth_required=True, allowed_groups=[],
-        strip_prefix=True, preserve_prefix_subpaths=["/apps/elsewhere/x"],
+        name="old", upstream="https://aa.apps.example/x", auth_required=True, allowed_groups=[],
     ).insert()
     archive = await _backup(client, auth_headers)
     assert [a["name"] for a in archive["attachments"]] == ["old"]
@@ -272,3 +271,17 @@ async def test_an_entry_the_sources_deployer_manages_is_not_restored(fresh, auth
     assert "managed by wip-deploy on the source" in report["attachments"]["skipped"][0]["reason"]
     assert report["attachments"]["skipped"][0]["reason_code"] == "managed_on_source"
     assert await AppAttachment.find_all().count() == 0
+
+
+@pytest.mark.asyncio
+async def test_an_archive_with_the_prefix_settings_is_refused(fresh, auth_headers, policy):
+    """An archive made while attachments were served under /apps/<name>
+    (CASE-1103). It is converted by restoring it on an install from before
+    the change and backing that up again, never here."""
+    client = fresh
+    await _attach(client, auth_headers, _item("aa", "https://aa.apps.example"))
+    archive = await _backup(client, auth_headers)
+    archive["attachments"][0]["strip_prefix"] = True
+    r = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
+    assert r.status_code == 422
+    assert "Restore it on an install from before" in r.text

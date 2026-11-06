@@ -126,7 +126,7 @@ async def upsert_attachments(
         if item.name in reserved:
             results.append(_error(
                 i, item.name, "name_collision",
-                f"/apps/{item.name} is a route of an app this install deploys",
+                f"{item.name!r} is the label of an app this install deploys: its origin is taken",
             ))
             continue
         try:
@@ -175,9 +175,9 @@ async def upsert_attachments(
                 doc = existing
                 status = "updated"
         if status != "unchanged":
-            logger.info("Attachment %s %s: /apps/%s -> %s by %s", item.name, status, item.name, item.upstream, who)
+            logger.info("Attachment %s %s: -> %s by %s", item.name, status, item.upstream, who)
         results.append(AttachmentBulkResultItem(
-            index=i, status=status, id=doc.name, name=doc.name, path=doc.path,
+            index=i, status=status, id=doc.name, name=doc.name,
             warnings=check.warnings,
         ))
     return _envelope(results)
@@ -217,7 +217,7 @@ async def deactivate_attachments(
             await doc.save()
             status = "deactivated"
             logger.info("Attachment %s deactivated by %s", doc.name, who)
-        results.append(AttachmentBulkResultItem(index=i, status=status, id=doc.name, name=doc.name, path=doc.path))
+        results.append(AttachmentBulkResultItem(index=i, status=status, id=doc.name, name=doc.name))
     return _envelope(results)
 
 

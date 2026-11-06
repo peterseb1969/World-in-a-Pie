@@ -122,6 +122,7 @@ from pymongo.errors import DuplicateKeyError
 from wip_auth import get_auth_config
 
 from ..models.api_key import StoredAPIKey, key_name_error
+from ..models.attachment import REMOVED_FIELDS as REMOVED_ATTACHMENT_FIELDS
 from ..models.attachment import AppAttachment, AttachmentFields, AttachmentRequest
 from ..models.grant import NamespaceGrant
 from ..models.namespace import Namespace
@@ -314,6 +315,25 @@ class SystemArchive(BaseModel):
     reservations: list[ArchiveReservation] = Field(default_factory=list)
     attachments: list[ArchiveAttachment] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _no_prefixed_attachments(self) -> "SystemArchive":
+        # An archive made while attachments were served under /apps/<name>
+        # carries their prefix settings, which mean nothing at an origin's
+        # root. There is no conversion here: restore it on an install from
+        # before that change, which drops them, and back it up again.
+        old = sorted({
+            a.name for a in self.attachments
+            if any(f in (a.model_extra or {}) for f in REMOVED_ATTACHMENT_FIELDS)
+        })
+        if old:
+            raise ValueError(
+                f"attachment(s) {', '.join(old)} carry {', '.join(REMOVED_ATTACHMENT_FIELDS)}: "
+                "this archive was made while attachments were served under /apps/<name>. "
+                "Restore it on an install from before attachments moved to their origin's "
+                "root, then back that install up again"
+            )
+        return self
+
 
 # --- Report shape ---
 
@@ -327,7 +347,7 @@ SkipReason = Literal[
     "orphaned_in_archive",      # an orphan in the archive, effective here; never replaced
     "other_oidc_issuer",        # a user grant from another issuer; include_user_grants restores it
     "config_key_name",          # a config key of this name is loaded here
-    "app_route",                # an app this install deploys routes under /apps/<name>
+    "app_route",                # an app this install deploys has this label
     "attach_policy_unavailable",
     "no_app_edge",              # active in the archive; this install runs no app edge to serve it
     "upstream_invalid",
@@ -1042,7 +1062,7 @@ async def _restore_attachments(
             continue
         if a.name in reserved:
             out.skipped.append(_skip_named(
-                a.name, "app_route", f"/apps/{a.name} is a route of an app this install deploys",
+                a.name, "app_route", f"{a.name!r} is the label of an app this install deploys",
             ))
             continue
         existing = await AppAttachment.find_one(AppAttachment.name == a.name)
@@ -1102,8 +1122,8 @@ async def _restore_attachments(
                 ))
                 continue
         logger.info(
-            "Attachment %s restored (%s) by %s: /apps/%s -> %s",
-            a.name, status, restored_by, a.name, request.upstream,
+            "Attachment %s restored (%s) by %s: -> %s",
+            a.name, status, restored_by, request.upstream,
         )
 
 

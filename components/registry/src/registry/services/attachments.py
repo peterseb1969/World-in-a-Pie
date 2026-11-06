@@ -1,7 +1,7 @@
 """Checks on an attachment's name and upstream.
 
-**Names.** An attachment owns `/apps/<name>`. It may not take a name the
-install's own apps route under: the deployer renders those names into the
+**Names.** An attachment owns the origin `<name>.<hostname>`. It may not
+take the label of one of the install's own apps, whose origin that is: the deployer renders those names into the
 attach policy file (WIP_ATTACH_POLICY_FILE, beside the reservations file),
 and an apply that adds an app named like an existing attachment is refused on
 the deployer's side.
@@ -71,7 +71,7 @@ class AttachPolicy(BaseModel):
     )
     reserved_names: list[str] = Field(
         default_factory=list,
-        description="Route names of the install's own apps (/apps/<name>)",
+        description="Labels of the install's own apps (each app's origin is <label>.<hostname>)",
     )
     app_edge: bool = Field(
         default=True,
@@ -152,8 +152,8 @@ def parse_upstream(upstream: str) -> tuple[str, int]:
         raise UpstreamInvalid("upstream must not carry a query or fragment")
     if parts.path not in ("", "/"):
         raise UpstreamInvalid(
-            f"upstream must not carry a path ({parts.path!r}): the router proxies "
-            "/apps/<name>/... to the upstream's root; use strip_prefix to drop the prefix"
+            f"upstream must not carry a path ({parts.path!r}): the router proxies every "
+            "path of the app's origin to the same path on the upstream"
         )
     return parts.hostname, port or (443 if parts.scheme == "https" else 80)
 

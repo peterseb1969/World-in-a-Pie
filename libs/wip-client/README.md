@@ -124,7 +124,7 @@ import { createWipClient, ApiKeyAuthProvider, OidcAuthProvider } from '@wip/clie
 const client = createWipClient({
   // Required: base URL of your WIP instance
   // In browser behind the app's @wip/proxy mount: `${import.meta.env.BASE_URL}wip`
-  //   (a deployed app lives under /apps/<name>/; a bare '/wip' works only at '/')
+  //   (an app is served at the root of its own origin, so that is '/wip')
   // In browser direct to Caddy: '' (resolved to window.location.origin)
   // For Node.js scripts: 'https://localhost:8443' or 'https://your-host:8443'
   baseUrl: `${import.meta.env.BASE_URL}wip`,

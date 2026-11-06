@@ -1,6 +1,7 @@
 """App attachments: an app put under the umbrella through the API (CASE-1051).
 
-An attachment is one record per app, keyed by name, owning /apps/<name>.
+An attachment is one record per app, keyed by name, owning the origin
+<name>.<hostname>, where it is served at the root (CASE-1103).
 Writes are bulk upserts that need platform admin; an attachment is never
 hard-deleted, only deactivated and revived. Names the install's own apps
 route under are refused, and so is an upstream that resolves to one of the
@@ -60,7 +61,8 @@ async def _post(client, headers, *items):
 async def test_attach_creates_then_is_unchanged(client, auth_headers, policy):
     body = await _post(client, auth_headers, _item(display_name="AuthorAssist"))
     res = body["results"][0]
-    assert (res["status"], res["name"], res["path"]) == ("created", "aa", "/apps/aa")
+    assert (res["status"], res["name"]) == ("created", "aa")
+    assert "path" not in res
     assert body["succeeded"] == 1
 
     again = await _post(client, auth_headers, _item(display_name="AuthorAssist"))
@@ -68,7 +70,7 @@ async def test_attach_creates_then_is_unchanged(client, auth_headers, policy):
 
     got = (await client.get(f"{URL}/aa", headers=auth_headers)).json()
     assert got["upstream"] == "https://aa.apps.example"
-    assert got["path"] == "/apps/aa"
+    assert "path" not in got and "strip_prefix" not in got
     assert got["status"] == "active"
     assert got["managed_by"] is None
     assert got["auth_required"] is True
@@ -76,10 +78,10 @@ async def test_attach_creates_then_is_unchanged(client, auth_headers, policy):
 
 async def test_update_changes_fields(client, auth_headers, policy):
     await _post(client, auth_headers, _item())
-    body = await _post(client, auth_headers, _item(allowed_groups=["aa-users"], strip_prefix=True))
+    body = await _post(client, auth_headers, _item(allowed_groups=["aa-users"], streaming=True))
     assert body["results"][0]["status"] == "updated"
     doc = await AppAttachment.find_one(AppAttachment.name == "aa")
-    assert doc.allowed_groups == ["aa-users"] and doc.strip_prefix is True
+    assert doc.allowed_groups == ["aa-users"] and doc.streaming is True
 
 
 async def test_deactivate_and_revive(client, auth_headers, policy):
@@ -362,12 +364,25 @@ async def test_install_names_resolve_concurrently(monkeypatch):
     assert time.monotonic() - started < 1.0
 
 
-@pytest.mark.parametrize("sub", ["/apps/other/api", "/apps/aa", "/apps/aa/../other/x", "/elsewhere"])
-async def test_preserved_subpaths_stay_under_the_attachments_prefix(client, auth_headers, policy, sub):
-    r = await client.post(URL, json=[_item(strip_prefix=True, preserve_prefix_subpaths=[sub])], headers=auth_headers)
+@pytest.mark.parametrize("field", [
+    {"strip_prefix": True}, {"preserve_prefix_subpaths": ["/apps/aa/health"]}, {"redirect_bare_path": False},
+])
+async def test_the_prefix_settings_are_gone(client, auth_headers, policy, field):
+    """An attachment is served at its origin's root (CASE-1103): there is no
+    /apps/<name> prefix to strip, keep or redirect."""
+    r = await client.post(URL, json=[_item(**field)], headers=auth_headers)
     assert r.status_code == 422
 
 
-async def test_a_preserved_subpath_of_its_own_is_accepted(client, auth_headers, policy):
-    res = (await _post(client, auth_headers, _item(strip_prefix=True, preserve_prefix_subpaths=["/apps/aa/health"])))["results"][0]
-    assert res["status"] == "created"
+async def test_stored_records_lose_the_prefix_settings_once(client, auth_headers, policy):
+    from registry.models.attachment import drop_removed_fields
+
+    await _post(client, auth_headers, _item())
+    await AppAttachment.get_motor_collection().update_one(
+        {"name": "aa"},
+        {"$set": {"strip_prefix": True, "preserve_prefix_subpaths": ["/apps/aa/x"], "redirect_bare_path": True}},
+    )
+    assert await drop_removed_fields() == 1
+    raw = await AppAttachment.get_motor_collection().find_one({"name": "aa"})
+    assert not {"strip_prefix", "preserve_prefix_subpaths", "redirect_bare_path"} & set(raw)
+    assert await drop_removed_fields() == 0

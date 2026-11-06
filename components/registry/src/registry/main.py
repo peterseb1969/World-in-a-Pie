@@ -142,6 +142,15 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"WARNING: Failed to reconcile pending claims: {e}")
 
+    # Attachments are served at their origin's root: records written while
+    # they were served under /apps/<name> lose their prefix settings, once.
+    from .models.attachment import drop_removed_fields
+    try:
+        if changed := await drop_removed_fields():
+            print(f"Dropped the /apps/<name> prefix settings from {changed} attachment(s).")
+    except Exception as e:
+        print(f"WARNING: Failed to drop attachments' prefix settings: {e}")
+
     # CASE-568: authentication is enforced by the wip-auth middleware
     # (setup_auth below) — the legacy AuthService.initialize call was a
     # documented no-op and its "initialized" message overstated what

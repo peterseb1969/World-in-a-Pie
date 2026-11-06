@@ -1,14 +1,15 @@
 """App attachments: an app put under the WIP umbrella through the API.
 
-An attachment says that `/apps/<name>` on the umbrella's host is served by
-`upstream`, behind the auth gateway like a deployer app's route. The app
+An attachment says that the origin `https://<name>.<hostname>[:port]` is
+served by `upstream`, behind the auth gateway like a deployer app: every path
+on that origin goes to the upstream as the browser sent it. The app
 itself runs wherever its own admin deployed it; WIP holds only this record,
 never the app's container, image, environment or key plaintext. The app's
 key, grants and reservations are ordinary records of their own.
 
-The router's app edge serves `/apps/*` from these records. Attaching an app
-trusts it with the sessions of everyone who visits it (it is served on WIP's
-origin), so attaching needs platform admin.
+The router's app edge serves these origins from these records. Attaching an
+app trusts it with its visitors' identities (the gateway hands it who they
+are), so attaching needs platform admin.
 
 An attachment is keyed by `name` and is never hard-deleted: it is
 deactivated, and revived by writing it again.
@@ -31,10 +32,10 @@ from wip_auth.bulk_models import BulkResponseBase, BulkResultItemBase
 EDGE_READER_GROUP = "wip-app-edge"
 
 # Lowercase letters, digits and hyphens, starting with a letter: safe as a
-# URL path segment, a Caddyfile token and a DNS label.
+# Caddyfile token and a DNS label.
 NAME_PATTERN = r"^[a-z][a-z0-9-]{1,40}$"
 GROUP_PATTERN = r"^[A-Za-z0-9._-]+$"
-SUBPATH_PATTERN = r"^/[A-Za-z0-9._~/-]*$"
+HEALTH_PATTERN = r"^/[A-Za-z0-9._~/-]*$"
 
 
 class UpstreamTLS(BaseModel):
@@ -92,16 +93,6 @@ class AttachmentFields(BaseModel):
         description="Groups the gateway lets through ([]: any logged-in user). "
         "Requires auth_required. Required on every write.",
     )
-    strip_prefix: bool = Field(
-        default=False, description="Strip /apps/<name> before proxying"
-    )
-    preserve_prefix_subpaths: list[str] = Field(
-        default_factory=list,
-        description="Subpaths under the prefix that keep it when strip_prefix is set",
-    )
-    redirect_bare_path: bool = Field(
-        default=True, description="Redirect /apps/<name> to /apps/<name>/"
-    )
     upstream_host_header: bool = Field(
         default=False, description="Send the upstream's host:port as Host"
     )
@@ -125,22 +116,12 @@ class AttachmentFields(BaseModel):
                 raise ValueError(f"allowed_groups entry {g!r}: letters, digits, '.', '_', '-'")
         return v
 
-    @field_validator("preserve_prefix_subpaths")
-    @classmethod
-    def _subpaths(cls, v: list[str]) -> list[str]:
-        import re
-
-        for s in v:
-            if not re.match(SUBPATH_PATTERN, s):
-                raise ValueError(f"preserve_prefix_subpaths entry {s!r} must be a plain path")
-        return v
-
     @field_validator("health")
     @classmethod
     def _health(cls, v: str | None) -> str | None:
         import re
 
-        if v is not None and not re.match(SUBPATH_PATTERN, v):
+        if v is not None and not re.match(HEALTH_PATTERN, v):
             raise ValueError("health must be a plain path starting with '/'")
         return v
 
@@ -164,10 +145,6 @@ class AppAttachment(Document, AttachmentFields):
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_by: str = Field(default="system")
 
-    @property
-    def path(self) -> str:
-        return f"/apps/{self.name}"
-
     class Settings:
         name = "app_attachments"
         indexes: ClassVar[list] = [
@@ -182,16 +159,6 @@ class AttachmentRequest(AttachmentFields):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(..., pattern=NAME_PATTERN)
-
-    @model_validator(mode="after")
-    def _subpaths_are_its_own(self) -> "AttachmentRequest":
-        """A preserved subpath outside /apps/<name>/ would take another
-        attachment's traffic to this upstream, under this one's auth."""
-        own = f"/apps/{self.name}/"
-        for sub in self.preserve_prefix_subpaths:
-            if not sub.startswith(own) or ".." in sub:
-                raise ValueError(f"preserve_prefix_subpaths entry {sub!r} must be under {own}")
-        return self
 
 
 # Whether this install serves attachments at all, from the attach policy:
@@ -243,7 +210,6 @@ def _stored_host_error(upstream: str) -> str | None:
 
 class AttachmentResponse(AttachmentFields):
     name: str
-    path: str
     status: Literal["active", "inactive"]
     managed_by: Literal["wip-deploy"] | None = None
     created_at: datetime
@@ -279,7 +245,6 @@ class AttachmentResponse(AttachmentFields):
         return cls(
             **doc.model_dump(include=set(AttachmentFields.model_fields)),
             name=doc.name,
-            path=doc.path,
             status=doc.status,
             managed_by=doc.managed_by,
             created_at=doc.created_at,
@@ -301,9 +266,24 @@ class AttachmentListResponse(BaseModel):
 
 class AttachmentBulkResultItem(BulkResultItemBase):
     name: str | None = None
-    path: str | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
 class AttachmentBulkResponse(BulkResponseBase[AttachmentBulkResultItem]):
     """Bulk envelope for attachment writes."""
+
+
+# Fields an attachment had while apps were served under /apps/<name> on WIP's
+# origin. An attachment is now served at its origin's root, so none applies.
+REMOVED_FIELDS = ("strip_prefix", "preserve_prefix_subpaths", "redirect_bare_path")
+
+
+async def drop_removed_fields() -> int:
+    """Remove REMOVED_FIELDS from every stored attachment, once: a record
+    written before they went still carries them. Returns how many records
+    changed."""
+    result = await AppAttachment.get_motor_collection().update_many(
+        {"$or": [{f: {"$exists": True}} for f in REMOVED_FIELDS]},
+        {"$unset": dict.fromkeys(REMOVED_FIELDS, "")},
+    )
+    return result.modified_count
