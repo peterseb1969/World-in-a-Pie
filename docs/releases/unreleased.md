@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### The app edge is off by default; the help names every optional module
+
+The app edge (module `app-edge`, which serves apps attached through the
+Registry's API) was in the `standard`, `full` and `analytics` presets, so
+every new install ran it, plus, with app origins, a catch-all site for
+unknown `<label>.<hostname>`, whether anyone attached an app or not.
+
+- **No preset includes `app-edge`.** Turn it on deliberately: `--add
+  app-edge` at install, or `wip-deploy add-module app-edge` later.
+- **A new install without the edge** refuses attachment writes (`invalid_state`,
+  `details.rule: no_app_edge`), and with app origins wip-caddy answers an
+  unknown `<label>.<hostname>` with 404.
+- **Existing installs are unchanged:** their saved spec lists their modules,
+  so a redeploy keeps the edge where it runs.
+- **Help:** `--add`, `--remove`, `add-module` and `remove-module` list the
+  optional modules, one line each, read from their manifests. `--preset` says
+  which modules each preset turns on, and `wip-deploy examples` shows how to
+  serve attached apps. The note "preset … includes the app edge" is gone with
+  the default it explained.
+
 ### App origins need a dotted hostname; `wip_session` is `Secure`; `@wip/react` 0.26.1
 
 - **`localhost` (and any hostname without a dot, or an IP address) can't

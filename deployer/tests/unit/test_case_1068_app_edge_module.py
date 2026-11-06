@@ -19,7 +19,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from wip_deploy.build import BuildInputs, build_deployment, preset_edge_dropped
+from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.cli import (
     _load_deployment,
     _persist_deployment,
@@ -169,21 +169,16 @@ def _inputs(**overrides: object) -> BuildInputs:
 
 
 @pytest.mark.parametrize("preset", sorted(PRESETS))
-def test_exactly_the_gateway_presets_include_it(preset: str) -> None:
-    p = PRESETS[preset]
-    listed = APP_EDGE_MODULE in p.get("modules", {}).get("optional", [])
-    assert listed is bool(p.get("auth", {}).get("gateway"))
+def test_no_preset_includes_it(preset: str) -> None:
+    """The edge is turned on deliberately (CASE-1106): a new install serves
+    attached apps only after `--add app-edge` or `add-module app-edge`."""
+    assert APP_EDGE_MODULE not in PRESETS[preset].get("modules", {}).get("optional", [])
 
 
-def test_no_auth_gateway_drops_the_presets_edge_with_a_note() -> None:
-    inputs = _inputs(auth_gateway=False, auth_mode="api-key-only")
-    d = build_deployment(inputs)
-    assert APP_EDGE_MODULE not in d.spec.modules.optional
-    assert preset_edge_dropped(inputs, d)
-
-    on = _inputs()
-    assert APP_EDGE_MODULE in build_deployment(on).spec.modules.optional
-    assert not preset_edge_dropped(on, build_deployment(on))
+def test_a_default_install_has_no_edge_and_add_turns_it_on() -> None:
+    assert APP_EDGE_MODULE not in build_deployment(_inputs()).spec.modules.optional
+    added = build_deployment(_inputs(add=[APP_EDGE_MODULE]))
+    assert APP_EDGE_MODULE in added.spec.modules.optional
 
 
 def test_an_explicit_add_stays_for_the_validator_to_refuse(discovery: Discovery) -> None:
@@ -191,13 +186,6 @@ def test_an_explicit_add_stays_for_the_validator_to_refuse(discovery: Discovery)
     d = build_deployment(inputs)
     assert APP_EDGE_MODULE in d.spec.modules.optional
     assert [m for m in _errors(d, discovery) if APP_EDGE_MODULE in m]
-
-
-def test_remove_flag_is_not_reported_as_a_drop() -> None:
-    inputs = _inputs(remove=[APP_EDGE_MODULE])
-    d = build_deployment(inputs)
-    assert APP_EDGE_MODULE not in d.spec.modules.optional
-    assert not preset_edge_dropped(inputs, d)
 
 
 # ── The one-time saved-spec migration ─────────────────────────────────

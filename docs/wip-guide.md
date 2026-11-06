@@ -1065,12 +1065,12 @@ attachments every 10 s with its own key, and serves each one at
 to the upstream. The public router hands it every `/apps` path that no
 deployed app's longer route claims.
 
-**The edge is an optional module.** The presets with the auth gateway
-(`standard`, `full`, `analytics`) include it. `wip-deploy remove-module
-app-edge` turns it off, and `wip-deploy add-module app-edge` turns it back on.
-It needs the auth gateway and core; the deployer refuses it otherwise, and
-`install --no-auth-gateway` leaves a preset's edge out with a note. Without
-the edge:
+**The edge is an optional module, off by default.** No preset includes
+it: turn it on with `--add app-edge` at install, or `wip-deploy add-module
+app-edge` on an existing install, and off again with `wip-deploy
+remove-module app-edge`. It needs the auth gateway and core; the deployer
+refuses it otherwise. Installs made before the default changed keep the edge
+they run. Without the edge:
 
 - an `/apps/<name>` that no deployed app routes answers 404;
 - the Registry refuses every attachment write (`invalid_state`,

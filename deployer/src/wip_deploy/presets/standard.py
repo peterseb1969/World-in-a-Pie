@@ -1,11 +1,12 @@
-"""Standard — Recommended for most users. Everything except ingest-gateway.
+"""Standard — Recommended for most users. Everything except ingest-gateway and the app edge.
 
 Use when: default choice. OIDC via Dex, auth-gateway on. Reporting
 (Postgres + reporting-sync), file storage (Garage), and the MCP server
 are all included so the platform is fully exercisable out of the box.
-The only optional module not included is `ingest-gateway` — that's
-async bulk ingestion via NATS JetStream, opt-in for installs that
-specifically want it.
+Two optional modules are not included, each opt-in for installs that
+want it: `ingest-gateway` (async bulk ingestion via NATS JetStream) and
+`app-edge` (serves apps attached through the Registry's API: `--add
+app-edge`, or `wip-deploy add-module app-edge` later).
 
 Apps (react-console, etc.) are enabled per-install via `--app`.
 
@@ -32,9 +33,6 @@ STANDARD: dict[str, Any] = {
             "reporting-sync",
             "garage",
             "mcp-server",
-            # Serves apps attached through the Registry's API; needs the
-            # gateway, so an install that turns it off drops the edge too.
-            "app-edge",
         ]
     },
     "auth": {"mode": "hybrid", "gateway": True},

@@ -27,7 +27,7 @@ from wip_deploy.apply import (
     changed_outside_scope,
     read_live_secrets,
 )
-from wip_deploy.build import BuildInputs, build_deployment, preset_edge_dropped
+from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.config_gen.api_keys import (
     app_key_secrets,
     effective_api_keys,
@@ -42,6 +42,7 @@ from wip_deploy.export_ca import (
     export_caddy_internal_ca,
 )
 from wip_deploy.kube import kubectl
+from wip_deploy.module_help import modules_line, with_modules
 from wip_deploy.nuke import NukeError, nuke_install_dir, nuke_purge_all
 from wip_deploy.presets import PRESETS
 from wip_deploy.renderers import (
@@ -139,10 +140,20 @@ def _root(
 # can be reused across commands without click's "Name defined twice" error.
 
 
+def _preset_help() -> str:
+    """Each preset with the optional modules it turns on, read from the
+    preset definitions so the help cannot drift from them."""
+    parts = []
+    for name in sorted(PRESETS):
+        mods = PRESETS[name].get("modules", {}).get("optional", [])
+        parts.append(f"{name} ({', '.join(mods) if mods else 'no optional modules'})")
+    return "Preset name, with the optional modules it turns on: " + "; ".join(parts) + "."
+
+
 def _preset_opt() -> typer.models.OptionInfo:
     return typer.Option(
         "--preset", "-p",
-        help=f"Preset name. One of: {', '.join(sorted(PRESETS))}.",
+        help=_preset_help(),
     )
 
 
@@ -482,11 +493,11 @@ def _parse_image_tags(raw: list[str]) -> dict[str, str]:
 
 
 def _add_opt() -> typer.models.OptionInfo:
-    return typer.Option("--add", help="Add an optional module (repeatable).")
+    return typer.Option("--add", help=with_modules("Add an optional module (repeatable)."))
 
 
 def _remove_opt() -> typer.models.OptionInfo:
-    return typer.Option("--remove", help="Remove an optional module (repeatable).")
+    return typer.Option("--remove", help=with_modules("Remove an optional module (repeatable)."))
 
 
 def _app_opt() -> typer.models.OptionInfo:
@@ -4997,10 +5008,7 @@ def add_module(
     module_name: Annotated[
         str,
         typer.Argument(
-            help=(
-                "Name of the optional module to enable (matches a "
-                "component with `category: optional` in its manifest)."
-            ),
+            help=with_modules("Name of the optional module to enable."),
         ),
     ],
     name: Annotated[str | None, _name_opt()] = None,
@@ -5035,7 +5043,7 @@ def add_module(
     if module_name not in optional_components:
         typer.echo(
             f"error: {module_name!r} is not a discovered optional component. "
-            f"Available: {', '.join(sorted(optional_components)) or '(none)'}",
+            f"Available: {modules_line() or ', '.join(sorted(optional_components)) or '(none)'}",
             err=True,
         )
         raise typer.Exit(2)
@@ -5062,7 +5070,7 @@ def add_module(
 def remove_module(
     module_name: Annotated[
         str,
-        typer.Argument(help="Name of the optional module to disable."),
+        typer.Argument(help=with_modules("Name of the optional module to disable.")),
     ],
     name: Annotated[str | None, _name_opt()] = None,
     install_dir: Annotated[
@@ -6056,6 +6064,11 @@ TEARDOWN
   Cross-install cleanup of every wip-* on host (DESTRUCTIVE):
     wip-deploy nuke --purge-all --remove-data --remove-secrets --yes
 
+Serve apps attached through the Registry's API (the app edge; needs the auth gateway):
+    wip-deploy add-module app-edge --name my-install
+    then attach each app: POST /api/registry/attachments, or RC's attach screen.
+    No preset includes the edge: a new install serves attached apps only after this.
+
 PRESETS — pick one, then tweak with --add NAME / --remove NAME / --app NAME
   core       minimal API-only backend
   headless   same as core, no UI surface
@@ -6292,14 +6305,6 @@ def _assemble(
         # Pydantic ValidationError and anything else
         typer.echo(f"spec construction failed:\n{e}", err=True)
         raise typer.Exit(2) from e
-
-    if preset_edge_dropped(inputs, deployment):
-        typer.echo(
-            f"note: preset {preset!r} includes the app edge (module 'app-edge'), "
-            "which needs the auth gateway; with the gateway off it is left out, "
-            "so this install cannot serve attached apps.",
-            err=True,
-        )
 
     if skip_discovery:
         return deployment, [], []

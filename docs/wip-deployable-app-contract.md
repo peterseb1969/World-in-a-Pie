@@ -281,8 +281,10 @@ You don't need to test these. They're stable. Just use them.
 An app its own admin deploys can be **attached** instead of deployed: an
 app-admin records it in the Registry (`POST /api/registry/attachments`,
 `docs/wip-guide.md` §6.5), and the `app-edge` component serves it at
-`/apps/<name>`. What the app must do differs from a deployed app in these
-points:
+`/apps/<name>`. The install must run that module: no preset includes it, so
+its operator turns it on with `wip-deploy add-module app-edge` (without it,
+the Registry refuses attachment writes with `no_app_edge`). What the app must
+do differs from a deployed app in these points:
 
 - **Be reachable from the app edge** at the upstream URL in the record:
   scheme, host and port, no path. Not on WIP's own hosts, loopback,

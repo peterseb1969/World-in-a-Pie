@@ -1,8 +1,10 @@
-"""Full — Everything: OIDC, gateway, reporting, files, ingest.
+"""Full — OIDC, gateway, reporting, files, ingest.
 
 Use when: production-like deployment with all surfaces enabled. Biggest
 footprint (Postgres + Garage + NATS all active). Apps (react-console,
-etc.) are enabled per-install via `--app`.
+etc.) are enabled per-install via `--app`. No preset includes the app
+edge, which serves apps attached through the Registry's API: add it with
+`--add app-edge` or `wip-deploy add-module app-edge`.
 """
 
 from typing import Any
@@ -14,7 +16,6 @@ FULL: dict[str, Any] = {
             "ingest-gateway",
             "garage",
             "mcp-server",
-            "app-edge",
         ]
     },
     # CASE-367: same shape as CASE-374's fix in standard.py — `oidc`
