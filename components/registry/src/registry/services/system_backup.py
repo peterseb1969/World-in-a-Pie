@@ -54,7 +54,10 @@ Restore rules:
   is no grant until it is activated, which happens when a platform admin
   creates the namespace (a data restore an admin runs does), or when a
   namespace admin activates it. A key that reserves the prefix later and
-  creates the namespace does not inherit it. So the system and data
+  creates the namespace does not inherit it. A namespace is known only by its name, so activation cannot tell
+  an orphan made because another owner reserves the name from one made
+  for a namespace that was simply absent: a platform admin's create
+  activates both. So the system and data
   restores work in either order. A grant the archive holds orphaned is
   written orphaned, and never replaces a grant that is effective here.
 - **Attachments come last,** after keys and grants, so an attached app's key
@@ -1190,9 +1193,13 @@ async def _grantable(
     """Whether a grant is written effective: on a namespace that exists here
     (active or archived), or on a prefix reserved here by the owner the
     archive's reservation names. A reservation by another owner is another
-    namespace of that name: its owner must not inherit the archive's grants,
-    so they are written orphaned, as on an absent prefix. A dry run counts
-    the reservations it would restore."""
+    namespace of that name, so the archive's grants on it are written
+    orphaned, as on an absent prefix: its owner's own create does not
+    activate them. That protection ends when a platform admin creates the
+    namespace, which activates every orphan on the name (see
+    activate_orphaned_grants): orphans do not record why they were written,
+    and a namespace has no identity beyond its name to match them against.
+    A dry run counts the reservations it would restore."""
     if await Namespace.find_one({"prefix": namespace, "status": {"$in": ["active", "archived"]}}):
         return True
     if dry_run and namespace in (*report.reservations.created, *report.reservations.replaced):

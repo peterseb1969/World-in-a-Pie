@@ -141,7 +141,10 @@ async def activate_orphaned_grants(prefix: str, actor: str) -> list[str]:
 
     Called when a platform admin creates the namespace: an admin could grant
     each of them anyway, and a disaster-recovery restore of the namespace
-    data then needs no second system restore. A namespace created under a
+    data then needs no second system restore. Every orphan is activated,
+    including those a restore wrote because another owner reserves the
+    name here: an orphan does not record why it was written, and a
+    namespace is known only by its name, so the two cannot be told apart. A namespace created under a
     reservation by its holder does not call this: an orphan exists because
     the archive held no reservation of the prefix, so the holder is not the
     namespace the grant was made for.

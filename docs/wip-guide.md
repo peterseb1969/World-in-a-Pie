@@ -832,7 +832,11 @@ in §5.5.
   by an admin does, or when a namespace admin activates it (`POST
   /api/registry/namespaces/{prefix}/grants/activate`) or grants it again. A key
   that reserves the prefix later and creates the namespace does not inherit
-  it. `GET /api/registry/grants?orphaned=true` lists every orphan. So the
+  it. **A platform admin's create activates every orphan on the name**,
+  including those written because another owner reserves it here: a
+  namespace is known only by its name, so they cannot be told apart. Before
+  an admin creates such a namespace, list its orphans and revoke any that
+  should not apply. `GET /api/registry/grants?orphaned=true` lists every orphan. So the
   system backup and the namespace backups can be restored in either order,
   and re-running the system restore is safe.
 - **A namespace restore creates namespaces as the requester.** A platform

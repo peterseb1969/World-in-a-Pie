@@ -597,7 +597,8 @@ neither exists nor is reserved. It writes it with `orphaned: true`:
   `namespaces` list names the prefix still reads it, as any such key does
   without a grant.)
 - **A prefix another owner reserves here counts as absent:** the archive's
-  grants on it are written orphaned, so that owner does not inherit them.
+  grants on it are written orphaned, so that owner's own create does not
+  activate them. A platform admin's create does (see below).
   An archived namespace counts as existing. A grant the archive holds
   orphaned never replaces one that is effective here, even with
   `overwrite`.
@@ -609,6 +610,11 @@ neither exists nor is reserved. It writes it with `orphaned: true`:
   grants it again.
 - **A key that reserves the prefix later and creates the namespace does not
   inherit orphans**; they were made for another namespace of that name.
+- **A platform admin's create activates every orphan on the name**, those
+  written because another owner reserves it included: a namespace is known
+  only by its name, so the two cannot be told apart. Before an admin creates
+  such a namespace, list its orphans (`GET /api/registry/grants?orphaned=true`)
+  and revoke any that should not apply.
 - **Listing:** grants carry `orphaned` and `orphaned_at`. `GET
   /api/registry/grants?orphaned=true` lists them across namespaces for
   platform admins.
