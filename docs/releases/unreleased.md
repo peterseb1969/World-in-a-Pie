@@ -18,6 +18,18 @@ it names the namespace. The shared namespace filter behind it
 namespace now keeps only the namespaces that meet the requirement, and
 answers 503 when the Registry cannot say. Keys with write are unaffected.
 
+### A canonical id resolves only as its own entity type
+
+Resolution sent a UUID to the Registry as a bare id, and the Registry checked
+an id by existence and status only, so any active entry's id resolved as
+whatever type was asked for: a template's id was accepted as a terminology.
+wip-auth now sends the entity type with every resolution, and the Registry
+applies it to canonical ids as well as to keys: an id of another type is not
+found. For a non-UUID value, which is tried as an id and then as a key,
+another type's id no longer wins; the value's own key answers. A Registry
+from before this change still resolves the new client's requests (without
+the id check), so the two can roll in either order.
+
 ### An unknown API key no longer stalls a service
 
 A key value a service has not seen is checked with bcrypt against every key

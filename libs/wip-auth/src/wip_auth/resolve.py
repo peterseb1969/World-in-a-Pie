@@ -271,6 +271,12 @@ def _build_resolve_payload(
             _, value = split_qualified_value(raw_id)
             payload["entry_id"] = value
         payload["composite_key"] = _build_composite_key(raw_id, entity_type, namespace)
+    # The type the caller wants: the Registry applies it to canonical-id
+    # verification too, so a template's id never resolves as a terminology.
+    # A type it does not know is left out (it would refuse the item).
+    registry_type = _registry_entity_type(entity_type)
+    if registry_type is not None:
+        payload["entity_type"] = registry_type
     if include_statuses:
         payload["include_statuses"] = include_statuses
     return payload
@@ -484,7 +490,17 @@ _ENTITY_TYPE_PLURAL = {
     "term": "terms",
     "template": "templates",
     "document": "documents",
+    "file": "files",
 }
+_REGISTRY_ENTITY_TYPES = frozenset(_ENTITY_TYPE_PLURAL.values())
+
+
+def _registry_entity_type(entity_type: str) -> str | None:
+    """The Registry's (plural) name for an entity type, or None when it has
+    none. An already-plural name is kept."""
+    if entity_type in _REGISTRY_ENTITY_TYPES:
+        return entity_type
+    return _ENTITY_TYPE_PLURAL.get(entity_type)
 
 
 async def _post_lookup_by_id(

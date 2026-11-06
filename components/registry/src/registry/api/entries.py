@@ -5,7 +5,7 @@ import math
 import re
 import time
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 import httpx
 from beanie.odm.utils.encoder import Encoder
@@ -2029,12 +2029,19 @@ async def resolve_synonyms(
             )
             entry = None
 
-            # Path 1: Canonical ID verification
+            # Path 1: Canonical ID verification. With entity_type given, an id
+            # resolves only as its own type: a template's id is not a
+            # terminology. A miss falls through to the composite key, so a
+            # value equal to another type's id still finds its own entry.
+            # Namespace stays out: canonical ids are namespace-free.
             if item.entry_id:
-                entry = await RegistryEntry.find_one({
+                id_query: dict[str, Any] = {
                     "entry_id": item.entry_id,
                     "status": status_filter,
-                })
+                }
+                if item.entity_type:
+                    id_query["entity_type"] = item.entity_type
+                entry = await RegistryEntry.find_one(id_query)
 
             # Path 2: Composite key resolution (synonym or primary key)
             if not entry and item.composite_key:

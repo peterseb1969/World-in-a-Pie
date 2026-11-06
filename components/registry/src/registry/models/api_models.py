@@ -653,12 +653,18 @@ class ResolveItem(StrictModel):
 
     Provide either ``composite_key`` (synonym resolution) or ``entry_id``
     (canonical ID verification). If both are given, ``entry_id`` is tried first.
+    ``entity_type``, when given, restricts both: an id of another type is not
+    found, and resolution falls through to the composite key.
     """
 
     composite_key: dict[str, Any] | None = Field(default=None, description="Synonym composite key to resolve")
     entry_id: str | None = Field(default=None, description="Canonical entry ID to verify")
     namespace: str | None = Field(default=None, description="Namespace filter for composite key resolution")
-    entity_type: str | None = Field(default=None, description="Entity type filter for composite key resolution")
+    entity_type: str | None = Field(
+        default=None,
+        description="Entity type filter (plural, e.g. templates): applied to canonical-ID "
+        "verification and to composite key resolution",
+    )
     include_statuses: list[str] | None = Field(default=None, description="Status filter. Default: active only.")
 
 

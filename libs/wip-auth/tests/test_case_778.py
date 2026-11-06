@@ -128,7 +128,9 @@ class TestBulkFieldDoor:
             items, "term_id", "term", "onto2", terminology="GO_SLIM",
         )
         payload = json.loads(httpx_mock.get_requests()[0].content)
-        assert payload[0] == {"entry_id": CANONICAL}
+        # By id, no composite key; the type rides along so the Registry
+        # resolves the id only as a term (CASE-1088).
+        assert payload[0] == {"entry_id": CANONICAL, "entity_type": "terms"}
 
     @pytest.mark.asyncio
     async def test_per_item_scope_via_terminology_field(self, httpx_mock):
