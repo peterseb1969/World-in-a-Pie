@@ -56,7 +56,7 @@ from pydantic import TypeAdapter, ValidationError
 from wip_auth import APIKeyProvider, APIKeyRecord
 from wip_auth.providers.api_key import api_key_prehash, hash_api_key, prehash_matches
 
-from ..models.api_key import StoredAPIKey
+from ..models.api_key import StoredAPIKey, key_name_error
 from ..models.grant import NamespaceGrant
 from ..models.reservation import RuntimeReservation
 from .managed import WIP_DEPLOY
@@ -84,6 +84,9 @@ _file_prehashes: dict[str, bytes] = {}
 _last_seen: tuple[str | None, str | None] | None = None
 # Why the reservations file could not be used at the last pass, if it could not
 _reservations_error: ReservationsUnavailable | None = None
+# Names this process has seen as managed records: a provider record under one
+# of them that MongoDB no longer backs is stale (see _align_provider).
+_seen_managed: set[str] = set()
 
 
 @dataclass
@@ -159,6 +162,9 @@ def _read_key_file() -> tuple[list[dict[str, Any]] | None, str | None]:
             return None, f"{path}: key '{entry.get('name')}' is invalid: {err}"
         if not entry.get("key") and not entry.get("key_hash"):
             return None, f"{path}: key '{entry.get('name')}' has no key"
+        name_error = key_name_error(str(entry.get("name")))
+        if name_error:
+            return None, f"{path}: {name_error}"
     return entries, None
 
 
@@ -190,6 +196,40 @@ async def _refresh_provider(
         if doc is not None and doc.enabled and not is_dormant(doc, provider.config_key_names()):
             provider.remove_key(doc.key_hash)
             provider.add_key(runtime_record(doc))
+
+
+async def _align_provider(provider: APIKeyProvider) -> None:
+    """Make the provider's managed records exactly the enabled, non-dormant
+    managed records in MongoDB, whatever earlier passes did.
+
+    A pass refreshes the provider only for what it changed in MongoDB. When
+    MongoDB was already current (another replica imported the file, or a
+    pass ran without the provider), the provider would otherwise keep a
+    rotated key's old hash, a removed key, or miss a new one until restart.
+
+    Only names seen as managed are pruned: a key the API creates enters
+    MongoDB and the provider outside provider_lock, so "a provider record
+    without a document" alone is not proof of a stale record.
+    """
+    from .key_shadowing import provider_lock, runtime_record
+
+    docs = await StoredAPIKey.find_all().to_list()
+    managed = {d.name: d for d in docs if d.managed_by is not None}
+    current = {d.name: d.key_hash for d in docs}
+    _seen_managed.update(managed)
+    config = provider.config_key_names()
+    async with provider_lock:
+        for rec in provider.iter_keys():
+            if rec.name in config or rec.name not in _seen_managed:
+                continue
+            doc = managed.get(rec.name)
+            live = doc is not None and doc.enabled and not is_dormant(doc, config)
+            if current.get(rec.name) != rec.key_hash or (doc is not None and not live):
+                provider.remove_key(rec.key_hash)
+        held = {rec.key_hash for rec in provider.iter_keys()}
+        for doc in managed.values():
+            if doc.enabled and not is_dormant(doc, config) and doc.key_hash not in held:
+                provider.add_key(runtime_record(doc))
 
 
 async def _import_keys(
@@ -403,8 +443,18 @@ async def _import_reservations(report: ImportReport) -> None:
 
 
 async def run_pass(provider: APIKeyProvider | None = None) -> ImportReport:
-    """One import of both files. Safe to call concurrently: passes run one at a time."""
+    """One import of both files. Safe to call concurrently: passes run one at a time.
+
+    Every pass keeps the Registry's own provider in step, whichever caller
+    started it: without `provider` it uses the one wired at startup. A pass
+    that wrote MongoDB without refreshing the provider would leave it stale
+    for good, since the next pass finds MongoDB current and changes nothing.
+    """
     global _last_seen, _reservations_error
+    if provider is None:
+        from ..api.api_keys import _api_key_provider_or_none
+
+        provider = _api_key_provider_or_none()
     async with _lock:
         report = ImportReport()
         digests = _current_digests()
@@ -416,6 +466,8 @@ async def run_pass(provider: APIKeyProvider | None = None) -> ImportReport:
                 report.skipped.append(why)
         else:
             await _import_keys(entries, provider, report)
+        if provider is not None:
+            await _align_provider(provider)
 
         try:
             await _import_reservations(report)
@@ -478,6 +530,7 @@ async def run_loop(provider: APIKeyProvider | None) -> None:
 def reset_for_tests() -> None:
     global _last_seen, _reservations_error
     _verified.clear()
+    _seen_managed.clear()
     _file_prehashes.clear()
     _last_seen = None
     _reservations_error = None

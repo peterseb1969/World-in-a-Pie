@@ -184,6 +184,20 @@ async def lifespan(app: FastAPI):
         for doc in runtime_docs:
             api_key_provider.add_key(key_shadowing.runtime_record(doc))
         print(f"Loaded {len(runtime_docs)} runtime API key(s) from MongoDB.")
+        # A key stored under a name new keys may not take (made before the
+        # rule) is also read as the key its name spells: it holds that key's
+        # grants. Name it loudly so an operator revokes and re-creates it.
+        import logging
+
+        from .models.api_key import key_name_error
+
+        for doc in await StoredAPIKey.find_all().to_list():
+            name_error = key_name_error(doc.name)
+            if name_error:
+                logging.getLogger(__name__).critical(
+                    "API key %r: %s. It is also read as that key; revoke it and "
+                    "create it again under another name.", doc.name, name_error,
+                )
         # A legacy SHA-256 hash is unsalted by bcrypt and fast to attack: the
         # salt is not secret, so only the key's own entropy protects it.
         for doc in runtime_docs:

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import ClassVar, Literal
 
 from beanie import Document
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pymongo import IndexModel
 
 from ..services.reservations import ReservationSettings
@@ -88,12 +88,41 @@ class NamespaceReserveRequest(BaseModel):
     )
 
 
+# A caller authenticated with a key presents its user_id as "apikey:<name>".
+# For callers on an older wip-auth, grants, reservations and grant writes
+# read that spelling as the bare name, so a key whose own name starts with it
+# would act as the other key: its grants, its reservations. No key may take
+# such a name.
+RESERVED_KEY_NAME_PREFIX = "apikey:"
+
+
+def key_name_error(name: str) -> str | None:
+    """Why `name` cannot name an API key, or None when it can."""
+    if name.startswith(RESERVED_KEY_NAME_PREFIX):
+        return (
+            f"key name {name!r} starts with {RESERVED_KEY_NAME_PREFIX!r}, the spelling "
+            f"by which the key {name.removeprefix(RESERVED_KEY_NAME_PREFIX)!r} is "
+            "addressed; choose another name"
+        )
+    return None
+
+
 class APIKeyCreateRequest(BaseModel):
     """Request body for creating a new runtime API key."""
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(..., description="Unique name for the key")
+    name: str = Field(
+        ..., description="Unique name for the key; must not start with 'apikey:'",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _name_is_free(cls, v: str) -> str:
+        error = key_name_error(v)
+        if error:
+            raise ValueError(error)
+        return v
     owner: str = Field(default="system", description="Owner identifier")
     groups: list[str] = Field(default_factory=list, description="Authorization groups")
     description: str | None = Field(default=None, description="What this key is for")

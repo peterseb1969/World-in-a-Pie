@@ -118,7 +118,7 @@ from pymongo.errors import DuplicateKeyError
 
 from wip_auth import get_auth_config
 
-from ..models.api_key import StoredAPIKey
+from ..models.api_key import StoredAPIKey, key_name_error
 from ..models.attachment import AppAttachment, AttachmentFields, AttachmentRequest
 from ..models.grant import NamespaceGrant
 from ..models.namespace import Namespace
@@ -895,6 +895,9 @@ def _key_skip(
     (_fresh_after): a key the restore skips keeps this stack's hash, so it
     must count against adopting another salt.
     """
+    name_error = key_name_error(k.name)
+    if name_error:
+        return _skip_named(k.name, "invalid_record", name_error)
     scope = archive.source.scope
     if scope is not None and not scope.holds_key(k.namespaces, k.groups):
         return _skip_named(k.name, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE)
