@@ -230,3 +230,60 @@ async def test_migrate_rejects_same_source_and_target(client, auth_headers):
     )
     assert resp.status_code == 400, resp.text
     assert resp.json()["detail"]["error_code"] == "invalid_migration"
+
+
+# -- CASE-1085: the write check holds when the namespace is omitted ------------
+
+SCOPED_KEY_HEADERS = {"X-API-Key": "test_scoped_key"}
+
+
+def _registry_grants(monkeypatch, permission: str):
+    """The Registry gives the scoped key `permission` on 'wip', and nothing else."""
+    import wip_auth.permissions as permissions
+
+    async def accessible(identity):
+        return ["wip"]
+
+    async def check(identity, namespace):
+        return permission if namespace == "wip" else "none"
+
+    monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", accessible)
+    monkeypatch.setattr(permissions, "_fetch_permission_from_registry", check)
+    permissions.clear_permission_cache()
+
+
+@pytest.mark.asyncio
+async def test_read_only_key_cannot_migrate_by_omitting_namespace(client, auth_headers, monkeypatch):
+    """A read-only single-namespace key gets 403, and no document gains a version."""
+    item = await _create_person(client, auth_headers)
+    tid = SAMPLE_TEMPLATES["PERSON"]["template_id"]
+    VERSIONED_TEMPLATE_OVERRIDES[(tid, 2)] = _person_v2(tid, add_optional="phone")
+    _registry_grants(monkeypatch, "read")
+
+    resp = await client.post(
+        MIGRATE_URL,
+        json={"template_id": "PERSON", "from_version": 1, "to_version": 2, "dry_run": False},
+        headers=SCOPED_KEY_HEADERS,
+    )
+    assert resp.status_code == 403, resp.text
+    doc = await _doc_in_db(item["document_id"])
+    assert doc.version == 1 and doc.template_version == 1
+
+
+@pytest.mark.asyncio
+async def test_write_key_migrates_with_namespace_omitted(client, auth_headers, monkeypatch):
+    """The control: the same key with write on its one namespace migrates."""
+    item = await _create_person(client, auth_headers)
+    tid = SAMPLE_TEMPLATES["PERSON"]["template_id"]
+    VERSIONED_TEMPLATE_OVERRIDES[(tid, 2)] = _person_v2(tid, add_optional="phone")
+    _registry_grants(monkeypatch, "write")
+
+    resp = await client.post(
+        MIGRATE_URL,
+        json={"template_id": "PERSON", "from_version": 1, "to_version": 2, "dry_run": False},
+        headers=SCOPED_KEY_HEADERS,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["succeeded"] == 1
+    doc = await _doc_in_db(item["document_id"])
+    assert doc.version == 2 and doc.template_version == 2

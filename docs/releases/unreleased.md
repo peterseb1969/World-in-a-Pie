@@ -7,6 +7,17 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A read-only key can no longer migrate documents by omitting the namespace
+
+`POST /api/document-store/documents/migrate` needs write on the cohort's
+namespace. With `namespace` omitted, a single-namespace key used to pass that
+check if it could merely read the namespace, and the migrate wrote a new
+version of every document on `from_version`. It now gets 403, as it does when
+it names the namespace. The shared namespace filter behind it
+(`resolve_namespace_filter` in wip-auth) asked for write or admin without a
+namespace now keeps only the namespaces that meet the requirement, and
+answers 503 when the Registry cannot say. Keys with write are unaffected.
+
 ### An unknown API key no longer stalls a service
 
 A key value a service has not seen is checked with bcrypt against every key

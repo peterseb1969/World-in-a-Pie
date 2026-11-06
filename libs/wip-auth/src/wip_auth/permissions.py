@@ -229,7 +229,10 @@ async def resolve_namespace_filter(
     """Resolve namespace into a MongoDB query filter.
 
     If namespace is provided: check permission, return single-namespace filter.
-    If namespace is None: resolve accessible namespaces, return multi-namespace filter.
+    If namespace is None: return the namespaces where the caller holds at least
+    `required`. For "read" that is every accessible namespace; for "write" or
+    "admin" each accessible namespace's permission is checked, so a caller who
+    omits the namespace never gets a weaker check than one who names it.
 
     Returns a NamespaceFilter with:
       - query: dict to merge into MongoDB query
@@ -238,7 +241,9 @@ async def resolve_namespace_filter(
     Raises:
       HTTPException 404: if explicit namespace is invisible (permission == none)
       HTTPException 403: if explicit namespace has insufficient permission,
-                         or if identity has no accessible namespaces
+                         or if identity has no accessible namespaces, or
+                         (no namespace given) none holds `required`
+      HTTPException 503: if the Registry could not be asked
     """
     if namespace:
         await check_namespace_permission(identity, namespace, required)
@@ -253,6 +258,20 @@ async def resolve_namespace_filter(
         return NamespaceFilter(query={}, namespaces=None)
     if not accessible:
         raise HTTPException(403, "No accessible namespaces")
+    if required != "read":
+        # Accessible means visible at any level. A write or admin filter keeps
+        # only the namespaces that meet the requirement; an outage on any of
+        # them is no answer, not a smaller list.
+        permitted = []
+        for ns in accessible:
+            permission = await resolve_permission(identity, ns)
+            if permission == PERMISSION_UNAVAILABLE:
+                raise HTTPException(503, _UNAVAILABLE_DETAIL)
+            if permission_sufficient(permission, required):
+                permitted.append(ns)
+        if not permitted:
+            raise HTTPException(403, f"Requires {required} access to a namespace")
+        accessible = permitted
     return NamespaceFilter(
         query={"namespace": {"$in": accessible}},
         namespaces=accessible,
