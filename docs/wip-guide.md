@@ -241,7 +241,7 @@ Networking is where most operator failures happen. The three callouts below prev
 
 | # | Scenario | Console | API | Dex |
 |---|---|---|---|---|
-| 1 | Localhost + OIDC | `https://localhost:8443/` | via Caddy on `:8443` | `https://localhost:8443/dex` |
+| 1 | Localhost + OIDC | `https://wip.localhost:8443/` | via Caddy on `:8443` | `https://wip.localhost:8443/dex` |
 | 2 | Localhost − OIDC | `http://localhost:3000/` | direct on `:8001`–`:8006` | n/a |
 | 3 | Remote + OIDC | `https://<host>:8443/` | via Caddy on `:8443` | `https://<host>:8443/dex` |
 | 4 | Remote − OIDC | `http://<host>:3000/` | direct on `:8001`–`:8006` | n/a |
@@ -250,24 +250,17 @@ Choose by what you need. If you want auth, go with 1 or 3 (and pick `--hostname`
 
 For scenarios 2 and 4 the console's dev server needs proxy rules (Vite `vite.config.ts → server.proxy`) pointing `/api/registry`, `/api/def-store`, etc. at the matching `localhost:800x`.
 
-### 3.5 Apps on origins of their own (`network.app_origins`)
+### 3.5 Apps on origins of their own
 
-Served under `/apps/<name>` on WIP's own origin, every app shares the visitor's login: an app's server receives the session cookie, and an app's JavaScript can call any other app as the visitor. With **`subdomain`** each app has an origin of its own and a session that works nowhere else:
+Every app, deployed or attached, is served at the root of an origin of its own, `https://<label>.<hostname>[:port]/`, with a session that works nowhere else: `wip_app_session`, host-only, naming the app. WIP's own origin serves nothing under `/apps/`; old `/apps/<name>/` URLs answer 404, with no redirect. There is no other mode.
 
-| | `path` | `subdomain` |
-|---|---|---|
-| App URL | `https://<hostname>:8443/apps/rc/` | `https://rc.<hostname>:8443/apps/rc/` |
-| Session | `wip_session`, shared by WIP and every app | per app: `wip_app_session`, host-only, naming the app |
-| Old app URLs | — | answer 301 to the app's origin |
-| Default for | installs made before this setting; new installs whose hostname has no dot (`localhost`) or is an IP address | new installs with a dotted hostname |
-
-- **Logging in once still covers every app.** The app origin sends the browser through `/auth/app-login` on WIP's origin, which hands it a one-time code; `/auth/handoff` on the app origin turns that into the app's session. Only WIP's origin talks to Dex, so Dex needs nothing per app.
+- **Logging in once still covers every app.** The app origin sends the browser through `/auth/app-login` on WIP's origin, which hands it a one-time code; `/auth/handoff` on the app origin turns that into the app's session. Only WIP's origin talks to Dex, so Dex needs nothing per app. WIP's bare host sends the browser to the first app's origin.
 - **Logout reaches an app within its session lifetime** (`APP_SESSION_MAX_AGE`, 15 minutes by default). An app built on `@wip/react` 0.26.0 or later renews its session in the background while it is open; see the app contract.
-- **The hostname needs a dot.** An app renews its session in a frame that calls WIP's origin, and the browser sends WIP's login cookie only when the app's origin and WIP's are the same site. A hostname without a dot (`localhost`) or an IP address is its own site, apart from `<label>.<hostname>`, so every renewal would read as a logout. The deployer refuses `subdomain` for such a hostname, and a new install with one defaults to `path`. **Locally, install with `--hostname wip.localhost`:** WIP is then `wip.localhost` and the apps `aa.wip.localhost`, one site, and Chrome and Firefox resolve every `*.localhost` to this machine (not checked here, nor whether Safari does). Changing an existing install's hostname is a re-install (§3.1).
+- **The hostname needs a dot.** An app renews its session in a frame that calls WIP's origin, and the browser sends WIP's login cookie only when the app's origin and WIP's are the same site. A hostname without a dot (`localhost`) or an IP address is its own site, apart from `<label>.<hostname>`, so every renewal would read as a logout. The deployer refuses an install that serves apps (or runs the app edge) on such a hostname. **Locally, the dev target's default hostname is `wip.localhost`:** WIP is then `wip.localhost` and the apps `aa.wip.localhost`, one site, and Chrome and Firefox resolve every `*.localhost` to this machine (not checked here, nor whether Safari does). Changing an existing install's hostname is a re-install (§3.1).
 - **DNS:** every `<label>.<hostname>` must reach the install. Names under `localhost` need nothing; for any other hostname, add a wildcard record (`*.<hostname>`) or one per app.
 - **TLS:** `tls internal` issues a certificate per app origin from Caddy's CA, which browsers already trust once they trust the install's CA. Attached apps' origins are not known when wip-caddy is rendered: it gets their certificates on demand, and only for a name the app edge confirms as an active attachment. With `tls letsencrypt`, deployer apps get a certificate per origin the same way the hostname does; attached apps' on-demand certificates have not been tried against a public CA yet.
 - **k8s:** the Ingress gets a `*.<hostname>` rule and TLS host, and wip-caddy behind it answers each origin on plain HTTP. A self-signed certificate the deployer mints names `*.<hostname>`; an existing self-signed `wip-tls` without it is refused, and the remedy is `kubectl delete secret wip-tls -n <namespace>` and another apply. With `tls external`, your certificate must cover `*.<hostname>`.
-- **Switching an existing install:** `wip-deploy redeploy --name <install> --app-origins subdomain` (or `path`). An install over an existing one keeps its mode unless `--app-origins` says otherwise. Bookmarks keep working through the 301; **non-browser clients of app URLs** (for example a CLI that writes to an app's `server-api`) must use the new origin, because a `POST` does not follow the redirect.
+- **An install saved with `network.app_origins`** (`path` or `subdomain`, from before this was the only mode) loses the field when it is loaded; one that served apps under `/apps/` moves to app origins on its next apply. Apps' images must already serve at the root (the app contract), and non-browser clients of app URLs (for example a CLI that writes to an app's `server-api`) use the app's origin.
 
 ---
 
@@ -909,16 +902,15 @@ spec:
       - {name: WIP_BASE_URL, source: {from_component: router}}
       - {name: WIP_API_KEY,  source: {from_secret: api-key}}
       - {name: PORT,          source: {literal: "3011"}}
-      - {name: APP_BASE_PATH, source: {literal: /apps/rc}}
       - {name: NODE_ENV,      source: {literal: production}}
 
   routes:
-    - {path: /apps/rc, auth_required: true}
+    - {path: /, auth_required: true}
 
   depends_on: [document-store]
 
   healthcheck:
-    endpoint: /apps/rc/health
+    endpoint: /health
     probe: auto
     start_period_seconds: 15
 ```
@@ -998,35 +990,16 @@ Today's `wip-app.yaml` doesn't carry an explicit `auth_mode` field — Shape A v
 
 These bit real apps in real deployments. Internalise them before you ship.
 
-**1. Bake `VITE_BASE_PATH` at build time.** Vite resolves asset URLs at build, not run. Forgetting `--build-arg VITE_BASE_PATH=/apps/<slug>/` produces an app whose HTML references `/assets/...` instead of `/apps/<slug>/assets/...`, and the browser shows "Refused to apply style — MIME type text/html" errors. **This is the #1 deployment failure.** The pattern in your Dockerfile:
-
-```dockerfile
-ARG VITE_BASE_PATH=/
-ENV VITE_BASE_PATH=${VITE_BASE_PATH}
-RUN npm run build
-```
-
-Build with: `podman build --build-arg VITE_BASE_PATH=/apps/<slug>/ -t <image> .`
+**1. Build and serve at `/`.** An app is served at the root of its own origin, `https://<label>.<hostname>/`, and is told no base path: Vite's default `base` (`/`) is the right one, and the manifest may not set `APP_BASE_PATH` / `VITE_BASE_PATH` (it is refused). An image still built for `/apps/<slug>/` loads a blank page: its HTML references `/apps/<slug>/assets/...`, which nothing serves.
 
 **2. Internal traffic is HTTP, not HTTPS.** `WIP_BASE_URL` from inside an app container must be `http://wip-caddy:8080`, not `https://wip-caddy:8443`. Caddy's HTTPS listener uses a self-signed cert that Node's fetch / undici rejects even with `NODE_TLS_REJECT_UNAUTHORIZED=0`. The HTTP listener on `:8080` is the right destination for internal hops.
 
-**3. Mount everything under `APP_BASE_PATH`.** Caddy preserves the full path. Your app receives `/apps/<slug>/health`, `/apps/<slug>/auth/callback`, etc. Use:
-
-```typescript
-const BASE_PATH = process.env.APP_BASE_PATH || ''
-const router = express.Router()
-router.get('/health', ...)
-router.get('/auth/callback', ...)
-app.use(BASE_PATH, router)
-```
-
-Do **not** rely on Caddy stripping the prefix. Do **not** hardcode paths.
+**3. Mount everything at `/`.** Caddy passes the full path to your app: it receives `/health`, `/auth/callback`, and so on. Five paths are the gateway's on every app origin and never reach you: `/auth/handoff`, `/auth/renew`, `/auth/renewed`, `/auth/logout`, `/auth/userinfo`; a manifest route that would cover one is refused.
 
 **4. Sessions behind Caddy.** If your app uses sessions for OIDC:
 
 - `app.set('trust proxy', 1)` — without this Express sees HTTP, not HTTPS, and `Secure` cookies don't go back.
-- Cookie path = `<APP_BASE_PATH>/` with trailing slash.
-- Use a unique cookie name (e.g., `rc.sid`) so apps on the same host don't collide.
+- Cookie path = `/`. Each app has its own origin, so its cookies are its own.
 
 **5. OIDC `state` parameter.** Always include a `state` parameter in the auth request. Dex returns it; `openid-client` / `oauth4webapi` will reject the response without it. Use the library's built-in `authorizationUrl()` rather than constructing the URL manually.
 
@@ -1034,8 +1007,6 @@ Do **not** rely on Caddy stripping the prefix. Do **not** hardcode paths.
 
 | Variable | When | How |
 |---|---|---|
-| `VITE_BASE_PATH` | Build time | `--build-arg` in Dockerfile |
-| `APP_BASE_PATH` | Runtime | env from manifest |
 | `WIP_BASE_URL` | Runtime | env from manifest (`from_component: router`) |
 | `WIP_API_KEY` | Runtime | set by the deployer from the app's own key (`app-<name>`, scoped by `spec.namespaces` / `spec.namespace_access`); only a `privileged_key` app declares `from_secret: api-key` |
 | `OIDC_ISSUER` | Runtime | env (the *external* URL — `https://<hostname>:8443/dex`) |
@@ -1046,10 +1017,10 @@ Do **not** rely on Caddy stripping the prefix. Do **not** hardcode paths.
 |---|---|---|
 | 502 on API calls from the app | TLS error proxying to `https://wip-caddy:8443` | Use `http://wip-caddy:8080` |
 | 401 on API calls | `WIP_API_KEY` mismatch / stale | Recreate containers so all read the current secret |
-| 404 on static assets ("MIME type text/html" errors) | `VITE_BASE_PATH` not baked at build | Add `ARG`/`ENV` to Dockerfile, rebuild with `--build-arg` |
+| Blank page; 404 on `/apps/<slug>/assets/...` | Image built for the old `/apps/<slug>/` base | Rebuild with Vite's default base `/` (§6.3 gotcha 1) |
 | OIDC "unexpected state" | `state` parameter missing | Use the OIDC library's `authorizationUrl()` |
-| OIDC redirect to wrong app | Callback URL missing base path | Mount auth routes under `APP_BASE_PATH`; do not strip prefix |
-| Session lost after Dex redirect | `trust proxy` not set, or wrong cookie path | `app.set('trust proxy', 1)`; cookie path = `<BASE>/` with trailing slash |
+| OIDC redirect to wrong app | Callback not on the app's origin | The deployer registers `https://<label>.<hostname>/<redirect_path>`; mount the callback at that path |
+| Session lost after Dex redirect | `trust proxy` not set, or wrong cookie path | `app.set('trust proxy', 1)`; cookie path = `/` |
 | `${VAR}` literal in container | Env var not resolved | Verify the manifest's `env.required` lists the var with a real `source:` |
 
 ### 6.5 Attached apps — under the umbrella without wip-deploy
@@ -1060,10 +1031,11 @@ deployed by wip-deploy. Its key is an ordinary Console key (§4.3). The
 deployer knows nothing about the app.
 
 **Served by the app edge.** The `app-edge` component reads the active
-attachments every 10 s with its own key, and serves each one at
-`/apps/<name>`: behind the gateway with the record's `allowed_groups`, then
-to the upstream. The public router hands it every `/apps` path that no
-deployed app's longer route claims.
+attachments every 10 s with its own key, and serves each one at the root of
+its own origin, `https://<name>.<hostname>[:port]/`: behind the gateway with
+the record's `allowed_groups`, then to the upstream, every path as the
+browser sent it. The public router hands it every origin under the hostname
+that no deployed app has.
 
 **The edge is an optional module, off by default.** No preset includes
 it: turn it on with `--add app-edge` at install, or `wip-deploy add-module
@@ -1072,7 +1044,8 @@ remove-module app-edge`. It needs the auth gateway and core; the deployer
 refuses it otherwise. Installs made before the default changed keep the edge
 they run. Without the edge:
 
-- an `/apps/<name>` that no deployed app routes answers 404;
+- an origin under the hostname that no deployed app has answers 404 (on
+  k8s) or gets no certificate (compose and dev);
 - the Registry refuses every attachment write (`invalid_state`,
   `details.rule: no_app_edge`), reviving included. Listing, reading and
   deactivating still work, so records from before the edge was removed stay
@@ -1099,8 +1072,8 @@ What the edge guarantees:
 - **Identity:** the app receives `X-WIP-User` / `X-WIP-Groups` from the
   gateway, never a key. Browser-sent identity headers and the gateway's
   `wip_session` cookie are removed. The app's own cookies pass through.
-  `X-Forwarded-Proto` / `X-Forwarded-Host` are set from the install's
-  public URL.
+  `X-Forwarded-Proto` / `X-Forwarded-Host` name the app's own origin as the
+  browser addressed it.
 - **No last-known-good copy:** the edge polls every 10 s. The first poll
   that finds the Registry silent for more than 30 s (in practice between 30
   and about 45 s after its last answer, since a failing poll takes longer)
@@ -1123,10 +1096,14 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   -H "X-API-Key: <admin-key>" -H "Content-Type: application/json" -d '[{"name": "aa"}]'
 ```
 
-- **One record per app**, keyed by `name`, owning `/apps/<name>`. The route
-  fields match a manifest's route: `auth_required`, `allowed_groups`,
-  `strip_prefix`, `preserve_prefix_subpaths`, `redirect_bare_path`,
-  `upstream_host_header`, `streaming`. Then `upstream_tls` (`verify`, and
+- **One record per app**, keyed by `name`, owning the origin
+  `<name>.<hostname>`. The route fields match a manifest's route:
+  `auth_required`, `allowed_groups`, `upstream_host_header`, `streaming`.
+  An attachment is served at its origin's root, so there is no prefix
+  setting; a record stored with `strip_prefix`,
+  `preserve_prefix_subpaths` or `redirect_bare_path` loses them once at
+  the Registry's startup, and a system archive carrying them is refused
+  (restore it on an install from before, and back that install up again). Then `upstream_tls` (`verify`, and
   an optional `ca_pem` holding the CA certificate itself), `display_name`,
   `ui_only` and `health`. Writes are bulk upserts and always answer 200
   with per-item results. **Never deleted:** deactivate it, and write it
@@ -1136,8 +1113,8 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   user). A client that sends only some fields fails with 422 rather than
   silently opening the app to more users. Send the full record you read.
 - **The upstream is scheme, host and optional port only:** no path,
-  credentials, query or fragment. The router proxies `/apps/<name>/…` to
-  the upstream's root; `strip_prefix` drops the prefix.
+  credentials, query or fragment. The router proxies every path of the
+  app's origin to the same path on the upstream.
 - **The host is an IP literal or a DNS name of RFC 1123 labels:** letters,
   digits and inner hyphens, 1 to 63 characters each. An underscore (common
   in container names), an empty label or a non-ASCII name is refused with
@@ -1148,14 +1125,14 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   router's app edge, whose key's group `wip-app-edge` may read attachments
   and nothing else. Every write stays platform admin. A record the deployer
   manages is refused with `managed_by_deployer`.
-- **Platform admin only. Attaching is full trust.** An attached app is
-  served on WIP's own origin, so it receives the sessions of everyone who
-  visits it. Its JavaScript can call every other app as the visitor, React
-  Console included when an admin visits. Attach only apps you trust with your
-  users' sessions. Deployer apps share this origin too.
-- **Refused names:** a route of an app this install deploys
-  (`name_collision`). An apply that would add an app on an attachment's
-  route, active or not, is refused in turn.
+- **Platform admin only. Attaching is trust.** An attached app is served on
+  an origin of its own with a session of its own, so it never receives a
+  visitor's WIP session; but the gateway tells it who its visitors are.
+  Attach only apps you trust with your users' identities.
+- **Refused names:** the label of an app this install deploys
+  (`name_collision`): its origin is taken. An apply that would add an app
+  with an attachment's name as its label, active or not, is refused in
+  turn.
 - **Refused upstreams** (`forbidden`, `details.rule: upstream_blocked`):
   anything resolving to one of the install's own hosts (the deployer
   renders them into `WIP_ATTACH_POLICY_FILE`: its containers and services,
@@ -1460,7 +1437,7 @@ If using SSH stdio and the connection drops:
 | Env change didn't take effect | §7.2 Key rotation | `wip-deploy redeploy --name <install>` (or `podman-compose down && podman-compose up -d`) — a `restart` keeps the old env |
 | "unable to open database file" on Dex | §5.4 Container user mapping | `podman unshare chown 1001:1001 <data-dir>/dex` |
 | App returns 502 calling WIP from inside its container | §6.3 gotcha 2 | Use `http://wip-caddy:8080`, not `https://wip-caddy:8443` |
-| App's static assets return 404 with MIME-type errors | §6.3 gotcha 1 | Bake `VITE_BASE_PATH` at build time with `--build-arg` |
+| App's static assets return 404 with MIME-type errors | §6.3 gotcha 1 | Rebuild the image with Vite's default base `/` |
 | Non-privileged API key gets 403 on every call | §4.5 Namespace scoping | Add a `namespaces` field; or put the key in `wip-admins` / `wip-services` |
 | MongoDB won't start on a network filesystem | §5.3 Network storage | WiredTiger doesn't like some NFS configurations; prefer local storage for MongoDB |
 

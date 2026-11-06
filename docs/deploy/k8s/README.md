@@ -16,7 +16,7 @@ Deploy WIP to a Kubernetes cluster with `wip-deploy --target k8s` — the same s
 
 - WIP's services + infra as Deployments/StatefulSets in a namespace of your choice, images pulled from `ghcr.io/peterseb1969/*`
 - An Ingress exposing WIP at your hostname over HTTPS (self-signed by default)
-- Optional apps (React Console at `/apps/rc/`, WIP-KB at `/apps/kb/`)
+- Optional apps (React Console at `https://rc.<host>/`, WIP-KB at `https://kb.<host>/`, each on an origin of its own)
 - A starter API key + Dex users, stored per the secrets backend
 
 ---
@@ -152,7 +152,7 @@ curl -k https://wip.example.internal/api/registry/health
 # → {"status":"healthy","database":"connected","auth_enabled":true}
 ```
 
-Then open **`https://wip.example.internal/apps/rc/`** and **`/apps/kb/`**. (WIP-KB offers to bootstrap its namespace on first load — accept it.)
+Then open **`https://rc.wip.example.internal/`** and **`https://kb.wip.example.internal/`**. (WIP-KB offers to bootstrap its namespace on first load — accept it.)
 
 ---
 
@@ -162,8 +162,8 @@ The step-5 command enables both UIs. They're **optional** — drop the `--app`/`
 
 | App | `--app` / `--image-tag` name | URL |
 |---|---|---|
-| React Console (admin UI) | `react-console` | `https://<host>/apps/rc/` |
-| WIP-KB (knowledge base) | `wip-kb` | `https://<host>/apps/kb/` |
+| React Console (admin UI) | `react-console` | `https://rc.<host>/` |
+| WIP-KB (knowledge base) | `wip-kb` | `https://kb.<host>/` |
 
 Each app is a separate image with its own tag, so pair every `--app <name>` with `--image-tag <name>=<tag>`. The key is the **image name** (`wip-kb`, **not** `kb`; a mismatched key is silently dropped), and on arm64 nodes the app tag must be multi-arch too. Backend-only, then RC and KB added:
 

@@ -78,7 +78,7 @@ Observed from a live render (wip-song, 2026-06-12):
 | Image | `<name>:dev`, built from your `Dockerfile.dev` | rebuilt on every install |
 | Source | your checkout bind-mounted **rw** at `/app` | edits appear in-container instantly |
 | Dependencies | named volume shadowing `/app/node_modules` | **independent of your host node_modules** — see §4 |
-| `APP_BASE_PATH`, `VITE_BASE_PATH` | `/apps/<name>` | serve everything under this |
+| Base path | none: the app is served at the root of its own origin | serve everything from `/` |
 | `PORT` | your manifest's http port | the healthcheck targets it |
 | `WIP_BASE_URL` | `http://wip-router:8080` | in-network; never localhost |
 | `MCP_URL` | `http://wip-router:8080/mcp` | requires `X-API-Key` on every request (CASE-451) |
@@ -96,9 +96,10 @@ rows** instead of erroring. Scope calls explicitly —
 `@wip/proxy`. Only an app declaring `privileged_key: true` (an admin
 console) gets the install's master key instead.
 
-**Routing:** Caddy serves `https://localhost:8443/apps/<name>/` →
-forward-auth (gateway) → your container. Unmatched paths under the router
-return **empty 200, not 404** (§14 trap) — never use a bare 200 as
+**Routing:** Caddy serves `https://<label>.wip.localhost:8443/` (your
+manifest's `app_metadata.label`) → forward-auth (gateway) → your container.
+Five paths there are the gateway's (`/auth/handoff`, `/auth/renew`,
+`/auth/renewed`, `/auth/logout`, `/auth/userinfo`). Never use a bare 200 as
 evidence your route works; check the body.
 
 ## 4. The hot-reload loop and its boundary
@@ -125,7 +126,7 @@ podman logs --tail 50 wip-<name>               # your dev server's output
 podman exec wip-<name> env | grep WIP          # what you actually received
 ```
 
-The healthcheck hits `http://localhost:<PORT>/apps/<name>/api/health`
+The healthcheck hits `http://localhost:<PORT>/api/health`
 *inside* the container — if your server dies at startup, the container
 shows `(unhealthy)` while vite may still be running; read the logs for the
 `[0]`/`[1]` concurrently streams separately. To prove a platform endpoint

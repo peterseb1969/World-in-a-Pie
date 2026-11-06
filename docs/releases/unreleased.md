@@ -7,6 +7,53 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Every app is served at the root of its own origin; path mode is gone; `@wip/client` 0.84.0
+
+**One cut-over, no compatibility mode.** Every app, deployed or attached, is
+served at `https://<label>.<hostname>[:port]/`. There is no
+`network.app_origins` setting, nothing is served under `/apps/` on WIP's
+origin, and old `/apps/<name>/` URLs answer 404, with no redirect.
+
+- **App manifests:** `app_metadata.route_prefix` (`/apps/rc`) is replaced by
+  `app_metadata.label` (`rc`). Routes and the healthcheck are paths on the
+  app's origin, declared from `/`. A manifest that declares a route or
+  healthcheck under `/apps/`, sets `APP_BASE_PATH` or `VITE_BASE_PATH`, or
+  routes a path covering the gateway's `/auth/handoff`, `/auth/renew`,
+  `/auth/renewed`, `/auth/logout` or `/auth/userinfo` is refused. Every
+  manifest in `apps/` is converted.
+- **App images must be rebuilt** to serve at `/` (Vite's default base, the
+  server's routes at the root). An image built for `/apps/<name>/` breaks on
+  any install redeployed after this change. The manifests in `apps/` still
+  pin the old tags until each app ships a new image; CASE-1115 tracks each
+  app. Until then, run an app that hasn't moved on an install from an image
+  set older than this change.
+- **Hostnames:** an install that serves apps (or runs the app edge) needs a
+  dotted hostname; a dotless one (`localhost`) or an IP address is refused.
+  The dev target's default hostname is now `wip.localhost`.
+- **Saved installs:** the deployer-state format is version 3. Loading a
+  version 2 state drops `network.app_origins`; an install saved with `path`
+  moves to app origins on its next apply. `wip-deploy install` and
+  `redeploy` no longer take `--app-origins`.
+- **Dex:** an app with its own OIDC client gets redirect URIs on its own
+  origin (`https://<label>.<hostname>/<path>`).
+- **The auth gateway:** `WIP_APP_ORIGINS` is gone. A handoff without a usable
+  return path lands at the app origin's `/`, and a login without one at
+  WIP's bare host (`DEFAULT_REDIRECT` defaults to `/`).
+- **Attached apps:** served at the root of their origin, every path as the
+  browser sent it. The attachment fields `strip_prefix`,
+  `preserve_prefix_subpaths` and `redirect_bare_path`, and `path` in
+  attachment responses and bulk results, are removed. Writes that send them
+  answer 422. The Registry drops them from stored records once at startup. A
+  system archive whose attachments carry them is refused: restore it on an
+  install from before this change and back that install up again. An
+  upstream that needed the prefix has to change. `@wip/client` 0.84.0 drops
+  the fields from its types.
+- **The app edge** names the app's own origin in `X-Forwarded-Host` toward
+  the app.
+- **k8s:** app sites behind the Ingress no longer carry a `tls` block (plain
+  HTTP there). That was a latent bug with `tls internal` on k8s.
+- **The scaffold (`--preset query`)** builds and mounts at `/`; its CI no
+  longer passes `VITE_BASE_PATH`.
 ### Event consumers survive a cancelled run; retried events stay deduplicated for an hour
 
 Four fixes in wip-auth's event bus, which every service with NATS uses:

@@ -37,15 +37,15 @@ These are opinionated conventions. They exist to reduce the AI’s decision surf
 
 ## Architecture
 
-The gateway is a reverse proxy (Caddy is recommended for its automatic TLS and simple configuration) that listens on the host’s ports 80 and 443. All constellation apps sit behind it, accessible via path-based routing on a single hostname.
+The gateway is a reverse proxy (Caddy is recommended for its automatic TLS and simple configuration) that listens on the host’s ports 80 and 443. All constellation apps sit behind it, each at the root of an origin of its own under one hostname.
 
 https://your-host.local/ → Portal (landing page)
 
-https://your-host.local/apps/statements/ → Statement Manager (port 3001 internal)
+https://statements.your-host.local/ → Statement Manager (port 3001 internal)
 
-https://your-host.local/apps/receipts/ → Receipt Scanner (port 3002 internal)
+https://receipts.your-host.local/ → Receipt Scanner (port 3002 internal)
 
-https://your-host.local/apps/energy/ → Energy Monitor (port 3003 internal)
+https://energy.your-host.local/ → Energy Monitor (port 3003 internal)
 
 https://your-host.local/console/ → WIP Console (port 8443 internal)
 
@@ -71,7 +71,7 @@ app-manifest.json:
 
 "icon": "bank",
 
-"path": "/apps/statements",
+"label": "statements",
 
 "internal_port": 3001,
 
@@ -112,7 +112,7 @@ The cleanest approach would be conditional behaviour based on the number of regi
 
 Importantly, the WIP Console would be one of the apps listed on the portal — not the portal itself. The Console is an administration and debugging tool; mixing it with app navigation would confuse both audiences. The portal is a separate, minimal UI whose only job is discovery and routing.
 
-**The API proxy is already deployed** — Caddy routes all `/api/*` paths to the correct WIP services. What remains is extending this to handle app routing (`/apps/*`) and auto-generating the portal page from app manifests. The detection mechanism is trivial (count routing entries at startup), and the implementation stays within Caddy’s existing configuration model.
+**The API proxy is already deployed** — Caddy routes all `/api/*` paths to the correct WIP services. What remains is auto-generating the portal page from app manifests. The detection mechanism is trivial (count routing entries at startup), and the implementation stays within Caddy’s existing configuration model.
 
 # Guide 2: UI Stack & Styling
 
@@ -144,7 +144,7 @@ All constellation apps use the same stack:
 | **Components**             | Plain Tailwind               | No component library: build each shape from the class strings in `docs/ui-guidance.md` (card, buttons, modal, badge, chip, list row, page header, empty state). |
 | **Icons**                  | Lucide React                 | Clean, consistent icon set.                                                                                                                      |
 | **Data fetching**          | TanStack Query (React Query) | Handles caching, refetching, loading/error states. Prevents every app from reinventing data fetch patterns.                                      |
-| **Routing**                | React Router v7 (pinned in `docs/technology-stack.md`) | Standard React routing. Apps must support a configurable base path for gateway integration (e.g., /apps/statements/).                            |
+| **Routing**                | React Router v7 (pinned in `docs/technology-stack.md`) | Standard React routing. Each app is served at the root of its own origin (e.g., https://statements.your-host.local/).                            |
 | **Charts / visualisation** | No standard yet              | `docs/ui-guidance.md` has no chart standard; propose one in a case before adding a chart library.                                                |
 
 ## Design tokens
@@ -202,8 +202,8 @@ Each app has a consistent navigation structure:
 ## Where the skeleton is defined
 
 The container shape every app must have — `Dockerfile.dev` and the production
-`Dockerfile`, the Vite `base` and dev-server binding, every server route on a
-Router mounted under `APP_BASE_PATH`, the `/api/app-config` endpoint that
+`Dockerfile`, the Vite `base` and dev-server binding, every server route mounted
+at `/` (the app is served at the root of its own origin), the `/api/app-config` endpoint that
 replaces baked `VITE_*` values, a health endpoint that answers without WIP being
 reachable, and the `apps/<name>/wip-app.yaml` manifest that wires ports, env,
 routes and secrets — is owned by `docs/wip-deployable-app-contract.md`. Its
@@ -231,9 +231,9 @@ Do NOT set this in `start` (production). Production deployments should use prope
 
 All three are defined by the deployable-app contract
 (`docs/wip-deployable-app-contract.md`): the manifest supplies `WIP_BASE_URL`,
-the API key, `APP_BASE_PATH` and `PORT`; the browser reads per-deployment
-values from `/api/app-config` at boot; only `VITE_BASE_PATH` is baked into the
-build; the health endpoint must not depend on WIP.
+the API key and `PORT`; the browser reads per-deployment values from
+`/api/app-config` at boot; no base path is set or baked; the health endpoint
+must not depend on WIP.
 
 # Guide 4: WIP Client Library
 

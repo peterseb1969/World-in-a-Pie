@@ -160,8 +160,8 @@ function MyComponent() {
 
 ### App origins: the session renews itself
 
-When WIP serves each app on its own origin (`https://<app>.<host>`, the
-install's `network.app_origins: subdomain`), the app holds a short-lived
+WIP serves each app at the root of its own origin (`https://<app>.<host>/`),
+and the app holds a short-lived
 session for that origin, handed over by the auth gateway. A page load renews
 it invisibly, but a background `fetch` cannot follow the gateway's redirect,
 so `WipProvider` keeps the session fresh while the app is open: it calls
@@ -169,8 +169,8 @@ so `WipProvider` keeps the session fresh while the app is open: it calls
 minutes (and when a hidden tab becomes visible again) and listens for the
 gateway's answer.
 
-- Where apps are served under `/apps/<name>`, it finds no app origin after the
-  first check and stops.
+- Where the page is not on an app origin (bare local dev without the
+  gateway), it finds none after the first check and stops.
 - When the WIP login has ended (logout, or expiry), the page reloads, which
   signs in again. Pass `onSessionLost` to do something else first, such as
   saving a draft. If the first renewal after that reload fails too, the

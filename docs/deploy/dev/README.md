@@ -17,8 +17,8 @@ Run WIP in **hot-reload development mode** on one machine: the **backend runs fr
 ## What you'll end up with
 
 - The WIP backend running from **this repo's `components/*/src`** (bind-mounted, hot-reloads on edit)
-- Any apps you pass via `--app-source`, each built from its **local checkout** and hot-reloading on edit (e.g. React Console at `/apps/rc/`, WIP-KB at `/apps/kb/`)
-- HTTPS via Caddy on `https://localhost:8443` (self-signed)
+- Any apps you pass via `--app-source`, each built from its **local checkout** and hot-reloading on edit (e.g. React Console at `https://rc.wip.localhost:8443/`, WIP-KB at `https://kb.wip.localhost:8443/`)
+- HTTPS via Caddy on `https://wip.localhost:8443` (self-signed)
 - A starter API key + Dex users, on disk under `~/.wip-deploy/wip/`
 
 ---
@@ -79,17 +79,17 @@ wip-deploy install \
   --preset standard \
   --target dev \
   --name wip \
-  --hostname localhost \
+  --hostname wip.localhost \
   --app-source react-console=../WIP-RC \
   --app-source wip-kb=../WIP-KB
 ```
 
-On success you'll see something like `Services: 13 active, 2 apps` … `✓ Install complete. https://localhost:8443`.
+On success you'll see something like `Services: 13 active, 2 apps` … `✓ Install complete. https://wip.localhost:8443`.
 
 - `--target dev` — bind-mounts backend `src/` + `libs/wip-auth/src` (read-only) and runs `uvicorn --reload`; builds + force-recreates on install and clears stale `wip-*` containers first.
 - `--app-source NAME=PATH` — `NAME` is the app name (`react-console`, `wip-kb`); `PATH` is its app directory. The app is built from that checkout's `Dockerfile.dev`, its source bind-mounted **rw**, deps in a named volume. **Dev-target only.** (To pull an app from a registry image instead of building it, use `--app-from-registry NAME`.)
 - **No `--registry`/`--tag`** — nothing is pulled by tag; the backend runs from this repo's source and the apps from your checkouts.
-- `--hostname localhost` — the dev default (no `/etc/hosts` magic). A resolvable name (DNS/mDNS) works too; `-k` regardless (self-signed).
+- `--hostname wip.localhost` — the dev default (no `/etc/hosts` magic: every `*.localhost` resolves to this machine, and apps get their origins under it). A resolvable name (DNS/mDNS) works too; `-k` regardless (self-signed).
 
 Run from inside this repo (or pass `--repo-root`), same as the quickstart.
 
@@ -101,7 +101,7 @@ wip-deploy status --name wip
 podman ps --format "{{.Names}}  {{.Status}}"          # all (healthy)?
 ```
 
-Then open the app UIs: **`https://localhost:8443/apps/rc/`** (React Console) and **`https://localhost:8443/apps/kb/`** (WIP-KB). (WIP-KB offers to bootstrap its namespace on first load — accept it.)
+Then open the app UIs: **`https://rc.wip.localhost:8443/`** (React Console) and **`https://kb.wip.localhost:8443/`** (WIP-KB). (WIP-KB offers to bootstrap its namespace on first load — accept it.)
 
 ## 6. The hot-reload loop (the whole point)
 

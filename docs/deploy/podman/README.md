@@ -22,7 +22,7 @@ The install below brings up the backend **plus the React Console admin UI**, so 
 
 - The 7 WIP backend services (Registry, Def-Store, Template-Store, Document-Store, Auth-Gateway, Reporting-Sync, MCP Server) from `ghcr.io/peterseb1969/*`
 - Supporting infrastructure (MongoDB, PostgreSQL, NATS, Garage, Dex for OIDC, Caddy) from their upstream public images
-- The **React Console** at `https://localhost:8443/apps/rc/`
+- The **React Console** at `https://rc.wip.localhost:8443/`
 - HTTPS via Caddy on port **8443** (self-signed by default)
 - A starter **API key** (for API/MCP access), written to disk
 
@@ -99,7 +99,7 @@ wip-deploy install \
   --preset standard \
   --target compose \
   --name wip \
-  --hostname localhost \
+  --hostname wip.localhost \
   --registry ghcr.io/peterseb1969 \
   --tag 20260628a \
   --app react-console --image-tag react-console=20260629a
@@ -108,7 +108,7 @@ wip-deploy install \
 - `--preset standard` — core services + Dex (OIDC) + reporting + Garage + MCP. Lighter: `core`, `analytics`; heavier: `full` (adds the async ingest-gateway).
 - `--app react-console` — enables the admin UI; `--image-tag react-console=20260629a` pins the current multi-arch RC build. **An `--image-tag` only takes effect for an app you also `--app`-enable — otherwise it's silently ignored** (so keep the `--app` and its `--image-tag` together).
 - `--name wip` — names the install; its files live in `~/.wip-deploy/wip/` (rendered compose, config, **secrets**, saved spec).
-- `--hostname localhost` — simplest and always works *on the host itself*. See the note below for reaching it by a real hostname.
+- `--hostname wip.localhost` — simplest and always works *on the host itself* (every `*.localhost` resolves to it, and apps get their origins under it; a dotless `localhost` is refused once apps are installed). See the note below for reaching it by a real hostname.
 - TLS is **self-signed by default** — no flag needed.
 - **Production install?** Add `--variant prod`. It injects `WIP_VARIANT=prod` into every backend service, arming their startup guards: a service finding a known-default secret (the documented dev API key, the placeholder session secret) refuses to start instead of running forgeable. Defaults to `dev`; the setting persists in the install's saved spec, so redeploys keep it.
 
@@ -132,7 +132,7 @@ wip-deploy status --name wip
 wip-deploy images --name wip
 ```
 
-All services should read `running / healthy`, then open **`https://localhost:8443/apps/rc/`** in a browser (accept the self-signed cert warning). The console loads directly in the default install.
+All services should read `running / healthy`, then open **`https://rc.wip.localhost:8443/`** in a browser (accept the self-signed cert warning). The console loads directly in the default install.
 
 ## 5. Talk to it (API key)
 
@@ -155,12 +155,12 @@ The same key is what an MCP client uses to connect to the MCP server at `/mcp` (
 
 ## Installing apps (React Console, WIP-KB)
 
-Apps are opt-in with `--app <name>`. Each is its own container image (its own tag) and serves under `/apps/<base>/`:
+Apps are opt-in with `--app <name>`. Each is its own container image (its own tag) and is served at the root of its own origin, `https://<label>.<hostname>/`:
 
 | App | `--app` / `--image-tag` name | URL | Notes |
 |---|---|---|---|
-| React Console (admin UI) | `react-console` | `/apps/rc/` | In the [step 3](#3-install-backend--react-console) default. |
-| WIP-KB (knowledge base) | `wip-kb` | `/apps/kb/` | On first load it offers to bootstrap its namespace — accept it. |
+| React Console (admin UI) | `react-console` | `https://rc.<hostname>/` | In the [step 3](#3-install-backend--react-console) default. |
+| WIP-KB (knowledge base) | `wip-kb` | `https://kb.<hostname>/` | On first load it offers to bootstrap its namespace — accept it. |
 
 > The `--image-tag` key is the **image/app name** — the same value you pass to `--app` (`wip-kb`, **not** `kb`; everything WIP-built carries the `wip-` prefix). A mismatched or non-`--app`-enabled key is **silently dropped** and the service falls back to the base `--tag` — verify what actually deployed with `podman inspect <container> --format '{{.ImageName}}'`.
 
@@ -169,7 +169,7 @@ Apps are opt-in with `--app <name>`. Each is its own container image (its own ta
 ```bash
 wip-deploy install \
   --preset standard --target compose --name wip \
-  --hostname localhost --registry ghcr.io/peterseb1969 --tag 20260628a \
+  --hostname wip.localhost --registry ghcr.io/peterseb1969 --tag 20260628a \
   --app react-console --image-tag react-console=20260629a \
   --app wip-kb --image-tag wip-kb=20260629a
 ```
@@ -180,7 +180,7 @@ wip-deploy install \
 # add WIP-KB to a running "wip" that already had the React Console:
 wip-deploy install \
   --preset standard --target compose --name wip \
-  --hostname localhost --registry ghcr.io/peterseb1969 --tag 20260628a \
+  --hostname wip.localhost --registry ghcr.io/peterseb1969 --tag 20260628a \
   --app react-console --image-tag react-console=20260629a \
   --app wip-kb --image-tag wip-kb=20260629a
 ```
@@ -233,7 +233,7 @@ If you are an AI agent setting WIP up for a user on a single host with podman, f
 4. **Get the CLI** ([step 1](#1-get-the-deployer-cli)) — clone, `git checkout develop`, venv, `pip install -e deployer`. Run `install` from inside the repo (or pass `--repo-root`).
 5. **Install** with the apps the user chose ([step 3](#3-install-backend--react-console) / [Installing apps](#installing-apps-react-console-wip-kb)). Keep each `--app` together with its `--image-tag`, using the same name for both (RC: `react-console=20260629a`; KB: `wip-kb=20260629a` — note the `wip-` prefix, `kb` won't match) — a mismatched or un-`--app`-ed image-tag is silently ignored.
 6. **Verify and report** ([step 4](#4-verify)): curl the health endpoint and **validate the JSON body** (never trust a bare `200`); optionally confirm each app's deployed image with `podman inspect <container> --format '{{.ImageName}}'`. Then tell the user:
-   - the Console URL(s) — `https://localhost:8443/apps/rc/`, `/apps/kb/` (or their real hostname if it resolves),
+   - the Console URL(s) — `https://rc.wip.localhost:8443/`, `https://kb.wip.localhost:8443/` (or under their real hostname if it resolves),
    - their API key: `cat ~/.wip-deploy/wip/secrets/api-key`,
    - how to stop/start ([Day-2](#day-2-operations)).
 7. If a pull returns **403**, it's stale GHCR creds, not privacy — apply the [Troubleshooting](#troubleshooting) fix and retry.
@@ -259,7 +259,7 @@ echo 'UUID=<your-uuid>  /mnt/wip-data  ext4  defaults,noatime  0  2' | sudo tee 
 
 # then install with the SSD as the data dir (add --data-dir to the step 3 command):
 wip-deploy install --preset standard --target compose --name wip \
-  --hostname localhost --registry ghcr.io/peterseb1969 --tag 20260628a \
+  --hostname wip.localhost --registry ghcr.io/peterseb1969 --tag 20260628a \
   --data-dir /mnt/wip-data
 ```
 

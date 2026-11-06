@@ -108,7 +108,7 @@ app-name/
 </QueryClientProvider>
 ```
 
-The `baseUrl` matches `@wip/proxy`'s mount in Express (apps proxy `<base>/wip/api/*` → backend with auth-key injection). The browser never sees the API key. Prefix it with `import.meta.env.BASE_URL`: an app deployed under `/apps/<name>/` serves its proxy at `/apps/<name>/wip`, so a bare `'/wip'` is correct only for an app served at `/`.
+The `baseUrl` matches `@wip/proxy`'s mount in Express (apps proxy `<base>/wip/api/*` → backend with auth-key injection). The browser never sees the API key. Prefix it with `import.meta.env.BASE_URL`: an app is served at the root of its own origin, so that is `/wip`.
 
 ### Router basename
 
