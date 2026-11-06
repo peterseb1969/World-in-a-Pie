@@ -157,6 +157,17 @@ class ArchiveWriter:
         """
         (self._blobs_dir / file_id).write_bytes(data)
 
+    def discard_blob(self, file_id: str) -> None:
+        """Drop a blob written earlier, so the archive carries no bytes for it.
+
+        For a blob that turned out not to be the file's: a download that
+        failed partway through, or bytes whose checksum does not match the
+        file's record. An archive without the blob says so honestly; one with
+        partial bytes would restore them as the file. A blob never written is
+        not an error.
+        """
+        (self._blobs_dir / file_id).unlink(missing_ok=True)
+
     def entity_count(self, entity_type: str, *, namespace: str = "") -> int:
         """Return the number of entities added for (namespace, entity type)."""
         ns = namespace or self._default_namespace

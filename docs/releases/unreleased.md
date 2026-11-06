@@ -61,6 +61,23 @@ re-minted files did the same.
   repair runs once storage is reachable, and finds nothing on an install that
   never ran a fresh restore with files.
 
+### Backups and restores check every file's bytes against its checksum; `wip-archive` 0.25.0
+
+A file download that failed partway through a backup left its partial
+bytes in the archive, and the backup completed. A restore uploaded whatever
+bytes the archive held. Missing or unreadable blobs showed up only in the
+server log.
+
+- **Backup:** each file's bytes are hashed as they stream and checked against
+  the file's SHA-256 `checksum`. A failed or mismatching download is dropped
+  from the archive and **named as a job warning**. The backup still
+  completes, so one lost object never blocks every backup.
+- **Restore** (plain, merge, fresh): only bytes matching the file's checksum
+  are uploaded. Every file restored without its bytes (missing from a backup
+  made with files, unreadable, or mismatching) is named as a job warning.
+- **`wip-archive` 0.25.0:** `ArchiveWriter.discard_blob(file_id)` drops a blob
+  written earlier.
+
 ### Registry: three fixes from the registry-auth review; `@wip/client` 0.83.0
 
 - **A key-file change takes effect at the Registry without a restart.** An

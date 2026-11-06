@@ -654,16 +654,41 @@ class DirectBackupEngine:
         files_db = self._mongo[_DB_DOCUMENT_STORE]["files"]
         query = {"namespace": namespace, "status": {"$ne": "deleted"}}
         count = 0
-        async for file_doc in files_db.find(query, {"file_id": 1, "storage_key": 1}):
+        projection = {"file_id": 1, "storage_key": 1, "checksum": 1}
+        async for file_doc in files_db.find(query, projection):
             file_id = file_doc.get("file_id") or str(file_doc.get("_id"))
             storage_key = file_doc.get("storage_key", file_id)
+            # The bytes are hashed as they stream and checked against the
+            # file's record. A blob that failed partway, or is not the file's,
+            # is dropped from the archive and named on the job: an archive
+            # without the bytes says so, one with partial bytes would restore
+            # them as the file. The backup still completes; every other file
+            # is in it.
+            digest = hashlib.sha256()
             try:
                 with writer.open_blob(file_id) as fh:
                     async for chunk in self._storage.download_stream(storage_key):
                         fh.write(chunk)
-                count += 1
-            except Exception:
+                        digest.update(chunk)
+            except Exception as exc:
                 logger.warning("Failed to download blob for file %s", file_id, exc_info=True)
+                writer.discard_blob(file_id)
+                self._emit(
+                    "warning",
+                    f"[{namespace}] file {file_id}: its bytes could not be read from "
+                    f"storage ({exc}); the backup carries no bytes for it",
+                )
+                continue
+            expected = file_doc.get("checksum")
+            if expected and digest.hexdigest() != expected:
+                writer.discard_blob(file_id)
+                self._emit(
+                    "warning",
+                    f"[{namespace}] file {file_id}: the bytes in storage do not match "
+                    f"its checksum; the backup carries no bytes for it",
+                )
+                continue
+            count += 1
 
         logger.info("Backed up %d blobs for namespace %s", count, namespace)
 
@@ -2206,11 +2231,12 @@ class DirectRestoreEngine:
         if not file_id_map:
             return
         self._emit("phase_blobs", f"Copying {len(file_id_map)} blob(s)", percent=92)
+        checksums = self._archive_file_checksums(reader)
+        report_missing = self._archive_includes_files(reader)
         copied = 0
         for old_id, new_id in file_id_map.items():
-            data = reader.read_blob(old_id)
+            data = self._checked_blob(reader, old_id, checksums.get(old_id), report_missing)
             if data is None:
-                logger.warning("Blob %s missing from archive; skipped", old_id)
                 continue
             await self._storage.upload(
                 storage_key=new_id,
@@ -4952,6 +4978,51 @@ class DirectRestoreEngine:
                 f"First error: {exc.details['writeErrors'][0].get('errmsg', 'unknown')}"
             ) from exc
 
+    @staticmethod
+    def _archive_file_checksums(reader: ArchiveReader) -> dict[str, str | None]:
+        """file_id → checksum of every file row the archive carries."""
+        out: dict[str, str | None] = {}
+        namespaces: list[str | None] = list(reader.list_namespaces() or []) or [None]
+        for ns in namespaces:
+            for row in reader.read_entities("files", namespace=ns) or []:
+                file_id = row.get("file_id")
+                if file_id:
+                    out[file_id] = row.get("checksum")
+        return out
+
+    @staticmethod
+    def _archive_includes_files(reader: ArchiveReader) -> bool:
+        """Whether the backup was made with its files: only then is a file
+        row without a blob a file that lost its bytes."""
+        return bool(getattr(reader.read_manifest(), "include_files", False))
+
+    def _checked_blob(
+        self, reader: ArchiveReader, file_id: str, expected: str | None, report_missing: bool
+    ) -> bytes | None:
+        """The archive's bytes for a file, or None when there are none to
+        restore. Bytes that do not match the file's recorded checksum are not
+        restored: a file without bytes is honest, one with wrong bytes is not.
+        Each file restored without its bytes is named on the job."""
+        data = reader.read_blob(file_id)
+        if data is None:
+            if report_missing:
+                self._emit(
+                    "warning",
+                    f"file {file_id}: the archive carries no bytes for it; "
+                    f"the file is restored without them",
+                )
+            logger.warning("Blob %s missing from archive; skipped", file_id)
+            return None
+        if expected and hashlib.sha256(data).hexdigest() != expected:
+            self._emit(
+                "warning",
+                f"file {file_id}: the archive's bytes do not match its checksum; "
+                f"the file is restored without them",
+            )
+            logger.warning("Blob %s does not match its checksum; not uploaded", file_id)
+            return None
+        return data
+
     async def _restore_blobs(
         self,
         reader: ArchiveReader,
@@ -4966,18 +5037,24 @@ class DirectRestoreEngine:
         had alone.
         """
         assert self._storage is not None
-        blob_ids = reader.list_blobs()
+        checksums = self._archive_file_checksums(reader)
+        report_missing = self._archive_includes_files(reader)
+        wanted = set(reader.list_blobs())
+        # A backup made with its files carries a blob for every file row: a
+        # row without one is a file restored without its bytes, and is named.
+        if report_missing:
+            wanted |= set(checksums)
         if only is not None:
-            blob_ids = [b for b in blob_ids if b in only]
+            wanted &= only
+        blob_ids = sorted(wanted)
         if not blob_ids:
             return
 
         self._emit("phase_blobs", f"Uploading {len(blob_ids)} file blobs", percent=92)
 
         for i, file_id in enumerate(blob_ids):
-            data = reader.read_blob(file_id)
+            data = self._checked_blob(reader, file_id, checksums.get(file_id), report_missing)
             if data is None:
-                logger.warning("Blob %s listed but not readable in archive", file_id)
                 continue
             # Use application/octet-stream as default; the File metadata
             # in MongoDB has the real content_type.

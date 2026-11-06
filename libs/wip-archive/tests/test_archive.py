@@ -188,6 +188,22 @@ class TestArchiveRoundTrip:
 
             assert reader.read_blob("NONEXISTENT") is None
 
+    def test_a_discarded_blob_is_not_in_the_archive(self, tmp_path):
+        """A partly streamed blob dropped with discard_blob() leaves no bytes
+        behind; the other blobs are kept, and a never-written id is no error."""
+        output = tmp_path / "discard.zip"
+        writer = ArchiveWriter(output, default_namespace="wip")
+        with writer.open_blob("FILE-PARTIAL") as fh:
+            fh.write(b"half a fi")
+        writer.add_blob("FILE-WHOLE", b"whole")
+        writer.discard_blob("FILE-PARTIAL")
+        writer.discard_blob("FILE-NEVER-WRITTEN")
+        writer.write(Manifest(namespace="wip", counts=EntityCounts(), include_files=True))
+
+        with ArchiveReader(output) as reader:
+            assert reader.list_blobs() == ["FILE-WHOLE"]
+            assert reader.read_blob("FILE-PARTIAL") is None
+
     def test_manifest_fields_preserved(self, tmp_path):
         """All manifest fields survive round-trip."""
         output = tmp_path / "manifest.zip"

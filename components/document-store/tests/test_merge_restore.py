@@ -300,9 +300,14 @@ class TestMergeInserts:
         # A file the target already had keeps its bytes; re-uploading them
         # would be needless work and, on a checksum match under a different
         # id, an orphan object.
+        import hashlib
+
+        # Real checksums: a restore uploads only bytes that match their file's.
+        content = {"F-EXISTING": b"existing bytes", "F-NEW": b"new bytes"}
+        c1, c2 = (hashlib.sha256(content[f]).hexdigest() for f in ("F-EXISTING", "F-NEW"))
         await _seed_namespace(mongo)
         await _seed(mongo, "files", [
-            {"file_id": "F-EXISTING", "namespace": NAMESPACE, "checksum": "c1"},
+            {"file_id": "F-EXISTING", "namespace": NAMESPACE, "checksum": c1},
         ])
         uploaded: list[str] = []
         storage = MagicMock()
@@ -312,18 +317,15 @@ class TestMergeInserts:
 
         storage.upload = _upload
 
-        await _run_merge(
-            mongo,
-            _archive(
-                {"files": [
-                    {"file_id": "F-EXISTING", "namespace": NAMESPACE,
-                     "checksum": "c1"},
-                    {"file_id": "F-NEW", "namespace": NAMESPACE, "checksum": "c2"},
-                ]},
-                blobs=["F-EXISTING", "F-NEW"],
-            ),
-            storage=storage,
+        reader = _archive(
+            {"files": [
+                {"file_id": "F-EXISTING", "namespace": NAMESPACE, "checksum": c1},
+                {"file_id": "F-NEW", "namespace": NAMESPACE, "checksum": c2},
+            ]},
+            blobs=["F-EXISTING", "F-NEW"],
         )
+        reader.read_blob = MagicMock(side_effect=content.get)
+        await _run_merge(mongo, reader, storage=storage)
 
         assert uploaded == ["F-NEW"]
 
