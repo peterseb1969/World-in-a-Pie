@@ -50,6 +50,50 @@ def current_federated_policy() -> FederatedGroupPolicy | None:
 
 logger = logging.getLogger("auth_gateway.oidc")
 
+
+def header_safe(value: str) -> bool:
+    """Whether `value` can travel in an HTTP header unchanged: latin-1 (what
+    the header encoding allows) and no control characters."""
+    if any(ord(c) < 0x20 or ord(c) == 0x7F for c in value):
+        return False
+    try:
+        value.encode("latin-1")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+def header_safe_groups(groups: object, email: str) -> list[str]:
+    """The token's groups that survive the trip through X-WIP-Groups intact.
+
+    The gateway joins groups with "," and every consumer splits on "," and
+    strips whitespace, so a provider's group "staff,wip-admins" or
+    " wip-admins" would arrive downstream as "wip-admins", past the reserved-
+    group filter, which compares whole names. A name the header cannot carry
+    at all (outside latin-1) made every /auth/verify for that user a 500.
+    Such names are dropped with a warning, for local and federated users
+    alike; the login keeps the user's other groups.
+    """
+    if not isinstance(groups, list):
+        if groups:
+            logger.warning("Ignoring a non-list groups claim for %s", email)
+        return []
+    kept: list[str] = []
+    for g in groups:
+        if (
+            isinstance(g, str)
+            and g
+            and g == g.strip()
+            and "," not in g
+            and header_safe(g)
+        ):
+            kept.append(g)
+        else:
+            logger.warning(
+                "Dropping group %r of %s: it cannot be carried in X-WIP-Groups unchanged", g, email
+            )
+    return kept
+
 # ---------------------------------------------------------------------------
 # OIDC metadata discovery — fetch from internal Dex URL
 # ---------------------------------------------------------------------------
@@ -202,7 +246,7 @@ async def exchange_code(request: Request) -> dict[str, Any]:
     payload_b64 += "=" * (4 - len(payload_b64) % 4)
     claims = json.loads(base64.urlsafe_b64decode(payload_b64))
 
-    groups = claims.get("groups", [])
+    groups = header_safe_groups(claims.get("groups", []), claims.get("email", ""))
     policy = current_federated_policy()
     if policy is not None:
         groups = policy.apply(claims, groups)

@@ -142,6 +142,23 @@ run on every install with the auth gateway. It is now the optional module
   by hand; the extra `app-edge` entry is then reported as an unknown module
   by the older deployer, so remove it from `modules.optional` as well.
 
+### Group names that can't travel in `X-WIP-Groups` are dropped at login
+
+The gateway joins a user's groups with `,` into `X-WIP-Groups`, and every
+consumer splits on `,` and trims spaces. The reserved-group filter compares
+whole names. So a federated provider's group named `staff,wip-admins`, or
+` wip-admins` with a leading space, passed the filter and arrived downstream
+as `wip-admins`.
+
+- **At login, the gateway drops any group name** that is empty, has leading or
+  trailing spaces, contains a comma or a control character, or holds
+  characters outside latin-1. It logs a warning, and the user keeps their
+  other groups. This applies to every user, local Dex users included.
+- **An email the identity header can't carry** (outside latin-1, or with
+  control characters) is refused at login with a 403 and a reason. It used
+  to make every later request a 500.
+- **Needs the new auth-gateway image.**
+
 ### Login returns only to this install; query strings survive login; `--tls external` is k8s-only
 
 - **Login can't end on another site.** `/auth/login?return_to=…` used to send

@@ -224,6 +224,22 @@ async def callback(request: Request):
             content={"error": "Authentication failed", "detail": str(exc)},
         )
 
+    # The email travels as X-WIP-User on every request. One the header
+    # cannot carry would turn each of them into a 500, so refuse it here,
+    # once, with a reason.
+    from .oidc import header_safe
+
+    if not header_safe(user_info["email"]):
+        logger.warning("Login refused: email %r cannot be carried in X-WIP-User", user_info["email"])
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "forbidden",
+                "detail": "This account's email cannot be carried in WIP's identity header "
+                "(it holds characters outside latin-1 or control characters).",
+            },
+        )
+
     # Populate session.
     request.session["email"] = user_info["email"]
     request.session["groups"] = user_info.get("groups", [])
