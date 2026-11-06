@@ -176,24 +176,50 @@ def _is_referent_field(field: dict[str, Any]) -> bool:
     return False
 
 
+is_referent_field = _is_referent_field
+
+
 def referent_identity_fields(
     identity_fields: list[str],
     template_fields: list[dict[str, Any]],
+    referent_paths: list[str] | None = None,
 ) -> set[str]:
     """The identity fields whose values are referents (term / reference typed).
 
-    These fields fall under the resolved-referent feed rule. Lookup is by the
-    identity path's top-level segment, so a dotted identity path into an
-    object field never matches here and keeps feeding its submitted value,
-    even when it names a term or reference field of the nested template that
-    validation resolves. Feeding those resolutions instead would re-hash every
-    existing document whose identity uses such a path.
+    These fields fall under the resolved-referent feed rule, nested paths
+    included: ``address.country`` is a referent when ``country`` is a term or
+    reference field of the template ``address`` nests.
+
+    ``referent_paths`` is the template's own ``referent_identity_paths``: the
+    template store works it out when a version is written, walking nested
+    templates at their pinned versions, and stores it with the version. Pass
+    it whenever the template carries it; it is the complete answer.
+
+    Without it (a template stored before the field existed, read from an
+    old archive), a path is classified by the top-level field alone, which
+    is exact for every path without a dot. A dotted path into a nested
+    template cannot be classified from these fields, so it raises
+    ``ValueError`` rather than guess: hashing a referent's spelling would
+    fork the document on its next write.
     """
+    if referent_paths is not None:
+        declared = set(referent_paths)
+        return {path for path in identity_fields if path in declared}
     fields_by_name = {f.get("name"): f for f in template_fields}
     referent: set[str] = set()
     for path in identity_fields:
-        field = fields_by_name.get(path.split(".", 1)[0])
-        if field is not None and _is_referent_field(field):
+        head, _, rest = path.partition(".")
+        field = fields_by_name.get(head)
+        if field is None:
+            continue
+        if rest and field.get("type") == "object" and field.get("template_ref"):
+            raise ValueError(
+                f"Identity field '{path}' is a path into a nested template and "
+                "the template carries no referent_identity_paths; it cannot be "
+                "classified (the template store fills the field in when it "
+                "starts, and on every version it writes)"
+            )
+        if not rest and _is_referent_field(field):
             referent.add(path)
     return referent
 
@@ -277,17 +303,20 @@ def resolved_identity_values(
     template_fields: list[dict[str, Any]],
     term_references: list[dict[str, Any]] | None,
     references: list[dict[str, Any]] | None,
+    referent_paths: list[str] | None = None,
 ) -> dict[str, Any]:
     """One-call feed derivation: extract, then substitute resolved referents.
 
     This is the full DECISION-2 feed as one step, for callers that hold a
     document plus its stored resolution arrays (integrity checks, restore
-    rehash, migration tooling, external loaders). Raises ``ValueError`` for a
-    missing identity field (extraction) or an unresolved referent identity
-    field (fail-closed substitution).
+    rehash, migration tooling, external loaders). ``referent_paths`` is the
+    template's ``referent_identity_paths`` (see ``referent_identity_fields``).
+    Raises ``ValueError`` for a missing identity field (extraction), an
+    unresolved referent identity field (fail-closed substitution), or a nested
+    identity path on a template without ``referent_identity_paths``.
     """
     values = extract_identity_values(data, identity_fields)
-    referent = referent_identity_fields(identity_fields, template_fields)
+    referent = referent_identity_fields(identity_fields, template_fields, referent_paths)
     if not referent:
         return values
     resolutions = build_referent_resolutions(term_references, references)
@@ -300,6 +329,7 @@ __all__ = [
     "compute_identity_hash",
     "compute_normalized_hash",
     "extract_identity_values",
+    "is_referent_field",
     "normalize_value",
     "referent_identity_fields",
     "resolved_identity_values",

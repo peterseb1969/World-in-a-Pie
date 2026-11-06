@@ -152,6 +152,7 @@ class DocumentCheck:
             values = resolved_identity_values(
                 row.get("data") or {}, list(identity_fields), list(template.get("fields") or []),
                 row.get("term_references"), row.get("references"),
+                template.get("referent_identity_paths"),
             )
             recomputed: str | None = compute_composite_key_hash(values)
         except (ValueError, KeyError, TypeError):

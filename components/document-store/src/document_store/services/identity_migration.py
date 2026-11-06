@@ -107,10 +107,10 @@ class RehashReport:
 
 
 async def _template_shape(
-    cache: dict[tuple[str, int], tuple[list[str], list[dict[str, Any]]] | None],
+    cache: dict[tuple[str, int], tuple[list[str], list[dict[str, Any]], list[str] | None] | None],
     template_id: str,
     version: int,
-) -> tuple[list[str], list[dict[str, Any]]] | None:
+) -> tuple[list[str], list[dict[str, Any]], list[str] | None] | None:
     key = (template_id, version)
     if key in cache:
         return cache[key]
@@ -125,6 +125,7 @@ async def _template_shape(
         else (
             list(template.get("identity_fields") or []),
             list(template.get("fields") or []),
+            template.get("referent_identity_paths"),
         )
     )
     cache[key] = shape
@@ -145,7 +146,9 @@ async def rehash_identities(
     from ..models.document import Document
 
     report = RehashReport(namespace=namespace, dry_run=dry_run)
-    shape_cache: dict[tuple[str, int], tuple[list[str], list[dict[str, Any]]] | None] = {}
+    shape_cache: dict[
+        tuple[str, int], tuple[list[str], list[dict[str, Any]], list[str] | None] | None
+    ] = {}
     collection = Document.get_motor_collection()
 
     # Latest version row per document_id in the namespace (any status — the
@@ -192,11 +195,20 @@ async def rehash_identities(
             report.errors += 1
             report.items.append(item)
             continue
-        identity_fields, template_fields = shape
+        identity_fields, template_fields, referent_paths = shape
         if not identity_fields:
             report.unchanged += 1
             continue
-        referent_fields = referent_identity_fields(identity_fields, template_fields)
+        try:
+            referent_fields = referent_identity_fields(
+                identity_fields, template_fields, referent_paths
+            )
+        except ValueError as exc:
+            item.status = "error"
+            item.detail = str(exc)
+            report.errors += 1
+            report.items.append(item)
+            continue
         if not referent_fields:
             report.unchanged += 1
             continue

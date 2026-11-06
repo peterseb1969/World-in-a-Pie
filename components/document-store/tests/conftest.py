@@ -204,6 +204,39 @@ _TEMPLATE_DEFS = [
         "rules": [],
     },
     {
+        # Nested template for NESTED_TERM_IDENTITY (CASE-1090).
+        "legacy_key": "TPL-NESTED-ADDRESS",
+        "value": "NESTED_ADDRESS",
+        "label": "Nested Address",
+        "version": 1,
+        "status": "active",
+        "identity_fields": [],
+        "fields": [
+            {"name": "street", "label": "Street", "type": "string", "mandatory": False},
+            {"name": "country", "label": "Country", "type": "term",
+             "terminology_ref": "COUNTRY", "mandatory": True},
+        ],
+        "rules": [],
+    },
+    {
+        # A term at a dotted identity path (address.country) feeds its
+        # resolved term_id like a top-level one: aliases are one identity.
+        "legacy_key": "TPL-NESTED-TERM-IDENTITY",
+        "value": "NESTED_TERM_IDENTITY",
+        "label": "Nested Term Identity",
+        "version": 1,
+        "status": "active",
+        "identity_fields": ["name", "address.country"],
+        "referent_identity_paths": ["address.country"],
+        "fields": [
+            {"name": "name", "label": "Name", "type": "string", "mandatory": True},
+            {"name": "address", "label": "Address", "type": "object",
+             "template_ref": "TPL-NESTED-ADDRESS", "template_ref_version": 1,
+             "mandatory": True},
+        ],
+        "rules": [],
+    },
+    {
         # Term-typed identity field: the CASE-847 resolved-referent feed —
         # aliases of one term converge on one document; resolution outage on
         # the identity field fails the write (fail-closed).
@@ -622,9 +655,15 @@ def _build_sample_templates(id_map: dict[str, str]) -> dict[str, dict]:
             # defs are rebuilt per test with fresh ids.
             "fields": [
                 {**f, "target_templates": [id_map.get(t, t) for t in f["target_templates"]]}
-                if f.get("target_templates") else f
+                if f.get("target_templates")
+                # A nested template_ref naming a fixture's legacy key likewise.
+                else {**f, "template_ref": id_map.get(f["template_ref"], f["template_ref"])}
+                if f.get("template_ref") else f
                 for f in tdef["fields"]
             ],
+            # What the template store records on a written version (None:
+            # stored before it existed, which the hasher must handle too).
+            "referent_identity_paths": tdef.get("referent_identity_paths"),
             "rules": tdef["rules"],
             # Phase-1 fields — pass through with sensible defaults so legacy
             # template defs (which omit them) still produce valid mock data.

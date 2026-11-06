@@ -7,6 +7,30 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Nested identity paths follow the resolved-referent rule; `wip-archive` 0.26.0
+
+A term- or reference-typed identity field feeds the identity hash the
+canonical ID it resolves to. A dotted identity path into an object field
+(`address.country`, where `country` is a term of the nested template) fed the
+submitted spelling instead, so two aliases of one term made two documents. It
+now feeds the resolved ID like a top-level field, and is fail-closed like one.
+
+- **Templates** carry a new server-owned field, `referent_identity_paths`: the
+  identity paths whose value is a term or a reference, worked out by the
+  template store when a non-draft version is written (activation, for
+  drafts). It is filled in at template-store startup for versions stored
+  before. A write that sends it is refused (422).
+- **Callers that compute identity hashes** pass it as `referent_paths` to
+  `resolved_identity_values` / `referent_identity_fields` (wip-auth and
+  `wip-archive` 0.26.0). Without it, a dotted path into a nested template is
+  refused rather than guessed.
+- **No existing documents change.** Before this change no template on dev-test,
+  prod-test, kb, wip-k3s, wip-kubi or the local default install had a dotted
+  identity path, so no hash moves and no re-hash is needed. An install with
+  such a template should re-hash its documents with
+  `POST /api/document-store/maintenance/rehash-identities` (admin on the
+  namespace; dry run first) before writing under a second spelling.
+
 ### A read-only key can no longer migrate documents by omitting the namespace
 
 `POST /api/document-store/documents/migrate` needs write on the cohort's

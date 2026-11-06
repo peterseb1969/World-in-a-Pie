@@ -1494,11 +1494,17 @@ class DirectRestoreEngine:
                     for template in entities_by_type.get("templates", [])
                     if isinstance(value := template.get("value"), str) and value
                 }
+                referent_paths = {
+                    value: template.get("referent_identity_paths")
+                    for template in entities_by_type.get("templates", [])
+                    if isinstance(value := template.get("value"), str) and value
+                }
                 remap_sources.append(RemapSource(
                     source=src, target=target,
                     entities_by_type=entities_by_type,
                     identity_fields=identity_fields,
                     template_fields=template_fields,
+                    referent_paths=referent_paths,
                     document_chains=document_chains,
                 ))
 

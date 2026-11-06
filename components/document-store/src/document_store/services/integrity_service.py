@@ -118,7 +118,7 @@ _term_check_cache: dict[str, bool] = {}  # term_id -> exists
 # not be read. Identity verification needs the field list, and fetching it per
 # document would be one HTTP call per row.
 _identity_fields_cache: dict[
-    tuple[str, int], tuple[list[str], list[dict[str, Any]]] | None
+    tuple[str, int], tuple[list[str], list[dict[str, Any]], list[str] | None] | None
 ] = {}
 
 
@@ -407,8 +407,9 @@ async def check_batch_references(
 
 async def _identity_shape_for(
     template_id: str, version: int
-) -> tuple[list[str], list[dict[str, Any]]] | None:
-    """The template version's (identity_fields, fields), cached. None = unreadable.
+) -> tuple[list[str], list[dict[str, Any]], list[str] | None] | None:
+    """The template version's (identity_fields, fields, referent_identity_paths),
+    cached. None = unreadable.
 
     Both halves are needed to recompute a hash: identity_fields names the
     feed, and the field definitions decide which identity fields are
@@ -431,6 +432,7 @@ async def _identity_shape_for(
         else (
             list(template.get("identity_fields") or []),
             list(template.get("fields") or []),
+            template.get("referent_identity_paths"),
         )
     )
     _identity_fields_cache[key] = shape
@@ -457,7 +459,7 @@ async def check_identity_hash(
     )
     if shape is None:
         return  # template unreadable — the orphaned-template check reports it
-    identity_fields, template_fields = shape
+    identity_fields, template_fields, referent_paths = shape
 
     if not identity_fields:
         if document.identity_hash:
@@ -499,7 +501,7 @@ async def check_identity_hash(
     try:
         values = substitute_resolved_referents(
             values,
-            referent_identity_fields(identity_fields, template_fields),
+            referent_identity_fields(identity_fields, template_fields, referent_paths),
             build_referent_resolutions(
                 document.term_references, document.references
             ),

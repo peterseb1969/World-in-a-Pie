@@ -180,6 +180,7 @@ def _assess_document(
             recomputed: str | None = compute_composite_key_hash(resolved_identity_values(
                 data, list(identity_fields), list(target.get("fields") or []),
                 outcome.term_references, row.get("references"),
+                target.get("referent_identity_paths"),
             ))
         except (ValueError, KeyError, TypeError):
             recomputed = None

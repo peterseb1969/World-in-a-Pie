@@ -96,6 +96,9 @@ class RemapSource:
     # identity_fields: the resolved-referent rehash needs to know which
     # identity fields are term/reference typed.
     template_fields: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # template value -> the template's referent_identity_paths (None for an
+    # archive written before the field existed).
+    referent_paths: dict[str, list[str] | None] = field(default_factory=dict)
     # Streamed documents: when set, ``entities_by_type["documents"]`` holds
     # ONE compact row per document (what its Registry key needs) and this
     # re-reads the archive's version chains, so the plan never holds the
@@ -231,6 +234,7 @@ class RemapRestore:
         *,
         identity_fields_by_template: dict[str, list[str]] | None = None,
         template_fields_by_template: dict[str, list[dict[str, Any]]] | None = None,
+        referent_paths_by_template: dict[str, list[str] | None] | None = None,
         document_chains: Callable[[], Iterator[list[dict[str, Any]]]] | None = None,
     ):
         self._provision = provision
@@ -242,6 +246,7 @@ class RemapRestore:
         # template value -> field definitions — which identity fields are
         # referent-typed (resolved-referent feed) during the rehash.
         self._template_fields = template_fields_by_template or {}
+        self._referent_paths = referent_paths_by_template or {}
 
     async def plan(
         self,
@@ -465,6 +470,7 @@ class RemapRestore:
             row,
             self._identity_fields.get(template_value) or [],
             self._template_fields.get(template_value) or [],
+            self._referent_paths.get(template_value),
         )
 
 
@@ -472,6 +478,7 @@ def rehash_document_row(
     row: dict[str, Any],
     identity_fields: list[str],
     template_fields: list[dict[str, Any]],
+    referent_paths: list[str] | None = None,
 ) -> bool:
     """Recompute a rewritten document row's identity hash in place; True if
     it changed.
@@ -497,7 +504,7 @@ def rehash_document_row(
         values = extract_identity_values(row.get("data") or {}, identity_fields)
         values = substitute_resolved_referents(
             values,
-            referent_identity_fields(identity_fields, template_fields),
+            referent_identity_fields(identity_fields, template_fields, referent_paths),
             build_referent_resolutions(
                 row.get("term_references"), row.get("references")
             ),
@@ -541,6 +548,7 @@ async def plan_multi(
             remapper,
             identity_fields_by_template=s.identity_fields,
             template_fields_by_template=s.template_fields,
+            referent_paths_by_template=s.referent_paths,
             document_chains=s.document_chains,
         )
         for s in sources

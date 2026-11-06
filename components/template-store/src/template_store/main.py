@@ -139,6 +139,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Startup integrity check failed: {e}")
 
+    # Versions stored before referent_identity_paths existed get it now. A
+    # nested identity path cannot be hashed without it; nothing else changes.
+    try:
+        from .services.referent_paths import backfill as backfill_referent_paths
+        stamped = await backfill_referent_paths()
+        if stamped:
+            logger.info(f"referent_identity_paths: filled in on {stamped} template version(s)")
+    except Exception as e:
+        logger.warning(f"referent_identity_paths backfill failed: {e}")
+
     # Start key sync (picks up runtime API keys from Registry)
     key_sync = await setup_key_sync(
         _providers,

@@ -38,6 +38,7 @@ from ..models.template import (
     TemplateMetadata,
     TemplateUsage,
 )
+from . import referent_paths
 from .def_store_client import DefStoreError, get_def_store_client
 from .document_store_client import get_document_store_client
 from .errors import TemplateError, TemplateUnresolvable, error_fields
@@ -662,6 +663,7 @@ class TemplateService:
             status=request.status or "active",
             created_by=actor,
         )
+        await TemplateService._stamp_referent_paths(template)
         await template.insert()
 
         # Register auto-synonym for human-readable resolution
@@ -727,6 +729,36 @@ class TemplateService:
             code = (
                 "reference_violation"
                 if e.rule in ("missing_parent", "unpinned_parent")
+                else "invalid_state"
+            )
+            raise TemplateError(str(e), code, rule=e.rule) from e
+
+    @staticmethod
+    async def _stamp_referent_paths(template: Template) -> None:
+        """Set a version's server-owned referent_identity_paths before it is
+        saved. Drafts stay unset: their parents and nested templates may not
+        exist yet, and activation sets it."""
+        if template.status == "draft":
+            template.referent_identity_paths = None
+            return
+        template.referent_identity_paths = await TemplateService._referent_paths_or_refuse(
+            template
+        )
+
+    @staticmethod
+    async def _referent_paths_or_refuse(
+        template: Template,
+        overrides: dict[tuple[str, int], Template] | None = None,
+    ) -> list[str]:
+        """The version's referent identity paths, or a refused write when a
+        parent or nested template on an identity path cannot be read (the
+        answer would be a guess)."""
+        try:
+            return await referent_paths.referent_identity_paths(template, overrides)
+        except InheritanceError as e:
+            code = (
+                "reference_violation"
+                if e.rule in ("missing_parent", "unpinned_parent", "missing_nested_template")
                 else "invalid_state"
             )
             raise TemplateError(str(e), code, rule=e.rule) from e
@@ -1641,6 +1673,7 @@ class TemplateService:
             updated_at=datetime.now(UTC),
             updated_by=actor,
         )
+        await TemplateService._stamp_referent_paths(new_template)
         was_retired = await Template.find_one(
             {"template_id": original.template_id, "status": "active"}
         ) is None
@@ -2781,6 +2814,7 @@ class TemplateService:
                     updated_at=datetime.now(UTC),
                     updated_by=actor,
                 )
+                await TemplateService._stamp_referent_paths(new_child)
                 await new_child.insert()
 
                 # Publish event
@@ -3317,6 +3351,13 @@ class TemplateService:
                 t.template_id, t.extends, t.extends_version, overrides=set_by_version
             )
 
+        # Work out each member's referent identity paths before saving any,
+        # so nothing is activated if one cannot be classified.
+        for t in activation_set:
+            t.referent_identity_paths = await TemplateService._referent_paths_or_refuse(
+                t, overrides=set_by_version
+            )
+
         # Activate all templates in the set
         actor = get_identity_string()
         now = datetime.now(UTC)
@@ -3474,6 +3515,7 @@ class TemplateService:
             extends=t.extends,
             extends_version=t.extends_version,
             identity_fields=t.identity_fields,
+            referent_identity_paths=t.referent_identity_paths,
             header_fields=t.header_fields,
             renames=t.renames,
             usage=t.usage,

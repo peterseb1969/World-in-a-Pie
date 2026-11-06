@@ -203,6 +203,18 @@ class Template(Document):
         default_factory=list,
         description="Fields that form the composite identity key for documents"
     )
+    referent_identity_paths: list[str] | None = Field(
+        default=None,
+        description=(
+            "Server-owned, never accepted on a write: the identity_fields paths "
+            "whose value is a term or a reference, nested paths into object "
+            "fields included (address.country). These feed the identity hash "
+            "the canonical ID they resolve to. Worked out when a non-draft "
+            "version is written, from the resolved identity_fields and fields "
+            "and the nested templates at their pinned versions, so it never "
+            "changes afterwards. Null on drafts."
+        ),
+    )
 
     # Peer-projection fields (CASE-343). Names of fields the platform
     # should include when projecting this template's documents in compact

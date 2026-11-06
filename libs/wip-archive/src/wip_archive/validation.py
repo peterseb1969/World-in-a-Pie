@@ -589,7 +589,13 @@ class OfflineValidator:
         identity_fields = template.get("identity_fields") or []
         # Elements (tags[0]) of a referent identity field feed the identity
         # hash too, as live: an ambiguous name there is refused.
-        referent = referent_identity_fields(identity_fields, template.get("fields") or [])
+        try:
+            referent = referent_identity_fields(
+                identity_fields, template.get("fields") or [],
+                template.get("referent_identity_paths"),
+            )
+        except ValueError:
+            referent = set()  # the identity check reports the template
         for path, terminology_ref, value in self._collect_term_values(
             data, template.get("fields", []), template_ns, result,
         ):

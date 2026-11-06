@@ -315,6 +315,9 @@ class TemplateResponse(BaseModel):
     extends: str | None = None
     extends_version: int | None = None
     identity_fields: list[str] = []
+    # Server-owned: the identity paths whose value is a term or reference,
+    # nested paths included; null on drafts. See the Template model.
+    referent_identity_paths: list[str] | None = None
     header_fields: list[str] = []
     renames: dict[str, str] | None = None
     usage: TemplateUsage = TemplateUsage.ENTITY

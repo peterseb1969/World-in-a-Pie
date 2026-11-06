@@ -914,7 +914,9 @@ sensitivity is the vocabulary's call: two case-variant TERMS stay distinct,
 two aliases of one term merge. The rule is fail-closed: a write whose
 identity field cannot be resolved (resolution service down) is REJECTED
 rather than hashed from the spelling; non-identity term fields keep their
-degrade-to-warning behavior. Corollary trap: two genuinely different things aliased onto one
+degrade-to-warning behavior. The rule holds at any depth: a dotted identity
+path into an object field (address.country) follows its leaf field's type in
+the nested template. Corollary trap: two genuinely different things aliased onto one
 term now merge into one identity — that is an alias-curation problem the
 merge makes visible, not something any hasher can solve.
 

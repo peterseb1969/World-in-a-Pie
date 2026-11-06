@@ -1214,6 +1214,7 @@ The algorithm above is only half the contract — the other half is **what feeds
 | `reference` / `reference_type: terminology` | the `terminology_id` |
 | `reference` / `reference_type: template` | the `template_id` |
 | array of term / reference items | element-wise, same rules (`field[i]`) |
+| a dotted path into an object field (`address.country`) | by the leaf field's type in the nested template, same rules |
 | everything else (string, number, date, …) | the submitted value, as before |
 
 Every alias, case variant or synonym of one referent therefore yields **one identity** — two writers naming the same term by different aliases update one document instead of forking two — and a term rename does not fork documents either. Case sensitivity is decided by the vocabulary, not the hasher: if a terminology treats `Foo` and `foo` as two terms, they resolve to two IDs and stay distinct.
@@ -1228,7 +1229,9 @@ The rule is **fail-closed**: a write whose referent identity field cannot be res
 # → "73c1010376586438c3e0ea72e858ea2cfe0637b3caedc8d1798ae475ac684f98"  (both spellings)
 ```
 
-External computers of the hash apply the same feed: `wip_auth.document_identity` exposes `resolved_identity_values(data, identity_fields, template_fields, term_references, references)` (and the composable `referent_identity_fields` / `build_referent_resolutions` / `substitute_resolved_referents`). A document's stored `term_references` / `references[]` arrays carry the resolved IDs, so the feed is recomputable offline from stored state.
+External computers of the hash apply the same feed: `wip_auth.document_identity` exposes `resolved_identity_values(data, identity_fields, template_fields, term_references, references, referent_paths)` (and the composable `referent_identity_fields` / `build_referent_resolutions` / `substitute_resolved_referents`). A document's stored `term_references` / `references[]` arrays carry the resolved IDs, so the feed is recomputable offline from stored state.
+
+Which identity paths are referents is recorded on the template: every non-draft version carries the server-owned `referent_identity_paths`, worked out by the template store when the version is written (the resolved `identity_fields` and fields, and each nested template at its pinned `template_ref_version`). Pass it as `referent_paths`. Without it, a path is classified by its top-level field, which is exact for every path without a dot; a dotted path into a nested template is refused (`ValueError`), because it cannot be classified from the top-level fields and a guess could fork the document.
 
 Decided platform-wide in DECISION-2 (2026-10-02); implemented via CASE-847. No spelling-sensitive opt-out exists.
 

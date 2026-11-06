@@ -57,9 +57,14 @@ def _feeds_identity(field_path: str, template: dict[str, Any]) -> bool:
     if field_path in identity_fields:
         return True
     base = _ELEMENT_SUFFIX.sub("", field_path)
-    return base != field_path and base in referent_identity_fields(
-        identity_fields, template.get("fields") or []
-    )
+    try:
+        referent = referent_identity_fields(
+            identity_fields, template.get("fields") or [],
+            template.get("referent_identity_paths"),
+        )
+    except ValueError:
+        return False  # the identity step refuses the write with the reason
+    return base != field_path and base in referent
 
 
 class ValidationResult:
@@ -2654,9 +2659,14 @@ class ValidationService:
             return
 
         result.submitted_identity_values = submitted
-        referent_fields = referent_identity_fields(
-            identity_fields, template.get("fields", [])
-        )
+        try:
+            referent_fields = referent_identity_fields(
+                identity_fields, template.get("fields", []),
+                template.get("referent_identity_paths"),
+            )
+        except ValueError as e:
+            result.add_error(code="identity_resolution_failed", message=str(e))
+            return
         if not referent_fields:
             result.identity_values = submitted
             return

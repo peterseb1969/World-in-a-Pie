@@ -69,7 +69,7 @@ def identity_hash(
         return None
     return compute_composite_key_hash(resolved_identity_values(
         data, identity_fields, list(template.get("fields") or []),
-        term_references, references,
+        term_references, references, template.get("referent_identity_paths"),
     ))
 
 
