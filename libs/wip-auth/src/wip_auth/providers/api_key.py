@@ -7,11 +7,13 @@ cached, and recently rejected keys are cached too.
 Legacy SHA-256 hashes are detected and verified with a deprecation warning.
 """
 
+import asyncio
 import hashlib
 import hmac
 import logging
 import threading
 import time
+import weakref
 from collections import OrderedDict
 from datetime import UTC, datetime
 from typing import Any
@@ -29,6 +31,11 @@ logger = logging.getLogger("wip_auth.api_key")
 # valid.
 _REJECTED_MAX = 1024
 _REJECTED_TTL_SECONDS = 60.0
+# Slow-path checks (bcrypt against every stored key) running at once, per
+# event loop. Each holds a worker thread for N x ~170 ms; two keep a first-time
+# key's check moving without letting a flood of unknown values take every
+# thread the loop's executor has.
+_SLOW_PATH_CONCURRENCY = 2
 
 
 def _monotonic() -> float:
@@ -167,6 +174,13 @@ class APIKeyProvider:
         self._verified_cache: dict[str, APIKeyRecord] = {}
         # SHA-256(plaintext_key) → monotonic expiry, for keys matching nothing.
         self._rejected: OrderedDict[str, float] = OrderedDict()
+        # The slow path (bcrypt against every stored key) runs in a worker
+        # thread, at most _SLOW_PATH_CONCURRENCY at a time per event loop,
+        # so a flood of unknown values never blocks the loop. One semaphore
+        # per loop: an asyncio.Semaphore binds to the loop it first waits on.
+        self._slow_path: weakref.WeakKeyDictionary[Any, asyncio.Semaphore] = (
+            weakref.WeakKeyDictionary()
+        )
 
         # Runtime keys are the Registry's keys, copied here by key sync; the
         # copy is a cache and answers only until this monotonic deadline.
@@ -356,25 +370,32 @@ class APIKeyProvider:
         config_names = self._config_names
         config_salt, runtime_salt = self.hash_salt, self.runtime_salt
 
-        # Fast path: check cache with SHA-256 fingerprint of plaintext key
+        # Fast path: check cache with SHA-256 fingerprint of plaintext key.
+        # The caches are shared with the worker threads the slow path runs
+        # in, so every read and write of them holds the lock; bcrypt never
+        # does.
         fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
-        cached = self._verified_cache.get(fingerprint)
+        with self._lock:
+            cached = self._verified_cache.get(fingerprint)
+            if cached is not None and cached.is_expired():
+                self._verified_cache.pop(fingerprint, None)
+            rejected = cached is None and self._recently_rejected(fingerprint)
+            keys = self._keys
         if cached is not None:
             if expired and cached.name not in config_names:
                 raise self._unverifiable()
             if cached.is_expired():
-                self._verified_cache.pop(fingerprint, None)
                 return None, "API key has expired"
             return cached, None
 
-        if self._recently_rejected(fingerprint):
+        if rejected:
             if expired:
                 raise self._unverifiable()
             return None, "Invalid API key"
 
         # Slow path: bcrypt verify against the registered keys — only the
         # config keys once the runtime copy is past its deadline.
-        for record in self._keys:
+        for record in keys:
             is_config = record.name in config_names
             if expired and not is_config:
                 continue
@@ -382,12 +403,14 @@ class APIKeyProvider:
             if verify_api_key(api_key, record.key_hash, salt):
                 if record.is_expired():
                     return None, "API key has expired"
-                self._verified_cache[fingerprint] = record
+                with self._lock:
+                    self._verified_cache[fingerprint] = record
                 return record, None
 
         # Matching no config key is true whatever the Registry says, so the
         # rejection is cached either way; the next successful sync clears it.
-        self._reject(fingerprint)
+        with self._lock:
+            self._reject(fingerprint)
         if expired:
             raise self._unverifiable()
         return None, "Invalid API key"
@@ -406,6 +429,28 @@ class APIKeyProvider:
         self._rejected.move_to_end(fingerprint)
         while len(self._rejected) > _REJECTED_MAX:
             self._rejected.popitem(last=False)
+
+    def _known_to_caches(self, api_key: str) -> bool:
+        """Whether a value is answered without bcrypt: it verified before, or
+        was rejected recently."""
+        fingerprint = hashlib.sha256(api_key.encode()).hexdigest()
+        with self._lock:
+            return fingerprint in self._verified_cache or self._recently_rejected(fingerprint)
+
+    async def _validate_key_async(
+        self, api_key: str
+    ) -> tuple[APIKeyRecord | None, str | None]:
+        """_validate_key without blocking the event loop: a value the caches
+        know is answered inline; any other runs bcrypt in a worker thread,
+        behind the per-loop semaphore."""
+        if self._known_to_caches(api_key):
+            return self._validate_key(api_key)
+        loop = asyncio.get_running_loop()
+        semaphore = self._slow_path.get(loop)
+        if semaphore is None:
+            semaphore = self._slow_path[loop] = asyncio.Semaphore(_SLOW_PATH_CONCURRENCY)
+        async with semaphore:
+            return await asyncio.to_thread(self._validate_key, api_key)
 
     def lookup(self, api_key: str) -> APIKeyRecord | None:
         """The registered, unexpired key matching api_key, or None — through
@@ -431,7 +476,7 @@ class APIKeyProvider:
             return None
 
         try:
-            key_record, error = self._validate_key(api_key)
+            key_record, error = await self._validate_key_async(api_key)
         except KeysUnverifiable as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 

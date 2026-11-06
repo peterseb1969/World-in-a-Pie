@@ -7,6 +7,18 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### An unknown API key no longer stalls a service
+
+A key value a service has not seen is checked with bcrypt against every key
+it holds (about 170 ms each, and every service holds every runtime key).
+That ran on the event loop, so one request with a random `X-API-Key` stalled
+the whole service for N × 170 ms, and a stream of them stalled it outright.
+The check now runs in a worker thread, at most two at a time per service;
+values the caches already know (verified before, or recently rejected) are
+answered inline as before. A flood of unknown keys now only delays other
+first-time key checks. The per-address rate limit (`WIP_RATE_LIMIT`) is
+still not enforced: no service installs slowapi's middleware.
+
 ### The app edge is off by default; the help names every optional module
 
 The app edge (module `app-edge`, which serves apps attached through the
