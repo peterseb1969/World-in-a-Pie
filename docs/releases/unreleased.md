@@ -93,7 +93,7 @@ visitor. With `network.app_origins: subdomain` each app is served at
   app's session, so an app's server cannot replay a visitor's session at
   another app. Logging in once still covers every app; Dex is unchanged.
 - **wip-caddy** serves each deployer app on its own site, attached apps on a
-  wildcard site handed to the app edge (certificates on demand, only for
+  catch-all site handed to the app edge (certificates on demand, only for
   names the edge confirms), and answers `/apps/<label>/…` on WIP's origin
   with 301 to the app's origin.
 - **`@wip/react` 0.26.0:** `WipProvider` renews the app session in the

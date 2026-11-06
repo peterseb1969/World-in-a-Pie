@@ -360,8 +360,8 @@ def _write_app_path_redirect(out: StringIO, cfg: CaddyConfig) -> None:
     out.write("    }\n\n")
 
 
-def _write_app_site_head(out: StringIO, cfg: CaddyConfig, host: str, *, on_demand: bool) -> None:
-    out.write(f"\n{host}:{cfg.https_port} {{\n")
+def _write_app_site_head(out: StringIO, cfg: CaddyConfig, address: str, *, on_demand: bool) -> None:
+    out.write(f"\n{address} {{\n")
     if cfg.tls_mode == "internal":
         out.write("    tls {\n")
         out.write("        issuer internal {\n")
@@ -390,8 +390,7 @@ def _write_app_site_head(out: StringIO, cfg: CaddyConfig, host: str, *, on_deman
 def _write_app_site(out: StringIO, cfg: CaddyConfig, site: AppSite) -> None:
     """A deployer app on its own origin. Its routes keep their /apps/<label>
     paths, so the app needs no rebuild; the bare origin goes to the app."""
-    host = f"{site.label}.{cfg.hostname}"
-    _write_app_site_head(out, cfg, host, on_demand=False)
+    _write_app_site_head(out, cfg, f"{site.label}.{cfg.hostname}:{cfg.https_port}", on_demand=False)
     out.write("    handle / {\n")
     out.write(f"        redir * /apps/{site.label}/ permanent\n")
     out.write("    }\n\n")
@@ -406,10 +405,15 @@ def _write_app_site(out: StringIO, cfg: CaddyConfig, site: AppSite) -> None:
 
 
 def _write_attached_apps_site(out: StringIO, cfg: CaddyConfig) -> None:
-    """Every other <label>.<hostname>: attached apps, served by the app edge
-    (which applies forward_auth itself). Certificates on demand, only for
-    the names the edge confirms."""
-    _write_app_site_head(out, cfg, f"*.{cfg.hostname}", on_demand=True)
+    """Every other name: attached apps, served by the app edge, which matches
+    each by host and applies forward_auth itself. Certificates on demand, only
+    for the names the edge confirms as active attachments.
+
+    A catch-all address, not `*.<hostname>`: Caddy gets no certificate of its
+    own for a name a managed wildcard covers, so a wildcard site would hand
+    the deployer apps' origins to on-demand issuance too, which the edge
+    refuses for them (seen live: rc.<hostname> then failed its handshake)."""
+    _write_app_site_head(out, cfg, f"https://:{cfg.https_port}", on_demand=True)
     out.write("    handle {\n")
     out.write(f"        reverse_proxy {cfg.edge_backend}\n")
     out.write("    }\n")

@@ -9,7 +9,7 @@ app_origins.py). wip-caddy then renders:
 - one site per deployer app: its routes (still under /apps/<label>), the
   gateway's handshake paths, forward_auth whose login is the handshake on
   WIP's origin, and the app session cookie removed before the app;
-- with the app edge, a wildcard site for attached apps, handed to the edge,
+- with the app edge, a catch-all site for attached apps, handed to the edge,
   with certificates on demand only for names the edge confirms.
 
 New compose and dev installs default to subdomain; k8s stays on path (its
@@ -127,9 +127,11 @@ def test_each_deployer_app_gets_its_own_site(discovery: Discovery) -> None:
 def test_attached_apps_get_the_wildcard_site_and_on_demand_certificates(discovery: Discovery) -> None:
     caddyfile = _caddy(_build(), discovery)
     assert "on_demand_tls {\n        ask http://wip-app-edge:8080/edge/ask\n    }" in caddyfile
-    wildcard = _site(caddyfile, "*.wip.example")
-    assert "on_demand" in wildcard
-    assert "reverse_proxy wip-app-edge:8080" in wildcard
+    attached = caddyfile[caddyfile.index("\nhttps://:8443 {"):]
+    assert "on_demand" in attached
+    assert "reverse_proxy wip-app-edge:8080" in attached
+    # No wildcard name: Caddy would then skip the deployer apps' own certificates.
+    assert "*.wip.example" not in caddyfile
 
 
 def test_without_the_edge_there_is_no_wildcard_site(discovery: Discovery) -> None:
@@ -138,7 +140,7 @@ def test_without_the_edge_there_is_no_wildcard_site(discovery: Discovery) -> Non
         remove=["app-edge"], compose_data_dir=Path("/tmp/d"), registry="ghcr.io/x",
     ))
     caddyfile = _caddy(d, discovery)
-    assert "*.wip.example" not in caddyfile and "on_demand_tls" not in caddyfile
+    assert "https://:8443" not in caddyfile and "on_demand_tls" not in caddyfile
     assert "\nrc.wip.example:8443 {" in caddyfile
 
 

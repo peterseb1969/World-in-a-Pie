@@ -411,7 +411,7 @@ def _route_block(t: Target, s: Settings, matcher: str, *, strip: bool) -> list[s
     name = r["name"]
     subdomain = s.app_origins == "subdomain"
     # On an app origin the gateway reads the app from the host the browser
-    # addressed (wip-caddy's wildcard site matched it to <name>.<hostname>),
+    # addressed (wip-caddy's catch-all site hands every other name to the edge),
     # and a login is the handshake on WIP's origin.
     forwarded_host = "{http.request.hostport}" if subdomain else s.public_host
     login = (

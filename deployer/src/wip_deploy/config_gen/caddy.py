@@ -103,7 +103,7 @@ class CaddyConfig:
     trusted_proxies: tuple[str, ...] = ()
     # "path" | "subdomain" (NetworkSpec.app_origins). In subdomain mode the
     # app routes are not in `routes`: each deployer app is an `app_sites`
-    # entry, and attached apps are served by a wildcard site handed to the
+    # entry, and attached apps are served by a catch-all site handed to the
     # app edge (`edge_backend`), which also answers whether a name may get a
     # certificate (on-demand TLS).
     app_origins: str = "path"
@@ -203,7 +203,7 @@ def _split_app_routes(
     """(routes WIP's origin keeps, one AppSite per deployer app, the app
     edge's /apps route or None). App routes move to their app's origin, and
     the edge's catch-all leaves WIP's origin with them: its apps get the
-    wildcard site."""
+    catch-all site."""
     main: list[ResolvedRoute] = []
     by_label: dict[str, list[ResolvedRoute]] = {}
     edge_route: ResolvedRoute | None = None
