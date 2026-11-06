@@ -105,6 +105,21 @@ class Settings:
     # browser's Accept header to the auth subrequest.
     auth_redirect_mode: str = os.getenv("AUTH_REDIRECT_MODE", "401")
 
+    # Where apps are served (app_origins.py). "path": under /apps/<label> on
+    # this install's own origin, sharing the wip_session cookie. "subdomain":
+    # each app on its own origin, https://<label>.<hostname>[:port], with a
+    # session cookie of its own (wip_app_session) that names the app; the
+    # gateway hands it over through a redirect handshake, so one login still
+    # covers every app.
+    app_origins: str = os.getenv("WIP_APP_ORIGINS", "path")
+    # This install's public URL, scheme://hostname[:port]; app origins are
+    # built from it. Defaults to CALLBACK_URL's origin.
+    public_url: str = os.getenv("WIP_PUBLIC_URL", "")
+    # Lifetime of an app origin's session, in seconds. Short, so a logout on
+    # WIP's origin reaches every app within it; @wip/react renews it in the
+    # background while the app is open.
+    app_session_max_age: int = int(os.getenv("APP_SESSION_MAX_AGE", "900"))
+
 
 def check_redirect_mode(mode: str | None = None) -> None:
     """Refuse to start on an invalid AUTH_REDIRECT_MODE.
@@ -121,6 +136,18 @@ def check_redirect_mode(mode: str | None = None) -> None:
             "login redirect; wip-caddy, nginx auth_request) or 'redirect' (gateway "
             "302s browsers to the login URL; Traefik-style forwardAuth). "
             "Refusing to start.",
+            value,
+        )
+        sys.exit(1)
+
+
+def check_app_origins_mode(mode: str | None = None) -> None:
+    """Refuse to start on an invalid WIP_APP_ORIGINS: a typo read as "path"
+    would serve every app on WIP's origin with the shared session."""
+    value = mode if mode is not None else settings.app_origins
+    if value not in ("path", "subdomain"):
+        logger.critical(
+            "Invalid WIP_APP_ORIGINS %r — must be 'path' or 'subdomain'. Refusing to start.",
             value,
         )
         sys.exit(1)

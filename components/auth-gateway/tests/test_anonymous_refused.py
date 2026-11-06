@@ -16,6 +16,10 @@ PUBLIC = {
     "GET /auth/login": "OIDC protocol endpoint: starts the login flow",
     "GET /auth/callback": "OIDC protocol endpoint: completes the login flow",
     "GET /auth/logout": "OIDC protocol endpoint: ends the session",
+    "GET /auth/app-login": "app-origin handshake: without a session it starts a login",
+    "GET /auth/handoff": "app-origin handshake: its credential is the one-time code",
+    "GET /auth/renew": "app-origin silent renew: starts the handshake",
+    "GET /auth/renewed": "app-origin silent renew: reports whether an app session exists",
 }
 
 

@@ -33,7 +33,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
-from .config import check_production_security, check_redirect_mode, settings
+from . import app_origins
+from .config import (
+    check_app_origins_mode,
+    check_production_security,
+    check_redirect_mode,
+    settings,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("auth_gateway")
@@ -45,6 +51,9 @@ check_production_security()
 # Refuse to start on a mistyped AUTH_REDIRECT_MODE — a typo silently
 # falling back to 401 behaviour would surface far from its cause.
 check_redirect_mode()
+
+# Refuse to start on a mistyped WIP_APP_ORIGINS, for the same reason.
+check_app_origins_mode()
 
 app = FastAPI(title="WIP Auth Gateway", version="0.1.0")
 
@@ -92,28 +101,21 @@ async def verify(request: Request):
     forwards the browser's Accept header to the auth subrequest, so a
     header heuristic cannot tell the constellations apart.
     """
+    label = app_origins.request_label(request.headers)
+    if label is not None:
+        return _verify_app_origin(request, label)
+
     session = request.session
     email = session.get("email")
     exp = session.get("exp", 0)
 
     if email and time.time() < exp:
-        user_groups = session.get("groups", [])
         # The route's allowed groups arrive in the verify URL the deployer
         # renders (wip-caddy's forward_auth `uri`); the client
         # cannot set them. A logged-in user outside them is refused with
         # 403 — never 401, which would send them back through a login they
         # already completed.
-        allowed = [g for g in request.query_params.get("allowed_groups", "").split(",") if g]
-        if allowed and not set(allowed).intersection(user_groups):
-            logger.info("Access refused: %s (groups %s) not in %s", email, user_groups, allowed)
-            return _forbidden(request)
-        return Response(
-            status_code=200,
-            headers={
-                "X-WIP-User": email,
-                "X-WIP-Groups": ",".join(user_groups),
-            },
-        )
+        return _allowed_or_forbidden(request, email, session.get("groups", []))
 
     # Not authenticated. Build the return URL from forwarded headers for
     # the informational X-Auth-Redirect header — the renderer-side
@@ -145,7 +147,36 @@ async def verify(request: Request):
     )
 
 
-_FORBIDDEN_PAGE = """<!doctype html>
+def _allowed_or_forbidden(request: Request, email: str, user_groups: list[str]) -> Response:
+    """200 with the identity, or 403 when the route's allowed groups (in the
+    verify URL the deployer renders) exclude the user."""
+    allowed = [g for g in request.query_params.get("allowed_groups", "").split(",") if g]
+    if allowed and not set(allowed).intersection(user_groups):
+        logger.info("Access refused: %s (groups %s) not in %s", email, user_groups, allowed)
+        return _forbidden(request)
+    return Response(
+        status_code=200,
+        headers={"X-WIP-User": email, "X-WIP-Groups": ",".join(user_groups)},
+    )
+
+
+def _verify_app_origin(request: Request, label: str) -> Response:
+    """verify on an app origin: only an app session naming this app counts.
+    Without one, the browser is sent through the handshake on WIP's origin
+    (absolute: it is another origin)."""
+    data = app_origins.read_session(request.cookies, label)
+    if data is not None:
+        return _allowed_or_forbidden(request, data["email"], data.get("groups", []))
+    login_url = app_origins.app_login_url(label, request.headers.get("X-Forwarded-Uri", "/"))
+    if (
+        settings.auth_redirect_mode == "redirect"
+        and "text/html" in request.headers.get("Accept", "")
+    ):
+        return RedirectResponse(url=login_url, status_code=302)
+    return Response(status_code=401, headers={"X-Auth-Redirect": login_url})
+
+
+_FORBIDDEN_PAGE ="""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>No access</title>
 <meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body style="font-family: system-ui, sans-serif; max-width: 32rem; margin: 4rem auto; padding: 0 1rem">
@@ -313,7 +344,15 @@ def _safe_return_to(return_to: str) -> str:
 
 @app.get("/auth/logout")
 async def logout(request: Request, return_to: str = ""):
-    """Clear session and redirect back to the app (or site root)."""
+    """Clear session and redirect back to the app (or site root).
+
+    On an app origin: drop that origin's app session and continue to the
+    logout on WIP's origin, which ends the login itself. Other apps' sessions
+    end when they expire (APP_SESSION_MAX_AGE)."""
+    if app_origins.request_label(request.headers) is not None:
+        response = RedirectResponse(url=f"{app_origins.wip_origin()}/auth/logout", status_code=302)
+        response.delete_cookie(app_origins.APP_COOKIE, path="/")
+        return response
     request.session.clear()
     if _same_origin_path(return_to):
         return Response(status_code=302, headers={"Location": return_to})
@@ -329,10 +368,11 @@ async def logout(request: Request, return_to: str = ""):
 @app.get("/auth/userinfo")
 async def userinfo(request: Request):
     """Return current user info from session (for app UIs)."""
-    session = request.session
-    email = session.get("email")
+    label = app_origins.request_label(request.headers)
+    session = app_origins.read_session(request.cookies, label) if label else request.session
+    email = (session or {}).get("email")
 
-    if not email or time.time() >= session.get("exp", 0):
+    if not session or not email or time.time() >= session.get("exp", 0):
         return JSONResponse(status_code=401, content={"authenticated": False})
 
     return {
@@ -342,3 +382,95 @@ async def userinfo(request: Request):
         "user_id": session.get("user_id", ""),
         "groups": session.get("groups", []),
     }
+
+
+# ---------------------------------------------------------------------------
+# App origins (WIP_APP_ORIGINS=subdomain): the handshake, see app_origins.py
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/app-login")
+async def app_login(request: Request, app: str = "", return_to: str = "/", silent: str = ""):
+    """On WIP's origin: hand the logged-in user to an app origin with a
+    one-time code. Not logged in: a normal login first, then back here; or,
+    for @wip/react's silent renew, straight back with login_required."""
+    if not app_origins.enabled():
+        return JSONResponse(status_code=400, content={
+            "error": "app_origins_off", "detail": "this install serves apps under /apps/<name>",
+        })
+    if not app_origins.LABEL_RE.fullmatch(app):
+        return JSONResponse(status_code=400, content={"error": "invalid_app"})
+    if not app_origins.same_origin_path(return_to):
+        return_to = "/"
+    session = request.session
+    if not session.get("email") or time.time() >= session.get("exp", 0):
+        if silent:
+            return RedirectResponse(
+                url=f"{app_origins.app_origin(app)}{app_origins.RENEWED_PATH}?error=login_required",
+                status_code=302,
+            )
+        from urllib.parse import quote
+
+        here = f"/auth/app-login?app={app}&return_to={quote(return_to)}"
+        return RedirectResponse(url=f"/auth/login?return_to={quote(here)}", status_code=302)
+    from urllib.parse import quote
+
+    code = app_origins.mint_code(app, session)
+    return RedirectResponse(
+        url=f"{app_origins.app_origin(app)}/auth/handoff?code={quote(code)}"
+        f"&return_to={quote(return_to)}",
+        status_code=302,
+    )
+
+
+@app.get("/auth/handoff")
+async def handoff(request: Request, code: str = "", return_to: str = "/"):
+    """On an app origin: redeem the one-time code and set that origin's app
+    session, then continue to `return_to` (a path on this origin)."""
+    label = app_origins.request_label(request.headers)
+    if label is None:
+        return JSONResponse(status_code=400, content={
+            "error": "not_an_app_origin", "detail": "a handoff completes only on an app origin",
+        })
+    identity = app_origins.redeem_code(code, label)
+    if identity is None:
+        logger.info("App handoff refused for %s: the code is invalid, expired, used or not for it", label)
+        if return_to == app_origins.RENEWED_PATH:
+            return RedirectResponse(url=f"{return_to}?error=handoff_failed", status_code=302)
+        return HTMLResponse(
+            "<!doctype html><p>This sign-in link has expired. "
+            f'<a href="{app_origins.app_login_url(label, "/apps/" + label + "/")}">Sign in again</a>.</p>',
+            status_code=400,
+        )
+    value, max_age = app_origins.session_cookie(identity, label)
+    target = return_to if app_origins.same_origin_path(return_to) else f"/apps/{label}/"
+    response = RedirectResponse(url=target, status_code=302)
+    response.set_cookie(
+        app_origins.APP_COOKIE, value, max_age=max_age, path="/", httponly=True,
+        secure=app_origins.cookie_secure(), samesite="lax",
+    )
+    return response
+
+
+@app.get("/auth/renew")
+async def renew(request: Request):
+    """Loaded by @wip/react in a hidden iframe on an app origin: run the
+    handshake again without showing anything, ending at /auth/renewed. On
+    WIP's own origin there is no app session to renew."""
+    label = app_origins.request_label(request.headers)
+    if label is None:
+        return HTMLResponse(app_origins.renewed_page(True, 0, "not_an_app_origin"))
+    return RedirectResponse(
+        url=app_origins.app_login_url(label, app_origins.RENEWED_PATH, silent=True),
+        status_code=302,
+    )
+
+
+@app.get("/auth/renewed")
+async def renewed(request: Request, error: str = ""):
+    """The end of a silent renew: tell the page whether the app session is
+    fresh, and for how long."""
+    label = app_origins.request_label(request.headers)
+    data = app_origins.read_session(request.cookies, label) if label else None
+    if error or data is None:
+        return HTMLResponse(app_origins.renewed_page(False, 0, error or "no_session"))
+    return HTMLResponse(app_origins.renewed_page(True, max(int(data["exp"] - time.time()), 0)))
