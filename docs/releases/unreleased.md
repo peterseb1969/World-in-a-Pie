@@ -32,6 +32,18 @@ Five fixes to what a merge restore writes:
   version new to the target was inserted under the archive's id while its
   earlier version matched under the target's, so the template had two ids
   and the merged documents pinned a version that did not exist under it.
+### A backup or restore job needs its permission on every namespace it spans
+
+A job may cover several namespaces, and creating it required admin on each.
+Seeing it, following its events, listing it and downloading a backup's
+archive checked only **read on its first namespace**, and deleting it only
+admin there. So a read key on A could download a backup of `[A, B, C]` with
+B's and C's data, and an admin of A alone could delete a backup of `[A, B]`.
+
+- **Read on every namespace** is now needed to see, list, follow, or download
+  a backup job. A restore job's input still needs admin on every namespace.
+- **Admin on every namespace** is now needed to delete a job.
+- Single-namespace jobs behave exactly as before.
 
 ### Registry: three fixes from the registry-auth review; `@wip/client` 0.83.0
 

@@ -814,6 +814,19 @@ async def start_validation(
 # ---------------------------------------------------------------------------
 
 
+async def _check_job_permission(identity: UserIdentity, job: BackupJob, permission: str) -> None:
+    """`permission` on every namespace a job spans, not just its anchor.
+
+    A backup or restore job may cover several namespaces, and creating one
+    required admin on each. Seeing it, streaming it, downloading its archive
+    or deleting it must not need less on any of them: a read key on the
+    anchor alone would otherwise read the other namespaces' data out of the
+    archive, and an admin of the anchor alone could delete everyone's backup.
+    """
+    for ns in job.namespaces or [job.namespace]:
+        await check_namespace_permission(identity, ns, permission)
+
+
 @router.get(
     "/jobs/{job_id}",
     response_model=BackupJobSnapshot,
@@ -826,7 +839,7 @@ async def get_job(
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
-    await check_namespace_permission(identity, job.namespace, "read")
+    await _check_job_permission(identity, job, "read")
     return BackupJobSnapshot.from_job(job)
 
 
@@ -894,11 +907,11 @@ async def list_jobs(
         query["status"] = status
     cursor = BackupJob.find(query).sort([("created_at", SortDirection.DESCENDING)]).limit(limit)
     jobs = await cursor.to_list()
-    # Filter to namespaces the caller can read (cheap for small limits).
+    # Only jobs the caller can read every namespace of (cheap for small limits).
     allowed: list[BackupJob] = []
     for job in jobs:
         try:
-            await check_namespace_permission(identity, job.namespace, "read")
+            await _check_job_permission(identity, job, "read")
         except HTTPException:
             continue
         allowed.append(job)
@@ -974,11 +987,11 @@ async def stream_job_events(
     not ``wip_archive.models.ProgressEvent``** — that type is an
     implementation detail and must not be exposed on the wire (Guardrail 2).
     """
-    # Permission check on the job's namespace before we start streaming.
+    # Permission check on every namespace of the job before we start streaming.
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
-    await check_namespace_permission(identity, job.namespace, "read")
+    await _check_job_permission(identity, job, "read")
 
     return StreamingResponse(
         _sse_stream(job_id),
@@ -1006,7 +1019,8 @@ async def download_archive(
     """Stream the archive a job retains, wherever it lives.
 
     Backup jobs serve their output: COMPLETE status required (an incomplete
-    backup has no valid archive) and read permission suffices, as before.
+    backup has no valid archive), and read suffices, on EVERY namespace the
+    backup covers: the archive holds each one's data.
     Restore jobs serve their INPUT: it is fully on disk before the job even
     starts, so it is valid regardless of the job's outcome — a FAILED
     restore's input is the most useful one to re-download. But it may carry
@@ -1018,15 +1032,14 @@ async def download_archive(
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
 
     if job.kind == BackupJobKind.BACKUP:
-        await check_namespace_permission(identity, job.namespace, "read")
+        await _check_job_permission(identity, job, "read")
         if job.status != BackupJobStatus.COMPLETE:
             raise HTTPException(
                 status_code=409,
                 detail=f"Job {job_id} is {job.status}, archive not available",
             )
     else:
-        for ns in job.namespaces or [job.namespace]:
-            await check_namespace_permission(identity, ns, "admin")
+        await _check_job_permission(identity, job, "admin")
 
     if not job.archive_path:
         raise HTTPException(status_code=500, detail="Job has no archive_path recorded")
@@ -1207,7 +1220,8 @@ async def delete_job(
     if job is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
 
-    await check_namespace_permission(identity, job.namespace, "admin")
+    # Admin on every namespace, as creating the job required.
+    await _check_job_permission(identity, job, "admin")
 
     if job.status == BackupJobStatus.RUNNING:
         raise HTTPException(

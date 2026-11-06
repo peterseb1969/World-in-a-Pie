@@ -102,6 +102,15 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "groups": [],
     "namespaces": ["wip"],
     "grants": {"wip": "write"},
+}, {
+    # Admin on 'wip' alone: a backup or restore job that also covers another
+    # namespace must stay out of its reach (deleting it needs admin on all).
+    "name": "test-wip-admin",
+    "key": "test_wip_admin_key",
+    "owner": "test-wip-admin",
+    "groups": [],
+    "namespaces": ["wip"],
+    "grants": {"wip": "admin"},
 }]))
 
 

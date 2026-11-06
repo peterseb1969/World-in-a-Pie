@@ -1029,6 +1029,70 @@ async def test_non_admin_key_is_refused_on_backup_restore_and_download(
     assert resp.status_code == 404, resp.text
 
 
+# ---------------------------------------------------------------------------
+# A job spanning several namespaces needs the permission on every one (CASE-1092)
+# ---------------------------------------------------------------------------
+
+# Read on 'wip' only / read on 'wip' and 'xns-closed' / admin on 'wip' only.
+WIP_READER = {"X-API-Key": "test_xns_writer_key"}
+BOTH_READER = {"X-API-Key": "test_xns_reader_key"}
+WIP_ADMIN = {"X-API-Key": "test_wip_admin_key"}
+
+
+async def _spanning_backup() -> BackupJob:
+    """A completed backup of ['wip', 'xns-closed'], anchored at 'wip'."""
+    job = await _make_persisted_job(
+        namespace="wip", status=BackupJobStatus.COMPLETE, archive_path="/tmp/no-such-archive.zip",
+    )
+    job.namespaces = ["wip", "xns-closed"]
+    await job.save()
+    return job
+
+
+@pytest.mark.asyncio
+async def test_read_on_the_anchor_alone_does_not_reach_a_spanning_backup(client: AsyncClient):
+    """A read key on 'wip' only must not see, follow or download a backup
+    that also holds 'xns-closed' — the archive carries both namespaces' data."""
+    job = await _spanning_backup()
+    base = f"/api/document-store/backup/jobs/{job.job_id}"
+    for path in ("", "/events", "/download"):
+        resp = await client.get(base + path, headers=WIP_READER)
+        assert resp.status_code == 404, (path, resp.status_code, resp.text)
+    listed = await client.get("/api/document-store/backup/jobs", headers=WIP_READER)
+    assert listed.status_code == 200
+    assert job.job_id not in {j["job_id"] for j in listed.json()}
+
+
+@pytest.mark.asyncio
+async def test_read_on_every_namespace_reaches_a_spanning_backup(client: AsyncClient):
+    job = await _spanning_backup()
+    base = f"/api/document-store/backup/jobs/{job.job_id}"
+    assert (await client.get(base, headers=BOTH_READER)).status_code == 200
+    listed = await client.get("/api/document-store/backup/jobs", headers=BOTH_READER)
+    assert job.job_id in {j["job_id"] for j in listed.json()}
+    # Past the permission check: the archive itself is gone, which is a 410.
+    assert (await client.get(base + "/download", headers=BOTH_READER)).status_code == 410
+
+
+@pytest.mark.asyncio
+async def test_admin_of_the_anchor_alone_cannot_delete_a_spanning_backup(
+    client: AsyncClient, auth_headers: dict
+):
+    job = await _spanning_backup()
+    url = f"/api/document-store/backup/jobs/{job.job_id}"
+    resp = await client.delete(url, headers=WIP_ADMIN)
+    assert resp.status_code == 404, resp.text
+    assert await BackupJob.find_one(BackupJob.job_id == job.job_id) is not None
+    assert (await client.delete(url, headers=auth_headers)).status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_admin_of_a_single_namespace_backup_can_still_delete_it(client: AsyncClient):
+    job = await _make_persisted_job(namespace="wip", status=BackupJobStatus.COMPLETE)
+    resp = await client.delete(f"/api/document-store/backup/jobs/{job.job_id}", headers=WIP_ADMIN)
+    assert resp.status_code == 204, resp.text
+
+
 class TestRestoreRequester:
     """The key a restore creates namespaces with is the caller's own, read
     only for a caller that authenticated with it: a gateway-forwarded login
