@@ -78,7 +78,7 @@ server log.
 - **`wip-archive` 0.25.0:** `ArchiveWriter.discard_blob(file_id)` drops a blob
   written earlier.
 
-### Apps on origins of their own: `network.app_origins`, the new default for compose and dev; `@wip/react` 0.26.0
+### Apps on origins of their own: `network.app_origins`, the new default; `@wip/react` 0.26.0
 
 Served under `/apps/<name>` on WIP's origin, every app received the visitor's
 session cookie, and an app's JavaScript could call any other app as the
@@ -99,10 +99,15 @@ visitor. With `network.app_origins: subdomain` each app is served at
 - **`@wip/react` 0.26.0:** `WipProvider` renews the app session in the
   background (`useAppSessionRenewal`), so a long-open app's `fetch` calls keep
   working; a page reload signs in again when the WIP login has ended.
-- **Defaults:** new `compose` and `dev` installs use `subdomain`; k8s stays on
-  `path` (its rendering comes in a later change, and `subdomain` is refused
-  there). An existing install keeps its mode: switch with `wip-deploy
-  redeploy --name <install> --app-origins subdomain`.
+- **k8s:** wip-caddy behind the Ingress answers each origin on plain HTTP;
+  the Ingress gets a `*.<hostname>` rule and TLS host, and a self-signed
+  certificate the deployer mints names `*.<hostname>` too. An existing
+  self-signed `wip-tls` without it is refused with the remedy (delete it and
+  apply again); with `tls external`, the operator's certificate must cover
+  `*.<hostname>`.
+- **Defaults:** new installs use `subdomain` on every target. An existing
+  install keeps its mode: switch with `wip-deploy redeploy --name <install>
+  --app-origins subdomain`.
 - **Action required for `subdomain`:**
   - `*.<hostname>` must resolve to the install (nothing to do for
     `localhost`);

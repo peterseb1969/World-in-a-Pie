@@ -259,13 +259,13 @@ Served under `/apps/<name>` on WIP's own origin, every app shares the visitor's 
 | App URL | `https://<hostname>:8443/apps/rc/` | `https://rc.<hostname>:8443/apps/rc/` |
 | Session | `wip_session`, shared by WIP and every app | per app: `wip_app_session`, host-only, naming the app |
 | Old app URLs | — | answer 301 to the app's origin |
-| Default for | k8s; installs made before this setting | new `compose` and `dev` installs |
+| Default for | installs made before this setting | new installs |
 
 - **Logging in once still covers every app.** The app origin sends the browser through `/auth/app-login` on WIP's origin, which hands it a one-time code; `/auth/handoff` on the app origin turns that into the app's session. Only WIP's origin talks to Dex, so Dex needs nothing per app.
 - **Logout reaches an app within its session lifetime** (`APP_SESSION_MAX_AGE`, 15 minutes by default). An app built on `@wip/react` 0.26.0 or later renews its session in the background while it is open; see the app contract.
 - **DNS:** every `<label>.<hostname>` must reach the install. `localhost` needs nothing (browsers resolve `*.localhost` to loopback); for any other hostname, add a wildcard record (`*.<hostname>`) or one per app.
 - **TLS:** `tls internal` issues a certificate per app origin from Caddy's CA, which browsers already trust once they trust the install's CA. Attached apps' origins are not known when wip-caddy is rendered: it gets their certificates on demand, and only for a name the app edge confirms as an active attachment. With `tls letsencrypt`, deployer apps get a certificate per origin the same way the hostname does; attached apps' on-demand certificates have not been tried against a public CA yet.
-- **k8s is not rendered yet:** a k8s install stays on `path`, and `subdomain` is refused there.
+- **k8s:** the Ingress gets a `*.<hostname>` rule and TLS host, and wip-caddy behind it answers each origin on plain HTTP. A self-signed certificate the deployer mints names `*.<hostname>`; an existing self-signed `wip-tls` without it is refused, and the remedy is `kubectl delete secret wip-tls -n <namespace>` and another apply. With `tls external`, your certificate must cover `*.<hostname>`.
 - **Switching an existing install:** `wip-deploy redeploy --name <install> --app-origins subdomain` (or `path`). An install over an existing one keeps its mode unless `--app-origins` says otherwise. Bookmarks keep working through the 301; **non-browser clients of app URLs** (for example a CLI that writes to an app's `server-api`) must use the new origin, because a `POST` does not follow the redirect.
 
 ---
