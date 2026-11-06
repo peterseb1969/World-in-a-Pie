@@ -158,17 +158,9 @@ Since every deployer app runs with a scoped key of its own, identity forwarding 
 
 ### K8s Deployment
 
-On K8s, the same app-side pattern works unchanged. Alternatively, `oauth2-proxy` as an Ingress sidecar can handle OIDC and inject the same headers:
+On K8s, the same app-side pattern works unchanged. The front door is the same too: one catch-all Ingress hands every request to wip-caddy, the Caddy that compose runs, with the same Caddyfile. Its `forward_auth` to the auth gateway sets the same headers on every target. The ingress controller (ingress-nginx or Traefik) only terminates TLS for the hostname, and carries no auth annotations.
 
-```yaml
-metadata:
-  annotations:
-    nginx.ingress.kubernetes.io/auth-url: "https://oauth2-proxy.wip.svc/oauth2/auth"
-    nginx.ingress.kubernetes.io/auth-signin: "https://wip-kubi.local/oauth2/start"
-    nginx.ingress.kubernetes.io/auth-response-headers: "X-WIP-User,X-WIP-Groups"
-```
-
-Both approaches produce the same headers — `TrustedHeaderProvider` doesn't care who set them, only that a valid API key accompanies them.
+`TrustedHeaderProvider` doesn't care who set the headers, only that a valid API key accompanies them.
 
 ### What This Gives Us
 
@@ -263,12 +255,11 @@ routes:
 ```
 
 - The deployer renders the list into that route's verify URL —
-  `/auth/verify?allowed_groups=wip-admins` — in Caddy's `forward_auth`
-  (compose, dev) and NGINX's `auth-url` (k8s). The URL is fixed in proxy
-  configuration, so a browser cannot change it.
+  `/auth/verify?allowed_groups=wip-admins` — in wip-caddy's `forward_auth`,
+  on every target (on k8s wip-caddy sits behind the Ingress). The URL is
+  fixed in proxy configuration, so a browser cannot change it.
 - A logged-in user in none of the groups gets **403** from `/auth/verify`:
-  a short "no access" page for browsers, JSON for API callers. Behind NGINX
-  only the status reaches the browser (NGINX serves its own 403 page).
+  a short "no access" page for browsers, JSON for API callers.
 - No session is still 401 (the login redirect). An empty or absent list keeps
   the old behaviour: any logged-in user.
 - Group names are limited to letters, digits, `.`, `_` and `-`, and the field
@@ -281,24 +272,23 @@ routes:
 ### What the gateway hands an app
 
 The gateway's verify answer carries the user's identity and nothing else:
-`X-WIP-User` and `X-WIP-Groups`. The proxy copies them onto the request
-(Caddy `copy_headers`, NGINX `auth-response-headers`), one list for every
-target (`GATEWAY_IDENTITY_HEADERS`, `deployer/src/wip_deploy/config_gen/routing.py`).
+`X-WIP-User` and `X-WIP-Groups`. wip-caddy copies them onto the request
+(`copy_headers`), one list for every target (`GATEWAY_IDENTITY_HEADERS`,
+`deployer/src/wip_deploy/config_gen/routing.py`).
 
 - **No API key.** The verify answer used to carry the install's master key as
   `X-API-Key`, so every app behind the gateway received it with every user
   request. The gateway holds no key now. An app calls WIP with its own key.
 - **Forged identity.** On a protected route the copied answer overwrites a
   client-sent `X-WIP-User` / `X-WIP-Groups`, and removes it when the answer's
-  value is empty or absent (checked on Caddy 2.11.7). On compose and dev,
-  the Caddy renderer also removes, on app routes, the identity headers the
-  answer does not set: `X-WIP-Auth-Method` on protected routes, and all three
-  on routes the gateway does not protect (`auth_required: false`).
-- **Gap on k8s.** ingress-nginx has no annotation that removes a request
-  header without a configuration snippet. On k8s, an app route the gateway
-  does not protect passes client-sent identity headers through, and so does
-  `X-WIP-Auth-Method` on protected routes. An app must trust `X-WIP-User` only on
-  routes it declares `auth_required: true`.
+  value is empty or absent (checked on Caddy 2.11.7). On every target,
+  wip-caddy also removes, on app routes, the identity headers the answer
+  does not set: `X-WIP-Auth-Method` on protected routes, and all three on
+  routes the gateway does not protect (`auth_required: false`). The app edge
+  does the same for attached apps.
+- **Unprotected routes carry no identity.** An app must trust `X-WIP-User`
+  only on routes it declares `auth_required: true`. On the others the headers
+  are removed, so there is no user to trust.
 
 ---
 
@@ -603,15 +593,13 @@ Today, all apps share one Dex instance with one set of users. ClinTrial users se
 
 **Recommendation:** Option C for most cases. Option A when external IdP integration is needed (e.g., hospital LDAP for a clinical app). Option B only for air-gapped deployments.
 
-### 4B: Gateway-Level Auth (Caddy or NGINX)
+### 4B: Gateway-Level Auth (implemented)
 
-If a future deployment needs auth enforcement at the reverse proxy level (e.g., protecting apps that don't use the scaffold middleware), two options:
-
-**Option A: Custom Caddy build** — Build Caddy with the `caddy-security` plugin for server-side OIDC. Requires maintaining a custom Docker image.
-
-**Option B: `oauth2-proxy` sidecar** — Deploy `oauth2-proxy` alongside Caddy or NGINX Ingress. Handles OIDC, injects the same `X-WIP-User`/`X-WIP-Groups` headers. No custom builds, but an extra container.
-
-Neither is needed while apps use the scaffold auth middleware. These are fallback options for apps that can't or don't want to handle auth themselves.
+Built as the auth gateway: wip-caddy's `forward_auth` on every target (on k8s
+behind one catch-all Ingress), with per-route `auth_required` and
+`allowed_groups` (see Phase 1.5). No custom Caddy build and no `oauth2-proxy`
+were needed. Apps behind a protected route receive the user's identity
+whether or not they run the scaffold middleware.
 
 ### 4C: WIP as Auth Provider
 

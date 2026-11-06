@@ -1,12 +1,12 @@
 """Shared route resolution.
 
-Every active component + enabled app contributes HTTP routes. Caddy
-(compose/dev) and NGINX Ingress (k8s) consume the same list of
-`ResolvedRoute` objects and emit target-idiomatic output.
+Every active component + enabled app contributes HTTP routes. wip-caddy's
+Caddyfile, the public front door on every target (on k8s behind one
+catch-all Ingress), is rendered from this list of `ResolvedRoute` objects.
 
-Putting this computation here — not inside each renderer — guarantees the
-two renderers never disagree about which route is auth-protected, which
-one streams, what the backend port is, etc.
+Putting this computation here — not inside a target's renderer — guarantees
+the targets never disagree about which route is auth-protected, which one
+streams, what the backend port is, etc.
 """
 
 from __future__ import annotations
@@ -117,11 +117,10 @@ def resolve_root_redirect(
 ) -> str | None:
     """Target path for a bare-host (`/`) redirect, or None to emit none.
 
-    CASE-368: a fresh install left `https://<host>/` with no handler — on
-    k8s nginx returned a 404 from its default backend; on compose Caddy
-    returns a 200 + empty body. Both are confusing first-contact failures.
-    This resolves where `/` should send the user, computed once here so the
-    Caddy and nginx-ingress renderers can't disagree (same cross-target
+    CASE-368: a fresh install left `https://<host>/` with no handler, and
+    Caddy answers an unhandled path with 200 and an empty body, a confusing
+    first contact. This resolves where `/` should send the user, computed
+    once here so every target's wip-caddy agrees (same cross-target
     invariant as resolve_routes).
 
     v1 policy:

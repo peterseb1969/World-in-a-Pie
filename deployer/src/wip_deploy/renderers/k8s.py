@@ -296,12 +296,16 @@ def _render_network_policies(
     the Registry and the auth gateway in this namespace, DNS, pods in other
     namespaces, and any address by ipBlock (attached apps may run anywhere).
 
-    What that ipBlock allow does NOT keep out: the API server's real
-    endpoint and the kubelets (node addresses, ports such as 6443/16443 and
-    10250) are cluster-external to it, and whether it also matches in-cluster
-    pod and Service IPs is up to the network plugin. The edge's own
-    resolve-time blocklist covers the install's names, the `kubernetes…`
-    names and their ClusterIP, not those endpoint addresses.
+    The cluster's own ranges (platform.k8s.cluster_ranges, `--cluster-cidr`)
+    are excepted from that ipBlock allow: pod and Service ranges, and the
+    node addresses where the API server's real endpoint and the kubelets
+    listen (ports such as 6443/16443 and 10250). The node ranges also go
+    into the attach policy as `blocked_cidrs`, which the Registry and the
+    edge check. Without ranges the allow reaches all of those (the CLI warns),
+    and the edge's resolve-time blocklist covers only the install's names,
+    the `kubernetes…` names and their ClusterIP. Pods and Services in other
+    namespaces stay reachable through the namespace rule: attaching is full
+    trust.
     """
     labels = {_LABELS_PART_OF: "wip"}
     # Every pod but the edge, for the broad allows.

@@ -85,9 +85,10 @@ class Settings:
     # reverse-proxy family in front of the gateway, not of the request:
     #
     #   "401" (default): every unauthenticated request gets 401 +
-    #   X-Auth-Redirect, and the proxy turns that into the login flow
-    #   (nginx-ingress `auth-signin`, Caddy `handle_response @401`).
-    #   MANDATORY behind nginx's auth_request, which treats any status
+    #   X-Auth-Redirect, and the proxy turns that into the login flow:
+    #   wip-caddy's `handle_response @401`, on every target the deployer
+    #   renders. Also MANDATORY behind a hand-built nginx auth_request
+    #   (`auth-signin`), which treats any status
     #   other than 2xx/401/403 from the auth subrequest — a 302
     #   included — as an internal error and answers the browser 500.
     #
@@ -96,6 +97,8 @@ class Settings:
     #   X-Auth-Redirect contract. For proxies like Traefik whose
     #   forwardAuth passes non-2xx auth responses to the client
     #   verbatim and has no mechanism of its own to start a login flow.
+    #   Hand-built only: the deployer never puts Traefik's forwardAuth in
+    #   front of the gateway (docs/deploy/traefik-forwardauth.md).
     #
     # Sniffing the proxy family from request headers instead of
     # configuring it is not possible: every proxy forwards the
@@ -115,7 +118,7 @@ def check_redirect_mode(mode: str | None = None) -> None:
     if value not in ("401", "redirect"):
         logger.critical(
             "Invalid AUTH_REDIRECT_MODE %r — must be '401' (proxy owns the "
-            "login redirect; nginx-ingress/Caddy) or 'redirect' (gateway "
+            "login redirect; wip-caddy, nginx auth_request) or 'redirect' (gateway "
             "302s browsers to the login URL; Traefik-style forwardAuth). "
             "Refusing to start.",
             value,

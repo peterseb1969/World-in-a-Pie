@@ -1,17 +1,18 @@
-"""WIP Auth Gateway — centralized OIDC gateway called by Caddy/nginx.
+"""WIP Auth Gateway — centralized OIDC gateway behind wip-caddy's forward_auth.
 
-Called by Caddy's forward_auth (compose) or nginx-ingress's auth-url
-(k8s) on every auth-protected request. The gateway checks the session
+Called by wip-caddy's forward_auth on every auth-protected request, on every
+target (on k8s wip-caddy sits behind one catch-all Ingress; the app edge
+calls it the same way for attached apps). The gateway checks the session
 cookie and returns:
 
   - 200 with X-WIP-User / X-WIP-Groups headers (authenticated) — the
     user's identity only; the gateway holds no API key and hands none on
   - 401 with X-Auth-Redirect header naming the login URL (unauthenticated)
 
-The 401 response is the standard signal both Caddy and nginx know how
-to turn into a browser redirect to /auth/login:
-  - Caddy: `handle_response @401 { redir ... }` in the forward_auth block.
-  - nginx: `auth-signin` annotation on the Ingress.
+The 401 response is what wip-caddy turns into the browser redirect to
+/auth/login (`handle_response @401 { redir ... }` in the forward_auth
+block). A hand-built nginx `auth_request` setup, which the deployer does not
+render, would use the `auth-signin` annotation the same way.
 
 Proxies that cannot own that redirect (Traefik's forwardAuth passes
 non-2xx auth responses to the client verbatim) set
@@ -67,7 +68,7 @@ async def health():
 
 
 # ---------------------------------------------------------------------------
-# /auth/verify — called by Caddy forward_auth / nginx auth-request
+# /auth/verify — called by wip-caddy's forward_auth (and the app edge's)
 # ---------------------------------------------------------------------------
 
 @app.get("/auth/verify")
@@ -79,11 +80,10 @@ async def verify(request: Request):
     /auth/login — or, in AUTH_REDIRECT_MODE=redirect, a 302 to the
     absolute public login URL for browser requests.
 
-    The 401 response is the standard signal both nginx's auth-request
-    module (via the `auth-signin` annotation) and Caddy's `forward_auth`
-    (via `handle_response @401 { redir ... }`) know how to turn into a
-    browser redirect — the proxy owns the target-specific UX, and behind
-    nginx the 401 is the ONLY safe answer (auth_request treats any other
+    The 401 response is the signal wip-caddy's `forward_auth` (via
+    `handle_response @401 { redir ... }`) turns into a browser redirect —
+    the proxy owns the UX. Behind a hand-built nginx auth_request setup,
+    which the deployer does not render, the 401 is the ONLY safe answer (auth_request treats any other
     non-2xx status, a 302 included, as an internal error → 500). The
     "redirect" mode exists solely for proxy families that pass the auth
     response to the client verbatim and therefore cannot own the
@@ -99,7 +99,7 @@ async def verify(request: Request):
     if email and time.time() < exp:
         user_groups = session.get("groups", [])
         # The route's allowed groups arrive in the verify URL the deployer
-        # renders (Caddy forward_auth `uri`, NGINX `auth-url`); the client
+        # renders (wip-caddy's forward_auth `uri`); the client
         # cannot set them. A logged-in user outside them is refused with
         # 403 — never 401, which would send them back through a login they
         # already completed.
@@ -159,9 +159,9 @@ Ask an administrator to add you, or <a href="/auth/logout">sign in as someone el
 def _forbidden(request: Request) -> Response:
     """403 for a logged-in user outside a route's allowed groups.
 
-    A readable page for browsers, JSON for API callers. Behind Caddy the
-    body reaches the client; behind NGINX auth_request only the status
-    does (NGINX serves its own 403 page).
+    A readable page for browsers, JSON for API callers. wip-caddy passes
+    the body to the client; a hand-built nginx auth_request setup would
+    pass only the status (nginx serves its own 403 page).
     """
     if "text/html" in request.headers.get("Accept", ""):
         return HTMLResponse(_FORBIDDEN_PAGE, status_code=403)
