@@ -587,19 +587,24 @@ def without_custom_cas(p: Plan) -> Plan:
     return Plan(targets=keep, skipped=skipped)
 
 
-def tick(s: Settings, state: State, now: float) -> str:
-    """One poll. Returns the config that should be loaded."""
+def tick(s: Settings, state: State, now: float) -> tuple[str, Plan | None]:
+    """One poll. Returns the config that should be loaded and the plan it
+    was built from: None for a config that serves no attached app. apply()
+    rebuilds routes only from that plan, never from an older one."""
     try:
         records = fetch_attachments(s)
         blocked, blocked_cidrs = load_policy(s.policy_file)
     except PolicyUnavailable as e:
         logger.error("Attach policy unavailable, serving no attached app: %s", e)
-        return caddyfile(None, s, unavailable="the install's attach policy is unavailable")
+        return caddyfile(None, s, unavailable="the install's attach policy is unavailable"), None
     except RegistryUnavailable as e:
         logger.warning("Cannot read attachments (%s): %s", e.reason, e)
         if state.last_ok is None or now - state.last_ok > EXPIRY_POLLS * POLL_SECONDS:
-            return caddyfile(None, s, unavailable=e.reason)
-        return state.loaded or caddyfile(None, s)
+            return caddyfile(None, s, unavailable=e.reason), None
+        # Within the grace window the loaded config stays as it is.
+        if state.loaded is not None:
+            return state.loaded, state.plan
+        return caddyfile(None, s), None
     state.last_ok = now
     p = plan(records, blocked, blocked_cidrs=blocked_cidrs)
     state.plan = p
@@ -611,13 +616,16 @@ def tick(s: Settings, state: State, now: float) -> str:
         for name in sorted(set(state.reported) - set(p.skipped)):
             logger.info("Attachment %s is served again", name)
         state.reported = dict(p.skipped)
-    return caddyfile(p, s)
+    return caddyfile(p, s), p
 
 
-def apply(config: str, state: State, s: Settings) -> str | None:
-    """Load `config`; returns what Caddy now serves. If Caddy refuses it,
-    retry without the attachments carrying their own CA; if that is refused
-    too, serve the unavailable config. Never keep the previous config: that
+def apply(config: str, built_from: Plan | None, s: Settings) -> str | None:
+    """Load `config`; returns what Caddy now serves, or None when Caddy
+    accepted nothing. If Caddy refuses it, retry without the attachments
+    carrying their own CA; if that is refused too, serve the unavailable
+    config. The CA-free retry is built from `built_from`, the plan `config`
+    came from, so an unavailable config (built from none) can never fall
+    back to routes of an earlier poll. Never keep the previous config: that
     would be a last-known-good copy, and deactivated attachments would stay
     served."""
     try:
@@ -626,8 +634,8 @@ def apply(config: str, state: State, s: Settings) -> str | None:
         return config
     except (urllib.error.URLError, OSError) as e:
         logger.error("Caddy refused the config: %s", e)
-    if state.plan is not None:
-        fallback = without_custom_cas(state.plan)
+    if built_from is not None:
+        fallback = without_custom_cas(built_from)
         for name, why in sorted(fallback.skipped.items()):
             if why.startswith("Caddy refused"):
                 logger.error("Attachment %s not served: %s", name, why)
@@ -669,9 +677,22 @@ def main() -> int:
         if caddy.poll() is not None:
             logger.error("Caddy exited with %s", caddy.returncode)
             return 1
-        config = tick(s, state, time.monotonic())
+        config, built_from = tick(s, state, time.monotonic())
         if config != state.loaded:
-            state.loaded = apply(config, state, s)
+            loaded = apply(config, built_from, s)
+            if loaded is None:
+                # Caddy accepts no config, not even the unavailable one, so
+                # it still serves whatever it last accepted: routes that may
+                # have expired or been deactivated. Exit; the container
+                # restarts the edge, which starts Caddy serving no app.
+                logger.error("Caddy accepts no config; exiting so the edge restarts serving no attached app")
+                caddy.terminate()
+                try:
+                    caddy.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    caddy.kill()
+                return 1
+            state.loaded = loaded
         time.sleep(POLL_SECONDS)
 
 

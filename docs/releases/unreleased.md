@@ -142,6 +142,22 @@ run on every install with the auth gateway. It is now the optional module
   by hand; the extra `app-edge` entry is then reported as an unknown module
   by the older deployer, so remove it from `modules.optional` as well.
 
+### The app edge never brings expired or deactivated attachments back
+
+During a Registry outage past the expiry deadline, or while the attach
+policy was unreadable, the edge loads a config that serves no attached app.
+If Caddy refused that load (for example a busy admin API timing out), the
+edge's fallback rebuilt the routes of the **last good poll**, so attachments
+were served again past expiry, including one deactivated during the outage.
+If every load failed, Caddy simply kept its old routes.
+
+- **The fallback now uses only the plan the refused config was built from.**
+  An unavailable config has none, so it can never fall back to routes.
+- **When Caddy accepts no config at all, the edge process exits.** The
+  container restarts it, and the edge always starts Caddy serving no
+  attached app.
+- **Needs the new app-edge image.**
+
 ### Group names that can't travel in `X-WIP-Groups` are dropped at login
 
 The gateway joins a user's groups with `,` into `X-WIP-Groups`, and every

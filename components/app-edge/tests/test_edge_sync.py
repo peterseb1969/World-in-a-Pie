@@ -233,22 +233,25 @@ def test_routes_expire_after_three_failed_polls(monkeypatch):
 
     monkeypatch.setattr(es, "fetch_attachments", fetch)
     state = es.State()
-    good = es.tick(SETTINGS, state, now=100.0)
+    good, built_from = es.tick(SETTINGS, state, now=100.0)
+    assert built_from is not None
     state.loaded = good
     assert "/apps/aa/*" in good
 
     calls["ok"] = False
     # Within 3 * POLL_SECONDS of the last success: the loaded config stays.
-    assert es.tick(SETTINGS, state, now=100.0 + 2 * es.POLL_SECONDS) == good
+    assert es.tick(SETTINGS, state, now=100.0 + 2 * es.POLL_SECONDS) == (good, built_from)
     # A failed poll never extends the deadline.
-    assert es.tick(SETTINGS, state, now=100.0 + 2.9 * es.POLL_SECONDS) == good
-    expired = es.tick(SETTINGS, state, now=100.0 + 3.1 * es.POLL_SECONDS)
+    assert es.tick(SETTINGS, state, now=100.0 + 2.9 * es.POLL_SECONDS) == (good, built_from)
+    expired, none = es.tick(SETTINGS, state, now=100.0 + 3.1 * es.POLL_SECONDS)
+    assert none is None
     assert "the Registry is not answering" in expired and "/apps/aa/*" not in expired
 
 
 def test_never_read_means_unavailable(monkeypatch):
     monkeypatch.setattr(es, "fetch_attachments", lambda _s: (_ for _ in ()).throw(es.RegistryUnavailable("x")))
-    assert "503" in es.tick(SETTINGS, es.State(), now=1.0)
+    config, built_from = es.tick(SETTINGS, es.State(), now=1.0)
+    assert "503" in config and built_from is None
 
 
 def test_header_lists_must_be_header_names():
@@ -297,8 +300,7 @@ def test_a_refused_config_never_leaves_the_old_one_serving(monkeypatch):
             raise OSError("refused")
 
     monkeypatch.setattr(es, "load", load)
-    state = es.State(loaded="OLD", plan=es.plan([rec()], []))
-    now_serving = es.apply("NEW", state, SETTINGS)
+    now_serving = es.apply("NEW", es.plan([rec()], []), SETTINGS)
     assert "the app edge's config was refused" in now_serving
     assert len(loads) == 3  # the config, the CA-free fallback, the unavailable one
 
@@ -311,7 +313,7 @@ def test_a_refused_key_is_named_as_such(monkeypatch):
         raise urllib.error.HTTPError("u", 403, "Forbidden", {}, io.BytesIO(b""))
 
     monkeypatch.setattr(es.urllib.request, "urlopen", refuse)
-    cfg = es.tick(SETTINGS, es.State(), now=1.0)
+    cfg, _ = es.tick(SETTINGS, es.State(), now=1.0)
     assert "the Registry refused the app edge's key" in cfg
 
 
@@ -350,3 +352,94 @@ def test_a_bad_node_range_fails_closed(tmp_path):
     f.write_text(json.dumps({"blocked_hosts": [], "blocked_cidrs": ["nope"]}))
     with pytest.raises(es.PolicyUnavailable):
         es.load_policy(str(f))
+
+
+# ── a refused unavailable config never brings old routes back (CASE-1082) ──
+
+
+def _refuse_everything_but(marker):
+    loads = []
+
+    def load(config, timeout=10.0):
+        loads.append(config)
+        if marker is None or marker not in config:
+            raise OSError("refused")
+
+    return loads, load
+
+
+def _expired_state(monkeypatch):
+    """A state whose last good poll served /apps/aa, then a Registry outage
+    past the deadline."""
+    calls = {"ok": True}
+
+    def fetch(_s):
+        if calls["ok"]:
+            return [rec()]
+        raise es.RegistryUnavailable("down")
+
+    monkeypatch.setattr(es, "fetch_attachments", fetch)
+    state = es.State()
+    good, _ = es.tick(SETTINGS, state, now=100.0)
+    state.loaded = good
+    calls["ok"] = False
+    return state
+
+
+def test_past_the_deadline_a_refused_unavailable_config_serves_no_old_route(monkeypatch):
+    state = _expired_state(monkeypatch)
+    config, built_from = es.tick(SETTINGS, state, now=100.0 + 3.1 * es.POLL_SECONDS)
+    assert built_from is None and state.plan is not None  # the stale plan is still held
+    loads, load = _refuse_everything_but(None)
+    monkeypatch.setattr(es, "load", load)
+    assert es.apply(config, built_from, SETTINGS) is None
+    assert loads and not any("/apps/aa/*" in c for c in loads)
+
+
+def test_an_unavailable_policy_never_falls_back_to_old_routes(monkeypatch):
+    state = _expired_state(monkeypatch)
+
+    def unavailable(_path):
+        raise es.PolicyUnavailable("gone")
+
+    monkeypatch.setattr(es, "fetch_attachments", lambda _s: [rec()])  # the Registry answers again
+    monkeypatch.setattr(es, "load_policy", unavailable)
+    config, built_from = es.tick(SETTINGS, state, now=101.0)
+    assert "attach policy is unavailable" in config
+    assert built_from is None
+    loads, load = _refuse_everything_but(None)
+    monkeypatch.setattr(es, "load", load)
+    es.apply(config, built_from, SETTINGS)
+    assert not any("/apps/aa/*" in c for c in loads)
+
+
+def test_within_the_grace_window_the_loaded_config_stays(monkeypatch):
+    state = _expired_state(monkeypatch)
+    assert es.tick(SETTINGS, state, now=101.0) == (state.loaded, state.plan)
+
+
+def test_the_edge_exits_when_caddy_accepts_no_config(monkeypatch, tmp_path):
+    class FakeCaddy:
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def send_signal(self, _sig):
+            pass
+
+        def terminate(self):
+            FakeCaddy.terminated = True
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(es.Settings, "from_env", classmethod(lambda cls: SETTINGS))
+    monkeypatch.setattr(es, "CADDYFILE_PATH", str(tmp_path / "edge.Caddyfile"))
+    monkeypatch.setattr(es.subprocess, "Popen", lambda *a, **k: FakeCaddy())
+    monkeypatch.setattr(es.signal, "signal", lambda *a: None)
+    monkeypatch.setattr(es.time, "sleep", lambda _s: None)
+    monkeypatch.setattr(es, "fetch_attachments", lambda _s: [rec()])
+    monkeypatch.setattr(es, "load", _refuse_everything_but(None)[1])
+    assert es.main() == 1
+    assert FakeCaddy.terminated
