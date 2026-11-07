@@ -1152,6 +1152,9 @@ class DirectRestoreEngine:
         # dry run's per-type counts — the whole reason to ask — are gone by the
         # time it completes unless they are collected here.
         self.result: dict[str, Any] = {}
+        # Per target of a fresh restore, how many restored identities are
+        # active so far: what a failed activation reports as live.
+        self._activation: dict[str, dict[str, int]] = {}
         # Namespaces whose reporting batch sync this run has already
         # triggered (the count phase). Reported on the complete event so the
         # job's completion does not trigger a second, full re-sync of them.
@@ -1483,9 +1486,11 @@ class DirectRestoreEngine:
         every identity under its old id.
 
         Ordering is deliberate. Entries are provisioned as *reserved*, which
-        does not resolve, so a job that dies partway leaves an invisible and
-        reconcilable namespace; a single activation at the end makes the whole
-        set visible at once.
+        does not resolve, so a job that dies before activation leaves an
+        invisible and reconcilable namespace. Activation at the end makes the
+        set visible; it runs in batches, target by target, so a failure during
+        it leaves the earlier batches live, and the error and the job record
+        say exactly how many per target.
 
         No reporting work happens here. A restore's job is to get the data in;
         PostgreSQL is a derived layer that can be rebuilt at any time, and
@@ -2350,30 +2355,69 @@ class DirectRestoreEngine:
             "X-API-Key": self._registry_api_key,
             "Content-Type": "application/json",
         }
+        # Activation goes out in batches, and an earlier batch stays active when
+        # a later one fails: the job must say exactly what is live, never that
+        # the namespace is still invisible.
+        progress = self._activation.setdefault(
+            namespace, {"total": len(items), "active": 0, "failed": 0}
+        )
+        progress["total"] = len(items)
         async with httpx.AsyncClient(timeout=120.0) as client:
             for start in range(0, len(items), 500):
                 batch = items[start:start + 500]
                 resp = await client.post(url, json=batch, headers=headers)
                 if resp.status_code != 200:
-                    raise RestoreEngineError(
-                        f"Could not activate {len(batch)} restored identit(ies) "
-                        f"in '{namespace}': {resp.status_code} — {resp.text}. "
-                        "The data is written but invisible; re-run activation "
-                        "or delete the namespace and retry."
+                    self._raise_activation_failure(
+                        namespace,
+                        f"the Registry answered {resp.status_code} for a batch of "
+                        f"{len(batch)} — {resp.text[:300]}",
                     )
                 body = resp.json()
+                results = body.get("results", [])
+                live = sum(
+                    1 for r in results if r.get("status") in ("activated", "already_active")
+                )
+                progress["active"] += live
                 if body.get("errors", 0):
                     failed = [
-                        r for r in body.get("results", [])
+                        r for r in results
                         if r.get("status") not in ("activated", "already_active")
                     ]
-                    raise RestoreEngineError(
-                        f"[{namespace}] {body['errors']} identit(ies) failed to "
-                        f"activate — a restored identity could not claim its "
-                        f"composite key (a genuine duplicate). The namespace is "
-                        f"partially written and invisible; delete it and retry. "
-                        f"First failures: {failed[:5]}"
+                    progress["failed"] += len(failed)
+                    self._raise_activation_failure(
+                        namespace,
+                        f"{len(failed)} identit(ies) could not claim their "
+                        f"composite key (a genuine duplicate); first: {failed[:5]}",
                     )
+
+    def _raise_activation_failure(self, namespace: str, cause: str) -> None:
+        """Stop a fresh restore whose activation failed, saying what is live.
+
+        Activation is the step that makes restored identities resolvable, and
+        it runs in batches, target by target: by the time one fails, earlier
+        batches (and earlier targets) are already live. The error says so per
+        target, and the job record carries the counts.
+        """
+        lines = []
+        for target, counts in self._activation.items():
+            pending = counts["total"] - counts["active"] - counts["failed"]
+            lines.append(
+                f"'{target}': {counts['active']} of {counts['total']} active"
+                + (f", {counts['failed']} failed" if counts["failed"] else "")
+                + (f", {pending} not activated" if pending else "")
+            )
+        targets = ", ".join(f"'{t}'" for t in self._activation)
+        raise RestoreEngineError(
+            f"Activation failed in '{namespace}': {cause}. What is live now — "
+            f"{'; '.join(lines)}. Restored identities that are active resolve; "
+            f"the rest do not. Delete the target namespace(s) ({targets}) and "
+            "retry the restore.",
+            details={
+                "result_kind": "activation_failed",
+                "namespace": namespace,
+                "activation": {t: dict(c) for t, c in self._activation.items()},
+            },
+        )
 
     def _rewritten_synonyms(
         self, reader: Any, src: str, target: str, plan: Any,

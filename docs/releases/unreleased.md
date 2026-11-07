@@ -7,6 +7,17 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A fresh restore whose activation fails says what is live
+
+A fresh restore makes its restored identities resolvable in one activation
+step at the end, sent in batches of 500, target by target. A failure partway
+left the earlier batches (and targets) live, but the error said the namespace
+was "invisible" and suggested a "re-run activation" that no surface offers. The
+error now gives, per target, how many identities are active, failed and not
+activated, and the failed job's `result` carries the same counts
+(`result_kind: activation_failed`). The recovery is unchanged: delete the target
+namespaces and retry.
+
 ### A multi-namespace merge checks every namespace before writing any
 
 A merge of an archive with several namespaces planned, checked and wrote them
