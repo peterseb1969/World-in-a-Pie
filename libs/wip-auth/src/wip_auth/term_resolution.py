@@ -122,6 +122,9 @@ async def resolve_term_values(
     Raises:
         TermResolutionError: def-store unreachable or answering an error —
             the caller decides (identity fields fail closed).
+        RegistryUnavailableError: the Registry did not answer while
+            resolving a value-form terminology ref — never reported as
+            "Terminology not found".
     """
     if not items:
         return []

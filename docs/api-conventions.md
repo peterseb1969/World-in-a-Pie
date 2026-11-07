@@ -627,11 +627,12 @@ UUID. Substitute it from the app's own configuration at bootstrap.
 
 ### Best-Effort Semantics
 
-Resolution is **best-effort** at the API boundary. If the Registry is unreachable, the synonym is not found, or no namespace context can be determined (multi-namespace key with `namespace` omitted), the raw value passes through unchanged. Namespace context comes from the `namespace` parameter, or implicitly from single-namespace API keys. This means:
+Where an endpoint has a value-based fallback, resolution is **best-effort** about *misses*: if the synonym is not found, or no namespace context can be determined (multi-namespace key with `namespace` omitted), the raw value passes through unchanged. Namespace context comes from the `namespace` parameter, or implicitly from single-namespace API keys. This means:
 
 - Existing code using canonical UUIDs continues to work unchanged
-- Services degrade gracefully when the Registry is down
 - Invalid synonyms are caught by downstream validation (e.g., "template not found"), not by the resolve layer
+
+It is never best-effort about an **outage**. If the Registry does not answer (unreachable, timed out, or an error status), the request fails with **503** and `error_code: "registry_unavailable"`: it is not answered as "not found", items are not passed on unresolved, and nothing is cached. Registry down means WIP down. An identifier that names several entities is **409** with its candidates (`detail.candidates`, `detail.total`); pick one by canonical ID or a qualified value.
 
 ### Auto-Synonyms
 
@@ -657,10 +658,12 @@ For details, see `docs/design/universal-synonym-resolution.md`.
 | **200** | All successful responses, including write operations (errors are per-item in BulkResponse) |
 | **401** | Missing or invalid authentication |
 | **404** | Entity not found (GET by ID) |
+| **409** | An identifier in the path or query names several entities (`detail.candidates`) |
 | **422** | Invalid request body (validation error from FastAPI) |
-| **502** | Upstream service error (e.g., Registry unreachable from Template-Store) |
+| **502** | The Registry refused an operation a route depends on (`Registry error: …`, e.g., Template-Store, Def-Store) |
+| **503** | The Registry did not answer (`error_code: "registry_unavailable"`), or the authorization check could not be made — retry |
 
-**Note:** 201 and 409 are never returned. All write results are communicated via `BulkResponse.results[i].status`.
+**Note:** 201 is never returned, and write results are communicated via `BulkResponse.results[i].status`: a per-item failure never changes the HTTP status. A 409 or 503 refuses the request as a whole.
 
 ---
 

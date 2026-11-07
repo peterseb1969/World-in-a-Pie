@@ -238,11 +238,13 @@ id_map = await resolve_entity_ids(["STATUS", "GENDER"], "terminology", "wip")
 # Returns: {"STATUS": "019abc...", "GENDER": "019def..."}
 ```
 
-**`resolve_entity_id(raw_id, entity_type, namespace)`** — Returns `raw_id` unchanged if it's already a UUID. Otherwise, resolves via the Registry's `POST /resolve` endpoint. Raises `EntityNotFoundError` if not found or Registry is unreachable.
+**`resolve_entity_id(raw_id, entity_type, namespace)`** — Returns `raw_id` unchanged if it's already a UUID. Otherwise, resolves via the Registry's `POST /resolve` endpoint. Raises `EntityNotFoundError` if the Registry answers "not found", `AmbiguousEntityError` (a subclass) if the value names several entities, and `RegistryUnavailableError` if the Registry does not answer (unreachable, timeout, error status).
 
 **`resolve_entity_ids(raw_ids, entity_type, namespace)`** — Batch variant. UUIDs pass through, cached results are reused, remaining IDs are resolved in a single Registry call. Returns `{raw_id: canonical_id}` dict.
 
-**`EntityNotFoundError`** — Raised when resolution fails. Has `.identifier` and `.entity_type` attributes.
+**`EntityNotFoundError`** — Raised when the Registry answers that nothing matches. Has `.identifier` and `.entity_type` attributes.
+
+**`RegistryUnavailableError`** — Raised when the Registry does not answer. Deliberately a subclass of neither `EntityNotFoundError` nor `RegistryError`, so a handler for a miss cannot absorb an outage. `setup_auth` registers a handler that answers **503** (`error_code: "registry_unavailable"`) in every service; let it propagate. The shared client's `resolve_candidates` and `get_namespace_deletion_mode` raise it too, and the permission checks answer 503 for any Registry reply other than a well-formed 200.
 
 ### Usage Pattern in Services
 
@@ -258,8 +260,9 @@ async def list_terms(terminology_id: str, namespace: str = "wip"):
         terminology_id = await resolve_entity_id(
             terminology_id, "terminology", namespace,
         )
-    # If resolution fails, the raw value passes through —
-    # downstream logic handles the "not found" case naturally
+    # If the identifier is not found, the raw value passes through —
+    # downstream logic handles the "not found" case naturally. A Registry
+    # outage is not suppressed: RegistryUnavailableError propagates (503).
     return await service.list_terms(terminology_id)
 ```
 

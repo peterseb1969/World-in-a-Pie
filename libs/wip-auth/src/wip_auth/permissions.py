@@ -18,15 +18,18 @@ Usage:
         # ... use query for MongoDB
 """
 
+import logging
 import os
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, cast
 
 from cachetools import TTLCache
 from fastapi import HTTPException
 
 from .config import get_auth_config
 from .models import UserIdentity
+
+logger = logging.getLogger(__name__)
 
 # Thread-safe TTL caches (L1 — prevents potential race conditions)
 GRANT_CACHE_TTL = 30.0  # seconds
@@ -36,10 +39,11 @@ _accessible_cache: TTLCache = TTLCache(maxsize=256, ttl=GRANT_CACHE_TTL)
 # Permission hierarchy
 PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2, "admin": 3}
 
-# The Registry could not be asked (unreachable, timed out, or 5xx). Not a
-# permission level — permission_sufficient treats it as nothing, so every
-# check still fails closed — and never cached, so access returns as soon as
-# the Registry does instead of staying denied for the cache lifetime.
+# The Registry gave no answer (unreachable, timed out, or any status but a
+# well-formed 200). Not a permission level — permission_sufficient treats it
+# as nothing, so every check still fails closed — and never cached, so
+# access returns as soon as the Registry does instead of staying denied for
+# the cache lifetime.
 PERMISSION_UNAVAILABLE = "unavailable"
 
 _UNAVAILABLE_DETAIL = "Authorization service unavailable — the Registry could not be reached; retry shortly"
@@ -166,13 +170,21 @@ async def _fetch_permission_from_registry(
                 params=params,
                 headers=headers,
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                permission: str = data.get("permission", "none")
-                return permission
-            if resp.status_code >= 500:
+            # The Registry answers every definite permission, "none"
+            # included, as a 200. Any other status (a 401 for a stale
+            # service key, a 403 for a key that is not a service account,
+            # a 5xx) and a 200 without a permission string are no answer:
+            # uncached, and the caller answers 503 rather than a false "none".
+            if resp.status_code != 200:
+                logger.warning(
+                    "Registry check-permission answered HTTP %s for %s on %s",
+                    resp.status_code, identity.user_id, namespace,
+                )
                 return PERMISSION_UNAVAILABLE
-            return "none"
+            permission = resp.json().get("permission")
+            if not isinstance(permission, str):
+                return PERMISSION_UNAVAILABLE
+            return permission
     except Exception:
         # Registry unreachable: no answer, not a "none" answer. Callers
         # still deny (fail closed), but nothing caches it.
@@ -355,15 +367,20 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] |
                 params=params,
                 headers=headers,
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("is_superadmin"):
-                    return None
-                namespaces: list[str] = data.get("namespaces", [])
-                return namespaces
-            if resp.status_code >= 500:
+            # As for check-permission: only a well-formed 200 is an answer.
+            if resp.status_code != 200:
+                logger.warning(
+                    "Registry accessible-namespaces answered HTTP %s for %s",
+                    resp.status_code, identity.user_id,
+                )
                 return _UNAVAILABLE_LIST
-            return []
+            data = resp.json()
+            if data.get("is_superadmin"):
+                return None
+            namespaces = data.get("namespaces")
+            if not isinstance(namespaces, list):
+                return _UNAVAILABLE_LIST
+            return cast(list[str], namespaces)
     except Exception:
         return _UNAVAILABLE_LIST
 

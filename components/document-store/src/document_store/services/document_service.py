@@ -519,12 +519,17 @@ class DocumentService:
 
         # Validate document
         start = time.perf_counter()
-        validation_result = await self._validate_as_writer(
-            request.template_id,
-            request.data,
-            namespace,
-            template_version=request.template_version,
-        )
+        try:
+            validation_result = await self._validate_as_writer(
+                request.template_id,
+                request.data,
+                namespace,
+                template_version=request.template_version,
+            )
+        except RegistryUnavailableError as e:
+            # The Registry could not be asked while validating: the item is
+            # refused, with the same per-item code the bulk path reports.
+            return None, error_fields(e)
         timing["1_validation"] = (time.perf_counter() - start) * 1000
 
         if not validation_result.valid:

@@ -2157,8 +2157,9 @@ class ValidationService:
 
         Every entry resolves through the Registry, so value-form, UUID and
         any synonym count identically (References-Must-Resolve). An entry
-        that does not resolve but is UUID-shaped is already canonical (or the
-        Registry is briefly unavailable): honoured directly, never dropped.
+        that does not resolve but is UUID-shaped is already canonical:
+        honoured directly, never dropped. A Registry that does not answer
+        raises RegistryUnavailableError, which RegistryError does not catch.
         """
         from .registry_client import RegistryError, get_registry_client
 

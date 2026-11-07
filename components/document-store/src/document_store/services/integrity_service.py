@@ -305,8 +305,9 @@ async def _lookup_hint(
             resolved = await resolve_entity_id(lookup, "document", namespace)
             hints[key] = f"; its lookup value '{lookup}' resolves to '{resolved}' here"
         except EntityNotFoundError:
-            # Not found, ambiguous and Registry-unreachable all land here;
-            # the wording claims no more than that.
+            # Not found and ambiguous land here; the wording claims no more
+            # than that. A Registry that does not answer is not caught: it
+            # fails the check (503) rather than reading as unresolvable.
             hints[key] = f"; its lookup value '{lookup}' could not be resolved here"
     return hints[key]
 

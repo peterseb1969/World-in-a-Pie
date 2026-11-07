@@ -74,6 +74,43 @@ Four fixes in wip-auth's event bus, which every service with NATS uses:
 - **`stop()`** awaits every task. Before, each finished task leaving the list
   made it skip the next.
 
+### A Registry that does not answer is 503, never "not found" or "no access"
+
+Several paths turned "the Registry did not answer" (unreachable, timed out, an
+error status) into "the Registry said no". They now all answer **503** with
+`error_code: "registry_unavailable"` and cache nothing:
+
+- **Resolution** (`resolve_or_404`, the by-value fallback, the terminology
+  lookup) answered 404 "Could not resolve". A value-form terminology ref in a
+  document reported "Terminology not found".
+- **Bulk writes** (`resolve_bulk_ids`, e.g. def-store term relations) passed
+  every item on unresolved. The request is now refused.
+- **Permission checks** treated any 4xx from the Registry, such as a 401 for a
+  stale service key after a key rotation, as a real "none", cached it for 30 s,
+  and answered 404 "Namespace not found" (or 403 / empty lists). Only a
+  well-formed 200 is an answer now.
+- **Hard delete** was refused with "deletion_mode 'retain'" when the
+  namespace lookup failed.
+- **Document writes** read a failed candidate lookup for a bare reference as
+  "no such document". The item is now refused with `registry_error`
+  (`details.rule: registry_unavailable`), the per-item code document writes
+  already report for an outage, on the single-item and bulk paths alike.
+- **Template writes** that resolve `extends` or field references during an
+  outage are refused as a whole request (503), as a Registry refusal there
+  already was (502).
+- **The edge-type endpoint heal pass** counted every entry as unresolvable.
+  It now fails.
+
+An identifier that names several entities is now **409** at a route, with
+`detail.candidates` and `detail.total`, instead of 404. Inside a bulk write the
+per-item `ambiguous_reference` is unchanged.
+
+**Who is affected:** callers that read a 404 during a Registry problem as
+"absent". Retry a 503. Code built on wip-auth gets `RegistryUnavailableError`,
+which is deliberately neither an `EntityNotFoundError` nor a `RegistryError`;
+let it propagate to the handler `setup_auth` registers. Document-store and
+template-store no longer define their own class of that name; they use this one.
+
 ### Nested identity paths follow the resolved-referent rule; `wip-archive` 0.26.0
 
 A term- or reference-typed identity field feeds the identity hash the

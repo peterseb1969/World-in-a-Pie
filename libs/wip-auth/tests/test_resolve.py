@@ -238,8 +238,12 @@ class TestResolveEntityId:
 
     @pytest.mark.asyncio
     async def test_registry_unreachable_raises(self):
-        with pytest.raises(EntityNotFoundError):
+        """Unreachable is no answer, not a miss: never EntityNotFoundError."""
+        from wip_auth import RegistryUnavailableError
+
+        with pytest.raises(RegistryUnavailableError) as exc:
             await resolve_entity_id("GENDER", "terminology", "wip")
+        assert not isinstance(exc.value, EntityNotFoundError)
 
     @pytest.mark.asyncio
     async def test_resolution_is_cached(self, httpx_mock):

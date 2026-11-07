@@ -20,6 +20,7 @@ from fastapi import HTTPException
 
 from .identity import get_current_identity
 from .resolve import (
+    AmbiguousEntityError,
     EntityNotFoundError,
     TermNamespaceRequiredError,
     _looks_like_uuid,
@@ -29,6 +30,25 @@ from .resolve import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _ambiguous_409(e: AmbiguousEntityError) -> HTTPException:
+    """409 for an identifier that names several entities, with its candidates.
+
+    Ambiguity is a definite answer, not a miss: the caller can fix it by
+    choosing one, so the candidates travel with the error.
+    """
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "ambiguous",
+            "error_code": "ambiguous_reference",
+            "message": str(e),
+            "identifier": e.identifier,
+            "candidates": e.candidates,
+            "total": e.total,
+        },
+    )
 
 
 def _reject_ambiguous_term_form(raw_id: str, param_name: str | None) -> None:
@@ -126,6 +146,10 @@ async def resolve_or_404(
 
     Raises:
         HTTPException(404): When the identifier cannot be resolved.
+        HTTPException(409): When the identifier names several entities;
+            the detail carries the candidates.
+        RegistryUnavailableError: When the Registry does not answer —
+            setup_auth's handler answers 503.
         HTTPException(422): When ``strict`` and the identifier is a non-UUID
             value with no namespace context to resolve it against; or when
             the identifier is a term in the ambiguous 2-part colon form
@@ -154,6 +178,8 @@ async def resolve_or_404(
             return await resolve_entity_id(
                 raw_id, entity_type, cast(str, ns_prefix), bypass_cache=bypass_cache
             )
+        except AmbiguousEntityError as e:
+            raise _ambiguous_409(e) from None
         except EntityNotFoundError:
             if strict:
                 # Filter context with real (identifier-carried) namespace
@@ -197,6 +223,8 @@ async def resolve_or_404(
         return await resolve_entity_id(
             raw_id, entity_type, namespace, bypass_cache=bypass_cache
         )
+    except AmbiguousEntityError as e:
+        raise _ambiguous_409(e) from None
     except EntityNotFoundError:
         label = param_name or entity_type
         detail = f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'"
@@ -233,6 +261,8 @@ async def resolve_term_by_fields_or_404(
                 "or use a single-namespace API key."
             ),
         ) from None
+    except AmbiguousEntityError as e:
+        raise _ambiguous_409(e) from None
     except EntityNotFoundError:
         raise HTTPException(
             status_code=404,
@@ -360,19 +390,13 @@ async def resolve_bulk_ids(
     for _item, raw_id, item_ns in string_door:
         ids_by_ns.setdefault(item_ns, []).append(raw_id)
     resolved_by_ns: dict[str, dict[str, str]] = {}
+    # A Registry that does not answer raises RegistryUnavailableError out of
+    # here (503): items are never passed on unverified because of an outage.
     for item_ns, ns_ids in ids_by_ns.items():
-        try:
-            resolved_by_ns[item_ns] = await resolve_entity_ids(
-                ns_ids, entity_type, item_ns,
-                bypass_cache=bypass_cache, strict=False,
-            )
-        except EntityNotFoundError:
-            # Registry unreachable / non-200 for this namespace's batch —
-            # the old per-item path passed every item through on exactly
-            # this failure (caught per item); the batch door must not turn
-            # it into a whole-request 500. Every id stays unresolved and
-            # the warnings below name each one.
-            resolved_by_ns[item_ns] = {}
+        resolved_by_ns[item_ns] = await resolve_entity_ids(
+            ns_ids, entity_type, item_ns,
+            bypass_cache=bypass_cache, strict=False,
+        )
     warned: set[tuple[str, str]] = set()
     for item, raw_id, item_ns in string_door:
         resolved = resolved_by_ns[item_ns].get(raw_id)

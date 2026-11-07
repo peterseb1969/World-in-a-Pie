@@ -33,6 +33,8 @@ from typing import Any, cast
 
 import httpx
 
+from .registry_client import registry_unavailable_from
+
 logger = logging.getLogger(__name__)
 
 # UUID pattern: 8-4-4-4-12 hex chars (covers UUID4, UUID7, and similar)
@@ -448,7 +450,9 @@ async def _post_resolve(
     Shared HTTP + error mapping for every resolution entry point — one
     implementation so transport injection and failure semantics cannot
     drift between the string-form and field-form resolvers. Raises
-    EntityNotFoundError on unreachable Registry, non-200, or not-found.
+    EntityNotFoundError when the Registry answers "not found", and
+    RegistryUnavailableError when it does not answer (unreachable,
+    timeout, non-200) — an outage is never reported as a miss.
     """
     registry_url = _get_registry_url()
     api_key = _get_api_key()
@@ -460,16 +464,16 @@ async def _post_resolve(
             headers={"X-API-Key": api_key, "Content-Type": "application/json"},
             json=[payload],
         )
-    except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
-        logger.debug("Registry unreachable for resolution: %s", e)
-        raise EntityNotFoundError(identifier, entity_type) from e
+    except (httpx.HTTPError, OSError) as e:
+        logger.warning("Registry unreachable for resolution of %s: %s", identifier, e)
+        raise registry_unavailable_from("resolve", error=e) from e
 
     if response.status_code != 200:
         logger.warning(
             "Registry resolve failed for %s (%s): %s",
             identifier, entity_type, response.status_code,
         )
-        raise EntityNotFoundError(identifier, entity_type)
+        raise registry_unavailable_from("resolve", response)
 
     data = response.json()
     results = data.get("results", [])
@@ -477,10 +481,8 @@ async def _post_resolve(
         return cast(str, results[0]["entry_id"])
 
     # Genuine "Registry looked and found nothing" — the only case where an
-    # under-specified identifier is a plausible cause, so the only one that
-    # gets the namespace hint. The transport and non-200 raises above are
-    # infrastructure failures; suggesting a qualified form there would send
-    # the reader after the wrong problem.
+    # under-specified identifier is a plausible cause, so the namespace
+    # hint belongs here.
     raise EntityNotFoundError(identifier, entity_type, namespace)
 
 
@@ -515,9 +517,10 @@ async def _post_lookup_by_id(
     The candidates match entry_id exactly, then the values of each entry's
     active keys (where identity-values synonyms live), filtered by namespace
     and plural entity_type. A Registry predating the route (404, during a
-    rollout) is asked by-id instead. Any other failure returns None: this is
-    a miss-path fallback, and the caller re-raises the original
-    EntityNotFoundError so the error names the identifier as given.
+    rollout) is asked by-id instead. A miss returns None, and the caller
+    re-raises the original EntityNotFoundError so the error names the
+    identifier as given. A Registry that does not answer raises
+    RegistryUnavailableError: the fallback must not turn an outage into a miss.
     """
     registry_url = _get_registry_url()
     api_key = _get_api_key()
@@ -536,16 +539,16 @@ async def _post_lookup_by_id(
                 headers=headers,
                 json=[{"entry_id": value, "namespace": namespace, "entity_type": plural}],
             )
-    except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
-        logger.debug("Registry unreachable for value fallback: %s", e)
-        return None
+    except (httpx.HTTPError, OSError) as e:
+        logger.warning("Registry unreachable for value fallback of %s: %s", value, e)
+        raise registry_unavailable_from("value lookup", error=e) from e
 
     if response.status_code != 200:
         logger.warning(
             "Registry value fallback failed for %s (%s): %s",
             value, entity_type, response.status_code,
         )
-        return None
+        raise registry_unavailable_from("value lookup", response)
 
     results = response.json().get("results", [])
     if not results or results[0].get("status") != "found":
@@ -574,6 +577,7 @@ async def terminology_coordinates_by_id(entry_id: str) -> tuple[str, str] | None
     The id needs no namespace context: the Registry entry carries its own.
     Only an exact entry_id match counts — the lookup's search_values
     fallback would also match a bare value in some other namespace.
+    Raises RegistryUnavailableError when the Registry does not answer.
     """
     registry_url = _get_registry_url()
     api_key = _get_api_key()
@@ -584,11 +588,11 @@ async def terminology_coordinates_by_id(entry_id: str) -> tuple[str, str] | None
             headers={"X-API-Key": api_key, "Content-Type": "application/json"},
             json=[{"entry_id": entry_id, "entity_type": "terminologies"}],
         )
-    except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
-        logger.debug("Registry unreachable for terminology lookup: %s", e)
-        return None
+    except (httpx.HTTPError, OSError) as e:
+        logger.warning("Registry unreachable for terminology lookup of %s: %s", entry_id, e)
+        raise registry_unavailable_from("terminology lookup", error=e) from e
     if response.status_code != 200:
-        return None
+        raise registry_unavailable_from("terminology lookup", response)
 
     results = response.json().get("results", [])
     if not results:
@@ -784,13 +788,13 @@ async def resolve_entity_ids(
                 headers={"X-API-Key": api_key, "Content-Type": "application/json"},
                 json=payloads,
             )
-        except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
-            logger.debug("Registry unreachable for batch resolution: %s", e)
-            raise EntityNotFoundError(chunk[0], entity_type) from e
+        except (httpx.HTTPError, OSError) as e:
+            logger.warning("Registry unreachable for batch resolution: %s", e)
+            raise registry_unavailable_from("batch resolve", error=e) from e
 
         if response.status_code != 200:
             logger.warning("Registry batch resolve failed: %s", response.status_code)
-            raise EntityNotFoundError(chunk[0], entity_type)
+            raise registry_unavailable_from("batch resolve", response)
 
         data = response.json()
         for i, resolve_result in enumerate(data.get("results", [])):

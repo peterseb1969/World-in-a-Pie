@@ -24,6 +24,8 @@ Configuration via environment variables:
 For more details, see the README.md.
 """
 
+import logging
+
 from .build_info import build_metadata
 from .config import (
     AuthConfig,
@@ -84,6 +86,7 @@ from .providers import (
 )
 from .query_validation import RejectUnknownQueryParamsMiddleware
 from .ratelimit import setup_rate_limiting
+from .registry_client import RegistryUnavailableError
 from .resolve import (
     AmbiguousEntityError,
     EntityNotFoundError,
@@ -103,6 +106,8 @@ from .term_resolution import (
 )
 
 __version__ = "0.4.0"
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     # Health-probe cache
@@ -125,6 +130,7 @@ __all__ = [
     "NamespaceFilter",
     "NoAuthProvider",
     "OIDCProvider",
+    "RegistryUnavailableError",
     "RejectUnknownQueryParamsMiddleware",
     "TermResolutionError",
     "TrustedHeaderProvider",
@@ -365,6 +371,20 @@ def _watch_api_keys_file(config: AuthConfig, provider: APIKeyProvider) -> None:
     watcher.start()
 
 
+async def registry_unavailable_handler(request, exc: RegistryUnavailableError):
+    """HTTP 503 for a Registry that did not answer (registered by setup_auth)."""
+    from fastapi.responses import JSONResponse
+
+    logger.warning("%s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": f"{exc}; retry shortly",
+            "error_code": "registry_unavailable",
+        },
+    )
+
+
 def setup_auth(
     app,
     config: AuthConfig | None = None,
@@ -410,6 +430,10 @@ def setup_auth(
             providers, public_paths=public_paths,
         )
         app.add_middleware(middleware_class)
+
+    # The Registry not answering is a 503 in every service, wherever in a
+    # request it surfaces — never the 404 or "none" of a definite answer.
+    app.add_exception_handler(RegistryUnavailableError, registry_unavailable_handler)
 
     # Added last, so it is outermost: the write flag is set before the auth
     # middleware runs the handler, and resolution in any non-GET request

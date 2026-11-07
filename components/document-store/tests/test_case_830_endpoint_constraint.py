@@ -15,12 +15,15 @@ and assert refusal rather than silent unconstrained acceptance.
 
 from __future__ import annotations
 
+from unittest.mock import patch
+
 import pytest
 
 from document_store.services.validation_service import (
     ValidationResult,
     ValidationService,
 )
+from wip_auth.registry_client import RegistryClientBase
 
 
 def _edge_template_row_without_projection() -> dict:
@@ -86,10 +89,17 @@ async def test_plain_reference_field_keeps_permissive_empty():
          "reference_type": "document", "target_templates": []},
     ]
 
-    await service._validate_references(
-        {"anything_ref": "0190bbbb-0000-7000-0000-00000000cafe"},
-        row, result, "wip",
-    )
+    # The field is checked against the Registry; answer "no such document"
+    # here (a reachable Registry). An unreachable one is an outage, which
+    # refuses the write rather than reading as an answer.
+    async def no_candidates(*_args, **_kwargs):
+        return [], 0
+
+    with patch.object(RegistryClientBase, "resolve_candidates", no_candidates):
+        await service._validate_references(
+            {"anything_ref": "0190bbbb-0000-7000-0000-00000000cafe"},
+            row, result, "wip",
+        )
 
     codes = [e.get("code") for e in result.errors]
     assert "missing_endpoint_constraint" not in codes

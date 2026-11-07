@@ -18,8 +18,15 @@ from wip_auth import UserIdentity
 from wip_auth.reference_policy import (
     outbound_allows,
 )
+from wip_auth.registry_client import RegistryUnavailableError
 
 from .registry_client import RegistryClient, RegistryError, get_registry_client
+
+# RegistryUnavailableError is the platform's one Registry-outage error
+# (wip_auth); modules that import it from here get that class. Isolation
+# that cannot be read is unknown, so the reference check refuses rather than
+# passing: a check skipped whenever the Registry is slow or down lets a
+# strict namespace accept references it forbids.
 
 logger = logging.getLogger(__name__)
 
@@ -42,15 +49,6 @@ class ReferenceValidationError(Exception):
     def __init__(self, message: str, violations: list[dict[str, Any]]):
         super().__init__(message)
         self.violations = violations
-
-
-class RegistryUnavailableError(Exception):
-    """The namespace's isolation settings could not be read from the Registry.
-
-    Isolation is then unknown, so the reference check refuses rather than
-    passing: a check that is skipped whenever the Registry is slow or down
-    lets a strict namespace accept references it forbids.
-    """
 
 
 class ReferenceValidator:

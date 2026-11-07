@@ -95,6 +95,39 @@ class AmbiguousIdentifierError(RegistryError):
         )
 
 
+class RegistryUnavailableError(Exception):
+    """The Registry did not answer: unreachable, timed out, or an error status.
+
+    Distinct from every "the Registry answered no" outcome (not found, no
+    candidates, permission none, deletion_mode retain), so an outage can
+    never be read as one of them. Deliberately a subclass of neither
+    RegistryError nor EntityNotFoundError: handlers written for those treat
+    the error as a definite answer (a miss, an unresolvable reference), and
+    must not absorb this one. ``setup_auth`` registers a handler that turns
+    it into HTTP 503 in every service; a bulk write that catches it reports
+    it per item as ``registry_error``. Nothing caches it.
+
+    The one class for the whole platform: the services' reference validators
+    re-export it rather than defining their own, so a single ``except``
+    catches every Registry outage whichever layer raised it.
+    """
+
+    def __init__(self, message: str, operation: str | None = None):
+        self.operation = operation
+        super().__init__(message)
+
+
+def registry_unavailable_from(
+    operation: str, response: httpx.Response | None = None, error: Exception | None = None,
+) -> RegistryUnavailableError:
+    """The RegistryUnavailableError for a failed call: its status or transport error."""
+    cause = (
+        f"HTTP {response.status_code}" if response is not None
+        else f"{type(error).__name__}: {error}"
+    )
+    return RegistryUnavailableError(f"Registry unavailable ({operation}): {cause}", operation)
+
+
 # ── Pydantic response models ────────────────────────────────────────────────
 #
 # Typed Registry-endpoint responses. Replace the cast() calls CASE-337
@@ -403,29 +436,32 @@ class RegistryClientBase:
         fallback is (CASE-433: value-form references need it), but all
         matches come back, each with the key that carried the value. A
         Registry predating the route (404, during a rollout) is asked by-id
-        instead, which answers at most one entry. Any other failure answers
-        no candidates.
+        instead, which answers at most one entry. Any other failure raises
+        RegistryUnavailableError: an outage is not "no candidates".
         """
         item: dict[str, Any] = {"value": value, "limit": limit}
         if namespace:
             item["namespace"] = namespace
         if entity_type:
             item["entity_type"] = entity_type
-        async with self._make_client() as client:
-            response = await client.post(
-                f"{self.base_url}/api/registry/entries/lookup/candidates",
-                headers=self._get_headers(),
-                json=[item],
-            )
-            if response.status_code == 404:
-                legacy = await self._lookup_by_id(client, namespace, entity_type, value)
-                return ([{"entry_id": legacy}] if legacy else []), (1 if legacy else 0)
-            if response.status_code != 200:
-                return [], 0
-            results = response.json().get("results", [])
-            if not results or results[0].get("status") != "found":
-                return [], 0
-            return list(results[0].get("candidates") or []), int(results[0].get("total") or 0)
+        try:
+            async with self._make_client() as client:
+                response = await client.post(
+                    f"{self.base_url}/api/registry/entries/lookup/candidates",
+                    headers=self._get_headers(),
+                    json=[item],
+                )
+                if response.status_code == 404:
+                    legacy = await self._lookup_by_id(client, namespace, entity_type, value)
+                    return ([{"entry_id": legacy}] if legacy else []), (1 if legacy else 0)
+        except httpx.HTTPError as e:
+            raise registry_unavailable_from("candidate lookup", error=e) from e
+        if response.status_code != 200:
+            raise registry_unavailable_from("candidate lookup", response)
+        results = response.json().get("results", [])
+        if not results or results[0].get("status") != "found":
+            return [], 0
+        return list(results[0].get("candidates") or []), int(results[0].get("total") or 0)
 
     async def _lookup_by_id(
         self, client: httpx.AsyncClient, namespace: str | None,
@@ -442,7 +478,7 @@ class RegistryClientBase:
             json=[lookup_item],
         )
         if response.status_code != 200:
-            return None
+            raise registry_unavailable_from("by-id lookup", response)
         results = response.json().get("results", [])
         if results and results[0].get("status") == "found":
             return cast("str | None", results[0].get("entry_id"))
@@ -653,18 +689,26 @@ class RegistryClientBase:
                 )
 
     async def get_namespace_deletion_mode(self, namespace: str) -> str:
-        """Fetch namespace deletion_mode from Registry. Returns 'retain' or 'full'."""
-        async with self._make_client() as client:
-            response = await client.get(
-                f"{self.base_url}/api/registry/namespaces/{namespace}",
-                headers=self._get_headers(),
-            )
-            if response.status_code != 200:
-                logger.warning(
-                    f"Failed to fetch namespace {namespace}: {response.status_code}"
+        """Fetch namespace deletion_mode from Registry. Returns 'retain' or 'full'.
+
+        Raises RegistryUnavailableError when the Registry does not answer:
+        a hard delete refused for "retain" must be refused because the
+        namespace is in retain mode, never because the lookup failed.
+        """
+        try:
+            async with self._make_client() as client:
+                response = await client.get(
+                    f"{self.base_url}/api/registry/namespaces/{namespace}",
+                    headers=self._get_headers(),
                 )
-                return "retain"
-            return cast(str, response.json().get("deletion_mode", "retain"))
+        except httpx.HTTPError as e:
+            raise registry_unavailable_from("namespace deletion mode", error=e) from e
+        if response.status_code == 404:
+            # A definite answer: no such namespace, so nothing opted it into "full".
+            return "retain"
+        if response.status_code != 200:
+            raise registry_unavailable_from("namespace deletion mode", response)
+        return cast(str, response.json().get("deletion_mode", "retain"))
 
     async def get_namespace(self, namespace: str) -> dict[str, Any] | None:
         """The namespace's Registry record, or None when it does not exist.

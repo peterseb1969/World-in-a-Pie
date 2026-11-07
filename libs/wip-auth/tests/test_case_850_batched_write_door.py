@@ -4,10 +4,11 @@ resolve_bulk_ids used to await one Registry round-trip per item (two per
 relation on the ontology door: a 200-relation request made 400 serial
 resolve calls, each on a fresh connection). The door now batches the
 string-form identifiers into one deduped resolve call per namespace,
-keeps the field door per item, and preserves the old failure semantics:
-a miss (or an unreachable Registry) leaves the item's id untouched for
-the downstream BulkResponse — now with the single door's by-id fallback
-on misses, so batch resolution is never weaker than single resolution.
+keeps the field door per item, and preserves the old miss semantics:
+a miss leaves the item's id untouched for the downstream BulkResponse —
+now with the single door's by-id fallback on misses, so batch resolution
+is never weaker than single resolution. A Registry that does not answer
+is not a miss: the request is refused (RegistryUnavailableError, 503).
 """
 
 import json
@@ -111,15 +112,17 @@ async def test_an_ambiguous_value_stays_unresolved_in_a_batch(httpx_mock):
 
 
 @pytest.mark.asyncio
-async def test_unreachable_registry_passes_all_items_through(httpx_mock):
+async def test_unreachable_registry_refuses_the_request(httpx_mock):
+    """An outage is not a miss: items are never passed on unverified."""
     import httpx as _httpx
+
+    from wip_auth import RegistryUnavailableError
 
     httpx_mock.add_exception(_httpx.ConnectError("boom"))
 
     items = [{"ref": "A"}, {"ref": "B"}]
-    # Must not raise — the old per-item door passed through on exactly this.
-    await resolve_bulk_ids(items, "ref", "template", "wip", bypass_cache=True)
-    assert [i["ref"] for i in items] == ["A", "B"]
+    with pytest.raises(RegistryUnavailableError):
+        await resolve_bulk_ids(items, "ref", "template", "wip", bypass_cache=True)
 
 
 @pytest.mark.asyncio
