@@ -1112,7 +1112,9 @@ def update_document_cmd(
     console.print(_json.dumps(result, indent=2, default=str))
 
 
-_MERGE_ONLY_OPTIONS = ("on_clash", "older_versions", "add_missing", "extend_terminologies")
+_MERGE_ONLY_OPTIONS = (
+    "on_clash", "older_versions", "add_missing", "extend_terminologies", "align_templates",
+)
 
 
 @main.command()
@@ -1139,6 +1141,11 @@ _MERGE_ONLY_OPTIONS = ("on_clash", "older_versions", "add_missing", "extend_term
               help="Merge only: insert terminologies and templates the target lacks.")
 @click.option("--extend-terminologies", is_flag=True, default=None,
               help="Merge only: add terms the target's terminologies lack.")
+@click.option("--align-templates", is_flag=True, default=None,
+              help="Merge only: for an archive from another install. Match templates "
+                   "by value and map each archive version onto the target version "
+                   "whose schema can take its documents; documents no version can "
+                   "take are listed on the job and not merged. Dry-run first.")
 @click.option("--skip-documents", is_flag=True, help="Definitions only.")
 @click.option("--skip-files", is_flag=True, help="Do not restore file blobs.")
 @click.option("--dry-run", is_flag=True, help="Report what would happen; write nothing.")
@@ -1168,6 +1175,7 @@ def restore(
     older_versions: str | None,
     add_missing: bool | None,
     extend_terminologies: bool | None,
+    align_templates: bool | None,
     skip_documents: bool,
     skip_files: bool,
     dry_run: bool,
@@ -1194,6 +1202,8 @@ def restore(
 
       wip-toolkit restore newer.zip --mode merge --on-clash overwrite \\
           --older-versions keep
+
+      wip-toolkit restore other-install.zip --mode merge --align-templates --dry-run
     """
     from pathlib import Path
 
@@ -1202,6 +1212,7 @@ def restore(
     given = {
         "on_clash": on_clash, "older_versions": older_versions,
         "add_missing": add_missing, "extend_terminologies": extend_terminologies,
+        "align_templates": align_templates,
     }
     if mode != "merge":
         misplaced = [name for name in _MERGE_ONLY_OPTIONS if given[name]]
@@ -1266,6 +1277,7 @@ def restore(
         older_versions=older_versions or "retire",
         add_missing=bool(add_missing),
         extend_terminologies=bool(extend_terminologies),
+        align_templates=bool(align_templates),
         skip_documents=skip_documents,
         skip_files=skip_files,
         dry_run=dry_run,

@@ -26,6 +26,7 @@ def build_form(
     older_versions: str = "retire",
     add_missing: bool = False,
     extend_terminologies: bool = False,
+    align_templates: bool = False,
     skip_documents: bool = False,
     skip_files: bool = False,
     dry_run: bool = False,
@@ -56,6 +57,7 @@ def build_form(
         data["older_versions"] = older_versions
         data["add_missing"] = str(add_missing).lower()
         data["extend_terminologies"] = str(extend_terminologies).lower()
+        data["align_templates"] = str(align_templates).lower()
     return data
 
 

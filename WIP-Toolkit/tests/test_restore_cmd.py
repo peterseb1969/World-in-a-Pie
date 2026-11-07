@@ -53,7 +53,7 @@ class TestBuildForm:
 
     def test_other_modes_send_no_merge_policy(self):
         form = build_form("restore")
-        assert not {"on_clash", "older_versions", "add_missing"} & form.keys()
+        assert not {"on_clash", "older_versions", "add_missing", "align_templates"} & form.keys()
 
 
 class TestRestoreVerb:
@@ -74,6 +74,19 @@ class TestRestoreVerb:
         assert form["older_versions"] == "keep"
         assert form["extend_terminologies"] == "true"
         client.get.assert_called_with("document-store", "/backup/jobs/rst-1")
+
+    def test_align_templates_reaches_the_form(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client, "--mode", "merge", "--align-templates", "--dry-run")
+        assert result.exit_code == 0, result.output
+        assert _form(client)["align_templates"] == "true"
+
+    def test_align_templates_outside_merge_is_a_usage_error(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client, "--align-templates")
+        assert result.exit_code == 2
+        assert "--align-templates" in result.output
+        client.post_form.assert_not_called()
 
     def test_merge_default_retires_older_versions(self, tmp_path):
         client = _mock_client()
