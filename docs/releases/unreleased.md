@@ -7,6 +7,20 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A multi-namespace merge checks every namespace before writing any
+
+A merge of an archive with several namespaces planned, checked and wrote them
+one at a time. A refusal in a later namespace came after the earlier ones were
+already merged into live data. A reference from one archived namespace into
+another resolved in the real run (the earlier namespace was written by then)
+but not in the dry run, which therefore refused what the real run accepted;
+and a reference into a *later* namespace was refused even by the real run.
+
+Now every namespace is planned and checked, against everything the whole
+merge brings, before anything is written. A refusal leaves every target
+untouched, the dry run refuses exactly what the real run refuses, and
+references between the archive's namespaces resolve in either direction.
+
 ### A restore re-points term and terminology references and successor terms; an edge type keeps an endpoint in another namespace; `wip-archive` 0.29.0
 
 - **Term-reference identity.** A fresh, plain-referent or merge restore

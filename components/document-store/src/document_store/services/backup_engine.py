@@ -20,6 +20,7 @@ import logging
 import os
 import socket
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NamedTuple, TypeVar, cast
@@ -934,6 +935,25 @@ def _drop_unchanged_mappings(remapper: IDRemapper) -> None:
         for old_id in [k for k, v in id_map.items() if k == v]:
             del id_map[old_id]
             remapper.external_documents.pop(old_id, None)
+
+
+@dataclass
+class _StagedMerge:
+    """One namespace of a merge, planned and waiting to be checked and written.
+
+    A merge plans every namespace before it checks any, and checks every one
+    before it writes any, so this holds what the write phase needs.
+    """
+
+    src: str
+    tgt: str
+    definitions: DefinitionsPlan
+    remapper: IDRemapper
+    built: dict[str, EntityPlan]
+    doc_groups: dict[str, list[dict[str, Any]]] | None
+    streamed: _StreamedDocuments | None
+    arriving: dict[str, set[str]]
+    wanted: dict[str, set[str]]
 
 
 class _AligningRemapper(IDRemapper):
@@ -2874,9 +2894,10 @@ class DirectRestoreEngine:
         accordingly, and a document whose versions map nowhere is listed and
         left out (docs/design/merge-template-version-alignment.md).
 
-        Both passes are computed before anything is written, so ``dry_run`` is
-        exact rather than indicative, and still fails on everything a real run
-        would refuse.
+        Both passes, and the reference check, run for every namespace in the
+        archive before anything is written to any of them, so a refusal never
+        follows a write and ``dry_run`` is exact rather than indicative: it
+        fails on everything a real run would refuse, and nothing else.
         """
         if on_clash not in self.MERGE_CLASH_POLICIES:
             raise RestoreEngineError(
@@ -2918,6 +2939,7 @@ class DirectRestoreEngine:
 
             entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
             inserted_file_ids: set[str] = set()
+            staged: list[_StagedMerge] = []
 
             for src, tgt in targets:
                 entry = entry_by_prefix.get(src)
@@ -3170,11 +3192,7 @@ class DirectRestoreEngine:
                         reader, src, chain_transform, documents_plan,
                         overwrite=on_clash != "skip",
                     )
-                    await self._check_merge_wanted(
-                        tgt,
-                        await self._off_loop(streamed.referenced_ids, self._referenced_ids),
-                        arriving,
-                    )
+                    wanted = await self._off_loop(streamed.referenced_ids, self._referenced_ids)
                 else:
                     rows_to_write: list[dict[str, Any]] = []
                     if documents_plan is not None and doc_groups is not None:
@@ -3186,16 +3204,38 @@ class DirectRestoreEngine:
                             rows_to_write.extend(
                                 clash.entity for clash in documents_plan.differing_clashes
                             )
-                    await self._check_merge_references(tgt, rows_to_write, arriving)
+                    wanted = self._referenced_ids(rows_to_write) if rows_to_write else {}
 
+                # Nothing is written yet: every namespace is planned and
+                # checked first, so a refusal in a later namespace never
+                # follows a write into an earlier one, and a dry run refuses
+                # exactly what the real run refuses.
+                staged.append(_StagedMerge(
+                    src=src, tgt=tgt, definitions=definitions, remapper=remapper,
+                    built=built, doc_groups=doc_groups, streamed=streamed,
+                    arriving=arriving, wanted=wanted,
+                ))
+
+            # References between the archive's namespaces resolve against what
+            # the whole merge supplies, not only what its own namespace does:
+            # a document in one namespace may point at one arriving in another.
+            arriving_anywhere: dict[str, set[str]] = {}
+            for stage in staged:
+                for entity_type, ids in stage.arriving.items():
+                    arriving_anywhere.setdefault(entity_type, set()).update(ids)
+            for stage in staged:
+                if stage.wanted:
+                    await self._check_merge_wanted(stage.tgt, stage.wanted, arriving_anywhere)
+
+            for stage in staged:
                 if dry_run:
-                    continue
-
-                await self._apply_definitions(tgt, definitions, remapper, batch_size)
+                    break
+                src, tgt, built = stage.src, stage.tgt, stage.built
+                await self._apply_definitions(tgt, stage.definitions, stage.remapper, batch_size)
                 await self._apply_merge(
-                    tgt, built, doc_groups or {},
+                    tgt, built, stage.doc_groups or {},
                     on_clash=on_clash, older_versions=older_versions,
-                    batch_size=batch_size, streamed=streamed,
+                    batch_size=batch_size, streamed=stage.streamed,
                 )
                 inserted_file_ids.update(
                     f["file_id"] for f in built.get(
@@ -3967,7 +4007,9 @@ class DirectRestoreEngine:
         away and retried; a merge that pollutes production data cannot.
 
         A reference is satisfied if the target already holds its target, or if
-        this merge is about to insert it. ``arriving`` carries the second set.
+        this merge is about to insert it, into any of the archive's
+        namespaces. ``arriving`` carries the second set; the merge checks every
+        namespace before writing any.
 
         This is the same question ``integrity_service`` answers after the fact,
         asked on a different substrate: that one walks Beanie documents through
