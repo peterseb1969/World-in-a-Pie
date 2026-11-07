@@ -397,8 +397,9 @@ class TestIDRemapper:
 
 
 class TestRemapTerm:
-    """A term's parent terminology is its only outward reference — and it is
-    load-bearing: left unmapped, the imported term is orphaned."""
+    """A term's terminology and its parent term are its outward references,
+    and both are load-bearing: left unmapped, the imported term is orphaned or
+    its hierarchy points at a term the target does not have."""
 
     def setup_method(self):
         self.remapper = IDRemapper()
@@ -415,6 +416,22 @@ class TestRemapTerm:
             {"term_id": "T1", "terminology_id": "untouched", "value": "M"}
         )
         assert result["terminology_id"] == "untouched"
+
+    def test_parent_term_id_is_remapped(self):
+        """CASE-1095: no restore path mapped a term's parent before."""
+        self.remapper.add_term_mapping("old-parent", "new-parent")
+        result = self.remapper.remap_term(
+            {"term_id": "T1", "terminology_id": "old-lov", "value": "BOY",
+             "parent_term_id": "old-parent"}
+        )
+        assert result["parent_term_id"] == "new-parent"
+
+    def test_unmapped_parent_passes_through(self):
+        result = self.remapper.remap_term(
+            {"term_id": "T1", "terminology_id": "old-lov", "value": "BOY",
+             "parent_term_id": "untouched"}
+        )
+        assert result["parent_term_id"] == "untouched"
 
     def test_other_fields_are_untouched_and_input_is_not_mutated(self):
         source = {"term_id": "T1", "terminology_id": "old-lov", "value": "M"}

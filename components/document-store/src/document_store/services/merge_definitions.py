@@ -31,6 +31,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from wip_archive.remap import IDRemapper
+
 logger = logging.getLogger("document_store.merge_definitions")
 
 # Entity types this pass owns, in dependency order: a term's identity contains
@@ -195,46 +197,103 @@ class DefinitionsPlanner:
         self._collection_map = collection_map
         self._add_missing = add_missing
         self._extend_terminologies = extend_terminologies
+        self._external: IDRemapper | None = None
 
     async def plan(
         self,
         entities_by_type: dict[str, list[dict[str, Any]]],
         namespace: str,
+        *,
+        external: IDRemapper | None = None,
     ) -> DefinitionsPlan:
-        """Check the archive's definitions against the target's."""
+        """Check the archive's definitions against the target's.
+
+        ``external`` holds the mappings for referenced entities the archive
+        does not carry (a terminology in another namespace, say), so a
+        reference to one compares by what it names on this install.
+        """
         plan = DefinitionsPlan()
+        self._external = external
 
         for entity_type in DEFINITION_TYPES:
             entities = entities_by_type.get(entity_type) or []
             if not entities:
                 continue
             target_index = await self._index_target(entity_type, namespace)
-            for entity in entities:
-                self._classify(entity_type, entity, target_index, plan)
+            # Match the whole type before comparing any of it: a definition
+            # can reference another of its own type (a template's extends or
+            # template_ref, a term's parent_term_id), and that reference
+            # compares equal only once its own mapping is known.
+            matched = [
+                (entity, self._match(entity_type, entity, target_index, plan))
+                for entity in entities
+            ]
+            remapper = self._remapper(plan)
+            for entity, target in matched:
+                self._classify(entity_type, entity, target, remapper, plan)
 
         return plan
 
-    def _classify(
+    def _match(
         self,
         entity_type: str,
         entity: dict[str, Any],
         target_index: dict[tuple[Any, ...], dict[str, Any]],
         plan: DefinitionsPlan,
-    ) -> None:
+    ) -> dict[str, Any] | None:
+        """The target's copy of this definition, recording the id mapping."""
         key = self._natural_key(entity_type, entity, plan)
-        name = self._describe(entity_type, entity)
         target = target_index.get(key) if key is not None else None
+        if target is not None:
+            old_id = entity.get(ID_KEYS[entity_type])
+            new_id = target.get(ID_KEYS[entity_type])
+            if old_id and new_id and old_id != new_id:
+                plan.mapping[entity_type][str(old_id)] = str(new_id)
+        return target
+
+    def _remapper(self, plan: DefinitionsPlan) -> IDRemapper:
+        """The plan's mappings so far (over any external ones), as the
+        remapper the data pass uses."""
+        remapper = IDRemapper()
+        external = self._external
+        if external is not None:
+            remapper.terminology_map.update(external.terminology_map)
+            remapper.term_map.update(external.term_map)
+            remapper.template_map.update(external.template_map)
+        remapper.terminology_map.update(plan.mapping["terminologies"])
+        remapper.term_map.update(plan.mapping["terms"])
+        remapper.template_map.update(plan.mapping["templates"])
+        return remapper
+
+    @staticmethod
+    def _as_target_would_hold_it(
+        entity_type: str, entity: dict[str, Any], remapper: IDRemapper
+    ) -> dict[str, Any]:
+        """The archive's definition with every reference it holds rewritten
+        through the plan's mappings, so ids that differ only because the two
+        sides minted them separately compare equal."""
+        if entity_type == "templates":
+            return remapper.remap_template(entity)
+        if entity_type == "terms":
+            return remapper.remap_term(entity)
+        return entity
+
+    def _classify(
+        self,
+        entity_type: str,
+        entity: dict[str, Any],
+        target: dict[str, Any] | None,
+        remapper: IDRemapper,
+        plan: DefinitionsPlan,
+    ) -> None:
+        name = self._describe(entity_type, entity)
 
         if target is None:
             self._classify_missing(entity_type, entity, name, plan)
             return
 
-        # Present on both sides: record the mapping, then compare content.
-        old_id = entity.get(ID_KEYS[entity_type])
-        new_id = target.get(ID_KEYS[entity_type])
-        if old_id and new_id and old_id != new_id:
-            plan.mapping[entity_type][str(old_id)] = str(new_id)
-
+        # Present on both sides: compare content, references mapped.
+        entity = self._as_target_would_hold_it(entity_type, entity, remapper)
         lifecycle = _TERM_LIFECYCLE_FIELDS if entity_type == "terms" else frozenset()
         cosmetic, substantive = compare_definitions(entity, target, skip=lifecycle)
         if substantive:

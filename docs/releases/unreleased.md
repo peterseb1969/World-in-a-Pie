@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Merges from another install compare references by what they name; `wip-archive` 0.27.0
+
+- **The definitions check** compared a definition's references as raw ids: a
+  template's `terminology_ref`, `template_ref`, `extends` and endpoint lists, a
+  term's `parent_term_id`. Across installs those ids always differ, so a merge
+  of identical definitions was refused as "different content" for any
+  template that referenced something. References are now compared after
+  mapping. That covers mappings the check discovers itself (same-type
+  references included) and out-of-archive referents, such as a terminology in
+  `wip`, through the archive's referent table.
+- **Mappings for documents and files** the target holds under other ids now
+  reach every incoming document before it is planned. Before, such a merge was
+  refused ("reference … entities that neither the target holds nor this merge
+  supplies") or a document whose identity hashes such a reference was inserted
+  twice. Files are planned before documents, and documents until no new
+  mapping appears.
+- **`wip-archive` 0.27.0:** `IDRemapper.remap_term` maps `parent_term_id`. No
+  restore path did before, so a term added by a merge or a fresh restore
+  could point at a parent the target does not have.
+
 ### Every app is served at the root of its own origin; path mode is gone; `@wip/client` 0.84.0
 
 **One cut-over, no compatibility mode.** Every app, deployed or attached, is

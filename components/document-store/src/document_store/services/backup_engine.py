@@ -388,6 +388,16 @@ class _StreamedDocuments:
 # before the entity holding it exists.
 MERGE_ENTITY_ORDER = list(BACKUP_ENTITY_ORDER)
 
+# The order a merge PLANS its data in, which is not the order it writes.
+# Files come before documents: a file's natural key (its checksum) needs no
+# rewritten reference, and a document referencing a file the target holds under
+# another id must be rewritten with that mapping before it is planned.
+_MERGE_PLAN_ORDER = [
+    "terminologies", "terms", "term_relations", "templates",
+    "files", "documents", "registry_entries",
+]
+assert sorted(_MERGE_PLAN_ORDER) == sorted(MERGE_ENTITY_ORDER)
+
 # The Registry's provision endpoint caps `count` per call (ProvisionRequest
 # bounds it at 1000), so a remap of a namespace-sized entity type asks in
 # chunks. Found live: 1099 terms in one request came back 422.
@@ -2899,27 +2909,33 @@ class DirectRestoreEngine:
                         "and composite keys re-scoped to the target",
                     )
 
+                # References to entities the archive does not carry (another
+                # namespace's terminology, say) are mapped first: the
+                # definitions pass compares a template's references by what
+                # they name here, and these are some of them. They never
+                # overlap with pass 1's mappings, which are archived entities.
+                remapper = IDRemapper()
+                referents = await self._map_external_referents(
+                    reader, manifest, remapper, tgt
+                )
+
                 # ---- Pass 1: definitions -------------------------------
                 definitions = await DefinitionsPlanner(
                     self._mongo, COLLECTION_MAP,
                     add_missing=add_missing,
                     extend_terminologies=extend_terminologies,
-                ).plan(archive_entities, tgt)
+                ).plan(archive_entities, tgt, external=remapper)
                 self._emit_definitions_plan(tgt, definitions, dry_run=dry_run)
                 self._enforce_definitions_gate(tgt, definitions)
 
                 # The mapping pass 1 produced is what lets pass 2 point the
                 # incoming data at the definitions that survived.
-                remapper = IDRemapper()
                 for old_id, new_id in definitions.mapping["terminologies"].items():
                     remapper.add_terminology_mapping(old_id, new_id)
                 for old_id, new_id in definitions.mapping["terms"].items():
                     remapper.add_term_mapping(old_id, new_id)
                 for old_id, new_id in definitions.mapping["templates"].items():
                     remapper.add_template_mapping(old_id, new_id)
-                referents = await self._map_external_referents(
-                    reader, manifest, remapper, tgt
-                )
                 dropped = await self._report_unresolved_references(
                     reader, [src], remapper, referents, tgt,
                     drop_edges=drop_unresolved_edges,
@@ -2942,57 +2958,75 @@ class DirectRestoreEngine:
                 built: dict[str, EntityPlan] = {}
                 rewritten = 0
                 # Streamed documents are rewritten as they are read again,
-                # with the remapper as it stands HERE — the same state the
-                # in-memory path applies to its chains below. Document and
-                # file mappings added after this point never reached a
-                # chain, and must not start to.
+                # with the remapper as it stands once documents are planned —
+                # by then it holds every file and document mapping, because
+                # files are planned first and documents until no new mapping
+                # appears (see _MERGE_PLAN_ORDER).
                 chain_transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
                 # Documents whose rewritten references change their identity
                 # are rehashed before they are planned: the planner matches on
                 # (template_id, identity_hash), and a stale hash would miss
                 # the target's copy of the same document.
                 rehash = _IdentityRehash(reader, [s for s, _t in targets])
-                for entity_type in MERGE_ENTITY_ORDER:
+                archived_doc_groups = doc_groups
+                for entity_type in _MERGE_PLAN_ORDER:
                     if entity_type in DEFINITION_TYPES:
                         continue
                     raw_entities = archive_entities.get(entity_type)
                     if raw_entities is None:
                         continue
-                    entities, changed = self._rewrite_entities(
-                        entity_type, raw_entities, remapper
-                    )
-                    rewritten += changed
-                    if entity_type == "documents":
-                        if doc_groups is not None:
-                            entities = [
-                                rehash.rehash(archived, row)
-                                for archived, row in zip(raw_entities, entities, strict=True)
-                            ]
-                            doc_groups = self._regroup_documents(doc_groups, remapper, rehash)
-                        else:
-                            chain_transform = self._chain_transform(
-                                copy.deepcopy(remapper), src, tgt, rehash
-                            )
-                            if remapper.total_mappings:
-                                # Compact heads carry no references: one pass
-                                # over the rewritten chains finds the new
-                                # hashes, which the heads then take.
-                                await self._off_loop(
-                                    _drain, transformed_chains(reader, src, chain_transform)
-                                )
+                    while True:
+                        entities, changed = self._rewrite_entities(
+                            entity_type, raw_entities, remapper
+                        )
+                        if entity_type == "documents":
+                            if archived_doc_groups is not None:
                                 entities = [
-                                    {**head, "identity_hash": rehash.new_hash[str(head.get("document_id"))]}
-                                    if str(head.get("document_id")) in rehash.new_hash else head
-                                    for head in entities
+                                    rehash.rehash(archived, row)
+                                    for archived, row in zip(raw_entities, entities, strict=True)
                                 ]
-                    elif entity_type == "registry_entries":
-                        entities = [rehash.rekey(entry) for entry in entities]
+                                doc_groups = self._regroup_documents(
+                                    archived_doc_groups, remapper, rehash
+                                )
+                            else:
+                                chain_transform = self._chain_transform(
+                                    copy.deepcopy(remapper), src, tgt, rehash
+                                )
+                                if remapper.total_mappings:
+                                    # Compact heads carry no references: one
+                                    # pass over the rewritten chains finds the
+                                    # new hashes, which the heads then take.
+                                    await self._off_loop(
+                                        _drain, transformed_chains(reader, src, chain_transform)
+                                    )
+                                    entities = [
+                                        {**head, "identity_hash": rehash.new_hash[str(head.get("document_id"))]}
+                                        if str(head.get("document_id")) in rehash.new_hash else head
+                                        for head in entities
+                                    ]
+                        elif entity_type == "registry_entries":
+                            entities = [rehash.rekey(entry) for entry in entities]
+                        plan = await planner.plan(entity_type, entities, tgt)
+                        # A document the target holds under another ID is
+                        # still a collision for policy, but the ID it survives
+                        # under has to reach everything referencing it — other
+                        # documents included, whose identity may hash that very
+                        # reference. So documents are planned again, from the
+                        # archived rows, until a round discovers nothing new.
+                        # Mappings only grow, so this ends.
+                        if entity_type != "documents":
+                            break
+                        new = {
+                            old_id: new_id for old_id, new_id in plan.mapping.items()
+                            if remapper.document_map.get(old_id) != new_id
+                        }
+                        if not new:
+                            break
+                        for old_id, new_id in new.items():
+                            remapper.add_document_mapping(old_id, new_id)
+                    rewritten += changed
                     archive_entities[entity_type] = entities
-                    plan = await planner.plan(entity_type, entities, tgt)
                     built[entity_type] = plan
-                    # A document the target holds under another ID is still a
-                    # collision for policy, but the ID it survives under has to
-                    # reach anything referencing it.
                     for old_id, new_id in plan.mapping.items():
                         if entity_type == "documents":
                             remapper.add_document_mapping(old_id, new_id)

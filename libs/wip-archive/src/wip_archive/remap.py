@@ -198,16 +198,21 @@ class IDRemapper:
         return result
 
     def remap_term(self, term: dict[str, Any]) -> dict[str, Any]:
-        """Remap the terminology a term belongs to.
+        """Remap the terminology a term belongs to, and its parent term.
 
-        A term's only outward reference is its parent terminology, but it is
-        load-bearing: leave it pointing at the source install's terminology ID
-        and the imported term is orphaned.
+        Both are load-bearing: leave ``terminology_id`` pointing at the source
+        install's terminology and the imported term is orphaned; leave
+        ``parent_term_id`` at the source's term id and its hierarchy points at
+        a term this install does not have.
         """
         result = dict(term)
         if result.get("terminology_id"):
             result["terminology_id"] = self.terminology_map.get(
                 result["terminology_id"], result["terminology_id"]
+            )
+        if result.get("parent_term_id"):
+            result["parent_term_id"] = self.term_map.get(
+                result["parent_term_id"], result["parent_term_id"]
             )
         return result
 
