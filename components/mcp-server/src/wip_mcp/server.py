@@ -4673,6 +4673,7 @@ async def start_restore(
     older_versions: str = "retire",
     add_missing: bool = False,
     extend_terminologies: bool = False,
+    align_templates: bool = False,
     skip_documents: bool = False,
     skip_files: bool = False,
     batch_size: int = 500,
@@ -4720,7 +4721,8 @@ async def start_restore(
     definitions is opt-in: add_missing inserts terminologies and templates it
     lacks, extend_terminologies adds missing terms. Where a definition matches
     but its label/aliases differ, the target's win and the difference is
-    reported.
+    reported. Templates are matched by (value, version) unless
+    align_templates is set; see its description below.
 
     Then documents merge under on_clash — 'skip' (default) keeps the target's
     version, 'overwrite' appends the archive's latest version on top of the
@@ -4773,6 +4775,16 @@ async def start_restore(
             target does not have, instead of refusing.
         extend_terminologies: Merge only — add terms the target's terminology
             is missing.
+        align_templates: Merge only — for an archive from another install,
+            whose template version numbers do not line up with the target's
+            (a fresh bootstrap holds v1 while the archive's history runs to
+            v6). Templates match by value; each archive version maps onto
+            the target version whose schema can take its documents (same
+            schema, or only added optional fields and removed fields the
+            documents leave empty), and documents are re-pinned to it.
+            Documents no target version can take are listed on the job
+            (result template_alignment.unplaceable_documents) and not
+            merged. Refused for a template both sides share. Dry-run first.
         skip_documents: Skip documents (definitions only).
         skip_files: Skip file blobs.
         batch_size: Bulk-insert batch size (1-500).
@@ -4807,6 +4819,7 @@ async def start_restore(
             older_versions=older_versions,
             add_missing=add_missing,
             extend_terminologies=extend_terminologies,
+            align_templates=align_templates,
             skip_documents=skip_documents,
             skip_files=skip_files,
             batch_size=batch_size,

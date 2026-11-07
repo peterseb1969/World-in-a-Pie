@@ -568,6 +568,23 @@ async def test_start_restore_merge_sends_the_clash_policies(tmp_path):
     assert data["older_versions"] == "keep"
     assert data["add_missing"] == "true"
     assert data["extend_terminologies"] == "false"
+    assert data["align_templates"] == "false"
+
+
+@pytest.mark.asyncio
+async def test_start_restore_merge_sends_align_templates(tmp_path):
+    """align_templates is a merge option; asked for, it reaches the wire."""
+    archive = tmp_path / "ns.zip"
+    archive.write_bytes(b"PK\x03\x04 fake zip")
+    mock_http = _mock_http(_mock_response({"job_id": "rst-2a", "status": "pending"}))
+
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_restore(
+            namespace="wip", archive_path=str(archive), mode="merge", align_templates=True,
+        )
+
+    assert mock_http.post.call_args.kwargs["data"]["align_templates"] == "true"
 
 
 @pytest.mark.asyncio
@@ -584,7 +601,7 @@ async def test_start_restore_omits_clash_policies_outside_merge(tmp_path):
 
     data = mock_http.post.call_args.kwargs["data"]
     assert "on_clash" not in data and "add_missing" not in data
-    assert "older_versions" not in data
+    assert "older_versions" not in data and "align_templates" not in data
 
 
 @pytest.mark.asyncio
