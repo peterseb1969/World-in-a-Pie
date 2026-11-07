@@ -10,8 +10,9 @@ from it.
 
 **Every ID goes through Registry.** There is no format-based bypass.
 UUIDs are verified via ``entry_id`` lookup; synonyms are resolved via
-``composite_key`` hash lookup. A TTL cache (5 minutes) minimises latency —
-the second time any ID is seen, resolution is a local dict lookup.
+``composite_key`` hash lookup. A TTL cache (30 seconds, ``_CACHE_TTL``)
+minimises latency — the second time any ID is seen within it, resolution is
+a local dict lookup.
 
 Usage:
     from wip_auth.resolve import resolve_entity_id, resolve_entity_ids

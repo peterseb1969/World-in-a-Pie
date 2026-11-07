@@ -69,6 +69,9 @@ spec:
       - "$JS.API.STREAM.INFO.WIP_EVENTS"
       - "$JS.API.STREAM.CREATE.WIP_EVENTS"
       - "$JS.API.STREAM.UPDATE.WIP_EVENTS"
+    # The Registry's cache-invalidation message (wip_auth.cache_events).
+    subscribe:
+      - "wip.cache.namespace.deleted"
 
   # MongoDB user for this service (config_gen/mongodb.py): its own database.
   mongo_client:

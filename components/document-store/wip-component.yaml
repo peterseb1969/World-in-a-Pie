@@ -92,6 +92,9 @@ spec:
       - "$JS.API.STREAM.DELETE.WIP_INGEST_RESULTS"
       - "$JS.API.STREAM.CREATE.WIP_INGEST"
       - "$JS.API.STREAM.CREATE.WIP_INGEST_RESULTS"
+    # The Registry's cache-invalidation message (wip_auth.cache_events).
+    subscribe:
+      - "wip.cache.namespace.deleted"
 
   # MongoDB user for this service (config_gen/mongodb.py). readWrite on all
   # four databases: backup reads them and restore writes raw rows into each

@@ -64,6 +64,10 @@ class ReferenceValidator:
         )
         self._namespace_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 
+    def forget_namespace(self, namespace: str) -> None:
+        """Drop the cached settings of a namespace that was deleted."""
+        self._namespace_cache.pop(namespace, None)
+
     async def _get_namespace(self, namespace: str) -> dict[str, Any]:
         """Get namespace info by namespace prefix (cached, TTL-bounded).
 

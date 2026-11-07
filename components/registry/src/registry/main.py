@@ -38,6 +38,7 @@ from .models.id_counter import IdCounter
 from .models.namespace import Namespace
 from .models.reservation import RuntimeReservation
 from .services import key_import, key_shadowing
+from .services.event_bus import start_event_bus, stop_event_bus
 from .services.managed import ManagedRecordRefused, managed_record_refused_handler
 
 
@@ -50,6 +51,7 @@ class Settings:
     MASTER_API_KEY: str | None = os.getenv("MASTER_API_KEY")
     AUTH_ENABLED: bool = os.getenv("AUTH_ENABLED", "true").lower() == "true"
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://localhost:8443").split(",")
+    NATS_URL: str = os.getenv("NATS_URL", "")
 
 
 settings = Settings()
@@ -113,6 +115,14 @@ async def lifespan(app: FastAPI):
                 granted_by="system:bootstrap",
             ).create()
             print(f"  Created grant: {subject} ({permission}) on 'wip'")
+
+    # NATS tells other services' caches when a namespace was deleted; without
+    # it they expire on their TTL. Started before recovery, whose deletions
+    # announce themselves. Connects in the background, never blocks startup.
+    if await start_event_bus(settings.NATS_URL):
+        print("NATS cache-invalidation bus started (connecting in background)")
+    else:
+        print("NATS_URL not configured: other services' caches expire on their TTL")
 
     # Resume incomplete namespace deletions in the background: off the
     # startup path (they call document-store and reporting-sync, which may not
@@ -234,6 +244,7 @@ async def lifespan(app: FastAPI):
         shadow_task.cancel()
     print("Shutting down WIP Registry Service...")
     await get_deletion_service().stop_recovery()
+    await stop_event_bus()
     app.state.mongodb_client.close()
     print("MongoDB connection closed.")
 

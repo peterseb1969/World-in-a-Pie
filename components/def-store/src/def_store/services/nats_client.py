@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from wip_auth.cache_events import subscribe_cache_invalidation
 from wip_auth.events import WIP_EVENTS_STREAM, EventBus, PublishOutcome
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,9 @@ async def configure_nats_client(nats_url: str) -> bool:
 
     _bus = EventBus(nats_url or None, name="def-store", streams=[WIP_EVENTS_STREAM])
     await _bus.start()
+    # The Registry announces deleted namespaces; caches here drop what they
+    # held for them instead of waiting out their TTL (wip_auth.cache_events).
+    subscribe_cache_invalidation(_bus)
     return _bus.configured
 
 

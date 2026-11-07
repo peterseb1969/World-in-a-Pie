@@ -23,6 +23,7 @@ from typing import Any, cast
 
 import httpx
 
+from wip_auth.cache_events import announce_namespace_deleted
 from wip_auth.startup import retry_until_done
 
 from ..models.deletion_journal import (
@@ -32,6 +33,7 @@ from ..models.deletion_journal import (
 )
 from ..models.entry import RegistryEntry
 from ..models.namespace import Namespace
+from .event_bus import get_event_bus
 
 logger = logging.getLogger("registry.namespace_deletion")
 
@@ -672,6 +674,10 @@ class NamespaceDeletionService:
             await self._run_steps(journal)
         finally:
             self._running.discard(journal_id)
+            # After every run, finished or not: whatever it removed may sit in
+            # other services' caches, and reads during the run may have cached
+            # the namespace's ids again. A repeated flush costs nothing.
+            await announce_namespace_deleted(get_event_bus(), journal.namespace)
 
     async def _run_steps(self, journal: DeletionJournal):
         summary: dict[str, int] = {}

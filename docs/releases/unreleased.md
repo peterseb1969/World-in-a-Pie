@@ -7,6 +7,30 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A deleted namespace clears every service's caches at once (where NATS runs)
+
+Services cache Registry answers for up to 30 seconds: resolutions of names to
+ids, and grants. The cache is keyed by namespace name, so after a namespace was
+deleted and re-created under the same name, reads by name could resolve to the
+deleted namespace's ids for up to 30 seconds and answer "not found" for an
+entity that exists (reproduced live: 404 until 30 s, then 200).
+
+- **Now:** when a namespace deletion runs, the Registry publishes
+  `wip.cache.namespace.deleted` on NATS. def-store, template-store and
+  document-store then clear their resolution and grant caches, and drop the
+  namespace from their reference-policy and template caches. Every deletion
+  run announces, whether it finished, failed or is waiting on a service.
+- **Without NATS** nothing changes: no message, and the caches expire after
+  their 30 s as before. A lost message (NATS briefly down) has the same
+  fallback.
+- **Deployer:** the Registry gets its own NATS user, allowed to publish only
+  that subject (plain publish, stored by no stream); the three services may
+  subscribe to it. The Registry image now includes `nats-py`, so it must be
+  rebuilt.
+- **Not covered yet:** a single entity hard-deleted and re-created under the
+  same name, and a name that moves to another entity (a term merge), keep the
+  30 s window. A second step will cover them.
+
 ### A prefixed ID sequence never mints an ID that already exists
 
 `prefixed` IDs were counted per (namespace, entity type, prefix), and the

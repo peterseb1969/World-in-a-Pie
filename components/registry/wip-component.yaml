@@ -88,6 +88,16 @@ spec:
       # Unset, the deletion records the step as degraded instead of
       # silently leaving the objects behind.
       - {name: DOCUMENT_STORE_URL, source: {from_component: document-store}}
+      # NATS is optional. When present, the Registry announces each deleted
+      # namespace, so other services drop their cached resolutions and grants
+      # at once; without it those caches expire on their TTL.
+      - {name: NATS_URL, source: {from_component: nats}}
+
+  # NATS user for this service (config_gen/nats.py): it publishes only the
+  # cache-invalidation message (wip_auth.cache_events), outside every stream.
+  nats_client:
+    publish:
+      - "wip.cache.namespace.deleted"
 
   # MongoDB user for this service (config_gen/mongodb.py): its own database,
   # plus find/remove — never insert or update — on exactly the collections

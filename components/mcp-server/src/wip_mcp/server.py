@@ -433,6 +433,16 @@ inbound_references) read during reference validation are cached with the same
 5-second TTL. After changing them, a retried write may still be rejected for up
 to 5 seconds — wait and retry, no service restart needed.
 
+## Deleting and Re-creating a Namespace
+Services cache what the Registry resolved for up to 30 seconds (names to ids,
+grants). Reads may answer from that cache; writes never do. When a namespace is
+deleted, the Registry tells every service over NATS and they drop those caches
+at once, so a namespace re-created under the same name is read correctly right
+away. A deployment without NATS has no such message: for up to 30 seconds after
+the deletion, a read by name in the re-created namespace may still find the
+deleted namespace's ids and answer "not found". Wait 30 seconds, or read by
+canonical id.
+
 ## Pagination
 Uniform across list endpoints: default page_size 50, maximum 1000. Two
 deliberate deviations: the document relationships endpoint caps at 500

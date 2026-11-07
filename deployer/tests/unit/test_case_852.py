@@ -60,7 +60,9 @@ from wip_deploy.verify_security import check_nats_authentication
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
-_CLIENTS = {"def-store", "document-store", "ingest-gateway", "reporting-sync", "template-store"}
+_CLIENTS = {
+    "def-store", "document-store", "ingest-gateway", "registry", "reporting-sync", "template-store",
+}
 
 
 @pytest.fixture(scope="module")
@@ -137,6 +139,18 @@ class TestRenderedConfig:
                 assert f'"{subject}"' in block.split("deny:")[0]
             assert f'"_INBOX_{name}.>"' in block
             assert block.count("_INBOX_") == 1  # no shared inbox grant
+
+    def test_cache_invalidation_reaches_every_resolving_service(self, discovery: Discovery) -> None:
+        # The Registry may publish only its cache-invalidation message; the
+        # services that cache Registry answers may receive it.
+        conf = _conf(_deployment(), discovery)
+        subject = '"wip.cache.namespace.deleted"'
+        registry = conf.split('user: "registry"', 1)[1].split("} }", 1)[0]
+        publish = registry.split("publish", 1)[1].split("]", 1)[0]
+        assert publish.count('"') == 2 and subject in publish
+        for name in ("def-store", "document-store", "template-store"):
+            block = conf.split(f'user: "{name}"', 1)[1].split("} }", 1)[0]
+            assert subject in block.split("subscribe", 1)[1]
 
     def test_document_store_cannot_delete_the_platform_streams(self, discovery: Discovery) -> None:
         conf = _conf(_deployment(), discovery)

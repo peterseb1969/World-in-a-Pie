@@ -104,6 +104,11 @@ class TemplateStoreClient:
         except httpx.RequestError:
             return None
 
+    def forget_namespace(self, namespace: str) -> None:
+        """Drop everything cached for a namespace that was deleted."""
+        self._evict_namespace(namespace)
+        self._ns_stamp.pop(namespace, None)
+
     def _evict_namespace(self, namespace: str) -> None:
         """Drop every cached entry belonging to `namespace` from both caches."""
         self._template_cache = {
