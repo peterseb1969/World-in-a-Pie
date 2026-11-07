@@ -237,28 +237,39 @@ async def test_migrate_rejects_same_source_and_target(client, auth_headers):
 SCOPED_KEY_HEADERS = {"X-API-Key": "test_scoped_key"}
 
 
-def _registry_grants(monkeypatch, permission: str):
-    """The Registry gives the scoped key `permission` on 'wip', and nothing else."""
+@pytest.fixture
+def registry_grants(monkeypatch):
+    """Make the Registry give the scoped key a permission on 'wip', and nothing else.
+
+    The answers land in wip-auth's permission cache (30 s), which outlives
+    monkeypatch's undo of the fetchers: left there, the scoped key keeps its
+    'wip' grant for the next tests in the same process. So the cache is
+    cleared on the way out as well as on the way in.
+    """
     import wip_auth.permissions as permissions
 
-    async def accessible(identity):
-        return ["wip"]
+    def grant(permission: str) -> None:
+        async def accessible(identity):
+            return ["wip"]
 
-    async def check(identity, namespace):
-        return permission if namespace == "wip" else "none"
+        async def check(identity, namespace):
+            return permission if namespace == "wip" else "none"
 
-    monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", accessible)
-    monkeypatch.setattr(permissions, "_fetch_permission_from_registry", check)
+        monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", accessible)
+        monkeypatch.setattr(permissions, "_fetch_permission_from_registry", check)
+        permissions.clear_permission_cache()
+
+    yield grant
     permissions.clear_permission_cache()
 
 
 @pytest.mark.asyncio
-async def test_read_only_key_cannot_migrate_by_omitting_namespace(client, auth_headers, monkeypatch):
+async def test_read_only_key_cannot_migrate_by_omitting_namespace(client, auth_headers, registry_grants):
     """A read-only single-namespace key gets 403, and no document gains a version."""
     item = await _create_person(client, auth_headers)
     tid = SAMPLE_TEMPLATES["PERSON"]["template_id"]
     VERSIONED_TEMPLATE_OVERRIDES[(tid, 2)] = _person_v2(tid, add_optional="phone")
-    _registry_grants(monkeypatch, "read")
+    registry_grants("read")
 
     resp = await client.post(
         MIGRATE_URL,
@@ -271,12 +282,12 @@ async def test_read_only_key_cannot_migrate_by_omitting_namespace(client, auth_h
 
 
 @pytest.mark.asyncio
-async def test_write_key_migrates_with_namespace_omitted(client, auth_headers, monkeypatch):
+async def test_write_key_migrates_with_namespace_omitted(client, auth_headers, registry_grants):
     """The control: the same key with write on its one namespace migrates."""
     item = await _create_person(client, auth_headers)
     tid = SAMPLE_TEMPLATES["PERSON"]["template_id"]
     VERSIONED_TEMPLATE_OVERRIDES[(tid, 2)] = _person_v2(tid, add_optional="phone")
-    _registry_grants(monkeypatch, "write")
+    registry_grants("write")
 
     resp = await client.post(
         MIGRATE_URL,

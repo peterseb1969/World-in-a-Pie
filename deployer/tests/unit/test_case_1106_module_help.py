@@ -7,8 +7,9 @@ manifests (`category: optional`, the description's first sentence), so the
 list cannot go stale; `--preset` says what each preset turns on, and
 `examples` shows how to serve attached apps.
 
-Assertions collapse whitespace: Rich wraps help to the terminal width, which
-differs between a local shell and CI.
+Assertions collapse whitespace and strip colour codes: Rich wraps help to the
+terminal width and colours it, both of which differ between a local shell and
+CI.
 """
 
 from __future__ import annotations
@@ -29,8 +30,11 @@ runner = CliRunner()
 
 
 def _flat(text: str) -> str:
-    # Rich's box-drawing borders and wrapping removed, so a phrase split
-    # across lines still matches.
+    # Rich's colour codes, box-drawing borders and wrapping removed, so a
+    # phrase split across lines or styles still matches. CI's runner gets
+    # coloured output (a local shell does not): a styled preset name breaks
+    # the phrase with escape codes.
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
     return " ".join(re.sub(r"[│╭╮╰╯─]", " ", text).split())
 
 
