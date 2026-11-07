@@ -1,6 +1,6 @@
 # Merge restore: aligning template versions across installs
 
-**Status:** proposed, awaiting approval. Nothing here is implemented.
+**Status:** approved by Peter, 2026-11-07 (decisions below). Implementation in progress.
 
 ## The problem
 
@@ -36,8 +36,8 @@ be merged into a freshly bootstrapped kb at all.
 
 ## Proposal
 
-A merge option, `align_templates` (name open), off by default. With it, pass 1
-treats templates as follows.
+A merge option, `align_templates`, off by default. With it, pass 1 treats
+templates as follows.
 
 1. **Match by value.** Each archive template matches the target template of
    the same value; the mapping archive `template_id` → target `template_id`
@@ -48,9 +48,11 @@ treats templates as follows.
    lists), else to the target's latest active version **if** the archive
    version's schema is compatible with it. "Compatible" is the migration
    eligibility verdict template create already reports in its schema diff
-   (`docs/api-conventions.md`, template upsert): additive or rename-only
-   changes are eligible; type changes, newly-required fields and modified
-   fields are not.
+   (`docs/api-conventions.md`, template upsert): added optional fields are
+   eligible, and so are removed fields that are empty in every arriving
+   document pinned to that version; type changes, newly-required fields,
+   modified fields, and any change to identity fields, rules, usage,
+   `versioned` or edge endpoints are not.
 3. **Documents follow their version.** Each archive document is written
    pinned to the target version its archived version mapped to. A document
    whose version mapped nowhere is listed in the plan
@@ -82,11 +84,38 @@ be placed.
   edited; `add_missing` keeps its current meaning for templates the target
   lacks by value.
 
-## Open questions for approval
+## Decisions (Peter, 2026-11-07)
 
-1. Is a schema-level compatibility check (step 2) enough, or must the
-   merge validate each document's data against the target version?
-2. Should `align_templates` also apply when the source is the same install
-   (a same-install merge already lines up by version), or be refused there
-   as meaningless?
-3. The option's name.
+1. **Schema-level check only.** Step 2 decides per version, from the two
+   schemas; the merge does not validate each document's data. Data that has
+   to change to fit the target goes through `wip-archive migrate`, then
+   re-export, then merge.
+2. **Refused for a merge from the same install.** There the versions are
+   already one entity's coordinates and line up by number, so the option has
+   nothing to do and is refused rather than ignored.
+3. **The option is named `align_templates`.**
+
+## Implementation choices (for review)
+
+These follow from the decisions above; the design did not spell them out.
+
+- **Detecting "the same install".** An archive records no install identity
+  (`source_install` carries format versions, `source_host` is a hostname that
+  changes per pod). The signal is the template itself: an archive template
+  whose `template_id` equals the target's template of the same value was
+  minted by the same Registry, so its versions are coordinates on the same
+  entity. Such a template is refused under `align_templates` ("merge without
+  align_templates").
+- **A document is placed whole or not at all.** A document's chain carries
+  every version row, and each row pins its own template version. If any row
+  pins a version that maps nowhere, the document is listed as unplaceable
+  and not written: writing it without those rows would drop history, and
+  writing them would pin versions the target does not have.
+- **Renames are not followed.** A field the target renamed reads as one
+  removed and one added field. The removed one is eligible only if empty in
+  the arriving documents; moving data from the old name to the new one is a
+  data change, which is `wip-archive migrate`'s job.
+- **Version references inside templates follow the alignment.** A template's
+  `extends_version` and a field's `template_ref_version` /
+  `array_template_ref_version` name versions of another template; they are
+  compared through that template's alignment, not as raw numbers.
