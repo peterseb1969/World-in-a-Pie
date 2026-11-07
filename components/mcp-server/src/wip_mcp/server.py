@@ -4778,10 +4778,13 @@ async def start_restore(
         archive_path: Local filesystem path to the .zip archive to upload.
         mode: 'restore' (empty target, ids preserved), 'merge' (existing
             namespace, ids preserved) or 'fresh' (new namespace, ids re-minted).
-        target_namespace: Where to write. For 'fresh' on a single-namespace
-            archive this is required; for the other modes the archive
-            manifest decides, and merge may use it to write into a
-            differently-named namespace.
+        target_namespace: Where to write — honoured or refused, never
+            ignored. 'restore' writes the archive's namespace to itself and
+            refuses a different value; 'merge' of a single-namespace archive
+            writes into this namespace; 'fresh' on a single-namespace archive
+            requires it. A multi-namespace archive takes no target in
+            'restore' or 'merge' mode. The `namespace` argument is the
+            permission anchor, not the destination.
         namespace_map: Fresh only — {source: target} for EVERY namespace in
             a multi-namespace archive. Mutually completing with
             target_namespace: pass exactly one of the two for 'fresh'.

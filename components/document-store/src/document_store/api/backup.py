@@ -18,6 +18,10 @@ Endpoints
     target, ``merge`` reconciles the archive into a namespace that already
     holds data: definitions must be compatible (see ``add_missing`` /
     ``extend_terminologies``), then documents merge under ``on_clash``.
+    The URL ``{namespace}`` is the permission anchor; the destination is the
+    archive's own namespace(s), which only a single-namespace ``merge``
+    (``target_namespace``) or a ``fresh`` restore may change. A target the
+    mode cannot honour is refused, never silently replaced.
 * ``POST /backup/namespaces/{namespace}/validate``
     Verify a namespace's referential and identity integrity as a job. Started
     automatically after every restore, and available on demand.
@@ -407,10 +411,13 @@ async def start_restore(
     target_namespace: str | None = Form(
         None,
         description=(
-            "Where to write. A restore and a merge write each archived "
-            "namespace to itself unless merging into a different one; a "
-            "'fresh' restore requires this, since it is placing new "
-            "identities somewhere."
+            "Where to write. Honoured or refused, never ignored: a plain "
+            "'restore' writes each archived namespace to itself and refuses "
+            "a different target (an id-preserving restore cannot re-namespace "
+            "data); a 'merge' of a single-namespace archive writes into this "
+            "namespace; a 'fresh' restore requires this or namespace_map, "
+            "since it places new identities. A multi-namespace archive takes "
+            "no target in restore or merge mode."
         ),
     ),
     namespace_map: str | None = Form(
@@ -530,7 +537,15 @@ async def start_restore(
     ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> BackupJobSnapshot:
-    """Upload an archive and restore it into ``namespace``.
+    """Upload an archive and restore it.
+
+    The URL ``namespace`` is the permission anchor, not the destination. The
+    destination is the archive's own namespace(s): a plain ``restore`` writes
+    each one to itself and refuses a ``target_namespace`` that differs; a
+    ``merge`` of a single-namespace archive may be redirected with
+    ``target_namespace``; a ``fresh`` restore needs ``target_namespace`` or
+    ``namespace_map``. An explicit target is honoured or refused, never
+    replaced.
 
     The archive is streamed to disk at ``$WIP_BACKUP_DIR/{job_id}.zip`` so
     multi-GB uploads don't buffer in RAM.
@@ -657,20 +672,42 @@ async def start_restore(
             # namespace instead, and the engine's whole redirect path
             # (namespace rewrite, composite-key rehash, ids-must-be-free) was
             # unreachable from the API.
+            if target_namespace and len(prefixes) > 1:
+                # The engine would refuse this too, but only after a job
+                # exists; refusing here turns a silent self-restore or
+                # self-merge of live namespaces into an immediate, visible
+                # error.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "target_namespace is not supported for a "
+                        f"multi-namespace archive in {mode} mode — each "
+                        "namespace is written to itself (omit "
+                        "target_namespace), or split the archive."
+                    ),
+                )
+            if (
+                mode == "restore" and target_namespace and prefixes
+                and target_namespace != prefixes[0]
+            ):
+                # A plain restore preserves every id, and the archived
+                # entities and composite keys embed the source namespace, so
+                # it cannot write them anywhere else. The manifest used to
+                # replace the caller's target silently, writing into a
+                # namespace the caller never named.
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"target_namespace '{target_namespace}' differs from "
+                        f"the archive's namespace '{prefixes[0]}' — an "
+                        "id-preserving restore cannot re-namespace data. "
+                        "Restore to the archive's own namespace (omit "
+                        "target_namespace), merge it into the namespace you "
+                        "want (mode=merge), or restore a copy with new ids "
+                        "(mode=fresh)."
+                    ),
+                )
             if mode == "merge" and target_namespace:
-                if len(prefixes) > 1:
-                    # The engine would refuse this too, but only after a job
-                    # exists; refusing here turns a silent self-merge of live
-                    # namespaces into an immediate, visible error.
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "target_namespace override is not supported for a "
-                            "multi-namespace archive in merge mode — merge "
-                            "each namespace to itself (omit target_namespace) "
-                            "or split the archive."
-                        ),
-                    )
                 # The archive prefixes were admin-checked above, but a
                 # redirected merge WRITES to the caller's target — admin
                 # there is the permission that gates the operation.

@@ -136,6 +136,16 @@ already holds data, instead of requiring an empty target. Use it to bring a
 namespace up to an archive's state without tearing it down, or to fold another
 install's copy of a namespace into this one.
 
+**Where it writes.** The URL / `namespace` argument is the permission
+anchor, not the destination. A restore or merge writes each archived
+namespace to itself. A merge of a single-namespace archive can be redirected
+with `target_namespace`; a plain restore refuses a `target_namespace` that
+differs from the archive's (an id-preserving restore cannot re-namespace
+data — merge into the namespace you want, or restore a copy with
+`mode=fresh`); a multi-namespace archive takes no `target_namespace` in
+either mode. A target the mode cannot honour is refused before any job
+starts, never silently replaced.
+
 A merge runs in two passes.
 
 ### Pass 1 — definitions must be compatible

@@ -31,6 +31,20 @@ entity that exists (reproduced live: 404 until 30 s, then 200).
   same name, and a name that moves to another entity (a term merge), keep the
   30 s window. A second step will cover them.
 
+### A plain restore refuses a `target_namespace` it cannot honour
+
+The upload restore (`POST /backup/namespaces/{namespace}/restore`,
+`mode=restore`) took its destination from the archive and silently dropped a
+`target_namespace` that differed, so a request naming `kb-copy` wrote into the
+archive's own `kb` when that was absent or empty. It now answers 400 before
+any job exists, naming the archive's namespace and the two modes that do move
+data (`merge` into an existing namespace, `fresh` for a copy with new ids). The
+archive's own name is still accepted, and omitting the field behaves as
+before. A multi-namespace archive with a `target_namespace` is refused in
+restore mode too, as it already was for merge. The endpoint's docstring and
+the MCP and user docs now say that the URL namespace is the permission
+anchor, not the destination.
+
 ### A prefixed ID sequence never mints an ID that already exists
 
 `prefixed` IDs were counted per (namespace, entity type, prefix), and the
