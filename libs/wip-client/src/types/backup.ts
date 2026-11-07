@@ -218,6 +218,16 @@ export interface RestoreOptions {
   add_missing?: boolean
   /** Merge only — add terms the target's terminology is missing. */
   extend_terminologies?: boolean
+  /**
+   * Merge only — for an archive from another install, whose template version
+   * numbers do not line up with the target's. Templates match by value; each
+   * archive version maps onto the target version whose schema can take its
+   * documents, and documents are re-pinned to it. Documents no target version
+   * can take are listed on the job (`result.namespaces[ns].template_alignment
+   * .unplaceable_documents`) and not merged. Refused for a template both
+   * sides share. Dry-run first.
+   */
+  align_templates?: boolean
   skip_documents?: boolean
   skip_files?: boolean
   batch_size?: number

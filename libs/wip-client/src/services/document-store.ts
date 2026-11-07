@@ -420,6 +420,8 @@ export class DocumentStoreService extends BaseService {
       form.append('add_missing', String(options.add_missing))
     if (options.extend_terminologies !== undefined)
       form.append('extend_terminologies', String(options.extend_terminologies))
+    if (options.align_templates !== undefined)
+      form.append('align_templates', String(options.align_templates))
     if (options.skip_documents !== undefined)
       form.append('skip_documents', String(options.skip_documents))
     if (options.skip_files !== undefined)

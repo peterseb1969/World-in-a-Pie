@@ -1006,6 +1006,8 @@ var DocumentStoreService = class extends BaseService {
       form.append("add_missing", String(options.add_missing));
     if (options.extend_terminologies !== void 0)
       form.append("extend_terminologies", String(options.extend_terminologies));
+    if (options.align_templates !== void 0)
+      form.append("align_templates", String(options.align_templates));
     if (options.skip_documents !== void 0)
       form.append("skip_documents", String(options.skip_documents));
     if (options.skip_files !== void 0)

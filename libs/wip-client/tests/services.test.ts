@@ -1113,6 +1113,31 @@ describe('Service classes via createWipClient', () => {
       expect(fd.get('extend_terminologies')).toBe('true')
     })
 
+    it('startRestore sends align_templates for a merge', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'aa' }))
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      await client.documents.startRestore('aa', archive, {
+        mode: 'merge',
+        align_templates: true,
+        dry_run: true,
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      const fd = options.body as FormData
+      expect(fd.get('align_templates')).toBe('true')
+    })
+
+    it('startRestore leaves align_templates out unless asked', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'aa' }))
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      await client.documents.startRestore('aa', archive, { mode: 'merge' })
+
+      const [, options] = fetchMock.mock.calls[0]
+      expect((options.body as FormData).has('align_templates')).toBe(false)
+    })
+
     it('startRestore sends the target for a fresh restore', async () => {
       mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'kb-copy' }))
 
