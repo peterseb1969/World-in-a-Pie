@@ -1597,6 +1597,11 @@ async def lookup_entry(
     Provide either entry_id (lookup by ID) or namespace + entity_type + composite_key
     (lookup by key). Key lookup also searches synonyms.
 
+    A value that is not an entry ID is matched against the values of entries'
+    keys, in the namespaces you can read. When several entries carry it, the
+    result has status "ambiguous" and lists them in "candidates" instead of
+    returning one: pass the canonical ID, or use the key lookup.
+
     Args:
         entry_id: Look up by entry ID or value code.
         namespace: Namespace for key lookup (e.g., 'wip').

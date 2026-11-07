@@ -146,7 +146,19 @@ export interface RegistryLookupResponse {
   synonyms: RegistrySynonym[]
   source_info: RegistrySourceInfo | null
   source_data: Record<string, unknown> | null
+  /** When status is 'ambiguous': the entries the value resolves to. */
+  candidates?: RegistryLookupCandidate[]
   error: string | null
+  error_code?: string | null
+}
+
+/** One entry a value resolves to, with the key that carried it. */
+export interface RegistryLookupCandidate {
+  entry_id: string
+  namespace: string
+  entity_type: string
+  matched_via: 'entry_id' | 'primary_key' | 'synonym'
+  matched_composite_key: Record<string, unknown> | null
 }
 
 export interface RegistryBrowseParams {

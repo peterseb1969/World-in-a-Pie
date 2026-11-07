@@ -76,9 +76,13 @@ from ..services.claims import (
 from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
+from ..services.key_scope import key_scope_refusal, named_namespace
 from .grants import NamespaceAccess, resolve_accessible_namespaces
 
 logger = logging.getLogger("registry.entries")
+
+# Candidates listed when a key or value resolves to several entries.
+_RESOLVE_CANDIDATE_LIMIT = 10
 
 router = APIRouter()
 
@@ -514,6 +518,18 @@ async def register_keys(
                 error_count += 1
                 continue
 
+            refusal = key_scope_refusal(item.composite_key, item.namespace) or (
+                key_scope_refusal(
+                    item.synonym_values, item.namespace, rule="synonym_scope_mismatch",
+                )
+                if item.synonym_values and not item.skip_identity_value_synonym
+                else None
+            )
+            if refusal:
+                results[i] = RegisterKeyResponse(index=i, status="error", **refusal)
+                error_count += 1
+                continue
+
             # Check if provided entry_id already exists (collision detection)
             existing: RegistryEntry | None
             if item.entry_id and item.entry_id in existing_by_entry_id:
@@ -816,6 +832,11 @@ async def provision_ids(
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {request.namespace}")
 
+    for composite_key in request.composite_keys or []:
+        refusal = key_scope_refusal(composite_key, request.namespace)
+        if refusal:
+            raise HTTPException(status_code=422, detail=refusal["error"])
+
     config = ns.get_id_algorithm(request.entity_type)
     ids = []
     entries = []
@@ -947,6 +968,13 @@ async def reserve_ids(
                 continue
 
             composite_key = item.composite_key or {}
+            refusal = key_scope_refusal(composite_key, item.namespace)
+            if refusal:
+                results.append(ReserveItemResponse(
+                    index=i, status="error", entry_id=item.entry_id, **refusal,
+                ))
+                error_count += 1
+                continue
             key_hash = HashService.compute_composite_key_hash(composite_key) if composite_key else ""
 
             entry = RegistryEntry(
@@ -1045,6 +1073,11 @@ def _attach_activation_synonyms(
                 "error_code": "invalid_request",
                 "details": {"rule": "synonym_scope_mismatch"},
             }
+        refusal = key_scope_refusal(
+            item.synonym_composite_key, entry.namespace, rule="synonym_scope_mismatch",
+        )
+        if refusal:
+            return refusal
     for item in synonyms:
         key_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
         if key_hash == entry.primary_composite_key_hash:
@@ -1116,6 +1149,13 @@ async def _activate_keyed(
             errors += 1
         else:
             key = items[i].composite_key or {}
+            refusal = key_scope_refusal(key, entry.namespace)
+            if refusal is not None:
+                results[i] = ActivateItemResponse(
+                    index=i, status="error", entry_id=eid, **refusal,
+                )
+                errors += 1
+                continue
             entry.primary_composite_key = key
             entry.primary_composite_key_hash = (
                 HashService.compute_composite_key_hash(key) if key else ""
@@ -1441,10 +1481,14 @@ async def lookup_by_ids(
     """Look up registry entries by their IDs. Only active entries are resolvable.
 
     An entry in a namespace the caller cannot read is reported not_found.
+    A value that is no entry ID is matched against the values of entries'
+    keys; when several entries the caller can read carry it, the item is
+    ambiguous with the candidates (/lookup/candidates lists them all).
     """
     results = []
     found_count = 0
     not_found_count = 0
+    ambiguous_count = 0
     error_count = 0
     access = NamespaceAccess(identity)
 
@@ -1466,21 +1510,49 @@ async def lookup_by_ids(
                 if item.entity_type:
                     q1["entity_type"] = item.entity_type
                 entry = await RegistryEntry.find_one(q1)
+                if entry and not await access.allows(entry.namespace, "read"):
+                    entry = None
                 if entry:
                     matched_via = "entry_id"
 
-                # 2. Composite key value search (covers merged IDs via search_values)
+                # 2. Composite key value search (covers merged IDs via
+                # search_values), over the entries the caller can read. A
+                # value several of them carry is ambiguous: answered with the
+                # candidates, never with whichever the database returns first.
                 if not entry:
                     q3: dict = {"search_values": item.entry_id, "status": "active"}
                     if item.namespace:
                         q3["namespace"] = item.namespace
+                    elif not access.unrestricted:
+                        q3["namespace"] = {
+                            "$in": await resolve_accessible_namespaces(identity) or [],
+                        }
                     if item.entity_type:
                         q3["entity_type"] = item.entity_type
-                    entry = await RegistryEntry.find_one(q3)
+                    matches = await RegistryEntry.find(q3).sort("+created_at").limit(
+                        _RESOLVE_CANDIDATE_LIMIT + 1,
+                    ).to_list()
+                    matches = [m for m in matches if await access.allows(m.namespace, "read")]
+                    if len(matches) > 1:
+                        results.append(LookupResponse(
+                            index=i, status="ambiguous",
+                            error=(
+                                f"'{item.entry_id}' is carried by {len(matches)} entries; "
+                                "qualify it (namespace, entity_type) or use a canonical ID."
+                            ),
+                            error_code="ambiguous",
+                            candidates=[
+                                _candidate(m, item.entry_id)
+                                for m in matches[:_RESOLVE_CANDIDATE_LIMIT]
+                            ],
+                        ))
+                        ambiguous_count += 1
+                        continue
+                    entry = matches[0] if matches else None
                     if entry:
                         matched_via = "composite_key_value"
 
-                if not entry or not await access.allows(entry.namespace, "read"):
+                if not entry:
                     results.append(LookupResponse(index=i, status="not_found"))
                     not_found_count += 1
                     continue
@@ -1507,7 +1579,8 @@ async def lookup_by_ids(
 
     return LookupBulkResponse(
         results=results, total=len(items),
-        found=found_count, not_found=not_found_count, errors=error_count,
+        found=found_count, not_found=not_found_count,
+        ambiguous=ambiguous_count, errors=error_count,
     )
 
 
@@ -1999,10 +2072,17 @@ async def resolve_synonyms(
 
     Returns entry_id for each found item, "not_found" otherwise — including
     for an entry in a namespace the caller cannot read.
+
+    A composite key is looked up in ``namespace`` when given, else in the
+    namespace the key itself names (its ``ns`` member), else in every
+    namespace the caller can read. When more than one entry the caller can
+    read holds the key, the item is ``ambiguous`` with the candidates —
+    never one of them picked.
     """
     results = []
     found_count = 0
     not_found_count = 0
+    ambiguous_count = 0
     error_count = 0
     access = NamespaceAccess(identity)
 
@@ -2043,10 +2123,18 @@ async def resolve_synonyms(
                     id_query["entity_type"] = item.entity_type
                 entry = await RegistryEntry.find_one(id_query)
 
-            # Path 2: Composite key resolution (synonym or primary key)
+            if entry and not await access.allows(entry.namespace, "read"):
+                entry = None
+
+            # Path 2: Composite key resolution (synonym or primary key).
+            # Scoped to the namespace asked for, else the one the key names
+            # (its 'ns'): key claims are unique per namespace, so a key that
+            # names its namespace has one possible holder there. Only
+            # entries the caller can read take part, and more than one
+            # match is refused as ambiguous, never answered with one of them.
             if not entry and item.composite_key:
                 key_hash = HashService.compute_composite_key_hash(item.composite_key)
-                query = {
+                query: dict[str, Any] = {
                     "$or": [
                         {"primary_composite_key_hash": key_hash},
                         {"synonyms": {"$elemMatch": {
@@ -2056,22 +2144,48 @@ async def resolve_synonyms(
                     ],
                     "status": status_filter,
                 }
-                if item.namespace:
-                    query["namespace"] = item.namespace
+                scope = item.namespace or named_namespace(item.composite_key)
+                if scope:
+                    query["namespace"] = scope
+                elif not access.unrestricted:
+                    query["namespace"] = {"$in": await resolve_accessible_namespaces(identity) or []}
                 if item.entity_type:
                     query["entity_type"] = item.entity_type
-                # CASE-427 defensive guard (see lookup_by_keys): detect+log a
-                # key resolving to >1 entry, deterministic [0] pick otherwise.
-                matches = await RegistryEntry.find(query).limit(2).to_list()
+                matches = await RegistryEntry.find(query).sort("+created_at").limit(
+                    _RESOLVE_CANDIDATE_LIMIT + 1,
+                ).to_list()
+                matches = [m for m in matches if await access.allows(m.namespace, "read")]
                 if len(matches) > 1:
-                    logger.error(
-                        "CASE-427 INVARIANT VIOLATION: composite key %s resolved "
-                        "to multiple entries %s — uniqueness gate breached.",
-                        key_hash, [e.entry_id for e in matches],
+                    logger.warning(
+                        "Composite key %s resolves to %d entries %s: answered ambiguous.",
+                        key_hash, len(matches), [e.entry_id for e in matches],
                     )
+                    results.append(ResolveResponse(
+                        index=i,
+                        status="ambiguous",
+                        composite_key=item.composite_key,
+                        error=(
+                            f"The key resolves to {len(matches)} entries; qualify it "
+                            "(namespace, a canonical ID) to name one."
+                        ),
+                        error_code="ambiguous",
+                        candidates=[
+                            LookupCandidate(
+                                entry_id=m.entry_id, namespace=m.namespace,
+                                entity_type=m.entity_type, matched_via=(
+                                    "primary_key" if m.primary_composite_key_hash == key_hash
+                                    else "synonym"
+                                ),
+                                matched_composite_key=item.composite_key,
+                            )
+                            for m in matches[:_RESOLVE_CANDIDATE_LIMIT]
+                        ],
+                    ))
+                    ambiguous_count += 1
+                    continue
                 entry = matches[0] if matches else None
 
-            if entry and await access.allows(entry.namespace, "read"):
+            if entry:
                 results.append(ResolveResponse(
                     index=i,
                     status="found",
@@ -2096,5 +2210,6 @@ async def resolve_synonyms(
 
     return BulkResolveResponse(
         results=results, total=len(items),
-        found=found_count, not_found=not_found_count, errors=error_count,
+        found=found_count, not_found=not_found_count,
+        ambiguous=ambiguous_count, errors=error_count,
     )

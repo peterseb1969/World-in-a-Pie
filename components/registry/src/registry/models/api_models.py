@@ -531,7 +531,7 @@ class LookupResponse(BaseModel):
     """Response model for lookups."""
 
     index: int
-    status: str  # found, not_found, error
+    status: str  # found, not_found, ambiguous, error
 
     entry_id: str | None = None
     namespace: str | None = None
@@ -550,6 +550,11 @@ class LookupResponse(BaseModel):
 
     source_info: SourceInfo | None = None
     source_data: dict[str, Any] | None = None
+
+    candidates: list["LookupCandidate"] = Field(
+        default_factory=list,
+        description="When status is ambiguous: the entries the value resolves to (up to 10)",
+    )
 
     error: str | None = None
     error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
@@ -575,6 +580,9 @@ class LookupCandidate(BaseModel):
     matched_composite_key: dict[str, Any] | None = Field(
         default=None, description="The key whose value matched — the qualifier",
     )
+
+
+LookupResponse.model_rebuild()
 
 
 class LookupCandidatesResponse(BaseModel):
@@ -607,6 +615,7 @@ class LookupBulkResponse(BaseModel):
     total: int
     found: int
     not_found: int
+    ambiguous: int = 0
     errors: int
 
 
@@ -672,9 +681,13 @@ class ResolveResponse(BaseModel):
     """Response model for a single resolve result."""
 
     index: int
-    status: str  # found, not_found, error
+    status: str  # found, not_found, ambiguous, error
     composite_key: dict[str, Any] | None = None
     entry_id: str | None = None
+    candidates: list[LookupCandidate] = Field(
+        default_factory=list,
+        description="When status is ambiguous: the entries the key resolves to (up to 10)",
+    )
     error: str | None = None
     error_code: str | None = Field(default=None, description=ITEM_ERROR_CODE_DESCRIPTION)
     details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
@@ -687,6 +700,7 @@ class BulkResolveResponse(BaseModel):
     total: int
     found: int
     not_found: int
+    ambiguous: int = 0
     errors: int
 
 

@@ -7,6 +7,38 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A composite key is held only in the namespace it names; `/resolve` and `/lookup/by-id` refuse instead of picking
+
+The Registry claims a key once per namespace and entity type, but the keys the
+platform builds name their namespace (`{"ns": ..., "type": "template",
+"value": ...}`). A writer of one namespace could add another namespace's
+template key as a synonym on its own template, and `/entries/resolve`, which
+hashes the key without a namespace, then answered with whichever entry came
+first. A reference written in the victim's namespace (a document's
+`template_id: "PATIENT"`) could then bind to the writer's template. Now:
+
+- **A key's `ns` must be its entry's namespace.** `/synonyms/add`, activation
+  synonyms, `/entries/register`, `/entries/reserve` and `/entries/activate`
+  refuse the item (`invalid_request`, `details.rule` `synonym_scope_mismatch`
+  for a synonym, `key_scope_mismatch` for a primary key); `/entries/provision`
+  answers 422. Keys with an `@`-qualified member (a document's identity
+  synonym, written only by system callers) are exempt. A count on six installs
+  found no stored key that breaks the rule.
+- **`/entries/resolve`** looks a key up in `namespace` when given, else in the
+  namespace the key names, else in every namespace the caller can read. Entries
+  the caller cannot read never take part. When more than one readable entry
+  holds the key, the item is `status: "ambiguous"` with `candidates` (up to 10)
+  and the bulk response counts it under the new `ambiguous` field.
+- **`/entries/lookup/by-id`**: a value that is no entry ID and that several
+  readable entries carry is `ambiguous` with `candidates`, no longer one of
+  them. An unreadable match no longer hides a readable one.
+- **wip-auth** raises `AmbiguousEntityError` (the error an ambiguous value
+  lookup already raised) for an ambiguous key, and does not fall back to the
+  value lookup for it; a non-strict batch leaves it unresolved.
+- **`@wip/client` 0.87.0**: `RegistryLookupResponse` gains `candidates` and
+  `error_code`; the new `RegistryLookupCandidate` type. The MCP `lookup_entry`
+  tool returns the same result.
+
 ### A merge retires target terms only under `carry_retirements`; `@wip/client` 0.86.0, WIP-Toolkit 0.25.9
 
 A merge used to deprecate every active target term that the archive had

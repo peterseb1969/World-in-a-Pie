@@ -31,6 +31,7 @@ from ..services.claims import (
 )
 from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.hash import HashService
+from ..services.key_scope import key_scope_refusal
 from .grants import NamespaceAccess
 
 logger = logging.getLogger("registry.synonyms")
@@ -91,7 +92,10 @@ async def add_synonyms(
     lives in the entry's namespace and has the entry's entity type. A
     synonym_namespace or synonym_entity_type that differs is refused
     (synonym_scope_mismatch): stored, it would either never resolve or
-    resolve across a namespace or type boundary.
+    resolve across a namespace or type boundary. So is a key whose own 'ns'
+    member names another namespace: it would be held here while naming
+    there, and a lookup by that key would find this entry for the other
+    namespace.
 
     Needs write on the entry's namespace. A target the caller cannot read is
     reported target_not_found; one it can read but not write is forbidden.
@@ -129,7 +133,11 @@ async def add_synonyms(
                 results[i] = AddSynonymResponse(index=i, status="forbidden", error=refusal)
                 continue
 
-            mismatch = _scope_mismatch(entry, item.synonym_namespace, item.synonym_entity_type)
+            mismatch = _scope_mismatch(
+                entry, item.synonym_namespace, item.synonym_entity_type,
+            ) or key_scope_refusal(
+                item.synonym_composite_key, entry.namespace, rule="synonym_scope_mismatch",
+            )
             if mismatch:
                 results[i] = AddSynonymResponse(
                     index=i, status="error", registry_id=entry.entry_id, **mismatch,

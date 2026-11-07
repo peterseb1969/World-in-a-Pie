@@ -414,6 +414,8 @@ async def resolve_entity_id(
     payload = _build_resolve_payload(raw_id, entity_type, namespace, include_statuses)
     try:
         canonical_id = await _post_resolve(payload, raw_id, entity_type, namespace)
+    except AmbiguousEntityError:
+        raise
     except EntityNotFoundError:
         if entity_type == "term" or _looks_like_uuid(raw_id):
             raise
@@ -479,6 +481,10 @@ async def _post_resolve(
     results = data.get("results", [])
     if results and results[0].get("status") == "found":
         return cast(str, results[0]["entry_id"])
+    if results and results[0].get("status") == "ambiguous":
+        # Several entities hold the key: refused, never one of them picked.
+        candidates = results[0].get("candidates") or []
+        raise AmbiguousEntityError(identifier, entity_type, candidates, len(candidates))
 
     # Genuine "Registry looked and found nothing" — the only case where an
     # under-specified identifier is a plausible cause, so the namespace
@@ -804,6 +810,13 @@ async def resolve_entity_ids(
                 cache_key = f"{namespace}:{entity_type}:{raw_id}"
                 _set_cached(cache_key, canonical_id)
                 result[raw_id] = canonical_id
+                continue
+            if resolve_result.get("status") == "ambiguous":
+                # Several entities hold the key. Strict callers get the
+                # refusal; otherwise it stays unresolved, never picked.
+                if strict:
+                    candidates = resolve_result.get("candidates") or []
+                    raise AmbiguousEntityError(raw_id, entity_type, candidates, len(candidates))
                 continue
             if strict:
                 # Same reasoning as the single-resolve path: a per-item miss
