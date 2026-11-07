@@ -154,7 +154,11 @@ class BackupJob(BeanieDocument):
     # right place to hold a quarter of a million of them.
     result: dict[str, Any] | None = Field(
         default=None,
-        description="Structured outcome for jobs that produce one (validation)"
+        description=(
+            "Structured outcome for jobs that produce one: a validation's "
+            "findings, a restore dry run's plan, or a refused merge's every "
+            "incompatibility (result_kind: merge_refused)"
+        )
     )
 
     # Validation jobs a completed restore kicked off, one per restored

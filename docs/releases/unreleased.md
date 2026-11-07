@@ -30,6 +30,26 @@ template, and validation warnings quoting a redacted value were kept.
 values, and their provenance says otherwise. Redact them again from their
 source archives.
 
+### A merge compares definitions as their models read them; a refusal lists every cause
+
+- **Absent fields count as their defaults.** A merge restore compared the
+  two sides' definitions as raw rows, so a field one side's row lacked
+  (written before the field existed) differed from the other side's default.
+  Merging an older install's archive into a newly bootstrapped one was
+  refused for every such field (seen: five terminologies refused for
+  `unique_names` absent vs `false`). Both sides are now read with absent
+  fields at the model's default, nested models included. A real difference,
+  such as `unique_names` `true` on one side and `false` on the other, still
+  refuses.
+- **A refused merge records every cause.** The error named five
+  incompatibilities and the job recorded none. The failed job's `result` now
+  holds all of them (`result_kind: merge_refused`), each with the target's
+  and the archive's values; the message says where to look.
+- **Still refused:** templates are matched by `(value, version)`, so an
+  archive whose template history runs past the target's versions (a fresh
+  bootstrap holds v1) is refused. A proposal is in
+  `docs/design/merge-template-version-alignment.md`.
+
 ### Merges from another install compare references by what they name; `wip-archive` 0.27.0
 
 - **The definitions check** compared a definition's references as raw ids: a

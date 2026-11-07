@@ -409,7 +409,24 @@ class BackupEngineError(Exception):
 
 
 class RestoreEngineError(Exception):
-    """Raised when the restore engine encounters a fatal error."""
+    """Raised when the restore engine encounters a fatal error.
+
+    ``details`` is a structured account of the failure for the job record
+    (``result`` on a failed job), when the message alone cannot carry it —
+    a merge refused for 62 definitions names only a few of them in its
+    message, and the operator needs all of them to act.
+    """
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.details = details
+
+
+# The incompatibilities a refused merge records on its job, at most. A
+# namespace's definitions are vocabularies and schemas, so a refusal is
+# normally a few dozen; the cap only keeps a pathological archive from
+# writing an unbounded record.
+MERGE_REFUSAL_INCOMPATIBILITY_CAP = 1000
 
 
 class RestoreRequester(NamedTuple):
@@ -3516,15 +3533,41 @@ class DirectRestoreEngine:
         merge before any document moves."""
         if definitions.compatible:
             return
+        issues = definitions.incompatibilities
         detail = "; ".join(
             f"{issue.entity_type} '{issue.name}' — {issue.reason}"
-            for issue in definitions.incompatibilities[:5]
+            for issue in issues[:5]
+        )
+        more = (
+            f" …and {len(issues) - 5} more; every one, with the two sides' "
+            "values, is on the job record (result.incompatibilities)."
+            if len(issues) > 5
+            else " The job record carries each with the two sides' values "
+            "(result.incompatibilities)."
         )
         raise RestoreEngineError(
             f"Merge into '{namespace}' refused — "
-            f"{len(definitions.incompatibilities)} definition(s) are not "
-            f"compatible with the target. {detail}. Documents cannot be merged "
-            "under definitions the two sides disagree on."
+            f"{len(issues)} definition(s) are not "
+            f"compatible with the target. {detail}.{more} Documents cannot be "
+            "merged under definitions the two sides disagree on.",
+            details={
+                "result_kind": "merge_refused",
+                "namespace": namespace,
+                "incompatibility_count": len(issues),
+                "incompatibilities": [
+                    {
+                        "namespace": namespace,
+                        "entity_type": issue.entity_type,
+                        "name": issue.name,
+                        "reason": issue.reason,
+                        "detail": issue.detail,
+                    }
+                    for issue in issues[:MERGE_REFUSAL_INCOMPATIBILITY_CAP]
+                ],
+                "incompatibilities_truncated": max(
+                    0, len(issues) - MERGE_REFUSAL_INCOMPATIBILITY_CAP
+                ),
+            },
         )
 
     async def _apply_definitions(

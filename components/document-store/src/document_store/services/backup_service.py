@@ -207,6 +207,12 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         fields[BackupJob.status] = BackupJobStatus.FAILED
         fields[BackupJob.error] = event.message
         fields[BackupJob.completed_at] = datetime.now(UTC)
+        # A failure with a structured account (result_kind names it) keeps
+        # it on the record: the message is a summary, the result the detail.
+        if event.details and event.details.get("result_kind"):
+            fields[BackupJob.result] = {
+                k: v for k, v in event.details.items() if k != "type"
+            }
 
     await job.set(fields)
 
@@ -266,7 +272,13 @@ async def start_async_job(
             err_event = ProgressEvent(
                 phase="error",
                 message=str(exc) or type(exc).__name__,
-                details={"type": type(exc).__name__},
+                # An engine error may carry a structured account of the
+                # failure (a refused merge's every incompatibility); it rides
+                # the error event to the job record.
+                details={
+                    "type": type(exc).__name__,
+                    **(getattr(exc, "details", None) or {}),
+                },
             )
             queue.put_nowait(err_event)
         finally:

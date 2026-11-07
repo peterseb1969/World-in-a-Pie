@@ -27,11 +27,14 @@ refuses rather than quietly importing half a vocabulary.
 
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from wip_archive.remap import IDRemapper
+
+from ._definition_defaults import DEFINITION_DEFAULTS
 
 logger = logging.getLogger("document_store.merge_definitions")
 
@@ -155,6 +158,38 @@ class DefinitionsPlan:
             }
             for entity_type in DEFINITION_TYPES
         }
+
+
+def with_defaults(entity_type: str, row: dict[str, Any]) -> dict[str, Any]:
+    """The row as its model reads it: every absent field at its default.
+
+    A row written before a field existed lacks the key, and def-store or
+    template-store reads it as the field's default; the comparison must read
+    it the same way, or an archive one release older than the target differs
+    from it in every field added since. Nested models (a template's fields,
+    rules and reporting, a term's names, a terminology's metadata) are
+    filled too. Only absent keys are filled — a value either side holds is
+    never changed — and the row itself is not modified.
+    """
+    root = DEFINITION_DEFAULTS["roots"].get(entity_type)
+    return _fill(root, row) if root else row
+
+
+def _fill(model: str, value: Any) -> Any:
+    spec = DEFINITION_DEFAULTS["models"][model]
+    if not isinstance(value, dict):
+        return value
+    filled = dict(value)
+    for name, default in spec["defaults"].items():
+        if name not in filled:
+            filled[name] = copy.deepcopy(default)
+    for name, (nested, many) in spec["nested"].items():
+        held = filled.get(name)
+        if many and isinstance(held, list):
+            filled[name] = [_fill(nested, item) for item in held]
+        elif not many and isinstance(held, dict):
+            filled[name] = _fill(nested, held)
+    return filled
 
 
 def compare_definitions(
@@ -292,8 +327,12 @@ class DefinitionsPlanner:
             self._classify_missing(entity_type, entity, name, plan)
             return
 
-        # Present on both sides: compare content, references mapped.
-        entity = self._as_target_would_hold_it(entity_type, entity, remapper)
+        # Present on both sides: compare content, references mapped, each
+        # side read as its model reads it (absent fields at their defaults).
+        entity = with_defaults(
+            entity_type, self._as_target_would_hold_it(entity_type, entity, remapper)
+        )
+        target = with_defaults(entity_type, target)
         lifecycle = _TERM_LIFECYCLE_FIELDS if entity_type == "terms" else frozenset()
         cosmetic, substantive = compare_definitions(entity, target, skip=lifecycle)
         if substantive:

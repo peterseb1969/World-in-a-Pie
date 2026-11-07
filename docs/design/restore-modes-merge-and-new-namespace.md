@@ -72,6 +72,22 @@ Changing the target's definitions is opt-in and split deliberately:
 `extend_terminologies` adds missing terms. Where a definition matches but
 label/aliases differ, the target's win and the difference is reported.
 
+Both sides are compared as their models read them: a field a row lacks
+(written before the field existed) counts as the model's default, nested
+models included — a template's fields, rules and reporting, a term's names,
+a terminology's metadata. An archive one release older than the target
+therefore differs from it only where the content differs. The defaults are
+generated from the def-store and template-store models
+(`components/document-store/scripts/generate_definition_defaults.py`), and a
+contract test fails when they fall behind. A refused merge records every
+incompatibility, with both sides' values, on the failed job's `result`
+(`result_kind: merge_refused`); the error message names the first five.
+
+Templates are matched per `(value, version)`. Version numbers are per
+install, so an archive whose history runs to v6 never lines up with a fresh
+bootstrap's v1. A proposed change, not yet approved, is in
+`docs/design/merge-template-version-alignment.md`.
+
 **Pass 2 — documents, under `on_clash`.** `skip` (default) keeps the
 target's version of a clashing identity. `overwrite` appends the archive's
 latest version on top of the target's head, preserving both histories (on a
@@ -107,8 +123,9 @@ carry the unprefixed value, there is deliberately no drop parameter and no
 platform special-case — the remediation is an operational recipe made of
 first-class operations, self-expiring once the last unprefixed pair is
 retired. Either variant works; both rely on the definitions pass comparing
-per (value, version) over the archive's entities only, and on the default
-export excluding inactive template versions:
+per (value, version) over the archive's entities. Note that an export carries
+every template version, inactive ones included (documents pin them), so the
+source's retired versions arrive in the archive and are compared too:
 
 1. *Retire the source's record*: deactivate the source namespace's
    bootstrap template and archive its record(s), re-export, merge. The
