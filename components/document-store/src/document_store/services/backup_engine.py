@@ -60,6 +60,7 @@ from .remap_restore import (
     REMAP_ENTITY_ORDER,
     RemapPlan,
     RemapSource,
+    check_collisions_before_writing,
     plan_multi,
     rehash_document_row,
 )
@@ -1602,6 +1603,12 @@ class DirectRestoreEngine:
                     referent_paths=referent_paths,
                     document_chains=document_chains,
                 ))
+
+            # Several sources folding into one target may collide on a Registry
+            # key. That is refused here, for every type at once, before any
+            # target is created or anything reserved: found later, it left a
+            # half-provisioned target that a retry refused as not empty.
+            await self._off_loop(check_collisions_before_writing, remap_sources)
 
             # The namespaces have to exist before anything is provisioned: the
             # Registry mints ids per the TARGET namespace's id_config, and

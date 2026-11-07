@@ -7,6 +7,16 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A fresh restore folding several namespaces into one refuses key collisions before writing
+
+When several archived namespaces are restored into one target
+(`namespace_map` with a shared target), two of them may claim the same
+Registry key, and the restore refuses rather than merge them. That check ran
+per entity type as planning reached it, after the target was created and the
+earlier types reserved in the Registry, so a collision found at documents left
+a half-provisioned target that a retry then refused as not empty. It now runs
+for every type before any target is created.
+
 ### A restore's dry run makes the same namespace check as the real run; `PUT /namespaces/{prefix}?dry_run=true`
 
 A restore creates or updates its target namespace as the requester, and the

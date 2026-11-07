@@ -602,6 +602,50 @@ async def plan_multi(
     return plans
 
 
+def check_collisions_before_writing(sources: list[RemapSource]) -> None:
+    """Refuse an N:1 fresh restore's key collisions before anything is written.
+
+    plan_multi checks each type's keys as it reaches the type, after the
+    earlier types are provisioned in the Registry and the targets exist, so a
+    collision found at documents left a created, half-reserved target that a
+    retry then refused as not empty. This runs the same check for every type
+    first, writing nothing.
+
+    A type's keys embed the NEW ids of earlier types (a term's terminology),
+    which do not exist yet. Each old id stands in for its new id instead,
+    tagged so it cannot equal a real one: a fresh restore mints a distinct new
+    id for every old id, so two keys are equal under these stand-ins exactly
+    when they would be equal under the minted ids. Only the keys are built —
+    no rewrite, no provisioning — and only targets that several sources fold
+    into can collide, so a 1:1 restore skips it.
+    """
+    per_target: dict[str, set[str]] = {}
+    for s in sources:
+        per_target.setdefault(s.target, set()).add(s.source)
+    if all(len(srcs) < 2 for srcs in per_target.values()):
+        return
+    stand_ins: dict[str, dict[str, str]] = {t: {} for t in REMAP_ENTITY_ORDER}
+    for entity_type in REMAP_ENTITY_ORDER:
+        id_field = ID_FIELDS[entity_type]
+        staged: list[tuple[RemapSource, dict[str, list[dict[str, Any]]], list[dict[str, Any]]]] = []
+        for s in sources:
+            entities = s.entities_by_type.get(entity_type) or []
+            if not entities:
+                continue
+            groups: dict[str, list[dict[str, Any]]] = {}
+            for entity in entities:
+                groups.setdefault(str(entity.get(id_field)), []).append(entity)
+            keys = [
+                composite_key_for(entity_type, rows[0], s.target, stand_ins)
+                for rows in groups.values()
+            ]
+            staged.append((s, groups, keys))
+        _check_target_collisions(entity_type, staged)
+        for _s, groups, _keys in staged:
+            for old_id in groups:
+                stand_ins[entity_type][old_id] = f"\x00planned:{entity_type}:{old_id}"
+
+
 # Per-type projection of a staged Registry key down to the fields the target
 # STORE is actually unique on. The staged key's job is Registry registration,
 # so its shape must keep matching each service's registration shape — but the
