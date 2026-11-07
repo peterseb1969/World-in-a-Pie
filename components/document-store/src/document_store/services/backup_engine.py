@@ -2138,32 +2138,20 @@ class DirectRestoreEngine:
                 hit = value_index.get(ns_half, {}).get(rest)
                 if hit:
                     return hit
-            # Out-of-archive: ask the Registry, scoped to the target — the
-            # same lookup the enforcement path runs (CASE-525 door), so what
-            # repairs here is exactly what would enforce later.
-            import httpx
+            # Out-of-archive: resolve it on the target the way every write
+            # does, through the shared resolver: a qualified 'ns:VALUE'
+            # names its own namespace, and a value or id is read in the
+            # target's. The by-id lookup used before matched the whole
+            # string and only inside the target namespace, so a valid
+            # endpoint in another namespace (`other:ROLE`) was cleared. The
+            # result is persisted, so the cache is bypassed.
+            from wip_auth.resolve import resolve_entity_id
 
-            url = f"{self._registry_url}/api/registry/entries/lookup/by-id"
-            headers = {
-                "X-API-Key": self._registry_api_key,
-                "Content-Type": "application/json",
-            }
-            item = {
-                "entry_id": lookup,
-                "namespace": target,
-                "entity_type": "templates",
-            }
             try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    resp = await client.post(url, headers=headers, json=[item])
-                if resp.status_code != 200:
-                    return None
-                results = resp.json().get("results", [])
-                if results and results[0].get("status") == "found":
-                    return cast("str | None", results[0].get("entry_id"))
-            except httpx.HTTPError:
+                return await resolve_entity_id(lookup, "template", target, bypass_cache=True)
+            except Exception as exc:  # not found, ambiguous, or no answer
+                logger.info("Endpoint %r does not resolve on %s: %s", lookup, target, exc)
                 return None
-            return None
 
         for src, target in mapping.items():
             for row in plans[src].rows.get("templates") or []:

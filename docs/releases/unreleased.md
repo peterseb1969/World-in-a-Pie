@@ -7,6 +7,29 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A restore re-points term and terminology references and successor terms; an edge type keeps an endpoint in another namespace; `wip-archive` 0.29.0
+
+- **Term-reference identity.** A fresh, plain-referent or merge restore
+  rewrote `term_references[].term_id` but left `references[].resolved.term_id`
+  and `.terminology_id` on the source's ids. The identity hash reads the
+  `references` copy, so a restored document whose identity field is a
+  term or terminology reference kept the source's hash. The next write of
+  the same data then made a second document. Both ids now follow the id
+  maps, as do terminology ids written as lookup or data strings.
+- **Successor terms.** A restored term's `replaced_by_term_id` follows the
+  term map, as its `parent_term_id` already does.
+- **Edge-type endpoints outside the archive.** A fresh restore looked such
+  an endpoint up as a whole string, inside the target namespace only, so a
+  valid endpoint in another namespace (`other:ROLE`) was cleared with a
+  warning. It now resolves through the shared resolver, which reads the
+  namespace a qualified value names.
+
+**Already-restored data.** Affected documents can be found exactly: for the
+same field path, the term id in `term_references` differs from the one in
+`references[].resolved`. Count them on each install before deciding on a
+repair. Restored terms whose successor names a source term have no such
+fingerprint; restore those namespaces again from their archives.
+
 ### `redact` clears fields inside arrays, checks every path segment, refuses a path that clears nothing; `wip-archive` 0.28.0
 
 `redact` walked a dot path only through objects. `contacts.email`, where

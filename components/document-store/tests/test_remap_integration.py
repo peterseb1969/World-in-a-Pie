@@ -710,3 +710,48 @@ class TestOutOfArchiveReferents:
         assert document["references"][0]["resolved"]["document_id"] == "SRC-BOSS"
         warnings = [e.message for e in events if e.phase == "warning"]
         assert any("SRC-BOSS" in w and "NOBODY" in w for w in warnings)
+
+
+class TestOutOfArchiveEndpoints:
+    """CASE-1108: an edge type's declared endpoint that names a template the
+    archive does not carry. The endpoint repair resolves its lookup half on
+    the target; this pins whether a template in ANOTHER namespace of the
+    target install survives the repair, rather than being cleared."""
+
+    async def _live_role(self):
+        from registry.models.entry import Synonym
+        from registry.services.hash import HashService
+
+        key = {"ns": OTHER, "type": "template", "value": "ROLE"}
+        await RegistryEntry(
+            entry_id="LIVE-ROLE", namespace=OTHER, entity_type="templates",
+            primary_composite_key={"namespace": OTHER, "value": "ROLE"},
+            primary_composite_key_hash=HashService.compute_composite_key_hash(
+                {"namespace": OTHER, "value": "ROLE"}),
+            synonyms=[Synonym(namespace=OTHER, entity_type="templates", composite_key=key,
+                              composite_key_hash=HashService.compute_composite_key_hash(key))],
+            search_values=["ROLE", OTHER],
+            status="active",
+        ).insert()
+
+    @pytest.mark.asyncio
+    async def test_an_endpoint_in_another_namespace_keeps_its_live_id(self, live_registry):
+        await self._live_role()
+        events: list[ProgressEvent] = []
+        await _run_remap(live_registry, {
+            "templates": [
+                {"template_id": "OLD-THING", "namespace": SOURCE, "value": "THING",
+                 "version": 1, "identity_fields": []},
+                {"template_id": "OLD-LINK", "namespace": SOURCE, "value": "HAS_ROLE",
+                 "version": 1, "usage": "relationship", "versioned": False,
+                 "identity_fields": ["source_ref", "target_ref"],
+                 "source_templates": [{"lookup_value": "THING", "resolved": "OLD-THING"}],
+                 "target_templates": [{"lookup_value": f"{OTHER}:ROLE", "resolved": "LIVE-ROLE"}]},
+            ],
+        }, events)
+
+        (link,) = [t for t in await _rows(live_registry, "templates") if t["value"] == "HAS_ROLE"]
+        (thing,) = [t for t in await _rows(live_registry, "templates") if t["value"] == "THING"]
+        assert link["source_templates"] == [{"lookup_value": "THING", "resolved": thing["template_id"]}]
+        assert link["target_templates"] == [{"lookup_value": f"{OTHER}:ROLE", "resolved": "LIVE-ROLE"}]
+        assert not [e.message for e in events if e.phase == "warning" and "ROLE" in e.message]

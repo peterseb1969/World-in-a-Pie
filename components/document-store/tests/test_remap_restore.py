@@ -406,3 +406,54 @@ class TestIdentityHashes:
 
         assert plan.rows["documents"][0]["identity_hash"] == "as-archived"
         assert plan.rehashed_documents == 0
+
+
+class TestTermReferenceIdentity:
+    """CASE-1108: a term-reference identity field hashes the referent the
+    stored resolution names. The remapper left ``references[].resolved``
+    on the source's term id, and that copy is the one the hash reads, so a
+    fresh restore wrote the old hash and the next write of the same data
+    made a second document."""
+
+    @pytest.mark.asyncio
+    async def test_the_rehash_reads_the_minted_term(self):
+        from wip_archive.identity import compute_composite_key_hash, resolved_identity_values
+
+        fields = [{"name": "kind", "type": "reference", "reference_type": "term",
+                   "target_terminologies": ["KIND"]}]
+        planner = RemapRestore(
+            _provisioner(), IDRemapper(),
+            identity_fields_by_template={"THING": ["kind"]},
+            template_fields_by_template={"THING": fields},
+        )
+
+        def feed(term_id):
+            refs = [{"field_path": "kind", "reference_type": "term", "lookup_value": "foo",
+                     "resolved": {"term_id": term_id, "terminology_id": "OLD-LOV"}}]
+            return refs, compute_composite_key_hash(
+                resolved_identity_values({"kind": "foo"}, ["kind"], fields, [], refs))
+
+        refs, archived_hash = feed("OLD-TERM")
+        plan = await planner.plan(
+            {
+                "terminologies": [{"terminology_id": "OLD-LOV", "value": "KIND"}],
+                "terms": [{"term_id": "OLD-TERM", "terminology_id": "OLD-LOV", "value": "foo"}],
+                "templates": [{"template_id": "T", "value": "THING"}],
+                "documents": [{
+                    "document_id": "D", "template_id": "T", "template_value": "THING",
+                    "identity_hash": archived_hash, "data": {"kind": "foo"},
+                    "term_references": [{"field_path": "kind", "term_id": "OLD-TERM"}],
+                    "references": refs,
+                }],
+            },
+            NAMESPACE,
+        )
+
+        new_term = plan.id_map["terms"]["OLD-TERM"]
+        new_lov = plan.id_map["terminologies"]["OLD-LOV"]
+        (doc,) = plan.rows["documents"]
+        assert doc["references"][0]["resolved"] == {"term_id": new_term, "terminology_id": new_lov}
+        # What a write of the same data on the new install computes.
+        _refs, written_hash = feed(new_term)
+        assert doc["identity_hash"] == written_hash != archived_hash
+        assert plan.rehashed_documents == 1

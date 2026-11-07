@@ -198,22 +198,23 @@ class IDRemapper:
         return result
 
     def remap_term(self, term: dict[str, Any]) -> dict[str, Any]:
-        """Remap the terminology a term belongs to, and its parent term.
+        """Remap the terminology a term belongs to, its parent term, and the
+        term that replaced it.
 
-        Both are load-bearing: leave ``terminology_id`` pointing at the source
+        All are load-bearing: leave ``terminology_id`` pointing at the source
         install's terminology and the imported term is orphaned; leave
-        ``parent_term_id`` at the source's term id and its hierarchy points at
-        a term this install does not have.
+        ``parent_term_id`` or ``replaced_by_term_id`` at the source's term ids
+        and its hierarchy, or its successor, is a term this install does not
+        have.
         """
         result = dict(term)
         if result.get("terminology_id"):
             result["terminology_id"] = self.terminology_map.get(
                 result["terminology_id"], result["terminology_id"]
             )
-        if result.get("parent_term_id"):
-            result["parent_term_id"] = self.term_map.get(
-                result["parent_term_id"], result["parent_term_id"]
-            )
+        for key in ("parent_term_id", "replaced_by_term_id"):
+            if result.get(key):
+                result[key] = self.term_map.get(result[key], result[key])
         return result
 
     def remap_term_relation(self, relation: dict[str, Any]) -> dict[str, Any]:
@@ -243,6 +244,8 @@ class IDRemapper:
         - term_references[].terminology_ref → terminology map
         - references[].resolved.document_id → document map
         - references[].resolved.template_id → template map
+        - references[].resolved.term_id → term map
+        - references[].resolved.terminology_id → terminology map
         - references[].resolved.identity_hash → pass through
         - file_references[].file_id → file map
         """
@@ -311,7 +314,8 @@ class IDRemapper:
         lookup = result.get("lookup_value")
         if isinstance(lookup, str):
             result["lookup_value"] = self._remap_reference_string(
-                lookup, (self.document_map, self.template_map, self.term_map)
+                lookup,
+                (self.document_map, self.template_map, self.term_map, self.terminology_map),
             )
         resolved = result.get("resolved")
         if resolved:
@@ -332,6 +336,17 @@ class IDRemapper:
                     resolved["namespace"] = self.namespace_map.get(
                         resolved["namespace"], resolved["namespace"]
                     )
+            # A term or terminology reference's referent. These ids feed the
+            # identity hash of a term- or terminology-reference identity field
+            # (references are applied after term_references), so one left on
+            # the source's id makes the next write of the same data a second
+            # document.
+            if resolved.get("term_id"):
+                resolved["term_id"] = self.term_map.get(resolved["term_id"], resolved["term_id"])
+            if resolved.get("terminology_id"):
+                resolved["terminology_id"] = self.terminology_map.get(
+                    resolved["terminology_id"], resolved["terminology_id"]
+                )
             # identity_hash passes through unchanged
             result["resolved"] = resolved
         return result
@@ -346,7 +361,8 @@ class IDRemapper:
         return result
 
     def _remap_data_ids(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Remap any known IDs (file, document, template, term) in data values.
+        """Remap any known IDs (file, document, template, term, terminology) in
+        data values.
 
         The walk is recursive on purpose: a reference id can sit at any depth
         of the payload — an array-of-references field, an object field, an
@@ -357,7 +373,10 @@ class IDRemapper:
         strings ('<ns>:<value>') whose namespace half is being remapped are
         rewritten as a whole — see _remap_reference_string.
         """
-        all_maps = (self.file_map, self.document_map, self.template_map, self.term_map)
+        all_maps = (
+            self.file_map, self.document_map, self.template_map, self.term_map,
+            self.terminology_map,
+        )
 
         def walk(value: Any) -> Any:
             if isinstance(value, str):
