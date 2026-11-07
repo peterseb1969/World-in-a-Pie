@@ -1438,16 +1438,22 @@ class TestRemapRestore:
 
     @pytest.mark.asyncio
     async def test_a_dry_run_does_not_create_the_namespace(self, mongo):
-        # Creating it is a write. A preview must not leave one behind.
+        # Creating it is a write. A preview must not leave one behind — but it
+        # does ask the Registry, with its dry_run flag, so it meets the same
+        # refusals as the real run (CASE-1096).
         await _clear_remap_target(mongo)
         created: list[str] = []
+        asked: list[str] = []
         registry = _FakeRegistry()
         http = MagicMock()
         http.post = registry.post
 
         async def _put(url, **kwargs):
-            created.append(url)
-            return MagicMock(status_code=200, text="ok")
+            if (kwargs.get("params") or {}).get("dry_run") == "true":
+                asked.append(url)
+            else:
+                created.append(url)
+            return MagicMock(status_code=200, text="ok", json=MagicMock(return_value={}))
 
         http.put = _put
         http.__aenter__ = AsyncMock(return_value=http)
@@ -1463,6 +1469,7 @@ class TestRemapRestore:
             await engine.run_remap(MagicMock(), REMAP_TARGET, dry_run=True)
 
         assert created == []
+        assert [u.rsplit("/", 1)[-1] for u in asked] == [REMAP_TARGET]
         await _clear_remap_target(mongo)
 
     @pytest.mark.asyncio

@@ -1324,6 +1324,14 @@ class DirectRestoreEngine:
                         for src, tgt in targets
                     },
                 }
+                # The one step a restore takes as its requester: asked with
+                # the Registry's dry_run, so its refusals are the real ones.
+                for src, tgt in targets:
+                    entry = entry_by_prefix.get(src)
+                    await self._upsert_namespace(
+                        tgt, entry.namespace_config if entry else manifest.namespace_config,
+                        dry_run=True,
+                    )
                 self._dry_run_report(
                     reader, targets, entry_by_prefix, restore_order,
                     skip_documents=skip_documents, skip_files=skip_files,
@@ -1597,31 +1605,30 @@ class DirectRestoreEngine:
 
             # The namespaces have to exist before anything is provisioned: the
             # Registry mints ids per the TARGET namespace's id_config, and
-            # refuses outright for a namespace it does not know. Creating them
-            # is a write, so a dry run skips it — which is exactly why the dry
-            # run cannot catch this ordering: its stand-in provisioner never
-            # asks the Registry anything. For several sources collapsing into
-            # one target, the FIRST source's config wins (archive order);
-            # allowed_external_refs naming other archive sources are rewritten
-            # through the mapping, names outside the archive are kept.
-            if not dry_run:
-                for target in targets:
-                    first_src = next(s for s, t in mapping.items() if t == target)
-                    entry = entries.get(first_src)
-                    ns_config = (
-                        entry.namespace_config if entry
-                        else manifest.namespace_config
-                    )
-                    ns_config = self._rewrite_ns_config_refs(ns_config, mapping)
-                    # Fresh means fresh: a remap re-mints every id, so the target
-                    # must not inherit the source's id_config. A prefixed source
-                    # scheme would otherwise re-mint the source's exact ids and
-                    # collide with the live original on the global entry_id index
-                    # (CASE-784). preserve_id_config=False defaults the target to
-                    # UUID7 (or keeps a pre-created target's own config).
-                    await self._upsert_namespace(
-                        target, ns_config, preserve_id_config=False
-                    )
+            # refuses outright for a namespace it does not know. A dry run asks
+            # the Registry the same question with its dry_run flag, so it meets
+            # the same refusals and creates nothing. For several sources
+            # collapsing into one target, the FIRST source's config wins
+            # (archive order); allowed_external_refs naming other archive
+            # sources are rewritten through the mapping, names outside the
+            # archive are kept.
+            for target in targets:
+                first_src = next(s for s, t in mapping.items() if t == target)
+                entry = entries.get(first_src)
+                ns_config = (
+                    entry.namespace_config if entry
+                    else manifest.namespace_config
+                )
+                ns_config = self._rewrite_ns_config_refs(ns_config, mapping)
+                # Fresh means fresh: a remap re-mints every id, so the target
+                # must not inherit the source's id_config. A prefixed source
+                # scheme would otherwise re-mint the source's exact ids and
+                # collide with the live original on the global entry_id index
+                # (CASE-784). preserve_id_config=False defaults the target to
+                # UUID7 (or keeps a pre-created target's own config).
+                await self._upsert_namespace(
+                    target, ns_config, preserve_id_config=False, dry_run=dry_run,
+                )
 
             # The remapper gets the namespace mapping so reference snapshots
             # (resolved.namespace) follow their entities — after a fresh
@@ -5123,6 +5130,7 @@ class DirectRestoreEngine:
         ns_config: NamespaceConfig | None,
         *,
         preserve_id_config: bool = True,
+        dry_run: bool = False,
     ) -> None:
         """Create or update the target namespace as the requester.
 
@@ -5143,11 +5151,18 @@ class DirectRestoreEngine:
         index, and stamp the copy's ids with the source's prefix. With it False
         the fresh target defaults to UUID7, or keeps its own config if the
         operator pre-created the target namespace.
+
+        ``dry_run`` asks the Registry the same question with its dry_run
+        flag: every refusal the real upsert would meet, and nothing written.
+        This step is the one a restore takes as its requester, so a dry run
+        that skipped it passed requests the real restore refused.
         """
         body = self._namespace_body(ns_config, preserve_id_config=preserve_id_config)
+        params = {"dry_run": "true"} if dry_run else None
         if self._requester.platform_admin:
             await self._admin_upsert_namespace(
-                namespace, body, self._requester.api_key or self._registry_api_key
+                namespace, body, self._requester.api_key or self._registry_api_key,
+                dry_run=dry_run,
             )
             return
 
@@ -5170,7 +5185,7 @@ class DirectRestoreEngine:
                         "have a platform admin create the namespace first."
                     )
                 create = {"description": body["description"]} if "description" in body else {}
-                resp = await client.put(url, json=create, headers={
+                resp = await client.put(url, json=create, params=params, headers={
                     "X-API-Key": self._requester.api_key,
                     "Content-Type": "application/json",
                 })
@@ -5180,7 +5195,8 @@ class DirectRestoreEngine:
                         f"{resp.status_code} — {resp.text}"
                     )
                 live = resp.json()
-                logger.info("Created namespace %s as the restore's requester", namespace)
+                if not dry_run:
+                    logger.info("Created namespace %s as the restore's requester", namespace)
             else:
                 raise RestoreEngineError(
                     f"Failed to read namespace '{namespace}': {resp.status_code} — {resp.text}"
@@ -5225,7 +5241,7 @@ class DirectRestoreEngine:
         return body
 
     async def _admin_upsert_namespace(
-        self, namespace: str, body: dict[str, Any], api_key: str
+        self, namespace: str, body: dict[str, Any], api_key: str, *, dry_run: bool = False,
     ) -> None:
         """A platform admin's upsert: the archive's settings, as sent."""
         import httpx
@@ -5235,8 +5251,9 @@ class DirectRestoreEngine:
             "X-API-Key": api_key,
             "Content-Type": "application/json",
         }
+        params = {"dry_run": "true"} if dry_run else None
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.put(url, json=body, headers=headers)
+            resp = await client.put(url, json=body, params=params, headers=headers)
             if (
                 resp.status_code == 400
                 and "confirm_enable_deletion" in resp.text
@@ -5255,13 +5272,14 @@ class DirectRestoreEngine:
                 )
                 logger.warning(warning)
                 self._emit("phase_namespace", f"WARNING: {warning}")
-                resp = await client.put(url, json=body, headers=headers)
+                resp = await client.put(url, json=body, params=params, headers=headers)
             if resp.status_code not in (200, 201):
                 raise RestoreEngineError(
                     f"Failed to upsert namespace '{namespace}': "
                     f"{resp.status_code} — {resp.text}"
                 )
-        logger.info("Upserted namespace %s from manifest config", namespace)
+        if not dry_run:
+            logger.info("Upserted namespace %s from manifest config", namespace)
 
     async def _insert_batch(
         self,

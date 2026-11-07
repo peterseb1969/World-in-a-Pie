@@ -821,6 +821,20 @@ class TestUpsertNamespace:
                 await engine._upsert_namespace("kb", manifest.namespace_config)
 
 
+@contextlib.contextmanager
+def _dry_registry(put_status: int = 200, put_body: dict | None = None):
+    """The Registry as a dry-run namespace upsert meets it: GET says the
+    namespace is missing, PUT answers with put_status."""
+    with patch("httpx.AsyncClient") as cls:
+        client = MagicMock()
+        client.get = AsyncMock(return_value=_response(404))
+        client.put = AsyncMock(return_value=_response(put_status, put_body or {"prefix": "kb"}))
+        client.__aenter__ = AsyncMock(return_value=client)
+        client.__aexit__ = AsyncMock(return_value=None)
+        cls.return_value = client
+        yield client
+
+
 def _response(status: int, body: dict | None = None) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status
@@ -900,6 +914,40 @@ class TestUpsertNamespaceAsRequester:
         with self._registry(get=_response(404), put=refused), \
                 pytest.raises(RestoreEngineError, match="Failed to create namespace 'aa-x': 403"):
             await engine._upsert_namespace("aa-x", self.CONFIG)
+
+    @pytest.mark.asyncio
+    async def test_a_dry_run_asks_the_registry_the_same_question(self):
+        engine = self._engine(RestoreRequester("holder-key", platform_admin=False), [])
+        with self._registry(get=_response(404), put=_response(200, self.LIVE)) as reg:
+            await engine._upsert_namespace("aa-x", self.CONFIG, dry_run=True)
+        put = reg.put.await_args.kwargs
+        assert put["params"] == {"dry_run": "true"}
+        assert put["headers"]["X-API-Key"] == "holder-key"
+
+    @pytest.mark.asyncio
+    async def test_a_dry_run_meets_the_real_refusal(self):
+        """The case the dry run used to pass: a requester the Registry will
+        not let create the namespace."""
+        engine = self._engine(RestoreRequester("plain-key", platform_admin=False), [])
+        refused = _response(403, {"detail": "requires a platform admin key"})
+        with self._registry(get=_response(404), put=refused), \
+                pytest.raises(RestoreEngineError, match="Failed to create namespace 'aa-x': 403"):
+            await engine._upsert_namespace("aa-x", self.CONFIG, dry_run=True)
+
+    @pytest.mark.asyncio
+    async def test_a_dry_run_by_a_login_is_refused_like_the_real_one(self):
+        engine = self._engine(RestoreRequester(None, platform_admin=False), [])
+        with self._registry(get=_response(404)) as reg, \
+                pytest.raises(RestoreEngineError, match="requester's own API key"):
+            await engine._upsert_namespace("aa-x", self.CONFIG, dry_run=True)
+        reg.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_admin_dry_run_sends_the_flag(self):
+        engine = self._engine(RestoreRequester("admin-key", platform_admin=True), [])
+        with self._registry(put=_response(200, self.LIVE)) as reg:
+            await engine._upsert_namespace("aa-x", self.CONFIG, dry_run=True)
+        assert reg.put.await_args.kwargs["params"] == {"dry_run": "true"}
 
     @pytest.mark.asyncio
     async def test_a_login_cannot_create_a_namespace(self):
@@ -1213,14 +1261,16 @@ class TestRunRestoreDryRun:
         with patch(
             "document_store.services.backup_engine.ArchiveReader",
             return_value=reader,
-        ), patch("httpx.AsyncClient") as mock_httpx_cls:
+        ), _dry_registry() as registry:
             await engine.run_restore(tmp_path / "kb.zip", "kb", dry_run=True)
 
-        # No namespace upsert (httpx never even instantiated), no inserts on
-        # any collection. The only entities read are the ones the old-format
-        # check needs (templates and Registry entries): a dry run refuses what
-        # the real run would.
-        assert not mock_httpx_cls.called
+        # The namespace upsert is asked with the Registry's dry_run flag, so
+        # its refusals are the real ones and nothing is created (CASE-1096);
+        # no inserts on any collection. The only entities read are the ones
+        # the old-format check needs (templates and Registry entries): a dry
+        # run refuses what the real run would.
+        assert registry.put.await_count == 1
+        assert registry.put.await_args.kwargs["params"] == {"dry_run": "true"}
         read_types = {c.args[0] for c in reader.read_entities.call_args_list}
         assert read_types <= {"templates", "registry_entries"}
         for coll in collections.values():
@@ -1260,7 +1310,7 @@ class TestRunRestoreDryRun:
         with patch(
             "document_store.services.backup_engine.ArchiveReader",
             return_value=self._reader(),
-        ):
+        ), _dry_registry():
             await engine.run_restore(
                 tmp_path / "kb.zip", "kb",
                 dry_run=True, skip_documents=True, skip_files=True,

@@ -358,6 +358,16 @@ async def upsert_namespace(
     prefix: str,
     request: NamespaceUpdate,
     identity: UserIdentity = Depends(require_api_key),
+    dry_run: bool = Query(
+        False,
+        description=(
+            "Run every check the upsert makes — who may create or change the "
+            "namespace, the reservation's settings, the deletion and inbound "
+            "guards, the id prefix rule and its availability — and answer "
+            "with the namespace as it would be stored, without writing "
+            "anything. A refusal is the same refusal the real call gives."
+        ),
+    ),
 ) -> NamespaceResponse:
     """
     Upsert a namespace's configuration.
@@ -388,6 +398,9 @@ async def upsert_namespace(
     flipping an existing namespace from `retain` to `full` requires
     `confirm_enable_deletion=true` in the body. The `wip` namespace
     cannot be closed to inbound references either.
+
+    With `dry_run=true` nothing is written: the answer is the namespace as
+    the call would store it, and every refusal is the real call's.
     """
     ns = await Namespace.find_one({"prefix": prefix})
     update_data = request.model_dump(exclude_unset=True)
@@ -464,6 +477,8 @@ async def upsert_namespace(
                 deletion_mode=settings["deletion_mode"],
                 created_by=actor,
             )
+            if dry_run:
+                return namespace_to_response(ns)
             await ns.create()
         response = namespace_to_response(ns)
         if is_admin:
@@ -496,6 +511,8 @@ async def upsert_namespace(
 
     ns.updated_at = datetime.now(UTC)
     ns.updated_by = actor
+    if dry_run:
+        return namespace_to_response(ns)
     with _id_prefix_errors(prefix):
         await ns.save()
 

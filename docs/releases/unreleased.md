@@ -7,6 +7,17 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A restore's dry run makes the same namespace check as the real run; `PUT /namespaces/{prefix}?dry_run=true`
+
+A restore creates or updates its target namespace as the requester, and the
+Registry decides who may (a reservation's holder with its settings, a platform
+admin, nobody else). The dry run skipped that step, so it passed requests the
+real restore then refused, after which a multi-namespace restore could already
+have written its first namespace. Plain and fresh dry runs now ask the
+Registry the same question with the upsert's new `dry_run` flag, which makes
+every check the real call makes (permission, reservation settings, deletion
+and inbound guards, id prefix rule and availability) and writes nothing.
+
 ### A fresh restore whose activation fails says what is live
 
 A fresh restore makes its restored identities resolvable in one activation
