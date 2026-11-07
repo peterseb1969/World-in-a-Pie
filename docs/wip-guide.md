@@ -204,7 +204,7 @@ Networking is where most operator failures happen. The three callouts below prev
 > | Services' `WIP_AUTH_JWT_JWKS_URI` | Dex's internal address, because services fetch signing keys server-to-server | `http://wip-dex:5556/dex/keys` |
 > | Services' `WIP_AUTH_JWT_AUDIENCE` | every Dex client the deployment registers: the gateway's, plus each app that declares its own | `wip-gateway,dnd` |
 >
-> Dex sets a token's `aud` to the client that requested it. That is why the audience is a list: a token minted for an app's own client is as valid as the gateway's. A key endpoint that can't be reached refuses the request with 503; a token with the wrong issuer or audience gets 401.
+> Dex sets a token's `aud` to the client that requested it. That is why the audience is a list: a token minted for an app's own client is as valid as the gateway's. A key endpoint that can't be reached refuses the request with 503; a token with the wrong issuer or audience gets 401. Each service re-reads the signing keys every 5 minutes and keeps using its last copy while Dex is unreachable, but for at most an hour: after that, tokens are refused with 503 until Dex answers again. A token naming a key the copy lacks prompts a re-read, at most one fetch every 10 seconds.
 >
 > **To change the hostname**, re-install with the new `--hostname`. The issuer is also baked into the TLS certificate and every registered redirect URI, and tokens minted under the old issuer stop validating.
 

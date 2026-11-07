@@ -50,6 +50,23 @@ source archives.
   bootstrap holds v1) is refused. A proposal is in
   `docs/design/merge-template-version-alignment.md`.
 
+### Dex's signing keys are trusted for at most an hour without a re-read
+
+Each service's copy of Dex's signing keys (JWKS) used to be kept with no
+limit while Dex was unreachable, so a key Dex had retired kept validating
+tokens for as long as the outage lasted.
+
+- **Refresh and limit:** keys are re-read every 5 minutes. A copy that could
+  not be re-read for **one hour** is no longer used: bearer tokens are refused
+  with 503 until Dex answers again.
+- **Attempt limit:** fetches are at most one every 10 seconds, whether
+  prompted by a failure, the schedule, or a token naming an unknown key id.
+  Before, an unknown `kid`, which is read before any signature is checked,
+  made every request fetch, and every request retried while Dex was down.
+- **Bad responses:** a response that is not a JWKS document (not JSON, the
+  wrong shape, no keys) is a failed fetch. It answers 503 instead of 500,
+  and it no longer wipes the last good copy.
+
 ### Merges from another install compare references by what they name; `wip-archive` 0.27.0
 
 - **The definitions check** compared a definition's references as raw ids: a

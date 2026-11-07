@@ -101,8 +101,8 @@ class TestJWKSCacheFetchKeys:
 
     @pytest.mark.asyncio
     async def test_fetch_keys_ignores_keys_without_kid(self):
-        """Keys without a kid field should be skipped."""
-        jwks = {"keys": [{"kty": "RSA", "n": "no-kid-key"}]}
+        """Keys without a kid field are skipped; the others are kept."""
+        jwks = {"keys": [{"kty": "RSA", "n": "no-kid-key"}, *SAMPLE_JWKS["keys"]]}
         cache = JWKSCache("https://auth.example.com/.well-known/jwks.json")
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=_mock_response(jwks))
@@ -110,7 +110,20 @@ class TestJWKSCacheFetchKeys:
 
         await cache.fetch_keys(force=True)
 
-        assert len(cache._keys) == 0
+        assert set(cache._keys) == {k["kid"] for k in SAMPLE_JWKS["keys"]}
+
+    @pytest.mark.asyncio
+    async def test_a_document_with_no_usable_key_is_a_failed_fetch(self):
+        """A JWKS document holding no key with a kid is not a set of keys:
+        with no earlier copy, validation cannot proceed (503 upstream)."""
+        jwks = {"keys": [{"kty": "RSA", "n": "no-kid-key"}]}
+        cache = JWKSCache("https://auth.example.com/.well-known/jwks.json")
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=_mock_response(jwks))
+        cache._client = mock_client
+
+        with pytest.raises(RuntimeError, match="holds no keys"):
+            await cache.fetch_keys(force=True)
 
 
 class TestJWKSCacheTTL:
@@ -144,8 +157,8 @@ class TestJWKSCacheTTL:
         await cache.fetch_keys(force=True)
         assert mock_client.get.await_count == 1
 
-        # Simulate TTL expiry
-        cache._last_fetch = time.time() - 120
+        # Simulate TTL expiry (and an attempt long enough ago)
+        cache._last_fetch = cache._last_attempt = time.monotonic() - 120
 
         # Should re-fetch
         await cache.fetch_keys()
@@ -170,13 +183,28 @@ class TestJWKSCacheRefreshOnKeyMiss:
         )
         cache._client = mock_client
 
-        # Requesting an unknown key should trigger an initial fetch + forced refresh
+        await cache.fetch_keys(force=True)
+        cache._last_attempt = time.monotonic() - 30  # past the attempt limit
+
+        # An unknown key prompts one re-read, which finds the rotated key
         result = await cache.get_key("key-3")
 
         assert result is not None
         assert result["kid"] == "key-3"
-        # First call: normal fetch_keys(); second call: force=True refresh
         assert mock_client.get.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_unknown_key_ids_cannot_force_a_fetch_per_request(self):
+        """The kid is read before any signature is checked, so a caller could
+        name random ones: re-reads stay within the attempt limit."""
+        cache = JWKSCache("https://auth.example.com/.well-known/jwks.json")
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=_mock_response(SAMPLE_JWKS))
+        cache._client = mock_client
+
+        for i in range(20):
+            assert await cache.get_key(f"random-{i}") is None
+        assert mock_client.get.await_count == 1
 
     @pytest.mark.asyncio
     async def test_returns_none_if_key_still_missing_after_refresh(self):
@@ -206,8 +234,8 @@ class TestJWKSCacheFallbackOnFailure:
         await cache.fetch_keys(force=True)
         assert "key-1" in cache._keys
 
-        # Simulate TTL expiry
-        cache._last_fetch = time.time() - 120
+        # Simulate TTL expiry, still well inside the maximum key age
+        cache._last_fetch = cache._last_attempt = time.monotonic() - 120
 
         # Second fetch fails
         mock_client.get = AsyncMock(
@@ -217,6 +245,63 @@ class TestJWKSCacheFallbackOnFailure:
         # Should not raise, should keep stale keys
         await cache.fetch_keys()
         assert "key-1" in cache._keys
+        assert mock_client.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_copy_past_the_maximum_age_is_not_used(self):
+        """CASE-1091: while the provider is unreachable, a copy older than
+        max_key_age is refused (RuntimeError, answered 503), not served."""
+        cache = JWKSCache("https://auth.example.com/.well-known/jwks.json", cache_ttl=60, max_key_age=3600)
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=_mock_response(SAMPLE_JWKS))
+        cache._client = mock_client
+        await cache.fetch_keys(force=True)
+
+        cache._last_fetch = cache._last_attempt = time.monotonic() - 3700
+        mock_client.get = AsyncMock(side_effect=httpx.HTTPError("connection failed"))
+        with pytest.raises(RuntimeError, match="could not be re-read"):
+            await cache.get_key("key-1")
+        # Refused again on the next request too, without another fetch.
+        with pytest.raises(RuntimeError):
+            await cache.get_key("key-1")
+        assert mock_client.get.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_copy_is_used_again_once_the_provider_answers(self):
+        cache = JWKSCache("https://auth.example.com/.well-known/jwks.json", cache_ttl=60, max_key_age=3600)
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=_mock_response(SAMPLE_JWKS))
+        cache._client = mock_client
+        await cache.fetch_keys(force=True)
+        cache._last_fetch = cache._last_attempt = time.monotonic() - 3700
+        assert (await cache.get_key("key-1"))["kid"] == "key-1"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [
+        pytest.param(ValueError("Expecting value"), id="not-json"),
+        pytest.param(["not", "a", "mapping"], id="a-list"),
+        pytest.param({"keys": "nope"}, id="keys-not-a-list"),
+        pytest.param({"keys": []}, id="no-keys"),
+    ])
+    async def test_a_malformed_response_keeps_the_last_good_copy(self, body):
+        """A bad answer is a failed fetch: never a 500, never a wiped copy."""
+        cache = JWKSCache("https://auth.example.com/.well-known/jwks.json", cache_ttl=60)
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=_mock_response(SAMPLE_JWKS))
+        cache._client = mock_client
+        await cache.fetch_keys(force=True)
+        cache._last_fetch = cache._last_attempt = time.monotonic() - 120
+
+        bad = MagicMock()
+        bad.raise_for_status = MagicMock()
+        if isinstance(body, Exception):
+            bad.json = MagicMock(side_effect=body)
+        else:
+            bad.json = MagicMock(return_value=body)
+        mock_client.get = AsyncMock(return_value=bad)
+
+        assert (await cache.get_key("key-1"))["kid"] == "key-1"
+        assert mock_client.get.await_count == 1
 
     @pytest.mark.asyncio
     async def test_raises_if_no_cache_and_fetch_fails(self):
@@ -472,7 +557,7 @@ class TestOIDCProviderAuthenticate:
         provider = OIDCProvider(issuer_url="https://auth.example.com")
         # Pre-populate JWKS cache to avoid real HTTP call
         provider._jwks_cache._keys = {"key-1": SAMPLE_JWKS["keys"][0]}
-        provider._jwks_cache._last_fetch = time.time()
+        provider._jwks_cache._last_fetch = time.monotonic()
 
         request = make_request({"Authorization": "Bearer fake.jwt.token"})
         identity = await provider.authenticate(request)
@@ -498,7 +583,7 @@ class TestOIDCProviderAuthenticate:
 
         provider = OIDCProvider(issuer_url="https://auth.example.com")
         provider._jwks_cache._keys = {"key-1": SAMPLE_JWKS["keys"][0]}
-        provider._jwks_cache._last_fetch = time.time()
+        provider._jwks_cache._last_fetch = time.monotonic()
 
         request = make_request({"Authorization": "Bearer expired.jwt.token"})
 
@@ -523,7 +608,7 @@ class TestOIDCProviderAuthenticate:
 
         provider = OIDCProvider(issuer_url="https://auth.example.com")
         provider._jwks_cache._keys = {"key-1": SAMPLE_JWKS["keys"][0]}
-        provider._jwks_cache._last_fetch = time.time()
+        provider._jwks_cache._last_fetch = time.monotonic()
 
         request = make_request({"Authorization": "Bearer bad-issuer.jwt.token"})
 
@@ -547,7 +632,7 @@ class TestOIDCProviderAuthenticate:
 
         provider = OIDCProvider(issuer_url="https://auth.example.com")
         provider._jwks_cache._keys = {"key-1": SAMPLE_JWKS["keys"][0]}
-        provider._jwks_cache._last_fetch = time.time()
+        provider._jwks_cache._last_fetch = time.monotonic()
 
         request = make_request({"Authorization": "Bearer bad-aud.jwt.token"})
 
@@ -621,7 +706,7 @@ class TestOIDCProviderAuthenticate:
 
         provider = OIDCProvider(issuer_url="https://auth.example.com")
         provider._jwks_cache._keys = {"key-1": SAMPLE_JWKS["keys"][0]}
-        provider._jwks_cache._last_fetch = time.time()
+        provider._jwks_cache._last_fetch = time.monotonic()
 
         request = make_request({"Authorization": "Bearer bad.jwt.token"})
 

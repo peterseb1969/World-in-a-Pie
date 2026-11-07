@@ -1,5 +1,6 @@
 """OIDC/JWT authentication provider."""
 
+import asyncio
 import logging
 import time
 from typing import Any
@@ -14,25 +15,58 @@ from ..models import UserIdentity
 logger = logging.getLogger(__name__)
 
 
-class JWKSCache:
-    """Cache for JWKS (JSON Web Key Set) keys.
+# How often the signing keys are re-read from the identity provider.
+_REFRESH_SECONDS = 300.0
+# How long a copy may be used without a successful re-read. Past this the copy
+# is not trusted (a key the provider retired, perhaps because it leaked, would
+# otherwise keep validating tokens for as long as the provider is unreachable),
+# and token validation answers 503 until the provider answers again.
+_MAX_KEY_AGE_SECONDS = 3600.0
+# The least time between two fetch attempts, whatever prompted them: a failed
+# attempt, the refresh interval, or a token naming a key id the copy lacks.
+# The last is reachable before any signature is checked, so without this any
+# caller could make every service fetch on every request.
+_MIN_ATTEMPT_INTERVAL_SECONDS = 10.0
 
-    Fetches and caches public keys from an OIDC provider's JWKS endpoint.
-    Keys are refreshed when expired or when validation fails with cached keys.
+
+class JWKSCache:
+    """The identity provider's signing keys (JWKS), re-read on a schedule.
+
+    Keys are re-read every ``refresh_seconds``, and on demand when a token
+    names a key id the copy does not have (the provider rotated its keys), but
+    never more often than ``min_attempt_interval`` apart. A copy that could not
+    be re-read for ``max_key_age`` is no longer used: ``get_key`` raises
+    ``RuntimeError``, which the provider answers with 503. A failed or
+    malformed response never replaces the last good copy.
     """
 
-    def __init__(self, jwks_url: str, cache_ttl: int = 3600):
+    def __init__(
+        self,
+        jwks_url: str,
+        cache_ttl: float = _REFRESH_SECONDS,
+        *,
+        max_key_age: float = _MAX_KEY_AGE_SECONDS,
+        min_attempt_interval: float = _MIN_ATTEMPT_INTERVAL_SECONDS,
+    ):
         """Initialize the JWKS cache.
 
         Args:
             jwks_url: URL of the JWKS endpoint
-            cache_ttl: Cache time-to-live in seconds (default 1 hour)
+            cache_ttl: how often the keys are re-read, in seconds
+            max_key_age: how long a copy may be used without a successful
+                re-read, in seconds (at least ``cache_ttl``)
+            min_attempt_interval: least time between two fetch attempts
         """
         self.jwks_url = jwks_url
         self.cache_ttl = cache_ttl
+        self.max_key_age = max(max_key_age, cache_ttl)
+        self.min_attempt_interval = min_attempt_interval
         self._keys: dict[str, dict] = {}
-        self._last_fetch: float = 0
+        self._last_fetch: float | None = None  # last success (monotonic)
+        self._last_attempt: float | None = None
+        self._last_error: str | None = None
         self._client: httpx.AsyncClient | None = None
+        self._lock: asyncio.Lock | None = None
 
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Get or create the HTTP client."""
@@ -46,53 +80,86 @@ class JWKSCache:
             await self._client.aclose()
             self._client = None
 
+    def _age(self, now: float) -> float | None:
+        return None if self._last_fetch is None else now - self._last_fetch
+
+    def _may_attempt(self, now: float) -> bool:
+        return self._last_attempt is None or now - self._last_attempt >= self.min_attempt_interval
+
     async def fetch_keys(self, force: bool = False) -> None:
-        """Fetch JWKS from the endpoint.
+        """Re-read the keys if they are due (or ``force``), within the attempt
+        limit, then check the copy may still be used.
 
-        Args:
-            force: Force refresh even if cache is valid
+        Raises:
+            RuntimeError: no usable copy — never fetched, or older than
+                ``max_key_age`` and the provider cannot be read.
         """
-        now = time.time()
+        now = time.monotonic()
+        age = self._age(now)
+        due = force or age is None or age >= self.cache_ttl
+        if due and self._may_attempt(now):
+            if self._lock is None:
+                self._lock = asyncio.Lock()
+            async with self._lock:
+                # Another request may have fetched while this one waited.
+                now = time.monotonic()
+                if self._may_attempt(now):
+                    await self._attempt(now)
+        self._check_usable(time.monotonic())
 
-        # Check if cache is still valid
-        if not force and self._keys and (now - self._last_fetch) < self.cache_ttl:
-            return
-
+    async def _attempt(self, now: float) -> None:
+        self._last_attempt = now
         client = await self._ensure_client()
         try:
             response = await client.get(self.jwks_url)
             response.raise_for_status()
             jwks = response.json()
+            if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
+                raise ValueError("the response is not a JWKS document")
+            keys = {
+                key["kid"]: key
+                for key in jwks["keys"]
+                if isinstance(key, dict) and isinstance(key.get("kid"), str) and key["kid"]
+            }
+            if not keys:
+                raise ValueError("the JWKS document holds no keys")
+        except (httpx.HTTPError, ValueError) as e:
+            # The last good copy stays; whether it may still be used is
+            # _check_usable's call.
+            self._last_error = str(e) or type(e).__name__
+            logger.warning("JWKS fetch from %s failed: %s", self.jwks_url, self._last_error)
+            return
+        self._keys = keys
+        self._last_fetch = now
+        self._last_error = None
 
-            # Index keys by kid (key ID)
-            self._keys = {}
-            for key in jwks.get("keys", []):
-                if kid := key.get("kid"):
-                    self._keys[kid] = key
-
-            self._last_fetch = now
-
-        except httpx.HTTPError as e:
-            # If we have cached keys, keep using them
-            if self._keys:
-                return
-            raise RuntimeError(f"Failed to fetch JWKS from {self.jwks_url}: {e}") from e
+    def _check_usable(self, now: float) -> None:
+        age = self._age(now)
+        if age is None:
+            raise RuntimeError(
+                f"Failed to fetch JWKS from {self.jwks_url}: {self._last_error or 'not fetched yet'}"
+            )
+        if age > self.max_key_age:
+            raise RuntimeError(
+                f"JWKS from {self.jwks_url} could not be re-read for {age:.0f}s "
+                f"(limit {self.max_key_age:.0f}s): {self._last_error or 'no answer'}"
+            )
 
     async def get_key(self, kid: str) -> dict | None:
         """Get a public key by ID.
 
-        Args:
-            kid: The key ID from the JWT header
+        A key id the copy lacks prompts one re-read (the provider may have
+        rotated its keys), within the attempt limit.
 
         Returns:
             The JWK dict or None if not found
+
+        Raises:
+            RuntimeError: the copy cannot be used (see ``fetch_keys``)
         """
         await self.fetch_keys()
-
         if kid in self._keys:
             return self._keys[kid]
-
-        # Key not found - try refreshing in case keys were rotated
         await self.fetch_keys(force=True)
         return self._keys.get(kid)
 

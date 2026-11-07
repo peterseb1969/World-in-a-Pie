@@ -52,7 +52,7 @@ def _provider(audience: str | list[str]) -> OIDCProvider:
         issuer_url=PUBLIC_ISSUER, jwks_url=INTERNAL_KEYS, audience=audience,
     )
     provider._jwks_cache._keys = {KID: _JWK}
-    provider._jwks_cache._last_fetch = time.time()
+    provider._jwks_cache._last_fetch = time.monotonic()
     return provider
 
 
