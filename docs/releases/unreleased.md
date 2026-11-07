@@ -68,10 +68,38 @@ source archives.
   incompatibilities and the job recorded none. The failed job's `result` now
   holds all of them (`result_kind: merge_refused`), each with the target's
   and the archive's values; the message says where to look.
-- **Still refused:** templates are matched by `(value, version)`, so an
-  archive whose template history runs past the target's versions (a fresh
-  bootstrap holds v1) is refused. A proposal is in
-  `docs/design/merge-template-version-alignment.md`.
+- **Template versions that do not line up:** templates are still matched by
+  `(value, version)` by default, so an archive whose template history runs
+  past the target's versions (a fresh bootstrap holds v1) is refused. The new
+  `align_templates` option handles that case; see the next section.
+
+### `align_templates`: merging an archive from another install; `@wip/client` 0.85.0, WIP-Toolkit 0.25.8
+
+A merge option, off by default, for an archive whose template version numbers
+do not line up with the target's.
+
+- **Templates match by value.** Each archive version maps onto the target
+  version with the same schema, or else onto the target's latest active
+  version if its documents fit it: only added optional fields, and removed
+  fields the arriving documents leave empty. A type change, a newly required
+  or modified field, or a different identity, rules, usage, `versioned` or
+  edge endpoints do not fit.
+- **Documents are re-pinned** to the target version their version mapped
+  onto. A document with any version row that maps nowhere is not merged and
+  is listed on the job (`result.namespaces.<ns>.template_alignment
+  .unplaceable_documents`); reshape those with `wip-archive migrate`,
+  re-export and merge again.
+- **Archive versions no document pins** (the source's retired history) are
+  reported as history, never compared or added.
+- **Refused** for a template both sides share (a merge from the same install,
+  where versions already line up), and for a template whose identity fields,
+  usage or `versioned` differ (a different template, not a version of it).
+- **Surfaces:** both restore routes (`align_templates` form field and request
+  field), the MCP `start_restore` tool, `@wip/client` 0.85.0
+  (`startRestore(…, { align_templates })`), and
+  `wip-toolkit restore --mode merge --align-templates` (0.25.8).
+  `docs/design/merge-template-version-alignment.md` has the design and
+  Peter's decisions.
 
 ### Dex's signing keys are trusted for at most an hour without a re-read
 

@@ -1,6 +1,9 @@
 # Merge restore: aligning template versions across installs
 
-**Status:** approved by Peter, 2026-11-07 (decisions below). Implementation in progress.
+**Status:** approved by Peter, 2026-11-07 (decisions below); implemented.
+The option is on every merge surface: the restore API (both routes), the MCP
+`start_restore` tool, `@wip/client` 0.85.0 `startRestore`, and
+`wip-toolkit restore --align-templates` (WIP-Toolkit 0.25.8).
 
 ## The problem
 
@@ -68,7 +71,11 @@ templates as follows.
 
 The dry run reports the whole alignment: per template, which archive versions
 map to which target versions, which are history, and which documents cannot
-be placed.
+be placed. It is on the job's result under
+`namespaces.<ns>.template_alignment` (`templates[].versions[]` with
+`archive_version`, `target_version`, `rows`, `history`, `reason`;
+`unplaceable_documents`, capped at 200, with `unplaceable_count` and
+`unplaceable_truncated`), and on the merge's restore provenance.
 
 ## What this does not do
 

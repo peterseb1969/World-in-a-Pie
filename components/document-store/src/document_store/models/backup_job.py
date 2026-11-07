@@ -367,6 +367,18 @@ class RestoreFromJobRequest(StrictModel):
             "Merge only — add terms the target's terminology is missing."
         ),
     )
+    align_templates: bool = Field(
+        False,
+        description=(
+            "Merge only — match templates by value instead of by version "
+            "number: each archive template version maps onto the target "
+            "version whose schema can take its documents, documents are "
+            "re-pinned to it, and documents no target version can take are "
+            "listed and not merged. For an archive from another install, "
+            "whose version numbers do not line up with the target's; "
+            "refused for a template both sides share."
+        ),
+    )
     skip_documents: bool = Field(
         False, description="Skip the documents phase entirely"
     )

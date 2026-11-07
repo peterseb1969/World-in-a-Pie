@@ -121,6 +121,41 @@ class TargetWins:
 
 
 @dataclass
+class VersionAlignment:
+    """Where one archive template version lands under ``align_templates``.
+
+    ``target_version`` is None when no target version can take its documents.
+    ``removed_fields`` are fields the archive version has and the target
+    version lacks: the mapping holds only if they are empty in every arriving
+    document pinned to this version, which the engine checks once it has seen
+    the documents.
+    """
+
+    archive_version: int
+    target_version: int | None
+    reason: str
+    removed_fields: list[str] = field(default_factory=list)
+
+
+@dataclass
+class TemplateAlignment:
+    """An archive template matched to the target's template of the same value,
+    and each of its versions mapped onto a target version."""
+
+    value: str
+    archive_template_id: str
+    target_template_id: str
+    versions: dict[int, VersionAlignment] = field(default_factory=dict)
+
+    def version_map(self) -> dict[int, int]:
+        return {
+            v: a.target_version
+            for v, a in self.versions.items()
+            if a.target_version is not None
+        }
+
+
+@dataclass
 class DefinitionsPlan:
     """What pass 1 found, and what pass 2 needs from it."""
 
@@ -143,6 +178,9 @@ class DefinitionsPlan:
     unchanged: dict[str, int] = field(
         default_factory=lambda: {t: 0 for t in DEFINITION_TYPES}
     )
+    # align_templates: the archive templates matched by value, keyed by the
+    # archive's template_id.
+    alignment: dict[str, TemplateAlignment] = field(default_factory=dict)
 
     @property
     def compatible(self) -> bool:
@@ -227,11 +265,13 @@ class DefinitionsPlanner:
         *,
         add_missing: bool = False,
         extend_terminologies: bool = False,
+        align_templates: bool = False,
     ):
         self._mongo = mongo_client
         self._collection_map = collection_map
         self._add_missing = add_missing
         self._extend_terminologies = extend_terminologies
+        self._align_templates = align_templates
         self._external: IDRemapper | None = None
 
     async def plan(
@@ -254,6 +294,10 @@ class DefinitionsPlanner:
             entities = entities_by_type.get(entity_type) or []
             if not entities:
                 continue
+            if entity_type == "templates" and self._align_templates:
+                entities = await self._align(entities, namespace, plan)
+                if not entities:
+                    continue
             target_index = await self._index_target(entity_type, namespace)
             # Match the whole type before comparing any of it: a definition
             # can reference another of its own type (a template's extends or
@@ -477,6 +521,181 @@ class DefinitionsPlanner:
             return f"{entity.get('value')} (in {entity.get('terminology_id')})"
         return str(entity.get("value"))
 
+    async def _align(
+        self,
+        archive_templates: list[dict[str, Any]],
+        namespace: str,
+        plan: DefinitionsPlan,
+    ) -> list[dict[str, Any]]:
+        """align_templates: match templates by value, map versions by schema.
+
+        Returns the archive templates whose value the target does not hold;
+        those go through the per-version path as before (refused, or added
+        under add_missing). Everything else is recorded in ``plan.alignment``
+        or refused into ``plan.incompatibilities`` here.
+        """
+        db_name, coll_name = self._collection_map["templates"]
+        target_by_value: dict[str, list[dict[str, Any]]] = {}
+        async for row in self._mongo[db_name][coll_name].find({"namespace": namespace}):
+            row.pop("_id", None)
+            if row.get("value"):
+                target_by_value.setdefault(row["value"], []).append(row)
+        archive_by_value: dict[str, list[dict[str, Any]]] = {}
+        for row in archive_templates:
+            archive_by_value.setdefault(str(row.get("value")), []).append(row)
+
+        unmatched: list[dict[str, Any]] = []
+        aligned: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}
+        for value, rows in archive_by_value.items():
+            targets = target_by_value.get(value)
+            if not targets:
+                unmatched.extend(rows)
+                continue
+            archive_id = str(rows[0].get("template_id"))
+            target_id = str(targets[0].get("template_id"))
+            refusal = self._alignment_refusal(value, archive_id, target_id, rows, targets)
+            if refusal:
+                plan.incompatibilities.append(refusal)
+                continue
+            plan.mapping["templates"][archive_id] = target_id
+            plan.alignment[archive_id] = TemplateAlignment(
+                value=value, archive_template_id=archive_id, target_template_id=target_id,
+            )
+            aligned[archive_id] = (rows, targets)
+
+        # Version references between templates (extends_version, a field's
+        # template_ref_version) compare through the referenced template's
+        # alignment, so the mapping is refined until it stops changing.
+        remapper = self._remapper(plan)
+        for _ in range(len(aligned) + 1):
+            changed = False
+            for archive_id, (rows, targets) in aligned.items():
+                alignment = plan.alignment[archive_id]
+                for row in rows:
+                    version = int(row.get("version") or 1)
+                    result = self._align_version(row, targets, remapper, plan)
+                    if alignment.versions.get(version) != result:
+                        alignment.versions[version] = result
+                        changed = True
+            if not changed:
+                break
+        for alignment in plan.alignment.values():
+            plan.unchanged["templates"] += sum(
+                1 for a in alignment.versions.values() if a.target_version is not None
+            )
+        return unmatched
+
+    @staticmethod
+    def _alignment_refusal(
+        value: str,
+        archive_id: str,
+        target_id: str,
+        rows: list[dict[str, Any]],
+        targets: list[dict[str, Any]],
+    ) -> Incompatibility | None:
+        """Why this template cannot be aligned at all, or None."""
+        if archive_id == target_id:
+            return Incompatibility(
+                entity_type="templates",
+                name=value,
+                reason=(
+                    "it is the same template on both sides (one install minted "
+                    "it), so its versions already line up — merge without "
+                    "align_templates"
+                ),
+            )
+        archive_latest = max(rows, key=lambda r: int(r.get("version") or 1))
+        target_latest = max(targets, key=lambda r: int(r.get("version") or 1))
+        archive_latest = with_defaults("templates", archive_latest)
+        target_latest = with_defaults("templates", target_latest)
+        for key in ("identity_fields", "usage", "versioned"):
+            if archive_latest.get(key) != target_latest.get(key):
+                return Incompatibility(
+                    entity_type="templates",
+                    name=value,
+                    reason=(
+                        f"its {key} differs between the two sides — a different "
+                        "template, not a version of this one"
+                    ),
+                    detail={key: {
+                        "target": target_latest.get(key),
+                        "archive": archive_latest.get(key),
+                    }},
+                )
+        return None
+
+    def _align_version(
+        self,
+        row: dict[str, Any],
+        targets: list[dict[str, Any]],
+        remapper: IDRemapper,
+        plan: DefinitionsPlan,
+    ) -> VersionAlignment:
+        """The target version one archive version maps onto, by schema."""
+        version = int(row.get("version") or 1)
+        archive = self._with_aligned_version_refs(
+            with_defaults("templates", remapper.remap_template(row)), plan
+        )
+        archive_schema = _schema(archive)
+        filled = sorted(
+            (with_defaults("templates", t) for t in targets),
+            key=lambda t: (t.get("status") == "active", int(t.get("version") or 1)),
+        )
+        for target in reversed(filled):
+            if _schema(target) == archive_schema:
+                return VersionAlignment(
+                    archive_version=version,
+                    target_version=int(target.get("version") or 1),
+                    reason=f"same schema as target v{target.get('version')}",
+                )
+        latest = filled[-1]
+        target_version = int(latest.get("version") or 1)
+        problem, removed = _compatibility(archive, latest)
+        if problem:
+            return VersionAlignment(
+                archive_version=version,
+                target_version=None,
+                reason=f"not compatible with target v{target_version}: {problem}",
+            )
+        return VersionAlignment(
+            archive_version=version,
+            target_version=target_version,
+            reason=f"compatible with target v{target_version}",
+            removed_fields=removed,
+        )
+
+    @staticmethod
+    def _with_aligned_version_refs(
+        template: dict[str, Any], plan: DefinitionsPlan
+    ) -> dict[str, Any]:
+        """Version numbers this template holds for other templates, in the
+        target's numbering where those templates are aligned."""
+        by_target: dict[str, dict[int, int]] = {
+            a.target_template_id: a.version_map() for a in plan.alignment.values()
+        }
+
+        def mapped(template_id: Any, version: Any) -> Any:
+            versions = by_target.get(str(template_id))
+            if versions is None or version is None:
+                return version
+            return versions.get(int(version), version)
+
+        result = dict(template)
+        if result.get("extends"):
+            result["extends_version"] = mapped(result["extends"], result.get("extends_version"))
+        fields = []
+        for f in result.get("fields") or []:
+            f = dict(f)
+            if f.get("template_ref"):
+                f["template_ref_version"] = mapped(f["template_ref"], f.get("template_ref_version"))
+            if f.get("array_template_ref"):
+                f["array_template_ref_version"] = mapped(
+                    f["array_template_ref"], f.get("array_template_ref_version")
+                )
+            fields.append(f)
+        result["fields"] = fields
+        return result
+
     async def _index_target(
         self, entity_type: str, namespace: str
     ) -> dict[tuple[Any, ...], dict[str, Any]]:
@@ -496,3 +715,86 @@ class DefinitionsPlanner:
             if all(k is not None and k != "" for k in key):
                 index[key] = row
         return index
+
+
+# What a document is validated against: two versions with the same schema can
+# take the same documents. Reporting, headers, labels and audit fields are not
+# part of it.
+_SCHEMA_KEYS = (
+    "identity_fields", "rules", "usage", "versioned",
+    "source_templates", "target_templates", "extends", "extends_version",
+)
+# Filled in when a template is resolved, never part of the stored schema.
+_FIELD_RESOLUTION_KEYS = frozenset({"inherited", "inherited_from"})
+
+
+def _endpoints(entries: Any) -> list[str]:
+    """An edge type's declared endpoints by what they name."""
+    out = []
+    for entry in entries or []:
+        if isinstance(entry, dict):
+            out.append(str(entry.get("resolved") or entry.get("lookup_value")))
+        else:
+            out.append(str(entry))
+    return sorted(out)
+
+
+def _fields(template: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """The template's fields by name, as a document is validated against them.
+
+    An edge type's source_ref/target_ref constraint is derived from its
+    endpoint declaration when the template is served, so what a stored field
+    carries there is not schema.
+    """
+    edge = template.get("usage") == "relationship"
+    fields: dict[str, dict[str, Any]] = {}
+    for f in template.get("fields") or []:
+        if not isinstance(f, dict) or not f.get("name"):
+            continue
+        f = {k: v for k, v in f.items() if k not in _FIELD_RESOLUTION_KEYS}
+        if edge and f["name"] in ("source_ref", "target_ref"):
+            f.pop("target_templates", None)
+        fields[f["name"]] = f
+    return fields
+
+
+def _schema(template: dict[str, Any]) -> dict[str, Any]:
+    schema = {key: template.get(key) for key in _SCHEMA_KEYS}
+    schema["source_templates"] = _endpoints(template.get("source_templates"))
+    schema["target_templates"] = _endpoints(template.get("target_templates"))
+    schema["fields"] = _fields(template)
+    return schema
+
+
+def _compatibility(
+    archive: dict[str, Any], target: dict[str, Any]
+) -> tuple[str | None, list[str]]:
+    """Can documents of the archive version be pinned to the target version?
+
+    The migration-eligibility rule template create reports: added optional
+    fields are fine; a removed field is fine only where the arriving
+    documents leave it empty (returned, for the engine to check); a type
+    change, a newly required field, a modified field, and any difference in
+    identity, rules, usage, versioning or endpoints are not. Returns
+    ``(problem, removed_fields)``; ``problem`` is None when compatible.
+    """
+    a_schema, t_schema = _schema(archive), _schema(target)
+    for key in _SCHEMA_KEYS:
+        if a_schema[key] != t_schema[key]:
+            return f"{key} differs", []
+    a_fields, t_fields = a_schema["fields"], t_schema["fields"]
+    added_required = sorted(
+        name for name in set(t_fields) - set(a_fields)
+        if t_fields[name].get("mandatory") and t_fields[name].get("default_value") is None
+    )
+    if added_required:
+        return f"the target requires new field(s) {', '.join(added_required)}", []
+    for name in sorted(set(a_fields) & set(t_fields)):
+        old, new = a_fields[name], t_fields[name]
+        if old.get("type") != new.get("type"):
+            return f"field '{name}' changed type", []
+        if not old.get("mandatory") and new.get("mandatory"):
+            return f"field '{name}' became required", []
+        if old != new:
+            return f"field '{name}' changed", []
+    return None, sorted(set(a_fields) - set(t_fields))

@@ -83,10 +83,11 @@ contract test fails when they fall behind. A refused merge records every
 incompatibility, with both sides' values, on the failed job's `result`
 (`result_kind: merge_refused`); the error message names the first five.
 
-Templates are matched per `(value, version)`. Version numbers are per
-install, so an archive whose history runs to v6 never lines up with a fresh
-bootstrap's v1. A proposed change, not yet approved, is in
-`docs/design/merge-template-version-alignment.md`.
+Templates are matched per `(value, version)` by default. Version numbers are
+per install, so an archive whose history runs to v6 never lines up with a
+fresh bootstrap's v1; `align_templates` matches templates by value instead
+and maps each archive version onto the target version whose schema can take
+its documents (`docs/design/merge-template-version-alignment.md`).
 
 **Pass 2 — documents, under `on_clash`.** `skip` (default) keeps the
 target's version of a clashing identity. `overwrite` appends the archive's

@@ -51,6 +51,7 @@ from .merge_definitions import (
     DEFINITION_TYPES,
     DefinitionsPlan,
     DefinitionsPlanner,
+    TemplateAlignment,
 )
 from .merge_plan import MERGE_ENTITY_SPECS, Clash, EntityPlan, MergePlanner
 from .referent_resolution import resolve_referents
@@ -933,6 +934,40 @@ def _drop_unchanged_mappings(remapper: IDRemapper) -> None:
         for old_id in [k for k, v in id_map.items() if k == v]:
             del id_map[old_id]
             remapper.external_documents.pop(old_id, None)
+
+
+class _AligningRemapper(IDRemapper):
+    """The merge's remapper, which also re-pins a document under
+    ``align_templates``.
+
+    Each archived row pins a version in the source install's numbering; the
+    alignment says which target version takes it. The re-pin keys on the
+    ARCHIVED row's (template_id, template_version), so it rides every rewrite
+    of a document — heads, in-memory chains, streamed chains — while the
+    archived row itself, which the identity rehash reads, is left alone.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.version_map: dict[tuple[str, int], int] = {}
+
+    def remap_document(self, document: dict[str, Any]) -> dict[str, Any]:
+        result = super().remap_document(document)
+        if self.version_map:
+            key = (str(document.get("template_id")), int(document.get("template_version") or 1))
+            target_version = self.version_map.get(key)
+            if target_version is not None:
+                result["template_version"] = target_version
+        return result
+
+
+# Unplaceable documents an align_templates merge lists on the job, at most;
+# the count is always complete.
+ALIGNMENT_UNPLACEABLE_SAMPLE = 200
+
+
+def _is_empty(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
 
 
 class _IdentityRehash:
@@ -2812,6 +2847,7 @@ class DirectRestoreEngine:
         dry_run: bool = False,
         drop_unresolved_edges: bool = False,
         allow_failed_verify: bool = False,
+        align_templates: bool = False,
     ) -> None:
         """Merge an archive into an existing, possibly non-empty namespace.
 
@@ -2831,6 +2867,12 @@ class DirectRestoreEngine:
         target already holds an identity, and ``older_versions`` whether the
         target's versions under an appended one are retired (the default) or
         stay active.
+
+        ``align_templates`` matches templates by value instead of by
+        ``(value, version)``: each archive version maps onto the target
+        version whose schema can take its documents, documents are re-pinned
+        accordingly, and a document whose versions map nowhere is listed and
+        left out (docs/design/merge-template-version-alignment.md).
 
         Both passes are computed before anything is written, so ``dry_run`` is
         exact rather than indicative, and still fails on everything a real run
@@ -2919,7 +2961,7 @@ class DirectRestoreEngine:
                 # definitions pass compares a template's references by what
                 # they name here, and these are some of them. They never
                 # overlap with pass 1's mappings, which are archived entities.
-                remapper = IDRemapper()
+                remapper = _AligningRemapper()
                 referents = await self._map_external_referents(
                     reader, manifest, remapper, tgt
                 )
@@ -2929,6 +2971,7 @@ class DirectRestoreEngine:
                     self._mongo, COLLECTION_MAP,
                     add_missing=add_missing,
                     extend_terminologies=extend_terminologies,
+                    align_templates=align_templates,
                 ).plan(archive_entities, tgt, external=remapper)
                 self._emit_definitions_plan(tgt, definitions, dry_run=dry_run)
                 self._enforce_definitions_gate(tgt, definitions)
@@ -2941,6 +2984,30 @@ class DirectRestoreEngine:
                     remapper.add_term_mapping(old_id, new_id)
                 for old_id, new_id in definitions.mapping["templates"].items():
                     remapper.add_template_mapping(old_id, new_id)
+                alignment_report: dict[str, Any] | None = None
+                if definitions.alignment:
+                    unplaceable, alignment_report = await self._off_loop(
+                        self._settle_alignment,
+                        definitions.alignment, reader, src, doc_groups,
+                    )
+                    remapper.version_map = {
+                        (archive_id, version): target_version
+                        for archive_id, alignment in definitions.alignment.items()
+                        for version, target_version in alignment.version_map().items()
+                    }
+                    self._emit_alignment(tgt, alignment_report, dry_run=dry_run)
+                    if unplaceable:
+                        for entity_type in ("documents", "registry_entries"):
+                            if entity_type in archive_entities:
+                                archive_entities[entity_type] = [
+                                    row for row in archive_entities[entity_type]
+                                    if not _dropped_row(entity_type, row, unplaceable)
+                                ]
+                        if doc_groups is not None:
+                            doc_groups = {
+                                doc_id: rows for doc_id, rows in doc_groups.items()
+                                if doc_id not in unplaceable
+                            }
                 dropped = await self._report_unresolved_references(
                     reader, [src], remapper, referents, tgt,
                     drop_edges=drop_unresolved_edges,
@@ -3058,6 +3125,7 @@ class DirectRestoreEngine:
                     "definitions": definitions.summary(),
                     "incompatibilities": len(definitions.incompatibilities),
                     "target_wins": len(definitions.target_wins),
+                    **({"template_alignment": alignment_report} if alignment_report else {}),
                     "entities": {
                         entity_type: plan.summary()
                         for entity_type, plan in built.items()
@@ -3152,7 +3220,10 @@ class DirectRestoreEngine:
                         "older_versions": older_versions,
                         "add_missing": add_missing,
                         "extend_terminologies": extend_terminologies,
+                        "align_templates": align_templates,
                         "definitions": planned.get("definitions"),
+                        **({"template_alignment": planned["template_alignment"]}
+                           if planned.get("template_alignment") else {}),
                         "entities": planned.get("entities"),
                     },
                 )
@@ -3482,6 +3553,120 @@ class DirectRestoreEngine:
             doc_id: [rehash.rehash(row, remapper.remap_document(row)) for row in rows]
             for doc_id, rows in doc_groups.items()
         }
+
+    def _settle_alignment(
+        self,
+        alignment: dict[str, TemplateAlignment],
+        reader: ArchiveReader,
+        src: str,
+        doc_groups: dict[str, list[dict[str, Any]]] | None,
+    ) -> tuple[set[str], dict[str, Any]]:
+        """Finish the template alignment against the arriving documents.
+
+        A version mapped onto a target version that lacks some of its fields
+        holds only if those fields are empty in every arriving row pinned to
+        it. Then every document with a row pinned to a version that maps
+        nowhere is unplaceable: a document is placed whole or not at all.
+        Returns the unplaceable document ids and the report for the job.
+        """
+        chains: Any = (
+            doc_groups.values() if doc_groups is not None else iter_chains(reader, src)
+        )
+        rows_per_version: dict[tuple[str, int], list[str]] = {}
+        carrying: dict[tuple[str, int], dict[str, int]] = {}
+        for chain in chains:
+            for row in chain:
+                template_id = str(row.get("template_id"))
+                if template_id not in alignment:
+                    continue
+                key = (template_id, int(row.get("template_version") or 1))
+                rows_per_version.setdefault(key, []).append(str(row.get("document_id")))
+                version = alignment[template_id].versions.get(key[1])
+                if version is None or not version.removed_fields:
+                    continue
+                data = row.get("data") or {}
+                for name in version.removed_fields:
+                    if not _is_empty(data.get(name)):
+                        counts = carrying.setdefault(key, {})
+                        counts[name] = counts.get(name, 0) + 1
+
+        for (template_id, number), counts in carrying.items():
+            version = alignment[template_id].versions[number]
+            version.reason = (
+                f"{version.reason}, but it lacks field(s) the arriving documents "
+                f"fill: {', '.join(f'{n} ({c})' for n, c in sorted(counts.items()))}"
+            )
+            version.target_version = None
+
+        unplaceable: dict[str, dict[str, Any]] = {}
+        for (template_id, number), doc_ids in rows_per_version.items():
+            template = alignment[template_id]
+            version = template.versions.get(number)
+            if version is not None and version.target_version is not None:
+                continue
+            reason = (
+                version.reason if version is not None
+                else "the archive does not carry this template version"
+            )
+            for doc_id in doc_ids:
+                entry = unplaceable.setdefault(doc_id, {
+                    "document_id": doc_id, "template": template.value, "versions": {},
+                })
+                entry["versions"][str(number)] = reason
+
+        report = {
+            "templates": [
+                {
+                    "value": template.value,
+                    "target_template_id": template.target_template_id,
+                    "versions": [
+                        {
+                            "archive_version": number,
+                            "target_version": version.target_version,
+                            "rows": len(rows_per_version.get((archive_id, number), [])),
+                            "history": (archive_id, number) not in rows_per_version,
+                            "reason": version.reason,
+                        }
+                        for number, version in sorted(template.versions.items())
+                    ],
+                }
+                for archive_id, template in sorted(
+                    alignment.items(), key=lambda item: item[1].value
+                )
+            ],
+            "unplaceable_count": len(unplaceable),
+            "unplaceable_documents": list(unplaceable.values())[:ALIGNMENT_UNPLACEABLE_SAMPLE],
+            "unplaceable_truncated": max(0, len(unplaceable) - ALIGNMENT_UNPLACEABLE_SAMPLE),
+        }
+        return set(unplaceable), report
+
+    def _emit_alignment(
+        self, namespace: str, report: dict[str, Any], *, dry_run: bool
+    ) -> None:
+        """Report the alignment: where each version went, and what stays out."""
+        phase = "phase_dry_run" if dry_run else "phase_definitions"
+        for template in report["templates"]:
+            for version in template["versions"]:
+                if version["history"]:
+                    continue
+                where = (
+                    f"target v{version['target_version']}"
+                    if version["target_version"] is not None else "nowhere"
+                )
+                self._emit(
+                    phase,
+                    f"[{namespace}] template {template['value']} v"
+                    f"{version['archive_version']} ({version['rows']} document row(s)) → "
+                    f"{where}: {version['reason']}",
+                )
+        if report["unplaceable_count"]:
+            self._emit(
+                "warning",
+                f"[{namespace}] {report['unplaceable_count']} document(s) not merged: "
+                "a version they pin maps onto no target version. They are listed "
+                "on the job (template_alignment.unplaceable_documents); reshape "
+                "them with wip-archive migrate, re-export and merge again.",
+            )
 
     def _emit_definitions_plan(
         self, namespace: str, definitions: DefinitionsPlan, *, dry_run: bool
