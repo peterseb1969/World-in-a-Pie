@@ -123,7 +123,7 @@ def test_restore_prints_attachments_and_marks_unresolved_upstreams(tmp_path):
     path.write_text(json.dumps(ARCHIVE))
     report = dict(REPORT, attachments={
         "created": ["aa", "later"], "replaced": [], "unchanged": [],
-        "skipped": [{"id": "kb", "reason": "/apps/kb is a route of an app this install deploys"}],
+        "skipped": [{"id": "kb", "reason": "'kb' is the label of an app this install deploys"}],
         "unresolved": ["later"],
     })
     result = _invoke(_client(report), "system-restore", path)

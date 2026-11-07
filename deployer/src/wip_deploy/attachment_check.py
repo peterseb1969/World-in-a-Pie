@@ -31,9 +31,9 @@ class AttachmentCheck:
 def collisions(route_names: list[str], attachments: list[dict[str, Any]]) -> list[str]:
     by_name = {a.get("name"): a for a in attachments}
     return [
-        f"/apps/{name} belongs to the app attachment {name!r} "
+        f"the origin {name}.<hostname> belongs to the app attachment {name!r} "
         f"({by_name[name].get('status', 'active')}, upstream {by_name[name].get('upstream')!r}); "
-        "rename the app's route or retire the attachment first"
+        "change the app's label or retire the attachment first"
         for name in route_names
         if name in by_name
     ]

@@ -107,7 +107,7 @@ def test_an_app_taking_an_attachments_route_is_refused(discovery: Discovery) -> 
         d, discovery.apps, "admin-key", transport=_transport(200, page, seen)
     )
     assert len(result.errors) == 1
-    assert "/apps/kb belongs to the app attachment 'kb' (inactive" in result.errors[0]
+    assert "the origin kb.<hostname> belongs to the app attachment 'kb' (inactive" in result.errors[0]
     assert seen[0].url.path == "/api/registry/attachments"
     assert seen[0].headers["X-API-Key"] == "admin-key"
 
@@ -143,7 +143,7 @@ def test_the_cli_refuses(discovery: Discovery, monkeypatch) -> None:
     d = _minimal_compose(apps=["wip-kb"])
     monkeypatch.setattr(
         attachment_check, "check_attachment_collisions",
-        lambda *a, **k: attachment_check.AttachmentCheck(errors=["/apps/kb belongs to …"]),
+        lambda *a, **k: attachment_check.AttachmentCheck(errors=["the origin kb.<hostname> belongs to …"]),
     )
 
     class _S:

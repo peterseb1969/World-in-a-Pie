@@ -11,8 +11,8 @@ namespace reservations (WIP_ATTACH_POLICY_FILE):
   name (`<name>`, `wip-<name>`), k8s's short and fully qualified service
   names, the public Caddy (wip-caddy, on every target), the install's own public hostname (an upstream
   pointing back at it would loop), and on k8s the API server's names.
-- `reserved_names`: the last segment of every enabled app's route prefix
-  (`/apps/kb` → `kb`).
+- `reserved_names`: every enabled app's label (`kb`): its origin,
+  `<label>.<hostname>`, is taken.
 - `app_edge: false`, only when the app-edge module does not run: nothing
   serves an attachment then, so the Registry refuses attachment writes.
   Absent means the edge runs.
@@ -46,7 +46,7 @@ def _hosts(name: str, deployment: Deployment) -> set[str]:
 
 
 def app_route_names(deployment: Deployment, apps: list[App]) -> list[str]:
-    """The /apps/<name> segments the install's enabled apps route under."""
+    """The labels of the install's enabled apps: each names an origin it takes."""
     enabled = {a.name for a in deployment.spec.apps if a.enabled}
     names: set[str] = set()
     for app in apps:
