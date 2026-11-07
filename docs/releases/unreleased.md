@@ -7,6 +7,36 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A prefixed ID sequence never mints an ID that already exists
+
+`prefixed` IDs were counted per (namespace, entity type, prefix), and the
+counter moved only by its own increments. After an ID-preserving restore the
+next new ID was the first restored one, and every new entity of that type
+failed (`E11000 … entry_id_unique_idx`) until the counter had passed them all.
+A prefix that moved to another namespace or entity type restarted at 1, and a
+caller-supplied ID in a prefix's range was minted again later. Now:
+
+- **One counter per prefix, install-wide** (`@prefix:<PFX>` in `id_counters`).
+  A prefix that moves continues its sequence, and namespaces still sharing a
+  prefix from before prefixes became install-unique draw from one counter.
+  Deleting a namespace leaves the counter: a restore of its IDs must not
+  restart it.
+- **IDs written with their number set raise the counter:** `/entries/register`
+  and `/entries/reserve` raise it to the highest such ID before minting
+  anything.
+- **The first mint from a prefix starts above every ID the prefix has**, from
+  entries and from the older per-namespace counters, which also repairs a
+  counter that fell behind earlier. No migration step is needed.
+- **A `prefixed` config without a prefix** (only possible in configs stored
+  before writes refused it) now refuses to mint: a per-item error on
+  register, 422 on provision, instead of bare numbers.
+- **A failed batch insert no longer returns the database error.** A taken
+  entry_id is `already_exists` (`details.rule` `entry_id_taken`, naming the
+  ID); anything else is `internal_error` pointing to the Registry log.
+- `/entries/register` still does not validate a caller's ID against the
+  namespace's current `id_config`: a restore writes back IDs minted under
+  earlier configs. `/entries/reserve` validates, as before.
+
 ### A composite key is held only in the namespace it names; `/resolve` and `/lookup/by-id` refuse instead of picking
 
 The Registry claims a key once per namespace and entity type, but the keys the

@@ -3,10 +3,16 @@
 Defines per-namespace, per-entity-type ID strategies.
 
 Generation algorithms (WIP mints the ID): uuid7, uuid4, prefixed, nanoid.
-Validation-only algorithms (the CALLER must supply the entry_id; WIP validates
-it against the config but will NOT generate one): pattern, any. Configuring a
-validation-only algorithm for an entity type whose IDs WIP is expected to mint
-fails at generation time with an actionable error (see IdGenerator.generate).
+Validation-only algorithms (the CALLER must supply the entry_id; WIP will NOT
+generate one): pattern, any. Configuring a validation-only algorithm for an
+entity type whose IDs WIP is expected to mint fails at generation time with an
+actionable error (see IdGenerator.generate).
+
+Where caller IDs are checked against the config: /entries/reserve validates
+each one. /entries/register does not: it is how a restore writes back the IDs
+it backed up, and a namespace's entries keep the IDs minted under earlier
+configs when its id_config changes. A prefixed ID written either way raises
+its prefix's counter (services/id_generator.py), so it is never minted again.
 """
 
 import re

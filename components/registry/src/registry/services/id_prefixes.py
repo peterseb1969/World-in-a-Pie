@@ -1,10 +1,9 @@
 """Install-wide uniqueness of `prefixed` ID prefixes.
 
 A `prefixed` ID is the prefix followed by a zero-padded sequence number, and
-every entry_id must be unique across the whole Registry. The sequence counter,
-though, is per (namespace, entity type, prefix), so two users of one prefix
-mint the same IDs and the second one's writes fail on the entry_id index. A
-prefix must therefore name exactly one ID sequence on the install.
+every entry_id must be unique across the whole Registry. A prefix must
+therefore name exactly one ID sequence on the install, and its counter is
+kept per prefix, install-wide (services/id_generator.py).
 
 The rule that guarantees it, for every `prefixed` entry of a namespace's
 `id_config`:

@@ -1,7 +1,9 @@
 """Atomic ID counter backed by MongoDB.
 
-Each document holds a sequence value for a specific counter_key
-(e.g. "wip:terminologies:TERM-").  The next value is obtained via
+Each document holds a sequence value for a specific counter_key. A
+`prefixed` ID sequence is counted per prefix, install-wide ("@prefix:TERM-",
+see services/id_generator.py); keys of the older per-namespace form
+("wip:terminologies:TERM-") remain only as a floor for those counters.  The next value is obtained via
 findOneAndUpdate with $inc, which is atomic even under concurrent access.
 """
 
@@ -16,7 +18,7 @@ class IdCounter(Document):
     """Persistent, atomic sequence counter."""
 
     counter_key: str = Field(
-        ..., description="Unique key, typically '{namespace}:{entity_type}:{prefix}'"
+        ..., description="Unique key: '@prefix:{prefix}' (older: '{namespace}:{entity_type}:{prefix}')"
     )
     seq: int = Field(default=0, description="Current sequence value")
 
@@ -44,9 +46,8 @@ class IdCounter(Document):
     async def set_if_higher(cls, counter_key: str, value: int) -> None:
         """Set counter to *value* only if it is currently lower (or missing).
 
-        No current callers (CASE-568) — kept as the counter-restore
-        primitive ($max upsert, never rolls back an already-incremented
-        counter) for future migration/restore paths.
+        A $max upsert: it never moves a counter back. Used to keep a prefix's
+        counter above IDs that were written with their number already set.
         """
         await cls.get_motor_collection().update_one(
             {"counter_key": counter_key},

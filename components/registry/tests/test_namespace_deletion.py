@@ -576,26 +576,28 @@ class TestNamespaceDeletion:
         assert resp.json()["total"] >= 1
 
     @pytest.mark.asyncio
-    async def test_delete_with_id_counters(self, client: AsyncClient, auth_headers: dict):
-        """Deleting a namespace cleans up its ID counters."""
-        await client.post(
-            "/api/registry/namespaces",
-            json={
-                "prefix": "del-counters",
-                "deletion_mode": "full",
-                "id_config": {
-                    "templates": {"algorithm": "prefixed", "prefix": "TPL-", "pad": 4}
-                },
-            },
-            headers=auth_headers,
-        )
-        # Provision IDs to create counters
-        await client.post(
-            "/api/registry/entries/provision",
-            json={"namespace": "del-counters", "entity_type": "templates",
-                  "count": 3, "created_by": "test"},
-            headers=auth_headers,
-        )
+    async def test_delete_keeps_the_prefix_sequence(self, client: AsyncClient, auth_headers: dict):
+        """A prefix's counter is install-wide, not the namespace's: deleting
+        the namespace leaves it, so a namespace that later uses the prefix
+        (or a restore of the deleted one's IDs) continues the sequence."""
+        ns_body = {
+            "prefix": "del-counters",
+            "deletion_mode": "full",
+            "id_config": {"templates": {"algorithm": "prefixed", "prefix": "DELTPL-", "pad": 4}},
+        }
+
+        async def provision() -> list[str]:
+            r = await client.post(
+                "/api/registry/entries/provision",
+                json={"namespace": "del-counters", "entity_type": "templates",
+                      "count": 3, "created_by": "test"},
+                headers=auth_headers,
+            )
+            assert r.status_code == 200, r.text
+            return [i["entry_id"] for i in r.json()["ids"]]
+
+        await client.post("/api/registry/namespaces", json=ns_body, headers=auth_headers)
+        assert await provision() == ["DELTPL-0001", "DELTPL-0002", "DELTPL-0003"]
 
         resp = await client.delete(
             "/api/registry/namespaces/del-counters",
@@ -603,7 +605,10 @@ class TestNamespaceDeletion:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "completed"
-        assert resp.json()["summary"].get("id_counters", 0) >= 1
+        assert resp.json()["summary"].get("id_counters", 0) == 0
+
+        await client.post("/api/registry/namespaces", json=ns_body, headers=auth_headers)
+        assert await provision() == ["DELTPL-0004", "DELTPL-0005", "DELTPL-0006"]
 
     @pytest.mark.asyncio
     async def test_upgrade_then_delete(self, client: AsyncClient, auth_headers: dict):

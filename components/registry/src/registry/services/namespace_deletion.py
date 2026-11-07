@@ -461,8 +461,10 @@ class NamespaceDeletionService:
                 {filter_field: prefix}
             )
 
-        # id_counters is keyed by "<prefix>:<entity_type>", not a namespace
-        # field — deleted by the journal via the same regex filter.
+        # Older id_counters are keyed "{namespace}:{entity_type}:{prefix}", not
+        # by a namespace field, and are deleted by the journal via the same
+        # regex filter. The install-wide "@prefix:" counters are not a
+        # namespace's and stay: a restore of its IDs must not restart them.
         counts["id_counters"] = await reg_db["id_counters"].count_documents(
             {"counter_key": {"$regex": f"^{prefix}:"}}
         )

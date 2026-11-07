@@ -87,6 +87,29 @@ _RESOLVE_CANDIDATE_LIMIT = 10
 router = APIRouter()
 
 
+def _insert_failure(e: Exception) -> dict[str, Any]:
+    """Error fields for a failed batch insert of new entries.
+
+    The database's own error carries other entries' keys, hashes and ids, so
+    it goes to the log; the caller is told what failed. A taken entry_id is
+    named, since it is the caller's (or a counter's) to correct.
+    """
+    logger.error("Registry batch insert failed: %s", e)
+    if isinstance(e, BulkWriteError):
+        for err in e.details.get("writeErrors", []):
+            if err.get("code") == 11000 and "entry_id_unique_idx" in str(err.get("errmsg", "")):
+                taken = (err.get("keyValue") or {}).get("entry_id")
+                return {
+                    "error": f"Batch insert failed: entry_id '{taken}' already exists",
+                    "error_code": "already_exists",
+                    "details": {"rule": "entry_id_taken", "entry_id": taken},
+                }
+    return {
+        "error": f"Batch insert failed ({type(e).__name__}); see the Registry log",
+        "error_code": "internal_error",
+    }
+
+
 def build_lookup_response(
     index: int,
     entry: RegistryEntry | None,
@@ -485,6 +508,13 @@ async def register_keys(
 
     lap("2_find_existing")
 
+    # Phase 2.5: IDs the caller sets (a restore re-registering its IDs) raise
+    # their prefix's counter first, so nothing minted below — in this batch or
+    # later — repeats one of them.
+    await IdGeneratorService.advance_for_ids(
+        [item.entry_id for item in items if item.entry_id]
+    )
+
     # Phase 3: Build entries to insert
     entries_to_insert: list[RegistryEntry] = []
     insert_indices: list[int] = []
@@ -691,11 +721,12 @@ async def register_keys(
                 (pos, idx) for pos, idx in enumerate(gated_indices) if results[idx] is None
             ]
             await release_entries_keys([gated_entries[pos] for pos, _ in unwritten])
+            failure = _insert_failure(e)
             for _pos, idx in unwritten:
                 results[idx] = RegisterKeyResponse(
                     index=idx,
                     status="error",
-                    error=f"Batch insert failed: {e!s}", error_code="internal_error"
+                    **failure,
                 )
                 error_count += 1
 
@@ -842,9 +873,12 @@ async def provision_ids(
     entries = []
 
     for i in range(request.count):
-        entry_id = await IdGeneratorService.generate_from_config(
-            config, request.namespace, request.entity_type
-        )
+        try:
+            entry_id = await IdGeneratorService.generate_from_config(
+                config, request.namespace, request.entity_type
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
 
         # Deferred-claim reservation mints the id with an EMPTY key: the final
         # key is set and claimed at activation. Empty is required, not just
@@ -921,6 +955,8 @@ async def reserve_ids(
     Validates each ID against the namespace's configured format.
     """
     results: list[ReserveItemResponse | None] = []
+    # The caller sets these IDs: their prefixes' counters must not mint them.
+    await IdGeneratorService.advance_for_ids([item.entry_id for item in items])
     reserved_count = 0
     error_count = 0
     entries_to_insert = []
@@ -1030,10 +1066,11 @@ async def reserve_ids(
                 (pos, idx) for pos, idx in enumerate(gated_indices) if results[idx] is None
             ]
             await release_entries_keys([gated_entries[pos] for pos, _ in unwritten])
+            failure = _insert_failure(e)
             for _pos, idx in unwritten:
                 results[idx] = ReserveItemResponse(
                     index=idx, status="error",
-                    error=f"Batch insert failed: {e!s}", error_code="internal_error"
+                    **failure,
                 )
                 error_count += 1
 
