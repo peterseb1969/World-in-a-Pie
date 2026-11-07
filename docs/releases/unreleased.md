@@ -7,6 +7,29 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `redact` clears fields inside arrays, checks every path segment, refuses a path that clears nothing; `wip-archive` 0.28.0
+
+`redact` walked a dot path only through objects. `contacts.email`, where
+`contacts` is a list, cleared nothing and kept the element snapshots
+(`contacts[0].email`), while the archive's `derived_from` hop recorded the
+path as redacted. Only a path's first segment was checked against the
+template, and validation warnings quoting a redacted value were kept.
+
+- A dot path names its field in every element of every array on the way;
+  an array leaf (`tags`) is cleared whole. Snapshots under every element path
+  go with it.
+- A bracketed index (`contacts[0].email`) is refused.
+- Every segment is checked: a nested one against the object's or array
+  items' template, which must be in the archive; nothing may follow a field
+  of another type. An object field without a template declares no keys, so
+  paths into it are not checked there.
+- A path that clears no value in any row is refused, naming it.
+- A row the redaction changes drops its `metadata.warnings`.
+
+**Archives redacted before this** with a path into an array still hold those
+values, and their provenance says otherwise. Redact them again from their
+source archives.
+
 ### Merges from another install compare references by what they name; `wip-archive` 0.27.0
 
 - **The definitions check** compared a definition's references as raw ids: a
