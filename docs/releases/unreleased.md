@@ -7,6 +7,29 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A merge retires target terms only under `carry_retirements`; `@wip/client` 0.86.0, WIP-Toolkit 0.25.9
+
+A merge used to deprecate every active target term that the archive had
+retired, even with every opt-in off. That changed the target's definitions,
+which a merge otherwise does only when asked.
+
+- **New default:** a term the archive retired stays active on the target.
+  The merge reports it as kept (target wins), and the plan says how many and
+  names the flag. The job result carries the count
+  (`result.namespaces.<ns>.retirements_not_carried`). Dry runs report the
+  same, since the decision is made in the plan.
+- **To keep the old behavior,** pass `carry_retirements=true`. The term is
+  retired with the archive's reason and replacement, as before. A term the
+  target retired still stays retired either way.
+- **Action:** if a merge script relies on deprecations travelling with the
+  archive (a newer backup merged into an older state of the same
+  namespace), add the flag.
+- **Surfaces:** both restore routes (`carry_retirements` form field and
+  request field; it is merge-only, like the other definition opt-ins), the
+  MCP `start_restore` tool, `@wip/client` 0.86.0
+  (`startRestore(…, { carry_retirements })`), and
+  `wip-toolkit restore --mode merge --carry-retirements` (0.25.9).
+
 ### A fresh restore folding several namespaces into one refuses key collisions before writing
 
 When several archived namespaces are restored into one target

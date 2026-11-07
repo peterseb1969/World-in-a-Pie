@@ -4674,6 +4674,7 @@ async def start_restore(
     add_missing: bool = False,
     extend_terminologies: bool = False,
     align_templates: bool = False,
+    carry_retirements: bool = False,
     skip_documents: bool = False,
     skip_files: bool = False,
     batch_size: int = 500,
@@ -4719,9 +4720,12 @@ async def start_restore(
     definitions are the same thing under different IDs, so an archive from
     another install works without any extra parameter. Changing the target's
     definitions is opt-in: add_missing inserts terminologies and templates it
-    lacks, extend_terminologies adds missing terms. Where a definition matches
-    but its label/aliases differ, the target's win and the difference is
-    reported. Templates are matched by (value, version) unless
+    lacks, extend_terminologies adds missing terms, carry_retirements retires
+    the target's active terms the archive retired. With all three off a merge
+    changes none of the target's definitions: a term the archive retired stays
+    active, and the job reports how many (retirements_not_carried). Where a
+    definition matches but its label/aliases differ, the target's win and the
+    difference is reported. Templates are matched by (value, version) unless
     align_templates is set; see its description below.
 
     Then documents merge under on_clash — 'skip' (default) keeps the target's
@@ -4785,6 +4789,10 @@ async def start_restore(
             Documents no target version can take are listed on the job
             (result template_alignment.unplaceable_documents) and not
             merged. Refused for a template both sides share. Dry-run first.
+        carry_retirements: Merge only — retire the target's active terms
+            that the archive has retired, with the archive's reason and
+            replacement. Without it they stay active and are reported as
+            kept.
         skip_documents: Skip documents (definitions only).
         skip_files: Skip file blobs.
         batch_size: Bulk-insert batch size (1-500).
@@ -4820,6 +4828,7 @@ async def start_restore(
             add_missing=add_missing,
             extend_terminologies=extend_terminologies,
             align_templates=align_templates,
+            carry_retirements=carry_retirements,
             skip_documents=skip_documents,
             skip_files=skip_files,
             batch_size=batch_size,

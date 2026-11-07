@@ -1138,6 +1138,29 @@ describe('Service classes via createWipClient', () => {
       expect((options.body as FormData).has('align_templates')).toBe(false)
     })
 
+    it('startRestore sends carry_retirements for a merge', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'aa' }))
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      await client.documents.startRestore('aa', archive, {
+        mode: 'merge',
+        carry_retirements: true,
+      })
+
+      const [, options] = fetchMock.mock.calls[0]
+      expect((options.body as FormData).get('carry_retirements')).toBe('true')
+    })
+
+    it('startRestore leaves carry_retirements out unless asked', async () => {
+      mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'aa' }))
+
+      const archive = new Blob([new Uint8Array([0x50, 0x4b])], { type: 'application/zip' })
+      await client.documents.startRestore('aa', archive, { mode: 'merge' })
+
+      const [, options] = fetchMock.mock.calls[0]
+      expect((options.body as FormData).has('carry_retirements')).toBe(false)
+    })
+
     it('startRestore sends the target for a fresh restore', async () => {
       mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'kb-copy' }))
 

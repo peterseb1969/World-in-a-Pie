@@ -1114,6 +1114,7 @@ def update_document_cmd(
 
 _MERGE_ONLY_OPTIONS = (
     "on_clash", "older_versions", "add_missing", "extend_terminologies", "align_templates",
+    "carry_retirements",
 )
 
 
@@ -1146,6 +1147,9 @@ _MERGE_ONLY_OPTIONS = (
                    "by value and map each archive version onto the target version "
                    "whose schema can take its documents; documents no version can "
                    "take are listed on the job and not merged. Dry-run first.")
+@click.option("--carry-retirements", is_flag=True, default=None,
+              help="Merge only: retire the target's active terms the archive retired. "
+                   "Without it they stay active and the merge reports how many.")
 @click.option("--skip-documents", is_flag=True, help="Definitions only.")
 @click.option("--skip-files", is_flag=True, help="Do not restore file blobs.")
 @click.option("--dry-run", is_flag=True, help="Report what would happen; write nothing.")
@@ -1176,6 +1180,7 @@ def restore(
     add_missing: bool | None,
     extend_terminologies: bool | None,
     align_templates: bool | None,
+    carry_retirements: bool | None,
     skip_documents: bool,
     skip_files: bool,
     dry_run: bool,
@@ -1212,7 +1217,7 @@ def restore(
     given = {
         "on_clash": on_clash, "older_versions": older_versions,
         "add_missing": add_missing, "extend_terminologies": extend_terminologies,
-        "align_templates": align_templates,
+        "align_templates": align_templates, "carry_retirements": carry_retirements,
     }
     if mode != "merge":
         misplaced = [name for name in _MERGE_ONLY_OPTIONS if given[name]]
@@ -1278,6 +1283,7 @@ def restore(
         add_missing=bool(add_missing),
         extend_terminologies=bool(extend_terminologies),
         align_templates=bool(align_templates),
+        carry_retirements=bool(carry_retirements),
         skip_documents=skip_documents,
         skip_files=skip_files,
         dry_run=dry_run,

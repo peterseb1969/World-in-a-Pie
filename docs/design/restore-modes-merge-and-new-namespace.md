@@ -69,8 +69,12 @@ definitions are the same thing under different ids, producing the id
 mapping pass 2 rewrites with. Incompatible definitions refuse the merge.
 Changing the target's definitions is opt-in and split deliberately:
 `add_missing` inserts terminologies and templates the target lacks;
-`extend_terminologies` adds missing terms. Where a definition matches but
-label/aliases differ, the target's win and the difference is reported.
+`extend_terminologies` adds missing terms; `carry_retirements` retires the
+target's active terms the archive retired, with the archive's reason and
+replacement. With all three off a merge changes none of the target's
+definitions: a term the archive retired stays active, and the merge reports
+how many. Where a definition matches but label/aliases differ, the target's
+win and the difference is reported.
 
 Both sides are compared as their models read them: a field a row lacks
 (written before the field existed) counts as the model's default, nested
@@ -248,7 +252,7 @@ Post CASE-740/741 (bulk activation, batch-sync throughput):
 - Route: `POST /api/document-store/backup/namespaces/{ns}/restore`
   (multipart; form fields `mode`, `target_namespace`, `namespace_map`
   (JSON object), `on_clash`, `add_missing`, `extend_terminologies`,
-  `skip_documents`, `skip_files`, `batch_size`, `dry_run`,
+  `carry_retirements`, `skip_documents`, `skip_files`, `batch_size`, `dry_run`,
   `drop_stale_reporting`). Retired toolkit-era params
   (`register_synonyms`, `continue_on_error`) are rejected with 400.
 - MCP: `start_restore` (same parameters; `namespace_map` as a dict).

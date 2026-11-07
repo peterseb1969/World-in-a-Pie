@@ -27,6 +27,7 @@ def build_form(
     add_missing: bool = False,
     extend_terminologies: bool = False,
     align_templates: bool = False,
+    carry_retirements: bool = False,
     skip_documents: bool = False,
     skip_files: bool = False,
     dry_run: bool = False,
@@ -58,6 +59,7 @@ def build_form(
         data["add_missing"] = str(add_missing).lower()
         data["extend_terminologies"] = str(extend_terminologies).lower()
         data["align_templates"] = str(align_templates).lower()
+        data["carry_retirements"] = str(carry_retirements).lower()
     return data
 
 

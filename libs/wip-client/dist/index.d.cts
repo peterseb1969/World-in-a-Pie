@@ -1974,6 +1974,13 @@ interface RestoreOptions {
      * sides share. Dry-run first.
      */
     align_templates?: boolean;
+    /**
+     * Merge only — retire the target's active terms that the archive has
+     * retired, with the archive's reason and replacement. Without it they stay
+     * active and the job reports how many
+     * (`result.namespaces[ns].retirements_not_carried`).
+     */
+    carry_retirements?: boolean;
     skip_documents?: boolean;
     skip_files?: boolean;
     batch_size?: number;

@@ -379,6 +379,14 @@ class RestoreFromJobRequest(StrictModel):
             "refused for a template both sides share."
         ),
     )
+    carry_retirements: bool = Field(
+        False,
+        description=(
+            "Merge only — retire the target's active terms that the archive "
+            "has retired, with the archive's reason and replacement. Without "
+            "it they stay active and are reported as kept."
+        ),
+    )
     skip_documents: bool = Field(
         False, description="Skip the documents phase entirely"
     )

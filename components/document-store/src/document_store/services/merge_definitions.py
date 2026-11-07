@@ -15,14 +15,17 @@ the target's `GENDER` *is* the archive's `GENDER` is the act of learning
 ``A-uuid -> B-uuid``.
 
 Verify-only is the default. Changing a live namespace's definitions is an
-active decision, never a side effect of restoring data into it, so the two
+active decision, never a side effect of restoring data into it, so the three
 strategies that would change them are opt-in:
 
 ``add_missing`` — insert terminologies and templates the target does not have.
 ``extend_terminologies`` — add terms the target's terminology is missing.
+``carry_retirements`` — retire the target's active terms the archive retired.
 
-Without them, anything the target lacks is an incompatibility and the merge
-refuses rather than quietly importing half a vocabulary.
+Without the first two, anything the target lacks is an incompatibility and the
+merge refuses rather than quietly importing half a vocabulary. Without the
+third, a term the archive retired stays active on the target and is reported
+as kept, like any other field where the target's value wins.
 """
 
 from __future__ import annotations
@@ -174,6 +177,9 @@ class DefinitionsPlan:
     # target's term_id plus the archive's lifecycle values. replaced_by_term_id
     # is still the archive's id here; pass 2 maps it to the target's.
     retire_terms: list[dict[str, Any]] = field(default_factory=list)
+    # Terms the archive retired that stay active on the target because
+    # carry_retirements is off: their names, for the plan report.
+    retirements_not_carried: list[str] = field(default_factory=list)
     # Definitions present and identical on both sides — nothing to do.
     unchanged: dict[str, int] = field(
         default_factory=lambda: {t: 0 for t in DEFINITION_TYPES}
@@ -266,12 +272,14 @@ class DefinitionsPlanner:
         add_missing: bool = False,
         extend_terminologies: bool = False,
         align_templates: bool = False,
+        carry_retirements: bool = False,
     ):
         self._mongo = mongo_client
         self._collection_map = collection_map
         self._add_missing = add_missing
         self._extend_terminologies = extend_terminologies
         self._align_templates = align_templates
+        self._carry_retirements = carry_retirements
         self._external: IDRemapper | None = None
 
     async def plan(
@@ -439,13 +447,18 @@ class DefinitionsPlanner:
 
         Returns the lifecycle fields in which the target's value was kept, for
         the target-wins report (empty when nothing differs or the archive's
-        retirement is carried over).
+        retirement is carried over). A retirement is carried only under
+        carry_retirements: deprecating a live term changes the target's
+        definitions, which a merge does only when asked to.
         """
         if not self._lifecycle_differs(archive, target):
             return []
         archive_status = archive.get("status") or "active"
         target_status = target.get("status") or "active"
-        if archive_status != "active" and target_status == "active":
+        retired_in_archive = archive_status != "active" and target_status == "active"
+        if retired_in_archive and not self._carry_retirements:
+            plan.retirements_not_carried.append(name)
+        elif retired_in_archive:
             plan.retire_terms.append({
                 "term_id": target.get(ID_KEYS["terms"]),
                 "terminology_id": target.get("terminology_id"),
@@ -456,7 +469,9 @@ class DefinitionsPlanner:
             })
             return []
         # The target retired it, or both retired it differently: a merge never
-        # brings a retired term back, and the target's retirement stands.
+        # brings a retired term back, and the target's retirement stands. Or
+        # the archive retired it and carry_retirements is off: the target's
+        # active term stands.
         return sorted(
             f for f in _TERM_LIFECYCLE_FIELDS if archive.get(f) != target.get(f)
         )

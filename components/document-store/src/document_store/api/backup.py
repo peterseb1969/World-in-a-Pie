@@ -127,6 +127,7 @@ def _validate_merge_options(
     extend_terminologies: bool,
     drop_stale_reporting: bool,
     align_templates: bool = False,
+    carry_retirements: bool = False,
 ) -> None:
     """Reject options the chosen mode cannot honour.
 
@@ -145,6 +146,7 @@ def _validate_merge_options(
             ("add_missing", add_missing, False),
             ("extend_terminologies", extend_terminologies, False),
             ("align_templates", align_templates, False),
+            ("carry_retirements", carry_retirements, False),
         ):
             if value != default:
                 raise HTTPException(
@@ -474,6 +476,16 @@ async def start_restore(
             "refused for a template both sides share."
         ),
     ),
+    carry_retirements: bool = Form(
+        False,
+        description=(
+            "Merge only — retire the target's active terms that the archive "
+            "has retired, with the archive's reason and replacement. Without "
+            "it they stay active and are reported as kept: deprecating a "
+            "live term is a change to the target's definitions, which a "
+            "merge makes only when asked to."
+        ),
+    ),
     skip_documents: bool = Form(False),
     skip_files: bool = Form(False),
     batch_size: int = Form(500, ge=1, le=500),
@@ -581,6 +593,7 @@ async def start_restore(
         extend_terminologies=extend_terminologies,
         drop_stale_reporting=drop_stale_reporting,
         align_templates=align_templates,
+        carry_retirements=carry_retirements,
     )
     _validate_allow_missing_identity(mode, allow_missing_identity)
     # Parameter of the retired toolkit import path. The direct restore engine
@@ -678,6 +691,7 @@ async def start_restore(
         "add_missing": add_missing,
         "extend_terminologies": extend_terminologies,
         "align_templates": align_templates,
+        "carry_retirements": carry_retirements,
         "skip_documents": skip_documents,
         "skip_files": skip_files,
         "batch_size": batch_size,
@@ -1130,6 +1144,7 @@ async def restore_from_job(
         extend_terminologies=request.extend_terminologies,
         drop_stale_reporting=False,
         align_templates=request.align_templates,
+        carry_retirements=request.carry_retirements,
     )
     _validate_allow_missing_identity(request.mode, request.allow_missing_identity)
 
@@ -1179,6 +1194,7 @@ async def restore_from_job(
         "add_missing": request.add_missing,
         "extend_terminologies": request.extend_terminologies,
         "align_templates": request.align_templates,
+        "carry_retirements": request.carry_retirements,
         "skip_documents": request.skip_documents,
         "skip_files": request.skip_files,
         "batch_size": request.batch_size,

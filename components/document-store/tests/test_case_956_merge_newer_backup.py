@@ -7,10 +7,12 @@ flag the refusal suggested, could never get past it. And a term the newer
 backup had deprecated differed in its lifecycle fields, which also refused.
 
 Now term_count is excluded as derived and recounted after the merge adds
-or retires terms. A term's lifecycle never refuses: retirement travels one
-way. A term the archive retired is retired on the target with the
-archive's reason and replacement, and a term the target retired stays
-retired.
+or retires terms. A term's lifecycle never refuses. A term the target
+retired stays retired. A term the archive retired is retired on the target,
+with the archive's reason and replacement, only under carry_retirements:
+deprecating a live term changes the target's definitions, which a merge
+with every opt-in off never does. Without the flag the term stays active
+and the merge says so.
 """
 
 from __future__ import annotations
@@ -19,8 +21,10 @@ import os
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException
 from motor.motor_asyncio import AsyncIOMotorClient
 
+from document_store.api.backup import _validate_merge_options
 from document_store.services.backup_engine import COLLECTION_MAP, RestoreEngineError
 from document_store.services.merge_definitions import compare_definitions
 from tests.test_merge_restore import (
@@ -138,21 +142,56 @@ class TestNewerBackupIntoOlderState:
         assert "term_count" not in message
 
 
+def _archive_deprecating_beta():
+    return _archive({
+        "terminologies": [_terminology(1)],
+        "terms": [
+            _term("T-A", "alpha"),
+            _term("T-B", "beta", status="deprecated",
+                  deprecated_reason="use alpha", replaced_by_term_id="T-A"),
+        ],
+        "templates": [_template()],
+    })
+
+
 class TestTermLifecycle:
     @pytest.mark.asyncio
-    async def test_a_deprecation_in_the_archive_is_carried_forward(self, mongo):
+    async def test_without_the_opt_in_a_deprecation_is_not_carried(self, mongo):
         await _seed_older_state(mongo, _term("T-A", "alpha"), _term("T-B", "beta"))
-        archive = _archive({
-            "terminologies": [_terminology(1)],
-            "terms": [
-                _term("T-A", "alpha"),
-                _term("T-B", "beta", status="deprecated",
-                      deprecated_reason="use alpha", replaced_by_term_id="T-A"),
-            ],
-            "templates": [_template()],
-        })
+        events: list = []
 
-        await _run_merge(mongo, archive)
+        await _run_merge(mongo, _archive_deprecating_beta(), events)
+
+        beta = next(t for t in await _rows(mongo, "terms") if t["value"] == "beta")
+        assert beta["status"] == "active"
+        assert beta.get("deprecated_reason") is None
+        assert beta.get("updated_by") != "restore-merge"
+        assert (await _terminology_row(mongo))["term_count"] == 2
+        assert any(
+            "1 term(s) the archive retired stay active" in (e.message or "")
+            and "carry_retirements" in e.message
+            for e in events
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_dry_run_plans_no_retirement_without_the_opt_in(self, mongo):
+        await _seed_older_state(mongo, _term("T-A", "alpha"), _term("T-B", "beta"))
+        events: list = []
+
+        await _run_merge(mongo, _archive_deprecating_beta(), events, dry_run=True)
+
+        assert not any("retired 1 term" in (e.message or "") for e in events)
+        assert any(
+            e.phase == "phase_dry_run"
+            and "stay active on the target" in (e.message or "")
+            for e in events
+        )
+
+    @pytest.mark.asyncio
+    async def test_with_the_opt_in_a_deprecation_is_carried_forward(self, mongo):
+        await _seed_older_state(mongo, _term("T-A", "alpha"), _term("T-B", "beta"))
+
+        await _run_merge(mongo, _archive_deprecating_beta(), carry_retirements=True)
 
         beta = next(t for t in await _rows(mongo, "terms") if t["value"] == "beta")
         assert beta["status"] == "deprecated"
@@ -178,6 +217,15 @@ class TestTermLifecycle:
         beta = next(t for t in await _rows(mongo, "terms") if t["value"] == "beta")
         assert beta["status"] == "deprecated"
         assert beta["deprecated_reason"] == "gone"
+
+    def test_the_option_is_merge_only(self):
+        with pytest.raises(HTTPException) as refused:
+            _validate_merge_options(
+                "restore", on_clash="skip", older_versions="retire",
+                add_missing=False, extend_terminologies=False,
+                drop_stale_reporting=False, carry_retirements=True,
+            )
+        assert "carry_retirements" in refused.value.detail
 
 
 class TestTemplateVersions:

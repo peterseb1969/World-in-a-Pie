@@ -53,7 +53,12 @@ class TestBuildForm:
 
     def test_other_modes_send_no_merge_policy(self):
         form = build_form("restore")
-        assert not {"on_clash", "older_versions", "add_missing", "align_templates"} & form.keys()
+        assert not {
+            "on_clash", "older_versions", "add_missing", "align_templates", "carry_retirements",
+        } & form.keys()
+
+    def test_merge_does_not_carry_retirements_by_default(self):
+        assert build_form("merge")["carry_retirements"] == "false"
 
 
 class TestRestoreVerb:
@@ -86,6 +91,19 @@ class TestRestoreVerb:
         result = _invoke(tmp_path, client, "--align-templates")
         assert result.exit_code == 2
         assert "--align-templates" in result.output
+        client.post_form.assert_not_called()
+
+    def test_carry_retirements_reaches_the_form(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client, "--mode", "merge", "--carry-retirements")
+        assert result.exit_code == 0, result.output
+        assert _form(client)["carry_retirements"] == "true"
+
+    def test_carry_retirements_outside_merge_is_a_usage_error(self, tmp_path):
+        client = _mock_client()
+        result = _invoke(tmp_path, client, "--carry-retirements")
+        assert result.exit_code == 2
+        assert "--carry-retirements" in result.output
         client.post_form.assert_not_called()
 
     def test_merge_default_retires_older_versions(self, tmp_path):

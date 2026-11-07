@@ -664,6 +664,7 @@ def make_direct_restore_runner(
                 add_missing=opts.get("add_missing", False),
                 extend_terminologies=opts.get("extend_terminologies", False),
                 align_templates=opts.get("align_templates", False),
+                carry_retirements=opts.get("carry_retirements", False),
                 skip_documents=opts.get("skip_documents", False),
                 skip_files=opts.get("skip_files", False),
                 batch_size=opts.get("batch_size", 500),

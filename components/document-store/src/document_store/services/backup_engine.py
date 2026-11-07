@@ -2926,6 +2926,7 @@ class DirectRestoreEngine:
         drop_unresolved_edges: bool = False,
         allow_failed_verify: bool = False,
         align_templates: bool = False,
+        carry_retirements: bool = False,
     ) -> None:
         """Merge an archive into an existing, possibly non-empty namespace.
 
@@ -2937,9 +2938,12 @@ class DirectRestoreEngine:
 
         Definitions are a precondition, not a policy: a mismatch refuses.
         ``add_missing`` and ``extend_terminologies`` are the two opt-ins that
-        let the merge extend the target's definitions instead of refusing;
-        without them, changing a live namespace's schema is never a side
-        effect of restoring data into it.
+        let the merge extend the target's definitions instead of refusing,
+        and ``carry_retirements`` the one that lets it retire the target's
+        active terms the archive retired. With all three off, a merge never
+        changes the target's definitions — neither its schema nor a term's
+        lifecycle: a term the archive retired stays active and is reported
+        as kept.
 
         Documents get the policy: ``on_clash`` decides what happens where the
         target already holds an identity, and ``older_versions`` whether the
@@ -3052,6 +3056,7 @@ class DirectRestoreEngine:
                     add_missing=add_missing,
                     extend_terminologies=extend_terminologies,
                     align_templates=align_templates,
+                    carry_retirements=carry_retirements,
                 ).plan(archive_entities, tgt, external=remapper)
                 self._emit_definitions_plan(tgt, definitions, dry_run=dry_run)
                 self._enforce_definitions_gate(tgt, definitions)
@@ -3205,6 +3210,7 @@ class DirectRestoreEngine:
                     "definitions": definitions.summary(),
                     "incompatibilities": len(definitions.incompatibilities),
                     "target_wins": len(definitions.target_wins),
+                    "retirements_not_carried": len(definitions.retirements_not_carried),
                     **({"template_alignment": alignment_report} if alignment_report else {}),
                     "entities": {
                         entity_type: plan.summary()
@@ -3319,6 +3325,7 @@ class DirectRestoreEngine:
                         "add_missing": add_missing,
                         "extend_terminologies": extend_terminologies,
                         "align_templates": align_templates,
+                        "carry_retirements": carry_retirements,
                         "definitions": planned.get("definitions"),
                         **({"template_alignment": planned["template_alignment"]}
                            if planned.get("template_alignment") else {}),
@@ -3795,6 +3802,13 @@ class DirectRestoreEngine:
                 phase,
                 f"[{namespace}] …and {len(definitions.target_wins) - 20} more "
                 "definition(s) where the target's metadata was kept",
+            )
+        if definitions.retirements_not_carried:
+            self._emit(
+                phase,
+                f"[{namespace}] {len(definitions.retirements_not_carried)} "
+                "term(s) the archive retired stay active on the target — "
+                "set carry_retirements to retire them",
             )
 
     def _enforce_definitions_gate(

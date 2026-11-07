@@ -63,7 +63,7 @@ class RestoreProvenance(BeanieDocument):
         description=(
             "Merge only: on_clash, older_versions, add_missing, "
             "extend_terminologies, align_templates (with the template "
-            "alignment when set), and the "
+            "alignment when set), carry_retirements, and the "
             "merge plan's per-entity-type summary"
         ),
     )
