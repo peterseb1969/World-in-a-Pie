@@ -1342,6 +1342,14 @@ class DirectRestoreEngine:
             total = sum(getattr(manifest.counts, et, 0) for et in restore_order)
             processed = 0
 
+            # Bytes before the records that need them. Blobs are flat
+            # (namespace-agnostic, globally unique file_ids), so the archive's
+            # whole set goes up once, first: a restore that fails later leaves
+            # at most bytes no record points at yet (re-uploaded by a retry),
+            # never a file record whose bytes are missing.
+            if not skip_files and self._storage:
+                await self._restore_blobs(reader, targets[0][1])
+
             for src, tgt in targets:
                 entry = entry_by_prefix.get(src)
                 ns_config = entry.namespace_config if entry else manifest.namespace_config
@@ -1435,11 +1443,6 @@ class DirectRestoreEngine:
                     source=src, target=tgt, mode="restore",
                     referents=_referents_for(referents, src),
                 )
-
-            # Blobs are flat (namespace-agnostic, globally-unique file_ids) — restore
-            # the whole archive's blob set once after all namespaces are in.
-            if not skip_files and self._storage:
-                await self._restore_blobs(reader, targets[0][1])
 
         self.result["referents"] = referents
         self.result["repointed_referents"] = remapper.total_mappings
@@ -1693,14 +1696,17 @@ class DirectRestoreEngine:
             # fresh namespace (the leak-sweep contract).
             await self._repair_endpoint_declarations(mapping, plans, remapper)
 
-            for src, target in mapping.items():
-                await self._write_remapped(target, plans[src], batch_size)
-
+            # Bytes before the records that need them, under their new ids:
+            # a write that fails afterwards leaves at most unreferenced bytes,
+            # never a file record whose bytes are missing.
             if not skip_files and self._storage:
                 merged_file_map: dict[str, str] = {}
                 for plan in plans.values():
                     merged_file_map.update(plan.id_map["files"])
                 await self._remap_blobs(reader, merged_file_map)
+
+            for src, target in mapping.items():
+                await self._write_remapped(target, plans[src], batch_size)
 
             # The archived synonyms, rewritten for their re-minted owners. A
             # document's travel with its activation item, so its entry is
@@ -2325,7 +2331,7 @@ class DirectRestoreEngine:
         assert self._storage is not None
         if not file_id_map:
             return
-        self._emit("phase_blobs", f"Copying {len(file_id_map)} blob(s)", percent=92)
+        self._emit("phase_blobs", f"Copying {len(file_id_map)} blob(s)")
         checksums = self._archive_file_checksums(reader)
         report_missing = self._archive_includes_files(reader)
         copied = 0
@@ -3000,7 +3006,6 @@ class DirectRestoreEngine:
                 await self._check_merge_reporting_precondition(tgt)
 
             entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
-            inserted_file_ids: set[str] = set()
             staged: list[_StagedMerge] = []
 
             for src, tgt in targets:
@@ -3291,6 +3296,20 @@ class DirectRestoreEngine:
                 if stage.wanted:
                     await self._check_merge_wanted(stage.tgt, stage.wanted, arriving_anywhere)
 
+            # Bytes before the records that need them: only for files the merge
+            # inserts (a file the target already has keeps its bytes), and all
+            # of them before any namespace is written, so a write that fails
+            # never leaves a file record without its bytes.
+            if not dry_run and not skip_files and self._storage:
+                inserting = {
+                    f["file_id"]
+                    for stage in staged
+                    for f in stage.built.get("files", EntityPlan(entity_type="files")).to_insert
+                    if f.get("file_id")
+                }
+                if inserting:
+                    await self._restore_blobs(reader, targets[0][1], only=inserting)
+
             for stage in staged:
                 if dry_run:
                     break
@@ -3300,12 +3319,6 @@ class DirectRestoreEngine:
                     tgt, built, stage.doc_groups or {},
                     on_clash=on_clash, older_versions=older_versions,
                     batch_size=batch_size, streamed=stage.streamed,
-                )
-                inserted_file_ids.update(
-                    f["file_id"] for f in built.get(
-                        "files", EntityPlan(entity_type="files")
-                    ).to_insert
-                    if f.get("file_id")
                 )
                 await self._release_retired_synonyms(tgt)
                 await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
@@ -3342,11 +3355,6 @@ class DirectRestoreEngine:
                 )
                 return
 
-            # Only blobs for files the merge actually inserted: a file the
-            # target already had keeps its bytes, and re-uploading them would
-            # be work at best and an orphan object at worst.
-            if not skip_files and self._storage and inserted_file_ids:
-                await self._restore_blobs(reader, targets[0][1], only=inserted_file_ids)
 
         self.result["reporting_synced"] = list(self._reporting_synced)
         self._finish_reporting_verification(
@@ -5431,7 +5439,9 @@ class DirectRestoreEngine:
         if not blob_ids:
             return
 
-        self._emit("phase_blobs", f"Uploading {len(blob_ids)} file blobs", percent=92)
+        # No percent: the bytes go up before the records, so the step sits
+        # early in the job and a figure here would make the bar jump back.
+        self._emit("phase_blobs", f"Uploading {len(blob_ids)} file blobs")
 
         for i, file_id in enumerate(blob_ids):
             data = self._checked_blob(reader, file_id, checksums.get(file_id), report_missing)
@@ -5448,7 +5458,6 @@ class DirectRestoreEngine:
                 self._emit(
                     "phase_blobs",
                     f"Uploaded {i + 1}/{len(blob_ids)} blobs",
-                    percent=92 + (i + 1) / len(blob_ids) * 6,
                     current=i + 1,
                     total=len(blob_ids),
                 )

@@ -30,6 +30,15 @@ which a merge otherwise does only when asked.
   (`startRestore(…, { carry_retirements })`), and
   `wip-toolkit restore --mode merge --carry-retirements` (0.25.9).
 
+### Restores upload file bytes before the records that need them
+
+Plain, merge and fresh restores wrote file records first and uploaded the
+bytes at the very end, so a failure in between left file records whose bytes
+were never uploaded. The bytes now go up first (a merge's only for the files it
+inserts, a fresh restore's under their new ids). A failure afterwards leaves at
+most unreferenced bytes, which a retry overwrites. The blob step's progress
+messages no longer carry a percentage, since the step now runs early in the job.
+
 ### A fresh restore folding several namespaces into one refuses key collisions before writing
 
 When several archived namespaces are restored into one target
