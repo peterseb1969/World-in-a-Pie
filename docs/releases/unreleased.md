@@ -7,6 +7,22 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Document validation: `enum` on every scalar type, `max_files`, exact email
+
+- **`validation.enum` holds for number, integer and boolean fields**, not
+  only strings (`invalid_enum`). A template that declared an enum on a
+  number was never enforced; writes outside it are now refused.
+- **`file_config.max_files` caps a multi-file field** (`max_files`, with
+  `details.max_files` and `details.count`). It was declared and shown in
+  forms but checked nowhere.
+- **An `email` value must be the address alone**: a trailing newline was
+  accepted.
+- A reference resolved through the Registry answers its latest active
+  version (or latest version) every time; with several active rows it could
+  answer an older one.
+- A template the template store does not have yet is no longer remembered as
+  missing for up to 5 seconds: one created a moment later is found at once.
+
 ### CSV exports cannot carry spreadsheet formulas; the table view is bounded and counts documents; `wip-archive` 0.35.0
 
 - **Formula escape in every CSV WIP writes:** document-store's table export,

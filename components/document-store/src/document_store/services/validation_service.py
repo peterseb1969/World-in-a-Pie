@@ -543,13 +543,7 @@ class ValidationService:
                     details={"pattern": pattern}
                 )
 
-        # Check enum
-        if validation.get("enum") and value not in validation["enum"]:
-            result.add_error(
-                code="invalid_enum",
-                message=f"Field '{field_path}' must be one of {validation['enum']}",
-                field=field_path
-            )
+        self._validate_enum(value, field_path, validation, result)
 
     async def _validate_number(
         self,
@@ -599,7 +593,7 @@ class ValidationService:
         validation: dict[str, Any],
         result: ValidationResult
     ):
-        """Validate numeric min/max constraints."""
+        """Validate numeric min/max and enum constraints."""
         if validation.get("minimum") is not None and value < validation["minimum"]:
             result.add_error(
                 code="minimum",
@@ -611,6 +605,20 @@ class ValidationService:
             result.add_error(
                 code="maximum",
                 message=f"Field '{field_path}' must be at most {validation['maximum']}",
+                field=field_path
+            )
+
+        self._validate_enum(value, field_path, validation, result)
+
+    @staticmethod
+    def _validate_enum(
+        value: Any, field_path: str, validation: dict[str, Any], result: ValidationResult
+    ) -> None:
+        """A declared enum holds for every scalar type, not only strings."""
+        if validation.get("enum") and value not in validation["enum"]:
+            result.add_error(
+                code="invalid_enum",
+                message=f"Field '{field_path}' must be one of {validation['enum']}",
                 field=field_path
             )
 
@@ -630,6 +638,8 @@ class ValidationService:
                 message=f"Field '{field_path}' must be a boolean",
                 field=field_path
             )
+            return
+        self._validate_enum(value, field_path, validation, result)
 
     async def _validate_date(
         self,
@@ -790,6 +800,14 @@ class ValidationService:
                         message=f"Item at '{field_path}[{i}]' must be a string (file ID)",
                         field=f"{field_path}[{i}]"
                     )
+            max_files = file_config.get("max_files")
+            if max_files is not None and len(value) > max_files:
+                result.add_error(
+                    code="max_files",
+                    message=f"Field '{field_path}' holds at most {max_files} file(s), got {len(value)}",
+                    field=field_path,
+                    details={"max_files": max_files, "count": len(value)},
+                )
         else:
             # Single file ID
             if not isinstance(value, str):
@@ -860,7 +878,10 @@ class ValidationService:
             return
 
         # Validate each item
-        item_type = field.get("array_item_type", "string")
+        # An array that declares no item type has untyped items: they are not
+        # checked one by one. (The key is always present, so a .get default
+        # never applied; the field model documents no default type.)
+        item_type = field.get("array_item_type")
         for i, item in enumerate(value):
             item_path = f"{field_path}[{i}]"
 
@@ -992,7 +1013,8 @@ class ValidationService:
 
         # RFC 5322 simplified pattern
         email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        if not re.match(email_pattern, value):
+        # fullmatch: re.match's "$" also matches before a trailing newline.
+        if not re.fullmatch(email_pattern, value):
             result.add_error(
                 code="invalid_email",
                 message=f"Field '{field_path}' must be a valid email address",
@@ -2272,9 +2294,12 @@ class ValidationService:
         """
         Resolve a reference value via the Registry's extended lookup.
 
-        If the resolved entry points to an inactive document, follows the
-        identity_hash chain to find the latest active version.
+        The Registry names the document; this answers its latest active
+        version, or its latest version when none is active. By document_id,
+        never identity_hash, which can match across templates (CASE-36).
         """
+        from beanie.odm.enums import SortDirection
+
         from ..models.document import Document, DocumentStatus
         from .registry_client import RegistryError, get_registry_client
 
@@ -2284,28 +2309,14 @@ class ValidationService:
             if not resolved_id:
                 return None
 
-            # Fetch the document by resolved ID
-            doc = await Document.find_one({
-                "document_id": resolved_id,
-                "status": DocumentStatus.ACTIVE
-            })
-            if doc:
-                return doc
-
-            # If inactive, follow document_id chain to latest active version.
-            # Uses document_id (stable across versions), NOT identity_hash
-            # which can match across templates (CASE-36).
-            inactive_doc = await Document.find_one({"document_id": resolved_id})
-            if inactive_doc:
-                active_doc = await Document.find_one({
-                    "document_id": inactive_doc.document_id,
-                    "status": DocumentStatus.ACTIVE
-                })
-                if active_doc:
-                    return active_doc
-                # Return the inactive doc if no active version exists
-                return inactive_doc
-
+            newest_first = [("version", SortDirection.DESCENDING)]
+            for query in (
+                {"document_id": resolved_id, "status": DocumentStatus.ACTIVE},
+                {"document_id": resolved_id},
+            ):
+                rows = await Document.find(query).sort(newest_first).limit(1).to_list()
+                if rows:
+                    return rows[0]
             return None
         except RegistryError:
             return None
@@ -2435,7 +2446,7 @@ class ValidationService:
         import re
         # UUID format: 8-4-4-4-12 hex digits
         uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-        return bool(re.match(uuid_pattern, value.lower()))
+        return bool(re.fullmatch(uuid_pattern, value.lower()))
 
     async def _collect_reference_values(
         self,

@@ -22,7 +22,8 @@ class TemplateStoreClient:
     field definitions, validation rules, and identity field configuration.
 
     Caching strategy (version-aware):
-    - (template_id, version) lookups: cached permanently — immutable pair
+    - (template_id, version) lookups: cached until the namespace stamp changes
+      (the schema is immutable, its status is not)
     - "latest" lookups (version=None): cached with short TTL (5s) — covers
       bulk batches without going stale across template updates
     """
@@ -265,7 +266,8 @@ class TemplateStoreClient:
         Get a template with inheritance fully resolved.
 
         Caching strategy:
-        - Pinned version (version != None): cached permanently — immutable pair
+        - Pinned version (version != None): cached until the namespace stamp
+          changes (the schema is immutable, its status is not)
         - Latest (version == None): cached with short TTL (5s) — fast enough
           for bulk batches, fresh enough for template updates
 
@@ -311,16 +313,17 @@ class TemplateStoreClient:
 
         # Cache the result
         if version is not None:
-            # Pinned version: permanent
+            # Pinned version: namespace-stamp bounded (a miss is not kept:
+            # the read above treats a cached None as a miss)
             self._template_cache[f"{template_id}:v{version}"] = template
-        else:
-            # Latest: TTL cache
+        elif template is not None:
+            # Latest: TTL cache. A miss is not cached, so a template created
+            # a moment later is found at once, not up to the TTL later.
             self._latest_cache[template_id] = (template, now)
-            # Also populate the permanent cache for the resolved version
-            if template is not None:
-                actual_version = template.get("version")
-                if actual_version is not None:
-                    self._template_cache[f"{template_id}:v{actual_version}"] = template
+            # Also populate the pinned cache for the resolved version
+            actual_version = template.get("version")
+            if actual_version is not None:
+                self._template_cache[f"{template_id}:v{actual_version}"] = template
 
         return template
 
