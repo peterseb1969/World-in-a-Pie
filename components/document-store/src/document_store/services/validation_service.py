@@ -147,6 +147,59 @@ class ValidationResult:
         }
 
 
+def _is_number(item: Any) -> bool:
+    return isinstance(item, (int, float)) and not isinstance(item, bool)
+
+
+def _is_integer(item: Any) -> bool:
+    return isinstance(item, int) and not isinstance(item, bool)
+
+
+def _is_string(item: Any) -> bool:
+    return isinstance(item, str)
+
+
+# Array item types checked by shape alone: (accepts the item, what the error
+# says it must be). A file item is checked here only as a string; its
+# existence is checked in the file stage, which collects only string items, so
+# a non-string item must be refused here or it is never checked at all.
+_ARRAY_ITEM_SHAPES: dict[str, tuple[Any, str]] = {
+    "string": (_is_string, "a string"),
+    "number": (_is_number, "a number"),
+    "integer": (_is_integer, "an integer"),
+    "file": (_is_string, "a string (file ID)"),
+}
+
+# Array item types checked by the validator of a field of that type.
+_ARRAY_ITEM_FIELD_VALIDATORS: dict[str, str] = {
+    "boolean": "_validate_boolean",
+    "date": "_validate_date",
+    "datetime": "_validate_datetime",
+}
+
+
+def _reference_item_shape_error(item: Any, reference_type: str | None) -> str | None:
+    """What a reference item must be, when it is not; None when it passes.
+
+    CASE-550: an array of references reuses the field's top-level
+    reference_type slot (the collector reads it there and queues each item for
+    Stage-5 existence resolution). This mirrors the single-reference Stage-3
+    type check (_validate_reference): document refs accept a string or a
+    composite dict, the others a string. reference_type is guaranteed present
+    on templates authored after the template-store guard; a grandfathered
+    template may carry None, and then the per-item type constraint is skipped
+    (existing soft-link data keeps validating) — existence resolution still
+    runs when a real reference_type is present.
+    """
+    if reference_type == "document":
+        if not isinstance(item, (str, dict)):
+            return "a string or object (document reference)"
+        return None
+    if reference_type in ("term", "terminology", "template") and not isinstance(item, str):
+        return f"a string ({reference_type} reference)"
+    return None
+
+
 class ValidationService:
     """
     Service for validating documents against templates.
@@ -901,7 +954,8 @@ class ValidationService:
         result: ValidationResult,
         validation: dict[str, Any]
     ):
-        """Validate array field."""
+        """Validate array field: a list, each item checked as its declared
+        item type."""
         if not isinstance(value, list):
             result.add_error(
                 code="invalid_type",
@@ -910,124 +964,88 @@ class ValidationService:
             )
             return
 
-        # Validate each item
         # An array that declares no item type has untyped items: they are not
         # checked one by one. (The key is always present, so a .get default
         # never applied; the field model documents no default type.)
         item_type = field.get("array_item_type")
         for i, item in enumerate(value):
-            item_path = f"{field_path}[{i}]"
+            await self._validate_array_item(
+                item, item_type, field, f"{field_path}[{i}]", template, result,
+            )
 
-            if item_type == "term":
-                # Create a mock field for term validation
-                mock_field = {
-                    "type": "term",
-                    "terminology_ref": field.get("array_terminology_ref")
-                }
-                await self._validate_term(item, mock_field, item_path, template, result, {})
+    async def _validate_array_item(
+        self,
+        item: Any,
+        item_type: str | None,
+        field: dict[str, Any],
+        item_path: str,
+        template: dict[str, Any],
+        result: ValidationResult,
+    ) -> None:
+        """Check one array item as its declared item type."""
+        if item_type in _ARRAY_ITEM_SHAPES:
+            accepts, what = _ARRAY_ITEM_SHAPES[item_type]
+            if not accepts(item):
+                result.add_error(
+                    code="invalid_type",
+                    message=f"Item at '{item_path}' must be {what}",
+                    field=item_path
+                )
+        elif item_type in _ARRAY_ITEM_FIELD_VALIDATORS:
+            # The field's own validator, run on the item.
+            validator = getattr(self, _ARRAY_ITEM_FIELD_VALIDATORS[item_type])
+            await validator(item, field, item_path, template, result, {})
+        elif item_type == "term":
+            # A term item is validated as a term field of the array's terminology.
+            mock_field = {"type": "term", "terminology_ref": field.get("array_terminology_ref")}
+            await self._validate_term(item, mock_field, item_path, template, result, {})
+        elif item_type == "object":
+            await self._validate_object_item(item, field, item_path, result)
+        elif item_type == "reference":
+            must_be = _reference_item_shape_error(item, field.get("reference_type"))
+            if must_be:
+                result.add_error(
+                    code="invalid_type",
+                    message=f"Item at '{item_path}' must be {must_be}",
+                    field=item_path
+                )
 
-            elif item_type == "object":
-                if not isinstance(item, dict):
-                    result.add_error(
-                        code="invalid_type",
-                        message=f"Item at '{item_path}' must be an object",
-                        field=item_path
-                    )
-                else:
-                    template_ref = field.get("array_template_ref")
-                    if template_ref:
-                        # CASE-493: validate against the PINNED version, same as
-                        # the object axis. array_template_ref_version is
-                        # mandatory on the schema.
-                        template_ref_version = field.get("array_template_ref_version")
-                        try:
-                            client = get_template_store_client()
-                            item_template = await client.get_template_resolved(
-                                template_ref, version=template_ref_version
-                            )
-                            if item_template:
-                                await self._validate_fields(
-                                    item, item_template, result, prefix=f"{item_path}."
-                                )
-                        except TemplateStoreError:
-                            result.add_warning(
-                                f"Could not validate array-item template "
-                                f"'{template_ref}' for field '{item_path}'"
-                            )
+    async def _validate_object_item(
+        self,
+        item: Any,
+        field: dict[str, Any],
+        item_path: str,
+        result: ValidationResult,
+    ) -> None:
+        """An object item: a dict, validated against the array's item template
+        when it declares one.
 
-            elif item_type == "string":
-                if not isinstance(item, str):
-                    result.add_error(
-                        code="invalid_type",
-                        message=f"Item at '{item_path}' must be a string",
-                        field=item_path
-                    )
-
-            elif item_type == "number":
-                if not isinstance(item, (int, float)) or isinstance(item, bool):
-                    result.add_error(
-                        code="invalid_type",
-                        message=f"Item at '{item_path}' must be a number",
-                        field=item_path
-                    )
-
-            elif item_type == "integer":
-                if not isinstance(item, int) or isinstance(item, bool):
-                    result.add_error(
-                        code="invalid_type",
-                        message=f"Item at '{item_path}' must be an integer",
-                        field=item_path
-                    )
-
-            elif item_type == "boolean":
-                await self._validate_boolean(item, field, item_path, template, result, {})
-
-            elif item_type == "date":
-                await self._validate_date(item, field, item_path, template, result, {})
-
-            elif item_type == "datetime":
-                await self._validate_datetime(item, field, item_path, template, result, {})
-
-            elif item_type == "file":
-                # Existence is checked in the file stage, which collects only
-                # string items; a non-string item must be refused here or it
-                # is never checked at all.
-                if not isinstance(item, str):
-                    result.add_error(
-                        code="invalid_type",
-                        message=f"Item at '{item_path}' must be a string (file ID)",
-                        field=item_path
-                    )
-
-            elif item_type == "reference":
-                # CASE-550: array-of-references reuse the field's top-level
-                # reference_type slot (the collector reads it there and queues
-                # each item for Stage-5 existence resolution). Mirror the
-                # single-reference Stage-3 type check (_validate_reference):
-                # document refs accept a string or composite dict, the others a
-                # string. reference_type is guaranteed present on templates
-                # authored after the template-store guard; a grandfathered
-                # template may carry None, in which case the per-item type
-                # constraint is skipped (existing soft-link data keeps
-                # validating) — existence resolution still runs when a real
-                # reference_type is present.
-                reference_type = field.get("reference_type")
-                if reference_type == "document":
-                    if not isinstance(item, (str, dict)):
-                        result.add_error(
-                            code="invalid_type",
-                            message=f"Item at '{item_path}' must be a string or object (document reference)",
-                            field=item_path
-                        )
-                elif (
-                    reference_type in ("term", "terminology", "template")
-                    and not isinstance(item, str)
-                ):
-                    result.add_error(
-                        code="invalid_type",
-                        message=f"Item at '{item_path}' must be a string ({reference_type} reference)",
-                        field=item_path
-                    )
+        CASE-493: the item template is read at its PINNED version, same as the
+        object axis (array_template_ref_version is mandatory on the schema). An
+        item template the template store cannot answer leaves a warning; one it
+        does not find leaves the item unchecked.
+        """
+        if not isinstance(item, dict):
+            result.add_error(
+                code="invalid_type",
+                message=f"Item at '{item_path}' must be an object",
+                field=item_path
+            )
+            return
+        template_ref = field.get("array_template_ref")
+        if not template_ref:
+            return
+        try:
+            item_template = await get_template_store_client().get_template_resolved(
+                template_ref, version=field.get("array_template_ref_version")
+            )
+            if item_template:
+                await self._validate_fields(item, item_template, result, prefix=f"{item_path}.")
+        except TemplateStoreError:
+            result.add_warning(
+                f"Could not validate array-item template "
+                f"'{template_ref}' for field '{item_path}'"
+            )
 
     # ========================================================================
     # Semantic Type Validators
