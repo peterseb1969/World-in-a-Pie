@@ -168,3 +168,39 @@ def test_json_carries_the_document_checks_only_when_run(tmp_path):
     payload = model.to_dict()
     assert payload["document_checks"]["documents_checked"] == 1
     assert payload["document_checks"]["identity"]["checked"] == 1
+
+
+def test_a_term_carried_in_an_unselected_namespace_is_not_missing(tmp_path):
+    """verify --namespace on a multi-namespace backup: a document's term lives
+    in another namespace the archive carries; it is carried, not missing."""
+    from wip_archive.archive import ArchiveWriter
+    from wip_archive.models import EntityCounts, Manifest, NamespaceEntry
+
+    shared = {"term_id": "t-shared", "terminology_id": "lov-shared", "namespace": "wip",
+              "value": "shared", "status": "active", "names": []}
+    rows = _rows([_doc("d1", {"code": "A"}, term_refs=[{"field_path": "colour", "term_id": "t-shared"}])])
+    path = tmp_path / "multi.zip"
+    writer = ArchiveWriter(path, default_namespace=NS)
+    for entity_type, entities in rows.items():
+        for entity in entities:
+            writer.add_entity(entity_type, entity, namespace=NS)
+    writer.add_entity("terms", shared, namespace="wip")
+    referents = writer.write_referents_file([])
+    writer.write(Manifest(
+        namespace=NS, counts=EntityCounts(),
+        namespaces=[NamespaceEntry(prefix=NS, counts=EntityCounts()),
+                    NamespaceEntry(prefix="wip", counts=EntityCounts(terms=1))],
+        referents=referents,
+    ))
+
+    with ArchiveReader(path) as reader:
+        model = ArchiveModel.load(reader, namespaces=[NS], check_documents=True)
+    findings = {f.finding_class: f for f in model.findings()}
+    assert "missing_term_reference" not in findings
+
+    # Unknown everywhere is still missing.
+    rows = _rows([_doc("d2", {"code": "B"}, term_refs=[{"field_path": "colour", "term_id": "t-nowhere"}])])
+    lost = _archive_with_referents(tmp_path / "lost.zip", rows, [])
+    with ArchiveReader(lost) as reader:
+        model = ArchiveModel.load(reader, namespaces=[NS], check_documents=True)
+    assert "missing_term_reference" in {f.finding_class for f in model.findings()}

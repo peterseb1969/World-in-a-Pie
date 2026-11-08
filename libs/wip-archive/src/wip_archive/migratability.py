@@ -15,7 +15,9 @@ can be assessed on any archive without an instance. It follows the live rules:
   re-resolved, so a term deprecated since the document was written fails it,
   exactly as live migration refuses it;
 - a recomputed identity hash that differs from the stored one fails the
-  document (`identity_fields_changed`).
+  document (`identity_hash_stale`, as live). An identity term the archive
+  cannot resolve (its vocabulary is not carried, e.g. shared `wip` terms) is
+  taken from the document's stored resolution instead.
 
 Not reproduced: reference and file checks, which live re-runs on every write
 and an archive cannot (their targets may lie outside it). A `ready` document is
@@ -139,7 +141,13 @@ def assess_migration(
                     sources[from_version] = e
                 source_identity = sources[from_version]
                 if isinstance(source_identity, UnresolvableTemplate):
-                    cohort.blocked = f"version {from_version} is not in the archive"
+                    if source_identity.missing in (None, (template_id, from_version)):
+                        cohort.blocked = f"version {from_version} is not in the archive"
+                    else:
+                        cohort.blocked = (
+                            f"version {from_version} cannot be resolved from the "
+                            f"archive: {source_identity.reason}"
+                        )
                 elif source_identity != target_identity:
                     cohort.blocked = (
                         f"identity_fields differ between v{from_version} ({source_identity}) "
@@ -176,17 +184,26 @@ def _assess_document(
     identity_fields = target.get("identity_fields") or []
     stored = row.get("identity_hash")
     if identity_fields and stored:
+        # Fresh resolutions where the archive could resolve; the document's
+        # stored ones where it could not (an uncarried vocabulary is
+        # unverifiable, not a change of identity).
+        fresh = list(outcome.term_references or [])
+        resolved_paths = {ref.get("field_path") for ref in fresh}
+        term_references = fresh + [
+            ref for ref in row.get("term_references") or ()
+            if ref.get("field_path") not in resolved_paths
+        ]
         try:
             recomputed: str | None = compute_composite_key_hash(resolved_identity_values(
                 data, list(identity_fields), list(target.get("fields") or []),
-                outcome.term_references, row.get("references"),
+                term_references, row.get("references"),
                 target.get("referent_identity_paths"),
             ))
         except (ValueError, KeyError, TypeError):
             recomputed = None
         if recomputed != stored:
             cohort.identity_changed += 1
-            cohort.failures[(None, "identity_fields_changed")] += 1
+            cohort.failures[(None, "identity_hash_stale")] += 1
             if len(cohort.samples) < MAX_SAMPLES:
                 cohort.samples.append(f"{tag}: identity hash would change")
             return

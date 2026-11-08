@@ -10,6 +10,7 @@ from typing import Any, ClassVar, NamedTuple, cast
 from beanie import PydanticObjectId
 from beanie.odm.enums import SortDirection
 
+from wip_auth.composite_key import compute_composite_key_hash
 from wip_auth.synonym_lifecycle import sync_entry_lifecycle
 from wip_auth.term_resolution import term_resolution_batch
 
@@ -220,6 +221,19 @@ def _declared_field_names(tpl: dict[str, Any]) -> set[str]:
             if isinstance(name, str):
                 out.add(name)
     return out
+
+
+def _identity_hash_of(identity_values: dict[str, Any] | None) -> str | None:
+    """The identity hash the Registry stores for these identity values: the
+    composite-key hash of the feed, or "" when there is none (an identity-less
+    template). None when the values are not JSON, which the Registry, fed over
+    JSON, could never have hashed."""
+    if not identity_values:
+        return ""
+    try:
+        return compute_composite_key_hash(identity_values)
+    except TypeError:
+        return None
 
 
 class DocumentService:
@@ -4073,14 +4087,25 @@ class DocumentService:
                 error_code="validation_failed", details={"errors": vr.errors},
             )
 
-        # Defensive: with identity_fields matched at the op level, the recomputed
-        # hash should equal the stored one. If it diverges, refuse rather than
-        # silently re-parent onto a different entity.
-        if vr.identity_hash and vr.identity_hash != doc.identity_hash:
+        # The re-pin carries the stored identity hash forward, so it must be the
+        # hash the Registry would compute for this document under the target
+        # version: the resolved identity feed validation just built. A hash
+        # written under older rules (before identity fed resolved referent ids),
+        # or one the target's retyped identity field no longer produces, would
+        # otherwise be migrated silently and fork the entity on its next write.
+        expected = _identity_hash_of(vr.identity_values)
+        if expected != (doc.identity_hash or ""):
             return BulkResultItem(
                 index=index, status="error", document_id=doc.document_id,
-                error="re-pin would change the document's identity hash",
-                error_code="identity_fields_changed",
+                error=(
+                    "the stored identity hash is not the one this document's identity "
+                    f"produces under v{to_version}; re-hash the namespace "
+                    "(POST /api/document-store/maintenance/rehash-identities) if it "
+                    "predates the current identity rules, or create new documents if "
+                    "the target changes what identifies them"
+                ),
+                error_code="identity_hash_stale",
+                details={"stored": doc.identity_hash or "", "expected": expected},
             )
 
         if dry_run:

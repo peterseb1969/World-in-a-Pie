@@ -496,7 +496,8 @@ class DocumentMigrateResponse(BulkResponse):
     - ``error`` — the document fails validation against to_version (e.g. a now-removed
       field still present → ``unknown_field``, or a newly-mandatory field missing).
       ``error_code`` is ``validation_failed`` (details carry the field errors) or
-      ``identity_fields_changed`` (the re-pin would alter the identity hash).
+      ``identity_hash_stale`` (the stored identity hash is not the one the
+      document's identity produces under to_version; details carry both).
 
     When ``dry_run`` is true the statuses are PROJECTED — nothing was written.
     """

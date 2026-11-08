@@ -93,3 +93,55 @@ def test_each_source_version_is_its_own_cohort(tmp_path):
         2: {("name", "unknown_field"): 1},
     }
     assert report.to_dict()["references_checked"] is False
+
+
+# ---------------------------------------------------------------------------
+# Identity: the stored hash must be the one the target produces (as live)
+# ---------------------------------------------------------------------------
+
+from wip_archive.identity import compute_composite_key_hash, resolved_identity_values  # noqa: E402
+
+KIND = {"name": "kind", "type": "term", "terminology_ref": "wip:KIND", "mandatory": True}
+
+
+def _hashed(doc, identity, fields, term_references=()):
+    doc = dict(doc, term_references=list(term_references))
+    doc["identity_hash"] = compute_composite_key_hash(resolved_identity_values(
+        doc["data"], list(identity), fields, list(term_references), [],
+    ))
+    return doc
+
+
+def test_a_stale_stored_hash_fails_the_document_as_live_does(tmp_path):
+    healthy = _hashed(_doc("d1", {"code": "A"}), ["code"], [CODE])
+    stale = dict(_doc("d2", {"code": "B"}), identity_hash="f" * 64)
+    v2 = _template(2, [CODE, {"name": "name", "type": "string"}])
+    report = _assess(tmp_path, [V1, v2], [healthy, stale])
+    cohort = report.cohorts[1]
+    assert cohort.ready == 1 and cohort.identity_changed == 1
+    assert cohort.failures[(None, "identity_hash_stale")] == 1
+
+
+def test_an_identity_term_from_an_uncarried_vocabulary_uses_the_stored_resolution(tmp_path):
+    fields = [CODE, KIND]
+    stored = [{"field_path": "kind", "term_id": "0190c000-0000-7000-0000-00000000kind",
+               "terminology_ref": "wip:KIND", "value": "big"}]
+    v1 = _template(1, fields, identity=("code", "kind"))
+    v2 = _template(2, [*fields, {"name": "name", "type": "string"}], identity=("code", "kind"))
+    doc = _hashed(_doc("d1", {"code": "A", "kind": "big"}), ["code", "kind"], fields, stored)
+
+    report = _assess(tmp_path, [v1, v2], [doc])
+
+    cohort = report.cohorts[1]
+    assert cohort.ready == 1, cohort.to_dict()
+    assert cohort.identity_changed == 0
+    assert any(kind == "terminology" for kind, _ in cohort.unverifiable)
+
+
+def test_a_missing_parent_is_reported_as_such_not_as_a_missing_version(tmp_path):
+    v1 = dict(V1, extends="0190c000-0000-7000-0000-000000parent", extends_version=1)
+    v2 = _template(2, [CODE, {"name": "name", "type": "string"}])
+    report = _assess(tmp_path, [v1, v2], [_doc("d1", {"code": "A"})])
+    blocked = report.cohorts[1].blocked
+    assert "parent template" in blocked and "is not in the archive" in blocked
+    assert not blocked.startswith("version 1 is not in the archive")

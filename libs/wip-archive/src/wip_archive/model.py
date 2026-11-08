@@ -591,9 +591,19 @@ class ArchiveModel:
             # A third streaming pass: every document against its pinned
             # template version (document_check.py). Opt-in, because it
             # validates every row; inspect does not need it, verify does.
+            # A term carried in a namespace outside the selection is neither
+            # loaded nor in the referents table (which lists only what the
+            # archive lacks); its id still counts as carried, not missing.
+            carried_terms = frozenset(
+                str(row["term_id"])
+                for ns in available if ns not in model.namespaces
+                for row in reader.read_entities("terms", namespace=ns)
+                if row.get("term_id")
+            )
             check = DocumentCheck(
                 model.definitions,
                 has_referents_table=model.manifest.referents is not None,
+                carried_terms=carried_terms,
             )
             for ns in model.namespaces:
                 for row in reader.read_entities("documents", namespace=ns):

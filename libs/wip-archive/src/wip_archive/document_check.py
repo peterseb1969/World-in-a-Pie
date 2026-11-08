@@ -44,6 +44,9 @@ class DocumentCheck:
     # True when the archive carries a referents table, so a term id absent
     # from both the archive and the table is provably missing.
     has_referents_table: bool
+    # Term ids the archive carries in namespaces outside the checked selection
+    # (verify --namespace): carried, so not missing, though not loaded.
+    carried_terms: frozenset[str] = frozenset()
     checked: int = 0
     # (template label, version, field, code) -> documents
     invalid: Counter = field(default_factory=Counter)
@@ -135,7 +138,7 @@ class DocumentCheck:
             term_id = ref.get("term_id")
             if not term_id or term_id in self.definitions.terms:
                 continue
-            if term_id in self.definitions.referents:
+            if term_id in self.definitions.referents or term_id in self.carried_terms:
                 continue
             self.missing_terms[term_id] += 1
             _sample(self.missing_term_samples, f"{tag}: {ref.get('field_path')} → {term_id}")

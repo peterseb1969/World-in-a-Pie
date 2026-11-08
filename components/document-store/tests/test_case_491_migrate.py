@@ -298,3 +298,38 @@ async def test_write_key_migrates_with_namespace_omitted(client, auth_headers, r
     assert resp.json()["succeeded"] == 1
     doc = await _doc_in_db(item["document_id"])
     assert doc.version == 2 and doc.template_version == 2
+
+
+@pytest.mark.asyncio
+async def test_migrate_refuses_a_document_whose_stored_identity_hash_is_stale(client, auth_headers):
+    """A stored hash the document's identity no longer produces (written under
+    older identity rules, or by a since-retyped identity field) is refused,
+    visibly in the dry run, never carried forward to fork on the next write."""
+    item = await _create_person(client, auth_headers, national_id="555000111")
+    healthy = await _create_person(client, auth_headers, national_id="555000222")
+    tid = SAMPLE_TEMPLATES["PERSON"]["template_id"]
+    doc = await _doc_in_db(item["document_id"])
+    await doc.set({"identity_hash": "f" * 64})  # what an older feed would have stored
+    VERSIONED_TEMPLATE_OVERRIDES[(tid, 2)] = _person_v2(tid, add_optional="phone")
+
+    by_id = {}
+    for dry_run in (True, False):
+        resp = await client.post(
+            MIGRATE_URL,
+            params={"namespace": "wip"},
+            json={"template_id": "PERSON", "from_version": 1, "to_version": 2, "dry_run": dry_run},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 200, resp.text
+        by_id = {r["document_id"]: r for r in resp.json()["results"]}
+        stale = by_id[item["document_id"]]
+        assert stale["status"] == "error"
+        assert stale["error_code"] == "identity_hash_stale"
+        assert stale["details"]["stored"] == "f" * 64
+        assert stale["details"]["expected"] == item["identity_hash"]
+        assert "rehash-identities" in stale["error"]
+        assert by_id[healthy["document_id"]]["status"] == "updated"
+
+    # The stale document was not migrated; the healthy one was.
+    assert (await _doc_in_db(item["document_id"])).template_version == 1
+    assert (await _doc_in_db(healthy["document_id"])).template_version == 2

@@ -7,6 +7,39 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Migrate refuses a document whose stored identity hash is stale; `wip-archive` 0.33.0
+
+`POST /documents/migrate` carries each document's stored identity hash onto
+the re-pinned version. Its per-document guard compared against a hash that
+validation never computed, so it never fired: a document whose stored hash its
+identity no longer produced was migrated, and forked into a second document on
+its next create. That happens to a hash written before identity fed resolved
+referent ids, or when the target version retypes an identity field under the
+same name.
+
+- **Now:** migrate recomputes each document's identity hash from its validated
+  data under the target version (the value the Registry would store) and
+  refuses a document whose stored hash differs: `error_code`
+  `identity_hash_stale`, with `details.stored` and `details.expected`, in the
+  dry run as in the apply. The error names the way out: re-hash the namespace
+  (`POST /api/document-store/maintenance/rehash-identities`) if the hash
+  predates the current rules, or create new documents if the target changes
+  what identifies them. Healthy documents migrate as before.
+- **Offline check agrees** (`wip-archive` migratability, behind
+  `wip-toolkit migrate`): the same refusal with the same code (it was
+  `identity_fields_changed`). An identity term whose vocabulary the archive
+  does not carry (shared `wip` terms, for example) is taken from the
+  document's stored resolution instead of failing every such document. A
+  cohort whose source version's parent template is missing now says so,
+  instead of "version N is not in the archive".
+- **`verify --namespace`** on a multi-namespace backup no longer reports a
+  term carried in another of the archive's namespaces as missing.
+- **Action:** a script that matched the per-document `identity_fields_changed`
+  code should match `identity_hash_stale`. The operation-level refusal
+  (identity field names differ between versions) keeps
+  `identity_fields_changed`. WIP-Toolkit's floor stays `wip-archive>=0.31.0`;
+  install 0.33.0 to get the offline changes.
+
 ### A document hard delete releases only the files the document still holds
 
 - **File references.** A document holds the files of its latest version
