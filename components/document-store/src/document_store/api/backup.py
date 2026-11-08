@@ -73,7 +73,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -589,45 +589,8 @@ async def start_restore(
             ),
         )
 
-    parsed_namespace_map: dict[str, str] | None = None
-    if namespace_map is not None:
-        if mode != "fresh":
-            raise HTTPException(
-                status_code=400,
-                detail="namespace_map applies only to mode='fresh'",
-            )
-        try:
-            parsed_namespace_map = json.loads(namespace_map)
-        except json.JSONDecodeError as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"namespace_map is not valid JSON: {e}",
-            ) from e
-        if not isinstance(parsed_namespace_map, dict) or not all(
-            isinstance(k, str) and isinstance(v, str) and v
-            for k, v in parsed_namespace_map.items()
-        ) or not parsed_namespace_map:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "namespace_map must be a non-empty JSON object of "
-                    "{source: target} strings"
-                ),
-            )
-        # New identities land in every mapped target — each needs admin.
-        for target in set(parsed_namespace_map.values()):
-            await check_namespace_permission(identity, target, "admin")
-
-    if mode == "fresh" and not target_namespace and not parsed_namespace_map:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "mode='fresh' mints new identities, so it must be told where "
-                "to put them: pass target_namespace (single-namespace "
-                "archive) or namespace_map."
-            ),
-        )
-
+    parsed_namespace_map = await _parse_namespace_map(namespace_map, mode, identity)
+    _require_fresh_target(mode, target_namespace, parsed_namespace_map)
     _validate_merge_options(
         mode,
         on_clash=on_clash,
@@ -639,113 +602,18 @@ async def start_restore(
         carry_retirements=carry_retirements,
     )
     _validate_allow_missing_identity(mode, allow_missing_identity)
-    # Parameter of the retired toolkit import path. The direct restore engine
-    # has no per-item error tolerance; silently ignoring a request for it
-    # would misrepresent what the restore did, so a request that sets it is
-    # rejected outright. (register_synonyms, the other retired param, was
-    # removed entirely: fresh means fresh — a restored copy is severed from
-    # its source, and old→new id back-ties contradict that ruling.)
-    for _dead_name, _dead_value in (
-        ("continue_on_error", continue_on_error),
-    ):
-        if _dead_value:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"'{_dead_name}' is not supported by the restore engine — "
-                    "it belonged to the retired toolkit import path and has "
-                    "no effect. Remove it from the request."
-                ),
-            )
+    _refuse_retired_restore_options(continue_on_error=continue_on_error)
 
     get_archive_store().sweep_expired_scratch()
 
     job_id = f"rst-{uuid.uuid4().hex[:16]}"
     archive_path = _archive_path_for(job_id)
-
-    # Stream upload to disk without buffering the whole thing in memory.
-    try:
-        with archive_path.open("wb") as fh:
-            while True:
-                chunk = await archive.read(1024 * 1024)  # 1 MiB
-                if not chunk:
-                    break
-                fh.write(chunk)
-    except Exception as exc:
-        archive_path.unlink(missing_ok=True)
-        logger.exception("Failed to stream restore upload for %s", job_id)
-        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
-    finally:
-        await archive.close()
-
+    await _stream_upload(archive, archive_path, job_id)
     archive_size = archive_path.stat().st_size
 
-    prefixes: list[str] = []
-    if mode == "fresh":
-        # A fresh restore reads the archive but writes only to the target, so
-        # admin there is the permission that matters — requiring it on the
-        # source namespaces would demand rights over an instance the caller
-        # may have nothing to do with.
-        await check_namespace_permission(identity, effective_target, "admin")
-    elif mode in ("restore", "merge"):
-        try:
-            prefixes, effective_target = await _authorize_archive_restore(
-                archive_path, identity
-            )
-            # A merge honors the caller's redirect. _authorize_archive_restore
-            # resolves the target from the ARCHIVE (correct for restore,
-            # where every namespace restores to itself) — for merge that
-            # silently replaced the caller's target with the archive's source,
-            # so "merge into scratch-ns" executed against the live source
-            # namespace instead, and the engine's whole redirect path
-            # (namespace rewrite, composite-key rehash, ids-must-be-free) was
-            # unreachable from the API.
-            if target_namespace and len(prefixes) > 1:
-                # The engine would refuse this too, but only after a job
-                # exists; refusing here turns a silent self-restore or
-                # self-merge of live namespaces into an immediate, visible
-                # error.
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "target_namespace is not supported for a "
-                        f"multi-namespace archive in {mode} mode — each "
-                        "namespace is written to itself (omit "
-                        "target_namespace), or split the archive."
-                    ),
-                )
-            if (
-                mode == "restore" and target_namespace and prefixes
-                and target_namespace != prefixes[0]
-            ):
-                # A plain restore preserves every id, and the archived
-                # entities and composite keys embed the source namespace, so
-                # it cannot write them anywhere else. The manifest used to
-                # replace the caller's target silently, writing into a
-                # namespace the caller never named.
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        f"target_namespace '{target_namespace}' differs from "
-                        f"the archive's namespace '{prefixes[0]}' — an "
-                        "id-preserving restore cannot re-namespace data. "
-                        "Restore to the archive's own namespace (omit "
-                        "target_namespace), merge it into the namespace you "
-                        "want (mode=merge), or restore a copy with new ids "
-                        "(mode=fresh)."
-                    ),
-                )
-            if mode == "merge" and target_namespace:
-                # The archive prefixes were admin-checked above, but a
-                # redirected merge WRITES to the caller's target — admin
-                # there is the permission that gates the operation.
-                await check_namespace_permission(
-                    identity, target_namespace, "admin"
-                )
-                effective_target = target_namespace
-        except HTTPException:
-            archive_path.unlink(missing_ok=True)
-            raise
+    prefixes, effective_target = await _authorize_restore_targets(
+        mode, archive_path, identity, target_namespace, effective_target,
+    )
 
     options = {
         "mode": mode,
@@ -767,38 +635,9 @@ async def start_restore(
         "drop_unresolved_edges": drop_unresolved_edges,
         "allow_failed_verify": allow_failed_verify,
     }
-
-    # A fresh restore WRITES to the resolved targets, not to the archive's
-    # namespaces. The job record must say so, because the post-restore
-    # automation (batch sync, validation) derives its scope from the job: a
-    # map-only fresh restore that recorded the URL path param here synced and
-    # "validated healthy" the SOURCE namespace while the target went
-    # unchecked — a green verdict about the wrong namespace (CASE-745).
-    # restore/merge keep the archive-prefixes semantics: they write to the
-    # archived namespaces.
-    if mode == "fresh":
-        write_targets = (
-            list(dict.fromkeys(parsed_namespace_map.values()))
-            if parsed_namespace_map
-            else [effective_target]
-        )
-        job_namespace = write_targets[0]
-    elif mode == "merge" and target_namespace:
-        # A redirected merge writes to the caller's target, not the archive's
-        # namespace — same reasoning as fresh above: sync and validation
-        # derive their scope from the job record.
-        write_targets = [effective_target]
-        job_namespace = effective_target
-    else:
-        # The manifest's prefixes are the namespaces this restore writes; a
-        # single-namespace archive derives prefixes == [effective_target], so
-        # this one expression covers both the single- and multi-namespace
-        # paths. Only an unreadable manifest leaves prefixes empty — fall back
-        # to the scalar namespace so the field is never silently blank. The
-        # scalar `namespace` stays the URL auth anchor here — each archived
-        # namespace restores into itself, so no single one of them IS the job.
-        write_targets = prefixes or [effective_target or namespace]
-        job_namespace = effective_target or namespace
+    write_targets, job_namespace = _restore_write_targets(
+        mode, parsed_namespace_map, target_namespace, effective_target, prefixes, namespace,
+    )
 
     job = BackupJob(
         job_id=job_id,
@@ -826,6 +665,222 @@ async def start_restore(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return BackupJobSnapshot.from_job(job)
+
+
+async def _parse_namespace_map(
+    namespace_map: str | None, mode: str, identity: UserIdentity,
+) -> dict[str, str] | None:
+    """The fresh restore's {source: target} map, checked: JSON, a non-empty
+    object of strings, and admin on every target it names."""
+    if namespace_map is None:
+        return None
+    if mode != "fresh":
+        raise HTTPException(
+            status_code=400,
+            detail="namespace_map applies only to mode='fresh'",
+        )
+    try:
+        parsed_namespace_map = json.loads(namespace_map)
+    except json.JSONDecodeError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"namespace_map is not valid JSON: {e}",
+        ) from e
+    if not _is_namespace_map(parsed_namespace_map):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "namespace_map must be a non-empty JSON object of "
+                "{source: target} strings"
+            ),
+        )
+    checked: dict[str, str] = parsed_namespace_map
+    # New identities land in every mapped target — each needs admin.
+    for target in set(checked.values()):
+        await check_namespace_permission(identity, target, "admin")
+    return checked
+
+
+def _is_namespace_map(value: Any) -> bool:
+    """A non-empty JSON object of {source: target} strings, no target empty."""
+    return isinstance(value, dict) and bool(value) and all(
+        isinstance(k, str) and isinstance(v, str) and v for k, v in value.items()
+    )
+
+
+def _require_fresh_target(
+    mode: str, target_namespace: str | None, namespace_map: dict[str, str] | None,
+) -> None:
+    if mode == "fresh" and not target_namespace and not namespace_map:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "mode='fresh' mints new identities, so it must be told where "
+                "to put them: pass target_namespace (single-namespace "
+                "archive) or namespace_map."
+            ),
+        )
+
+
+def _refuse_retired_restore_options(*, continue_on_error: bool) -> None:
+    """Parameter of the retired toolkit import path. The direct restore engine
+    has no per-item error tolerance; silently ignoring a request for it would
+    misrepresent what the restore did, so a request that sets it is rejected
+    outright. (register_synonyms, the other retired param, was removed
+    entirely: fresh means fresh — a restored copy is severed from its source,
+    and old→new id back-ties contradict that ruling.)"""
+    for dead_name, dead_value in (("continue_on_error", continue_on_error),):
+        if dead_value:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"'{dead_name}' is not supported by the restore engine — "
+                    "it belonged to the retired toolkit import path and has "
+                    "no effect. Remove it from the request."
+                ),
+            )
+
+
+async def _stream_upload(archive: UploadFile, archive_path: Path, job_id: str) -> None:
+    """Stream the upload to disk without buffering the whole thing in memory;
+    a failed write leaves no file behind."""
+    try:
+        with archive_path.open("wb") as fh:
+            while True:
+                chunk = await archive.read(1024 * 1024)  # 1 MiB
+                if not chunk:
+                    break
+                fh.write(chunk)
+    except Exception as exc:
+        archive_path.unlink(missing_ok=True)
+        logger.exception("Failed to stream restore upload for %s", job_id)
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
+    finally:
+        await archive.close()
+
+
+async def _authorize_restore_targets(
+    mode: str,
+    archive_path: Path,
+    identity: UserIdentity,
+    target_namespace: str | None,
+    effective_target: str,
+) -> tuple[list[str], str]:
+    """Admin on the namespaces the restore writes, and the target it writes
+    to. Returns (the archive's prefixes, the effective target); a refusal
+    removes the uploaded archive."""
+    if mode == "fresh":
+        # A fresh restore reads the archive but writes only to the target, so
+        # admin there is the permission that matters — requiring it on the
+        # source namespaces would demand rights over an instance the caller
+        # may have nothing to do with.
+        await check_namespace_permission(identity, effective_target, "admin")
+        return [], effective_target
+    try:
+        prefixes, effective_target = await _authorize_archive_restore(
+            archive_path, identity
+        )
+        # A merge honors the caller's redirect. _authorize_archive_restore
+        # resolves the target from the ARCHIVE (correct for restore,
+        # where every namespace restores to itself) — for merge that
+        # silently replaced the caller's target with the archive's source,
+        # so "merge into scratch-ns" executed against the live source
+        # namespace instead, and the engine's whole redirect path
+        # (namespace rewrite, composite-key rehash, ids-must-be-free) was
+        # unreachable from the API.
+        _check_restore_redirect(mode, target_namespace, prefixes)
+        if mode == "merge" and target_namespace:
+            # The archive prefixes were admin-checked above, but a
+            # redirected merge WRITES to the caller's target — admin
+            # there is the permission that gates the operation.
+            await check_namespace_permission(
+                identity, target_namespace, "admin"
+            )
+            effective_target = target_namespace
+    except HTTPException:
+        archive_path.unlink(missing_ok=True)
+        raise
+    return prefixes, effective_target
+
+
+def _check_restore_redirect(mode: str, target_namespace: str | None, prefixes: list[str]) -> None:
+    """The targets a restore or merge cannot honour, refused before a job exists."""
+    if target_namespace and len(prefixes) > 1:
+        # The engine would refuse this too, but only after a job
+        # exists; refusing here turns a silent self-restore or
+        # self-merge of live namespaces into an immediate, visible
+        # error.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "target_namespace is not supported for a "
+                f"multi-namespace archive in {mode} mode — each "
+                "namespace is written to itself (omit "
+                "target_namespace), or split the archive."
+            ),
+        )
+    if (
+        mode == "restore" and target_namespace and prefixes
+        and target_namespace != prefixes[0]
+    ):
+        # A plain restore preserves every id, and the archived
+        # entities and composite keys embed the source namespace, so
+        # it cannot write them anywhere else. The manifest used to
+        # replace the caller's target silently, writing into a
+        # namespace the caller never named.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"target_namespace '{target_namespace}' differs from "
+                f"the archive's namespace '{prefixes[0]}' — an "
+                "id-preserving restore cannot re-namespace data. "
+                "Restore to the archive's own namespace (omit "
+                "target_namespace), merge it into the namespace you "
+                "want (mode=merge), or restore a copy with new ids "
+                "(mode=fresh)."
+            ),
+        )
+
+
+def _restore_write_targets(
+    mode: str,
+    namespace_map: dict[str, str] | None,
+    target_namespace: str | None,
+    effective_target: str,
+    prefixes: list[str],
+    namespace: str,
+) -> tuple[list[str], str]:
+    """The namespaces a restore writes, and the one its job record names.
+
+    A fresh restore WRITES to the resolved targets, not to the archive's
+    namespaces. The job record must say so, because the post-restore
+    automation (batch sync, validation) derives its scope from the job: a
+    map-only fresh restore that recorded the URL path param here synced and
+    "validated healthy" the SOURCE namespace while the target went unchecked
+    — a green verdict about the wrong namespace (CASE-745). restore/merge
+    keep the archive-prefixes semantics: they write to the archived
+    namespaces.
+    """
+    if mode == "fresh":
+        write_targets = (
+            list(dict.fromkeys(namespace_map.values()))
+            if namespace_map
+            else [effective_target]
+        )
+        return write_targets, write_targets[0]
+    if mode == "merge" and target_namespace:
+        # A redirected merge writes to the caller's target, not the archive's
+        # namespace — same reasoning as fresh above: sync and validation
+        # derive their scope from the job record.
+        return [effective_target], effective_target
+    # The manifest's prefixes are the namespaces this restore writes; a
+    # single-namespace archive derives prefixes == [effective_target], so
+    # this one expression covers both the single- and multi-namespace
+    # paths. Only an unreadable manifest leaves prefixes empty — fall back
+    # to the scalar namespace so the field is never silently blank. The
+    # scalar `namespace` stays the URL auth anchor here — each archived
+    # namespace restores into itself, so no single one of them IS the job.
+    return prefixes or [effective_target or namespace], effective_target or namespace
 
 
 # ---------------------------------------------------------------------------
