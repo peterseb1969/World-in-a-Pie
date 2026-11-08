@@ -207,3 +207,26 @@ def id_config_view(ns: Namespace) -> dict[str, Any]:
             _view_logger.warning("namespace %s: unreadable id_config[%s]: %s", ns.prefix, entity_type, e)
             id_config[entity_type] = {"invalid": str(e)}
     return id_config
+
+
+LOCKED_DETAIL = "Namespace '{prefix}' is locked: its deletion is in progress"
+
+
+async def set_unless_locked(ns: Namespace, fields: dict[str, Any]) -> bool:
+    """Write ``fields`` to the namespace unless it is locked, in one update.
+
+    A deletion locks the namespace before it removes anything, and its
+    recovery and clean-up steps read the lock to tell an unfinished deletion
+    from a namespace created again. A read followed by a whole-document save
+    could write the status it read back over a lock taken in between; this
+    write cannot. Returns False (nothing written) when the namespace is
+    locked or gone.
+    """
+    result = await Namespace.get_motor_collection().update_one(
+        {"_id": ns.id, "status": {"$ne": "locked"}}, {"$set": fields},
+    )
+    if result.matched_count != 1:
+        return False
+    for key, value in fields.items():
+        setattr(ns, key, value)
+    return True

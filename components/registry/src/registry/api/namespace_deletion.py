@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from wip_auth import UserIdentity
 
-from ..models.namespace import Namespace
+from ..models.namespace import LOCKED_DETAIL, Namespace, set_unless_locked
 from ..services.auth import require_admin_key, require_api_key
 from ..services.namespace_deletion import NamespaceDeletionService
 
@@ -178,10 +178,12 @@ async def update_deletion_mode(
             "Changing from 'retain' to 'full' requires confirm_enable_deletion=true"
         )
 
-    ns.deletion_mode = cast(Literal["retain", "full"], deletion_mode)
-    ns.updated_at = datetime.now(UTC)
-    ns.updated_by = updated_by
-    await ns.save()
+    # A namespace mid-deletion keeps the mode it is being deleted under.
+    if not await set_unless_locked(ns, {
+        "deletion_mode": cast(Literal["retain", "full"], deletion_mode),
+        "updated_at": datetime.now(UTC), "updated_by": updated_by,
+    }):
+        raise HTTPException(409, LOCKED_DETAIL.format(prefix=prefix))
 
     return {
         "prefix": prefix,

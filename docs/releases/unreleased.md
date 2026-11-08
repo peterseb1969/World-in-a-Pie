@@ -7,6 +7,20 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A namespace locked for deletion stays locked
+
+A deletion locks its namespace before it removes anything, and its recovery
+and clean-up steps read the lock. Archiving a locked namespace removed the
+lock (the deletion then skipped its PostgreSQL rows, and document-store
+refused its stored-file delete), and the upsert and the deletion-mode PATCH
+changed a namespace mid-deletion. Now `POST …/{prefix}/archive`,
+`PUT …/{prefix}` (an existing namespace, dry runs included) and
+`PATCH …/{prefix}` answer **409** for a locked namespace. Those writes,
+`POST …/{prefix}/restore` and the deletion's own lock are each a single
+conditional update: a write that read the namespace before it was locked
+answers 409 instead of undoing the lock, and two deletions cannot both take
+it.
+
 ### Migrate refuses a document whose stored identity hash is stale; `wip-archive` 0.33.0
 
 `POST /documents/migrate` carries each document's stored identity hash onto

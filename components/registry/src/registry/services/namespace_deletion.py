@@ -32,7 +32,7 @@ from ..models.deletion_journal import (
     InboundReference,
 )
 from ..models.entry import RegistryEntry
-from ..models.namespace import Namespace
+from ..models.namespace import Namespace, set_unless_locked
 from .event_bus import get_event_bus
 
 logger = logging.getLogger("registry.namespace_deletion")
@@ -349,10 +349,12 @@ class NamespaceDeletionService:
                 "from other namespaces. Use force=true to proceed."
             )
 
-        # Lock the namespace
-        ns.status = "locked"
-        ns.updated_at = datetime.now(UTC)
-        await ns.save()
+        # Lock the namespace, in one conditional update: two deletions that
+        # both read it unlocked cannot both take the lock.
+        if not await set_unless_locked(ns, {"status": "locked", "updated_at": datetime.now(UTC)}):
+            raise ValueError(
+                f"Namespace '{prefix}' is already locked (deletion in progress)"
+            )
         logger.info("Namespace '%s' locked for deletion", prefix)
 
         # Build journal

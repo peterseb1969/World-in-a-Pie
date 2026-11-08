@@ -26,7 +26,14 @@ from ..models.api_models import (
 from ..models.entry import RegistryEntry
 from ..models.grant import NamespaceGrant
 from ..models.id_algorithm import VALID_ENTITY_TYPES, validate_id_config_write
-from ..models.namespace import WIP_NAMESPACE, Namespace, id_config_view, prefix_error
+from ..models.namespace import (
+    LOCKED_DETAIL,
+    WIP_NAMESPACE,
+    Namespace,
+    id_config_view,
+    prefix_error,
+    set_unless_locked,
+)
 from ..services.auth import require_admin_key, require_api_key
 from ..services.id_prefixes import (
     IdPrefixError,
@@ -514,6 +521,10 @@ async def upsert_namespace(
             await _restore_owner_grant(prefix, owner)
         return response
 
+    # A namespace mid-deletion keeps the settings it was locked with.
+    if ns.status == "locked":
+        raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
+
     # A changed id_config must pass the prefix rule and claim its prefixes;
     # re-sending the stored one (a resume, a same-name restore) never fails.
     new_id_prefixes = None
@@ -526,20 +537,24 @@ async def upsert_namespace(
     # Update path — only touch explicitly provided fields.
     # confirm_enable_deletion is a safety toggle, not a stored field —
     # consumed by the guard above and dropped here.
-    for field, value in update_data.items():
-        if field in ("updated_by", "confirm_enable_deletion"):
-            continue
-        if value is not None:
-            setattr(ns, field, value)
+    changes: dict[str, Any] = {
+        field: value for field, value in update_data.items()
+        if field not in ("updated_by", "confirm_enable_deletion") and value is not None
+    }
     if new_id_prefixes is not None:
-        ns.id_prefixes = new_id_prefixes
-
-    ns.updated_at = datetime.now(UTC)
-    ns.updated_by = actor
+        changes["id_prefixes"] = new_id_prefixes
+    changes["updated_at"] = datetime.now(UTC)
+    changes["updated_by"] = actor
     if dry_run:
+        for field, value in changes.items():
+            setattr(ns, field, value)
         return namespace_to_response(ns)
+    # Written only while unlocked: a deletion that locked the namespace after
+    # the read above is not undone by this write.
     with _id_prefix_errors(prefix):
-        await ns.save()
+        written = await set_unless_locked(ns, changes)
+    if not written:
+        raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
 
     return namespace_to_response(ns)
 
@@ -562,10 +577,12 @@ async def archive_namespace(
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
-    ns.status = "archived"
-    ns.updated_at = datetime.now(UTC)
-    ns.updated_by = archived_by
-    await ns.save()
+    # Archiving a namespace mid-deletion would remove the lock its deletion
+    # relies on: the clean-up would take it for a namespace created again.
+    if not await set_unless_locked(ns, {
+        "status": "archived", "updated_at": datetime.now(UTC), "updated_by": archived_by,
+    }):
+        raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
 
     return namespace_to_response(ns)
 
@@ -588,10 +605,12 @@ async def restore_namespace(
     if ns.status != "archived":
         raise HTTPException(status_code=400, detail=f"Namespace is not archived: {prefix}")
 
-    ns.status = "active"
-    ns.updated_at = datetime.now(UTC)
-    ns.updated_by = restored_by
-    await ns.save()
+    # An archived namespace can be deleted: a deletion that locked it after
+    # the read above keeps its lock.
+    if not await set_unless_locked(ns, {
+        "status": "active", "updated_at": datetime.now(UTC), "updated_by": restored_by,
+    }):
+        raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
 
     return namespace_to_response(ns)
 
