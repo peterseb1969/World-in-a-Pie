@@ -156,6 +156,15 @@ class RegistryEntry(Document):
         description="Additional metadata"
     )
 
+    # Write counter: every write to the entry increments it, and a write that
+    # read the entry first is filtered on the value it read, so two writers
+    # cannot overwrite each other's changes (services/entry_writes.py). An
+    # entry written before the counter existed has none and reads as 0.
+    revision: int = Field(
+        default=0,
+        description="Write counter of the entry, incremented by every write"
+    )
+
     class Settings:
         name = "registry_entries"
         indexes: ClassVar[list[IndexModel]] = [

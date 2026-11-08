@@ -7,6 +7,29 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Concurrent writes to one Registry entry keep each other's changes
+
+Synonym add and remove read an entry, changed its synonym list in memory and
+wrote the whole list back; update, soft delete, merge, synonym retire/revive
+and identity rekey saved a full copy of the entry they had read. Two requests
+changing one entry at the same time silently lost one's change — a synonym
+reported `added` was missing, a removed one came back with no claim behind it
+(so a second entry could take the same key), and an update could undo a
+concurrent soft delete. Now:
+
+- **Every write to an entry increments its `revision`**, and a write that read
+  the entry first lands only if the entry still has the revision it read.
+  Writes set only the fields they change.
+- **A write that lost re-reads the entry and applies its change again**, so
+  the outcome is decided against the entry as it now is: two parallel adds of
+  the same synonym answer `added` once and `already_exists` once; a remove
+  that another request beat answers `not_found`.
+- After sustained contention on one entry (10 lost attempts) the item reports
+  `error_code: concurrency_conflict`, and the claims it took are released.
+  Retry it.
+
+Entries written before this have no `revision` and read as 0. Nothing to migrate.
+
 ### `POST /import` goes on past a failing row by default; `@wip/client` 0.97.0
 
 - **Every row is attempted and reported by default.** `skip_errors` now

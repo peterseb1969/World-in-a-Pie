@@ -16,10 +16,13 @@ from ..models.id_algorithm import VALID_ENTITY_TYPES
 
 def error_fields(exc: BaseException) -> dict[str, Any]:
     """The error and error_code of a per-item result for ``exc``."""
+    from .entry_writes import EntryWriteConflict
     from .managed import MANAGED_BY_DEPLOYER, ManagedRecordRefused
 
     if isinstance(exc, ManagedRecordRefused):
         return {"error": exc.detail, "error_code": MANAGED_BY_DEPLOYER}
+    if isinstance(exc, EntryWriteConflict):
+        return {"error": str(exc), "error_code": EntryWriteConflict.error_code}
     code = "invalid_request" if isinstance(exc, ValueError) else "internal_error"
     return {"error": str(exc), "error_code": code}
 

@@ -1,12 +1,13 @@
 """Synonym management API endpoints."""
 
+import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
-from beanie.odm.utils.encoder import Encoder
 from fastapi import APIRouter, Body, Depends
-from pymongo import UpdateOne
-from pymongo.errors import BulkWriteError, DuplicateKeyError
+from pymongo.errors import DuplicateKeyError
 
 from wip_auth import UserIdentity
 
@@ -30,6 +31,7 @@ from ..services.claims import (
     new_claim_token,
     release_keys_bulk,
 )
+from ..services.entry_writes import UNCHANGED, apply_to_entry, write_entry
 from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.event_bus import entries_changed
 from ..services.hash import HashService
@@ -232,9 +234,24 @@ async def add_synonyms(
         changed[entry.entry_id] = entry
         by_entry.setdefault(entry.entry_id, []).append(p)
 
-    failed = await _write_synonym_lists(
-        changed, lambda entry_id: [planned[p][2].composite_key_hash for p in by_entry[entry_id]],
-    )
+    def reapply_adds(entry_id: str, entry: RegistryEntry) -> SynonymOutcomes:
+        outcomes: SynonymOutcomes = {}
+        for p in by_entry[entry_id]:
+            synonym = planned[p][2]
+            h = synonym.composite_key_hash
+            recorded = entry.find_synonym_by_hash(h)
+            if entry.primary_composite_key_hash == h or (
+                recorded is not None and recorded.status != "inactive"
+            ):
+                outcomes[h] = "already_exists"
+                continue
+            if recorded is not None:
+                entry.synonyms.remove(recorded)
+            entry.synonyms.append(synonym)
+            outcomes[h] = "added"
+        return outcomes
+
+    failed, redecided = await _write_synonym_lists(changed, reapply_adds)
     claims_to_confirm, claims_to_release = [], []
     for entry_id, positions in by_entry.items():
         for p in positions:
@@ -244,8 +261,10 @@ async def add_synonyms(
                 claims_to_release.append(key)
                 settle(p, AddSynonymResponse(index=0, status="error", **failed[entry_id]))
             else:
+                # The claim is this entry's either way: confirm it.
                 claims_to_confirm.append(key)
-                settle(p, AddSynonymResponse(index=0, status="added", registry_id=entry_id))
+                status = redecided.get(entry_id, {}).get(synonym.composite_key_hash, "added")
+                settle(p, AddSynonymResponse(index=0, status=status, registry_id=entry_id))
     # A failed write releases the claims this request inserted (anything
     # missed is pending and dies in the reconcile pass); a committed one
     # confirms them, best-effort.
@@ -268,63 +287,89 @@ async def _load_active_entries(entry_ids: set[str]) -> dict[str, RegistryEntry]:
     }
 
 
+SynonymOutcomes = dict[str, str]  # composite_key_hash -> per-item status
+
+# updated_by is always among them: an entry a request does not name it for
+# keeps the value it was read with.
+_SYNONYM_FIELDS = ("synonyms", "search_values", "updated_at", "updated_by")
+
+
 async def _write_synonym_lists(
     changed: dict[str, RegistryEntry],
-    expected_hashes,
+    reapply: Callable[[str, RegistryEntry], SynonymOutcomes],
     updated_by: dict[str, str | None] | None = None,
-    absent: bool = False,
-) -> dict[str, dict]:
-    """Write each changed entry's synonyms, search_values and updated_at in one
-    bulk write, instead of a full save per item. Returns the entries whose
-    write failed, with the per-item error fields.
+) -> tuple[dict[str, dict], dict[str, SynonymOutcomes]]:
+    """Write each changed entry's synonyms, search_values and updated_at, each
+    write filtered on the revision the entry was read with (entry_writes), so
+    two requests changing one entry's synonyms cannot drop each other's
+    change.
 
-    When the bulk write does not say which writes failed, each entry is
-    re-read: it counts as written if the synonym hashes this request changed
-    are present and active (``absent=False``) or gone (``absent=True``) on it.
+    An entry another writer changed in the meantime is read again and the
+    request's changes are applied to it afresh by ``reapply(entry_id, entry)``,
+    which changes the entry in place and returns each synonym's outcome as
+    decided against the entry as it now is — a synonym another request added
+    first is already_exists, one it removed first is not_found. An entry no
+    longer active fails its items, as one that was not active at the start
+    would have.
+
+    Returns (failed entries with their per-item error fields, the outcomes
+    re-decided on a re-read, by entry).
     """
     if not changed:
-        return {}
+        return {}, {}
     now = datetime.now(UTC)
-    ops = []
-    order = list(changed)
-    for entry_id in order:
-        entry = changed[entry_id]
+
+    def finish(entry: RegistryEntry) -> None:
         entry.rebuild_search_values()
         entry.updated_at = now
-        fields = {"synonyms", "search_values", "updated_at"}
-        if updated_by is not None and entry_id in updated_by:
-            entry.updated_by = updated_by[entry_id]
-            fields.add("updated_by")
-        encoded = Encoder().encode(entry)
-        ops.append(UpdateOne(
-            {"entry_id": entry_id}, {"$set": {f: encoded[f] for f in fields}},
-        ))
+        if updated_by is not None and entry.entry_id in updated_by:
+            entry.updated_by = updated_by[entry.entry_id]
+
+    async def first_write(entry: RegistryEntry) -> bool | BaseException:
+        finish(entry)
+        try:
+            return await write_entry(entry, _SYNONYM_FIELDS, {"status": "active"})
+        except Exception as e:  # outcome unknown: settled by a re-read below
+            return e
+
+    order = list(changed)
+    landed = await asyncio.gather(*(first_write(changed[eid]) for eid in order))
+
     failed: dict[str, dict] = {}
-    try:
-        await RegistryEntry.get_motor_collection().bulk_write(ops, ordered=False)
-    except BulkWriteError as e:
-        for err in e.details.get("writeErrors", []):
-            failed[order[err["index"]]] = error_fields(Exception(err.get("errmsg", "write failed")))
-    except Exception as e:
-        # Outcome unknown: re-read and decide per entry.
-        stored = {
-            d["entry_id"]: {
-                s.get("composite_key_hash")
-                for s in d.get("synonyms") or []
-                if s.get("status") != "inactive"
-            }
-            async for d in RegistryEntry.get_motor_collection().find(
-                {"entry_id": {"$in": order}},
-                {"entry_id": 1, "synonyms.composite_key_hash": 1, "synonyms.status": 1, "_id": 0},
+    redecided: dict[str, SynonymOutcomes] = {}
+    for entry_id, outcome in zip(order, landed, strict=True):
+        if outcome is True:
+            continue
+        unknown = outcome if isinstance(outcome, BaseException) else None
+        decided: SynonymOutcomes = {}
+
+        def mutate(entry: RegistryEntry, entry_id: str = entry_id, decided: dict = decided) -> Any:
+            decided.clear()
+            decided.update(reapply(entry_id, entry))
+            if not any(status in ("added", "removed") for status in decided.values()):
+                return UNCHANGED
+            finish(entry)
+            return None
+
+        try:
+            entry, _ = await apply_to_entry(
+                entry_id, mutate, _SYNONYM_FIELDS, read_filter={"status": "active"},
             )
-        }
-        for entry_id in order:
-            hashes = set(expected_hashes(entry_id))
-            have = stored.get(entry_id, set())
-            written = not (hashes & have) if absent else hashes <= have
-            if not written:
-                failed[entry_id] = error_fields(e)
-    return failed
+        except Exception as e:
+            failed[entry_id] = error_fields(unknown or e)
+            continue
+        if entry is None:
+            failed[entry_id] = {
+                "error": f"Entry {entry_id} is no longer active", "error_code": "not_found",
+            }
+            continue
+        if unknown is not None:
+            # The first write may have landed before its error: a change found
+            # already made is this request's own.
+            decided = {h: {"already_exists": "added", "not_found": "removed"}.get(st, st)
+                       for h, st in decided.items()}
+        redecided[entry_id] = dict(decided)
+    return failed, redecided
 
 
 @router.post(
@@ -399,17 +444,32 @@ async def remove_synonyms(
         except Exception as e:
             results[i] = RemoveSynonymResponse(index=i, status="error", **error_fields(e))
 
-    failed = await _write_synonym_lists(
-        changed,
-        lambda entry_id: [key[2] for _, key in removals[entry_id]],
-        updated_by=updated_by,
-        absent=True,
+    def reapply_removals(entry_id: str, entry: RegistryEntry) -> SynonymOutcomes:
+        outcomes: SynonymOutcomes = {}
+        for _i, (ns, entity_type, h, _owner, _kind) in removals[entry_id]:
+            before = len(entry.synonyms)
+            entry.synonyms = [
+                s for s in entry.synonyms
+                if not (s.namespace == ns and s.entity_type == entity_type
+                        and s.composite_key_hash == h)
+            ]
+            outcomes[h] = "removed" if len(entry.synonyms) < before else "not_found"
+        return outcomes
+
+    failed, redecided = await _write_synonym_lists(
+        changed, reapply_removals, updated_by=updated_by,
     )
     released = []
     for entry_id, entry_removals in removals.items():
         for i, key in entry_removals:
             if entry_id in failed:
                 results[i] = RemoveSynonymResponse(index=i, status="error", **failed[entry_id])
+            elif redecided.get(entry_id, {}).get(key[2], "removed") == "not_found":
+                # Another request removed it first; its claim went with it.
+                results[i] = RemoveSynonymResponse(
+                    index=i, status="not_found", registry_id=entry_id,
+                    error="Synonym not found in entry",
+                )
             else:
                 released.append(key)
                 results[i] = RemoveSynonymResponse(
@@ -533,6 +593,7 @@ async def merge_entries(
                 composite_key_hash=entry_id_hash,
                 created_by=item.updated_by,
             )
+            additions: list[Synonym] = []
             if not any(s.composite_key_hash == entry_id_hash for s in preferred.synonyms):
                 # CASE-427: claim the entry_id-as-synonym for preferred. The
                 # hash is unique to deprecated's id, so a conflict can only be a
@@ -547,7 +608,7 @@ async def merge_entries(
                         deprecated.namespace, deprecated.entity_type,
                         entry_id_hash, preferred.entry_id,
                     )
-                preferred.synonyms.append(entry_id_synonym)
+                additions.append(entry_id_synonym)
 
             # Transfer all deprecated synonyms (claim re-points to preferred).
             # An inactive synonym holds no claim — the key may belong to
@@ -559,17 +620,32 @@ async def merge_entries(
                             syn.namespace, syn.entity_type, syn.composite_key_hash,
                             preferred.entry_id,
                         )
-                    preferred.synonyms.append(syn)
+                    additions.append(syn)
 
-            deprecated.status = "inactive"
-            deprecated.updated_at = datetime.now(UTC)
-            deprecated.updated_by = item.updated_by
-            await deprecated.save()
+            # Both writes are guarded on the revision read (entry_writes): a
+            # synonym another request adds to either entry meanwhile is kept.
+            now = datetime.now(UTC)
 
-            preferred.rebuild_search_values()
-            preferred.updated_at = datetime.now(UTC)
-            preferred.updated_by = item.updated_by
-            await preferred.save()
+            def retire(entry: RegistryEntry, now=now, by=item.updated_by) -> None:
+                entry.status = "inactive"
+                entry.updated_at = now
+                entry.updated_by = by
+
+            def absorb(entry: RegistryEntry, now=now, by=item.updated_by, additions=additions) -> None:
+                present = {s.composite_key_hash for s in entry.synonyms}
+                entry.synonyms.extend(s for s in additions if s.composite_key_hash not in present)
+                entry.rebuild_search_values()
+                entry.updated_at = now
+                entry.updated_by = by
+
+            await apply_to_entry(
+                deprecated.entry_id, retire, ("status", "updated_at", "updated_by"),
+                first=deprecated,
+            )
+            await apply_to_entry(
+                preferred.entry_id, absorb,
+                ("synonyms", "search_values", "updated_at", "updated_by"), first=preferred,
+            )
 
             results.append(MergeResponse(
                 index=i, status="merged",

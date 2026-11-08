@@ -28,6 +28,7 @@ from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
+from .entry_writes import UNCHANGED, apply_to_entry
 
 logger = logging.getLogger("registry.claims")
 
@@ -392,15 +393,29 @@ async def retire_entry_synonyms(
     claim its owner no longer backs, which inline healing frees at the next
     collision — never a released claim on a synonym still marked active.
     """
-    released = releasable_synonyms(entry)
-    if dry_run or not released:
+    if dry_run:
+        return releasable_synonyms(entry)
+    now = datetime.now(UTC)
+
+    # Decided on the entry as written: a synonym another request adds or
+    # removes meanwhile is kept or stays gone (entry_writes).
+    def retire(fresh: RegistryEntry) -> object:
+        released = releasable_synonyms(fresh)
+        if not released:
+            return UNCHANGED
+        for syn in released:
+            syn.status = "inactive"
+        fresh.rebuild_search_values()
+        fresh.updated_at = now
+        fresh.updated_by = updated_by
         return released
-    for syn in released:
-        syn.status = "inactive"
-    entry.rebuild_search_values()
-    entry.updated_at = datetime.now(UTC)
-    entry.updated_by = updated_by
-    await entry.save()
+
+    written, released = await apply_to_entry(
+        entry.entry_id, retire, ("synonyms", "search_values", "updated_at", "updated_by"),
+        first=entry,
+    )
+    if written is None or released is UNCHANGED:
+        return []
     for syn in released:
         try:
             await CompositeKeyClaim.release(
@@ -416,19 +431,17 @@ async def retire_entry_synonyms(
     return released
 
 
-async def revive_entry_synonyms(
-    entry: RegistryEntry, updated_by: str | None = None,
-) -> tuple[list[Synonym], list[tuple[Synonym, str]]]:
-    """Revive an entry's inactive synonyms: re-claim each one whose key is
-    free. One another entity took while this one was retired stays inactive —
-    the entity is revived without it. Returns (reclaimed, [(synonym, holder
-    entry_id), …] for those left inactive). Idempotent.
+def _synonym_scope(syn: Synonym) -> tuple[str, str, str]:
+    return (syn.namespace, syn.entity_type, syn.composite_key_hash)
 
-    Same two-phase order as a synonym add: claim pending, write the entry,
-    confirm.
-    """
-    token = new_claim_token()
-    reclaimed: list[Synonym] = []
+
+async def _claim_inactive_synonyms(
+    entry: RegistryEntry, token: str,
+) -> tuple[list[Synonym], list[tuple[Synonym, str]]]:
+    """Claim, pending, every inactive synonym of ``entry`` whose key is free.
+    Returns (claimed, [(synonym, holder entry_id), …] for keys another entry
+    holds)."""
+    claimed: list[Synonym] = []
     taken: list[tuple[Synonym, str]] = []
     for syn in entry.synonyms:
         if syn.status != "inactive":
@@ -439,7 +452,7 @@ async def revive_entry_synonyms(
                     syn.namespace, syn.entity_type, syn.composite_key_hash,
                     entry.entry_id, "synonym", state="pending", token=token,
                 )
-                reclaimed.append(syn)
+                claimed.append(syn)
                 break
             except DuplicateKeyError:
                 existing = await CompositeKeyClaim.find_existing(
@@ -449,22 +462,69 @@ async def revive_entry_synonyms(
                     continue  # healed — retry once; index arbitrates races
                 taken.append((syn, existing.owner_entry_id if existing else "?"))
                 break
-    if not reclaimed:
-        return reclaimed, taken
+    return claimed, taken
 
-    for syn in reclaimed:
-        syn.status = "active"
-    entry.rebuild_search_values()
-    entry.updated_at = datetime.now(UTC)
-    entry.updated_by = updated_by
+
+def _revival(claimed: set[tuple[str, str, str]], updated_by: str | None):
+    """The change a revival makes, applied to the entry as written
+    (entry_writes): a claimed synonym that another request removed meanwhile
+    is not brought back. Returns the synonyms revived, or UNCHANGED."""
+    now = datetime.now(UTC)
+
+    def revive(fresh: RegistryEntry) -> object:
+        revived = [
+            s for s in fresh.synonyms
+            if s.status == "inactive" and _synonym_scope(s) in claimed
+        ]
+        if not revived:
+            return UNCHANGED
+        for syn in revived:
+            syn.status = "active"
+        fresh.rebuild_search_values()
+        fresh.updated_at = now
+        fresh.updated_by = updated_by
+        return revived
+
+    return revive
+
+
+async def _release_synonym_claims(entry_id: str, synonyms: list[Synonym], token: str) -> None:
+    if synonyms:
+        await release_keys_bulk(
+            [(*_synonym_scope(s), entry_id, "synonym") for s in synonyms], token,
+        )
+
+
+async def revive_entry_synonyms(
+    entry: RegistryEntry, updated_by: str | None = None,
+) -> tuple[list[Synonym], list[tuple[Synonym, str]]]:
+    """Revive an entry's inactive synonyms: re-claim each one whose key is
+    free. One another entity took while this one was retired stays inactive —
+    the entity is revived without it. Returns (reclaimed, [(synonym, holder
+    entry_id), …] for those left inactive). Idempotent.
+
+    Same two-phase order as a synonym add: claim pending, write the entry,
+    confirm. A claim whose synonym another request removed before the write
+    is released.
+    """
+    token = new_claim_token()
+    claimed, taken = await _claim_inactive_synonyms(entry, token)
+    if not claimed:
+        return claimed, taken
+
     try:
-        await entry.save()
+        _written, revived = await apply_to_entry(
+            entry.entry_id, _revival({_synonym_scope(s) for s in claimed}, updated_by),
+            ("synonyms", "search_values", "updated_at", "updated_by"), first=entry,
+        )
     except Exception:
-        await release_keys_bulk([
-            (syn.namespace, syn.entity_type, syn.composite_key_hash, entry.entry_id, "synonym")
-            for syn in reclaimed
-        ], token)
+        await _release_synonym_claims(entry.entry_id, claimed, token)
         raise
+    kept = set() if revived in (UNCHANGED, None) else {_synonym_scope(s) for s in revived}
+    await _release_synonym_claims(
+        entry.entry_id, [s for s in claimed if _synonym_scope(s) not in kept], token,
+    )
+    reclaimed = [s for s in claimed if _synonym_scope(s) in kept]
     for syn in reclaimed:
         await CompositeKeyClaim.confirm(
             syn.namespace, syn.entity_type, syn.composite_key_hash, entry.entry_id,
@@ -574,11 +634,9 @@ async def backfill_claims() -> dict[str, int]:
     async for entry in RegistryEntry.find_all().sort("+created_at"):
         if not entry.synonyms:
             continue
-        survivors = []
-        changed = False
+        losers: set[tuple[str, str, str]] = set()
         for syn in entry.synonyms:
             if not syn.composite_key_hash or syn.status == "inactive":
-                survivors.append(syn)
                 continue
             try:
                 await CompositeKeyClaim.claim(
@@ -586,7 +644,6 @@ async def backfill_claims() -> dict[str, int]:
                     entry.entry_id, "synonym",
                 )
                 summary["synonym_claimed"] += 1
-                survivors.append(syn)
             except DuplicateKeyError:
                 existing = await CompositeKeyClaim.find_existing(
                     syn.namespace, syn.entity_type, syn.composite_key_hash
@@ -600,11 +657,17 @@ async def backfill_claims() -> dict[str, int]:
                     syn.entity_type, winner, syn.composite_key,
                 )
                 summary["synonym_losers_stripped"] += 1
-                changed = True  # drop this synonym (not appended to survivors)
-        if changed:
-            entry.synonyms = survivors
-            entry.rebuild_search_values()
-            await entry.save()
+                losers.add((syn.namespace, syn.entity_type, syn.composite_key_hash))
+        if losers:
+            def strip(fresh: RegistryEntry, losers=losers) -> None:
+                fresh.synonyms = [
+                    s for s in fresh.synonyms
+                    if s.status == "inactive"
+                    or (s.namespace, s.entity_type, s.composite_key_hash) not in losers
+                ]
+                fresh.rebuild_search_values()
+
+            await apply_to_entry(entry.entry_id, strip, ("synonyms", "search_values"), first=entry)
 
     logger.info("CASE-427 backfill complete: %s", summary)
     return summary

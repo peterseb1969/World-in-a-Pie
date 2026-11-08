@@ -77,6 +77,12 @@ from ..services.claims import (
     retire_entry_synonyms,
     revive_entry_synonyms,
 )
+from ..services.entry_writes import (
+    REVISION_INC,
+    UNCHANGED,
+    EntryWriteConflict,
+    apply_to_entry,
+)
 from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.event_bus import entries_changed
 from ..services.hash import HashService
@@ -862,13 +868,30 @@ async def rekey_identity(
                 failed += 1
                 continue
 
-            entry.primary_composite_key = new_key
-            entry.primary_composite_key_hash = new_hash
-            entry.rebuild_search_values()
-            entry.updated_at = datetime.now(UTC)
-            entry.updated_by = identity.identity_string
+            now = datetime.now(UTC)
+
+            def rekey(fresh: RegistryEntry, new_key=new_key, new_hash=new_hash,
+                      old_hash=old_hash, now=now) -> Any:
+                if fresh.primary_composite_key_hash == new_hash:
+                    return UNCHANGED
+                if fresh.primary_composite_key_hash != old_hash:
+                    raise EntryWriteConflict(
+                        f"Entry {fresh.entry_id} was re-keyed by another request meanwhile"
+                    )
+                fresh.primary_composite_key = new_key
+                fresh.primary_composite_key_hash = new_hash
+                fresh.rebuild_search_values()
+                fresh.updated_at = now
+                fresh.updated_by = identity.identity_string
+                return None
+
             try:
-                await entry.save()
+                await apply_to_entry(
+                    entry.entry_id, rekey,
+                    ("primary_composite_key", "primary_composite_key_hash", "search_values",
+                     "updated_at", "updated_by"),
+                    first=entry,
+                )
             except Exception:
                 await release_keys_bulk([new_claim], token)
                 raise
@@ -1299,7 +1322,8 @@ async def _activate_keyed(
         if entry.entry_id in with_synonyms:
             fields["synonyms"] = Encoder().encode(entry)["synonyms"]
         ops.append(UpdateOne(
-            {"entry_id": entry.entry_id, "status": "reserved"}, {"$set": fields},
+            {"entry_id": entry.entry_id, "status": "reserved"},
+            {"$set": fields, "$inc": dict(REVISION_INC)},
         ))
     failed: dict[int, dict] = {}  # position in to_write -> error fields
     if ops:
@@ -1459,7 +1483,7 @@ async def activate_entries(
                     {"$set": {
                         "status": "active",
                         "updated_at": datetime.now(UTC),
-                    }},
+                    }, "$inc": dict(REVISION_INC)},
                 )
                 if update_result.modified_count != len(reserved_ids):
                     # A concurrent status change between classify and update: the
@@ -1953,25 +1977,28 @@ async def update_entries(
 
     for i, item in enumerate(items):
         try:
-            entry = await RegistryEntry.find_one({
-                "entry_id": item.entry_id,
-                "status": "active"
-            })
+            now = datetime.now(UTC)
 
+            def update(entry: RegistryEntry, item=item, now=now) -> None:
+                if item.source_info is not None:
+                    entry.source_info = item.source_info
+                if item.metadata is not None:
+                    entry.metadata.update(item.metadata)
+                entry.updated_at = now
+                entry.updated_by = item.updated_by
+
+            # Only the fields an update changes, and only over the revision it
+            # read: a concurrent synonym change or soft delete is kept.
+            entry, _ = await apply_to_entry(
+                item.entry_id, update,
+                ("source_info", "metadata", "updated_at", "updated_by"),
+                read_filter={"status": "active"},
+            )
             if not entry:
                 results.append(UpdateEntryResponse(
                     index=i, status="not_found", registry_id=item.entry_id,
                 ))
                 continue
-
-            if item.source_info is not None:
-                entry.source_info = item.source_info
-            if item.metadata is not None:
-                entry.metadata.update(item.metadata)
-
-            entry.updated_at = datetime.now(UTC)
-            entry.updated_by = item.updated_by
-            await entry.save()
 
             results.append(UpdateEntryResponse(
                 index=i, status="updated", registry_id=item.entry_id,
@@ -1987,6 +2014,23 @@ async def update_entries(
         succeeded=sum(1 for r in results if r.status == "updated"),
         failed=sum(1 for r in results if r.status in ("not_found", "error")),
     )
+
+
+async def _soft_delete_entry(index: int, entry: RegistryEntry, updated_by: str | None) -> DeleteResponse:
+    """Set an entry inactive — only those fields, over the revision read
+    (entry_writes), so a concurrent change to the entry is kept."""
+    now = datetime.now(UTC)
+
+    def deactivate(fresh: RegistryEntry) -> None:
+        fresh.status = "inactive"
+        fresh.updated_at = now
+        fresh.updated_by = updated_by
+
+    gone, _ = await apply_to_entry(
+        entry.entry_id, deactivate, ("status", "updated_at", "updated_by"), first=entry,
+    )
+    status = "not_found" if gone is None else "deactivated"
+    return DeleteResponse(index=index, status=status, registry_id=entry.entry_id)
 
 
 @router.delete(
@@ -2055,15 +2099,7 @@ async def delete_entries(
                     index=i, status="deleted", registry_id=item.entry_id,
                 ))
             else:
-                # Soft-delete: set status to inactive
-                entry.status = "inactive"
-                entry.updated_at = datetime.now(UTC)
-                entry.updated_by = item.updated_by
-                await entry.save()
-
-                results.append(DeleteResponse(
-                    index=i, status="deactivated", registry_id=item.entry_id,
-                ))
+                results.append(await _soft_delete_entry(i, entry, item.updated_by))
 
         except Exception as e:
             results.append(DeleteResponse(
