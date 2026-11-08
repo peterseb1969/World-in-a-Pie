@@ -613,16 +613,7 @@ class DirectBackupEngine:
 
         left_out: dict[str, list[tuple[str, int]]] = {}
         if not include_inactive_templates:
-            left_out = await self._template_versions_to_leave_out(namespaces, skip_documents)
-            dropped = sum(len(v) for v in left_out.values())
-            if dropped:
-                self._emit(
-                    "phase_templates",
-                    f"Leaving out {dropped} inactive template version(s) that no "
-                    "document or template in the archive needs "
-                    "(include_inactive_templates keeps them)",
-                    percent=0,
-                )
+            left_out = await self._announce_left_out_templates(namespaces, skip_documents)
 
         # Pre-count entities across all namespaces for percent calculation
         per_ns_counts: dict[str, dict[str, int]] = {}
@@ -636,48 +627,11 @@ class DirectBackupEngine:
 
         try:
             for ns in namespaces:
-                for entity_type in BACKUP_ENTITY_ORDER:
-                    if skip_documents and entity_type == "documents":
-                        continue
-
-                    db_name, coll_name = COLLECTION_MAP[entity_type]
-                    collection = self._mongo[db_name][coll_name]
-
-                    query = self._entity_query(ns, entity_type, left_out.get(ns, []))
-
-                    phase_name = f"phase_{entity_type}"
-                    expected = per_ns_counts[ns].get(entity_type, 0)
-                    self._emit(
-                        phase_name,
-                        f"[{ns}] Reading {entity_type} ({expected} expected)",
-                        percent=self._pct(processed, total_entities),
-                    )
-
-                    count = 0
-                    cursor = collection.find(query, allow_disk_use=True).sort(
-                        EXPORT_SORT_ORDER[entity_type]
-                    )
-                    async for doc in cursor:
-                        doc.pop("_id", None)
-                        writer.add_entity(entity_type, doc, namespace=ns)
-                        referents.add(entity_type, doc)
-                        count += 1
-                        processed += 1
-                        if count % 5000 == 0:
-                            self._emit(
-                                phase_name,
-                                f"[{ns}] {entity_type}: {count}/{expected}",
-                                percent=self._pct(processed, total_entities),
-                                current=count,
-                                total=expected,
-                            )
-
-                    logger.info("Backed up %d %s for namespace %s", count, entity_type, ns)
-
-                # Blobs (per namespace; file_ids are globally unique so the
-                # archive's flat blobs/ dir never collides across namespaces)
-                if include_files and self._storage:
-                    await self._backup_blobs(writer, ns, archive_path, processed, total_entities)
+                processed = await self._backup_namespace(
+                    writer, referents, ns, archive_path, left_out.get(ns, []),
+                    per_ns_counts[ns], processed, total_entities,
+                    include_files=include_files, skip_documents=skip_documents,
+                )
 
             self._emit(
                 "phase_referents",
@@ -686,42 +640,10 @@ class DirectBackupEngine:
             )
             referent_rows = await self._read_referents(referents.external_ids())
             writer.write_referents_file(referent_rows)
-            referent_count = len(referent_rows)
 
-            # Build manifest: one entry per namespace + aggregate counts
-            ns_entries: list[NamespaceEntry] = []
-            agg: dict[str, int] = {et: 0 for et in BACKUP_ENTITY_ORDER}
-            for ns in namespaces:
-                counts = EntityCounts(
-                    **{et: writer.entity_count(et, namespace=ns) for et in BACKUP_ENTITY_ORDER}
-                )
-                ns_entries.append(
-                    NamespaceEntry(
-                        prefix=ns,
-                        namespace_config=await self._read_namespace_config(ns),
-                        counts=counts,
-                        provenance=await self._read_provenance(ns),
-                    )
-                )
-                for et in BACKUP_ENTITY_ORDER:
-                    agg[et] += writer.entity_count(et, namespace=ns)
-
-            single = len(namespaces) == 1
-            manifest = Manifest(
-                format_version="3.1",
-                exported_at=datetime.now(UTC),
-                source_host=socket.gethostname(),
-                namespaces=ns_entries,
-                namespace=namespaces[0] if single else "",
-                namespace_config=ns_entries[0].namespace_config if single else None,
-                source_install={
-                    "schema_version": "1.4",
-                    "hash_version": 1,
-                },
-                include_files=include_files,
-                include_all_versions=not latest_only,
-                counts=EntityCounts(**agg),
-                referents=referent_count,
+            manifest = await self._backup_manifest(
+                writer, namespaces, include_files=include_files,
+                latest_only=latest_only, referent_count=len(referent_rows),
             )
 
             self._emit("phase_finalize", "Writing archive", percent=95)
@@ -746,6 +668,145 @@ class DirectBackupEngine:
             with contextlib.suppress(Exception):
                 writer._cleanup()
             raise
+
+    async def _announce_left_out_templates(
+        self, namespaces: list[str], skip_documents: bool,
+    ) -> dict[str, list[tuple[str, int]]]:
+        """The inactive template versions this backup leaves out, per
+        namespace (see ``_template_versions_to_leave_out``), announced in a
+        progress event when there are any."""
+        left_out = await self._template_versions_to_leave_out(namespaces, skip_documents)
+        dropped = sum(len(v) for v in left_out.values())
+        if dropped:
+            self._emit(
+                "phase_templates",
+                f"Leaving out {dropped} inactive template version(s) that no "
+                "document or template in the archive needs "
+                "(include_inactive_templates keeps them)",
+                percent=0,
+            )
+        return left_out
+
+    async def _backup_namespace(
+        self,
+        writer: ArchiveWriter,
+        referents: ReferentCollector,
+        ns: str,
+        archive_path: Path,
+        left_out: list[tuple[str, int]],
+        counts: dict[str, int],
+        processed: int,
+        total_entities: int,
+        *,
+        include_files: bool,
+        skip_documents: bool,
+    ) -> int:
+        """Write one namespace's entities, in BACKUP_ENTITY_ORDER, and its file
+        blobs when asked. Returns the running count of entities processed."""
+        for entity_type in BACKUP_ENTITY_ORDER:
+            if skip_documents and entity_type == "documents":
+                continue
+            processed = await self._backup_entity_type(
+                writer, referents, ns, entity_type, left_out,
+                counts.get(entity_type, 0), processed, total_entities,
+            )
+
+        # Blobs (per namespace; file_ids are globally unique so the
+        # archive's flat blobs/ dir never collides across namespaces)
+        if include_files and self._storage:
+            await self._backup_blobs(writer, ns, archive_path, processed, total_entities)
+        return processed
+
+    async def _backup_entity_type(
+        self,
+        writer: ArchiveWriter,
+        referents: ReferentCollector,
+        ns: str,
+        entity_type: str,
+        left_out: list[tuple[str, int]],
+        expected: int,
+        processed: int,
+        total_entities: int,
+    ) -> int:
+        """Stream one entity type of one namespace into the archive, in its
+        export sort order, reporting progress every 5000 rows. Returns the
+        running count of entities processed."""
+        db_name, coll_name = COLLECTION_MAP[entity_type]
+        collection = self._mongo[db_name][coll_name]
+        query = self._entity_query(ns, entity_type, left_out)
+
+        phase_name = f"phase_{entity_type}"
+        self._emit(
+            phase_name,
+            f"[{ns}] Reading {entity_type} ({expected} expected)",
+            percent=self._pct(processed, total_entities),
+        )
+
+        count = 0
+        cursor = collection.find(query, allow_disk_use=True).sort(EXPORT_SORT_ORDER[entity_type])
+        async for doc in cursor:
+            doc.pop("_id", None)
+            writer.add_entity(entity_type, doc, namespace=ns)
+            referents.add(entity_type, doc)
+            count += 1
+            processed += 1
+            if count % 5000 == 0:
+                self._emit(
+                    phase_name,
+                    f"[{ns}] {entity_type}: {count}/{expected}",
+                    percent=self._pct(processed, total_entities),
+                    current=count,
+                    total=expected,
+                )
+
+        logger.info("Backed up %d %s for namespace %s", count, entity_type, ns)
+        return processed
+
+    async def _backup_manifest(
+        self,
+        writer: ArchiveWriter,
+        namespaces: list[str],
+        *,
+        include_files: bool,
+        latest_only: bool,
+        referent_count: int,
+    ) -> Manifest:
+        """The archive's manifest: one entry per namespace (its config,
+        counts and provenance) plus the aggregate counts."""
+        ns_entries: list[NamespaceEntry] = []
+        agg: dict[str, int] = {et: 0 for et in BACKUP_ENTITY_ORDER}
+        for ns in namespaces:
+            counts = EntityCounts(
+                **{et: writer.entity_count(et, namespace=ns) for et in BACKUP_ENTITY_ORDER}
+            )
+            ns_entries.append(
+                NamespaceEntry(
+                    prefix=ns,
+                    namespace_config=await self._read_namespace_config(ns),
+                    counts=counts,
+                    provenance=await self._read_provenance(ns),
+                )
+            )
+            for et in BACKUP_ENTITY_ORDER:
+                agg[et] += writer.entity_count(et, namespace=ns)
+
+        single = len(namespaces) == 1
+        return Manifest(
+            format_version="3.1",
+            exported_at=datetime.now(UTC),
+            source_host=socket.gethostname(),
+            namespaces=ns_entries,
+            namespace=namespaces[0] if single else "",
+            namespace_config=ns_entries[0].namespace_config if single else None,
+            source_install={
+                "schema_version": "1.4",
+                "hash_version": 1,
+            },
+            include_files=include_files,
+            include_all_versions=not latest_only,
+            counts=EntityCounts(**agg),
+            referents=referent_count,
+        )
 
     async def _pre_count(
         self, namespace: str, skip_documents: bool,
