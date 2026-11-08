@@ -9,7 +9,12 @@ import re
 from fastapi import HTTPException
 
 # Default allowed MIME types. Override with WIP_ALLOWED_MIME_TYPES env var
-# (comma-separated, e.g. "image/*,application/pdf,text/*").
+# (comma-separated, e.g. "image/*,application/pdf,text/*"). A pattern ending
+# in "*" matches every type that starts with what precedes it, so
+# "image/*" admits image/png and "application/vnd.openxmlformats-officedocument.*"
+# admits .docx, .xlsx and .pptx (and their templates). Macro-enabled Office
+# documents (application/vnd.ms-word.document.macroEnabled.12 and kin) are
+# deliberately NOT admitted: their types share neither prefix.
 _DEFAULT_ALLOWED = (
     "image/*,"
     "audio/*,"
@@ -19,8 +24,9 @@ _DEFAULT_ALLOWED = (
     "application/xml,"
     "text/*,"
     "application/vnd.openxmlformats-officedocument.*,"
+    "application/msword,"
     "application/vnd.ms-excel,"
-    "application/vnd.ms-word,"
+    "application/vnd.ms-powerpoint,"
     "application/zip,"
     "application/gzip,"
     "application/octet-stream"
@@ -40,15 +46,23 @@ def _get_allowed_types() -> list[str]:
     return [t.strip().lower() for t in raw.split(",") if t.strip()]
 
 
-def _matches_type_pattern(content_type: str, patterns: list[str]) -> bool:
-    """Check if content_type matches any allowed pattern."""
+def content_type_matches(content_type: str, patterns: list[str]) -> bool:
+    """Whether a MIME type matches any of ``patterns``.
+
+    The one matching rule for the upload allowlist and a file field's
+    ``allowed_types``: a pattern ending in ``*`` matches every type that
+    starts with the text before the ``*`` ("*/*" and "*" match anything,
+    "image/*" matches image/png, "application/vnd.openxmlformats-officedocument.*"
+    matches .docx); any other pattern matches that type exactly. Case is
+    ignored, and parameters ("; charset=utf-8") are not part of the type.
+    """
     base_type = content_type.split(";")[0].strip().lower()
     for pattern in patterns:
+        pattern = pattern.strip().lower()
         if pattern == "*/*":
             return True
-        if pattern.endswith("/*"):
-            prefix = pattern[:-2]
-            if base_type.startswith(prefix + "/"):
+        if pattern.endswith("*"):
+            if base_type.startswith(pattern[:-1]):
                 return True
         elif pattern == base_type:
             return True
@@ -71,7 +85,7 @@ def validate_upload_content_type(content_type: str, filename: str) -> None:
 
     # Check content type against allowlist
     allowed = _get_allowed_types()
-    if not _matches_type_pattern(content_type, allowed):
+    if not content_type_matches(content_type, allowed):
         raise HTTPException(
             status_code=415,
             detail=f"Content type '{content_type}' is not allowed. "

@@ -7,6 +7,27 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Word, Excel and PowerPoint files can be uploaded
+
+The default upload allowlist refused every Office document except legacy
+`.xls`. Its OOXML entry, `application/vnd.openxmlformats-officedocument.*`,
+was read as one exact type because only patterns ending in `/*` were treated
+as wildcards; and its Word entry, `application/vnd.ms-word`, is not a
+registered type (`.doc` is `application/msword`). Now:
+
+- **A pattern ending in `*` matches every type that starts with the text
+  before it** — in the upload allowlist (`WIP_ALLOWED_MIME_TYPES`), in a file
+  field's `allowed_types`, and in the `content_type` filter of
+  `GET /api/document-store/files`. The three had separate copies of the
+  matcher; they now share one.
+- The default list admits `.docx`, `.xlsx`, `.pptx` (and their templates),
+  `application/msword` (`.doc`) and `application/vnd.ms-powerpoint` (`.ppt`),
+  alongside `application/vnd.ms-excel`. The unregistered
+  `application/vnd.ms-word` is gone from it.
+- **Macro-enabled Office documents stay refused** by default
+  (`application/vnd.ms-word.document.macroEnabled.12` and kin): their types
+  share neither prefix. Add them to `WIP_ALLOWED_MIME_TYPES` to accept them.
+
 ### Document bulk writes report every item and stop where asked; validation and integrity bounds hold
 
 - **`DELETE /documents` and `PATCH /documents` report a namespace refusal

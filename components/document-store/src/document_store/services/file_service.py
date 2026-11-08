@@ -29,6 +29,7 @@ from .file_storage_client import (
     get_file_storage_client,
     is_file_storage_enabled,
 )
+from .file_validation import content_type_matches
 from .nats_client import EventType, publish_file_event
 from .registry_client import RegistryError, get_registry_client
 
@@ -600,7 +601,8 @@ class FileService:
 
         Args:
             status: Filter by status
-            content_type: Filter by MIME type (prefix match, e.g., "image/")
+            content_type: Filter by MIME type: exact, or a prefix ending in "*"
+                (e.g. "image/*", "application/vnd.openxmlformats-officedocument.*")
             category: Filter by category
             tags: Filter by tags (all must match)
             uploaded_by: Filter by uploader
@@ -618,13 +620,14 @@ class FileService:
         if status:
             query["status"] = status.value
         if content_type:
-            if content_type.endswith("/*"):
-                # Match MIME type prefix (e.g., "image/*"). The prefix is
-                # caller text landing in a pattern — escape it so a stray
-                # metacharacter can neither 500 the query nor widen the
-                # match (same literal-text rule as term search).
-                prefix = re.escape(content_type[:-2])
-                query["content_type"] = {"$regex": f"^{prefix}/"}
+            if content_type.endswith("*"):
+                # A prefix, by the allowlist's rule (content_type_matches):
+                # "image/*" lists image/png. The prefix is caller text landing
+                # in a pattern — escape it so a stray metacharacter can
+                # neither 500 the query nor widen the match (same
+                # literal-text rule as term search).
+                prefix = re.escape(content_type[:-1])
+                query["content_type"] = {"$regex": f"^{prefix}"}
             else:
                 query["content_type"] = content_type
         if category:
@@ -766,7 +769,7 @@ class FileService:
             return False, f"File size ({file_doc.size_bytes} bytes) exceeds maximum ({max_size_bytes} bytes)", None
 
         # Check content type
-        if not self._matches_type_pattern(file_doc.content_type, allowed_types):
+        if not content_type_matches(file_doc.content_type, allowed_types):
             return False, f"File type '{file_doc.content_type}' not allowed. Allowed: {allowed_types}", None
 
         # The file's own restriction: the canonical ids of the templates whose
@@ -788,29 +791,6 @@ class FileService:
         )
 
         return True, None, file_ref
-
-    def _matches_type_pattern(self, content_type: str, patterns: list[str]) -> bool:
-        """Check if content_type matches any of the allowed patterns.
-
-        Handles:
-        - Wildcard patterns (e.g., "image/*")
-        - Case-insensitive comparison
-        - Content-type parameters (e.g., "text/csv; charset=utf-8" matches "text/csv")
-        """
-        # Strip parameters (e.g., "; charset=utf-8") and normalize case
-        base_type = content_type.split(";")[0].strip().lower()
-        for pattern in patterns:
-            pattern = pattern.strip().lower()
-            if pattern == "*/*":
-                return True
-            if pattern.endswith("/*"):
-                # Wildcard pattern (e.g., "image/*")
-                prefix = pattern[:-2]
-                if base_type.startswith(prefix + "/"):
-                    return True
-            elif pattern == base_type:
-                return True
-        return False
 
     async def check_integrity(self) -> FileIntegrityResponse:
         """
