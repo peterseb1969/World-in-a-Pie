@@ -2,12 +2,13 @@
 pinned before _resolve_business_key_reference's refactor.
 
 Provenance: CASE-1161. A dict reference names a target template's identity
-fields; each target template is tried in turn. Pinned here, as they behave
-today: no target templates is refused; a target template the template store
-cannot answer or does not find is skipped; a key whose terms or references do
-not resolve, or that yields no identity, names no document under that
-template (later stages are not run); and a Registry error on the primary-key
-lookup counts as no match.
+fields; each target template is tried in turn. Pinned here: no target
+templates is refused; a target template the template store does not find is
+skipped, one it cannot answer fails the reference (template_error); a key
+whose terms or references do not resolve, or that yields no identity, names
+no document under that template (later stages are not run); and a Registry
+that cannot answer the primary-key lookup fails the write
+(RegistryUnavailableError), never counting as no match.
 """
 
 from __future__ import annotations
@@ -18,9 +19,9 @@ import pytest
 
 from document_store.services import registry_client as rc
 from document_store.services import validation_service as vs
-from document_store.services.registry_client import RegistryError
 from document_store.services.template_store_client import TemplateStoreError
 from document_store.services.validation_service import ValidationResult, ValidationService
+from wip_auth.registry_client import RegistryUnavailableError
 
 KEY = {"code": "X1"}
 TEMPLATE = {
@@ -99,10 +100,23 @@ async def test_no_target_templates_is_refused():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("answer", [TemplateStoreError("down"), None])
-async def test_a_target_template_that_cannot_be_read_is_skipped(monkeypatch, stages, answer):
+async def test_a_target_template_the_store_cannot_answer_fails_the_reference(monkeypatch, stages):
     registry = _Registry()
-    _wire(monkeypatch, answer, registry)
+    _wire(monkeypatch, TemplateStoreError("down"), registry)
+    doc, error = await _resolve()
+    assert doc is None
+    assert error["code"] == "template_error"
+    assert error["message"] == (
+        "Could not read a target template of the business key: target template 'T1': down"
+    )
+    assert error["details"] == {"value": KEY}
+    assert stages["ran"] == [] and registry.asked == []
+
+
+@pytest.mark.asyncio
+async def test_a_target_template_the_store_does_not_find_is_skipped(monkeypatch, stages):
+    registry = _Registry()
+    _wire(monkeypatch, None, registry)
     doc, error = await _resolve()
     assert doc is None
     # Skipped templates leave no identity on record, so the key names none.
@@ -141,10 +155,11 @@ async def test_the_identity_template_holds_only_the_identity_fields(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_a_registry_error_on_the_lookup_counts_as_no_match(monkeypatch, stages):
-    registry = _Registry(RegistryError("down"))
+async def test_a_registry_that_cannot_answer_the_lookup_fails_the_write(monkeypatch, stages):
+    registry = _Registry(RegistryUnavailableError("down"))
     _wire(monkeypatch, TEMPLATE, registry)
-    assert await _resolve() == (None, None)
+    with pytest.raises(RegistryUnavailableError):
+        await _resolve()
     assert registry.asked == [("ns", "T1")]
 
 

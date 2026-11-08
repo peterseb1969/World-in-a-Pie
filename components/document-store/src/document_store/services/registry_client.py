@@ -13,10 +13,13 @@ import logging
 import uuid
 from typing import Any, cast
 
+import httpx
+
 from wip_auth.registry_client import (
     RegistryClientBase,
     RegistryError,
     clear_registry_transport,
+    registry_unavailable_from,
     set_registry_transport,
 )
 
@@ -186,26 +189,31 @@ class RegistryClient(RegistryClientBase):
         The key a document write registers (generate_document_id): synonyms
         are not searched, so only the document whose identity this IS can
         match, never one that merely carries the values as a synonym.
+
+        A Registry that cannot answer (unreachable, timed out, or an error
+        status) raises RegistryUnavailableError: an outage is not "no such
+        document".
         """
-        async with self._make_client() as client:
-            response = await client.post(
-                f"{self.base_url}/api/registry/entries/lookup/by-key",
-                headers=self._get_headers(),
-                json=[{
-                    "namespace": namespace,
-                    "entity_type": "documents",
-                    "composite_key": {
-                        "ns": namespace,
-                        "template_id": template_id,
-                        "identity_hash": identity_hash,
-                    },
-                    "search_synonyms": False,
-                }],
-            )
+        try:
+            async with self._make_client() as client:
+                response = await client.post(
+                    f"{self.base_url}/api/registry/entries/lookup/by-key",
+                    headers=self._get_headers(),
+                    json=[{
+                        "namespace": namespace,
+                        "entity_type": "documents",
+                        "composite_key": {
+                            "ns": namespace,
+                            "template_id": template_id,
+                            "identity_hash": identity_hash,
+                        },
+                        "search_synonyms": False,
+                    }],
+                )
+        except httpx.HTTPError as e:
+            raise registry_unavailable_from("document key lookup", error=e) from e
         if response.status_code != 200:
-            raise RegistryError(
-                f"Failed to look up document key: {response.status_code} - {response.text}"
-            )
+            raise registry_unavailable_from("document key lookup", response)
         result = response.json()["results"][0]
         return cast(str, result["entry_id"]) if result.get("status") == "found" else None
 

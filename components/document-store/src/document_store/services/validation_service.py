@@ -2229,9 +2229,19 @@ class ValidationService:
                 "details": {"value": value},
             }
 
-        identities, matches = await self._match_business_key(
-            value, target_templates, namespace, doc_ref_cache,
-        )
+        try:
+            identities, matches = await self._match_business_key(
+                value, target_templates, namespace, doc_ref_cache,
+            )
+        except TemplateStoreError as e:
+            # The key's meaning depends on the target templates' identity
+            # fields; one the template store cannot answer fails the
+            # reference, as the document's own template does.
+            return None, {
+                "code": "template_error",
+                "message": f"Could not read a target template of the business key: {e!s}",
+                "details": {"value": value},
+            }
         error = _business_key_error(value, identities, matches)
         if error is not None or not matches:
             return None, error
@@ -2253,9 +2263,10 @@ class ValidationService:
         (each template's identity fields by template value, the
         (document_id, template value) of every document it names).
 
-        A template the template store cannot answer or does not find is
-        skipped; one whose identity fields the key does not name exactly is
-        recorded but not searched.
+        A template the template store does not find is skipped; one it cannot
+        answer raises TemplateStoreError (the caller fails the reference with
+        it, never reading it as "no such template"); one whose identity fields
+        the key does not name exactly is recorded but not searched.
         """
         from .registry_client import get_registry_client
 
@@ -2266,8 +2277,8 @@ class ValidationService:
         for template_id in sorted(await self._allowed_template_ids(target_templates, namespace)):
             try:
                 template = await client.get_template(template_id)
-            except TemplateStoreError:
-                continue
+            except TemplateStoreError as e:
+                raise TemplateStoreError(f"target template '{template_id}': {e}", code=e.code) from e
             if not template:
                 continue
             template_value = template.get("value") or template_id
@@ -2300,11 +2311,9 @@ class ValidationService:
         reference identity fields feed their referent's canonical ID); a
         value that does not resolve names no document here. The document is
         looked up by its Registry primary key (namespace, template_id,
-        identity_hash); a Registry error counts as no match.
+        identity_hash).
         """
         from wip_auth.composite_key import compute_composite_key_hash
-
-        from .registry_client import RegistryError
 
         identity_template = {
             **template,
@@ -2321,12 +2330,11 @@ class ValidationService:
             self._compute_identity(value, identity_template, scratch)
         if not scratch.valid or not scratch.identity_values:
             return None
-        try:
-            document_id = await registry.lookup_document_by_primary_key(
-                namespace, template_id, compute_composite_key_hash(scratch.identity_values),
-            )
-        except RegistryError:
-            return None
+        # A Registry that cannot answer raises RegistryUnavailableError, which
+        # fails the write: an outage is never read as "no such document".
+        document_id = await registry.lookup_document_by_primary_key(
+            namespace, template_id, compute_composite_key_hash(scratch.identity_values),
+        )
         return cast(str | None, document_id)
 
     async def _allowed_template_ids(

@@ -876,14 +876,10 @@ class DocumentService:
         """The latest stored version of the document with this identity, if any."""
         from wip_auth.composite_key import compute_composite_key_hash
 
-        try:
-            document_id = await get_registry_client().lookup_document_by_primary_key(
-                namespace, template_id, compute_composite_key_hash(identity_values),
-            )
-        except RegistryError as e:
-            raise RegistryUnavailableError(
-                f"Cannot look up the document this write replaces: {e}"
-            ) from e
+        # A Registry that cannot answer raises RegistryUnavailableError here.
+        document_id = await get_registry_client().lookup_document_by_primary_key(
+            namespace, template_id, compute_composite_key_hash(identity_values),
+        )
         if not document_id:
             return None
         return await Document.find_one(
