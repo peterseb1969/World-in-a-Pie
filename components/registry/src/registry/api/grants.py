@@ -205,21 +205,40 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     if ns is None and await reservation_owner(identity, namespace) is not None:
         return "admin"
 
-    # A config-file key that declares grants (a spec-declared key) resolves
-    # locally from its own definition, in the same order as wip-auth's
-    # resolve_permission: the declared grant, else read on a namespace in
-    # the key's scope, else none. Without this the Registry would answer
-    # "read" where every other service answers the declared "write".
-    config_grants = (identity.raw_claims or {}).get("grants")
-    if identity.auth_method == "api_key" and isinstance(config_grants, dict):
-        declared = config_grants.get(namespace)
-        if declared is not None:
-            return str(declared)
-        key_namespaces = (identity.raw_claims or {}).get("namespaces") or []
-        return "read" if namespace in key_namespaces else "none"
+    declared = _config_key_permission(identity, namespace)
+    if declared is not None:
+        return declared
 
-    # Determine subject identifiers to check
-    subjects = []
+    subjects = _grant_subjects(identity, namespace)
+    if not subjects:
+        return "none"
+    return await _best_grant(namespace, subjects)
+
+
+def _config_key_permission(identity: UserIdentity, namespace: str) -> str | None:
+    """A config-file key that declares grants (a spec-declared key) resolves
+    locally from its own definition, in the same order as wip-auth's
+    resolve_permission: the declared grant, else read on a namespace in the
+    key's scope, else none. Without this the Registry would answer "read"
+    where every other service answers the declared "write". None for any
+    other caller."""
+    config_grants = (identity.raw_claims or {}).get("grants")
+    if identity.auth_method != "api_key" or not isinstance(config_grants, dict):
+        return None
+    declared = config_grants.get(namespace)
+    if declared is not None:
+        return str(declared)
+    key_namespaces = (identity.raw_claims or {}).get("namespaces") or []
+    return "read" if namespace in key_namespaces else "none"
+
+
+def _grant_subjects(identity: UserIdentity, namespace: str) -> list[tuple[str, str]]:
+    """The (subject_type, subject) pairs whose grants count for the caller on
+    the namespace: the key (by name) or the user (by email and id), and its
+    groups. Empty when a key's scope excludes the namespace, or when an
+    unscoped key is not in a privileged group (only those may omit
+    scoping)."""
+    subjects: list[tuple[str, str]] = []
     if identity.auth_method == "api_key":
         subjects.append(("api_key", identity.username))
         # CASE-450 compat: cross-service callers on a pre-450 wip-auth don't
@@ -228,30 +247,24 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
         # name. Match both spellings.
         if identity.username.startswith("apikey:"):
             subjects.append(("api_key", identity.username.removeprefix("apikey:")))
-        # Check API key namespace restrictions
         namespaces = (identity.raw_claims or {}).get("namespaces")
         if namespaces is not None:
             if namespace not in namespaces:
-                return "none"
-        else:
-            # Unscoped key (namespaces=None): only privileged groups may omit scoping
-            if not any(g in _PRIVILEGED_GROUPS for g in identity.groups):
-                return "none"
+                return []
+        elif not any(g in _PRIVILEGED_GROUPS for g in identity.groups):
+            return []
     else:
         # OIDC user — check by email
         if identity.email:
             subjects.append(("user", identity.email))
         subjects.append(("user", identity.user_id))
+    subjects.extend(("group", group) for group in identity.groups)
+    return subjects
 
-    # Add group subjects
-    for group in identity.groups:
-        subjects.append(("group", group))
 
-    if not subjects:
-        return "none"
-
-    # Query all matching grants for this namespace. An orphaned grant gives
-    # nothing until it is activated.
+async def _best_grant(namespace: str, subjects: list[tuple[str, str]]) -> str:
+    """The highest unexpired permission granted to any of the subjects on the
+    namespace. An orphaned grant gives nothing until it is activated."""
     query = {
         "namespace": namespace,
         "orphaned": {"$ne": True},
@@ -260,18 +273,13 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
             for stype, subj in subjects
         ],
     }
-    grants = await NamespaceGrant.find(query).to_list()
-
-    # Find highest non-expired permission
     best = "none"
-    for grant in grants:
+    for grant in await NamespaceGrant.find(query).to_list():
         if grant.is_expired():
             continue
         if _PERMISSION_LEVELS.get(grant.permission, 0) > _PERMISSION_LEVELS.get(best, 0):
             best = grant.permission
-
     return best
-
 
 async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | None:
     """Namespaces a directly-calling identity may read, or None for superadmin.
