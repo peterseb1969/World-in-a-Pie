@@ -60,7 +60,7 @@ class NamespaceCreate(StrictModel):
         default=None,
         description="Per-entity-type ID algorithm config. Defaults to UUID7 for all."
     )
-    deletion_mode: str = Field(
+    deletion_mode: Literal["retain", "full"] = Field(
         default="retain",
         description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
     )
@@ -77,7 +77,7 @@ class NamespaceUpdate(StrictModel):
     # Validated in the handler, not here: a value re-sent exactly as stored
     # is accepted even if it predates validation (validate_id_config_write).
     id_config: dict[str, Any] | None = None
-    deletion_mode: str | None = Field(
+    deletion_mode: Literal["retain", "full"] | None = Field(
         default=None,
         description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
     )

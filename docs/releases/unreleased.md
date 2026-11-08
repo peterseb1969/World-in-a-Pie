@@ -7,6 +7,25 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Namespace writes accept `deletion_mode` only as `retain` or `full`
+
+`POST /api/registry/namespaces` and `PUT /api/registry/namespaces/{prefix}`
+took `deletion_mode` as any string. The guards compare the exact value, so
+`"FULL"`, `"Full"` or `" full"` got past both of them: the refusal to enable
+deletion on `wip`, and the `confirm_enable_deletion` step for `retain` →
+`full`. An upsert of an existing namespace then stored that value. The stored
+model refuses it on read, so every later read of that namespace failed, as
+did every namespace listing on the install, and no API call could repair it.
+
+- **Any other value is a 422** on create, upsert-create and upsert-update,
+  and nothing is stored. The narrow `PATCH` route already refused such
+  values with a 400; it is unchanged.
+- **No value was normalised** (no case-folding or trimming): the confirmed
+  switch from `retain` to `full` is meant to be explicit.
+- **An install that already stored such a value** still fails on reads of
+  that namespace. Repair it in MongoDB: set the namespace's `deletion_mode`
+  in `wip_registry.namespaces` to `retain` or `full`.
+
 ### Restores rehash each document against the template it is pinned to; restored Registry rows search by their new keys
 
 - **Fresh restore**: a document's identity hash is recomputed against the
