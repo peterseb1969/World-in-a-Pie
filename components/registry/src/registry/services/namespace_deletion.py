@@ -351,7 +351,7 @@ async def _inbound_from_document_uses(
     Registry and unique install-wide, as the template check assumes too."""
     counts = await _documents_using(documents, prefix, owned)
     impacts = {kind: impact for kind, _f, _s, impact in _DOCUMENT_ID_USES}
-    labels: dict[str | None, str] = {k: v for k, v in owned["templates"].items()}
+    labels: dict[str | None, str] = dict(owned["templates"].items())
     refs: list[InboundReference] = []
     for (kind, ns, template_id), n in sorted(counts.items(), key=lambda kv: [x or "" for x in kv[0]]):
         if template_id not in labels:
