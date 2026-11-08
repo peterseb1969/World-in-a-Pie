@@ -327,7 +327,7 @@ All endpoints require API key authentication via the `X-API-Key` header.
 - **Template Store Service**: Fetch templates for validation
 - **Def-Store Service**: Validate term field values
     """,
-    version="0.2.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",

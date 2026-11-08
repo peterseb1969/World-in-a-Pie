@@ -265,7 +265,7 @@ All endpoints require API key authentication via the `X-API-Key` header.
 Terminologies and terms are registered with the WIP Registry service to get
 unique, system-wide identifiers. IDs are configurable per namespace (default: UUID7).
     """,
-    version="0.2.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",

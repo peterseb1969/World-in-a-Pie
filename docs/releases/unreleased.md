@@ -7,6 +7,48 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Registry lows: export, activation errors, status filters, ID formats; one version per service
+
+- **`POST /api/registry/entries/export`** answers `not_found` for an entry in a
+  namespace the caller cannot read, exactly like a missing id, so the route no
+  longer confirms that an id exists (as `/entries/lookup/by-id` already did).
+  An entry the caller reads but does not administer is still `forbidden`, so an
+  export key short of admin still fails loudly.
+- **`POST /entries/activate`**: a database failure is now an error on the items
+  it concerns. On the keyed path (reading the entries, the claim insert, the
+  post-write re-read) it used to be a whole-request 500. On the keyless path, a
+  failed flip marked every keyless item an error; now only the reserved items
+  it was for. A failure confirming or releasing claims is logged; the claim
+  stays pending for the startup reconcile.
+- **`GET /entries` and `GET /entries/search`** refuse a `status` other than
+  `active`, `reserved` or `inactive` (422). An unknown value used to return an
+  empty page.
+- **`/health`'s `auth_enabled`** is the mode the auth layer enforces
+  (`WIP_AUTH_MODE` is not `none`). It used to echo `AUTH_ENABLED`, which nothing
+  else read; that variable is gone.
+- **ID formats (`/entries/reserve`):**
+  - a UUID must be in canonical form: lowercase, hyphenated, no braces or
+    `urn:uuid:`. Any version is accepted;
+  - a prefixed ID is its prefix followed by one or more digits. IDs whose
+    counter outgrew `pad`, or that were minted under an earlier `pad`, used to
+    be refused;
+  - a `pattern` must match the whole ID;
+  - a nanoid may not carry a trailing newline.
+- **`id_config` writes** refuse:
+  - a prefix with characters other than letters, digits, `_`, `.` and `-`, or
+    longer than 32;
+  - `pad` above 20;
+  - a nanoid `length` outside 8–64.
+
+  Configs already stored are re-accepted unchanged, as before. A field of
+  another algorithm (`pad` on uuid7) is still accepted and has no effect.
+- **`/entries/reactivate`** is documented as what it is: it reclaims synonyms
+  and does not change the entry's status.
+- **Versions:** registry, def-store, template-store and document-store serve
+  one version, their `__version__`, at `/`, in build metadata and in OpenAPI
+  (registry 0.4.0, the three stores 0.2.0). `/` used to report a different
+  number.
+
 ### PATCH and migrate enforce the edge namespace rule
 
 - **PATCH and migrate run the relationship constraints** that create runs.

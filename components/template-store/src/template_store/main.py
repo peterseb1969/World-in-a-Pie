@@ -198,7 +198,7 @@ All endpoints require API key authentication via the `X-API-Key` header.
 - **Def-Store Service**: Terminology references can be validated
 - **Namespace Isolation**: Multi-tenant data isolation
     """,
-    version="0.2.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
