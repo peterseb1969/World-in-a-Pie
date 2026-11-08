@@ -249,3 +249,133 @@ class TestRebuildCli:
             )
         assert r.exit_code == 0, r.output
         assert "Rebuilt mcp-server" in r.output
+
+
+# ────────────────────────────────────────────────────────────────────
+# dev installs: rebuild builds from the repo as it is now
+# ────────────────────────────────────────────────────────────────────
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _fake_repo(root: Path, requirement: str) -> Path:
+    """A repo holding document-store (its real manifest) and the two
+    libraries it bakes in, with `requirement` in its docker requirements."""
+    comp = root / "components" / "document-store"
+    comp.mkdir(parents=True)
+    (comp / "wip-component.yaml").write_text(
+        (REPO_ROOT / "components" / "document-store" / "wip-component.yaml").read_text()
+    )
+    (comp / "Dockerfile").write_text(
+        "FROM python:3.12-slim\n"
+        "COPY requirements-docker.txt .\n"
+        "RUN pip install --no-cache-dir -r requirements-docker.txt\n"
+    )
+    (comp / "requirements-docker.txt").write_text(f"{requirement}\n")
+    for lib in ("wip-auth", "wip-archive"):
+        pkg = root / "libs" / lib / "src" / lib.replace("-", "_")
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text(f"# {lib} as it is now\n")
+    return root
+
+
+def _stale_context(install_dir: Path, name: str) -> Path:
+    ctx = install_dir / "build-contexts" / name
+    (ctx / "wip-auth").mkdir(parents=True)
+    (ctx / "requirements-docker.txt").write_text("fastapi\n")
+    (ctx / "deleted-in-repo.txt").write_text("left over\n")
+    return ctx
+
+
+class TestRefreshDevBuildContexts:
+    def test_requirements_edit_reaches_the_context_the_rebuild_builds(self, tmp_path: Path) -> None:
+        from wip_deploy.discovery import discover
+        from wip_deploy.renderers.dev_simple import refresh_dev_build_contexts
+
+        repo = _fake_repo(tmp_path / "repo", "openpyxl>=3.1.0")
+        install = tmp_path / "install"
+        ctx = _stale_context(install, "document-store")
+
+        refreshed = refresh_dev_build_contexts(
+            install, repo, discover(repo).components, ["document-store"],
+        )
+
+        assert refreshed == ["document-store"]
+        assert (ctx / "requirements-docker.txt").read_text() == "openpyxl>=3.1.0\n"
+        assert not (ctx / "deleted-in-repo.txt").exists()
+        # The baked-in libraries are copied as they are now, and the
+        # Dockerfile is patched to install them, as a render writes it.
+        assert (ctx / "wip-auth/src/wip_auth/__init__.py").read_text() == "# wip-auth as it is now\n"
+        assert (ctx / "wip-archive/src/wip_archive/__init__.py").is_file()
+        dockerfile = (ctx / "Dockerfile").read_text()
+        assert "COPY wip-auth /tmp/wip-auth" in dockerfile
+        assert "COPY wip-archive /tmp/wip-archive" in dockerfile
+
+    def test_only_the_named_services_are_touched(self, tmp_path: Path) -> None:
+        from wip_deploy.discovery import discover
+        from wip_deploy.renderers.dev_simple import refresh_dev_build_contexts
+
+        repo = _fake_repo(tmp_path / "repo", "openpyxl>=3.1.0")
+        install = tmp_path / "install"
+        _stale_context(install, "document-store")
+        other = _stale_context(install, "registry")
+
+        refreshed = refresh_dev_build_contexts(
+            install, repo, discover(repo).components, ["document-store"],
+        )
+
+        assert refreshed == ["document-store"]
+        assert (other / "requirements-docker.txt").read_text() == "fastapi\n"
+        assert (other / "deleted-in-repo.txt").exists()
+
+    def test_a_service_without_a_copied_context_is_skipped(self, tmp_path: Path) -> None:
+        from wip_deploy.discovery import discover
+        from wip_deploy.renderers.dev_simple import refresh_dev_build_contexts
+
+        repo = _fake_repo(tmp_path / "repo", "openpyxl>=3.1.0")
+        install = tmp_path / "install"
+        install.mkdir()
+
+        refreshed = refresh_dev_build_contexts(
+            install, repo, discover(repo).components, ["document-store", "some-app"],
+        )
+
+        assert refreshed == []
+        assert not (install / "build-contexts").exists()
+
+
+class TestRebuildCliRefresh:
+    def _run(self, tmp_path: Path, target: str) -> tuple[object, MagicMock]:
+        from types import SimpleNamespace
+
+        _write_compose(tmp_path, {"document-store": {"build": {"context": "./build-contexts/document-store"}}})
+        deployment = SimpleNamespace(spec=SimpleNamespace(target=target))
+        with (
+            patch("wip_deploy.cli._try_load_previous_deployment", return_value=deployment),
+            patch("wip_deploy.cli._load_state_repo_root", return_value=REPO_ROOT),
+            patch(
+                "wip_deploy.renderers.dev_simple.refresh_dev_build_contexts",
+                return_value=["document-store"],
+            ) as refresh,
+            patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/podman-compose"),
+            patch("wip_deploy.apply.subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            r = runner.invoke(
+                app, ["rebuild", "document-store", "--install-dir", str(tmp_path), "--no-wait"],
+            )
+        return r, refresh
+
+    def test_dev_install_refreshes_before_building(self, tmp_path: Path) -> None:
+        r, refresh = self._run(tmp_path, "dev")
+        assert r.exit_code == 0, r.output
+        refresh.assert_called_once()
+        args = refresh.call_args.args
+        assert args[0] == tmp_path and args[1] == REPO_ROOT and args[3] == ["document-store"]
+        assert "Build context refreshed from the repo: document-store" in r.output
+
+    def test_compose_install_is_not_refreshed(self, tmp_path: Path) -> None:
+        r, refresh = self._run(tmp_path, "compose")
+        assert r.exit_code == 0, r.output
+        refresh.assert_not_called()
+        assert "refreshed" not in r.output

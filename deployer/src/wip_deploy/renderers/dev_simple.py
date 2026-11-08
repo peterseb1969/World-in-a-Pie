@@ -239,6 +239,46 @@ def _materialize_dev_build_context(
     return f"./{prefix}"
 
 
+def refresh_dev_build_contexts(
+    install_dir: Path,
+    repo_root: Path,
+    components: list[Component],
+    services: list[str],
+) -> list[str]:
+    """Re-copy the named services' build contexts from the repo into an
+    existing dev install, exactly as a render would write them.
+
+    A dev install builds each component's image from the copy the render
+    made under build-contexts/<name>/ (the component plus the libraries it
+    bakes in), not from the repo itself. Without a refresh, a rebuild after
+    a Dockerfile or requirements edit builds the old copy and the new image
+    has none of the edit. Only the named services' contexts are rewritten;
+    each is replaced whole, so a file deleted in the repo does not linger.
+
+    A service is skipped when it is not a discovered component with a
+    build context, or when the install holds no build-contexts/<name>/ for
+    it (it is not built from a copied context here, e.g. an app built from
+    its own --app-source checkout, which a rebuild already reads live).
+    Returns the names refreshed.
+    """
+    import shutil
+
+    by_name = {c.metadata.name: c for c in components}
+    refreshed: list[str] = []
+    for name in services:
+        component = by_name.get(name)
+        ctx_dir = install_dir / "build-contexts" / name
+        if component is None or not ctx_dir.is_dir():
+            continue
+        tree = FileTree()
+        if _materialize_dev_build_context(component, repo_root, tree) is None:
+            continue
+        shutil.rmtree(ctx_dir)
+        tree.write(install_dir)
+        refreshed.append(name)
+    return refreshed
+
+
 # ────────────────────────────────────────────────────────────────────
 
 

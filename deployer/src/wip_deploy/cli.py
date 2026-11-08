@@ -1824,7 +1824,12 @@ def rebuild(
     with a healthcheck reports healthy unless `--no-wait` is set.
 
     This is the verb for Dockerfile or requirements.txt/package.json
-    edits — changes that need a new image. Source-only edits on a dev
+    edits — changes that need a new image. On a dev install it first
+    re-copies each named component's build context (the component plus
+    the wip-auth / wip-archive it bakes in) from the repo the install was
+    rendered from, so the image is built from the files as they are now,
+    not as they were at the last render; nothing else is re-rendered.
+    Source-only edits on a dev
     install need nothing at all: source is bind-mounted and hot-reloads
     within seconds (the dev renderer injects WATCHFILES_FORCE_POLLING
     so --reload works across the bind mount). `wip-deploy restart <svc>`
@@ -1844,6 +1849,10 @@ def rebuild(
         typer.echo("error: at least one service name is required", err=True)
         raise typer.Exit(2)
 
+    refreshed = _refresh_dev_build_contexts(target_dir, list(services))
+    if refreshed:
+        typer.echo(f"↻ Build context refreshed from the repo: {', '.join(refreshed)}")
+
     try:
         rebuild_compose_services(
             install_dir=target_dir,
@@ -1860,6 +1869,22 @@ def rebuild(
         typer.style(
             f"✓ Rebuilt {rebuilt}", fg=typer.colors.GREEN, bold=True
         )
+    )
+
+
+def _refresh_dev_build_contexts(install_dir: Path, services: list[str]) -> list[str]:
+    """On a dev install, re-copy the named services' build contexts from
+    the repo the install was rendered from (see
+    renderers.dev_simple.refresh_dev_build_contexts). Any other install,
+    or one without a readable saved spec, is left as it is."""
+    from wip_deploy.renderers.dev_simple import refresh_dev_build_contexts
+
+    deployment = _try_load_previous_deployment(install_dir)
+    if deployment is None or deployment.spec.target != "dev":
+        return []
+    repo_root = _load_state_repo_root(install_dir) or find_repo_root()
+    return refresh_dev_build_contexts(
+        install_dir, repo_root, discover(repo_root).components, services,
     )
 
 
