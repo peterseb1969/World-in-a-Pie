@@ -7,7 +7,7 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
-### A key change reaches every service within about a second
+### A key change reaches every service within a few seconds
 
 - Services learned runtime keys only by polling the Registry every 30 s: a
   key the Registry had just created was refused elsewhere with 401 "Invalid
@@ -16,7 +16,8 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   (create, update, widen, narrow, revoke, key-file import) and grant write
   (create, revoke, activate) on NATS subject `wip.cache.access.changed`;
   every service drops its cached grants and, for a key change, re-syncs its
-  keys at once. Without NATS the 30 s poll remains the bound.
+  keys at once — measured on wip-pi: a new key accepted after ~2.3 s, a
+  revoked one refused after ~1.1 s. Without NATS the 30 s poll remains the bound.
 - ingest-gateway and reporting-sync now subscribe to the Registry's cache
   messages too (before, only def-store, template-store and document-store
   did), so they also drop caches for deleted namespaces and changed entries

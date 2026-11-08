@@ -404,7 +404,7 @@ curl -k -X DELETE https://<host>:8443/api/registry/api-keys/my-app \
   -H "X-API-Key: <admin-key>"
 ```
 
-Other services discover key changes via the Registry's `/api/registry/api-keys/sync` endpoint, polled every 30 seconds. Where the install runs NATS, the Registry also announces every key and grant change (`wip.cache.access.changed`), and each service syncs its keys and drops its cached grants at once — a created, narrowed or revoked key takes effect everywhere within about a second. Without NATS, or for a service that missed the message, allow up to 30 seconds (the poll; the 30 s grant cache for a grant change). Under a Registry outage a service keeps its last copy for up to 90 seconds (three missed polls) before refusing runtime keys with 503, so a key revoked during an outage keeps working there for that long.
+Other services discover key changes via the Registry's `/api/registry/api-keys/sync` endpoint, polled every 30 seconds. Where the install runs NATS, the Registry also announces every key and grant change (`wip.cache.access.changed`), and each service syncs its keys and drops its cached grants at once — a created, narrowed or revoked key takes effect everywhere within a few seconds. Without NATS, or for a service that missed the message, allow up to 30 seconds (the poll; the 30 s grant cache for a grant change). Under a Registry outage a service keeps its last copy for up to 90 seconds (three missed polls) before refusing runtime keys with 503, so a key revoked during an outage keeps working there for that long.
 
 ### 4.5 Namespace scoping and privileged groups
 
@@ -1260,7 +1260,7 @@ services (MongoDB, PostgreSQL, NATS, Garage, Dex) are not restarted this way.
 |---|---|---|
 | The install's **master key** (`secrets/api-key`), read by every service and app | install secret | `wip-deploy rotate-key --secret api-key --name <install>` |
 | **Declared keys** (`auth.api_keys`, e.g. agent keys) | install secret + rendered `api-keys.json` | `wip-deploy rotate-key <key-name> --name <install>` |
-| **Runtime keys** (console / `POST /api/registry/api-keys`) | Registry (MongoDB, bcrypt hash) | revoke + create a new one; other services see the change within about a second (NATS), at most the 30 s key sync |
+| **Runtime keys** (console / `POST /api/registry/api-keys`) | Registry (MongoDB, bcrypt hash) | revoke + create a new one; other services see the change within a few seconds (NATS), at most the 30 s key sync |
 
 `rotate-key` names the secret file that holds the new value
 (`~/.wip-deploy/<name>/secrets/<secret>`), not the value itself, so the key

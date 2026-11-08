@@ -30,7 +30,7 @@ When a key or a grant changes, the Registry publishes
 ``ACCESS_CHANGED_SUBJECT``: every process drops its grant cache, and — when
 keys changed (created, changed, narrowed, widened, revoked) — re-syncs the
 runtime keys at once instead of at its next poll, so a key created a moment
-ago is accepted, and a revoked one refused, everywhere within about a second.
+ago is accepted, and a revoked one refused, everywhere within a few seconds.
 
 The message is plain NATS publish/subscribe, at most once, and stored by no
 stream: a message that is lost (NATS down, a process reconnecting) leaves the

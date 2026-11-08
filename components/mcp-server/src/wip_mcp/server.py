@@ -397,7 +397,7 @@ namespace (`grant_permission`, else read). Revoking the grant ends the access.
 
 **A new key reaches the other services shortly after the Registry.** The
 Registry accepts a key it just created at once. Every other service learns of
-it within about a second where the install runs NATS, otherwise at its next
+it within a few seconds where the install runs NATS, otherwise at its next
 key sync (up to 30 s); until then it answers 401 "Invalid API key (… may not
 have reached this service yet …)". Retry such a 401 shortly rather than
 recreating the key. A revoked key, and a changed grant, take effect on the
@@ -1559,7 +1559,7 @@ async def create_api_key(
 ) -> str:
     """Create a runtime API key. Returns the plaintext key (shown once, never stored).
 
-    The Registry accepts a new or changed key at once; the other services pick it up within about a second where the install runs NATS, otherwise within one key sync (up to 30 s). A 401 from another service right after creating the key means it
+    The Registry accepts a new or changed key at once; the other services pick it up within a few seconds where the install runs NATS, otherwise within one key sync (up to 30 s). A 401 from another service right after creating the key means it
     has not arrived there yet: retry shortly, do not recreate the key.
 
     Args:

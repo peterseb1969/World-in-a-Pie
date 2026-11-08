@@ -224,7 +224,7 @@ async def create_api_key(
     reserved settings: an app key for an app wip-deploy does not manage.
     Every reservation is checked before anything is written.
 
-    The Registry accepts a new or changed key at once; the other services pick it up within about a second where the install runs NATS, otherwise within one key sync (up to 30 s). Until then another service answers 401 "Invalid API key" with a
+    The Registry accepts a new or changed key at once; the other services pick it up within a few seconds where the install runs NATS, otherwise within one key sync (up to 30 s). Until then another service answers 401 "Invalid API key" with a
     note that the key may not have arrived yet.
     """
     provider = _get_provider()
