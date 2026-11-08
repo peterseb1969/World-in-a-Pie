@@ -7,6 +7,20 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A failed document write no longer leaves the document without an active version
+
+A new version is written by retiring the active version first and then
+inserting its successor. If the insert failed, the document was left with no
+active version, which reads as a deleted document. This applied to `POST
+/documents` (single, sequential and bulk) and to `PATCH /documents`.
+- **The document keeps an active version.** After a failed insert, its
+  highest stored version is active again, with that version's own
+  `updated_at` and `updated_by`.
+- **A failed bulk insert reports per item.** When a bulk insert itself
+  fails (connection lost, step-down, timeout), each row that did not land
+  reports an error; previously the request answered 500 with no results.
+
+The single-item `POST` still answers 500 on such an error.
 ### Word, Excel and PowerPoint files can be uploaded
 
 The default upload allowlist refused every Office document except legacy

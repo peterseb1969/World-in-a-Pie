@@ -4,6 +4,7 @@ import asyncio
 import logging
 import math
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, ClassVar, NamedTuple, cast
 
@@ -1073,6 +1074,67 @@ class DocumentService:
             metadata=metadata,
         )
 
+    async def _reactivate_if_orphaned(
+        self,
+        namespace: str,
+        document_id: str,
+        prior: Mapping[Any, tuple[datetime | None, str | None]] | None = None,
+    ) -> bool:
+        """Give a document its active version back after a failed successor write.
+
+        A new version is written by retiring the active one first and then
+        inserting its successor, so an entity never has two active rows. When
+        the insert fails, the entity is left with none, which reads as a
+        retired document. This reactivates its highest stored version, which
+        is either the version the write retired or a successor that did land
+        inactive behind it. ``prior`` maps a retired row's _id to the
+        (updated_at, updated_by) it had before the write stamped it, and those
+        are restored with its status. True when a row was reactivated.
+        """
+        coll = Document.get_motor_collection()
+        if await coll.find_one(
+            {"namespace": namespace, "document_id": document_id,
+             "status": DocumentStatus.ACTIVE.value},
+            {"_id": 1},
+        ):
+            return False
+        latest = await coll.find_one(
+            {"namespace": namespace, "document_id": document_id},
+            {"_id": 1, "version": 1},
+            sort=[("version", -1)],
+        )
+        if latest is None:
+            return False
+        update: dict[str, Any] = {"status": DocumentStatus.ACTIVE.value}
+        stamp = (prior or {}).get(latest["_id"])
+        if stamp is not None:
+            update["updated_at"], update["updated_by"] = stamp
+        await coll.update_one({"_id": latest["_id"]}, {"$set": update})
+        logger.warning(
+            "Document %s/%s had no active version after a failed write; "
+            "reactivated version %s", namespace, document_id, latest.get("version"),
+        )
+        return True
+
+    async def _insert_or_restore(
+        self,
+        prior: Mapping[Any, tuple[datetime | None, str | None]] | None,
+        **insert: Any,
+    ) -> "Document":
+        """_insert_with_retry for a successor version whose predecessor this
+        write has retired (``prior``: its _id and original stamps). If the
+        insert fails, the document gets its active version back
+        (_reactivate_if_orphaned) and the failure is raised as before. With
+        ``prior`` None nothing was retired, and nothing is repaired."""
+        try:
+            return await self._insert_with_retry(**insert)
+        except Exception:
+            if prior is not None:
+                await self._reactivate_if_orphaned(
+                    insert["namespace"], insert["document_id"], prior,
+                )
+            raise
+
     async def _insert_with_retry(
         self,
         namespace: str,
@@ -1265,6 +1327,7 @@ class DocumentService:
         actor = get_identity_string()
 
         # Deactivate old version
+        prior = {existing.id: (existing.updated_at, existing.updated_by)}
         existing.status = DocumentStatus.INACTIVE
         existing.updated_at = datetime.now(UTC)
         existing.updated_by = actor
@@ -1284,7 +1347,8 @@ class DocumentService:
             else dict(existing.metadata.custom if existing.metadata else {}),
         )
 
-        document = await self._insert_with_retry(
+        document = await self._insert_or_restore(
+            prior,
             namespace=namespace,
             document_id=document_id,
             template_id=request.template_id,
@@ -3038,11 +3102,13 @@ class DocumentService:
                     None,
                     "unchanged",
                 )
+            if existing.id is not None and existing.id not in retiring:
+                # As it was before this write, so a failed successor insert
+                # can put it back (_reactivate_if_orphaned).
+                retiring[existing.id] = existing.model_copy()
             existing.status = DocumentStatus.INACTIVE
             existing.updated_at = now
             existing.updated_by = actor
-            if existing.id is not None and existing.id not in retiring:
-                retiring[existing.id] = existing
             version = existing.version + 1
         else:
             version = 1
@@ -3114,6 +3180,8 @@ class DocumentService:
             except BulkWriteError as e:
                 for err in e.details.get("writeErrors", []):
                     refused[first + err["index"]] = err
+            except Exception as exc:
+                refused.update(await self._refuse_unlanded(namespace, chunk, first, exc))
         timing["4b_insert_documents"] = (time.perf_counter() - start) * 1000
 
         outcomes: list[_ItemOutcome] = []
@@ -3179,7 +3247,48 @@ class DocumentService:
                 )),
                 "created" if is_new else "updated",
             ))
+        await self._repair_failed_writes(namespace, planned, outcomes, retiring)
         return outcomes
+
+    async def _refuse_unlanded(
+        self, namespace: str, chunk: list["_PlannedWrite"], first: int, exc: Exception,
+    ) -> dict[int, dict]:
+        """The rows of a chunk whose insert_many raised (connection, step-down,
+        timeout) that are not stored, keyed by position in the write, each
+        refused with the failure: which rows landed is unknown, so ask."""
+        logger.exception("Bulk insert of %d documents failed", len(chunk))
+        rows = await Document.get_motor_collection().find(
+            {"namespace": namespace,
+             "$or": [{"document_id": p.document.document_id, "version": p.document.version}
+                     for p in chunk]},
+            {"document_id": 1, "version": 1},
+        ).to_list(None)
+        landed = {(r["document_id"], r["version"]) for r in rows}
+        return {
+            first + offset: {"errmsg": str(exc)}
+            for offset, plan in enumerate(chunk)
+            if (plan.document.document_id, plan.document.version) not in landed
+        }
+
+    async def _repair_failed_writes(
+        self,
+        namespace: str,
+        planned: list["_PlannedWrite"],
+        outcomes: list["_ItemOutcome"],
+        retiring: dict[Any, "Document"],
+    ) -> None:
+        """Every entity with a failed row in this write gets an active version
+        back if the write left it with none (_reactivate_if_orphaned)."""
+        failed = {
+            plan.document.document_id
+            for plan, outcome in zip(planned, outcomes, strict=True)
+            if outcome.counter == "failed"
+        }
+        if not failed:
+            return
+        prior = {key: (doc.updated_at, doc.updated_by) for key, doc in retiring.items()}
+        for document_id in sorted(failed):
+            await self._reactivate_if_orphaned(namespace, document_id, prior)
 
     async def _apply_validated_item(
         self,
@@ -3248,6 +3357,7 @@ class DocumentService:
                 )
 
         revival = existing is not None and self._is_revival(existing)
+        prior: dict[Any, tuple[datetime | None, str | None]] | None = None
         if existing and version_override is None:
             if not revival and not self._document_has_changed(
                 existing,
@@ -3311,6 +3421,7 @@ class DocumentService:
                 )
 
             # Deactivate old version
+            prior = {existing.id: (existing.updated_at, existing.updated_by)}
             existing.status = DocumentStatus.INACTIVE
             existing.updated_at = now
             existing.updated_by = actor
@@ -3340,7 +3451,8 @@ class DocumentService:
             warnings=validation_result.warnings + synonym_warnings,
             custom=custom_metadata,
         )
-        document = await self._insert_with_retry(
+        document = await self._insert_or_restore(
+            prior,
             namespace=namespace,
             document_id=document_id,
             template_id=item.template_id,
@@ -4906,6 +5018,7 @@ class DocumentService:
                 )
 
             # versioned=True: existing flow — deactivate current, insert v+1.
+            prior = {current.id: (current.updated_at, current.updated_by)}
             current.status = DocumentStatus.INACTIVE
             current.updated_at = now
             current.updated_by = actor
@@ -4921,7 +5034,8 @@ class DocumentService:
             )
 
             try:
-                new_doc = await self._insert_with_retry(
+                new_doc = await self._insert_or_restore(
+                    prior,
                     namespace=current.namespace,
                     document_id=current.document_id,
                     template_id=current.template_id,
