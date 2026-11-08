@@ -1166,96 +1166,74 @@ class TemplateService:
         return TemplateService._to_template_response(template)
 
     @staticmethod
-    def _template_has_changed(
+    async def _template_has_changed(
         original: Template,
         request: UpdateTemplateRequest
     ) -> bool:
         """
         Check if the update request would change the template.
 
-        Compares all changeable fields between the original and the request.
+        Compares every property the request sets with the stored one, by
+        meaning: a reference (``extends``, a field's terminology or template
+        reference) in value, ``ns:VALUE`` or synonym form equals its stored
+        canonical id, so re-sending the same template in another addressing
+        form is not a change (it minted a version that differed in nothing).
         """
-        import json
+        if TemplateService._scalars_changed(original, request):
+            return True
+        if request.extends is not None and not await TemplateService._refs_equivalent(
+            request.extends, original.extends, "template", original.namespace,
+        ):
+            return True
+        if request.fields is not None and not await TemplateService._fields_equivalent(
+            TemplateService._without_endpoint_projection(original.usage, original.fields),
+            request.fields, original.namespace,
+        ):
+            return True
+        return TemplateService._dumps_changed(original, request)
 
-        # Check each field that can be updated
-        if request.value is not None and request.value != original.value:
-            return True
-        if request.label is not None and request.label != original.label:
-            return True
-        if request.description is not None and request.description != original.description:
-            return True
-        if request.extends is not None and request.extends != original.extends:
-            return True
-        if request.extends_version is not None and request.extends_version != original.extends_version:
-            return True
-        if request.identity_fields is not None and request.identity_fields != original.identity_fields:
-            return True
-        if request.header_fields is not None and request.header_fields != original.header_fields:
-            return True
-        if request.renames is not None and request.renames != original.renames:
-            return True
-
-        # Compare fields using JSON serialization
-        if request.fields is not None:
-            original_fields_json = json.dumps(
-                [
-                    f.model_dump()
-                    for f in TemplateService._without_endpoint_projection(
-                        original.usage, original.fields
-                    )
-                ],
-                sort_keys=True, default=str
-            )
-            new_fields_json = json.dumps(
-                [f.model_dump() for f in request.fields],
-                sort_keys=True, default=str
-            )
-            if original_fields_json != new_fields_json:
+    @staticmethod
+    def _scalars_changed(original: Template, request: UpdateTemplateRequest) -> bool:
+        """A plainly-compared property the request sets differs."""
+        for name in ("value", "label", "description", "extends_version",
+                     "identity_fields", "header_fields", "renames"):
+            sent = getattr(request, name)
+            if sent is not None and sent != getattr(original, name):
                 return True
-
-        # Compare rules using JSON serialization
-        if request.rules is not None:
-            original_rules_json = json.dumps(
-                [r.model_dump() for r in original.rules],
-                sort_keys=True, default=str
-            )
-            new_rules_json = json.dumps(
-                [r.model_dump() for r in request.rules],
-                sort_keys=True, default=str
-            )
-            if original_rules_json != new_rules_json:
-                return True
-
-        # Compare metadata
-        if request.metadata is not None:
-            original_meta_json = json.dumps(
-                original.metadata.model_dump() if original.metadata else {},
-                sort_keys=True, default=str
-            )
-            new_meta_json = json.dumps(
-                request.metadata.model_dump() if request.metadata else {},
-                sort_keys=True, default=str
-            )
-            if original_meta_json != new_meta_json:
-                return True
-
-        # Compare reporting config
-        if request.reporting is not None:
-            original_reporting_json = json.dumps(
-                original.reporting.model_dump() if original.reporting else {},
-                sort_keys=True, default=str
-            )
-            new_reporting_json = json.dumps(
-                request.reporting.model_dump() if request.reporting else {},
-                sort_keys=True, default=str
-            )
-            if original_reporting_json != new_reporting_json:
-                return True
-
         return False
 
     @staticmethod
-    def _only_reporting_changed(
+    def _dumps_changed(original: Template, request: UpdateTemplateRequest) -> bool:
+        """rules, metadata or reporting differ (they carry no references)."""
+        import json
+
+        def dump(value: Any) -> str:
+            if isinstance(value, list):
+                value = [v.model_dump() for v in value]
+            elif value is not None:
+                value = value.model_dump()
+            return json.dumps(value or {}, sort_keys=True, default=str)
+
+        return any(
+            getattr(request, name) is not None
+            and dump(getattr(request, name)) != dump(getattr(original, name))
+            for name in ("rules", "metadata", "reporting")
+        )
+
+    @staticmethod
+    async def _fields_equivalent(
+        stored: list[FieldDefinition], sent: list[FieldDefinition], namespace: str,
+    ) -> bool:
+        """Same fields, in the same order, each equivalent by meaning."""
+        if [f.name for f in stored] != [f.name for f in sent]:
+            return False
+        for old, new in zip(stored, sent, strict=True):
+            if not await TemplateService._compare_field_definitions(old, new, namespace):
+                return False
+        return True
+
+    @staticmethod
+    async def _only_reporting_changed(
         original: "Template",
         request: "UpdateTemplateRequest",
     ) -> bool:
@@ -1275,7 +1253,7 @@ class TemplateService:
             return False
         saved = request.reporting
         request.reporting = None
-        schema_changed = TemplateService._template_has_changed(original, request)
+        schema_changed = await TemplateService._template_has_changed(original, request)
         request.reporting = saved
         return not schema_changed
 
@@ -1594,20 +1572,21 @@ class TemplateService:
         TemplateService._strip_endpoint_projection(original.usage, request.fields)
 
         # Check if anything has actually changed
-        if not TemplateService._template_has_changed(original, request):
+        if not await TemplateService._template_has_changed(original, request):
             # No changes - return current template info
             return TemplateUpdateResponse(
                 template_id=original.template_id,
                 value=original.value,
                 version=original.version,
                 is_new_version=False,
+                changed=False,
                 previous_version=None
             )
 
         # Reporting config is operational metadata, not document schema.
         # A change to sync_enabled, sync_strategy, etc. mutates in place
         # without a version bump — same pattern as add_edge_type_endpoints.
-        if TemplateService._only_reporting_changed(original, request):
+        if await TemplateService._only_reporting_changed(original, request):
             TemplateService._validate_full_text_indexed_constraints(
                 original.fields, request.reporting,
             )
@@ -1621,11 +1600,13 @@ class TemplateService:
                 TemplateService._template_to_event_payload(original),
                 changed_by=actor,
             )
+            # Changed in place: no version, but not "unchanged" either.
             return TemplateUpdateResponse(
                 template_id=original.template_id,
                 value=original.value,
                 version=original.version,
                 is_new_version=False,
+                changed=True,
                 previous_version=None,
             )
 
@@ -1848,6 +1829,7 @@ class TemplateService:
             value=new_value,
             version=new_version,
             is_new_version=True,
+            changed=True,
             previous_version=original.version
         )
 
@@ -2631,7 +2613,7 @@ class TemplateService:
                     metadata=item.metadata,
                     reporting=item.reporting,
                 )
-                if verdict == "identical" and not TemplateService._template_has_changed(
+                if verdict == "identical" and not await TemplateService._template_has_changed(
                     existing, cosmetic_probe
                 ):
                     results.append(BulkResultItem(
@@ -2688,12 +2670,16 @@ class TemplateService:
                         details={**diff, "impact": impact, "migration": migration},
                     ))
                 else:
+                    # A reporting-only change is made in place: no version,
+                    # but the template changed, and the item says so.
+                    changed = bool(update_resp and update_resp.changed)
                     results.append(BulkResultItem(
                         index=i,
-                        status="unchanged",
+                        status="updated" if changed else "unchanged",
                         id=existing.template_id,
                         value=existing.value,
                         version=existing.version,
+                        is_new_version=False if changed else None,
                         details=diff,
                     ))
             except ValueError as e:

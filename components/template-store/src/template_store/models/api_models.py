@@ -393,7 +393,11 @@ class TemplateUpdateResponse(BaseModel):
     version: int
     is_new_version: bool = Field(
         ...,
-        description="True if a new version was created, False if unchanged"
+        description="True if a new version was created"
+    )
+    changed: bool = Field(
+        ...,
+        description="True if the template changed: a new version, or a reporting change made in place"
     )
     previous_version: int | None = Field(
         default=None,

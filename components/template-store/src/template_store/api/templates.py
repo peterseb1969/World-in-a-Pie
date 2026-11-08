@@ -461,12 +461,13 @@ async def update_templates(
                         result.template_id, result.version,
                         result.previous_version, item.renames,
                     )
-                # No version minted means nothing changed: report it as
-                # create-as-upsert does, so a caller acting on "updated"
-                # (deactivating the previous version) is not misled.
+                # "updated" means the template changed — a new version, or a
+                # reporting change made in place (is_new_version false). A
+                # caller acting on a new version (deactivating the previous
+                # one) reads is_new_version.
                 results.append(BulkResultItem(
                     index=i,
-                    status="updated" if result.is_new_version else "unchanged",
+                    status="updated" if result.changed else "unchanged",
                     id=result.template_id,
                     value=result.value, version=result.version,
                     is_new_version=result.is_new_version,
