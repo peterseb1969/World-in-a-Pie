@@ -90,7 +90,10 @@ class TemplateService:
 
     @staticmethod
     async def _validate_relationship_template_shape(
-        request: CreateTemplateRequest,
+        usage: TemplateUsage | None,
+        source_templates: list | None,
+        target_templates: list | None,
+        fields: list[FieldDefinition],
     ) -> None:
         """Enforce structural constraints on relationship templates.
 
@@ -109,12 +112,15 @@ class TemplateService:
         template-level source_templates / target_templates must be
         empty — they only mean something when usage=relationship.
 
-        Raises ValueError on violation.
+        Called on create and on update (with the merged fields), so a new
+        version cannot drop an edge type's endpoint fields.
+
+        Raises TemplateError on violation.
         """
-        usage = request.usage if request.usage is not None else TemplateUsage.ENTITY
+        usage = usage if usage is not None else TemplateUsage.ENTITY
 
         if usage != TemplateUsage.RELATIONSHIP:
-            if request.source_templates or request.target_templates:
+            if source_templates or target_templates:
                 raise TemplateError(
                     "source_templates and target_templates may only be set "
                     f"when usage='relationship' (got usage='{usage.value}')", "validation_failed", rule="relationship_shape"
@@ -122,16 +128,16 @@ class TemplateService:
             return
 
         # usage == relationship from here on.
-        if not request.source_templates:
+        if not source_templates:
             raise TemplateError(
                 "Relationship templates require a non-empty source_templates list", "validation_failed", rule="relationship_shape"
             )
-        if not request.target_templates:
+        if not target_templates:
             raise TemplateError(
                 "Relationship templates require a non-empty target_templates list", "validation_failed", rule="relationship_shape"
             )
 
-        fields_by_name = {f.name: f for f in request.fields}
+        fields_by_name = {f.name: f for f in fields}
 
         # The endpoint fields must exist and be document references. What they
         # may point AT is not checked here: `target_templates` on these two
@@ -356,6 +362,25 @@ class TemplateService:
                 )
 
     @staticmethod
+    def _refuse_undeclared_reference(f: FieldDefinition) -> None:
+        """A reference field declares what it references, and a term
+        reference which terminologies it draws from: without them it
+        validates nothing at document write. Activation demanded this; a
+        directly-active create or an update skipped it."""
+        if f.type != FieldType.REFERENCE:
+            return
+        if f.reference_type is None:
+            raise TemplateError(
+                f"reference_type is required for reference field '{f.name}'",
+                "validation_failed", rule="reference_type_required",
+            )
+        if f.reference_type == ReferenceType.TERM and not f.target_terminologies:
+            raise TemplateError(
+                f"target_terminologies is required for term reference field '{f.name}'",
+                "validation_failed", rule="target_terminologies_required",
+            )
+
+    @staticmethod
     def validate_fields_for_write(fields: list[FieldDefinition]) -> None:
         """Enforce field-shape authoring invariants at the write seam (CASE-629).
 
@@ -409,6 +434,7 @@ class TemplateService:
                     "an array-item template reference must pin an explicit version "
                     "(CASE-493)", "validation_failed", rule="template_ref_version_required"
                 )
+            TemplateService._refuse_undeclared_reference(f)
             # An array of references must declare what it references. Without it,
             # each item is queued for resolution carrying reference_type=None,
             # matches no resolution branch, and is dropped silently — a bogus id
@@ -460,7 +486,10 @@ class TemplateService:
         # mode too, and now purely structural: with the endpoint constraint
         # projected rather than supplied, there is nothing here that needs the
         # Registry or the database.
-        await TemplateService._validate_relationship_template_shape(request)
+        await TemplateService._validate_relationship_template_shape(
+            request.usage, request.source_templates, request.target_templates,
+            request.fields,
+        )
         # The endpoint constraint on source_ref/target_ref is derived from the
         # declaration when the template is served, so what a caller sends
         # there is discarded before anything resolves it: a typo there, or a
@@ -547,6 +576,7 @@ class TemplateService:
                     # Draft mode: store raw extends value even if parent doesn't exist yet
             if parent:
                 parent_namespace = parent.namespace
+                TemplateService._refuse_inactive_parent(parent, is_draft)
 
         # Normalize all field references to canonical IDs — skip for drafts.
         # Normalization implicitly validates (raises EntityNotFoundError for invalid refs),
@@ -733,6 +763,18 @@ class TemplateService:
             )
 
         return TemplateService._to_template_response(template)
+
+    @staticmethod
+    def _refuse_inactive_parent(parent: Template, is_draft: bool) -> None:
+        """An active template extends an active parent, as activation
+        demands: a draft or retired parent is refused. ``parent`` is the
+        parent's latest version, the one activation judges. A draft may
+        extend a draft; activation checks it."""
+        if not is_draft and parent.status != "active":
+            raise TemplateError(
+                f"Parent template '{parent.value}' is {parent.status}, not active",
+                "reference_violation", rule="parent_not_active",
+            )
 
     @staticmethod
     async def _refuse_unresolvable_inheritance(
@@ -1584,6 +1626,7 @@ class TemplateService:
                     extends_value = parent.template_id
                 else:
                     raise TemplateError(f"Parent template '{extends_value}' not found", "reference_violation", rule="parent_not_found")
+            TemplateService._refuse_inactive_parent(parent, original.status == "draft")
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
@@ -1661,6 +1704,10 @@ class TemplateService:
             original.versioned, new_identity_fields
         )
         TemplateService.validate_fields_for_write(new_fields)
+        await TemplateService._validate_relationship_template_shape(
+            original.usage, original.source_templates, original.target_templates,
+            new_fields,
+        )
         TemplateService.validate_rules_for_write(
             request.rules if request.rules is not None else original.rules
         )
