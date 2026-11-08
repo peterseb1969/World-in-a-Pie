@@ -7,6 +7,15 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `validate_references` is gone from template create
+
+- The create request accepted `validate_references` (default true), and
+  nothing read it: references were always validated, and `false` was
+  silently ignored. The field is removed from the request, the OpenAPI
+  snapshot, the MCP tool schemas and `@wip/client` (0.99.0).
+- **Action:** a caller still sending it gets a 422 (the request model
+  forbids unknown fields); drop it. Validation is unchanged.
+
 ### A template that extends another cannot redefine its parent's fields
 
 - A child field with the same name as a field of its parent chain overrode

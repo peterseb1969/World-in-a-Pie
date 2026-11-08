@@ -293,7 +293,6 @@ export interface CreateTemplateRequest {
   metadata?: Partial<TemplateMetadata>
   reporting?: Partial<ReportingConfig>
   created_by?: string
-  validate_references?: boolean
   status?: string
 }
 

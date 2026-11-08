@@ -1223,7 +1223,17 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                                                              'patterns '
                                                                                                                                                              '(e.g., '
                                                                                                                                                              "'image/*', "
-                                                                                                                                                             "'application/pdf')",
+                                                                                                                                                             "'application/pdf'). "
+                                                                                                                                                             'Must '
+                                                                                                                                                             'not '
+                                                                                                                                                             'be '
+                                                                                                                                                             'empty; '
+                                                                                                                                                             'omit '
+                                                                                                                                                             'it '
+                                                                                                                                                             'to '
+                                                                                                                                                             'accept '
+                                                                                                                                                             'every '
+                                                                                                                                                             'type.',
                                                                                                                                               'default': ['*/*']},
                                                                                                                             'max_size_mb': {'type': 'number',
                                                                                                                                             'maximum': 100.0,
@@ -1332,7 +1342,17 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                                                                    'patterns '
                                                                                                                                                                    '(e.g., '
                                                                                                                                                                    "'image/*', "
-                                                                                                                                                                   "'application/pdf')",
+                                                                                                                                                                   "'application/pdf'). "
+                                                                                                                                                                   'Must '
+                                                                                                                                                                   'not '
+                                                                                                                                                                   'be '
+                                                                                                                                                                   'empty; '
+                                                                                                                                                                   'omit '
+                                                                                                                                                                   'it '
+                                                                                                                                                                   'to '
+                                                                                                                                                                   'accept '
+                                                                                                                                                                   'every '
+                                                                                                                                                                   'type.',
                                                                                                                                                     'default': ['*/*']},
                                                                                                                                   'max_size_mb': {'type': 'number',
                                                                                                                                                   'maximum': 100.0,
@@ -1655,11 +1675,16 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                         'description': 'Sync '
                                                                                                                        'strategy: '
                                                                                                                        "'latest_only' "
-                                                                                                                       '(upsert) '
-                                                                                                                       'or '
+                                                                                                                       '(upsert '
+                                                                                                                       'the '
+                                                                                                                       'latest '
+                                                                                                                       'version), '
                                                                                                                        "'all_versions' "
                                                                                                                        '(insert '
-                                                                                                                       'all)',
+                                                                                                                       'every '
+                                                                                                                       'version) '
+                                                                                                                       'or '
+                                                                                                                       "'disabled'",
                                                                                                         'default': 'latest_only'},
                                                                                       'table_name': {'type': 'string',
                                                                                                      'description': 'Custom '
@@ -1752,17 +1777,6 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                        'creating '
                                                                                        'this '
                                                                                        'template'},
-                                                         'validate_references': {'type': 'boolean',
-                                                                                 'description': 'Validate '
-                                                                                                'that '
-                                                                                                'terminology_ref '
-                                                                                                'and '
-                                                                                                'template_ref '
-                                                                                                'values '
-                                                                                                'exist '
-                                                                                                'before '
-                                                                                                'creating',
-                                                                                 'default': True},
                                                          'status': {'type': 'string',
                                                                     'description': 'Initial '
                                                                                    'status: '
@@ -1898,7 +1912,17 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                    'patterns '
                                                                                                                    '(e.g., '
                                                                                                                    "'image/*', "
-                                                                                                                   "'application/pdf')",
+                                                                                                                   "'application/pdf'). "
+                                                                                                                   'Must '
+                                                                                                                   'not '
+                                                                                                                   'be '
+                                                                                                                   'empty; '
+                                                                                                                   'omit '
+                                                                                                                   'it '
+                                                                                                                   'to '
+                                                                                                                   'accept '
+                                                                                                                   'every '
+                                                                                                                   'type.',
                                                                                                     'default': ['*/*']},
                                                                                   'max_size_mb': {'type': 'number',
                                                                                                   'maximum': 100.0,
@@ -1999,7 +2023,17 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                          'patterns '
                                                                                                                          '(e.g., '
                                                                                                                          "'image/*', "
-                                                                                                                         "'application/pdf')",
+                                                                                                                         "'application/pdf'). "
+                                                                                                                         'Must '
+                                                                                                                         'not '
+                                                                                                                         'be '
+                                                                                                                         'empty; '
+                                                                                                                         'omit '
+                                                                                                                         'it '
+                                                                                                                         'to '
+                                                                                                                         'accept '
+                                                                                                                         'every '
+                                                                                                                         'type.',
                                                                                                           'default': ['*/*']},
                                                                                         'max_size_mb': {'type': 'number',
                                                                                                         'maximum': 100.0,
@@ -2268,14 +2302,13 @@ metadata (object): Additional metadata
   custom (object): Custom metadata fields
 reporting (object): Configuration for PostgreSQL reporting sync
   sync_enabled (boolean, default: true): Whether to sync documents of this template to PostgreSQL
-  sync_strategy (string, default: "latest_only"): Sync strategy: 'latest_only' (upsert) or 'all_versions' (insert all)
+  sync_strategy (string, default: "latest_only"): Sync strategy: 'latest_only' (upsert the latest version), 'all_versions' (insert every version) or 'disabled'
   table_name (string): Custom PostgreSQL table name (auto-generated from value if not set)
   include_metadata (boolean, default: true): Include created_at, created_by, etc. columns
   flatten_arrays (boolean, default: true): Flatten arrays into multiple rows (cross-product)
   max_array_elements (integer, default: 10): Maximum array elements to include when flattening
   cross_version_view (object): Opt-in cross-version entity view over the per-version reporting tables: {'versions': 'all' | [ints], 'columns': {target: {'from': source} | {}}}. The identity core is always included; declared column mappings extend it. Consumed by reporting-sync (which validates the shape); stored pass-through here.
 created_by (string): User or system creating this template
-validate_references (boolean, default: true): Validate that terminology_ref and template_ref values exist before creating
 status (string): Initial status: 'active' (default) or 'draft' (skips reference validation)
 
 FieldDefinition fields:
@@ -2388,14 +2421,13 @@ metadata (object): Additional metadata
   custom (object): Custom metadata fields
 reporting (object): Configuration for PostgreSQL reporting sync
   sync_enabled (boolean, default: true): Whether to sync documents of this template to PostgreSQL
-  sync_strategy (string, default: "latest_only"): Sync strategy: 'latest_only' (upsert) or 'all_versions' (insert all)
+  sync_strategy (string, default: "latest_only"): Sync strategy: 'latest_only' (upsert the latest version), 'all_versions' (insert every version) or 'disabled'
   table_name (string): Custom PostgreSQL table name (auto-generated from value if not set)
   include_metadata (boolean, default: true): Include created_at, created_by, etc. columns
   flatten_arrays (boolean, default: true): Flatten arrays into multiple rows (cross-product)
   max_array_elements (integer, default: 10): Maximum array elements to include when flattening
   cross_version_view (object): Opt-in cross-version entity view over the per-version reporting tables: {'versions': 'all' | [ints], 'columns': {target: {'from': source} | {}}}. The identity core is always included; declared column mappings extend it. Consumed by reporting-sync (which validates the shape); stored pass-through here.
 created_by (string): User or system creating this template
-validate_references (boolean, default: true): Validate that terminology_ref and template_ref values exist before creating
 status (string): Initial status: 'active' (default) or 'draft' (skips reference validation)
 
 FieldDefinition fields:
