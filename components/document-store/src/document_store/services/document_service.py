@@ -296,6 +296,72 @@ def _identity_hash_of(identity_values: dict[str, Any] | None) -> str | None:
         return None
 
 
+def _add_validation_timing(validation_results: list[Any], timing: dict[str, float]) -> None:
+    """Aggregate per-stage validation timing from all individual results."""
+    val_stage_totals: dict[str, float] = {}
+    for _, _, vr in validation_results:
+        for stage, ms in vr.timing.items():
+            val_stage_totals[stage] = val_stage_totals.get(stage, 0) + ms
+    for stage, total_ms in sorted(val_stage_totals.items()):
+        timing[f"1v_{stage}"] = round(total_ms, 1)
+
+
+def _assign_identity_hashes(
+    validation_results: list[Any], registry_results: list[dict[str, Any]],
+) -> None:
+    """Assign registry-returned identity_hashes back to validation results."""
+    for (_, _, vr), reg_result in zip(validation_results, registry_results, strict=False):
+        if reg_result.get("status") != "error":
+            vr.identity_hash = reg_result.get("identity_hash")
+
+
+async def _add_latest_of_retired(
+    namespace: str, registry_doc_ids: list[Any], existing_by_doc_id: dict[str, Document],
+) -> None:
+    """Add the latest version of each known identity that has no active one."""
+    # A known identity with no active version is soft-deleted: the write
+    # follows its latest version and brings it back as the successor (see
+    # _find_latest_by_document_id). Rare, so looked up only for those.
+    retired_ids = [
+        doc_id for doc_id in dict.fromkeys(registry_doc_ids)
+        if isinstance(doc_id, str) and doc_id not in existing_by_doc_id
+    ]
+    # One query per chunk, as for the active rows above; the newest row
+    # of each comes first.
+    for first in range(0, len(retired_ids), BULK_WRITE_CHUNK):
+        rows = await Document.find({
+            "namespace": namespace,
+            "document_id": {"$in": retired_ids[first:first + BULK_WRITE_CHUNK]},
+        }).sort([("version", SortDirection.DESCENDING)]).to_list()
+        for row in rows:
+            existing_by_doc_id.setdefault(row.document_id, row)
+
+
+async def _publish_bulk_events(
+    pending_events: list[tuple[Any, dict]], actor: str, timing: dict[str, float],
+) -> None:
+    """Publish a batch's NATS events concurrently. Events are fire-and-forget
+    within gather — individual failures are logged by publish_document_event()
+    but don't fail the batch."""
+    if not pending_events:
+        return
+    start = time.perf_counter()
+    await asyncio.gather(*(
+        publish_document_event(et, payload, changed_by=actor)
+        for et, payload in pending_events
+    ))
+    timing["5_nats_publish"] = (time.perf_counter() - start) * 1000
+
+
+def _collect_outcome(
+    outcome: Any, results: list[Any], pending_events: list[tuple[Any, dict]],
+) -> None:
+    """One written item's result row, and its event when it has one."""
+    results.append(outcome.result)
+    if outcome.pending_event:
+        pending_events.append(outcome.pending_event)
+
+
 class DocumentService:
     """
     Service for document CRUD operations and upsert logic.
@@ -3743,40 +3809,19 @@ class DocumentService:
           by def-store, shared across the batch)
         - Single bulk Registry call for all document IDs
         - Batch MongoDB operations for existing document checks
-        """
-        timing = {}
-        total_start = time.perf_counter()
 
-        results: list[BulkResultItem] = []
-        created = 0
-        updated = 0
-        unchanged = 0
-        failed = 0
+        The response's counts come from the per-item results
+        (_finalize_bulk_response), so nothing here keeps a tally.
+        """
+        timing: dict[str, float] = {}
+        total_start = time.perf_counter()
 
         # Stage 0: Pre-warm the template cache for the batch — each unique
         # template once, including nested template_refs. Term values are not
         # warmed: they resolve through def-store at validation time, shared
         # across the batch by bulk_create's term_resolution_batch.
         start = time.perf_counter()
-        template_client = get_template_store_client()
-        unique_template_ids = {item.template_id for item in items}
-        warmed_templates: set[str] = set()
-
-        async def warm_template(tid: str):
-            """Recursively warm a template and its nested template_refs."""
-            if tid in warmed_templates:
-                return
-            warmed_templates.add(tid)
-            template = await template_client.get_template_resolved(tid)
-            if not template:
-                return
-            for field in template.get("fields", []):
-                for key in ("template_ref", "array_template_ref"):
-                    ref = field.get(key)
-                    if ref:
-                        await warm_template(ref)
-
-        await asyncio.gather(*(warm_template(tid) for tid in unique_template_ids))
+        await self._warm_templates({item.template_id for item in items})
         timing["0_cache_warmup"] = (time.perf_counter() - start) * 1000
 
         # Stage 0t: resolve every term value of the batch up front, so each
@@ -3795,18 +3840,10 @@ class DocumentService:
         # validation_results and proceed to creation (CASE-413, Option 2); the
         # failing item's error row and the trailing skipped rows are already in
         # results.
-        validation_results, results, failed = await self._validate_batch(
+        validation_results, results, _ = await self._validate_batch(
             items, namespace, continue_on_error, timing
         )
-
-        # Aggregate per-stage validation timing from all individual results
-        val_stage_totals: dict[str, float] = {}
-        for _, _, vr in validation_results:
-            for stage, ms in vr.timing.items():
-                val_stage_totals[stage] = val_stage_totals.get(stage, 0) + ms
-        if val_stage_totals:
-            for stage, total_ms in sorted(val_stage_totals.items()):
-                timing[f"1v_{stage}"] = round(total_ms, 1)
+        _add_validation_timing(validation_results, timing)
 
         # Stage 1b: relationship-document constraints (CASE-788). The single-item
         # create path (create_document) enforces the cross-namespace rule
@@ -3815,29 +3852,10 @@ class DocumentService:
         # validation_service.validate already populated each reference's resolved
         # {namespace, status}, so this reuses _validate_relationship_constraints.
         start = time.perf_counter()
-        # Namespace isolation can only refuse in a strict namespace; there the
-        # whole batch's references are placed with one Registry lookup per
-        # 500 ids, not one per document. If that lookup fails, each item
-        # falls back to its own lookup below and is refused on its own.
-        placements: dict[str, str] | None
-        try:
-            placements = await get_reference_validator().place_references(
-                namespace,
-                [
-                    {
-                        "term_references": vr.term_references,
-                        "file_references": vr.file_references,
-                        "document_references": vr.references,
-                    }
-                    for _, _, vr in validation_results
-                ],
-            )
-        except RegistryUnavailableError:
-            placements = None
-        validation_results, refused = await self._apply_reference_gates(
+        placements = await self._place_batch_references(namespace, validation_results)
+        validation_results, _ = await self._apply_reference_gates(
             validation_results, namespace, placements, continue_on_error, results,
         )
-        failed += refused
         timing["1b_reference_gates"] = (time.perf_counter() - start) * 1000
 
         if not validation_results:
@@ -3849,68 +3867,166 @@ class DocumentService:
         # Stage 2: Bulk request IDs from Registry (sends identity_values,
         # gets back identity_hash for each item)
         start = time.perf_counter()
-        registry = get_registry_client()
-        # CASE-430: suppress the bare identity-values synonym for
-        # relationship/edge types. Usage is read from the templates already
-        # warmed into cache in Stage 0, so this is a cache hit per template_id.
-        template_client = get_template_store_client()
-        _usage_is_rel: dict[str, bool] = {}
-
-        async def _is_relationship(tid: str) -> bool:
-            if tid not in _usage_is_rel:
-                t = await template_client.get_template_resolved(tid)
-                _usage_is_rel[tid] = bool(t and t.get("usage") == "relationship")
-            return _usage_is_rel[tid]
-
-        registry_items = []
-        for vr in validation_results:
-            reg_item: dict[str, Any] = {
-                "identity_values": vr[2].identity_values or None,
-                # Submitted spellings, qualified by the template, mint the
-                # raw-values synonym; the hash feed (identity_values) carries
-                # resolved referent IDs.
-                "synonym_values": qualified_synonym_values(
-                    vr[2].template_value, vr[2].submitted_identity_values,
-                ),
-                "template_id": vr[1].template_id,
-                "has_identity_fields": bool(vr[2].identity_fields),
-                "skip_identity_value_synonym": await _is_relationship(vr[1].template_id),
-            }
-            # A restore/migration (document_id + version) asks for its exact
-            # id. A document_id without a version is an upsert: the identity
-            # decides and the id is checked against it below, as on the
-            # single-item path.
-            if vr[1].document_id and vr[1].version is not None:
-                reg_item["entry_id"] = vr[1].document_id
-            registry_items.append(reg_item)
-
         try:
-            registry_results = await registry.generate_document_ids_bulk(
-                registry_items,
+            registry_results = await get_registry_client().generate_document_ids_bulk(
+                await self._registry_items(validation_results),
                 created_by=actor,
                 namespace=namespace,
             )
         except RegistryError as e:
             # All valid documents fail due to Registry error
-            for i, _item, _ in validation_results:
-                failed += 1
-                results.append(BulkResultItem(index=i, status="error", **error_fields(e)))
+            results.extend(
+                BulkResultItem(index=i, status="error", **error_fields(e))
+                for i, _item, _ in validation_results
+            )
             timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
             return self._finalize_bulk_response(results, len(items), timing, total_start)
 
         timing["2_registry_bulk"] = (time.perf_counter() - start) * 1000
 
-        # Assign registry-returned identity_hashes back to validation results
-        for (_, _, vr), reg_result in zip(validation_results, registry_results, strict=False):
-            if reg_result.get("status") != "error":
-                vr.identity_hash = reg_result.get("identity_hash")
-
+        _assign_identity_hashes(validation_results, registry_results)
         await self._refuse_document_id_mismatches(validation_results, registry_results)
 
         # Stage 3: Batch check for existing documents using Registry-resolved IDs.
         # Uses document_id (from Registry), NOT identity_hash — local
         # identity_hash lookups can match across templates (CASE-36).
         start = time.perf_counter()
+        existing_by_doc_id = await self._find_existing_for_batch(namespace, registry_results)
+        timing["3_find_existing"] = (time.perf_counter() - start) * 1000
+
+        # Stage 4: Create all documents
+        # Track documents created within this batch so that duplicate identity
+        # hashes in the same batch use the correct latest version instead of
+        # the stale Stage 3 snapshot.
+        # NATS events are collected and published concurrently after the loop
+        # to avoid per-document ACK wait (~10ms each).
+        start = time.perf_counter()
+        pending_events = await self._create_validated_items(
+            validation_results, registry_results, existing_by_doc_id,
+            namespace, actor, datetime.now(UTC), continue_on_error, results, timing,
+        )
+        timing["4_create_documents"] = (time.perf_counter() - start) * 1000
+
+        # Stage 4c: every document this batch created at version 1 gets the
+        # template-scoped auto-synonym the single-item path registers — its
+        # portable address, the one a restore carries forward (and, for an
+        # edge or an identity-less document, the only synonym it has). A
+        # refused synonym fails that document, as it fails a single create.
+        start = time.perf_counter()
+        pending_events = await self._register_batch_auto_synonyms(
+            results, validation_results, namespace, actor, pending_events,
+        )
+        timing["4c_auto_synonyms"] = (time.perf_counter() - start) * 1000
+
+        # Stage 5: Publish all NATS events concurrently
+        await _publish_bulk_events(pending_events, actor, timing)
+        return self._finalize_bulk_response(results, len(items), timing, total_start)
+
+    async def _register_batch_auto_synonyms(
+        self,
+        results: list[BulkResultItem],
+        validation_results: list[Any],
+        namespace: str,
+        actor: str,
+        pending_events: list[tuple[EventType, dict]],
+    ) -> list[tuple[EventType, dict]]:
+        """Register the batch's auto-synonyms; a document whose synonym was
+        refused is rolled back, and its event is not published."""
+        rolled_back = await self._register_bulk_auto_synonyms(
+            results, validation_results, namespace, actor,
+        )
+        if not rolled_back:
+            return pending_events
+        return [
+            (et, payload) for et, payload in pending_events
+            if payload.get("document_id") not in rolled_back
+        ]
+
+    async def _warm_templates(self, template_ids: set[str]) -> None:
+        """Load each template of a batch into the cache once, nested
+        template_refs included, concurrently."""
+        client = get_template_store_client()
+        warmed: set[str] = set()
+        await asyncio.gather(*(self._warm_template(client, tid, warmed) for tid in template_ids))
+
+    async def _warm_template(self, client: Any, tid: str, warmed: set[str]) -> None:
+        """Recursively warm a template and its nested template_refs."""
+        if tid in warmed:
+            return
+        warmed.add(tid)
+        template = await client.get_template_resolved(tid)
+        if not template:
+            return
+        for field in template.get("fields", []):
+            for key in ("template_ref", "array_template_ref"):
+                ref = field.get(key)
+                if ref:
+                    await self._warm_template(client, ref, warmed)
+
+    @staticmethod
+    async def _place_batch_references(
+        namespace: str, validation_results: list[Any],
+    ) -> dict[str, str] | None:
+        """Namespace isolation can only refuse in a strict namespace; there the
+        whole batch's references are placed with one Registry lookup per 500
+        ids, not one per document. If that lookup fails (None), each item falls
+        back to its own lookup and is refused on its own."""
+        try:
+            return await get_reference_validator().place_references(
+                namespace,
+                [
+                    {
+                        "term_references": vr.term_references,
+                        "file_references": vr.file_references,
+                        "document_references": vr.references,
+                    }
+                    for _, _, vr in validation_results
+                ],
+            )
+        except RegistryUnavailableError:
+            return None
+
+    @staticmethod
+    async def _registry_items(validation_results: list[Any]) -> list[dict[str, Any]]:
+        """The Registry registration item of each validated document."""
+        # CASE-430: suppress the bare identity-values synonym for
+        # relationship/edge types. Usage is read from the templates already
+        # warmed into cache in Stage 0, so this is a cache hit per template_id.
+        template_client = get_template_store_client()
+        is_relationship: dict[str, bool] = {}
+        registry_items = []
+        for _, item, vr in validation_results:
+            tid = item.template_id
+            if tid not in is_relationship:
+                t = await template_client.get_template_resolved(tid)
+                is_relationship[tid] = bool(t and t.get("usage") == "relationship")
+            reg_item: dict[str, Any] = {
+                "identity_values": vr.identity_values or None,
+                # Submitted spellings, qualified by the template, mint the
+                # raw-values synonym; the hash feed (identity_values) carries
+                # resolved referent IDs.
+                "synonym_values": qualified_synonym_values(
+                    vr.template_value, vr.submitted_identity_values,
+                ),
+                "template_id": tid,
+                "has_identity_fields": bool(vr.identity_fields),
+                "skip_identity_value_synonym": is_relationship[tid],
+            }
+            # A restore/migration (document_id + version) asks for its exact
+            # id. A document_id without a version is an upsert: the identity
+            # decides and the id is checked against it below, as on the
+            # single-item path.
+            if item.document_id and item.version is not None:
+                reg_item["entry_id"] = item.document_id
+            registry_items.append(reg_item)
+        return registry_items
+
+    @staticmethod
+    async def _find_existing_for_batch(
+        namespace: str, registry_results: list[dict[str, Any]],
+    ) -> dict[str, Document]:
+        """The stored document each known identity of the batch continues:
+        its active version, or for a soft-deleted identity its latest one."""
         registry_doc_ids = [
             r.get("registry_id") for r in registry_results
             if r.get("status") == "already_exists" and r.get("registry_id")
@@ -3921,39 +4037,32 @@ class DocumentService:
             "status": DocumentStatus.ACTIVE.value
         }).to_list() if registry_doc_ids else []
         existing_by_doc_id = {doc.document_id: doc for doc in existing_docs}
-        # A known identity with no active version is soft-deleted: the write
-        # follows its latest version and brings it back as the successor (see
-        # _find_latest_by_document_id). Rare, so looked up only for those.
-        retired_ids = [
-            doc_id for doc_id in dict.fromkeys(registry_doc_ids)
-            if isinstance(doc_id, str) and doc_id not in existing_by_doc_id
-        ]
-        # One query per chunk, as for the active rows above; the newest row
-        # of each comes first.
-        for first in range(0, len(retired_ids), BULK_WRITE_CHUNK):
-            rows = await Document.find({
-                "namespace": namespace,
-                "document_id": {"$in": retired_ids[first:first + BULK_WRITE_CHUNK]},
-            }).sort([("version", SortDirection.DESCENDING)]).to_list()
-            for row in rows:
-                existing_by_doc_id.setdefault(row.document_id, row)
-        timing["3_find_existing"] = (time.perf_counter() - start) * 1000
+        await _add_latest_of_retired(namespace, registry_doc_ids, existing_by_doc_id)
+        return existing_by_doc_id
 
-        # Stage 4: Create all documents
-        # Track documents created within this batch so that duplicate identity
-        # hashes in the same batch use the correct latest version instead of
-        # the stale Stage 3 snapshot.
-        # NATS events are collected and published concurrently after the loop
-        # to avoid per-document ACK wait (~10ms each).
-        start = time.perf_counter()
-        now = datetime.now(UTC)
+
+    async def _create_validated_items(
+        self,
+        validation_results: list[Any],
+        registry_results: list[dict[str, Any]],
+        existing_by_doc_id: dict[str, Document],
+        namespace: str,
+        actor: str,
+        now: datetime,
+        continue_on_error: bool,
+        results: list[BulkResultItem],
+        timing: dict[str, float],
+    ) -> list[tuple[EventType, dict]]:
+        """Write every validated document, appending its result row; returns
+        the events to publish.
+
+        Plain creates and new versions are planned in memory and written in
+        bulk after the loop (_write_planned); everything else, and every item
+        of a document that has such an item, keeps the per-item path.
+        Stop-on-first-error keeps the per-item path for the whole batch: a
+        bulk write cannot stop at the failing item.
+        """
         pending_events: list[tuple[EventType, dict]] = []
-
-        # Plain creates and new versions are planned in memory and written
-        # in bulk after the loop (_write_planned); everything else, and every
-        # item of a document that has such an item, keeps the per-item path.
-        # Stop-on-first-error keeps the per-item path for the whole batch: a
-        # bulk write cannot stop at the failing item.
         per_item_ids = (
             await self._per_item_document_ids(
                 validation_results, registry_results, existing_by_doc_id,
@@ -3967,90 +4076,59 @@ class DocumentService:
             zip(validation_results, registry_results, strict=False)
         ):
             try:
-                if per_item_ids is not None and self._bulk_eligible(
-                    registry_result, per_item_ids,
-                ):
-                    plan = self._plan_validated_item(
-                        i, item, validation_result, registry_result,
-                        existing_by_doc_id, namespace, actor, now, retiring,
-                    )
-                    if isinstance(plan, _PlannedWrite):
-                        planned.append(plan)
-                        continue
-                    outcome = plan
-                else:
-                    outcome = await self._apply_validated_item(
-                        i, item, validation_result, registry_result,
-                        existing_by_doc_id, namespace, actor, now,
-                    )
+                outcome = await self._create_one_validated(
+                    i, item, validation_result, registry_result, existing_by_doc_id,
+                    namespace, actor, now, per_item_ids, retiring,
+                )
             except Exception as e:
-                failed += 1
                 results.append(BulkResultItem(
                     index=i, status="error", **error_fields(e)
                 ))
                 if not continue_on_error:
                     # Mark remaining as skipped
-                    for remaining_idx in range(idx + 1, len(validation_results)):
-                        remaining_i = validation_results[remaining_idx][0]
-                        results.append(BulkResultItem(
-                            index=remaining_i, status="skipped",
-                            error="Stopped due to previous error"
-                        ))
+                    results.extend(
+                        BulkResultItem(
+                            index=remaining[0], status="skipped",
+                            error="Stopped due to previous error",
+                        )
+                        for remaining in validation_results[idx + 1:]
+                    )
                     break
                 continue
-
-            results.append(outcome.result)
-            if outcome.pending_event:
-                pending_events.append(outcome.pending_event)
-            if outcome.counter == "created":
-                created += 1
-            elif outcome.counter == "updated":
-                updated += 1
-            elif outcome.counter == "unchanged":
-                unchanged += 1
-            else:  # "failed" — registry-error row, no exception raised
-                failed += 1
+            if isinstance(outcome, _PlannedWrite):
+                planned.append(outcome)
+            else:
+                _collect_outcome(outcome, results, pending_events)
 
         for outcome in await self._write_planned(planned, retiring, namespace, actor, now, timing):
-            results.append(outcome.result)
-            if outcome.pending_event:
-                pending_events.append(outcome.pending_event)
-            if outcome.counter == "created":
-                created += 1
-            elif outcome.counter == "updated":
-                updated += 1
-            else:
-                failed += 1
+            _collect_outcome(outcome, results, pending_events)
+        return pending_events
 
-        timing["4_create_documents"] = (time.perf_counter() - start) * 1000
-
-        # Stage 4c: every document this batch created at version 1 gets the
-        # template-scoped auto-synonym the single-item path registers — its
-        # portable address, the one a restore carries forward (and, for an
-        # edge or an identity-less document, the only synonym it has). A
-        # refused synonym fails that document, as it fails a single create.
-        start = time.perf_counter()
-        rolled_back = await self._register_bulk_auto_synonyms(
-            results, validation_results, namespace, actor,
+    async def _create_one_validated(
+        self,
+        i: int,
+        item: DocumentCreateRequest,
+        validation_result: Any,
+        registry_result: dict[str, Any],
+        existing_by_doc_id: dict[str, Document],
+        namespace: str,
+        actor: str,
+        now: datetime,
+        per_item_ids: Any,
+        retiring: dict[Any, Document],
+    ) -> Any:
+        """One validated item: planned for the bulk write when it is eligible
+        (a _PlannedWrite, or the outcome the plan settled), else written on
+        its own."""
+        if per_item_ids is not None and self._bulk_eligible(registry_result, per_item_ids):
+            return self._plan_validated_item(
+                i, item, validation_result, registry_result,
+                existing_by_doc_id, namespace, actor, now, retiring,
+            )
+        return await self._apply_validated_item(
+            i, item, validation_result, registry_result,
+            existing_by_doc_id, namespace, actor, now,
         )
-        if rolled_back:
-            pending_events = [
-                (et, payload) for et, payload in pending_events
-                if payload.get("document_id") not in rolled_back
-            ]
-        timing["4c_auto_synonyms"] = (time.perf_counter() - start) * 1000
-
-        # Stage 5: Publish all NATS events concurrently
-        # Events are fire-and-forget within gather — individual failures are
-        # logged by publish_document_event() but don't fail the batch.
-        if pending_events:
-            start = time.perf_counter()
-            await asyncio.gather(*(
-                publish_document_event(et, payload, changed_by=actor)
-                for et, payload in pending_events
-            ))
-            timing["5_nats_publish"] = (time.perf_counter() - start) * 1000
-        return self._finalize_bulk_response(results, len(items), timing, total_start)
 
     @staticmethod
     def _result_to_validation_response(result) -> ValidationResponse:
