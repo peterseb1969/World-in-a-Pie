@@ -240,55 +240,69 @@ def _restore_requester(request: Request, identity: UserIdentity) -> RestoreReque
 async def _authorize_archive_restore(
     archive_path: Path,
     identity: UserIdentity,
-    fallback_target: str,
 ) -> tuple[list[str], str]:
-    """Manifest-driven restore authorization, shared by BOTH restore entry
+    """Archive-driven restore authorization, shared by BOTH restore entry
     points (upload and restore-from-job) so neither can bypass it.
 
-    In restore mode the archive manifest is authoritative for which
-    namespaces get written — an archive may carry several, and admin is
-    required on EVERY one of them; a check against only the request's
-    anchor namespace would be a privilege hole. Returns the manifest's
-    namespace prefixes and the effective target ('' for a multi-namespace
-    archive: each namespace restores to itself).
+    In restore mode the archive decides which namespaces get written — it
+    may carry several, and admin is required on EVERY one of them; a check
+    against only the request's anchor namespace would be a privilege hole.
+    Returns those namespace prefixes and the effective target ('' for a
+    multi-namespace archive: each namespace restores to itself).
+
+    The namespaces checked are the ones the engine will write: the
+    manifest's list, or the zip's own namespaces/ tree when the manifest
+    names none (the engine's fallback). Checking only the manifest's list
+    let a manifest with an empty list restore the zip's namespaces with no
+    check at all.
 
     A pre-v3 archive is flat (no namespaces/ subtree), so the restore loop
     would read nothing, create the namespace, and report success — an empty
     namespace with no error. Reject it synchronously here, before any job
-    or namespace exists. A malformed archive (not a zip, no manifest,
-    unparseable manifest) likewise 400s here with a typed message, rather
-    than minting a job that fails later inside the engine. Only a genuinely
-    unexpected read error falls through to the fallback target; a readable
-    non-v3 manifest is a caller error.
+    or namespace exists. A malformed archive (not a zip, no manifest, a
+    manifest that is not JSON or not a valid manifest, an unsafe member
+    name) likewise 400s here with a typed message, rather than minting a job
+    that fails later inside the engine. So does an archive that names no
+    namespace at all. Any other failure to read the archive is a 500: the
+    admin check is never skipped because the archive could not be read.
     """
     try:
-        manifest = backup_service.read_archive_manifest(archive_path)
+        manifest, prefixes = backup_service.read_archive_restore_scope(archive_path)
     except backup_service.ArchiveError as exc:
         # GUARDRAIL 1: reference the type via backup_service (which owns the
         # wip_archive import) rather than importing wip_archive here.
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("Could not read restore archive %s", archive_path)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not read the archive to authorize the restore: {exc}",
+        ) from exc
 
-    prefixes: list[str] = []
-    if manifest is not None:
-        if not manifest.format_version.startswith("3"):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Archive is format v{manifest.format_version} — this "
-                    "endpoint restores v3 archives. Convert it first: "
-                    "python -m wip_toolkit convert-archive <src> <dst>"
-                ),
-            )
-        prefixes = manifest.namespace_prefixes()
+    if not manifest.format_version.startswith("3"):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Archive is format v{manifest.format_version} — this "
+                "endpoint restores v3 archives. Convert it first: "
+                "python -m wip_toolkit convert-archive <src> <dst>"
+            ),
+        )
+    if not prefixes:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Archive names no namespace: its manifest lists none and it "
+                "has no namespaces/ tree — nothing to restore"
+            ),
+        )
 
-    effective_target = fallback_target
-    if prefixes:
-        # Admin on every namespace the restore will write.
-        for ns in prefixes:
-            await check_namespace_permission(identity, ns, "admin")
-        # Single-namespace archive → that namespace is the target. Multi →
-        # each restores to itself; leave target empty so the engine loops.
-        effective_target = prefixes[0] if len(prefixes) == 1 else ""
+    # Admin on every namespace the restore will write.
+    for ns in prefixes:
+        await check_namespace_permission(identity, ns, "admin")
+    # Single-namespace archive → that namespace is the target. Multi →
+    # each restores to itself; leave target empty so the engine loops.
+    effective_target = prefixes[0] if len(prefixes) == 1 else ""
 
     return prefixes, effective_target
 
@@ -675,10 +689,10 @@ async def start_restore(
     elif mode in ("restore", "merge"):
         try:
             prefixes, effective_target = await _authorize_archive_restore(
-                archive_path, identity, fallback_target=effective_target
+                archive_path, identity
             )
             # A merge honors the caller's redirect. _authorize_archive_restore
-            # resolves the target from the MANIFEST (correct for restore,
+            # resolves the target from the ARCHIVE (correct for restore,
             # where every namespace restores to itself) — for merge that
             # silently replaced the caller's target with the archive's source,
             # so "merge into scratch-ns" executed against the live source
@@ -1177,9 +1191,10 @@ async def restore_from_job(
     copy in the bucket, or a hardlink in scratch), so deleting either job
     never removes the archive out from under the other. Authorization is
     two-layered: admin on every namespace the SOURCE job spans (reading the
-    archive is download-equivalent), then the same manifest-driven
-    per-namespace admin checks the upload restore runs (the archive
-    manifest is authoritative for what gets written).
+    archive is download-equivalent), then the same per-namespace admin
+    checks the upload restore runs, over the namespaces the restore will
+    write (the manifest's list, or the zip's namespaces/ tree when the
+    manifest lists none).
     """
     if request.mode not in ("restore", "merge"):
         raise HTTPException(
@@ -1230,7 +1245,7 @@ async def restore_from_job(
 
     try:
         prefixes, effective_target = await _authorize_archive_restore(
-            scratch, identity, fallback_target=src.namespace
+            scratch, identity
         )
     except HTTPException:
         await store.discard_materialized(new_job_id, object_copied)

@@ -30,3 +30,17 @@ class MissingManifestError(ArchiveError):
 
 class ManifestParseError(ArchiveError):
     """The archive's ``manifest.json`` is not valid JSON."""
+
+
+class ManifestValidationError(ArchiveError):
+    """The archive's ``manifest.json`` is JSON but not a valid manifest
+    (a required field is missing or has the wrong type)."""
+
+
+class EntityParseError(ArchiveError):
+    """A line of one of the archive's entity JSONL files is not valid JSON."""
+
+
+class UnsafePathError(ArchiveError):
+    """A name the archive supplies — a namespace prefix, a file id, a template
+    value, a ZIP member name — cannot be used safely as a path segment."""

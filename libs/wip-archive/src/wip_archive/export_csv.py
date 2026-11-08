@@ -41,6 +41,7 @@ from .archive import ArchiveReader
 from .csv_cells import escape_cell
 from .definitions import UnresolvableTemplate
 from .model import ArchiveModel
+from .paths import safe_segment
 
 _BASE = ("document_id", "version", "status")
 _INDEX = re.compile(r"\[(\d+)\]")
@@ -188,7 +189,15 @@ def export_csv(
             if key not in files:
                 tpl = model.templates.get(template_id)
                 name = tpl.value if tpl is not None and tpl.value else template_id
-                files[key] = CsvFile(ns, name, out_dir / ns / f"{name}.csv")
+                # Both come from the archive and become output path segments.
+                # The reader already refused an unsafe namespace member name;
+                # a template value is not constrained by the platform.
+                path = (
+                    out_dir
+                    / safe_segment(ns, "namespace prefix")
+                    / f"{safe_segment(name, 'template value')}.csv"
+                )
+                files[key] = CsvFile(ns, name, path)
                 columns[key] = set()
             files[key].rows += 1
             columns[key].update(_row_values(row))

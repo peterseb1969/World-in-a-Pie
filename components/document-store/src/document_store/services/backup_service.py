@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx as _httpx
 from beanie.odm.operators.update.array import Push
-from wip_archive.exceptions import ArchiveError
+from wip_archive.exceptions import ArchiveError  # noqa: F401  (re-exported for api/backup.py)
 from wip_archive.models import ProgressEvent
 
 from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
@@ -340,30 +340,30 @@ async def wait_for_job(job_id: str, timeout: float | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def read_archive_manifest(archive_path: str | Path) -> Any | None:
-    """Read an archive's manifest.
+def read_archive_restore_scope(archive_path: str | Path) -> tuple[Any, list[str]]:
+    """An archive's manifest and the namespaces a restore of it writes.
 
-    A malformed archive raises a typed ``ArchiveError`` (not-a-zip, no
-    manifest, unparseable manifest) so the restore route can refuse it with a
-    400 at upload time instead of minting a job that fails later. Only a
-    genuinely UNEXPECTED read error falls through to None (logged) — the caller
-    treats an absent manifest as "proceed with the request's target".
+    The namespaces are chosen by the same rule the restore engine applies
+    (``_archive_namespaces``): the manifest's list, or — when the manifest
+    names none — the ``namespaces/<prefix>/`` tree of the zip itself. The
+    restore route admin-checks exactly this list, so the check covers what
+    the engine will write rather than only what the manifest claims.
+
+    Every failure raises; nothing is turned into "no manifest". A malformed
+    archive (not a zip, no manifest, a manifest that is not valid JSON or not
+    a valid manifest, an unsafe member name) is a typed ``ArchiveError`` the
+    route refuses with a 400. Any other error propagates: a permission check
+    must never be skipped because reading the archive failed.
 
     Lives here (not in the API layer) so ``api/backup.py`` keeps its
-    no-toolkit-imports guardrail intact — the manifest read used to be a
-    function-local toolkit import inside the restore endpoint, which the
-    guardrail's own verification grep would have flagged.
+    no-toolkit-imports guardrail intact.
     """
     from wip_archive.archive import ArchiveReader
 
-    try:
-        with ArchiveReader(Path(archive_path)) as reader:
-            return reader.read_manifest()
-    except ArchiveError:
-        raise  # typed malformed-archive error → the route turns it into a 400
-    except Exception as exc:
-        logger.warning("Could not read manifest from archive %s: %s", archive_path, exc)
-        return None
+    with ArchiveReader(Path(archive_path)) as reader:
+        manifest = reader.read_manifest()
+        namespaces = manifest.namespace_prefixes() or reader.list_namespaces()
+    return manifest, namespaces
 
 
 async def list_all_namespaces() -> list[str]:

@@ -7,6 +7,41 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Archive names cannot escape their paths; a restore always checks the namespaces it writes (wip-archive 0.36.0, WIP-Toolkit 0.26.2)
+
+An archive's namespace prefixes, file ids and template values become
+filesystem paths in the toolkit (transforms, `export-csv`, `split`,
+`convert-archive`) and ZIP member names in their output. None was checked, so
+a crafted archive could write or overwrite files anywhere the operator can
+write, through `../` or an absolute path. Now:
+
+- **Opening an archive refuses an unsafe member name** — an absolute path,
+  a backslash, an empty, `.` or `..` segment, a `namespaces/<prefix>/` whose
+  prefix is not one safe segment, or a `blobs/` member that is not
+  `blobs/<file_id>`. The error is `UnsafePathError`, an `ArchiveError`, so
+  the restore route answers 400 at upload.
+- **The writer refuses an unsafe namespace prefix or file id** before it
+  names a staging file, whoever supplies it (an archive, a remote instance's
+  file records).
+- **`export-csv` refuses a template value that is not one safe segment**
+  instead of writing `<out>/<ns>/<value>.csv` outside `<out>`.
+  A template whose value contains `/` cannot be exported to CSV until it is
+  renamed; the error names it.
+- **A manifest that is JSON but not a valid manifest** is
+  `ManifestValidationError`, and **a corrupt entity line** is
+  `EntityParseError` naming its member — both `ArchiveError`s, not raw
+  pydantic or JSON errors.
+
+The restore route (`POST /backup/namespaces/{ns}/restore` and
+`POST /backup/jobs/{id}/restore`, modes restore and merge) admin-checks the
+namespaces the engine will write: the manifest's list, or the zip's own
+`namespaces/` tree when the manifest lists none. It used to check only the
+manifest's list, so an archive with an empty list restored the zip's
+namespaces with no permission check, and it skipped every check when the
+manifest failed to parse. Now an invalid manifest is a 400, an archive that
+names no namespace at all is a 400, and any other failure to read the
+archive is a 500 — never a job.
+
 ### A backup of namespaces with no entities can be restored
 
 A backup whose namespaces hold no entities is a zip with only its manifest,

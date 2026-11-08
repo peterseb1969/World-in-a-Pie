@@ -18,7 +18,9 @@ import zipfile
 from pathlib import Path
 
 from wip_archive.archive import BLOBS_DIR, ENTITY_FILES, MANIFEST_FILE, SYNONYMS_FILE, _entity_path
+from wip_archive.exceptions import ArchiveError
 from wip_archive.models import Manifest, NamespaceEntry
+from wip_archive.paths import check_member_name, safe_segment
 
 
 def convert_archive(src_path: str | Path, dst_path: str | Path) -> Path:
@@ -32,6 +34,11 @@ def convert_archive(src_path: str | Path, dst_path: str | Path) -> Path:
 
     with zipfile.ZipFile(src, "r") as zin:
         names = set(zin.namelist())
+        # The legacy namespace becomes a member path and blob names are
+        # copied across verbatim: refuse a source that would put an escaping
+        # name into the converted archive.
+        for name in names:
+            check_member_name(name)
         old = Manifest(**json.loads(zin.read(MANIFEST_FILE)))
 
         if old.format_version.startswith("3") or any(
@@ -45,6 +52,7 @@ def convert_archive(src_path: str | Path, dst_path: str | Path) -> Path:
         ns = old.namespace
         if not ns:
             raise ValueError(f"{src} has no namespace in its manifest to convert")
+        safe_segment(ns, "namespace prefix")
 
         v3 = Manifest(
             format_version="3.0",
@@ -97,7 +105,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         out = convert_archive(args[0], args[1])
-    except (ValueError, FileNotFoundError, zipfile.BadZipFile) as exc:
+    except (ValueError, FileNotFoundError, zipfile.BadZipFile, ArchiveError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"converted → {out}")

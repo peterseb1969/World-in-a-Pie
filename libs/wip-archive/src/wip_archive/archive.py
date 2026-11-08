@@ -12,12 +12,17 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import IO, Any, BinaryIO, TextIO
 
+from pydantic import ValidationError
+
 from .exceptions import (
+    EntityParseError,
     ManifestParseError,
+    ManifestValidationError,
     MissingManifestError,
     NotAnArchiveError,
 )
 from .models import Manifest
+from .paths import check_member_name, safe_segment
 
 # JSONL file names within the archive
 MANIFEST_FILE = "manifest.json"
@@ -53,6 +58,16 @@ NAMESPACES_DIR = "namespaces"
 def _entity_path(namespace: str, entity_type: str) -> str:
     """In-archive path for one namespace's entity JSONL (v3 layout)."""
     return f"{NAMESPACES_DIR}/{namespace}/{ENTITY_FILES[entity_type]}"
+
+
+def _parse_line(line: str, member: str) -> Any:
+    """One JSONL line, or a typed error naming the member it came from."""
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError as exc:
+        raise EntityParseError(
+            f"archive member {member} has a line that is not valid JSON: {exc}"
+        ) from exc
 
 
 class ArchiveWriter:
@@ -98,6 +113,10 @@ class ArchiveWriter:
                 "ArchiveWriter (v3) requires a namespace: pass namespace= or "
                 "construct with default_namespace="
             )
+        # The prefix becomes a staging directory and a ZIP member path, and a
+        # transform takes it from the archive it reads — refuse one that
+        # would leave the staging tree.
+        safe_segment(ns, "namespace prefix")
         if ns not in self._namespaces:
             self._namespaces.append(ns)
         return ns
@@ -135,6 +154,12 @@ class ArchiveWriter:
         for fh in self._handles.values():
             fh.flush()
 
+    def _blob_path(self, file_id: str) -> Path:
+        """The staging path for one blob. A file id comes from an archive
+        (transforms) or a remote instance (the toolkit exporter), so it is
+        checked to be one path segment before it names a file."""
+        return self._blobs_dir / safe_segment(file_id, "file id")
+
     @contextmanager
     def open_blob(self, file_id: str) -> Iterator[BinaryIO]:
         """Open a binary file handle for streaming a blob to disk.
@@ -144,7 +169,7 @@ class ArchiveWriter:
         :meth:`WIPClient.stream_to_file` so no full blob is ever held in
         Python memory.
         """
-        path = self._blobs_dir / file_id
+        path = self._blob_path(file_id)
         with open(path, "wb") as fh:
             yield fh
 
@@ -155,7 +180,7 @@ class ArchiveWriter:
         as :meth:`open_blob`. Preserves the original public API for
         existing callers and tests; new code should prefer ``open_blob``.
         """
-        (self._blobs_dir / file_id).write_bytes(data)
+        self._blob_path(file_id).write_bytes(data)
 
     def discard_blob(self, file_id: str) -> None:
         """Drop a blob written earlier, so the archive carries no bytes for it.
@@ -166,7 +191,7 @@ class ArchiveWriter:
         partial bytes would restore them as the file. A blob never written is
         not an error.
         """
-        (self._blobs_dir / file_id).unlink(missing_ok=True)
+        self._blob_path(file_id).unlink(missing_ok=True)
 
     def entity_count(self, entity_type: str, *, namespace: str = "") -> int:
         """Return the number of entities added for (namespace, entity type)."""
@@ -292,6 +317,15 @@ class ArchiveReader:
             raise NotAnArchiveError(
                 f"not a valid archive (unreadable zip): {self.archive_path}"
             ) from exc
+        # Member names become directory names and output paths downstream
+        # (list_namespaces, transforms, export-csv), so a crafted zip is
+        # refused when it is opened, before anything reads it.
+        try:
+            for name in self._zf.namelist():
+                check_member_name(name)
+        except Exception:
+            self._zf.close()
+            raise
 
     def close(self) -> None:
         self._zf.close()
@@ -332,8 +366,19 @@ class ArchiveReader:
         return data
 
     def read_manifest(self) -> Manifest:
-        """Read and parse the manifest (typed; unknown keys are ignored)."""
-        return Manifest(**self.read_manifest_raw())
+        """Read and parse the manifest (typed; unknown keys are ignored).
+
+        Raises ManifestValidationError when the manifest is JSON but does not
+        match the model, so every malformed-manifest failure is an
+        ArchiveError a caller can refuse, never a raw pydantic error.
+        """
+        raw = self.read_manifest_raw()
+        try:
+            return Manifest(**raw)
+        except ValidationError as exc:
+            raise ManifestValidationError(
+                f"archive manifest.json is not a valid manifest: {exc}"
+            ) from exc
 
     def list_namespaces(self) -> list[str]:
         """The namespaces present in this v3 archive, sorted.
@@ -383,8 +428,9 @@ class ArchiveReader:
         ns = self._resolve_ns(namespace)
         if ns is None:
             return
+        member = _entity_path(ns, entity_type)
         try:
-            handle = self._zf.open(_entity_path(ns, entity_type))
+            handle = self._zf.open(member)
         except KeyError:
             return
 
@@ -392,12 +438,13 @@ class ArchiveReader:
             for line in text:
                 line = line.strip()
                 if line:
-                    yield json.loads(line)
+                    yield _parse_line(line, member)
 
     def read_synonyms(self) -> Iterator[dict[str, Any]]:
         """Iterate over synonyms from synonyms.jsonl (if present)."""
+        member = SYNONYMS_FILE
         try:
-            handle = self._zf.open(SYNONYMS_FILE)
+            handle = self._zf.open(member)
         except KeyError:
             return
 
@@ -405,7 +452,7 @@ class ArchiveReader:
             for line in text:
                 line = line.strip()
                 if line:
-                    yield json.loads(line)
+                    yield _parse_line(line, member)
 
     def read_referents(self) -> Iterator[dict[str, Any]]:
         """Iterate over the out-of-archive referent table (if present).
@@ -413,8 +460,9 @@ class ArchiveReader:
         Whether the archive has a table at all is ``Manifest.referents``
         (None = predates it); a table of zero rows has no file.
         """
+        member = REFERENTS_FILE
         try:
-            handle = self._zf.open(REFERENTS_FILE)
+            handle = self._zf.open(member)
         except KeyError:
             return
 
@@ -422,7 +470,7 @@ class ArchiveReader:
             for line in text:
                 line = line.strip()
                 if line:
-                    yield json.loads(line)
+                    yield _parse_line(line, member)
 
     def has_synonyms(self) -> bool:
         """Check if the archive contains synonyms.jsonl."""

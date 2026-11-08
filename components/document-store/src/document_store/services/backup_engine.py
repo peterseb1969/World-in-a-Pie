@@ -4916,6 +4916,8 @@ class DirectRestoreEngine:
                 "Archive manifest claims v3 but the zip has no namespaces/ "
                 "tree — malformed archive, nothing to restore"
             )
+        # The restore route admin-checks namespaces by this same rule
+        # (backup_service.read_archive_restore_scope); change both together.
         namespaces: list[str] = manifest.namespace_prefixes() or reader.list_namespaces()
         if not namespaces:
             raise RestoreEngineError("Archive contains no namespaces to restore")
