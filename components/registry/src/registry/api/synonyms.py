@@ -27,6 +27,7 @@ from ..services.auth import require_api_key
 from ..services.claims import (
     claim_keys_pending_bulk,
     confirm_keys_bulk,
+    new_claim_token,
     release_keys_bulk,
 )
 from ..services.errors import error_fields, invalid_entity_type_fields
@@ -210,10 +211,11 @@ async def add_synonyms(
     # the entry itself already holds (its write died mid-flight) is fine, a
     # stale holder is healed and retried once, a genuine owner is never
     # stolen from.
+    token = new_claim_token()
     blocked = await claim_keys_pending_bulk([
         [(entry.namespace, entry.entity_type, synonym.composite_key_hash, entry.entry_id, "synonym")]
         for _, entry, synonym, _ in planned
-    ])
+    ], token)
     changed: dict[str, RegistryEntry] = {}
     by_entry: dict[str, list[int]] = {}
     for p, ((_i, entry, synonym, recorded), owner) in enumerate(zip(planned, blocked, strict=True)):
@@ -244,9 +246,10 @@ async def add_synonyms(
             else:
                 claims_to_confirm.append(key)
                 settle(p, AddSynonymResponse(index=0, status="added", registry_id=entry_id))
-    # A failed write releases its claims (anything missed is pending and dies
-    # in the reconcile pass); a committed one confirms them, best-effort.
-    await release_keys_bulk(claims_to_release)
+    # A failed write releases the claims this request inserted (anything
+    # missed is pending and dies in the reconcile pass); a committed one
+    # confirms them, best-effort.
+    await release_keys_bulk(claims_to_release, token)
     await confirm_keys_bulk(claims_to_confirm)
 
     done = [r for r in results if r is not None]

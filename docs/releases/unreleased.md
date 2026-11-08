@@ -7,6 +7,39 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Registry: a composite key stays claimed by the entry that holds it
+
+The claims collection is what keeps a composite key to one entry. Several
+paths could leave an entry holding a key with no claim, after which another
+entry could take the same key as a synonym and lookups by it became
+ambiguous. They no longer can:
+
+- **A refused claim rolls back only what its own request took.** An
+  activation refused because one of its synonyms belongs to another entry
+  used to delete the claim on the reservation's own key as well. Every
+  pending claim now carries its request's token, and a rollback deletes only
+  claims that still carry it.
+- **Two requests on one entry no longer delete each other's claims.** A
+  request that finds its entry already holding a key takes the claim over as
+  its own in-flight claim (pending, dated now, no token). The request that
+  inserted it can no longer release it, and a healer or audit running
+  meanwhile leaves it alone.
+- **`POST /entries/rekey-identity` moves the claim with the key.** It claims
+  the new key before writing, confirms it after, and releases the old one.
+  A target key another entry holds as a **synonym**, or is claiming right
+  now, is a `conflict`. Before, only another entry's primary key was. The
+  entry's `updated_at` now moves too.
+- **A batch insert that fails part-way reports what it wrote.** The
+  `register`, `reserve` and `provision` insert is ordered. Entries before the
+  failing one are written: they keep their claims, and `register`/`reserve`
+  report them `created`/`reserved` instead of `error`. Only the entries that
+  were not written lose their claims. When the error does not say how far the
+  insert got, every claim stays pending for the pending reconcile.
+- **The orphan audit (`reconcile_orphan_claims`, run by
+  `python -m registry.admin_backfill_claims`) skips pending claims younger
+  than the grace window.** It deletes a claim only in the state and with the
+  date it read, so it can run against a live Registry.
+
 ### Registry lows: export, activation errors, status filters, ID formats; one version per service
 
 - **`POST /api/registry/entries/export`** answers `not_found` for an entry in a

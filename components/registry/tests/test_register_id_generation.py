@@ -84,5 +84,5 @@ async def test_the_response_reports_its_phases(client: AsyncClient, auth_headers
               "composite_key": {"idgen-timing": uuid.uuid4().hex}}]
     timing = (await client.post(REGISTER, json=items, headers=auth_headers)).json()["timing"]
     for phase in ("0_namespace", "2_find_existing", "3_build_entries", "3b_claim_keys",
-                  "4_insert_entries", "4b_confirm_keys", "total"):
+                  "4_insert_entries", "total"):
         assert phase in timing, timing

@@ -19,6 +19,7 @@ to the pending pass, which never touches young or confirmed claims.
 """
 
 import logging
+import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
@@ -34,6 +35,13 @@ logger = logging.getLogger("registry.claims")
 # collision) treats its request as dead. Requests live for seconds; a minute
 # is generous without letting ghosts block a hash for long.
 PENDING_GRACE_SECONDS = 60
+
+
+def new_claim_token() -> str:
+    """A token naming one request's pending claims. The request passes it to
+    the claim call and to its rollback, which then deletes only the claims
+    that request inserted and nobody has taken over since."""
+    return uuid.uuid4().hex
 
 
 def _entry_key_pairs(entry: RegistryEntry) -> list[tuple[str, str, str, str]]:
@@ -91,6 +99,9 @@ async def resolve_stale_claim(existing: CompositeKeyClaim | None) -> bool:
         "composite_key_hash": existing.composite_key_hash,
         "owner_entry_id": existing.owner_entry_id,
         "state": existing.state,
+        # A request that takes the claim over meanwhile re-dates it; this
+        # delete then misses, which is right — it is in flight again.
+        "created_at": existing.created_at,
     })
     logger.info(
         "CASE-554: healed stale %s claim on %s (%s/%s), late owner %s",
@@ -100,37 +111,21 @@ async def resolve_stale_claim(existing: CompositeKeyClaim | None) -> bool:
     return True
 
 
-async def claim_entry_keys_pending(entry: RegistryEntry) -> str | None:
-    """Claim-first gate for the entry create paths: claim every key pair as
-    ``pending`` BEFORE the entry insert. Returns None on success or a
-    conflict message — in which case any pairs already claimed for this
-    entry have been rolled back and the item must NOT be inserted.
+async def claim_entry_keys_pending(
+    entry: RegistryEntry, token: str | None = None,
+) -> str | None:
+    """Claim-first gate for one entry: claim every key pair as ``pending``
+    BEFORE the entry insert. Returns None on success or a conflict message —
+    in which case the pairs this call took have been rolled back and the
+    entry must NOT be inserted. The single-entry form of
+    ``claim_entries_keys_pending``.
 
     Fail-fast is deliberate (CASE-554): a primary key colliding with an
     existing synonym is a real conflict — the composite key already resolves
     to another entity — not a log line. Claim-first also makes
     entry-without-claim unrepresentable by ordering.
     """
-    claimed: list[tuple[str, str, str]] = []
-    for ns, etype, key_hash, kind in _entry_key_pairs(entry):
-        for attempt in (1, 2):
-            try:
-                await CompositeKeyClaim.claim(
-                    ns, etype, key_hash, entry.entry_id, kind, state="pending"
-                )
-                claimed.append((ns, etype, key_hash))
-                break
-            except DuplicateKeyError:
-                existing = await CompositeKeyClaim.find_existing(ns, etype, key_hash)
-                if attempt == 1 and await resolve_stale_claim(existing):
-                    continue  # healed — retry once; index arbitrates races
-                owner = existing.owner_entry_id if existing else "?"
-                for c_ns, c_et, c_hash in claimed:
-                    await CompositeKeyClaim.release(c_ns, c_et, c_hash, entry.entry_id)
-                return (
-                    f"Composite key already registered under different entry: {owner}"
-                )
-    return None
+    return (await claim_entries_keys_pending([entry], token))[0]
 
 
 async def confirm_entry_keys(entry: RegistryEntry) -> None:
@@ -148,18 +143,11 @@ async def confirm_entry_keys(entry: RegistryEntry) -> None:
             )
 
 
-async def release_entry_keys(entry: RegistryEntry) -> None:
-    """Roll back an entry's claims after its insert failed. Best-effort —
+async def release_entry_keys(entry: RegistryEntry, token: str | None = None) -> None:
+    """Roll back an entry's claims after its insert failed: with the claiming
+    request's ``token``, only the claims that request inserted. Best-effort —
     anything left behind is pending and dies in the reconcile pass."""
-    for ns, etype, key_hash, _kind in _entry_key_pairs(entry):
-        try:
-            await CompositeKeyClaim.release(ns, etype, key_hash, entry.entry_id)
-        except Exception:
-            logger.exception(
-                "CASE-554: release failed for %s (%s/%s), entry %s — pending "
-                "claim left for reconciliation.",
-                key_hash, ns, etype, entry.entry_id,
-            )
+    await release_entries_keys([entry], token)
 
 
 # ── Bulk forms ───────────────────────────────────────────────────────────
@@ -183,15 +171,18 @@ def entry_claim_keys(entry: RegistryEntry) -> list[ClaimKey]:
     ]
 
 
-async def _claim_one_pending(key: ClaimKey) -> str | None:
-    """One pending claim, the way ``claim_entry_keys_pending`` takes each
-    pair: a stale holder is healed and the claim retried once. Returns None
-    when the claim is held by its owner, or the entry_id of the owner that
-    blocks it ("?" when the holder cannot be read)."""
+async def _claim_one_pending(key: ClaimKey, token: str) -> str | None:
+    """One pending claim, taken under the request's token: a stale holder is
+    healed and the claim retried once. Returns None when the claim is held by
+    its owner, or the entry_id of the owner that blocks it ("?" when the
+    holder cannot be read). A claim the owner already held is taken over
+    without the token, so the request's rollback leaves it."""
     ns, etype, key_hash, owner, kind = key
     for attempt in (1, 2):
         try:
-            await CompositeKeyClaim.claim(ns, etype, key_hash, owner, kind, state="pending")
+            await CompositeKeyClaim.claim(
+                ns, etype, key_hash, owner, kind, state="pending", token=token,
+            )
             return None
         except DuplicateKeyError:
             existing = await CompositeKeyClaim.find_existing(ns, etype, key_hash)
@@ -201,28 +192,36 @@ async def _claim_one_pending(key: ClaimKey) -> str | None:
     return "?"
 
 
-async def _claim_group_one_by_one(group: Sequence[ClaimKey]) -> str | None:
+async def _claim_group_one_by_one(group: Sequence[ClaimKey], token: str) -> str | None:
     """Claim a group pair by pair, releasing what it took if one is blocked."""
     taken: list[ClaimKey] = []
     for key in group:
         if not key[2]:
             continue
-        blocker = await _claim_one_pending(key)
+        blocker = await _claim_one_pending(key, token)
         if blocker is not None:
-            await release_keys_bulk(taken)
+            await release_keys_bulk(taken, token)
             return blocker
         taken.append(key)
     return None
 
 
-async def claim_keys_pending_bulk(groups: Sequence[Sequence[ClaimKey]]) -> list[str | None]:
+async def claim_keys_pending_bulk(
+    groups: Sequence[Sequence[ClaimKey]], token: str | None = None,
+) -> list[str | None]:
     """Claim many groups of keys as ``pending`` in one insert.
 
     Each group is all-or-nothing, like one call of
     ``claim_entry_keys_pending``: either every key in it is held by its owner
-    afterwards, or none of the keys it took in this call are. The result
-    names, per group and in input order, None (claimed) or the entry_id of
-    the owner that blocks it.
+    afterwards, or none of the keys it took in this call are. A key its owner
+    already held before the call is not one the call took: a blocked group
+    leaves it held. The result names, per group and in input order, None
+    (claimed) or the entry_id of the owner that blocks it.
+
+    The claims this call inserts carry ``token`` (a fresh one when omitted).
+    A caller that may roll back after the call — its entry write failed —
+    passes its own token here and to ``release_keys_bulk``, which then
+    deletes only what this call inserted.
 
     The insert is unordered, so every key that is free is claimed in the one
     round trip. Only a key that hits the unique index goes the per-key way:
@@ -232,6 +231,7 @@ async def claim_keys_pending_bulk(groups: Sequence[Sequence[ClaimKey]]) -> list[
     batch that was itself rolled back is claimed again, pair by pair: taken
     one at a time, as before, it would have found the key free.
     """
+    token = token or new_claim_token()
     collection = CompositeKeyClaim.get_motor_collection()
     now = datetime.now(UTC)
     docs: list[dict] = []
@@ -248,6 +248,7 @@ async def claim_keys_pending_bulk(groups: Sequence[Sequence[ClaimKey]]) -> list[
                 "kind": kind,
                 "state": "pending",
                 "created_at": now,
+                "claim_token": token,
             })
             doc_group.append(gi)
 
@@ -270,18 +271,18 @@ async def claim_keys_pending_bulk(groups: Sequence[Sequence[ClaimKey]]) -> list[
         blocked[gi] = await _claim_one_pending((
             d["namespace"], d["entity_type"], d["composite_key_hash"],
             d["owner_entry_id"], d["kind"],
-        ))
+        ), token)
 
     failed = [gi for gi, b in enumerate(blocked) if b is not None]
     if not failed:
         return blocked
-    await release_keys_bulk([key for gi in failed for key in groups[gi]])
+    await release_keys_bulk([key for gi in failed for key in groups[gi]], token)
 
     rolled_back = {key[3] for gi in failed for key in groups[gi]}
     for gi in failed:
         own = {key[3] for key in groups[gi]}
         if blocked[gi] in rolled_back - own:
-            blocked[gi] = await _claim_group_one_by_one(groups[gi])
+            blocked[gi] = await _claim_group_one_by_one(groups[gi], token)
     return blocked
 
 
@@ -316,16 +317,22 @@ async def confirm_keys_bulk(keys: Sequence[ClaimKey]) -> None:
         )
 
 
-async def release_keys_bulk(keys: Sequence[ClaimKey]) -> None:
+async def release_keys_bulk(keys: Sequence[ClaimKey], token: str | None = None) -> None:
     """Delete claims, each only if its named owner holds it, in a few
-    writes. Best-effort, as ``release_entry_keys``: anything left behind is
-    pending and dies in the reconcile pass."""
+    writes. With a ``token`` — a request rolling back its own claims — only
+    the claims that request inserted are deleted: never one its entry held
+    before, nor one another request has taken over since. Without one — a
+    synonym removed, an entity retired — the owner's claim goes, whoever
+    inserted it. Best-effort: anything left behind is pending and dies in the
+    reconcile pass."""
+    scope = {} if token is None else {"claim_token": token}
     clauses = [
         {
             "namespace": ns,
             "entity_type": etype,
             "composite_key_hash": key_hash,
             "owner_entry_id": owner,
+            **scope,
         }
         for ns, etype, key_hash, owner, _kind in keys
         if key_hash
@@ -342,10 +349,13 @@ async def release_keys_bulk(keys: Sequence[ClaimKey]) -> None:
             )
 
 
-async def claim_entries_keys_pending(entries: Sequence[RegistryEntry]) -> list[str | None]:
-    """``claim_entry_keys_pending`` for many entries in one insert: per entry,
-    in input order, None or the conflict message."""
-    blocked = await claim_keys_pending_bulk([entry_claim_keys(e) for e in entries])
+async def claim_entries_keys_pending(
+    entries: Sequence[RegistryEntry], token: str | None = None,
+) -> list[str | None]:
+    """Claim every entry's keys pending in one insert: per entry, in input
+    order, None or the conflict message. Pass the request's token to roll
+    back later with ``release_entries_keys``."""
+    blocked = await claim_keys_pending_bulk([entry_claim_keys(e) for e in entries], token)
     return [None if owner is None else _CLAIM_CONFLICT.format(owner=owner) for owner in blocked]
 
 
@@ -354,9 +364,12 @@ async def confirm_entries_keys(entries: Sequence[RegistryEntry]) -> None:
     await confirm_keys_bulk([key for e in entries for key in entry_claim_keys(e)])
 
 
-async def release_entries_keys(entries: Sequence[RegistryEntry]) -> None:
-    """``release_entry_keys`` for many entries in a few writes."""
-    await release_keys_bulk([key for e in entries for key in entry_claim_keys(e)])
+async def release_entries_keys(
+    entries: Sequence[RegistryEntry], token: str | None = None,
+) -> None:
+    """Release many entries' claims in a few writes; with the claiming
+    request's token, only the claims that request inserted."""
+    await release_keys_bulk([key for e in entries for key in entry_claim_keys(e)], token)
 
 
 def releasable_synonyms(entry: RegistryEntry) -> list[Synonym]:
@@ -414,6 +427,7 @@ async def revive_entry_synonyms(
     Same two-phase order as a synonym add: claim pending, write the entry,
     confirm.
     """
+    token = new_claim_token()
     reclaimed: list[Synonym] = []
     taken: list[tuple[Synonym, str]] = []
     for syn in entry.synonyms:
@@ -423,7 +437,7 @@ async def revive_entry_synonyms(
             try:
                 await CompositeKeyClaim.claim(
                     syn.namespace, syn.entity_type, syn.composite_key_hash,
-                    entry.entry_id, "synonym", state="pending",
+                    entry.entry_id, "synonym", state="pending", token=token,
                 )
                 reclaimed.append(syn)
                 break
@@ -446,11 +460,10 @@ async def revive_entry_synonyms(
     try:
         await entry.save()
     except Exception:
-        for syn in reclaimed:
-            await CompositeKeyClaim.release(
-                syn.namespace, syn.entity_type, syn.composite_key_hash,
-                owner_entry_id=entry.entry_id,
-            )
+        await release_keys_bulk([
+            (syn.namespace, syn.entity_type, syn.composite_key_hash, entry.entry_id, "synonym")
+            for syn in reclaimed
+        ], token)
         raise
     for syn in reclaimed:
         await CompositeKeyClaim.confirm(
@@ -488,12 +501,16 @@ async def reconcile_pending_claims(
         )
         if backed:
             await claims_coll.update_one(
-                {"_id": doc["_id"], "state": "pending"},
+                {"_id": doc["_id"], "state": "pending", "created_at": doc["created_at"]},
                 {"$set": {"state": "confirmed"}},
             )
             summary["confirmed"] += 1
         else:
-            await claims_coll.delete_one({"_id": doc["_id"], "state": "pending"})
+            # The observed date in the filter: a request that took the claim
+            # over since re-dated it, and its claim is in flight again.
+            await claims_coll.delete_one(
+                {"_id": doc["_id"], "state": "pending", "created_at": doc["created_at"]}
+            )
             summary["deleted"] += 1
 
     if summary["checked"]:
@@ -600,10 +617,13 @@ async def reconcile_orphan_claims() -> dict[str, int]:
     reconcile_pending_claims + inline healing, and this scan's concurrency
     hazard against live traffic (CASE-553) is why it stays manual.
 
-    Safe + idempotent — only deletes dangling claims, never mutates entries.
+    Idempotent — only deletes dangling claims, never mutates entries.
     Catches confirmed-dangling residue in bulk: claims for deleted entries,
     cross-namespace-synonym residue after namespace deletion, stale claims
-    from entry mutations.
+    from entry mutations. A pending claim younger than the grace window is
+    an in-flight request's (its entry is written after it) and is never
+    read as dangling, and each delete names the state and date the scan
+    saw, so a claim a request takes over meanwhile survives.
 
     Uses batched queries (500 owner IDs per round) instead of per-claim
     lookups to avoid the N+1 pattern that takes 20+ minutes on slow storage.
@@ -645,15 +665,28 @@ async def _reconcile_batch(batch, entries_coll, claims_coll) -> int:
     ):
         existing[entry["entry_id"]] = entry
 
-    orphan_ids = []
+    cutoff = datetime.now(UTC) - timedelta(seconds=PENDING_GRACE_SECONDS)
+    orphans = []
     for doc in batch:
+        created = doc.get("created_at")
+        if created is not None and created.tzinfo is None:
+            created = created.replace(tzinfo=UTC)
+        if doc.get("state") == "pending" and created is not None and created >= cutoff:
+            continue  # in flight: its entry is written after its claim
         entry = existing.get(doc["owner_entry_id"])
         if entry is None or not _entry_doc_backs_claim(entry, doc):
-            orphan_ids.append(doc["_id"])
+            # Legacy claims carry no state; {"state": None} matches the
+            # missing field.
+            orphans.append({
+                "_id": doc["_id"],
+                "state": doc.get("state"),
+                "created_at": doc.get("created_at"),
+            })
 
-    if orphan_ids:
-        await claims_coll.delete_many({"_id": {"$in": orphan_ids}})
-    return len(orphan_ids)
+    if not orphans:
+        return 0
+    result = await claims_coll.delete_many({"$or": orphans})
+    return int(result.deleted_count)
 
 
 def _entry_doc_backs_claim(entry: dict, claim_doc: dict) -> bool:
@@ -687,14 +720,4 @@ def _entry_backs_claim(entry: RegistryEntry, claim: CompositeKeyClaim) -> bool:
         and s.entity_type == claim.entity_type
         and s.composite_key_hash == claim.composite_key_hash
         for s in entry.active_synonyms()
-    )
-
-
-async def _delete_claim(claim: CompositeKeyClaim) -> None:
-    await CompositeKeyClaim.get_motor_collection().delete_one(
-        {
-            "namespace": claim.namespace,
-            "entity_type": claim.entity_type,
-            "composite_key_hash": claim.composite_key_hash,
-        }
     )

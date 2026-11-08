@@ -170,9 +170,9 @@ async def test_register_claims_a_batch_in_one_insert(client, auth_headers, monke
     calls = {"insert_many": 0}
     real = claims_service.claim_keys_pending_bulk
 
-    async def counting(groups):
+    async def counting(groups, token=None):
         calls["insert_many"] += 1
-        return await real(groups)
+        return await real(groups, token)
 
     monkeypatch.setattr(claims_service, "claim_keys_pending_bulk", counting)
 

@@ -27,7 +27,7 @@ from typing import ClassVar
 
 from beanie import Document
 from pydantic import Field
-from pymongo import IndexModel
+from pymongo import IndexModel, ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 
@@ -73,6 +73,15 @@ class CompositeKeyClaim(Document):
     created_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
+    claim_token: str | None = Field(
+        default=None,
+        description="The request that inserted this pending claim. A rollback "
+                    "deletes only claims carrying its own token, so it never "
+                    "deletes a claim its entry held before the request, nor one "
+                    "another request on the same entry has taken over (taking "
+                    "over clears the token). None on confirmed one-shot claims "
+                    "and on claims taken over."
+    )
 
     class Settings:
         name = "composite_key_claims"
@@ -117,46 +126,67 @@ class CompositeKeyClaim(Document):
         owner_entry_id: str,
         kind: str,
         state: str = "confirmed",
+        token: str | None = None,
     ) -> "CompositeKeyClaim | None":
         """Atomically claim a composite-key hash for an owner.
 
         Returns the claim on success. Empty hashes are not claimed (returns
         None). Idempotent self-retry: if the hash is already claimed by the
-        SAME owner, returns the existing claim (no-op) rather than raising.
-        Raises ``DuplicateKeyError`` only when the hash is claimed by a
-        DIFFERENT owner — the caller inspects ``find_existing`` to decide.
+        SAME owner, returns that claim rather than raising. Raises
+        ``DuplicateKeyError`` only when the hash is claimed by a DIFFERENT
+        owner — the caller inspects ``find_existing`` to decide.
 
-        Two-phase write paths pass ``state="pending"`` before the entry
-        write and ``confirm`` after it commits; ``confirmed`` stays the
-        default so audit/backfill callers keep their one-shot semantics.
+        Two-phase write paths pass ``state="pending"`` (with their request's
+        ``token``) before the entry write and ``confirm`` after it commits;
+        ``confirmed`` stays the default so audit/backfill callers keep their
+        one-shot semantics. A pending self-retry takes the existing claim over
+        as this request's in-flight claim: pending, dated now (so a healer or
+        audit running meanwhile leaves it alone) and with no token (so no
+        request's rollback deletes a claim its entry may still need — it
+        either gets confirmed by a committed write or settled by the pending
+        reconcile against what the entry holds).
         """
         if not composite_key_hash:
             return None
-        doc = {
+        collection = cls.get_motor_collection()
+        key = {
             "namespace": namespace,
             "entity_type": entity_type,
             "composite_key_hash": composite_key_hash,
-            "owner_entry_id": owner_entry_id,
-            "kind": kind,
-            "state": state,
-            "created_at": datetime.now(UTC),
         }
-        try:
-            await cls.get_motor_collection().insert_one(doc)
-        except DuplicateKeyError:
-            existing = await cls.find_existing(namespace, entity_type, composite_key_hash)
-            if existing is not None and existing.owner_entry_id == owner_entry_id:
-                return existing  # self-retry — already ours
-            raise
-        return cls(
-            namespace=namespace,
-            entity_type=entity_type,
-            composite_key_hash=composite_key_hash,
-            owner_entry_id=owner_entry_id,
-            kind=kind,
-            state=state,
-            created_at=doc["created_at"],
-        )
+        for attempt in (1, 2):
+            now = datetime.now(UTC)
+            doc = {
+                **key,
+                "owner_entry_id": owner_entry_id,
+                "kind": kind,
+                "state": state,
+                "created_at": now,
+                "claim_token": token,
+            }
+            try:
+                await collection.insert_one(doc)
+                doc.pop("_id", None)
+                return cls(**doc)
+            except DuplicateKeyError:
+                if state == "pending":
+                    taken = await collection.find_one_and_update(
+                        {**key, "owner_entry_id": owner_entry_id},
+                        {"$set": {"state": "pending", "created_at": now, "claim_token": None}},
+                        return_document=ReturnDocument.AFTER,
+                    )
+                    if taken is not None:
+                        return cls(**{**doc, "kind": taken["kind"], "claim_token": None})
+                existing = await cls.find_existing(namespace, entity_type, composite_key_hash)
+                if existing is not None and existing.owner_entry_id != owner_entry_id:
+                    raise
+                if existing is not None and state != "pending":
+                    return existing  # self-retry — already ours
+                if attempt == 2:
+                    raise
+                # The holder went (or became ours) between the insert and the
+                # read: try once more.
+        raise AssertionError("unreachable")  # pragma: no cover
 
     @classmethod
     async def confirm(

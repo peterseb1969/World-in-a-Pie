@@ -68,8 +68,12 @@ from ..models.namespace import Namespace
 from ..services.auth import require_api_key, require_privileged_key
 from ..services.claims import (
     claim_entries_keys_pending,
+    claim_keys_pending_bulk,
     confirm_entries_keys,
+    confirm_keys_bulk,
+    new_claim_token,
     release_entries_keys,
+    release_keys_bulk,
     retire_entry_synonyms,
     revive_entry_synonyms,
 )
@@ -109,6 +113,37 @@ def _insert_failure(e: Exception) -> dict[str, Any]:
         "error": f"Batch insert failed ({type(e).__name__}); see the Registry log",
         "error_code": "internal_error",
     }
+
+
+async def _insert_claimed_entries(
+    entries: list[RegistryEntry], token: str,
+) -> tuple[int | None, Exception | None]:
+    """Insert entries whose keys this request claimed pending (under
+    ``token``), then settle those claims. Returns (how many entries were
+    written, the insert error or None).
+
+    The batch insert is ordered and has no transaction: when it fails, the
+    entries before the failing one are written and the rest are not. The
+    written ones keep their claims, confirmed; the others lose the claims
+    this request took for them. When the error does not say how far the
+    insert got, the count is None and nothing is released — every claim
+    stays pending, and the pending reconcile settles each one by whether its
+    entry exists.
+    """
+    try:
+        await RegistryEntry.insert_many(entries)
+    except Exception as e:
+        written: int | None = None
+        if isinstance(e, BulkWriteError):
+            failing = [err["index"] for err in e.details.get("writeErrors", [])]
+            if failing:
+                written = min(failing)
+        if written is not None:
+            await confirm_entries_keys(entries[:written])
+            await release_entries_keys(entries[written:], token)
+        return written, e
+    await confirm_entries_keys(entries)
+    return len(entries), None
 
 
 def build_lookup_response(
@@ -688,7 +723,8 @@ async def register_keys(
     lap("3_build_entries")
     gated_entries: list = []
     gated_indices: list[int] = []
-    conflicts = await claim_entries_keys_pending(entries_to_insert)
+    token = new_claim_token()
+    conflicts = await claim_entries_keys_pending(entries_to_insert, token)
     for pos, idx in enumerate(insert_indices):
         entry = entries_to_insert[pos]
         conflict = conflicts[pos]
@@ -706,13 +742,12 @@ async def register_keys(
 
     # Phase 4: Batch insert, then confirm the pending claims.
     if gated_entries:
-        try:
-            await RegistryEntry.insert_many(gated_entries)
-            lap("4_insert_entries")
-            await confirm_entries_keys(gated_entries)
-            lap("4b_confirm_keys")
-            for pos, idx in enumerate(gated_indices):
-                entry = gated_entries[pos]
+        written, insert_error = await _insert_claimed_entries(gated_entries, token)
+        lap("4_insert_entries")
+        failure = _insert_failure(insert_error) if insert_error is not None else {}
+        for pos, idx in enumerate(gated_indices):
+            entry = gated_entries[pos]
+            if written is not None and pos < written:
                 results[idx] = RegisterKeyResponse(
                     index=idx,
                     status="created",
@@ -722,18 +757,8 @@ async def register_keys(
                     identity_hash=identity_hashes[idx],
                 )
                 created_count += 1
-        except Exception as e:
-            unwritten = [
-                (pos, idx) for pos, idx in enumerate(gated_indices) if results[idx] is None
-            ]
-            await release_entries_keys([gated_entries[pos] for pos, _ in unwritten])
-            failure = _insert_failure(e)
-            for _pos, idx in unwritten:
-                results[idx] = RegisterKeyResponse(
-                    index=idx,
-                    status="error",
-                    **failure,
-                )
+            else:
+                results[idx] = RegisterKeyResponse(index=idx, status="error", **failure)
                 error_count += 1
 
     timing["total"] = round((time.perf_counter() - started) * 1000, 1)
@@ -807,18 +832,29 @@ async def rekey_identity(
 
             new_key = {**current_key, "identity_hash": item.identity_hash}
             new_hash = HashService.compute_composite_key_hash(new_key)
+            old_hash = entry.primary_composite_key_hash
 
+            # The key moves with its claim, in the two-phase order: claim the
+            # new key pending, write the entry, confirm, then release the old
+            # key. The claim is the uniqueness gate, so it also refuses a key
+            # another entry holds as a synonym or is claiming right now.
             holder = await RegistryEntry.find_one({
                 "namespace": entry.namespace,
                 "entity_type": entry.entity_type,
                 "primary_composite_key_hash": new_hash,
                 "entry_id": {"$ne": entry.entry_id},
             })
-            if holder:
+            new_claim = (entry.namespace, entry.entity_type, new_hash, entry.entry_id, "primary")
+            token = new_claim_token()
+            blocker = (
+                holder.entry_id if holder
+                else (await claim_keys_pending_bulk([[new_claim]], token))[0]
+            )
+            if blocker is not None:
                 results.append(RekeyIdentityResponse(
                     index=i, entry_id=item.entry_id, status="conflict",
                     error=(
-                        f"target key is held by entry '{holder.entry_id}' — "
+                        f"target key is held by entry '{blocker}' — "
                         "two documents converge on one identity; curate "
                         "before migrating"
                     ),
@@ -829,8 +865,20 @@ async def rekey_identity(
             entry.primary_composite_key = new_key
             entry.primary_composite_key_hash = new_hash
             entry.rebuild_search_values()
+            entry.updated_at = datetime.now(UTC)
             entry.updated_by = identity.identity_string
-            await entry.save()
+            try:
+                await entry.save()
+            except Exception:
+                await release_keys_bulk([new_claim], token)
+                raise
+            await confirm_keys_bulk([new_claim])
+            if old_hash and not any(
+                s.composite_key_hash == old_hash for s in entry.active_synonyms()
+            ):
+                await release_keys_bulk(
+                    [(entry.namespace, entry.entity_type, old_hash, entry.entry_id, "primary")]
+                )
             results.append(RekeyIdentityResponse(
                 index=i, entry_id=item.entry_id, status="rekeyed",
             ))
@@ -926,17 +974,15 @@ async def provision_ids(
         # Claim-first (pending) for reserved entries too; a conflict on a
         # provisioned composite key fails the whole provision loudly rather
         # than reserving an entry whose key resolves elsewhere.
-        conflicts = await claim_entries_keys_pending(entries)
+        token = new_claim_token()
+        conflicts = await claim_entries_keys_pending(entries, token)
         conflict = next((c for c in conflicts if c is not None), None)
         if conflict is not None:
-            await release_entries_keys(entries)
+            await release_entries_keys(entries, token)
             raise HTTPException(status_code=409, detail=conflict)
-        try:
-            await RegistryEntry.insert_many(entries)
-        except Exception:
-            await release_entries_keys(entries)
-            raise
-        await confirm_entries_keys(entries)
+        _written, insert_error = await _insert_claimed_entries(entries, token)
+        if insert_error is not None:
+            raise insert_error
 
     return ProvisionResponse(
         namespace=request.namespace,
@@ -1043,7 +1089,8 @@ async def reserve_ids(
     # insert and confirm — same two-phase shape as the register path.
     gated_entries = []
     gated_indices = []
-    conflicts = await claim_entries_keys_pending(entries_to_insert)
+    token = new_claim_token()
+    conflicts = await claim_entries_keys_pending(entries_to_insert, token)
     for pos, idx in enumerate(insert_indices):
         entry = entries_to_insert[pos]
         conflict = conflicts[pos]
@@ -1058,26 +1105,17 @@ async def reserve_ids(
         gated_indices.append(idx)
 
     if gated_entries:
-        try:
-            await RegistryEntry.insert_many(gated_entries)
-            await confirm_entries_keys(gated_entries)
-            for pos, idx in enumerate(gated_indices):
-                entry = gated_entries[pos]
+        written, insert_error = await _insert_claimed_entries(gated_entries, token)
+        failure = _insert_failure(insert_error) if insert_error is not None else {}
+        for pos, idx in enumerate(gated_indices):
+            entry = gated_entries[pos]
+            if written is not None and pos < written:
                 results[idx] = ReserveItemResponse(
                     index=idx, status="reserved", entry_id=entry.entry_id
                 )
                 reserved_count += 1
-        except Exception as e:
-            unwritten = [
-                (pos, idx) for pos, idx in enumerate(gated_indices) if results[idx] is None
-            ]
-            await release_entries_keys([gated_entries[pos] for pos, _ in unwritten])
-            failure = _insert_failure(e)
-            for _pos, idx in unwritten:
-                results[idx] = ReserveItemResponse(
-                    index=idx, status="error",
-                    **failure,
-                )
+            else:
+                results[idx] = ReserveItemResponse(index=idx, status="error", **failure)
                 error_count += 1
 
     return ReserveBulkResponse(
@@ -1224,8 +1262,9 @@ async def _activate_keyed(
     # Two-phase claim, as provision does it: pending before the write,
     # confirmed after it.
     claim_error: dict | None = None
+    token = new_claim_token()
     try:
-        conflicts = await claim_entries_keys_pending([entry for _, entry in candidates])
+        conflicts = await claim_entries_keys_pending([entry for _, entry in candidates], token)
     except Exception as e:
         # Claims this call inserted stay pending; startup's pending-claim
         # reconcile settles them against the entries, which stay reserved.
@@ -1318,7 +1357,10 @@ async def _activate_keyed(
                 index=i, status="error", entry_id=entry.entry_id, **fields)
             errors += 1
         try:
-            await release_entries_keys(released)
+            # Token-scoped: a losing request releases only the claims it
+            # inserted, never one the entry held already or one the request
+            # that won took over.
+            await release_entries_keys(released, token)
             await confirm_entries_keys(confirmed)
         except Exception:
             # The entries' states are already decided and reported; a claim
