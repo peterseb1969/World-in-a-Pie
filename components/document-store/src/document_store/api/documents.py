@@ -34,7 +34,7 @@ from ..models.api_models import (
 )
 from ..models.document import DocumentStatus
 from ..services.document_service import get_document_service
-from ..services.errors import error_fields
+from ..services.errors import DocumentStoreError, error_fields
 from ..services.nats_client import get_throttle_delay
 from ..services.registry_client import get_registry_client
 from .auth import require_api_key
@@ -103,6 +103,7 @@ async def create_documents(
                 index=0, status=status,
                 id=response.document_id, document_id=response.document_id,
                 identity_hash=response.identity_hash, version=response.version,
+                template_version=response.template_version,
                 is_new=response.is_new, warnings=response.warnings,
             )]
         succeeded = sum(1 for r in results if r.status != "error")
@@ -822,25 +823,49 @@ async def query_documents(
     "/by-identity/{identity_hash}",
     response_model=DocumentResponse,
     summary="Get document by identity hash",
-    description="Get the active document with the specified identity hash."
+    description="""
+The latest version of the document with the specified identity hash (the
+active one unless include_inactive is set).
+
+An identity hash is unique only within a template and namespace. When the
+filters leave several readable documents matching, the answer is 409 with
+error_code `ambiguous` and the candidates — pass namespace and template_id
+to name one. template_id accepts the canonical ID or any synonym (e.g. the
+template's value).
+""",
 )
 async def get_document_by_identity(
     identity_hash: str,
     namespace: str | None = Query(None, description="Filter by namespace (recommended to avoid cross-template ambiguity)"),
-    template_id: str | None = Query(None, description="Filter by template_id (recommended to avoid cross-template ambiguity)"),
+    template_id: str | None = Query(None, description="Filter by template — canonical ID or synonym (recommended to avoid cross-template ambiguity)"),
     include_inactive: bool = Query(False, description="Include inactive documents"),
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Get a document by identity hash."""
+    if template_id:
+        # Filter context, no value fallback: an unresolvable template would
+        # otherwise filter on its raw spelling and report the document as
+        # missing. strict=True makes it a 422 naming the parameter.
+        template_id = await resolve_or_404(
+            template_id, "template", namespace=namespace,
+            param_name="template_id", strict=True,
+        )
+    ns_filter = await resolve_namespace_filter(identity, namespace=namespace)
+
     service = get_document_service()
-    document = await service.get_document_by_identity(
-        identity_hash, include_inactive,
-        namespace=namespace, template_id=template_id,
-    )
+    try:
+        document = await service.get_document_by_identity(
+            identity_hash, include_inactive,
+            namespace=namespace, template_id=template_id,
+            namespace_filter=ns_filter.query,
+        )
+    except DocumentStoreError as e:
+        raise HTTPException(
+            status_code=409,
+            detail={"error": str(e), "error_code": e.code, **(e.details or {})},
+        ) from e
 
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-
-    await check_namespace_permission(identity, document.namespace, "read")
 
     return document

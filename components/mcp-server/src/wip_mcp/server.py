@@ -102,7 +102,9 @@ Semantics:
 - Empty patch or a no-op patch (data AND metadata unchanged) returns status
   "unchanged" (no new version)
 - Identity fields CANNOT be changed via PATCH — you get error_code
-  `identity_field_change`. To change identity, POST a new document.
+  `identity_field_change`. To change identity, POST a new document. A term
+  or reference identity field may change its spelling (another alias of the
+  same term): only a different referent is a change.
 - A template with NO identity_fields (append-only) CANNOT be PATCHed at all —
   you get error_code `append_only`. Its documents have only a surrogate
   document_id, not a logical identity; PATCH operates on logical entities. The

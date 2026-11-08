@@ -9,6 +9,8 @@ export interface BulkResultItem {
   details?: Record<string, unknown>
   value?: string
   version?: number
+  /** Document writes: the template version the document is pinned to. */
+  template_version?: number
   is_new_version?: boolean
   document_id?: string
   identity_hash?: string

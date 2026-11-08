@@ -11,6 +11,10 @@ from beanie import PydanticObjectId
 from beanie.odm.enums import SortDirection
 
 from wip_auth.composite_key import compute_composite_key_hash
+from wip_auth.document_identity import (
+    build_referent_resolutions,
+    substitute_resolved_referents,
+)
 from wip_auth.synonym_lifecycle import sync_entry_lifecycle
 from wip_auth.term_resolution import term_resolution_batch
 
@@ -223,6 +227,41 @@ def _declared_field_names(tpl: dict[str, Any]) -> set[str]:
             if isinstance(name, str):
                 out.add(name)
     return out
+
+
+def _document_id_mismatch(
+    request: DocumentCreateRequest, resolved_id: str, is_new: bool,
+) -> dict[str, Any] | None:
+    """The refusal for a ``document_id`` the identity does not resolve to.
+
+    A create that names a ``document_id`` without a ``version`` is an upsert
+    of that document: its identity decides which document it is, and the
+    named id must be that one. Without the check the id was dropped — a new
+    identity silently got a fresh id, and the caller's id was never used.
+    A restore (``document_id`` + ``version``) asks the Registry for the id
+    itself and never comes here. Returns None when there is nothing to refuse.
+    """
+    if not request.document_id or request.version is not None:
+        return None
+    if resolved_id == request.document_id:
+        return None
+    found = (
+        "no document has this identity yet" if is_new
+        else f"this identity is document '{resolved_id}'"
+    )
+    return {
+        "error": (
+            f"document_id '{request.document_id}' is not the document this "
+            f"identity resolves to: {found}. Omit document_id to let the "
+            "identity decide, or pass version as well for a restore."
+        ),
+        "error_code": "invalid_request",
+        "details": {
+            "rule": "document_id_mismatch",
+            "document_id": request.document_id,
+            "resolved_document_id": None if is_new else resolved_id,
+        },
+    }
 
 
 def _identity_hash_of(identity_values: dict[str, Any] | None) -> str | None:
@@ -637,7 +676,8 @@ class DocumentService:
 
         # Every document goes through Registry — no exceptions.
         # For restore: entry_id=request.document_id tells Registry to use that exact ID.
-        # For upsert (document_id but no version): rely on composite_key dedup.
+        # For upsert (document_id but no version): the identity decides, and
+        # the submitted id must be the one it resolves to (checked below).
         # For normal: entry_id=None lets Registry generate one.
         restore_entry_id = request.document_id if version_override is not None else None
         start = time.perf_counter()
@@ -664,6 +704,12 @@ class DocumentService:
         except RegistryError as e:
             return None, {"error": f"Failed to generate document ID: {e!s}", "error_code": "registry_error"}
         timing["2_registry"] = (time.perf_counter() - start) * 1000
+
+        mismatch = _document_id_mismatch(request, document_id, is_new)
+        if mismatch is not None:
+            if is_new:
+                await self._release_minted_entry(document_id)
+            return None, mismatch
 
         # Store the registry-returned identity_hash on the validation result
         validation_result.identity_hash = identity_hash
@@ -713,6 +759,19 @@ class DocumentService:
         self._record_creation_timing(timing)
 
         return result
+
+    async def _release_minted_entry(self, document_id: str) -> None:
+        """Release a Registry entry this request minted and will not use.
+
+        Best effort, like the inline-synonym rollback: a failure is logged and
+        the refusal that caused it is what the caller reports.
+        """
+        try:
+            await get_registry_client().hard_delete_entry(
+                document_id, rollback_uncommitted=True,
+            )
+        except RegistryError as e:
+            logger.error("failed to release unused entry %s: %s", document_id, e)
 
     async def _register_inline_synonyms(
         self,
@@ -847,22 +906,26 @@ class DocumentService:
 
         version = version_override if version_override is not None else 1
 
-        document = await self._insert_with_retry(
-            namespace=namespace,
-            document_id=document_id,
-            template_id=request.template_id,
-            template_version=validation_result.template_version,
-            template_value=validation_result.template_value,
-            identity_hash=validation_result.identity_hash or "",
-            version=version,
-            data=request.data,
-            term_references=validation_result.term_references,
-            references=validation_result.references,
-            file_references=validation_result.file_references,
-            metadata=metadata,
-            actor=actor,
-            now=now,
-        )
+        try:
+            document = await self._insert_with_retry(
+                namespace=namespace,
+                document_id=document_id,
+                template_id=request.template_id,
+                template_version=validation_result.template_version,
+                template_value=validation_result.template_value,
+                identity_hash=validation_result.identity_hash or "",
+                version=version,
+                data=request.data,
+                term_references=validation_result.term_references,
+                references=validation_result.references,
+                file_references=validation_result.file_references,
+                metadata=metadata,
+                actor=actor,
+                now=now,
+                pinned=version_override is not None,
+            )
+        except DocumentStoreError as e:
+            return None, error_fields(e)
 
         # Register auto-synonym for migration portability (version 1 only)
         # On failure, roll back the MongoDB document and re-raise
@@ -904,6 +967,7 @@ class DocumentService:
             template_value=validation_result.template_value,
             identity_hash=validation_result.identity_hash or "",
             version=document.version,
+            template_version=document.template_version,
             is_new=document.version == 1,
             previous_version=None if document.version == 1 else document.version - 1,
             warnings=all_warnings
@@ -1033,6 +1097,7 @@ class DocumentService:
         now: datetime,
         max_retries: int = 3,
         entity_created_at: datetime | None = None,
+        pinned: bool = False,
     ) -> "Document":
         """Insert a document, retrying on duplicate key errors.
 
@@ -1050,6 +1115,12 @@ class DocumentService:
         race to create the same version, the loser gets a DuplicateKeyError.
         This method catches that, re-queries the latest version, deactivates
         it, and retries with an incremented version number.
+
+        ``pinned`` marks a version the caller chose (a restore or migration
+        writing an exact ``document_id`` + ``version``). That slot is the whole
+        request, so a duplicate key refuses the write with ``already_exists``
+        instead: bumping it would write a version nobody asked for and retire
+        the document's current head to make room.
         """
         from pymongo.errors import DuplicateKeyError
 
@@ -1076,7 +1147,14 @@ class DocumentService:
             try:
                 await document.insert()
                 return document
-            except DuplicateKeyError:
+            except DuplicateKeyError as exc:
+                if pinned:
+                    raise DocumentStoreError(
+                        f"Document '{document_id}' already has version {version}; "
+                        "a pinned version is written only into a free slot",
+                        "already_exists",
+                        rule="version_taken",
+                    ) from exc
                 if attempt >= max_retries - 1:
                     raise
                 # Re-query the latest version and retry
@@ -1170,6 +1248,7 @@ class DocumentService:
                 template_value=existing.template_value,
                 identity_hash=existing.identity_hash,
                 version=existing.version,
+                template_version=existing.template_version,
                 is_new=False,
                 previous_version=None,  # No previous version because nothing changed
                 warnings=validation_result.warnings + synonym_warnings
@@ -1255,6 +1334,7 @@ class DocumentService:
             template_value=validation_result.template_value,
             identity_hash=validation_result.identity_hash or "",
             version=new_version,
+            template_version=validation_result.template_version,
             is_new=False,
             previous_version=existing.version,
             warnings=validation_result.warnings + synonym_warnings + lifecycle_warnings
@@ -1329,6 +1409,7 @@ class DocumentService:
             template_value=existing.template_value,
             identity_hash=existing.identity_hash,
             version=existing.version,
+            template_version=existing.template_version,
             is_new=False,
             # No new version was minted — the replaced payload was at this
             # same version, so previous_version == version is the in-place
@@ -1522,24 +1603,56 @@ class DocumentService:
         include_inactive: bool = False,
         namespace: str | None = None,
         template_id: str | None = None,
+        namespace_filter: dict[str, Any] | None = None,
     ) -> DocumentResponse | None:
-        """Get a document by identity hash.
+        """The latest version of the one document with this identity hash.
 
-        Without namespace and template_id filters, identity_hash can match
-        documents across templates (CASE-36). Callers should always provide
-        both to avoid ambiguity.
+        An identity hash is scoped to its template (and namespace), so one
+        hash can be several documents when the filters leave those open.
+        Several matching documents raise ``DocumentStoreError`` with code
+        ``ambiguous`` and the candidates in its details — the endpoint answers
+        "which one?" instead of picking. ``namespace_filter`` is the caller's
+        readable-namespace clause, so a document the caller cannot read is
+        never a candidate. Within the one document, the highest version
+        matching the status filter is returned.
         """
         query: dict[str, Any] = {"identity_hash": identity_hash}
         if not include_inactive:
             query["status"] = DocumentStatus.ACTIVE.value
+        if namespace_filter:
+            query.update(namespace_filter)
         if namespace:
             query["namespace"] = namespace
         if template_id:
             query["template_id"] = template_id
 
-        document = await Document.find_one(query)
-        if not document:
+        latest_by_document: dict[str, Document] = {}
+        async for row in Document.find(query).sort(
+            [("version", SortDirection.DESCENDING)]
+        ):
+            latest_by_document.setdefault(row.document_id, row)
+        if not latest_by_document:
             return None
+        if len(latest_by_document) > 1:
+            error = DocumentStoreError(
+                f"identity hash '{identity_hash}' matches "
+                f"{len(latest_by_document)} documents; pass namespace and "
+                "template_id to name one",
+                "ambiguous",
+            )
+            error.details = {
+                "candidates": [
+                    {
+                        "document_id": row.document_id,
+                        "namespace": row.namespace,
+                        "template_id": row.template_id,
+                        "template_value": row.template_value,
+                    }
+                    for row in latest_by_document.values()
+                ],
+            }
+            raise error
+        (document,) = latest_by_document.values()
         return await self._to_response(document)
 
     # =========================================================================
@@ -2837,6 +2950,7 @@ class DocumentService:
                         document_id=existing.document_id,
                         identity_hash=identity_hash,
                         version=existing.version,
+                        template_version=existing.template_version,
                         is_new=False,
                         warnings=validation_result.warnings,
                     ),
@@ -2974,6 +3088,7 @@ class DocumentService:
                     document_id=document.document_id,
                     identity_hash=document.identity_hash,
                     version=document.version,
+                    template_version=document.template_version,
                     is_new=is_new,
                     warnings=plan.validation_result.warnings,
                 ),
@@ -3010,7 +3125,8 @@ class DocumentService:
                 BulkResultItem(
                     index=i, status="error",
                     error=registry_result.get("error", "Failed to generate ID"),
-                    error_code="registry_error",
+                    error_code=registry_result.get("error_code") or "registry_error",
+                    details=registry_result.get("details"),
                 ),
                 None,
                 "failed",
@@ -3068,6 +3184,7 @@ class DocumentService:
                         document_id=existing.document_id,
                         identity_hash=identity_hash,
                         version=existing.version,
+                        template_version=existing.template_version,
                         is_new=False,
                         warnings=validation_result.warnings + synonym_warnings,
                     ),
@@ -3102,6 +3219,7 @@ class DocumentService:
                         document_id=response.document_id,
                         identity_hash=identity_hash,
                         version=response.version,
+                        template_version=response.template_version,
                         is_new=False,
                         warnings=response.warnings,
                     ),
@@ -3157,6 +3275,7 @@ class DocumentService:
             # An update carries the entity's creation time forward; a brand-new
             # document (existing is None) gets `now` (CASE-802).
             entity_created_at=existing.created_at if existing is not None else None,
+            pinned=version_override is not None,
         )
         new_version = document.version
         is_new = new_version == 1
@@ -3187,12 +3306,139 @@ class DocumentService:
                 document_id=document_id,
                 identity_hash=identity_hash,
                 version=new_version,
+                template_version=document.template_version,
                 is_new=is_new,
                 warnings=validation_result.warnings + synonym_warnings + lifecycle_warnings,
             ),
             pending_event,
             "created" if is_new else "updated",
         )
+
+    async def _refuse_document_id_mismatches(
+        self,
+        validation_results: list[tuple[int, DocumentCreateRequest, Any]],
+        registry_results: list[dict],
+    ) -> None:
+        """Turn each item whose document_id its identity does not resolve to
+        into an error row, in place — the single-item path's check.
+
+        An entry the Registry minted for such an item is released, unless
+        another item of the batch resolved to it too (it is then that item's).
+        """
+        claimed: dict[str, int] = {}
+        for reg in registry_results:
+            if reg.get("status") != "error" and reg.get("registry_id"):
+                claimed[reg["registry_id"]] = claimed.get(reg["registry_id"], 0) + 1
+        for (_i, item, _vr), reg in zip(validation_results, registry_results, strict=False):
+            if reg.get("status") == "error":
+                continue
+            is_new = reg.get("status") == "created"
+            mismatch = _document_id_mismatch(item, reg["registry_id"], is_new)
+            if mismatch is None:
+                continue
+            if is_new and claimed.get(reg["registry_id"], 0) == 1:
+                await self._release_minted_entry(reg["registry_id"])
+            reg.clear()
+            reg.update({"status": "error", **mismatch})
+
+    @staticmethod
+    def _stored_identity_feed(
+        current: Document, validation_result: Any,
+    ) -> dict[str, Any] | None:
+        """The identity feed of the stored version: its identity values with
+        each referent field replaced by the canonical ID its stored
+        resolutions name — the same rule the write's own feed follows.
+
+        Built from the row itself, never from its stored identity hash: a
+        hash written under older feed rules would make an unchanged identity
+        look changed. None when the row cannot give it (an identity value
+        missing, or a referent the row holds no resolution for); the guard
+        then compares spellings, as it did before the feed rule.
+        """
+        try:
+            values = IdentityService.extract_identity_values(
+                current.data, validation_result.identity_fields or [],
+            )
+            if not validation_result.referent_identity_fields:
+                return values
+            return substitute_resolved_referents(
+                values,
+                validation_result.referent_identity_fields,
+                build_referent_resolutions(current.term_references, current.references),
+            )
+        except ValueError:
+            return None
+
+    async def _register_bulk_auto_synonyms(
+        self,
+        results: list[BulkResultItem],
+        validation_results: list[tuple[int, DocumentCreateRequest, Any]],
+        namespace: str,
+        actor: str,
+    ) -> set[str]:
+        """Register the auto-synonym of each document a bulk create made new.
+
+        The candidates are the items reported ``created`` at version 1 that
+        were not pinned to a version (a restore carries its archived synonyms
+        instead) — the same rule as _create_new_document. One Registry call
+        covers them all; a document whose synonym is refused is rolled back
+        (its row deleted, its file references released) and its result turns
+        into a ``registry_error`` item. Returns the rolled-back document ids.
+        """
+        by_index = {i: (item, vr) for i, item, vr in validation_results}
+        candidates: list[tuple[int, DocumentCreateRequest, Any]] = []
+        for pos, result in enumerate(results):
+            if result.status != "created" or result.version != 1 or not result.document_id:
+                continue
+            item, vr = by_index[result.index]
+            if item.document_id and item.version is not None:
+                continue
+            candidates.append((pos, item, vr))
+        if not candidates:
+            return set()
+
+        refusals = await get_registry_client().register_auto_synonyms_per_item(
+            [
+                {
+                    "document_id": results[pos].document_id,
+                    "template_value": vr.template_value or "",
+                    "identity_hash": vr.identity_hash,
+                    "has_identity_fields": bool(vr.identity_hash),
+                }
+                for pos, _item, vr in candidates
+            ],
+            namespace=namespace,
+            created_by=actor,
+        )
+        reasons: dict[str, str] = {}
+        for (pos, _item, _vr), refusal in zip(candidates, refusals, strict=True):
+            if refusal is not None:
+                reasons[cast(str, results[pos].document_id)] = refusal
+        # The document was born in this batch (its version 1 is), so every row
+        # of it is this batch's: later items of the same identity wrote its
+        # successors. All of them go, and every result naming it fails.
+        for document_id in reasons:
+            logger.error(
+                "Auto-synonym registration failed for document %s — rolling back",
+                document_id,
+            )
+            rows = await Document.find(
+                {"namespace": namespace, "document_id": document_id}
+            ).to_list()
+            for row in rows:
+                if row.status == DocumentStatus.ACTIVE:
+                    await self._update_file_reference_counts(row.file_references, delta=-1)
+            await Document.find(
+                {"namespace": namespace, "document_id": document_id}
+            ).delete()
+        for pos, result in enumerate(results):
+            if result.document_id in reasons and result.status != "error":
+                results[pos] = BulkResultItem(
+                    index=result.index, status="error",
+                    error=reasons[result.document_id],
+                    error_code="registry_error",
+                )
+        return set(reasons)
 
     async def bulk_create(
         self,
@@ -3392,8 +3638,11 @@ class DocumentService:
                 "has_identity_fields": bool(vr[2].identity_fields),
                 "skip_identity_value_synonym": await _is_relationship(vr[1].template_id),
             }
-            # Pass through pre-assigned document_id for restore/migration
-            if vr[1].document_id:
+            # A restore/migration (document_id + version) asks for its exact
+            # id. A document_id without a version is an upsert: the identity
+            # decides and the id is checked against it below, as on the
+            # single-item path.
+            if vr[1].document_id and vr[1].version is not None:
                 reg_item["entry_id"] = vr[1].document_id
             registry_items.append(reg_item)
 
@@ -3417,6 +3666,8 @@ class DocumentService:
         for (_, _, vr), reg_result in zip(validation_results, registry_results, strict=False):
             if reg_result.get("status") != "error":
                 vr.identity_hash = reg_result.get("identity_hash")
+
+        await self._refuse_document_id_mismatches(validation_results, registry_results)
 
         # Stage 3: Batch check for existing documents using Registry-resolved IDs.
         # Uses document_id (from Registry), NOT identity_hash — local
@@ -3526,6 +3777,22 @@ class DocumentService:
                 failed += 1
 
         timing["4_create_documents"] = (time.perf_counter() - start) * 1000
+
+        # Stage 4c: every document this batch created at version 1 gets the
+        # template-scoped auto-synonym the single-item path registers — its
+        # portable address, the one a restore carries forward (and, for an
+        # edge or an identity-less document, the only synonym it has). A
+        # refused synonym fails that document, as it fails a single create.
+        start = time.perf_counter()
+        rolled_back = await self._register_bulk_auto_synonyms(
+            results, validation_results, namespace, actor,
+        )
+        if rolled_back:
+            pending_events = [
+                (et, payload) for et, payload in pending_events
+                if payload.get("document_id") not in rolled_back
+            ]
+        timing["4c_auto_synonyms"] = (time.perf_counter() - start) * 1000
 
         # Stage 5: Publish all NATS events concurrently
         # Events are fire-and-forget within gather — individual failures are
@@ -4159,10 +4426,19 @@ class DocumentService:
             )
 
         if dry_run:
+            # `version` is the DOCUMENT version, as on the apply and every
+            # other bulk result: the one the apply would write. A versioned:
+            # false template re-pins in place, keeping the version.
+            projected = (
+                doc.version + 1
+                if await self._is_template_versioned(template_id)
+                else doc.version
+            )
             return BulkResultItem(
                 index=index, status="updated", id=doc.document_id,
                 document_id=doc.document_id, identity_hash=doc.identity_hash,
-                version=to_version, is_new=False,
+                version=projected, is_new=False,
+                template_version=to_version,
             )
 
         # Apply: reuse the create-new-version machinery, forcing a write even when
@@ -4190,7 +4466,8 @@ class DocumentService:
         return BulkResultItem(
             index=index, status="updated", id=response.document_id,
             document_id=response.document_id, identity_hash=response.identity_hash,
-            version=response.version, is_new=False, warnings=response.warnings,
+            version=response.version, template_version=response.template_version,
+            is_new=False, warnings=response.warnings,
         )
 
     # ========================================================================
@@ -4364,18 +4641,33 @@ class DocumentService:
                     "the template.",
                 )
 
-            # 6. Identity-field invariant (design §3).
-            #    Compare resolved values via dot-path lookup so nested identity
-            #    fields (e.g. "address.city") are handled correctly.
+            # 6. Identity-field invariant (design §3). An identity field may
+            #    change its spelling but not what it names: a term or
+            #    reference identity field is compared by the referent it
+            #    resolves to (another alias of the same term is the same
+            #    identity), every other field by value. Dot-path lookup keeps
+            #    nested identity fields (e.g. "address.city") in reach.
+            stored_feed = self._stored_identity_feed(current, validation_result)
             for field_path in validation_result.identity_fields or []:
                 old_val = IdentityService._get_nested_value(current.data, field_path)
                 new_val = IdentityService._get_nested_value(merged_data, field_path)
-                if old_val != new_val:
-                    raise PatchError(
-                        "identity_field_change",
-                        f"Cannot patch identity field '{field_path}' "
-                        f"(use POST to create a new document instead)",
-                    )
+                if old_val == new_val:
+                    continue
+                if (
+                    field_path in validation_result.referent_identity_fields
+                    and stored_feed is not None
+                    and field_path in stored_feed
+                    and stored_feed[field_path]
+                    == validation_result.identity_values.get(field_path)
+                ):
+                    continue
+                raise PatchError(
+                    "identity_field_change",
+                    f"Cannot patch identity field '{field_path}': the change "
+                    "names a different entity, and a document's identity "
+                    "cannot change. POST the new values to create a separate "
+                    "document (this one stays as it is).",
+                )
 
             # 7. No-op detection — if data, all 3 reference arrays, and the
             #    merged custom metadata are byte-equal to the current version,

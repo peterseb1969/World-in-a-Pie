@@ -10,6 +10,7 @@ from typing import Any, ClassVar, cast
 from wip_auth import split_qualified_value
 from wip_auth.document_identity import (
     build_referent_resolutions,
+    is_referent_field,
     referent_identity_fields,
     substitute_resolved_referents,
 )
@@ -90,6 +91,10 @@ class ValidationResult:
         # references keep resolving while the hash converges on referents.
         self.submitted_identity_values: dict[str, Any] = {}
         self.identity_fields: list[str] = []
+        # The identity fields whose value is a referent (term / reference
+        # typed, nested paths included): the ones identity_values carries as
+        # resolved canonical IDs rather than as submitted.
+        self.referent_identity_fields: set[str] = set()
         self.template_version: int | None = None
         self.template_value: str | None = None
         # The template's OWN namespace — which may differ from the document's
@@ -293,7 +298,14 @@ class ValidationService:
         start = time.perf_counter()
         template: dict[str, Any] | None
         if template_override is not None:
-            template = template_override
+            # The candidate exists nowhere, so nothing worked out which of its
+            # identity paths name a referent; a stored version carries that
+            # answer from the template store. Derived here, by the same rule —
+            # whatever the caller put in the field is not taken on trust.
+            template = dict(template_override)
+            template["referent_identity_paths"] = await self._candidate_referent_paths(
+                template
+            )
         else:
             template = await self._resolve_template(template_id, result, version=template_version)
         result.timing["2_template_resolution"] = (time.perf_counter() - start) * 1000
@@ -1438,6 +1450,42 @@ class ValidationService:
                             )
 
         return leaves
+
+    async def _candidate_referent_paths(
+        self, template: dict[str, Any]
+    ) -> list[str] | None:
+        """The identity paths of an inline candidate whose value is a referent.
+
+        The template store's rule for a stored version, applied to a
+        definition that was never stored: a path names a referent when its
+        leaf is a term or reference field, following each object field into
+        its nested template at the version the candidate's documents are
+        validated against. None when a nested template on an identity path
+        cannot be read — the identity stage then refuses the path rather than
+        guess.
+        """
+        paths: list[str] = []
+        for path in template.get("identity_fields") or []:
+            fields: list[dict[str, Any]] | None = template.get("fields") or []
+            segments = path.split(".")
+            referent = False
+            for depth, name in enumerate(segments):
+                field = {f.get("name"): f for f in fields or []}.get(name)
+                if field is None:
+                    break
+                if depth == len(segments) - 1:
+                    referent = is_referent_field(field)
+                    break
+                if field.get("type") != "object" or not field.get("template_ref"):
+                    break
+                fields = await self._nested_template_fields(
+                    field["template_ref"], field.get("template_ref_version")
+                )
+                if fields is None:
+                    return None
+            if referent:
+                paths.append(path)
+        return paths
 
     async def _nested_template_fields(
         self, template_ref: str, version: int | None
@@ -2682,6 +2730,7 @@ class ValidationService:
         except ValueError as e:
             result.add_error(code="identity_resolution_failed", message=str(e))
             return
+        result.referent_identity_fields = referent_fields
         if not referent_fields:
             result.identity_values = submitted
             return

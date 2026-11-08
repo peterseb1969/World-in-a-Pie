@@ -845,10 +845,17 @@ var DocumentStoreService = class extends BaseService {
   async getLatestDocument(id) {
     return this.get(`/documents/${id}/latest`);
   }
-  async getDocumentByIdentity(identityHash, includeInactive, namespace) {
+  /**
+   * The latest version of the document with this identity hash. An identity
+   * hash is unique only within a template and namespace: when several
+   * readable documents match, the server answers 409 (`ambiguous`) with the
+   * candidates — pass namespace and templateId (ID or value) to name one.
+   */
+  async getDocumentByIdentity(identityHash, includeInactive, namespace, templateId) {
     const params = {};
     if (includeInactive !== void 0) params.include_inactive = includeInactive;
     if (namespace !== void 0) params.namespace = namespace;
+    if (templateId !== void 0) params.template_id = templateId;
     return this.get(`/documents/by-identity/${identityHash}`, Object.keys(params).length ? params : void 0);
   }
   /**

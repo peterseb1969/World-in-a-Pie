@@ -302,6 +302,31 @@ class RegistryClient(RegistryClientBase):
             data = response.json()
             return cast(list[dict[str, Any]], data.get("results", []))
 
+    @staticmethod
+    def _auto_synonym_key(
+        namespace: str,
+        template_value: str,
+        identity_hash: str | None,
+        has_identity_fields: bool,
+    ) -> dict[str, Any]:
+        """The composite key of a document's auto-synonym.
+
+        With identity fields: the template plus the identity hash. Without:
+        a portable UUID4, the document's only address apart from its id.
+        """
+        if has_identity_fields and identity_hash:
+            return {
+                "ns": namespace,
+                "type": "document",
+                "template": template_value,
+                "identity_hash": identity_hash,
+            }
+        return {
+            "ns": namespace,
+            "type": "document",
+            "portable_id": str(uuid.uuid4()),
+        }
+
     async def register_auto_synonym(
         self,
         document_id: str,
@@ -317,26 +342,85 @@ class RegistryClient(RegistryClientBase):
         identity_hash. Without: includes a portable UUID4. Failure raises and
         prevents document creation.
         """
-        if has_identity_fields and identity_hash:
-            composite_key: dict[str, Any] = {
-                "ns": namespace,
-                "type": "document",
-                "template": template_value,
-                "identity_hash": identity_hash,
-            }
-        else:
-            composite_key = {
-                "ns": namespace,
-                "type": "document",
-                "portable_id": str(uuid.uuid4()),
-            }
         await self._register_auto_synonym(
             target_id=document_id,
             namespace=namespace,
             entity_type="documents",
-            composite_key=composite_key,
+            composite_key=self._auto_synonym_key(
+                namespace, template_value, identity_hash, has_identity_fields,
+            ),
             created_by=created_by,
         )
+
+    async def register_auto_synonyms_per_item(
+        self,
+        documents: list[dict[str, Any]],
+        namespace: str,
+        created_by: str | None = None,
+    ) -> list[str | None]:
+        """Register the auto-synonyms of several new documents in one call.
+
+        ``documents`` holds dicts with document_id, template_value,
+        identity_hash and has_identity_fields. Returns one entry per
+        document, in order: None when its synonym is registered (or already
+        was), else the reason it was refused — so a bulk create can fail
+        exactly the documents whose synonym the Registry refused. A transport
+        or HTTP failure refuses every document with the same reason.
+        """
+        if not documents:
+            return []
+        payload = [
+            {
+                "target_id": d["document_id"],
+                "synonym_namespace": namespace,
+                "synonym_entity_type": "documents",
+                "synonym_composite_key": self._auto_synonym_key(
+                    namespace, d.get("template_value") or "",
+                    d.get("identity_hash"), bool(d.get("has_identity_fields")),
+                ),
+                "created_by": created_by,
+            }
+            for d in documents
+        ]
+        try:
+            async with self._make_client() as client:
+                response = await client.post(
+                    f"{self.base_url}/api/registry/synonyms/add",
+                    headers=self._get_headers(),
+                    json=payload,
+                )
+        except Exception as e:
+            return [f"Failed to register auto-synonym: {e}"] * len(documents)
+        if response.status_code != 200:
+            reason = (
+                f"Failed to register auto-synonym: {response.status_code} - {response.text}"
+            )
+            return [reason] * len(documents)
+        data = response.json()
+        rows = data.get("results", data) if isinstance(data, dict) else data
+        if not isinstance(rows, list) or len(rows) != len(documents):
+            return ["Failed to register auto-synonym: unreadable Registry response"] * len(
+                documents
+            )
+        out: list[str | None] = [
+            "Failed to register auto-synonym: no result from the Registry"
+        ] * len(documents)
+        for pos, row in enumerate(rows):
+            if not isinstance(row, dict):
+                continue
+            index = row.get("index", pos)
+            if not isinstance(index, int) or not 0 <= index < len(documents):
+                continue
+            status = row.get("status")
+            if status in ("added", "already_exists"):
+                out[index] = None
+            else:
+                error = row.get("error")
+                out[index] = (
+                    f"Failed to register auto-synonym: status={status}"
+                    + (f": {error}" if error else "")
+                )
+        return out
 
     async def get_namespace_status(self, namespace: str) -> str | None:
         """The namespace's lifecycle status as the Registry serves it, or None

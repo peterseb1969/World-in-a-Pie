@@ -462,17 +462,38 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                              '(default: '
                                                                                              'latest)'},
                                                          'document_id': {'type': 'string',
-                                                                         'description': 'Pre-assigned '
+                                                                         'description': 'With '
+                                                                                        'version: '
+                                                                                        'the '
+                                                                                        'pre-assigned '
                                                                                         'document '
-                                                                                        'ID (for '
-                                                                                        'restore/migration '
-                                                                                        '— '
+                                                                                        'ID of a '
+                                                                                        'restore '
+                                                                                        'or '
+                                                                                        'migration, '
+                                                                                        'which the '
                                                                                         'Registry '
                                                                                         'uses '
-                                                                                        'as-is '
-                                                                                        'instead '
-                                                                                        'of '
-                                                                                        'generating)'},
+                                                                                        'as-is. '
+                                                                                        'Without '
+                                                                                        'version: '
+                                                                                        'the '
+                                                                                        'document '
+                                                                                        'this '
+                                                                                        'write '
+                                                                                        'updates — '
+                                                                                        'it must '
+                                                                                        'be the '
+                                                                                        'one the '
+                                                                                        'identity '
+                                                                                        'resolves '
+                                                                                        'to, or '
+                                                                                        'the item '
+                                                                                        'is '
+                                                                                        'refused '
+                                                                                        '(invalid_request, '
+                                                                                        'details.rule '
+                                                                                        'document_id_mismatch).'},
                                                          'version': {'type': 'integer',
                                                                      'description': 'Pre-assigned '
                                                                                     'version (for '
@@ -2139,7 +2160,7 @@ an existing one, it creates a new version instead of a duplicate.
 Fields (from OpenAPI — these are the exact field names):
 template_id (string, REQUIRED): Template ID to validate against
 template_version (integer): Specific template version to validate against (default: latest)
-document_id (string): Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)
+document_id (string): With version: the pre-assigned document ID of a restore or migration, which the Registry uses as-is. Without version: the document this write updates — it must be the one the identity resolves to, or the item is refused (invalid_request, details.rule document_id_mismatch).
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)
 namespace (string, REQUIRED): Namespace for the document
 data (object, REQUIRED): Document content
@@ -2154,7 +2175,7 @@ Each item follows the same schema as create_document.
 Fields (from OpenAPI — these are the exact field names):
 template_id (string, REQUIRED): Template ID to validate against
 template_version (integer): Specific template version to validate against (default: latest)
-document_id (string): Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)
+document_id (string): With version: the pre-assigned document ID of a restore or migration, which the Registry uses as-is. Without version: the document this write updates — it must be the one the identity resolves to, or the item is refused (invalid_request, details.rule document_id_mismatch).
 version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with document_id)
 namespace (string, REQUIRED): Namespace for the document
 data (object, REQUIRED): Document content

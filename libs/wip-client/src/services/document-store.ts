@@ -217,15 +217,23 @@ export class DocumentStoreService extends BaseService {
     return this.get(`/documents/${id}/latest`)
   }
 
+  /**
+   * The latest version of the document with this identity hash. An identity
+   * hash is unique only within a template and namespace: when several
+   * readable documents match, the server answers 409 (`ambiguous`) with the
+   * candidates — pass namespace and templateId (ID or value) to name one.
+   */
   async getDocumentByIdentity(
     identityHash: string,
     includeInactive?: boolean,
     namespace?: string,
+    templateId?: string,
   ): Promise<Document> {
     const params: Record<string, unknown> = {}
     if (includeInactive !== undefined) params.include_inactive = includeInactive
-    // namespace (CASE-457) scopes identity-hash resolution under a multi-namespace key.
+    // namespace scopes identity-hash resolution under a multi-namespace key.
     if (namespace !== undefined) params.namespace = namespace
+    if (templateId !== undefined) params.template_id = templateId
     return this.get(`/documents/by-identity/${identityHash}`, Object.keys(params).length ? params : undefined)
   }
 

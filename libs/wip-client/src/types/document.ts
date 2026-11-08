@@ -83,6 +83,8 @@ export interface DocumentCreateResponse {
   template_value?: string
   identity_hash: string
   version: number
+  /** The template version the document is pinned to. */
+  template_version?: number
   is_new: boolean
   previous_version?: number
   warnings: string[]

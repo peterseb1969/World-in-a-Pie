@@ -41,7 +41,13 @@ class DocumentCreateRequest(StrictModel):
     )
     document_id: str | None = Field(
         default=None,
-        description="Pre-assigned document ID (for restore/migration — Registry uses as-is instead of generating)"
+        description=(
+            "With version: the pre-assigned document ID of a restore or "
+            "migration, which the Registry uses as-is. Without version: the "
+            "document this write updates — it must be the one the identity "
+            "resolves to, or the item is refused (invalid_request, "
+            "details.rule document_id_mismatch)."
+        )
     )
     version: int | None = Field(
         default=None,
@@ -139,6 +145,10 @@ class DocumentCreateResponse(BaseModel):
     )
     identity_hash: str = ""
     version: int
+    template_version: int | None = Field(
+        default=None,
+        description="Template version the document is pinned to",
+    )
     is_new: bool = Field(
         ...,
         description="True if this is a new document, False if it's a new version"

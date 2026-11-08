@@ -97,6 +97,8 @@ interface BulkResultItem {
     details?: Record<string, unknown>;
     value?: string;
     version?: number;
+    /** Document writes: the template version the document is pinned to. */
+    template_version?: number;
     is_new_version?: boolean;
     document_id?: string;
     identity_hash?: string;
@@ -1299,6 +1301,8 @@ interface DocumentCreateResponse {
     template_value?: string;
     identity_hash: string;
     version: number;
+    /** The template version the document is pinned to. */
+    template_version?: number;
     is_new: boolean;
     previous_version?: number;
     warnings: string[];
@@ -2196,7 +2200,13 @@ declare class DocumentStoreService extends BaseService {
         max_cross_product?: number;
     }): Promise<Blob>;
     getLatestDocument(id: string): Promise<Document>;
-    getDocumentByIdentity(identityHash: string, includeInactive?: boolean, namespace?: string): Promise<Document>;
+    /**
+     * The latest version of the document with this identity hash. An identity
+     * hash is unique only within a template and namespace: when several
+     * readable documents match, the server answers 409 (`ambiguous`) with the
+     * candidates — pass namespace and templateId (ID or value) to name one.
+     */
+    getDocumentByIdentity(identityHash: string, includeInactive?: boolean, namespace?: string, templateId?: string): Promise<Document>;
     /**
      * Query documents by template + filters (POST /documents/query).
      *

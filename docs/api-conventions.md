@@ -148,7 +148,7 @@ Codes defined by `PATCH /documents`:
 |--------------|------|
 | `not_found` | Document does not exist or has been soft-deleted |
 | `forbidden` | Caller lacks write permission on the document's namespace |
-| `identity_field_change` | Patch attempts to change a template-defined identity field — not allowed |
+| `identity_field_change` | Patch attempts to change a template-defined identity field — not allowed (a term or reference identity field changes only when it names a different referent; another alias of the same term is accepted) |
 | `append_only` | Template has empty `identity_fields` (append-only) — the document has no logical identity, only a surrogate `document_id`, so it cannot be PATCHed. The error carries remediation: create a new document, or declare `identity_fields` on the template (CASE-478) |
 | `concurrency_conflict` | `if_match` mismatch, or internal version race lost after retries |
 | `validation_failed` | Merged document fails template validation |
@@ -564,7 +564,7 @@ Resolution happens at the API boundary (in the service's route handler) using `r
 |---------|-----------------------------|
 | **Def-Store** | `terminology_id` in term endpoints |
 | **Template-Store** | `terminology_ref`, `template_ref`, `target_templates`, `target_terminologies` in template fields |
-| **Document-Store** | `template_id` in document creation; `document_id` in PATCH, the relationships, and traverse endpoints (accepts a registered synonym) |
+| **Document-Store** | `template_id` in document creation and the by-identity lookup; `document_id` in PATCH, the relationships, and traverse endpoints (accepts a registered synonym) |
 
 ### Term Addressing Is Strict
 

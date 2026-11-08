@@ -83,6 +83,13 @@ class DocumentBulkResultItem(BulkResultItemBase):
     document_id: str | None = None
     identity_hash: str | None = None
     version: int | None = None
+    template_version: int | None = Field(
+        default=None,
+        description=(
+            "Template version the written (or unchanged) document is pinned "
+            "to; on a migrate dry run, the version it would be pinned to."
+        ),
+    )
     is_new: bool | None = None
     warnings: list[str] = Field(default_factory=list)
 

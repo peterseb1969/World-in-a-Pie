@@ -241,7 +241,7 @@ Templates with **no identity_fields** use an empty composite key — every submi
 
 `PATCH /api/document-store/documents` creates a new version of an existing document by applying an RFC 7396 merge patch (see `docs/api-conventions.md`). It is **forbidden** to change any identity field or the namespace via PATCH:
 
-- Attempting to patch a template-defined identity field fails with `error_code: "identity_field_change"`
+- Attempting to patch a template-defined identity field fails with `error_code: "identity_field_change"`. A term or reference identity field is compared by the referent it resolves to, so another alias of the same term is not a change
 - The new version **preserves** the original `identity_hash` — it is invariant under PATCH, never recomputed
 - The new version **preserves** the original `template_version` — PATCH validates against the version recorded on the document, not the latest template version
 - The namespace is not a patchable field — it is fixed at document creation
