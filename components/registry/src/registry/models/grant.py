@@ -74,7 +74,13 @@ class NamespaceGrant(Document):
     def is_expired(self) -> bool:
         if self.expires_at is None:
             return False
-        return datetime.now(UTC) > self.expires_at
+        # MongoDB hands datetimes back without a timezone; a stored expiry is
+        # UTC, so a naive one is read as such (comparing it with an aware
+        # now raises TypeError).
+        expires_at = self.expires_at
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=UTC)
+        return datetime.now(UTC) > expires_at
 
     class Settings:
         name = "namespace_grants"
