@@ -117,9 +117,12 @@ _EXTERNAL_COLLECTIONS = [
 _REGISTRY_COLLECTIONS = [
     ("registry_entries", "namespace"),
     ("namespace_grants", "namespace"),
-    # CASE-427: composite-key claims scoped to this namespace. Cross-namespace
-    # synonym claims owned by a now-deleted entry in another namespace are
-    # mopped up by startup reconcile_orphan_claims (owner-entry-missing).
+    # CASE-427: composite-key claims scoped to this namespace. A claim in
+    # another namespace whose owner entry this deletion removes is not swept
+    # here, and nothing sweeps it at startup either (startup only settles
+    # pending claims). It is healed where it next blocks a write: a claim
+    # whose owner entry is gone is stale and is taken over (resolve_stale_claim).
+    # reconcile_orphan_claims is the admin audit that finds such claims.
     ("composite_key_claims", "namespace"),
 ]
 

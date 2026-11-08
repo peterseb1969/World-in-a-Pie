@@ -28,6 +28,13 @@ BAD_ID_CONFIGS = [
     pytest.param({"terminologies": {"algorithm": "pattern"}}, id="pattern-without-pattern"),
     pytest.param({"terminologies": {"algorithm": "pattern", "pattern": "("}}, id="pattern-bad-regex"),
     pytest.param({"terminologies": {"algorithm": "nanoid", "length": 0}}, id="nanoid-zero-length"),
+    pytest.param({"terminologies": {"algorithm": "nanoid", "length": 3}}, id="nanoid-collides-fast"),
+    pytest.param({"terminologies": {"algorithm": "nanoid", "length": 65}}, id="nanoid-too-long"),
+    pytest.param({"terminologies": {"algorithm": "prefixed", "prefix": "T-", "pad": 21}}, id="pad-too-wide"),
+    pytest.param({"terminologies": {"algorithm": "prefixed", "prefix": "INV/"}}, id="prefix-slash"),
+    pytest.param({"terminologies": {"algorithm": "prefixed", "prefix": "INV:"}}, id="prefix-colon"),
+    pytest.param({"terminologies": {"algorithm": "prefixed", "prefix": "IN V-"}}, id="prefix-space"),
+    pytest.param({"terminologies": {"algorithm": "prefixed", "prefix": "P" * 33}}, id="prefix-too-long"),
 ]
 
 

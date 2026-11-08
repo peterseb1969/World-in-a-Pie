@@ -5,7 +5,7 @@ import math
 import re
 import time
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 import httpx
 from beanie.odm.utils.encoder import Encoder
@@ -147,6 +147,11 @@ def build_lookup_response(
     )
 
 
+# The statuses an entry can hold. A free-text filter would answer an unknown
+# value (a typo) with an empty page, indistinguishable from "no such entries".
+EntryStatusFilter = Literal["active", "reserved", "inactive"]
+
+
 def _require_valid_entity_type(entity_type: str | None) -> None:
     """Refuse an unknown entity_type filter: it would list nothing, silently."""
     invalid = invalid_entity_type_fields(entity_type)
@@ -162,7 +167,7 @@ def _require_valid_entity_type(entity_type: str | None) -> None:
 async def browse_entries(
     namespace: str | None = Query(None, description="Filter by namespace"),
     entity_type: str | None = Query(None, description="Filter by entity type"),
-    status: str | None = Query(None, description="Filter by status (active, reserved, inactive)"),
+    status: EntryStatusFilter | None = Query(None, description="Filter by status (active, reserved, inactive)"),
     q: str | None = Query(None, description="Search across entry IDs and composite key values"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
@@ -238,13 +243,13 @@ async def unified_search(
     q: str = Query(..., min_length=1, description="Search query string"),
     namespace: str | None = Query(None, description="Filter by namespace"),
     entity_type: str | None = Query(None, description="Filter by entity type"),
-    status: str | None = Query(None, description="Filter by status"),
+    status: EntryStatusFilter | None = Query(None, description="Filter by status (active, reserved, inactive)"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Page size (max 1000)"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> UnifiedSearchResponse:
     """
-    Unified search across entry IDs, additional IDs, and all composite key values
+    Unified search across entry IDs and all composite key values
     (primary + synonyms). Returns rich results with match context and resolution paths.
     """
     _require_valid_entity_type(entity_type)
@@ -1165,10 +1170,18 @@ async def _activate_keyed(
         else:
             first_index[eid] = i
 
-    loaded = {
-        e.entry_id: e
-        async for e in RegistryEntry.find({"entry_id": {"$in": list(first_index)}})
-    }
+    try:
+        loaded = {
+            e.entry_id: e
+            async for e in RegistryEntry.find({"entry_id": {"$in": list(first_index)}})
+        }
+    except Exception as e:
+        # A failed read decides nothing: every keyed item is an error of its
+        # own, never a whole-request 500 (bulk-first, like the keyless path).
+        for i in keyed:
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=items[i].entry_id, **error_fields(e))
+        return 0, len(keyed)
 
     candidates: list[tuple[int, RegistryEntry]] = []
     for eid, i in first_index.items():
@@ -1210,10 +1223,21 @@ async def _activate_keyed(
 
     # Two-phase claim, as provision does it: pending before the write,
     # confirmed after it.
-    conflicts = await claim_entries_keys_pending([entry for _, entry in candidates])
+    claim_error: dict | None = None
+    try:
+        conflicts = await claim_entries_keys_pending([entry for _, entry in candidates])
+    except Exception as e:
+        # Claims this call inserted stay pending; startup's pending-claim
+        # reconcile settles them against the entries, which stay reserved.
+        claim_error = error_fields(e)
+        conflicts = [None] * len(candidates)
     to_write: list[tuple[int, RegistryEntry]] = []
     for (i, entry), conflict in zip(candidates, conflicts, strict=True):
-        if conflict is not None:
+        if claim_error is not None:
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=entry.entry_id, **claim_error)
+            errors += 1
+        elif conflict is not None:
             results[i] = ActivateItemResponse(
                 index=i, status="error", entry_id=entry.entry_id, error=conflict,
                 error_code="already_exists", details={"rule": "key_claimed"},
@@ -1253,13 +1277,24 @@ async def _activate_keyed(
         # An entry is activated only if it now holds the key this request
         # wrote. Anything else (a write error, or a status that changed
         # between the read and the guarded write) is re-read to tell.
-        written = {
-            d["entry_id"]: d
-            async for d in entries_coll.find(
-                {"entry_id": {"$in": [entry.entry_id for _, entry in to_write]}},
-                {"entry_id": 1, "status": 1, "primary_composite_key_hash": 1, "_id": 0},
-            )
-        }
+        try:
+            written = {
+                d["entry_id"]: d
+                async for d in entries_coll.find(
+                    {"entry_id": {"$in": [entry.entry_id for _, entry in to_write]}},
+                    {"entry_id": 1, "status": 1, "primary_composite_key_hash": 1, "_id": 0},
+                )
+            }
+        except Exception as e:
+            # Outcome unknown and unconfirmable: report each item as an error.
+            # Its claim stays pending for startup's reconcile, which settles
+            # it by what the entry holds; a retry finds it active or reserved.
+            for i, entry in to_write:
+                results[i] = ActivateItemResponse(
+                    index=i, status="error", entry_id=entry.entry_id, **error_fields(e))
+                errors += 1
+            to_write = []
+            written = {}
         confirmed: list[RegistryEntry] = []
         released: list[RegistryEntry] = []
         for pos, (i, entry) in enumerate(to_write):
@@ -1282,8 +1317,13 @@ async def _activate_keyed(
             results[i] = ActivateItemResponse(
                 index=i, status="error", entry_id=entry.entry_id, **fields)
             errors += 1
-        await release_entries_keys(released)
-        await confirm_entries_keys(confirmed)
+        try:
+            await release_entries_keys(released)
+            await confirm_entries_keys(confirmed)
+        except Exception:
+            # The entries' states are already decided and reported; a claim
+            # left pending here is settled by startup's pending-claim reconcile.
+            logger.exception("activate: confirming or releasing key claims failed")
 
     for i in repeats:
         first = results[first_index[items[i].entry_id]]
@@ -1369,6 +1409,7 @@ async def activate_entries(
             if status_by_id.get(eid) == "reserved"
         ]
         flipped_ids: set[str] = set(reserved_ids)
+        update_error: dict | None = None
         if reserved_ids:
             try:
                 update_result = await entries_coll.update_many(
@@ -1389,15 +1430,10 @@ async def activate_entries(
                         still_reserved.add(doc["entry_id"])
                     flipped_ids -= still_reserved
             except Exception as e:
-                for i in keyless:
-                    results[i] = ActivateItemResponse(
-                        index=i, status="error", entry_id=items[i].entry_id,
-                        **error_fields(e))
-                    error_count += 1
-                return ActivateBulkResponse(
-                    results=[r for r in results if r is not None],
-                    total=len(items), activated=activated_count, errors=error_count,
-                )
+                # Only the items this write was for failed; the classify read
+                # already decided the rest (not_found, already_active, ...).
+                update_error = error_fields(e)
+                flipped_ids = set()
 
         for i in keyless:
             item = items[i]
@@ -1420,6 +1456,10 @@ async def activate_entries(
                 results[i] = ActivateItemResponse(
                     index=i, status="activated", entry_id=item.entry_id)
                 activated_count += 1
+            elif update_error is not None:
+                results[i] = ActivateItemResponse(
+                    index=i, status="error", entry_id=item.entry_id, **update_error)
+                error_count += 1
             else:
                 results[i] = ActivateItemResponse(
                     index=i, status="error", entry_id=item.entry_id,
@@ -1455,9 +1495,13 @@ async def export_entries(
     records the instance as it is, inactive rows included).
 
     Admin-gated per entry namespace, matching the backup/restore surfaces
-    (archive download requires admin on every namespace it spans). Ids the
-    caller lacks admin on come back per-item `forbidden`, never a
-    whole-call 403 — bulk-first.
+    (archive download requires admin on every namespace it spans). An id in
+    a namespace the caller can read but does not administer comes back
+    per-item `forbidden`, never a whole-call 403 (bulk-first), so an export
+    key short of admin fails loudly. An id in a namespace the caller cannot
+    read is `not_found`, exactly like a missing id: as on /lookup/by-id, this
+    route does not confirm that an entry exists to a caller who cannot read
+    its namespace.
     """
     from .grants import _is_superadmin, _resolve_permission
 
@@ -1469,27 +1513,29 @@ async def export_entries(
         entries_by_id[row.entry_id] = row
 
     superadmin = _is_superadmin(identity)
-    admin_by_namespace: dict[str, bool] = {}
+    permission_by_namespace: dict[str, str] = {}
 
-    async def _admin_on(namespace: str) -> bool:
+    async def _permission_on(namespace: str) -> str:
         if superadmin:
-            return True
-        if namespace not in admin_by_namespace:
-            perm = await _resolve_permission(identity, namespace)
-            admin_by_namespace[namespace] = perm == "admin"
-        return admin_by_namespace[namespace]
+            return "admin"
+        if namespace not in permission_by_namespace:
+            permission_by_namespace[namespace] = await _resolve_permission(
+                identity, namespace
+            )
+        return permission_by_namespace[namespace]
 
     results: list[ExportEntryItem] = []
     found = not_found = forbidden = 0
     for i, entry_id in enumerate(request.entry_ids):
         entry = entries_by_id.get(entry_id)
-        if entry is None:
+        permission = await _permission_on(entry.namespace) if entry else "none"
+        if entry is None or permission == "none":
             results.append(ExportEntryItem(
                 index=i, entry_id=entry_id, status="not_found"
             ))
             not_found += 1
             continue
-        if not await _admin_on(entry.namespace):
+        if permission != "admin":
             results.append(ExportEntryItem(
                 index=i, entry_id=entry_id, status="forbidden"
             ))
@@ -2058,10 +2104,13 @@ async def reactivate_entries(
 ) -> BulkEntryLifecycleResponse:
     """Called by the owning service when it revives a retired entity.
 
-    Each inactive synonym is claimed again where its key is free. A key
-    another entity took while this one was retired stays with that entity:
-    the synonym stays inactive, the entry is reactivated without it, and a
-    warning names the synonym and its holder. Idempotent.
+    Synonym-level only, like /deactivate: the entry's own status is not
+    touched (a retired entity's entry stays active throughout). Each inactive
+    synonym is claimed again where its key is free. A key another entity took
+    while this one was retired stays with that entity: that synonym stays
+    inactive, the others are reclaimed without it, and a warning names the
+    synonym and its holder. Idempotent: an entry with nothing to reclaim
+    reports unchanged.
     """
     results: list[EntryLifecycleResponse] = []
     for i, item in enumerate(items):
@@ -2084,7 +2133,7 @@ async def reactivate_entries(
                 ],
                 warnings=[
                     f"Synonym {s.composite_key} is now held by entry {holder}; "
-                    "reactivated without it"
+                    "the other synonyms were reclaimed without it"
                     for s, holder in taken
                 ],
             ))

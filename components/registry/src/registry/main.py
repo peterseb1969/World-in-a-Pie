@@ -18,6 +18,7 @@ from wip_auth import (
     build_metadata,
     check_production_security,
     declare_api_key_security,
+    get_auth_config,
     init_beanie_with_retry,
     install_liveness,
     setup_auth,
@@ -49,7 +50,6 @@ class Settings:
     MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "wip_registry")
     MASTER_API_KEY: str | None = os.getenv("MASTER_API_KEY")
-    AUTH_ENABLED: bool = os.getenv("AUTH_ENABLED", "true").lower() == "true"
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://localhost:8443").split(",")
     NATS_URL: str = os.getenv("NATS_URL", "")
 
@@ -274,17 +274,18 @@ The Registry service provides centralized identity management for the WIP ecosys
 - **Cross-Namespace Search**: Find entities across all namespaces
 - **ID Provisioning**: Registry generates IDs per namespace config
 - **ID Reservation**: Clients provide IDs, registry validates format
-- **Pluggable ID Generation**: UUID4, UUID7, NanoID, Prefixed, or Pattern-based
+- **Pluggable ID Generation**: UUID7, UUID4, Prefixed or NanoID minted by the
+  Registry; Pattern and Any validate IDs the caller supplies
 
 ### Authentication
 
 All endpoints require API key authentication via the `X-API-Key` header,
-except the public probe and docs routes (`/`, `/health`, `/ready`,
+except the public probe and docs routes (`/`, `/health`, `/ready`, `/livez`,
 `/api/registry/health`, `/docs`, `/redoc`, `/openapi.json`).
 
 Admin operations (namespace management) require elevated privileges.
     """,
-    version="0.4.0",
+    version=__version__,
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc",
@@ -356,7 +357,8 @@ async def health_check():
         return {
             "status": "healthy",
             "database": "connected",
-            "auth_enabled": settings.AUTH_ENABLED,
+            # The mode the auth layer actually enforces (WIP_AUTH_MODE).
+            "auth_enabled": get_auth_config().mode != "none",
         }
     except Exception as e:
         import logging

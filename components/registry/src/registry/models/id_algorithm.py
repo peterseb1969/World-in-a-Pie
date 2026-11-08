@@ -64,29 +64,48 @@ VALID_ENTITY_TYPES = {"terminologies", "terms", "templates", "documents", "files
 IdEntityType = Literal["terminologies", "terms", "templates", "documents", "files"]
 
 
+_PREFIX_CHARS = re.compile(r"[A-Za-z0-9_.-]+")
+
+
 class IdAlgorithmWrite(BaseModel):
     """An id_config entry as a namespace write accepts it.
 
     Strict where IdAlgorithmConfig is lenient. IdAlgorithmConfig reads what is
     already stored, and must keep reading legacy values instead of failing on
-    them. A write must refuse anything that would be stored and then ignored
-    or misapplied: an unknown field is dropped on read, an unknown algorithm
-    fails every later mint, and a prefixed config without a prefix mints bare
-    numbers that collide across entity types.
+    them. A write refuses what would be misapplied or would mint unusable IDs:
+    an unknown field (dropped on read), an unknown algorithm (fails every
+    later mint), a prefixed config without a prefix (bare numbers that collide
+    across entity types), a prefix with characters an ID cannot carry in a URL
+    path or a qualified name, and pad or length values outside the ranges
+    below. A field of another algorithm (pad on a uuid7 config, say) is stored
+    and has no effect; it is not refused, because a restore re-sends configs
+    as they were stored before this model was strict.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     algorithm: Literal["uuid7", "uuid4", "prefixed", "nanoid", "pattern", "any"] = "uuid7"
-    prefix: str | None = None
-    pad: int = Field(default=6, ge=0)
-    length: int = Field(default=21, ge=1)
+    # Letters, digits, '_', '.', '-': a minted ID is a path segment
+    # (GET /entries/{entry_id}) and must not contain '/', '#', '?', '%' or
+    # the ':' of a qualified name.
+    prefix: str | None = Field(default=None, max_length=32)
+    # The zero-padding width of a prefixed ID. A wider value only builds a
+    # longer string per mint.
+    pad: int = Field(default=6, ge=0, le=20)
+    # A nanoid's length: 64^8 IDs keeps a collision unlikely for millions of
+    # mints (length 3 collides within a few hundred); 64 is ample.
+    length: int = Field(default=21, ge=8, le=64)
     pattern: str | None = None
 
     @model_validator(mode="after")
     def algorithm_fields_present(self) -> "IdAlgorithmWrite":
         if self.algorithm == "prefixed" and not self.prefix:
             raise ValueError("algorithm 'prefixed' needs a non-empty prefix")
+        if self.prefix and not _PREFIX_CHARS.fullmatch(self.prefix):
+            raise ValueError(
+                f"prefix {self.prefix!r} may contain only letters, digits, "
+                "'_', '.' and '-'"
+            )
         if self.algorithm == "pattern":
             if not self.pattern:
                 raise ValueError("algorithm 'pattern' needs a pattern")
@@ -131,25 +150,31 @@ class IdFormatValidator:
         algo = config.algorithm
 
         if algo in ("uuid7", "uuid4"):
+            # The canonical spelling only: IDs are looked up by exact string,
+            # so 'ABC…', '{…}' or 'urn:uuid:…' would be reservable and never
+            # found. Any UUID version passes: apps reserve their own v4 IDs
+            # under the default uuid7 config.
             try:
-                uuid.UUID(id_string)
-                return True
+                return str(uuid.UUID(id_string)) == id_string
             except ValueError:
                 return False
 
         elif algo == "prefixed":
+            # The prefix, then digits: at least one, and possibly more than
+            # pad, which the generator emits once the counter outgrows it, and
+            # which an ID minted under an earlier pad may hold.
             prefix = config.prefix or ""
-            pat = re.compile(rf"^{re.escape(prefix)}\d{{{config.pad}}}$")
-            return bool(pat.match(id_string))
+            pat = re.compile(rf"{re.escape(prefix)}\d+")
+            return bool(pat.fullmatch(id_string))
 
         elif algo == "nanoid":
-            pat = re.compile(rf"^[A-Za-z0-9_-]{{{config.length}}}$")
-            return bool(pat.match(id_string))
+            pat = re.compile(rf"[A-Za-z0-9_-]{{{config.length}}}")
+            return bool(pat.fullmatch(id_string))
 
         elif algo == "pattern":
             if not config.pattern:
                 return True
-            return bool(re.match(config.pattern, id_string))
+            return bool(re.fullmatch(config.pattern, id_string))
 
         elif algo == "any":
             return bool(id_string)

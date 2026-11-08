@@ -26,7 +26,7 @@ This creates three concrete pain points:
 - Registry supports multiple composite keys per entity (`POST /entries/{id}/synonyms`)
 - Lookup by any synonym is fast: hash-based, O(1) per key
 - Synonyms are unique — no two entities can share the same composite key hash
-- Composite key hash uniqueness is enforced **globally** (not per-namespace) — the `$or` query in `entries.py` checks `primary_composite_key_hash` and `synonyms.composite_key_hash` without a namespace filter
+- Composite key hash uniqueness is enforced **per (namespace, entity type)**, not install-wide: a key is claimed in the namespace and entity type of the entry that holds it (the unique index on `composite_key_claims` is `(namespace, entity_type, composite_key_hash)`), and lookups filter by namespace. *Corrected 2026-11-08; this line said "globally" when the doc was written, and the code has not worked that way since key claims were introduced.*
 - Export includes synonyms (`_fetch_synonyms` in toolkit exporter)
 - The MCP server has `add_synonym`, `remove_synonym`, `lookup_entry` tools
 
@@ -55,7 +55,7 @@ This creates three concrete pain points:
 
 **Decision:** Include namespace in all auto-synonym composite keys to ensure global uniqueness.
 
-**Rationale:** The Registry enforces composite key hash uniqueness globally, not per-namespace. Two namespaces with a template named `ADDRESS` would collide if namespace were excluded. Including namespace makes collisions impossible by construction.
+**Rationale:** Including the namespace in the key makes a key name its own namespace, so a lookup by key alone (no `namespace` parameter) finds the one entry it names. Uniqueness itself is per (namespace, entity type): two namespaces with a template named `ADDRESS` hold two claims either way. A key must name its entry's own namespace, and the Registry refuses one that names another (`key_scope_mismatch` / `synonym_scope_mismatch`).
 
 ### D3: Namespace rewriting on import (not namespace-free keys)
 

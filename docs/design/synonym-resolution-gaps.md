@@ -129,39 +129,33 @@ Seven API-boundary gaps were closed in a single pass. These were the "stragglers
 
 ## Enumeration vs Resolution: two different namespace axes
 
-Namespace access in WIP is gated on **two independent axes**, and conflating them
-causes both over- and under-scoping. Keep them distinct:
+*Rewritten 2026-11-08. This section used to say that the Registry's resolution
+routes were deliberately left unscoped and must stay so. That is no longer the
+model.* Two questions still have to be kept apart, but the Registry is not
+where they part:
 
-- **Reference resolution** (canonical ID / synonym / value → entity) is gated by
-  **isolation** — a namespace's `isolation_mode` + `allowed_external_refs`, plus the
-  always-shared `wip` namespace. Resolution crosses namespaces *by design*: a document
-  in namespace `app-a` legitimately references a term in `wip` with no grant on `wip`
-  (Vision §"References Must Resolve"). The Registry's resolution endpoints
-  (`/entries/lookup/by-id`, `/entries/lookup/by-keys`, `/entries/resolve`,
-  `/synonyms/*`) are therefore intentionally not grant-scoped. Isolation for
-  *references* is enforced at the stores' `ReferenceValidator` (see the document-store
-  fix that closed the UUID-form bypass).
+- **What a caller may read** (browse, search, lookups, resolve, synonyms) is
+  gated by the caller's grants. Every Registry entry, synonym and search route
+  serves only the namespaces the caller can read, and reports everything else
+  as not found: `GET /entries`, `/entries/search`, `/entries/{id}`,
+  `/entries/lookup/by-id`, `/entries/lookup/by-keys`, `/entries/resolve`,
+  `/synonyms/*` and `/search/*` alike. Adding or removing a synonym, or merging,
+  needs write on every namespace it touches (CASE-910).
 
-- **Enumeration / listing** (browse the inventory of a namespace, search across it) is
-  gated by **grants** — you need a read grant (or the api-key's namespace scope) to list
-  a namespace's entries. This is the convention "you need a grant to *list* a
-  namespace's data, but not to reference its terms."
+- **What a write may reference** across namespaces is gated in the stores,
+  not in the Registry. The referencing namespace's `isolation_mode` and
+  `allowed_external_refs` decide what it may point at (outbound), and the
+  referenced namespace's `inbound_references` decides who may point at it
+  (closed by default: only a writer who can read it). The stores resolve
+  references through `wip_auth` with their own service key, which the Registry
+  treats as privileged, and then apply both gates themselves
+  (`ReferenceValidator`). A reference into `wip` needs no grant on `wip`,
+  because `wip` is always open inbound.
 
-The gap fixed under CASE-580: the Registry's own enumeration endpoints —
-`GET /api/registry/entries` (browse) and `GET /api/registry/entries/search` (unified
-search) — applied **no** namespace filter, so a namespace-scoped, non-privileged
-api-key could enumerate every namespace's entry inventory. They now resolve the caller's
-accessible namespaces via `registry.api.grants.resolve_accessible_namespaces` (superadmin
-→ no filter; scoped caller → `namespace $in accessible`) and constrain the query; an
-explicit foreign namespace returns an empty page rather than leaking rows.
-
-**Do not "fix" the resolution endpoints the same way** — grant-scoping
-`/entries/lookup/*` or `/synonyms/*` would break cross-namespace reference resolution,
-which is a guarantee, not a gap. `POST /search/by-fields` is a targeted value→entry
-resolution primitive and stays on the resolution (isolation) axis, not the enumeration
-one.
-
----
+So cross-namespace resolution is still a guarantee, but it is the stores'
+resolution with their service key that provides it, not unscoped Registry
+routes. Scoping a Registry route to the caller's readable namespaces does not
+break it.
 
 ## The Core Gap: Template-Store Internal Resolution
 

@@ -20,7 +20,6 @@ _XDIST_WORKER = os.environ.get("PYTEST_XDIST_WORKER", "")
 if _XDIST_WORKER:
     os.environ["DATABASE_NAME"] = f"{os.environ['DATABASE_NAME']}_{_XDIST_WORKER}"
 os.environ.setdefault("MASTER_API_KEY", "test_master_key")
-os.environ.setdefault("AUTH_ENABLED", "true")
 
 from registry.api.api_keys import configure_api_key_management  # noqa: E402
 from registry.main import app  # noqa: E402

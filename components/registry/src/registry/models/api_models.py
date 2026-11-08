@@ -910,7 +910,7 @@ class EntryLifecycleResponse(BaseModel):
         default_factory=list,
         description=(
             "Synonyms another entry took while this one was retired: "
-            "{composite_key, held_by}. The entry is reactivated without them."
+            "{composite_key, held_by}. The other synonyms are reclaimed without them."
         ),
     )
     warnings: list[str] = Field(default_factory=list)

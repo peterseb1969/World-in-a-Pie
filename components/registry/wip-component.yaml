@@ -33,7 +33,6 @@ spec:
       # this, X-API-Key from the gateway fails auth on PUT/DELETE
       # endpoints even though MASTER_API_KEY matches.
       - {name: WIP_AUTH_LEGACY_API_KEY, source: {from_secret: api-key}}
-      - {name: AUTH_ENABLED, source: {literal: "true"}}
       # Let wip-auth trust the X-WIP-User / X-WIP-Groups headers the
       # gateway injects — required for gateway-authenticated browser
       # flows (as opposed to raw API key callers).
