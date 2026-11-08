@@ -1,22 +1,35 @@
-"""Rate limiting configuration for WIP services.
+"""Rate limiting for WIP services.
 
-Provides a shared rate limiter factory so all services use consistent
-configuration. Uses slowapi (built on the limits library).
+setup_rate_limiting installs a per-client limit (slowapi, built on the
+limits library) on every request that reached the service through the
+platform's reverse proxy:
 
-NOT ENFORCED: setup_rate_limiting stores the limiter and its 429 handler on
-the app, but nothing installs slowapi's middleware (which is what applies
-``default_limits``) and no route carries a ``@limiter.limit``, so no request
-is ever limited. Enforcement is tracked as its own case: service-to-service
-calls carry no X-Forwarded-For, so a per-IP key would put all internal
-traffic in one bucket.
+- **Who is limited.** A request that came through Caddy carries the
+  ``X-Forwarded-For`` header Caddy writes itself (a client's own copy is
+  replaced, except from the trusted k8s ingress), and is limited per client
+  address, its first entry.
+- **Who is not.** A request without the header did not come through Caddy:
+  it is a call from inside the platform (another service, a health probe,
+  ingest's deliveries, a restore), and is not limited, so the platform never
+  throttles its own bulk work. Only Caddy's port is published on compose and
+  dev; on k8s, anything inside the cluster that calls a service directly is
+  inside this exemption.
+- **Probes.** A path ending in health, ready or livez is never limited.
+
+The limit runs before authentication, so it costs no key check and also
+sheds a flood of unknown keys. Buckets are in memory, per process: N
+replicas allow N times the limit, and a restart resets them.
 
 Configuration via environment:
-    WIP_RATE_LIMIT=40000/minute   # Default: 40K req/min per IP
+    WIP_RATE_LIMIT=40000/minute   # Default: 40K req/min per client address
     WIP_RATE_LIMIT=                # Empty string disables rate limiting
 
-Usage in a service's main.py:
+Usage in a service's main.py, after setup_auth and before CORS (so the
+limit runs before authentication, and preflights are answered by CORS
+without spending budget):
     from wip_auth.ratelimit import setup_rate_limiting
     app = FastAPI(...)
+    setup_auth(app, ...)
     setup_rate_limiting(app)
 """
 
@@ -25,9 +38,14 @@ from typing import Any
 
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
+
+# Lifecycle probes, matched on the last path segment so a service's own
+# prefixed probe (/api/<svc>/health) counts too.
+_PROBE_SEGMENTS = frozenset({"health", "ready", "livez"})
 
 
 def _get_client_ip(request: Request) -> str:
@@ -51,19 +69,43 @@ def create_limiter() -> Limiter:
         key_func=_get_client_ip,
         default_limits=default_limits,
         enabled=bool(default_limit),
+        headers_enabled=True,
     )
 
 
-def rate_limit_exceeded_handler(
-    request: Request, exc: RateLimitExceeded
-) -> JSONResponse:
-    """Custom 429 handler with retry information."""
-    return JSONResponse(
+def is_rate_limited(request: Request) -> bool:
+    """Whether the limit applies: the request came through the reverse proxy
+    (it carries X-Forwarded-For) and is not a lifecycle probe."""
+    if request.url.path.rstrip("/").rsplit("/", 1)[-1] in _PROBE_SEGMENTS:
+        return False
+    return "x-forwarded-for" in request.headers
+
+
+class WipRateLimitMiddleware(SlowAPIMiddleware):
+    """slowapi's middleware, applied only where is_rate_limited says so
+    (slowapi's default limits take no exemption of their own)."""
+
+    async def dispatch(self, request: Request, call_next: Any) -> Response:
+        if not is_rate_limited(request):
+            response: Response = await call_next(request)
+            return response
+        return await super().dispatch(request, call_next)
+
+
+def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Response:
+    """429 with the retry window: Retry-After and the X-RateLimit-* headers.
+
+    Synchronous on purpose: slowapi's middleware calls a synchronous handler
+    and silently replaces an async one with its own.
+    """
+    response = JSONResponse(
         status_code=429,
-        content={
-            "detail": "Rate limit exceeded. Try again later.",
-        },
+        content={"detail": f"Rate limit exceeded ({exc.detail}). Try again later."},
     )
+    limited: Response = request.app.state.limiter._inject_headers(
+        response, request.state.view_rate_limit
+    )
+    return limited
 
 
 def setup_rate_limiting(app) -> Limiter | None:
@@ -81,4 +123,5 @@ def setup_rate_limiting(app) -> Limiter | None:
     limiter = create_limiter()
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    app.add_middleware(WipRateLimitMiddleware)
     return limiter

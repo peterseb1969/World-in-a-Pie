@@ -301,7 +301,9 @@ providers = setup_auth(app, public_paths=["/api/registry/health"])
 install_liveness(app)
 print(f"Auth setup complete. Providers: {[type(p).__name__ for p in providers]}")
 
-# Rate limiting: configured (WIP_RATE_LIMIT) but NOT enforced — see wip_auth.ratelimit
+# Rate limiting (WIP_RATE_LIMIT) per client address on requests through the
+# proxy; internal calls and probes are exempt — see wip_auth.ratelimit. After
+# setup_auth so it runs before authentication, before CORS so preflights pass.
 setup_rate_limiting(app)
 
 # Add CORS middleware

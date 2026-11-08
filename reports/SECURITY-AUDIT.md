@@ -47,7 +47,7 @@ A comprehensive security audit was performed on the World In a Pie (WIP) project
 |----|---------|--------|-----|
 | C1 | CORS wildcard with credentials | **Fixed** | Default CORS origin changed to `https://localhost:8443`. Restricted `allow_methods` and `allow_headers` to required values only. Configurable via `CORS_ORIGINS` env var. setup.sh generates hostname-specific CORS for prod. |
 | C2 | No file upload size limit | **Fixed** | Added `WIP_MAX_UPLOAD_SIZE` (default 100MB). Upload endpoint reads in 64KB chunks with byte counter, returns HTTP 413 if exceeded. Document import (`/import`, `/import/preview`) reads the same way (2026-11-08). |
-| C3 | No rate limiting | **Open — not enforced** | `wip_auth.ratelimit` builds a `slowapi` limiter (default 40,000 req/min per IP, `WIP_RATE_LIMIT`) and every service calls `setup_rate_limiting`, but no service installs the middleware that applies a default limit and no route carries a limit, so nothing is limited. Found 2026-11-08; enforcement tracked in its own case (internal service-to-service calls carry no `X-Forwarded-For`, so a per-IP limit needs a design for them). |
+| C3 | No rate limiting | **Fixed** | `wip_auth.ratelimit` installs a per-client limit (default 40,000 req/min, `WIP_RATE_LIMIT`; empty disables) in registry, def-store, template-store, document-store and reporting-sync. It applies to every request that came through Caddy (keyed by the first `X-Forwarded-For` entry, which Caddy writes itself) and runs before authentication; calls from inside the platform (no `X-Forwarded-For`) and health/ready/livez probes are not limited. Buckets are in memory per process. auth-gateway and ingest-gateway configure no limiter (tracked separately). Enforced 2026-11-08; until then the limiter was configured but never applied. |
 | C4 | Default API key accepted in production | **Fixed** | Added `check_production_security()` to all service startups. Services refuse to start in `WIP_VARIANT=prod` if the well-known default key `dev_master_key_for_testing` is configured. |
 
 ### HIGH
@@ -95,7 +95,7 @@ A comprehensive security audit was performed on the World In a Pie (WIP) project
 | JWT refresh tokens not implemented | Medium | Short-lived access tokens via Dex config | UI would benefit from silent refresh |
 | MCP SSE transport lacks auth middleware | Medium | Warning on startup; typically local-only use | Depends on MCP library auth support |
 | MongoDB auth optional in dev mode | Low | Dev is trusted local only; prod check enforces | By design for ease of development |
-| No WAF or DDoS protection | Low | Caddy rate limiting at reverse proxy level | Acceptable for Tier 1-2; Tier 3 needs external WAF |
+| No WAF or DDoS protection | Low | Per-client rate limit in the services (C3); Caddy itself renders no rate limit | Acceptable for Tier 1-2; Tier 3 needs external WAF |
 
 ---
 

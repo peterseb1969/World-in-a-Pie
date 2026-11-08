@@ -279,13 +279,17 @@ manifest lists its namespaces, all with zero counts, restores their settings
 and nothing else. An archive missing the `namespaces/` tree is still refused
 when its manifest counts entities or lists no namespaces.
 
-### `WIP_RATE_LIMIT` limits nothing; the security audit says so
+### `WIP_RATE_LIMIT` is enforced, per client, on requests through the proxy
 
-`WIP_RATE_LIMIT` is read by every service, but no service installs the
-middleware that applies it, so no request has ever been rate-limited.
-`reports/SECURITY-AUDIT.md` recorded C3 ("No rate limiting") as fixed; it now
-says open, and the docstrings say not enforced. Enforcement is tracked in its
-own case. Nothing changes at runtime.
+`WIP_RATE_LIMIT` (default `40000/minute`) was read by registry, def-store, template-store, document-store and reporting-sync, but none of them installed the middleware that applies it, so no request was ever rate-limited. Now:
+- **Who is limited.** Each request that reached a service through Caddy is limited per client address, the first `X-Forwarded-For` entry, which Caddy writes itself. The limit runs before authentication.
+- **Who is not.** A request without `X-Forwarded-For` came from inside the platform (another service, ingest's deliveries, a restore, a health probe) and is not limited. Neither is any path ending in `health`, `ready` or `livez`.
+- **The 429.** It carries `Retry-After` and `X-RateLimit-Limit` / `-Remaining` / `-Reset`.
+- **Disabling.** An empty `WIP_RATE_LIMIT` turns it off.
+- **Scope.** Buckets are in memory per process: N replicas allow N times the limit, and a restart resets them. auth-gateway and ingest-gateway configure no limiter yet.
+- **Dependency.** `wip-auth` now requires `slowapi>=0.1.10`.
+
+`reports/SECURITY-AUDIT.md` C3 is back to Fixed.
 
 ### A file's `allowed_templates` is enforced, and stored as template ids
 

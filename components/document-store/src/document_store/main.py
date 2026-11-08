@@ -368,7 +368,9 @@ _providers = setup_auth(app, public_paths=["/api/document-store/health"])
 # kept apart from the dependency-checking health and readiness endpoints.
 install_liveness(app)
 
-# Rate limiting: configured (WIP_RATE_LIMIT) but NOT enforced — see wip_auth.ratelimit
+# Rate limiting (WIP_RATE_LIMIT) per client address on requests through the
+# proxy; internal calls and probes are exempt — see wip_auth.ratelimit. After
+# setup_auth so it runs before authentication, before CORS so preflights pass.
 setup_rate_limiting(app)
 
 # Reject unknown query parameters (returns 422 for undeclared params)

@@ -20,7 +20,7 @@ dependencies = [
     "PyJWT>=2.8.0",
     "cryptography>=41.0.0",
     "bcrypt>=4.0.0",
-    "slowapi>=0.1.9",
+    "slowapi>=0.1.10",
     "cachetools>=5.3.0",
 ]
 
