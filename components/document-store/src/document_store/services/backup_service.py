@@ -146,75 +146,102 @@ async def _persist_event(job_id: str, event: ProgressEvent) -> None:
         fields[BackupJob.percent] = event.percent
 
     if event.phase == "complete":
-        fields[BackupJob.status] = BackupJobStatus.COMPLETE
-        fields[BackupJob.percent] = 100.0
-        fields[BackupJob.completed_at] = datetime.now(UTC)
-        # A structured outcome rides on the terminal event rather than being
-        # written separately afterwards. Saving it in a second pass raced this
-        # one: the consumer had already loaded the record, so its save put the
-        # result back to null. Observed exactly that on a live dry run.
-        if event.details:
-            fields[BackupJob.result] = dict(event.details)
-        # Populate archive_size from disk if the archive file exists.
-        # This is the first opportunity after the backup engine has finalized
-        # the ZIP; the API layer set archive_path at job creation but
-        # cannot know the size until the worker writes the file.
-        if job.archive_path:
-            with contextlib.suppress(OSError):
-                fields[BackupJob.archive_size] = Path(job.archive_path).stat().st_size
-        # After a successful restore, trigger a batch sync so reporting-sync
-        # picks up the restored documents in PostgreSQL. The restore engine
-        # writes directly to MongoDB and bypasses the NATS event path that
-        # reporting-sync normally subscribes to.
-        #
-        # A dry run gets neither this nor the validation below. It wrote
-        # nothing, so there is nothing to sync and nothing to verify — and a
-        # preview that spawns follow-up jobs against a namespace it did not
-        # create is not a preview. Observed doing exactly that: a dry run into
-        # a non-existent namespace produced a validation job reporting
-        # "healthy, 0 documents".
-        if (
-            job.kind == BackupJobKind.RESTORE
-            and job.namespace
-            and not job.options.get("dry_run")
-        ):
+        fields.update(_complete_fields(job, event))
+        if _restore_wrote(job):
             # Persist the terminal state BEFORE scheduling the follow-ups —
             # they read the record and must see it terminal. (The write
             # being field-scoped already protects the validation back-link
             # from being clobbered; the ordering keeps the follow-ups from
             # observing a job that still looks RUNNING.)
             await job.set(fields)
-            # One sync per namespace the restore WROTE — a multi-target fresh
-            # restore (namespace_map with several targets) needs each target
-            # synced; job.namespace alone would cover only the first. A plain
-            # or merge restore has already triggered and waited on the sync
-            # of each namespace in its count phase (listed in the complete
-            # event's reporting_synced); triggering again here re-synced every
-            # template from scratch — a second full pass per restore.
-            already = set((event.details or {}).get("reporting_synced") or [])
-            for target in dict.fromkeys(job.namespaces or [job.namespace]):
-                if target not in already:
-                    _track(asyncio.ensure_future(_trigger_reporting_batch_sync(target)))
-            # And verify what was written. A restore validates nothing while
-            # writing, so this is the only thing that would notice a dangling
-            # reference or an identity hash that no longer matches its data.
-            # It runs as its own job and the restore does not wait for it —
-            # the data is committed either way, and blocking a fast restore on
-            # verification would defeat the point.
-            _track(asyncio.ensure_future(trigger_validation_for(job)))
+            _schedule_restore_follow_ups(job, event)
             return
     elif event.phase == "error":
-        fields[BackupJob.status] = BackupJobStatus.FAILED
-        fields[BackupJob.error] = event.message
-        fields[BackupJob.completed_at] = datetime.now(UTC)
-        # A failure with a structured account (result_kind names it) keeps
-        # it on the record: the message is a summary, the result the detail.
-        if event.details and event.details.get("result_kind"):
-            fields[BackupJob.result] = {
-                k: v for k, v in event.details.items() if k != "type"
-            }
+        fields.update(_error_fields(event))
 
     await job.set(fields)
+
+
+def _complete_fields(job: BackupJob, event: ProgressEvent) -> dict[Any, Any]:
+    """The fields a 'complete' event sets on its job."""
+    fields: dict[Any, Any] = {
+        BackupJob.status: BackupJobStatus.COMPLETE,
+        BackupJob.percent: 100.0,
+        BackupJob.completed_at: datetime.now(UTC),
+    }
+    # A structured outcome rides on the terminal event rather than being
+    # written separately afterwards. Saving it in a second pass raced this
+    # one: the consumer had already loaded the record, so its save put the
+    # result back to null. Observed exactly that on a live dry run.
+    if event.details:
+        fields[BackupJob.result] = dict(event.details)
+    # Populate archive_size from disk if the archive file exists.
+    # This is the first opportunity after the backup engine has finalized
+    # the ZIP; the API layer set archive_path at job creation but
+    # cannot know the size until the worker writes the file.
+    if job.archive_path:
+        with contextlib.suppress(OSError):
+            fields[BackupJob.archive_size] = Path(job.archive_path).stat().st_size
+    return fields
+
+
+def _restore_wrote(job: BackupJob) -> bool:
+    """A completed restore that wrote data: its follow-ups are due.
+
+    A dry run gets neither the sync nor the validation. It wrote nothing, so
+    there is nothing to sync and nothing to verify — and a preview that
+    spawns follow-up jobs against a namespace it did not create is not a
+    preview. Observed doing exactly that: a dry run into a non-existent
+    namespace produced a validation job reporting "healthy, 0 documents".
+    """
+    return bool(
+        job.kind == BackupJobKind.RESTORE
+        and job.namespace
+        and not job.options.get("dry_run")
+    )
+
+
+def _schedule_restore_follow_ups(job: BackupJob, event: ProgressEvent) -> None:
+    """After a restore that wrote: a reporting batch sync per namespace it
+    wrote, and a validation of what it wrote.
+
+    The restore engine writes directly to MongoDB and bypasses the NATS event
+    path that reporting-sync normally subscribes to, so each namespace the
+    restore WROTE is synced — a multi-target fresh restore (namespace_map
+    with several targets) needs each target synced; job.namespace alone
+    would cover only the first. A plain or merge restore has already
+    triggered and waited on the sync of each namespace in its count phase
+    (listed in the complete event's reporting_synced); triggering again here
+    would re-sync every template from scratch — a second full pass per
+    restore.
+
+    A restore validates nothing while writing, so the validation is the only
+    thing that would notice a dangling reference or an identity hash that no
+    longer matches its data. It runs as its own job and the restore does not
+    wait for it — the data is committed either way, and blocking a fast
+    restore on verification would defeat the point.
+    """
+    already = set((event.details or {}).get("reporting_synced") or [])
+    for target in dict.fromkeys(job.namespaces or [job.namespace]):
+        if target not in already:
+            _track(asyncio.ensure_future(_trigger_reporting_batch_sync(target)))
+    _track(asyncio.ensure_future(trigger_validation_for(job)))
+
+
+def _error_fields(event: ProgressEvent) -> dict[Any, Any]:
+    """The fields an 'error' event sets on its job.
+
+    A failure with a structured account (result_kind names it) keeps it on
+    the record: the message is a summary, the result the detail.
+    """
+    fields: dict[Any, Any] = {
+        BackupJob.status: BackupJobStatus.FAILED,
+        BackupJob.error: event.message,
+        BackupJob.completed_at: datetime.now(UTC),
+    }
+    if event.details and event.details.get("result_kind"):
+        fields[BackupJob.result] = {k: v for k, v in event.details.items() if k != "type"}
+    return fields
 
 
 async def _mark_failed(job_id: str, error: str) -> None:
