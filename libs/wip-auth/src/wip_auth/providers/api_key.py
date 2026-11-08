@@ -421,8 +421,14 @@ class APIKeyProvider:
 
         # Matching no config key is true whatever the Registry says, so the
         # rejection is cached either way; the next successful sync clears it.
+        # Unless the keys changed while bcrypt ran: a sync that landed
+        # meanwhile may have brought this very key, and recording the
+        # rejection after it cleared the cache would refuse the new key until
+        # the next sync. Every change replaces the list (or the salt), so an
+        # unchanged list is an exact test.
         with self._lock:
-            self._reject(fingerprint)
+            if self._keys is keys and self.runtime_salt == runtime_salt:
+                self._reject(fingerprint)
         if expired:
             raise self._unverifiable()
         return None, self._invalid_message()

@@ -177,3 +177,29 @@ async def test_live_an_announced_key_change_triggers_a_sync():
         await service.stop()
         await sender.stop()
         await receiver.stop()
+
+
+def test_a_sync_during_a_failed_check_does_not_leave_the_new_key_refused(monkeypatch):
+    """The refusal of a key checked against the old key list must not outlive
+    a sync that brought the key while bcrypt ran (it would refuse the new key
+    until the next sync, which is what an immediate re-sync exists to avoid)."""
+    from wip_auth.providers import api_key as api_key_module
+
+    provider = APIKeyProvider([APIKeyRecord(name="c", key_hash=hash_api_key("c"))])
+    provider.confirm_runtime_keys(90)
+    new = APIKeyRecord(name="fresh", key_hash=hash_api_key("fresh-key"))
+    real_verify = api_key_module.verify_api_key
+    synced: list[int] = []
+
+    def verify_while_a_sync_lands(plaintext, key_hash, salt):
+        if not synced:
+            synced.append(1)
+            provider.replace_runtime_keys([new])  # the sync, mid-check
+        return real_verify(plaintext, key_hash, salt)
+
+    monkeypatch.setattr(api_key_module, "verify_api_key", verify_while_a_sync_lands)
+    record, _message = provider._validate_key("fresh-key")
+    assert record is None  # checked against the list from before the sync
+
+    record, message = provider._validate_key("fresh-key")
+    assert record is not None and record.name == "fresh", message
