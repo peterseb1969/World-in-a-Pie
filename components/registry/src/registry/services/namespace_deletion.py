@@ -455,8 +455,11 @@ class NamespaceDeletionService:
         prefix: str,
         force: bool = False,
         requested_by: str | None = None,
+        requested_note: str | None = None,
     ) -> DeletionJournal:
-        """Lock the namespace and build + execute the deletion journal."""
+        """Lock the namespace and build + execute the deletion journal.
+        ``requested_by`` is the authenticated caller; ``requested_note`` the
+        free text it sent, recorded beside it."""
         ns = await Namespace.find_one({"prefix": prefix})
         if not ns:
             raise ValueError(f"Namespace not found: {prefix}")
@@ -485,6 +488,7 @@ class NamespaceDeletionService:
         # namespace locked with no journal; resume_deletion builds one then.
         journal = await self._build_journal(prefix, force, requested_by, inbound_refs)
         journal.namespace_id = ns.namespace_id
+        journal.requested_note = requested_note
         await journal.create()
         logger.info("Deletion journal created for '%s' with %d steps", prefix, len(journal.steps))
 

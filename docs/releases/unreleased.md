@@ -7,6 +7,24 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Namespace routes reveal nothing to a caller without standing
+
+- **`GET /namespaces/{prefix}/deletion-status` is for platform admins only**
+  (the callers who can start a deletion); anyone else gets 404, as for a
+  namespace with no journal. Any key could read any namespace's journal:
+  storage keys, collection filters and counts, and the entities of third
+  namespaces that referenced it.
+- **The namespace upsert decides a non-admin caller's standing before it
+  reads the reservation.** A key without standing got a 409 naming the app
+  that reserves the prefix, or a 503 naming the reservations file's path, and
+  the two 403 wordings told reserved prefixes from free ones. It now gets
+  one 403, whatever the prefix. A platform admin's *update* no longer fails
+  when the reservations file is broken — it never uses it; a create still
+  does (503), since it would apply the reservation's settings.
+- **The deletion journal's `requested_by` is the authenticated caller.** It
+  was whatever `deleted_by` said. `deleted_by` is still accepted and is kept
+  as `requested_note` beside it.
+
 ### A merged-away Registry ID resolves to the entry it was merged into
 
 - **The merged-away ID resolves.** After merging D into P, `POST

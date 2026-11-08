@@ -176,10 +176,10 @@ async def _check_reserved_upsert(
     prefix: str,
     ns: Namespace | None,
     update_data: dict[str, Any],
-    reserved: dict[str, Any] | None,
     owner: str | None = None,
-) -> None:
-    """Admit a caller outside the platform admin groups to the upsert, or 403.
+) -> dict[str, Any]:
+    """Admit a caller outside the platform admin groups to the upsert, or 403;
+    returns the reservation's settings.
 
     Such a caller needs a reservation of the prefix and either to own it
     (`owner`, a runtime reservation made by this key) or to hold `admin` on
@@ -188,20 +188,24 @@ async def _check_reserved_upsert(
     it governs nothing, so a create stores the one sent and an existing
     namespace ignores it. A reservation changed after the namespace was
     created is never applied through this path.
+
+    Standing is decided before the reservation is read, and every refusal
+    before that point reads the same: a caller without standing learns
+    neither whether the prefix is reserved nor by which app, and a broken
+    reservations file is not its business.
     """
-    if reserved is None:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Upserting namespace '{prefix}' requires a platform admin key; "
-                "an app's key may only upsert a namespace the install reserves for it"
-            ),
-        )
+    refused = HTTPException(
+        status_code=403,
+        detail=(
+            f"Upserting namespace '{prefix}' requires a platform admin key, or "
+            "admin on a namespace the install reserves for the caller's app"
+        ),
+    )
     if owner is None and await _resolve_permission(identity, prefix) != "admin":
-        raise HTTPException(
-            status_code=403,
-            detail=f"Upserting reserved namespace '{prefix}' requires admin on it",
-        )
+        raise refused
+    reserved = await _reserved_settings(prefix)
+    if reserved is None:
+        raise refused
     for field in SETTING_FIELDS:
         value = update_data.get(field)
         if value is None or field == "description":
@@ -224,6 +228,7 @@ async def _check_reserved_upsert(
                     "changes an existing namespace's settings"
                 ),
             )
+    return reserved
 
 
 @router.get(
@@ -465,7 +470,6 @@ async def upsert_namespace(
                 [{**err, "loc": ("body", "id_config", *err["loc"])} for err in e.errors()]
             ) from e
 
-    reserved = await _reserved_settings(prefix)
     is_admin = identity.has_any_group(get_auth_config().admin_groups)
     archived_id = update_data.pop("namespace_id", None)
     if archived_id is not None and not is_admin:
@@ -477,12 +481,17 @@ async def upsert_namespace(
             ),
         )
     owner: str | None = None
+    reserved: dict[str, Any] | None = None
     if not is_admin:
         owner = await reservation_owner(identity, prefix)
-        await _check_reserved_upsert(identity, prefix, ns, update_data, reserved, owner)
+        reserved = await _check_reserved_upsert(identity, prefix, ns, update_data, owner)
         if ns is not None:
             # Every supplied setting equals the live value: nothing to write.
             return namespace_to_response(ns)
+    elif ns is None:
+        # Only a create applies a reservation's settings; an update never
+        # reads them, so a broken reservations file does not fail it.
+        reserved = await _reserved_settings(prefix)
 
     actor = request.updated_by
 

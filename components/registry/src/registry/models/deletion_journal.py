@@ -83,7 +83,10 @@ class DeletionJournal(Document):
     status: Literal[
         "in_progress", "completed", "completed_with_warnings", "failed"
     ] = "in_progress"
+    # The authenticated caller who asked for the deletion (its identity
+    # string); the caller's own free-text note, if it sent one, beside it.
     requested_by: str | None = None
+    requested_note: str | None = None
     requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
     force: bool = False

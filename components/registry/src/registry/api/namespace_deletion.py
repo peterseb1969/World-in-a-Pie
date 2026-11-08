@@ -9,7 +9,7 @@ from typing import Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from wip_auth import UserIdentity
+from wip_auth import UserIdentity, get_auth_config, get_identity_string
 
 from ..models.namespace import LOCKED_DETAIL, Namespace, set_unless_locked
 from ..services.auth import require_admin_key, require_api_key
@@ -37,7 +37,14 @@ async def delete_namespace(
     prefix: str,
     dry_run: bool = Query(False, description="Return impact report without making changes"),
     force: bool = Query(False, description="Proceed despite inbound references"),
-    deleted_by: str = Query(None, description="User requesting deletion"),
+    deleted_by: str = Query(
+        None,
+        description=(
+            "A free-text note on who asked for the deletion, recorded in the "
+            "journal as requested_note. The journal's requested_by is always "
+            "the authenticated caller."
+        ),
+    ),
     api_key: str = Depends(require_admin_key),
 ):
     """Delete a namespace and all its data.
@@ -65,7 +72,8 @@ async def delete_namespace(
         journal = await _deletion_service.start_deletion(
             prefix=prefix,
             force=force,
-            requested_by=deleted_by,
+            requested_by=get_identity_string(),
+            requested_note=deleted_by,
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
@@ -96,15 +104,24 @@ async def deletion_status(
     prefix: str,
     identity: UserIdentity = Depends(require_api_key),
 ):
-    """Get the current journal state for an in-progress or completed deletion."""
+    """Get the current journal state for an in-progress or completed deletion.
+
+    Platform admins only — the callers who can start a deletion. Anyone else
+    gets 404, as for a namespace with no journal: the journal lists where the
+    namespace's data lived and what other namespaces referenced in it.
+    """
+    not_found = HTTPException(404, f"No deletion journal found for namespace '{prefix}'")
+    if not identity.has_any_group(get_auth_config().admin_groups):
+        raise not_found
     journal = await _deletion_service.get_deletion_status(prefix)
     if not journal:
-        raise HTTPException(404, f"No deletion journal found for namespace '{prefix}'")
+        raise not_found
 
     return {
         "namespace": journal.namespace,
         "status": journal.status,
         "requested_by": journal.requested_by,
+        "requested_note": journal.requested_note,
         "requested_at": journal.requested_at.isoformat() if journal.requested_at else None,
         "completed_at": journal.completed_at.isoformat() if journal.completed_at else None,
         "force": journal.force,

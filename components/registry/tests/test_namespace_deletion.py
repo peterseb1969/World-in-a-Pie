@@ -798,7 +798,8 @@ class TestAuditTrail:
 
     @pytest.mark.asyncio
     async def test_journal_records_requested_by(self, client: AsyncClient, auth_headers: dict):
-        """Journal records the user who requested deletion."""
+        """Journal records the authenticated caller who requested deletion;
+        the free-text deleted_by is kept beside it as a note."""
         await client.post(
             "/api/registry/namespaces",
             json={"prefix": "audit-user", "deletion_mode": "full"},
@@ -814,7 +815,8 @@ class TestAuditTrail:
             "/api/registry/namespaces/audit-user/deletion-status",
             headers=auth_headers,
         )
-        assert resp.json()["requested_by"] == "admin@test.com"
+        assert resp.json()["requested_by"] not in (None, "admin@test.com")
+        assert resp.json()["requested_note"] == "admin@test.com"
 
     @pytest.mark.asyncio
     async def test_journal_has_timestamps(self, client: AsyncClient, auth_headers: dict):

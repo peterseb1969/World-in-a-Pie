@@ -293,7 +293,7 @@ async def test_a_non_owner_without_admin_is_refused(client, auth_headers):
     other_key = await _key(client, auth_headers, other, [prefix], grant_permission="write")
     resp = await client.put(f"{NS}/{prefix}", json={}, headers=other_key)
     assert resp.status_code == 403
-    assert "requires admin" in resp.json()["detail"]
+    assert "requires a platform admin key, or admin on" in resp.json()["detail"]
 
 
 @pytest.mark.asyncio
