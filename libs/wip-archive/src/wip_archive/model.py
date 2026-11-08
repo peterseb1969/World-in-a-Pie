@@ -329,8 +329,14 @@ class ReferenceGraph:
 
     # (source template_id, target template_id) -> number of document references
     reference_edges: Counter = field(default_factory=Counter)
-    # (template_id, terminology_id) -> number of term references
+    # (template_id, terminology_id) -> number of term references, plus
+    # references through terminology-typed fields
     terminology_use: Counter = field(default_factory=Counter)
+    # (source template_id, target template_id) -> number of references through
+    # template-typed fields: a document naming a template, not one of its
+    # documents. Kept apart from reference_edges, which closures and islands
+    # walk as data: the target's definition is needed, not its documents.
+    template_use: Counter = field(default_factory=Counter)
     # term_id -> number of references
     term_use: Counter = field(default_factory=Counter)
     # file_id -> number of references
@@ -895,6 +901,7 @@ class ArchiveModel:
                 acc.pins[(template_id, template_version)] += 1
 
             self._document_reference_edges(row, doc_id, template_id, targets)
+            self._definition_reference_edges(row, template_id, targets)
             self._term_reference_edges(row, template_id, targets)
             self._file_reference_edges(row, doc_id, template_id, targets)
 
@@ -958,6 +965,28 @@ class ArchiveModel:
         if is_edge_type:
             for acc in targets:
                 acc.relationship_docs[template_id] += 1
+
+    def _definition_reference_edges(
+        self,
+        row: dict[str, Any],
+        template_id: str,
+        targets: list[ReferenceGraph],
+    ) -> None:
+        """References through template- and terminology-typed fields: the
+        document needs the target's definition, which must travel with it."""
+        for ref in row.get("references") or []:
+            kind = ref.get("reference_type")
+            resolved = ref.get("resolved") or {}
+            if kind == "template":
+                target = resolved.get("template_id")
+                if target and target in self.templates:
+                    for acc in targets:
+                        acc.template_use[(template_id, target)] += 1
+            elif kind == "terminology":
+                target = resolved.get("terminology_id")
+                if target and target in self.terminologies:
+                    for acc in targets:
+                        acc.terminology_use[(template_id, target)] += 1
 
     def _term_reference_edges(
         self,
@@ -1187,6 +1216,10 @@ class ArchiveModel:
                 if target and target not in seen:
                     queue.append(target)
             terminologies |= acc.terminologies_of(current)
+        # Templates the reached documents name through template-typed fields:
+        # their definitions are needed, their documents are not followed.
+        named = {dst for (src, dst) in acc.template_use if src in seen | template_ids}
+        seen |= named
         reached = seen | template_ids
         external = [
             e

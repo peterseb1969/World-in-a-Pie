@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `prune` and `filter` keep the templates and terminologies documents name; `wip-archive` 0.34.0
+
+A document can name a template or a terminology through a reference field
+whose `reference_type` is `template` or `terminology`. Archive transforms did
+not see those references:
+
+- `prune` could remove a template no document was pinned to but a document
+  named, and a terminology only a pruned template declared but a document
+  named, while the documents travelled;
+- `filter` carried a kept document's pinned template and its terms'
+  terminologies, but not a template or terminology the document named.
+
+Now both follow those references: a named template is used (prune) or
+carried (filter), with everything its schema needs, and a named terminology
+is kept whole. `inspect`'s data closure lists them too. They are definitions,
+so `filter --boundary strict` carries them rather than refusing. Re-run
+`prune` or `filter` on an archive cut with an older version if its documents
+use such fields; `verify` does not detect the cut (it checks stored term
+references, not template- or terminology-typed ones).
+
 ### Query filters can't carry MongoDB operators; MongoDB runs without server-side JavaScript
 
 `POST /api/document-store/documents/query` (and the MCP `query_documents` /

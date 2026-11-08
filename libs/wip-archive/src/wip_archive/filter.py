@@ -30,7 +30,9 @@ not keep:
 template a kept document pins travels, with all its versions, everything it
 declares (parents, reference targets, edge-type endpoints) transitively, and
 every terminology those templates declare or the kept documents' terms
-belong to, each whole. Terms travel with their terminology, term relations
+belong to, each whole. Templates and terminologies a kept document names
+through template- or terminology-typed reference fields travel as
+definitions too: the boundary policy covers documents only. Terms travel with their terminology, term relations
 with their source term, files with the kept documents that reference them.
 
 With ``definitions_only`` no document or file travels: the definitions of
@@ -227,8 +229,9 @@ def _document_graph(
 def _kept_document_dependencies(
     reader: ArchiveReader, model: ArchiveModel, plan: FilterPlan
 ) -> tuple[set[str], set[str]]:
-    """A pass over the kept documents: the templates they pin, the
-    terminologies of the terms they hold, and (into the plan) their files."""
+    """A pass over the kept documents: the templates they pin or name, the
+    terminologies of the terms they hold or that they name, and (into the
+    plan) their files."""
     pinned: set[str] = set()
     terminologies: set[str] = set()
     for ns in model.namespaces:
@@ -241,6 +244,16 @@ def _kept_document_dependencies(
                 term = model.terms.get(tref.get("term_id") or "")
                 if term is not None:
                     terminologies.add(term.terminology_id)
+            for ref in row.get("references") or ():
+                resolved = ref.get("resolved") or {}
+                if ref.get("reference_type") == "template":
+                    target = resolved.get("template_id")
+                    if isinstance(target, str) and target in model.templates:
+                        pinned.add(target)
+                elif ref.get("reference_type") == "terminology":
+                    target = resolved.get("terminology_id")
+                    if isinstance(target, str) and target in model.terminologies:
+                        terminologies.add(target)
             for fref in row.get("file_references") or ():
                 file_id = fref.get("file_id")
                 if isinstance(file_id, str) and file_id in model.files:

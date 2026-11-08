@@ -5,17 +5,18 @@ only they used.
 extraction one. Nothing that has data is touched: every document and file
 travels.
 
-**A template is used** when documents are pinned to it, or when the schema
-of a template with documents needs it: as a parent, a reference target or an
-edge-type endpoint, transitively (``ArchiveModel.schema_closure``). Every
+**A template is used** when documents are pinned to it, when a document
+names it through a template-typed reference field, or when the schema of
+such a template needs it: as a parent, a reference target or an edge-type
+endpoint, transitively (``ArchiveModel.schema_closure``). Every
 other template is pruned, all its versions. Computing usage from the
 templates that hold data, rather than counting each template's declared
 in-degree, also removes unused templates that only declare each other.
 
 **A terminology is pruned** only when a pruned template declared it and
 nothing kept uses it: no kept template declares it, no kept document holds
-one of its terms, and no term relation from a kept terminology points into
-it. A terminology no template ever declared is kept: an app may use it
+one of its terms or names it through a terminology-typed reference field,
+and no term relation from a kept terminology points into it. A terminology no template ever declared is kept: an app may use it
 through the validation API alone, which an archive cannot see.
 
 A pruned entity is referenced by nothing that travels, so it leaves no
@@ -62,11 +63,16 @@ class PrunePlan:
 
 def plan_prune(reader: ArchiveReader, model: ArchiveModel) -> PrunePlan:
     with_data = {tid for tid, tpl in model.templates.items() if tpl.document_ids}
-    closure = model.schema_closure(with_data)
-    used_templates = with_data | {t for t in closure.template_ids if t in model.templates}
+    # Every document travels, so every template a document names is used.
+    named_by_documents = {dst for (_src, dst) in model.history.template_use}
+    roots = with_data | named_by_documents
+    closure = model.schema_closure(roots)
+    used_templates = roots | {t for t in closure.template_ids if t in model.templates}
     pruned_templates = set(model.templates) - used_templates
 
     used_terminologies = set(closure.terminology_ids)
+    # Terminologies documents use: through their terms, or named outright.
+    used_terminologies |= {tl for (_tpl, tl) in model.history.terminology_use}
     for term_id, count in model.history.term_use.items():
         term = model.terms.get(term_id)
         if count and term is not None:
