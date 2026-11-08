@@ -153,9 +153,16 @@ class FileService:
         # If Registry already had this checksum in this namespace, the File
         # document should already exist — return it without re-uploading or
         # re-inserting. This makes upload_file idempotent for identical bytes.
+        # A soft-deleted file is the exception: re-uploading its bytes brings
+        # it back under the same file_id, as re-posting a deleted document's
+        # identity does. Inactive means retired, not gone.
         if already_exists:
             existing = await File.find_one({"file_id": file_id})
             if existing is not None:
+                if existing.status == FileStatus.INACTIVE:
+                    return await self._revive_from_upload(
+                        existing, content, metadata, allowed_templates, actor,
+                    )
                 return self._to_response(existing)
             # Fallback: Registry has the entry but Mongo does not (e.g. after
             # a partial failure or data loss). Fall through and re-create the
@@ -392,6 +399,100 @@ class FileService:
         )
 
         return True
+
+    @staticmethod
+    def _live_status(file_doc: File) -> FileStatus:
+        """The status a revived file takes: ACTIVE while documents still
+        reference it (a force-delete keeps the count), ORPHAN otherwise —
+        the same rule update_reference_count applies to a live file."""
+        return FileStatus.ACTIVE if file_doc.reference_count > 0 else FileStatus.ORPHAN
+
+    async def _revive_from_upload(
+        self,
+        file_doc: File,
+        content: bytes,
+        metadata: FileUploadMetadata | None,
+        allowed_templates: list[str] | None,
+        actor: str | None,
+    ) -> FileResponse:
+        """Bring a soft-deleted file back from a re-upload of its bytes.
+
+        The bytes are written again: a soft-deleted file's object is not
+        watched by the integrity scan, so it may be gone, and the caller has
+        handed us exactly the bytes the file is. Metadata fields the upload
+        sends replace the stored ones; fields it omits keep their values.
+        """
+        try:
+            storage = get_file_storage_client()
+            await storage.upload(
+                storage_key=file_doc.storage_key,
+                content=content,
+                content_type=file_doc.content_type,
+                metadata={
+                    "filename": file_doc.filename,
+                    "checksum": file_doc.checksum,
+                    "uploaded_by": file_doc.uploaded_by or "unknown",
+                },
+            )
+        except FileStorageError as e:
+            raise FileServiceError(f"Failed to upload file to storage: {e}") from e
+
+        if metadata is not None:
+            if metadata.description is not None:
+                file_doc.metadata.description = metadata.description
+            if metadata.tags:
+                file_doc.metadata.tags = metadata.tags
+            if metadata.category is not None:
+                file_doc.metadata.category = metadata.category
+            if metadata.custom:
+                file_doc.metadata.custom.update(metadata.custom)
+            if metadata.allowed_templates is not None:
+                file_doc.allowed_templates = allowed_templates
+
+        await self._mark_live(file_doc, actor)
+        return self._to_response(file_doc)
+
+    async def _mark_live(self, file_doc: File, actor: str | None) -> None:
+        file_doc.status = self._live_status(file_doc)
+        file_doc.updated_at = datetime.now(UTC)
+        file_doc.updated_by = actor
+        await file_doc.save()
+        await publish_file_event(
+            EventType.FILE_UPDATED,
+            self._file_to_event_payload(file_doc),
+            changed_by=actor,
+        )
+
+    async def reactivate_file(self, file_id: str) -> tuple[File, bool] | None:
+        """Bring a soft-deleted file back without its bytes.
+
+        Returns (file, reactivated) — reactivated is False for a file that was
+        not inactive — or None when there is no such file. Refuses
+        (invalid_state, rule storage_missing) when the object store no longer
+        holds the file's bytes: a live record whose download fails would be
+        worse than the inactive one. Re-uploading the bytes revives it then.
+        """
+        file_doc = await File.find_one({"file_id": file_id})
+        if not file_doc:
+            return None
+        if file_doc.status != FileStatus.INACTIVE:
+            return file_doc, False
+
+        if not is_file_storage_enabled():
+            raise FileServiceError("File storage is not enabled", "invalid_state", rule="storage_disabled")
+        try:
+            present = await get_file_storage_client().exists(file_doc.storage_key)
+        except FileStorageError as e:
+            raise FileServiceError(f"Could not check the file's bytes in storage: {e}") from e
+        if not present:
+            raise FileServiceError(
+                "The file's bytes are no longer in storage — upload the same bytes "
+                "again to bring the file back",
+                "invalid_state", rule="storage_missing",
+            )
+
+        await self._mark_live(file_doc, get_identity_string())
+        return file_doc, True
 
     async def hard_delete_file(self, file_id: str) -> bool:
         """

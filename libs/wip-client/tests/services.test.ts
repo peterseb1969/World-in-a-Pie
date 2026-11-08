@@ -1869,6 +1869,41 @@ describe('Service classes via createWipClient', () => {
       expect(body).toEqual([{ id: 'F-001' }, { id: 'F-002' }])
     })
 
+    it('reactivateFile sends bulk POST to /reactivate', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'reactivated', id: 'F-001' }],
+        total: 1,
+        succeeded: 1,
+        failed: 0,
+      })
+
+      const result = await client.files.reactivateFile('F-001')
+
+      expect(result.status).toBe('reactivated')
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(url).toContain('/api/document-store/files/reactivate')
+      expect(options.method).toBe('POST')
+      expect(JSON.parse(options.body)).toEqual([{ id: 'F-001' }])
+    })
+
+    it('reactivateFiles sends every id', async () => {
+      mockJsonResponse({
+        results: [
+          { index: 0, status: 'reactivated', id: 'F-001' },
+          { index: 1, status: 'unchanged', id: 'F-002' },
+        ],
+        total: 2,
+        succeeded: 2,
+        failed: 0,
+      })
+
+      const result = await client.files.reactivateFiles(['F-001', 'F-002'])
+
+      expect(result.succeeded).toBe(2)
+      const [, options] = fetchMock.mock.calls[0]
+      expect(JSON.parse(options.body)).toEqual([{ id: 'F-001' }, { id: 'F-002' }])
+    })
+
     it('hardDeleteFile sends DELETE to /hard endpoint', async () => {
       mockJsonResponse(undefined)
 

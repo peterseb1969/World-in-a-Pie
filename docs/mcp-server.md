@@ -382,7 +382,7 @@ Templates are the schema for entity documents. **Edge types** — schemas for re
 | `search(query, types?)` | Unified full-text search across all entity types (via reporting-sync / PostgreSQL). |
 | `search_registry(query)` | Search Registry entries by ID or composite key values. |
 
-### Files (6 tools)
+### Files (7 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -390,6 +390,7 @@ Templates are the schema for entity documents. **Edge types** — schemas for re
 | `get_file_metadata(id)` | Get file metadata (not content). |
 | `upload_file(file_path, namespace?, description?, tags?, category?)` | Upload a file from a local path. Auto-detects content type. Tags are comma-separated. |
 | `delete_file(file_id, force?)` | Soft-delete a file. Blocked if referenced by documents unless `force=true`. |
+| `reactivate_file(file_id)` | Bring a soft-deleted file back under the same id (`orphan`, or `active` if still referenced). Refused with `storage_missing` when the bytes are gone — re-upload them instead. |
 | `hard_delete_file(file_id)` | Permanently remove from object storage. File must be soft-deleted first. Irreversible. |
 | `get_file_documents(file_id)` | Find which documents reference a file — document IDs, templates, and field paths. |
 

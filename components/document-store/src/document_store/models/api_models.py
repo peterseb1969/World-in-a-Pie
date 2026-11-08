@@ -521,6 +521,12 @@ class DeleteItem(StrictModel):
     updated_by: str | None = Field(default=None, description="User performing deletion")
 
 
+class ReactivateFileItem(StrictModel):
+    """Item in a bulk file-reactivate request."""
+
+    id: str = Field(..., description="ID of the soft-deleted file to bring back (canonical id or synonym)")
+
+
 class PatchDocumentItem(StrictModel):
     """Item in a bulk PATCH /documents request.
 

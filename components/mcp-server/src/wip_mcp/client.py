@@ -1504,6 +1504,15 @@ class WipClient:
         )
         return self._unwrap_single(resp)
 
+    async def reactivate_file(self, file_id: str, namespace: str | None = None) -> dict:
+        resp = await self._post(
+            self.document_store_url,
+            "/api/document-store/files/reactivate",
+            json=[{"id": file_id}],
+            namespace=namespace or self.default_namespace,
+        )
+        return self._unwrap_single(resp)
+
     async def hard_delete_file(self, file_id: str) -> dict:
         return await self._delete(
             self.document_store_url,

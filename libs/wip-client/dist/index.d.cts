@@ -2464,6 +2464,14 @@ declare class FileStoreService extends BaseService {
     updateMetadata(fileId: string, data: UpdateFileMetadataRequest): Promise<BulkResultItem>;
     deleteFile(fileId: string): Promise<BulkResultItem>;
     deleteFiles(fileIds: string[]): Promise<BulkResponse>;
+    /**
+     * Bring a soft-deleted file back under the same id. Result status is
+     * `reactivated`, or `unchanged` for a file that was not deleted; refused
+     * with `invalid_state` (details.rule `storage_missing`) when the bytes are
+     * gone from storage — upload them again instead.
+     */
+    reactivateFile(fileId: string): Promise<BulkResultItem>;
+    reactivateFiles(fileIds: string[]): Promise<BulkResponse>;
     hardDeleteFile(fileId: string): Promise<void>;
     listOrphans(params?: {
         older_than_hours?: number;

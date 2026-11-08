@@ -69,6 +69,20 @@ export class FileStoreService extends BaseService {
     return this.bulkWrite('', fileIds.map(id => ({ id })), 'DELETE')
   }
 
+  /**
+   * Bring a soft-deleted file back under the same id. Result status is
+   * `reactivated`, or `unchanged` for a file that was not deleted; refused
+   * with `invalid_state` (details.rule `storage_missing`) when the bytes are
+   * gone from storage — upload them again instead.
+   */
+  async reactivateFile(fileId: string): Promise<BulkResultItem> {
+    return this.bulkWriteOne('/reactivate', { id: fileId }, 'POST')
+  }
+
+  async reactivateFiles(fileIds: string[]): Promise<BulkResponse> {
+    return this.bulkWrite('/reactivate', fileIds.map(id => ({ id })), 'POST')
+  }
+
   async hardDeleteFile(fileId: string): Promise<void> {
     return this.del(`/${fileId}/hard`)
   }

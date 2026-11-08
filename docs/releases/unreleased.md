@@ -7,6 +7,31 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A soft-deleted file can come back (@wip/client 0.96.0)
+
+Soft-deleting a file kept its record and its bytes, but nothing could return
+it to service: uploading the same bytes again answered HTTP 200 with the
+inactive record (the checksum identity is never released), and no route
+changed a file's status out of `inactive`. The only way to use those bytes
+again was to change one, forking the identity. Now:
+
+- **An upload of a soft-deleted file's bytes revives it** under the same
+  `file_id`. The bytes are written to the object store again (a soft-deleted
+  file's object is not watched by the integrity scan), the metadata fields the
+  upload sends replace the stored ones (omitted fields keep their values), and
+  `file.updated` is published. An upload of a live file's bytes is unchanged:
+  the existing record, its metadata untouched.
+- **`POST /api/document-store/files/reactivate`** (bulk, `[{id}]`) revives
+  files without their bytes. Per item: `reactivated`; `unchanged` for a file
+  that was not inactive; `not_found` (no such file, or a namespace the caller
+  cannot read); `forbidden` (read but not write); `invalid_state` with
+  `details.rule: storage_missing` when the object store no longer holds the
+  bytes. One item's refusal never stops the rest of the batch.
+- A revived file is `active` while documents still reference it (a file
+  deleted with `force=true` keeps its reference count), `orphan` otherwise.
+- New MCP tool `reactivate_file`; `@wip/client` `files.reactivateFile` /
+  `files.reactivateFiles`.
+
 ### `PATCH /files` and `DELETE /files` report a namespace refusal per item
 
 If one file in a batch was in a namespace the caller could not write, the

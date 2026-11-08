@@ -4093,6 +4093,28 @@ async def delete_file(file_id: str, force: bool = False) -> str:
 
 
 @mcp.tool()
+async def reactivate_file(file_id: str) -> str:
+    """Bring a soft-deleted file back into service under the same file_id.
+
+    A soft-deleted file is retired, not gone: its record and bytes are kept.
+    It comes back as status "orphan", or "active" when documents still
+    reference it. Result status is "reactivated", or "unchanged" for a file
+    that was not deleted. Refused (error_code invalid_state, rule
+    storage_missing) when the object store no longer holds the bytes —
+    upload the same bytes again instead: an upload of a soft-deleted file's
+    bytes revives it too.
+
+    Args:
+        file_id: File ID (or synonym) of the soft-deleted file.
+    """
+    try:
+        data = await get_client().reactivate_file(file_id)
+        return json.dumps(data, indent=2, default=str)
+    except Exception as e:
+        return _error(e)
+
+
+@mcp.tool()
 async def hard_delete_file(file_id: str) -> str:
     """Permanently delete a file from object storage.
 
@@ -5224,6 +5246,7 @@ WRITE_TOOLS = frozenset({
     # Files
     "upload_file",
     "delete_file",
+    "reactivate_file",
     "hard_delete_file",
     # Import
     "import_terminology",

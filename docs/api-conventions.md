@@ -690,6 +690,8 @@ Data is never physically deleted. All delete operations set `status: "inactive"`
 
 **Exception: Files.** Binary files stored in the object store (Garage) support a two-step purge: soft-delete (`DELETE /files` → sets status to `inactive`) followed by hard-delete (`DELETE /files/{id}/hard` → permanently removes from storage and database). Hard-delete only works on files already in `inactive` status. This exists because binary storage has real cost, unlike soft-deleted MongoDB documents which are negligible.
 
+**Files come back two ways.** `POST /files/reactivate` (bulk, `[{id}]`) returns soft-deleted files to service under the same `file_id`: per item `reactivated`, or `unchanged` for a file that was not inactive; `invalid_state` with `details.rule: storage_missing` when the object store no longer holds the bytes. Uploading a soft-deleted file's bytes again (`POST /files`) revives it too — the bytes are written again and the metadata fields the upload sends replace the stored ones. A revived file is `active` while documents still reference it (a force-delete keeps the count), `orphan` otherwise.
+
 ---
 
 ## What is NOT Bulk

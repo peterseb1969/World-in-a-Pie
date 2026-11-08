@@ -28,6 +28,7 @@ from ..models.api_models import (
     FileListResponse,
     FileResponse,
     FileUploadMetadata,
+    ReactivateFileItem,
     StrictModel,
     UpdateFileItem,
 )
@@ -449,6 +450,72 @@ async def delete_files(
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found", error_code="not_found"))
             else:
                 results.append(BulkResultItem(index=i, status="deleted", id=item.id))
+        except FileServiceError as e:
+            results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
+    await asyncio.sleep(get_throttle_delay())
+    return BulkResponse(
+        results=results, total=len(items),
+        succeeded=sum(1 for r in results if r.status != "error"),
+        failed=sum(1 for r in results if r.status == "error"),
+    )
+
+
+@router.post(
+    "/reactivate",
+    response_model=BulkResponse,
+    summary="Reactivate soft-deleted files",
+    description="""
+Bring soft-deleted files back without re-uploading them. A soft-deleted file is
+retired, not gone: its record and its bytes are kept, and this returns it to
+service under the same file_id.
+
+Per item:
+- `reactivated` — the file was inactive and is live again: `orphan`, or `active`
+  when documents still reference it (a file deleted with force=true keeps its
+  reference count).
+- `unchanged` — the file was not inactive.
+- error `not_found` — no such file, or one in a namespace the caller cannot read.
+- error `forbidden` — the caller can read the file's namespace but not write it.
+- error `invalid_state`, details.rule `storage_missing` — the object store no
+  longer holds the file's bytes. Upload the same bytes again: an upload of a
+  soft-deleted file's bytes revives it too, under the same file_id.
+    """,
+    dependencies=[Depends(require_file_storage)]
+)
+async def reactivate_files(
+    items: list[ReactivateFileItem] = Body(...),
+    namespace: str | None = Query(None, description="Namespace for synonym resolution"),
+    identity: UserIdentity = Depends(require_api_key)
+):
+    """Reactivate one or more soft-deleted files."""
+    await resolve_bulk_ids(
+        items, "id", "file", namespace=namespace, bypass_cache=True
+    )
+
+    from ..models.file import File as FileModel
+    service = get_file_service()
+    file_docs = [await FileModel.find_one({"file_id": item.id}) for item in items]
+    refusals = await _write_refusals(
+        identity, {doc.namespace for doc in file_docs if doc}
+    )
+    results = []
+    for i, (item, file_doc) in enumerate(zip(items, file_docs, strict=True)):
+        try:
+            if not file_doc:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found", error_code="not_found"))
+                continue
+            if file_doc.namespace in refusals:
+                error, code = refusals[file_doc.namespace]
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error=error, error_code=code))
+                continue
+            outcome = await service.reactivate_file(item.id)
+            if outcome is None:
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found", error_code="not_found"))
+                continue
+            _doc, reactivated = outcome
+            results.append(BulkResultItem(
+                index=i, status="reactivated" if reactivated else "unchanged", id=item.id,
+            ))
         except FileServiceError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
