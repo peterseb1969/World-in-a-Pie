@@ -674,80 +674,21 @@ async def restore_archive(
     overwrite = mode != "upsert"
     same_issuer = archive.source.oidc_issuer == current_issuer()
     user_grants = same_issuer or include_user_grants
-    plan = (
-        await _plan_mirror(archive, config_key_names, user_grants, caller_key)
-        if mode == "mirror" else None
+    plan, refused = await _plan_and_refusals(
+        archive, mode, config_key_names, user_grants, caller_key,
     )
-    refused = list(plan.refused) if plan is not None else []
-    if overwrite:
-        refused += await _caller_replacement(archive, caller_key, config_key_names)
-    if refused and not dry_run:
-        raise RestoreRefused(
-            "The restore would " + "; ".join(f"{r.reason} ({r.id})" for r in refused)
-            + ". Nothing was written."
-        )
-    if plan is not None and not dry_run and expect is not None and expect != plan.digest:
-        raise PlanChanged(
-            "The mirror plan changed since the dry run that returned the expected "
-            "digest. Nothing was written; run the dry run again and review it."
-        )
+    _refuse_unsafe_apply(refused, plan, dry_run=dry_run, expect=expect)
 
-    adopt: str | None = None
-    salt_note: str | None = None
-    if archive.source.salt_fingerprint != salt_fingerprint():
-        archive_salt = archive.source.salt
-        if archive_salt is None:
-            # An archive made before archives carried the salt names it only by
-            # fingerprint. Under the configured salt (every stack's default
-            # before the Registry kept its own) the salt is known all the same.
-            configured = get_auth_config().api_key_hash_salt
-            if archive.source.salt_fingerprint == salt_fingerprint(configured):
-                archive_salt = configured
-        if archive_salt is None:
-            raise SaltMismatch(
-                "The archive's key hashes were made under a different runtime-key salt, "
-                "and the archive does not carry the salt itself, so it cannot be "
-                "adopted; restored keys could never authenticate here."
-            )
-        fresh = await is_fresh() if plan is None else await _fresh_after(plan, archive, config_key_names)
-        if refused:
-            # A dry run only (an apply was refused above): report the refusal,
-            # which the operator must resolve first, rather than a salt error
-            # it may be the cause of.
-            fresh = False
-            salt_note = (
-                "The archive was made under another runtime-key salt. Whether this "
-                "stack can adopt it is decided once the refusals below are resolved."
-            )
-        elif not fresh:
-            raise SaltMismatch(
-                "The archive's key hashes were made under a different runtime-key salt, "
-                "and this stack already holds API keys of its own (not managed by its "
-                "key file), which adopting the archive's salt would invalidate. Restore "
-                "onto a fresh stack, or revoke this stack's own keys first."
-            )
-        else:
-            adopt = archive_salt
+    adopt, salt_note = (
+        await _salt_to_adopt(archive, plan, refused, config_key_names)
+        if archive.source.salt_fingerprint != salt_fingerprint() else (None, None)
+    )
 
-    report = SystemRestoreReport(dry_run=dry_run, mode=mode, salt_adopted=adopt is not None)
-    report.refused = refused
+    report = _restore_report(archive, plan, refused, dry_run=dry_run, mode=mode, adopt=adopt)
     if salt_note:
         report.warnings.append(salt_note)
-    if plan is not None:
-        report.plan_digest = plan.digest
-        report.api_keys.deleted = sorted(k.name for k in plan.keys)
-        report.grants.deleted = sorted(plan.grant_ids)
-        report.reservations.deleted = sorted(r.prefix for r in plan.reservations)
-        report.attachments.deactivated = sorted(a.name for a in plan.attachments)
     if adopt:
-        report.warnings.append(
-            "The archive was made under another runtime-key salt and this stack holds "
-            "no API keys of its own: "
-            + ("its salt would be adopted, and the install's managed keys re-hashed."
-               if dry_run else
-               "its salt is adopted, and the install's managed keys are re-hashed. "
-               "Services verify under it from their next key sync.")
-        )
+        report.warnings.append(_salt_adopted_warning(dry_run))
         if not dry_run:
             await adopt_salt(adopt)
     if await _holds_own_state():
@@ -756,42 +697,71 @@ async def restore_archive(
             "Restoring brings back the archive's state, including access revoked "
             "since the backup was taken. Review the lists below before applying."
         )
-    if archive.source.scope is not None:
-        scope = archive.source.scope
-        report.warnings.append(
-            f"A scoped archive: namespaces {scope.namespaces or '(none)'}, attachments "
-            f"{scope.attachments or '(none)'}."
-            + (" A mirror removes only within this scope." if mode == "mirror" else "")
-        )
-        carried = {k.name for k in archive.api_keys}
-        uncarried = sorted({
-            _grant_id(g.namespace, g.subject_type, g.subject) for g in archive.grants
-            if g.subject_type == "api_key" and g.subject.removeprefix("apikey:") not in carried
-        })
-        if uncarried:
-            report.warnings.append(
-                "Grants to keys the archive does not carry (they hold a namespace outside "
-                "the scope, or none): " + ", ".join(uncarried) + ". Each is written as "
-                "any grant: effective where the key exists here, otherwise it gives nothing."
-            )
-        orphan_owned = sorted(
-            f"{r.prefix} (owner {r.app})" for r in archive.reservations
-            if r.managed_by is None and r.app not in carried
-        )
-        if orphan_owned:
-            report.warnings.append(
-                "Reservations owned by keys the archive does not carry: "
-                + ", ".join(orphan_owned) + ". Where the owner key does not exist here, "
-                "only a platform admin can create such a namespace."
-            )
+    report.warnings += _scope_warnings(archive, mode)
     if not same_issuer:
-        report.warnings.append(
-            f"The archive was made under OIDC issuer {archive.source.oidc_issuer!r}, "
-            f"this instance uses {current_issuer()!r}: user grants are "
-            + ("restored (include_user_grants)." if include_user_grants
-               else "skipped; pass include_user_grants to restore them.")
-        )
+        report.warnings.append(_issuer_warning(archive, include_user_grants))
 
+    written_keys, removed_hashes = await _run_restore_steps(
+        archive, report, plan, dry_run=dry_run, overwrite=overwrite,
+        user_grants=user_grants, config_key_names=config_key_names, restored_by=restored_by,
+    )
+    return report, written_keys, removed_hashes
+
+
+async def _plan_and_refusals(
+    archive: SystemArchive,
+    mode: RestoreMode,
+    config_key_names: frozenset[str],
+    user_grants: bool,
+    caller_key: str | None,
+) -> tuple["MirrorPlan | None", list[SkippedRecord]]:
+    """A mirror's plan (None for other modes), and the records the restore
+    may not write: the plan's refusals, and in an overwriting mode a
+    replacement of the caller's own key."""
+    plan = (
+        await _plan_mirror(archive, config_key_names, user_grants, caller_key)
+        if mode == "mirror" else None
+    )
+    refused = list(plan.refused) if plan is not None else []
+    if mode != "upsert":
+        refused += await _caller_replacement(archive, caller_key, config_key_names)
+    return plan, refused
+
+
+def _salt_adopted_warning(dry_run: bool) -> str:
+    return (
+        "The archive was made under another runtime-key salt and this stack holds "
+        "no API keys of its own: "
+        + ("its salt would be adopted, and the install's managed keys re-hashed."
+           if dry_run else
+           "its salt is adopted, and the install's managed keys are re-hashed. "
+           "Services verify under it from their next key sync.")
+    )
+
+
+def _issuer_warning(archive: SystemArchive, include_user_grants: bool) -> str:
+    return (
+        f"The archive was made under OIDC issuer {archive.source.oidc_issuer!r}, "
+        f"this instance uses {current_issuer()!r}: user grants are "
+        + ("restored (include_user_grants)." if include_user_grants
+           else "skipped; pass include_user_grants to restore them.")
+    )
+
+
+async def _run_restore_steps(
+    archive: SystemArchive,
+    report: SystemRestoreReport,
+    plan: "MirrorPlan | None",
+    *,
+    dry_run: bool,
+    overwrite: bool,
+    user_grants: bool,
+    config_key_names: frozenset[str],
+    restored_by: str,
+) -> tuple[list[tuple[str | None, StoredAPIKey]], list[str]]:
+    """Restore (or report) reservations, keys, grants and attachments in
+    that order, then apply a mirror's removals. Returns the keys written
+    and the hashes of the keys the mirror removed."""
     planned = await _restore_reservations(archive, report, dry_run, overwrite, restored_by)
     written_keys = await _restore_keys(archive, report, dry_run, overwrite, config_key_names)
     removed_keys = {k.name for k in plan.keys} if plan is not None else set()
@@ -800,7 +770,146 @@ async def restore_archive(
     removed_hashes: list[str] = []
     if plan is not None and not dry_run:
         removed_hashes = await _apply_mirror(plan, restored_by)
-    return report, written_keys, removed_hashes
+    return written_keys, removed_hashes
+
+
+def _refuse_unsafe_apply(
+    refused: list[SkippedRecord],
+    plan: "MirrorPlan | None",
+    *,
+    dry_run: bool,
+    expect: str | None,
+) -> None:
+    """Refuse an apply that the dry run would have flagged: a record the
+    restore may not write, or a mirror whose plan changed since the dry run
+    that returned ``expect``. Nothing is written either way."""
+    if dry_run:
+        return
+    if refused:
+        raise RestoreRefused(
+            "The restore would " + "; ".join(f"{r.reason} ({r.id})" for r in refused)
+            + ". Nothing was written."
+        )
+    if plan is not None and expect is not None and expect != plan.digest:
+        raise PlanChanged(
+            "The mirror plan changed since the dry run that returned the expected "
+            "digest. Nothing was written; run the dry run again and review it."
+        )
+
+
+async def _salt_to_adopt(
+    archive: SystemArchive,
+    plan: "MirrorPlan | None",
+    refused: list[SkippedRecord],
+    config_key_names: frozenset[str],
+) -> tuple[str | None, str | None]:
+    """(the archive's salt to adopt, a note for the report) for an archive
+    made under another runtime-key salt.
+
+    The salt can be adopted only when it is known (carried by the archive,
+    or the configured one it names by fingerprint) and this stack holds no
+    API keys of its own that adopting it would invalidate; otherwise the
+    restore cannot go on (SaltMismatch). With refusals pending (a dry run
+    only), the decision waits for them and the note says so.
+    """
+    archive_salt = archive.source.salt
+    if archive_salt is None:
+        # An archive made before archives carried the salt names it only by
+        # fingerprint. Under the configured salt (every stack's default
+        # before the Registry kept its own) the salt is known all the same.
+        configured = get_auth_config().api_key_hash_salt
+        if archive.source.salt_fingerprint == salt_fingerprint(configured):
+            archive_salt = configured
+    if archive_salt is None:
+        raise SaltMismatch(
+            "The archive's key hashes were made under a different runtime-key salt, "
+            "and the archive does not carry the salt itself, so it cannot be "
+            "adopted; restored keys could never authenticate here."
+        )
+    fresh = await is_fresh() if plan is None else await _fresh_after(plan, archive, config_key_names)
+    if refused:
+        # A dry run only (an apply was refused above): report the refusal,
+        # which the operator must resolve first, rather than a salt error
+        # it may be the cause of.
+        return None, (
+            "The archive was made under another runtime-key salt. Whether this "
+            "stack can adopt it is decided once the refusals below are resolved."
+        )
+    if not fresh:
+        raise SaltMismatch(
+            "The archive's key hashes were made under a different runtime-key salt, "
+            "and this stack already holds API keys of its own (not managed by its "
+            "key file), which adopting the archive's salt would invalidate. Restore "
+            "onto a fresh stack, or revoke this stack's own keys first."
+        )
+    return archive_salt, None
+
+
+def _restore_report(
+    archive: SystemArchive,
+    plan: "MirrorPlan | None",
+    refused: list[SkippedRecord],
+    *,
+    dry_run: bool,
+    mode: RestoreMode,
+    adopt: str | None,
+) -> SystemRestoreReport:
+    """The report a restore starts from: its refusals and, for a mirror, the
+    records the plan removes and the plan's digest."""
+    report = SystemRestoreReport(dry_run=dry_run, mode=mode, salt_adopted=adopt is not None)
+    report.refused = refused
+    if plan is not None:
+        report.plan_digest = plan.digest
+        report.api_keys.deleted = sorted(k.name for k in plan.keys)
+        report.grants.deleted = sorted(plan.grant_ids)
+        report.reservations.deleted = sorted(r.prefix for r in plan.reservations)
+        report.attachments.deactivated = sorted(a.name for a in plan.attachments)
+    return report
+
+
+def _scope_warnings(archive: SystemArchive, mode: RestoreMode) -> list[str]:
+    """What a scoped archive's restore should tell the operator: its scope,
+    grants to keys it does not carry, and reservations owned by such keys."""
+    scope = archive.source.scope
+    if scope is None:
+        return []
+    warnings = [
+        f"A scoped archive: namespaces {scope.namespaces or '(none)'}, attachments "
+        f"{scope.attachments or '(none)'}."
+        + (" A mirror removes only within this scope." if mode == "mirror" else "")
+    ]
+    carried = {k.name for k in archive.api_keys}
+    uncarried = _grants_to_uncarried_keys(archive, carried)
+    if uncarried:
+        warnings.append(
+            "Grants to keys the archive does not carry (they hold a namespace outside "
+            "the scope, or none): " + ", ".join(uncarried) + ". Each is written as "
+            "any grant: effective where the key exists here, otherwise it gives nothing."
+        )
+    orphan_owned = _reservations_of_uncarried_keys(archive, carried)
+    if orphan_owned:
+        warnings.append(
+            "Reservations owned by keys the archive does not carry: "
+            + ", ".join(orphan_owned) + ". Where the owner key does not exist here, "
+            "only a platform admin can create such a namespace."
+        )
+    return warnings
+
+
+def _grants_to_uncarried_keys(archive: SystemArchive, carried: set[str]) -> list[str]:
+    """The archive's grants to API keys it does not carry, as grant ids."""
+    return sorted({
+        _grant_id(g.namespace, g.subject_type, g.subject) for g in archive.grants
+        if g.subject_type == "api_key" and g.subject.removeprefix("apikey:") not in carried
+    })
+
+
+def _reservations_of_uncarried_keys(archive: SystemArchive, carried: set[str]) -> list[str]:
+    """The archive's key-owned reservations whose owner key it does not carry."""
+    return sorted(
+        f"{r.prefix} (owner {r.app})" for r in archive.reservations
+        if r.managed_by is None and r.app not in carried
+    )
 
 
 # --- Mirror ---
