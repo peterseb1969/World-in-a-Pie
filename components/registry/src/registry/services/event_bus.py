@@ -8,6 +8,9 @@ those caches expire on their TTL.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
+from wip_auth.cache_events import announce_entries_changed
 from wip_auth.events import EventBus
 
 _bus: EventBus = EventBus(None, name="registry")
@@ -27,3 +30,9 @@ async def stop_event_bus() -> None:
 
 def get_event_bus() -> EventBus:
     return _bus
+
+
+async def entries_changed(entry_ids: Iterable[str]) -> None:
+    """Tell other services' caches that these entries lost names or are gone
+    (deleted, synonyms removed or released, merged into another entry)."""
+    await announce_entries_changed(_bus, entry_ids)

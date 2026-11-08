@@ -18,6 +18,14 @@ subscribed drops what it cached:
 * whatever a service registered with ``on_namespace_deleted``, for its own
   namespace-keyed caches.
 
+When single entities lose names, the Registry publishes
+``ENTRIES_CHANGED_SUBJECT`` with their ids: an entry hard- or soft-deleted, a
+synonym removed or released when its entity was retired, an entry merged into
+another (its names, and its id, now resolve to the survivor). Every process
+drops the resolutions it cached to those ids, whatever spelling they were
+cached under, so a name re-created for another entity, or moved to one,
+resolves to it at once.
+
 The message is plain NATS publish/subscribe, at most once, and stored by no
 stream: a message that is lost (NATS down, a process reconnecting) leaves the
 caches to expire on their TTL, which stays the bound. Without NATS — a
@@ -30,12 +38,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from typing import Any
 
 from .events import EventBus
 from .permissions import clear_permission_cache
-from .resolve import clear_resolution_cache
+from .resolve import clear_resolution_cache, forget_resolutions
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +51,14 @@ NAMESPACE_DELETED_SUBJECT = "wip.cache.namespace.deleted"
 """Published by the Registry after a namespace deletion has run; payload
 ``{"namespace": "<prefix>"}``. Outside every JetStream stream's subjects, so
 nothing stores it."""
+
+ENTRIES_CHANGED_SUBJECT = "wip.cache.entries.changed"
+"""Published by the Registry when entries lost names or were removed;
+payload ``{"entry_ids": [...]}``. Outside every stream, like the above."""
+
+# Ids per message: a bulk delete of thousands stays far below NATS's payload
+# limit (a UUID is ~40 bytes in JSON).
+_IDS_PER_MESSAGE = 1000
 
 _namespace_flushers: list[Callable[[str], None]] = []
 
@@ -70,9 +86,24 @@ def flush_namespace(prefix: str) -> None:
     logger.info("caches flushed for deleted namespace '%s'", prefix)
 
 
+def forget_entries(entry_ids: Iterable[str]) -> int:
+    """Drop this process's cached resolutions to ``entry_ids``."""
+    dropped = forget_resolutions(entry_ids)
+    if dropped:
+        logger.info("dropped %d cached resolution(s) to changed entries", dropped)
+    return dropped
+
+
 async def _handle(msg: Any) -> None:
     try:
-        prefix = json.loads(msg.data)["namespace"]
+        body = json.loads(msg.data)
+        if msg.subject == ENTRIES_CHANGED_SUBJECT:
+            ids = body["entry_ids"]
+            if not isinstance(ids, list):
+                raise ValueError("entry_ids is not a list")
+            forget_entries(str(i) for i in ids if i)
+            return
+        prefix = body["namespace"]
     except Exception:
         logger.warning("ignoring malformed %s message: %r", msg.subject, msg.data[:200])
         return
@@ -95,35 +126,58 @@ def subscribe_cache_invalidation(bus: EventBus) -> asyncio.Task[None] | None:
         nc = bus.client
         if nc is None:
             raise RuntimeError("not connected")
-        sub = await nc.subscribe(NAMESPACE_DELETED_SUBJECT, cb=_handle)
+        subs = [
+            await nc.subscribe(NAMESPACE_DELETED_SUBJECT, cb=_handle),
+            await nc.subscribe(ENTRIES_CHANGED_SUBJECT, cb=_handle),
+        ]
         try:
             await asyncio.Event().wait()  # until the supervisor cancels us
         finally:
             if not nc.is_closed:
-                try:
-                    await sub.unsubscribe()
-                except Exception:
-                    logger.debug("unsubscribe from %s failed", NAMESPACE_DELETED_SUBJECT)
+                for sub in subs:
+                    try:
+                        await sub.unsubscribe()
+                    except Exception:
+                        logger.debug("unsubscribe from %s failed", sub.subject)
 
     return bus.supervise("cache-invalidation", run)
+
+
+async def _publish(bus: EventBus, subject: str, payloads: list[bytes], what: str) -> bool:
+    nc = bus.client
+    if nc is None:
+        if bus.configured:
+            logger.warning("NATS not connected: caches elsewhere keep %s until their TTL", what)
+        return False
+    try:
+        for payload in payloads:
+            await nc.publish(subject, payload)
+        await nc.flush(timeout=2)
+    except Exception as e:
+        logger.warning("announcing %s failed: %s", what, e)
+        return False
+    return True
 
 
 async def announce_namespace_deleted(bus: EventBus, prefix: str) -> bool:
     """Tell every subscribed process that ``prefix`` was deleted. True when
     the message was handed to NATS; False when the bus is not configured or
     not connected (then the caches expire on their TTL)."""
-    nc = bus.client
-    if nc is None:
-        if bus.configured:
-            logger.warning(
-                "NATS not connected: caches elsewhere keep namespace '%s' until "
-                "their TTL", prefix,
-            )
-        return False
-    try:
-        await nc.publish(NAMESPACE_DELETED_SUBJECT, json.dumps({"namespace": prefix}).encode())
-        await nc.flush(timeout=2)
-    except Exception as e:
-        logger.warning("announcing deleted namespace '%s' failed: %s", prefix, e)
-        return False
-    return True
+    payload = json.dumps({"namespace": prefix}).encode()
+    return await _publish(
+        bus, NAMESPACE_DELETED_SUBJECT, [payload], f"deleted namespace '{prefix}'",
+    )
+
+
+async def announce_entries_changed(bus: EventBus, entry_ids: Iterable[str]) -> bool:
+    """Tell every subscribed process that ``entry_ids`` lost names or are
+    gone. True when there was nothing to say or it was handed to NATS; False
+    when the bus is not configured or not connected (TTL fallback)."""
+    ids = sorted({str(i) for i in entry_ids if i})
+    if not ids:
+        return True
+    payloads = [
+        json.dumps({"entry_ids": ids[start:start + _IDS_PER_MESSAGE]}).encode()
+        for start in range(0, len(ids), _IDS_PER_MESSAGE)
+    ]
+    return await _publish(bus, ENTRIES_CHANGED_SUBJECT, payloads, f"{len(ids)} changed entr(ies)")

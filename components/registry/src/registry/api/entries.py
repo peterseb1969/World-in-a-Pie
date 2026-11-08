@@ -74,6 +74,7 @@ from ..services.claims import (
     revive_entry_synonyms,
 )
 from ..services.errors import error_fields, invalid_entity_type_fields
+from ..services.event_bus import entries_changed
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
 from ..services.key_scope import key_scope_refusal, named_namespace
@@ -1981,6 +1982,11 @@ async def delete_entries(
                 index=i, status="error", registry_id=item.entry_id, **error_fields(e)
             ))
 
+    # Deleted or deactivated entries stop resolving; other services drop
+    # what they cached for them.
+    await entries_changed(
+        r.registry_id for r in results if r.status in ("deactivated", "deleted")
+    )
     return BulkDeleteResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status in ("deactivated", "deleted")),
@@ -2030,6 +2036,9 @@ async def deactivate_entries(
                 index=i, status="error", registry_id=item.entry_id, **error_fields(e),
             ))
 
+    if not dry_run:
+        # Released synonyms stop resolving to these entries.
+        await entries_changed(r.registry_id for r in results if r.status == "deactivated")
     return BulkEntryLifecycleResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status in ("deactivated", "unchanged")),

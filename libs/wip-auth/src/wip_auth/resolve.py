@@ -30,6 +30,7 @@ import logging
 import os
 import re
 import time
+from collections.abc import Iterable
 from typing import Any, cast
 
 import httpx
@@ -46,6 +47,10 @@ _UUID_PATTERN = re.compile(
 
 # TTL cache: {cache_key: (canonical_id, expire_time)}
 _resolution_cache: dict[str, tuple[str, float]] = {}
+# Reverse index: canonical id -> the cache keys that resolve to it, so the
+# Registry's word that an entity lost its names (wip_auth.cache_events) drops
+# every spelling cached for it. Kept in step with _resolution_cache.
+_keys_by_id: dict[str, set[str]] = {}
 # How long a read may answer from a cached resolution. It bounds how long a
 # read can lag a namespace deleted and re-created under the same name (the
 # cached id is the deleted entity's): 30 s keeps that window short while
@@ -292,19 +297,45 @@ def _get_cached(cache_key: str) -> str | None:
         return None
     canonical_id, expire_time = entry
     if time.monotonic() > expire_time:
-        del _resolution_cache[cache_key]
+        _drop_key(cache_key)
         return None
     return canonical_id
 
 
+def _drop_key(cache_key: str) -> None:
+    entry = _resolution_cache.pop(cache_key, None)
+    if entry is None:
+        return
+    keys = _keys_by_id.get(entry[0])
+    if keys is not None:
+        keys.discard(cache_key)
+        if not keys:
+            del _keys_by_id[entry[0]]
+
+
 def _set_cached(cache_key: str, canonical_id: str) -> None:
     """Cache a resolution result."""
+    _drop_key(cache_key)  # a key re-cached to another id leaves the old index
     _resolution_cache[cache_key] = (canonical_id, time.monotonic() + _CACHE_TTL)
+    _keys_by_id.setdefault(canonical_id, set()).add(cache_key)
 
 
 def clear_resolution_cache() -> None:
     """Clear the resolution cache (useful for testing)."""
     _resolution_cache.clear()
+    _keys_by_id.clear()
+
+
+def forget_resolutions(entity_ids: Iterable[str]) -> int:
+    """Drop every cached resolution to one of ``entity_ids``: their names
+    changed (removed, released, moved by a merge) or the entities are gone.
+    Returns how many cache entries were dropped."""
+    dropped = 0
+    for entity_id in entity_ids:
+        for cache_key in list(_keys_by_id.get(entity_id, ())):
+            _drop_key(cache_key)
+            dropped += 1
+    return dropped
 
 
 class EntityNotFoundError(Exception):

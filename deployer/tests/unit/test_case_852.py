@@ -141,16 +141,17 @@ class TestRenderedConfig:
             assert block.count("_INBOX_") == 1  # no shared inbox grant
 
     def test_cache_invalidation_reaches_every_resolving_service(self, discovery: Discovery) -> None:
-        # The Registry may publish only its cache-invalidation message; the
-        # services that cache Registry answers may receive it.
+        # The Registry may publish only its cache-invalidation messages; the
+        # services that cache Registry answers may receive them.
         conf = _conf(_deployment(), discovery)
-        subject = '"wip.cache.namespace.deleted"'
+        subjects = ['"wip.cache.namespace.deleted"', '"wip.cache.entries.changed"']
         registry = conf.split('user: "registry"', 1)[1].split("} }", 1)[0]
         publish = registry.split("publish", 1)[1].split("]", 1)[0]
-        assert publish.count('"') == 2 and subject in publish
+        assert publish.count('"') == 2 * len(subjects)
+        assert all(s in publish for s in subjects)
         for name in ("def-store", "document-store", "template-store"):
             block = conf.split(f'user: "{name}"', 1)[1].split("} }", 1)[0]
-            assert subject in block.split("subscribe", 1)[1]
+            assert all(s in block.split("subscribe", 1)[1] for s in subjects)
 
     def test_document_store_cannot_delete_the_platform_streams(self, discovery: Discovery) -> None:
         conf = _conf(_deployment(), discovery)

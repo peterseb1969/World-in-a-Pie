@@ -134,3 +134,139 @@ async def test_live_an_announcement_reaches_a_subscribed_process(flushed):
     finally:
         await sender.stop()
         await receiver.stop()
+
+
+# ---------------------------------------------------------------------------
+# Entries: names removed, released or moved, entities gone
+# ---------------------------------------------------------------------------
+
+from wip_auth.cache_events import (  # noqa: E402
+    ENTRIES_CHANGED_SUBJECT,
+    announce_entries_changed,
+    forget_entries,
+)
+
+
+def test_forgetting_an_entity_drops_every_spelling_cached_for_it():
+    resolve.clear_resolution_cache()
+    resolve._set_cached("ns:term:Male", "T-1")
+    resolve._set_cached("ns:term:M", "T-1")
+    resolve._set_cached("ns:term:T-1", "T-1")
+    resolve._set_cached("ns:term:Female", "T-2")
+
+    assert forget_entries(["T-1"]) == 3
+
+    assert set(resolve._resolution_cache) == {"ns:term:Female"}
+    assert resolve._keys_by_id == {"T-2": {"ns:term:Female"}}
+
+
+def test_a_key_recached_to_another_entity_leaves_the_old_index():
+    resolve.clear_resolution_cache()
+    resolve._set_cached("ns:term:Male", "T-old")
+    resolve._set_cached("ns:term:Male", "T-new")
+
+    assert forget_entries(["T-old"]) == 0
+    assert resolve._get_cached("ns:term:Male") == "T-new"
+
+
+def test_an_expired_key_leaves_the_index(monkeypatch):
+    resolve.clear_resolution_cache()
+    resolve._set_cached("ns:term:Male", "T-1")
+    later = time.monotonic() + resolve._CACHE_TTL + 1
+    monkeypatch.setattr(resolve.time, "monotonic", lambda: later)
+
+    assert resolve._get_cached("ns:term:Male") is None
+    assert resolve._keys_by_id == {}
+
+
+async def test_an_entries_message_drops_their_resolutions():
+    resolve.clear_resolution_cache()
+    resolve._set_cached("ns:term:Male", "T-1")
+    resolve._set_cached("ns:term:Female", "T-2")
+
+    await cache_events._handle(SimpleNamespace(
+        subject=ENTRIES_CHANGED_SUBJECT, data=json.dumps({"entry_ids": ["T-1"]}).encode(),
+    ))
+
+    assert set(resolve._resolution_cache) == {"ns:term:Female"}
+
+
+async def test_a_malformed_entries_message_is_ignored():
+    resolve.clear_resolution_cache()
+    resolve._set_cached("ns:term:Male", "T-1")
+    await cache_events._handle(SimpleNamespace(
+        subject=ENTRIES_CHANGED_SUBJECT, data=json.dumps({"entry_ids": "T-1"}).encode(),
+    ))
+    assert "ns:term:Male" in resolve._resolution_cache
+
+
+class _FakeClient:
+    def __init__(self):
+        self.sent: list[tuple[str, bytes]] = []
+
+    async def publish(self, subject, payload):
+        self.sent.append((subject, payload))
+
+    async def flush(self, timeout=None):
+        pass
+
+
+class _FakeBus:
+    configured = True
+
+    def __init__(self):
+        self.client = _FakeClient()
+
+
+async def test_many_ids_are_split_into_messages_of_bounded_size():
+    bus = _FakeBus()
+    ids = [f"id-{n:05d}" for n in range(2500)]
+
+    assert await announce_entries_changed(bus, ids)
+
+    sent = bus.client.sent
+    assert [subject for subject, _ in sent] == [ENTRIES_CHANGED_SUBJECT] * 3
+    received = [i for _, payload in sent for i in json.loads(payload)["entry_ids"]]
+    assert sorted(received) == ids
+
+
+async def test_nothing_to_announce_sends_nothing():
+    bus = _FakeBus()
+    assert await announce_entries_changed(bus, [None, ""])
+    assert bus.client.sent == []
+
+
+async def test_without_nats_entries_are_not_announced():
+    assert await announce_entries_changed(EventBus(None, name="test"), ["T-1"]) is False
+
+
+async def test_live_an_entries_announcement_reaches_a_subscribed_process():
+    nats = pytest.importorskip("nats")
+    try:
+        probe = await asyncio.wait_for(
+            nats.connect(NATS_TEST_URL, connect_timeout=1, max_reconnect_attempts=0,
+                         allow_reconnect=False),
+            timeout=5,
+        )
+        await probe.close()
+    except Exception:
+        pytest.skip(f"no NATS at {NATS_TEST_URL}")
+
+    receiver = EventBus(NATS_TEST_URL, name="test-receiver")
+    sender = EventBus(NATS_TEST_URL, name="test-sender")
+    await receiver.start()
+    await sender.start()
+    try:
+        assert await receiver.wait_connected(timeout=5)
+        assert await sender.wait_connected(timeout=5)
+        subscribe_cache_invalidation(receiver)
+        resolve.clear_resolution_cache()
+        resolve._set_cached("ns:term:Male", "T-live")
+        deadline = time.monotonic() + 5
+        while "ns:term:Male" in resolve._resolution_cache and time.monotonic() < deadline:
+            assert await announce_entries_changed(sender, ["T-live"])
+            await asyncio.sleep(0.1)
+        assert "ns:term:Male" not in resolve._resolution_cache
+    finally:
+        await sender.stop()
+        await receiver.stop()

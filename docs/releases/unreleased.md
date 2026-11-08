@@ -64,9 +64,13 @@ entity that exists (reproduced live: 404 until 30 s, then 200).
   that subject (plain publish, stored by no stream); the three services may
   subscribe to it. The Registry image now includes `nats-py`, so it must be
   rebuilt.
-- **Not covered yet:** a single entity hard-deleted and re-created under the
-  same name, and a name that moves to another entity (a term merge), keep the
-  30 s window. A second step will cover them.
+- **Single entities too:** when an entry is hard- or soft-deleted, its
+  synonyms are released (its entity retired), a synonym is removed, or it is
+  merged into another entry (`merge_entries`, `merge_terms`), the Registry
+  publishes `wip.cache.entries.changed` with the entry ids. Every service
+  drops the resolutions it cached to them, under whatever spelling, so a name
+  re-created for another entity, or moved to one, resolves to it at once
+  instead of to the old entity for up to 30 s.
 
 ### A plain restore refuses a `target_namespace` it cannot honour
 

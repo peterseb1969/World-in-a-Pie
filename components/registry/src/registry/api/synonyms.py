@@ -30,6 +30,7 @@ from ..services.claims import (
     release_keys_bulk,
 )
 from ..services.errors import error_fields, invalid_entity_type_fields
+from ..services.event_bus import entries_changed
 from ..services.hash import HashService
 from ..services.key_scope import key_scope_refusal
 from .grants import NamespaceAccess
@@ -415,6 +416,8 @@ async def remove_synonyms(
     # owner so a claim that belongs elsewhere is never deleted. A leftover
     # claim is a benign orphan that reconciliation clears.
     await release_keys_bulk(released)
+    # The removed synonyms no longer resolve to their entries.
+    await entries_changed(key[3] for key in released)
 
     done = [r for r in results if r is not None]
     return BulkSynonymRemoveResponse(
@@ -576,6 +579,9 @@ async def merge_entries(
                 index=i, status="error", **error_fields(e)
             ))
 
+    # A merged-away entry's id and names now resolve to the preferred entry;
+    # caches holding them for the deprecated one drop them.
+    await entries_changed(r.deprecated_id for r in results if r.status == "merged")
     return BulkMergeResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status == "merged"),
