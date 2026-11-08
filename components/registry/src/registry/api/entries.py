@@ -1360,19 +1360,7 @@ async def _activate_keyed(
     confirm per item. A repeated entry_id is answered as taking the items
     in order would: the first activates, the rest find it active.
     """
-    activated = 0
-    errors = 0
-    entries_coll = RegistryEntry.get_motor_collection()
-
-    first_index: dict[str, int] = {}
-    repeats: list[int] = []
-    for i in keyed:
-        eid = items[i].entry_id
-        if eid in first_index:
-            repeats.append(i)
-        else:
-            first_index[eid] = i
-
+    first_index, repeats = _first_and_repeats(items, keyed)
     try:
         loaded = {
             e.entry_id: e
@@ -1389,45 +1377,77 @@ async def _activate_keyed(
     candidates: list[tuple[int, RegistryEntry]] = []
     for eid, i in first_index.items():
         entry = loaded.get(eid)
-        if entry is None:
-            results[i] = ActivateItemResponse(index=i, status="not_found", entry_id=eid)
-            errors += 1
-        elif entry.status == "active":
-            results[i] = ActivateItemResponse(index=i, status="already_active", entry_id=eid)
-        elif entry.status != "reserved":
-            results[i] = ActivateItemResponse(
-                index=i, status="error", entry_id=eid,
-                error=f"Cannot activate entry with status '{entry.status}'",
-                error_code="invalid_state", details={"rule": "not_reserved"},
-            )
-            errors += 1
+        answer = _prepare_keyed_activation(i, eid, entry, items[i])
+        if answer is not None:
+            results[i] = answer
         else:
-            key = items[i].composite_key or {}
-            refusal = key_scope_refusal(key, entry.namespace)
-            if refusal is not None:
-                results[i] = ActivateItemResponse(
-                    index=i, status="error", entry_id=eid, **refusal,
-                )
-                errors += 1
-                continue
-            entry.primary_composite_key = key
-            entry.primary_composite_key_hash = (
-                HashService.compute_composite_key_hash(key) if key else ""
-            )
-            refusal = _attach_activation_synonyms(entry, items[i].synonyms or [])
-            if refusal is not None:
-                results[i] = ActivateItemResponse(
-                    index=i, status="error", entry_id=eid, **refusal,
-                )
-                errors += 1
-                continue
-            entry.rebuild_search_values()
-            candidates.append((i, entry))
+            candidates.append((i, cast(RegistryEntry, entry)))
 
     # Two-phase claim, as provision does it: pending before the write,
     # confirmed after it.
-    claim_error: dict | None = None
     token = new_claim_token()
+    to_write = await _claim_for_activation(candidates, results, token)
+    if to_write:
+        await _write_activations(items, keyed, to_write, results, token)
+
+    _answer_activation_repeats(items, repeats, first_index, results)
+    return _keyed_activation_counts(results, keyed)
+
+
+def _first_and_repeats(
+    items: list[ActivateItem], keyed: list[int],
+) -> tuple[dict[str, int], list[int]]:
+    """Each keyed entry_id's first item index, and the indices of the items
+    that repeat an earlier one's entry_id."""
+    first_index: dict[str, int] = {}
+    repeats: list[int] = []
+    for i in keyed:
+        eid = items[i].entry_id
+        if eid in first_index:
+            repeats.append(i)
+        else:
+            first_index[eid] = i
+    return first_index, repeats
+
+
+def _prepare_keyed_activation(
+    i: int, eid: str, entry: RegistryEntry | None, item: ActivateItem,
+) -> ActivateItemResponse | None:
+    """Answer an item whose entry cannot take its key (missing, active
+    already, not reserved, a key or synonym scoped elsewhere), or give the
+    entry its final key and synonyms and return None: a candidate to claim
+    and write."""
+    if entry is None:
+        return ActivateItemResponse(index=i, status="not_found", entry_id=eid)
+    if entry.status == "active":
+        return ActivateItemResponse(index=i, status="already_active", entry_id=eid)
+    if entry.status != "reserved":
+        return ActivateItemResponse(
+            index=i, status="error", entry_id=eid,
+            error=f"Cannot activate entry with status '{entry.status}'",
+            error_code="invalid_state", details={"rule": "not_reserved"},
+        )
+    key = item.composite_key or {}
+    refusal = key_scope_refusal(key, entry.namespace)
+    if refusal is not None:
+        return ActivateItemResponse(index=i, status="error", entry_id=eid, **refusal)
+    entry.primary_composite_key = key
+    entry.primary_composite_key_hash = HashService.compute_composite_key_hash(key) if key else ""
+    refusal = _attach_activation_synonyms(entry, item.synonyms or [])
+    if refusal is not None:
+        return ActivateItemResponse(index=i, status="error", entry_id=eid, **refusal)
+    entry.rebuild_search_values()
+    return None
+
+
+async def _claim_for_activation(
+    candidates: list[tuple[int, RegistryEntry]],
+    results: list[ActivateItemResponse | None],
+    token: str,
+) -> list[tuple[int, RegistryEntry]]:
+    """Claim the candidates' keys pending; answer each one whose claim
+    failed or collided, and return the rest, to write."""
+    claim_error: dict | None = None
     try:
         conflicts = await claim_entries_keys_pending([entry for _, entry in candidates], token)
     except Exception as e:
@@ -1440,18 +1460,72 @@ async def _activate_keyed(
         if claim_error is not None:
             results[i] = ActivateItemResponse(
                 index=i, status="error", entry_id=entry.entry_id, **claim_error)
-            errors += 1
         elif conflict is not None:
             results[i] = ActivateItemResponse(
                 index=i, status="error", entry_id=entry.entry_id, error=conflict,
                 error_code="already_exists", details={"rule": "key_claimed"},
             )
-            errors += 1
         else:
             to_write.append((i, entry))
+    return to_write
 
-    now = datetime.now(UTC)
+
+async def _write_activations(
+    items: list[ActivateItem],
+    keyed: list[int],
+    to_write: list[tuple[int, RegistryEntry]],
+    results: list[ActivateItemResponse | None],
+    token: str,
+) -> None:
+    """Write the claimed entries active with one guarded bulk write, then
+    answer each by what it now holds, and confirm or release its claims."""
+    entries_coll = RegistryEntry.get_motor_collection()
     with_synonyms = {items[i].entry_id for i in keyed if items[i].synonyms}
+    failed = await _bulk_activate(entries_coll, to_write, with_synonyms)
+
+    # An entry is activated only if it now holds the key this request
+    # wrote. Anything else (a write error, or a status that changed
+    # between the read and the guarded write) is re-read to tell.
+    try:
+        written = {
+            d["entry_id"]: d
+            async for d in entries_coll.find(
+                {"entry_id": {"$in": [entry.entry_id for _, entry in to_write]}},
+                {"entry_id": 1, "status": 1, "primary_composite_key_hash": 1, "_id": 0},
+            )
+        }
+    except Exception as e:
+        # Outcome unknown and unconfirmable: report each item as an error.
+        # Its claim stays pending for startup's reconcile, which settles
+        # it by what the entry holds; a retry finds it active or reserved.
+        for i, entry in to_write:
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=entry.entry_id, **error_fields(e))
+        to_write, written = [], {}
+
+    confirmed, released = _answer_written(to_write, written, failed, results)
+    try:
+        # Token-scoped: a losing request releases only the claims it
+        # inserted, never one the entry held already or one the request
+        # that won took over.
+        await release_entries_keys(released, token)
+        await confirm_entries_keys(confirmed)
+    except Exception:
+        # The entries' states are already decided and reported; a claim
+        # left pending here is settled by startup's pending-claim reconcile.
+        logger.exception("activate: confirming or releasing key claims failed")
+
+
+async def _bulk_activate(
+    entries_coll: Any,
+    to_write: list[tuple[int, RegistryEntry]],
+    with_synonyms: set[str],
+) -> dict[int, dict]:
+    """The guarded write that flips each entry from reserved to active with
+    its key (and synonyms, when the item carried them). Returns the error
+    fields of each position in ``to_write`` the write failed or may have
+    failed."""
+    now = datetime.now(UTC)
     ops = []
     for _, entry in to_write:
         fields: dict = {
@@ -1468,82 +1542,77 @@ async def _activate_keyed(
             {"$set": fields, "$inc": dict(REVISION_INC)},
         ))
     failed: dict[int, dict] = {}  # position in to_write -> error fields
-    if ops:
-        try:
-            await entries_coll.bulk_write(ops, ordered=False)
-        except BulkWriteError as e:
-            for err in e.details.get("writeErrors", []):
-                failed[err["index"]] = error_fields(Exception(err.get("errmsg", "write failed")))
-        except Exception as e:
-            # Outcome unknown: the re-read below decides per entry.
-            for pos in range(len(to_write)):
-                failed[pos] = error_fields(e)
+    try:
+        await entries_coll.bulk_write(ops, ordered=False)
+    except BulkWriteError as e:
+        for err in e.details.get("writeErrors", []):
+            failed[err["index"]] = error_fields(Exception(err.get("errmsg", "write failed")))
+    except Exception as e:
+        # Outcome unknown: the re-read decides per entry.
+        for pos in range(len(to_write)):
+            failed[pos] = error_fields(e)
+    return failed
 
-        # An entry is activated only if it now holds the key this request
-        # wrote. Anything else (a write error, or a status that changed
-        # between the read and the guarded write) is re-read to tell.
-        try:
-            written = {
-                d["entry_id"]: d
-                async for d in entries_coll.find(
-                    {"entry_id": {"$in": [entry.entry_id for _, entry in to_write]}},
-                    {"entry_id": 1, "status": 1, "primary_composite_key_hash": 1, "_id": 0},
-                )
-            }
-        except Exception as e:
-            # Outcome unknown and unconfirmable: report each item as an error.
-            # Its claim stays pending for startup's reconcile, which settles
-            # it by what the entry holds; a retry finds it active or reserved.
-            for i, entry in to_write:
-                results[i] = ActivateItemResponse(
-                    index=i, status="error", entry_id=entry.entry_id, **error_fields(e))
-                errors += 1
-            to_write = []
-            written = {}
-        confirmed: list[RegistryEntry] = []
-        released: list[RegistryEntry] = []
-        for pos, (i, entry) in enumerate(to_write):
-            doc = written.get(entry.entry_id) or {}
-            ours = (
-                doc.get("status") == "active"
-                and doc.get("primary_composite_key_hash") == entry.primary_composite_key_hash
-            )
-            if ours:
-                confirmed.append(entry)
-                results[i] = ActivateItemResponse(
-                    index=i, status="activated", entry_id=entry.entry_id)
-                activated += 1
-                continue
-            released.append(entry)
-            fields = failed.get(pos) or {
-                "error": "Entry status changed concurrently; not activated",
-                "error_code": "concurrency_conflict",
-            }
-            results[i] = ActivateItemResponse(
-                index=i, status="error", entry_id=entry.entry_id, **fields)
-            errors += 1
-        try:
-            # Token-scoped: a losing request releases only the claims it
-            # inserted, never one the entry held already or one the request
-            # that won took over.
-            await release_entries_keys(released, token)
-            await confirm_entries_keys(confirmed)
-        except Exception:
-            # The entries' states are already decided and reported; a claim
-            # left pending here is settled by startup's pending-claim reconcile.
-            logger.exception("activate: confirming or releasing key claims failed")
 
+def _answer_written(
+    to_write: list[tuple[int, RegistryEntry]],
+    written: dict[str, dict],
+    failed: dict[int, dict],
+    results: list[ActivateItemResponse | None],
+) -> tuple[list[RegistryEntry], list[RegistryEntry]]:
+    """Answer each written item by what its entry now holds: activated when
+    it is active with this request's key; otherwise its write error, or a
+    concurrency conflict. Returns (claims to confirm, claims to release)."""
+    confirmed: list[RegistryEntry] = []
+    released: list[RegistryEntry] = []
+    for pos, (i, entry) in enumerate(to_write):
+        doc = written.get(entry.entry_id) or {}
+        ours = (
+            doc.get("status") == "active"
+            and doc.get("primary_composite_key_hash") == entry.primary_composite_key_hash
+        )
+        if ours:
+            confirmed.append(entry)
+            results[i] = ActivateItemResponse(index=i, status="activated", entry_id=entry.entry_id)
+            continue
+        released.append(entry)
+        fields = failed.get(pos) or {
+            "error": "Entry status changed concurrently; not activated",
+            "error_code": "concurrency_conflict",
+        }
+        results[i] = ActivateItemResponse(index=i, status="error", entry_id=entry.entry_id, **fields)
+    return confirmed, released
+
+
+def _answer_activation_repeats(
+    items: list[ActivateItem],
+    repeats: list[int],
+    first_index: dict[str, int],
+    results: list[ActivateItemResponse | None],
+) -> None:
+    """Answer each repeated entry_id as taking the items in order would: the
+    first activates, the rest find it active; a failed first's answer is
+    theirs too."""
     for i in repeats:
         first = results[first_index[items[i].entry_id]]
-        if first is not None and first.status in ("activated", "already_active"):
+        assert first is not None
+        if first.status in ("activated", "already_active"):
             results[i] = ActivateItemResponse(
                 index=i, status="already_active", entry_id=items[i].entry_id)
         else:
-            assert first is not None
             results[i] = first.model_copy(update={"index": i})
-            if first.status != "already_active":
-                errors += 1
-    return activated, errors
+
+
+def _keyed_activation_counts(
+    results: list[ActivateItemResponse | None], keyed: list[int],
+) -> tuple[int, int]:
+    """(activated, errors) over the keyed items, from their statuses: an
+    error or a missing entry counts as an error, already_active as neither."""
+    statuses = [cast(ActivateItemResponse, results[i]).status for i in keyed]
+    return (
+        statuses.count("activated"),
+        statuses.count("error") + statuses.count("not_found"),
+    )
 
 
 @router.post(
