@@ -92,7 +92,7 @@ class FileFieldConfig(BaseModel):
 
     allowed_types: list[str] = Field(
         default=["*/*"],
-        description="Allowed MIME type patterns (e.g., 'image/*', 'application/pdf')"
+        description="Allowed MIME type patterns (e.g., 'image/*', 'application/pdf'). Must not be empty; omit it to accept every type."
     )
     max_size_mb: float = Field(
         default=10.0,

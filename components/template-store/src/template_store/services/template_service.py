@@ -381,6 +381,20 @@ class TemplateService:
             )
 
     @staticmethod
+    def _refuse_empty_allowed_types(f: FieldDefinition) -> None:
+        """A file field's allowed_types lists what may be uploaded; an empty
+        list would allow nothing, so it is refused rather than stored.
+        (document-store read it as "every type".) Omit it to allow every
+        type."""
+        for config in (f.file_config, f.array_file_config):
+            if config is not None and not config.allowed_types:
+                raise TemplateError(
+                    f"allowed_types for file field '{f.name}' is empty: list "
+                    "the MIME types it accepts, or omit it to accept every type",
+                    "validation_failed", rule="allowed_types_empty",
+                )
+
+    @staticmethod
     def validate_fields_for_write(fields: list[FieldDefinition]) -> None:
         """Enforce field-shape authoring invariants at the write seam (CASE-629).
 
@@ -435,6 +449,7 @@ class TemplateService:
                     "(CASE-493)", "validation_failed", rule="template_ref_version_required"
                 )
             TemplateService._refuse_undeclared_reference(f)
+            TemplateService._refuse_empty_allowed_types(f)
             # An array of references must declare what it references. Without it,
             # each item is queued for resolution carrying reference_type=None,
             # matches no resolution branch, and is dropped silently — a bogus id
@@ -724,39 +739,15 @@ class TemplateService:
             status=request.status or "active",
             created_by=actor,
         )
-        await TemplateService._stamp_referent_paths(template)
-        await template.insert()
-
-        # Register auto-synonym for human-readable resolution
-        # Only for version 1 (auto-synonym resolves to entity_id, stable across versions)
-        # Restore mode registers it on EVERY version create: a restored template
-        # must be resolvable by value no later than its own activation (edge
-        # types resolve value-form source/target_templates there), and archives
-        # may not contain version 1 at all (latest-only exports). Repeat
-        # registrations of the same value are absorbed by the Registry's
-        # idempotent already_exists path, which also lets the archive's later
-        # synonym replay re-add the same key harmlessly.
-        # On failure, roll back the MongoDB document and re-raise
-        if version == 1 or is_restore:
-            try:
-                client = get_registry_client()
-                await client.register_auto_synonym(
-                    target_id=template_id,
-                    namespace=namespace,
-                    composite_key={
-                        "ns": namespace,
-                        "type": "template",
-                        "value": request.value,
-                    },
-                    created_by=actor,
-                )
-            except RegistryError:
-                logger.error(
-                    "Auto-synonym registration failed for template %s — rolling back",
-                    template_id,
-                )
-                await template.delete()
-                raise
+        # The identity is claimed. A create that fails from here on releases
+        # an entry it minted, so the next create of the same (namespace,
+        # value) does not collide with an entry that owns no template.
+        try:
+            await TemplateService._store_new_template(template, bool(is_restore), actor)
+        except Exception:
+            if reg_status == "created":
+                await TemplateService._release_minted_entry(template_id)
+            raise
 
         # Publish template created event — skip for drafts
         if not is_draft:
@@ -805,6 +796,56 @@ class TemplateService:
                 "them first",
                 "reference_violation", rule="template_not_active",
             )
+
+    @staticmethod
+    async def _store_new_template(template: Template, is_restore: bool, actor: str) -> None:
+        """Insert a just-registered template and its auto-synonym. A failed
+        synonym takes the inserted row back out; either failure is raised."""
+        await TemplateService._stamp_referent_paths(template)
+        await template.insert()
+
+        # Register auto-synonym for human-readable resolution
+        # Only for version 1 (auto-synonym resolves to entity_id, stable across versions)
+        # Restore mode registers it on EVERY version create: a restored template
+        # must be resolvable by value no later than its own activation (edge
+        # types resolve value-form source/target_templates there), and archives
+        # may not contain version 1 at all (latest-only exports). Repeat
+        # registrations of the same value are absorbed by the Registry's
+        # idempotent already_exists path, which also lets the archive's later
+        # synonym replay re-add the same key harmlessly.
+        # On failure, roll back the MongoDB document and re-raise
+        if template.version == 1 or is_restore:
+            try:
+                client = get_registry_client()
+                await client.register_auto_synonym(
+                    target_id=template.template_id,
+                    namespace=template.namespace,
+                    composite_key={
+                        "ns": template.namespace,
+                        "type": "template",
+                        "value": template.value,
+                    },
+                    created_by=actor,
+                )
+            except RegistryError:
+                logger.error(
+                    "Auto-synonym registration failed for template %s — rolling back",
+                    template.template_id,
+                )
+                await template.delete()
+                raise
+
+    @staticmethod
+    async def _release_minted_entry(template_id: str) -> None:
+        """Release a Registry entry this create minted and will not use.
+        Best effort: a failure is logged, and the error that caused the
+        rollback is what the caller reports."""
+        try:
+            await get_registry_client().hard_delete_entry(
+                template_id, rollback_uncommitted=True,
+            )
+        except (RegistryError, httpx.HTTPError) as e:
+            logger.error("Failed to release unused Registry entry %s: %s", template_id, e)
 
     @staticmethod
     async def _refuse_unresolvable_inheritance(

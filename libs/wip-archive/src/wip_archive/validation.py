@@ -796,16 +796,85 @@ class OfflineValidator:
     def _evaluate_rules(
         self, data: dict[str, Any], template: dict[str, Any], result: ValidationOutcome,
     ) -> None:
-        for rule in template.get("rules") or []:
+        evaluators = {
+            "conditional_required": self._conditional_required,
+            "conditional_value": self._conditional_value,
+            "mutual_exclusion": self._mutual_exclusion,
+            "dependency": self._dependency,
+            "pattern": self._pattern,
+            "range": self._range,
+        }
+        # As document-store does: every rule type the template model accepts
+        # is evaluated, and a rule that cannot be evaluated is an error on the
+        # document, never skipped — an offline check must not pass what a
+        # live write refuses.
+        for index, rule in enumerate(template.get("rules") or []):
             rule_type = rule.get("type")
-            if rule_type == "conditional_required":
-                self._conditional_required(data, rule, result)
-            elif rule_type == "conditional_value":
-                self._conditional_value(data, rule, result)
-            elif rule_type == "mutual_exclusion":
-                self._mutual_exclusion(data, rule, result)
-            elif rule_type == "dependency":
-                self._dependency(data, rule, result)
+            evaluator = evaluators.get(rule_type)
+            if evaluator is None:
+                self._refuse_rule(result, index, rule, f"unknown rule type {rule_type!r}")
+                continue
+            try:
+                evaluator(data, rule, result)
+            except (TypeError, AttributeError, KeyError, re.error) as e:
+                self._refuse_rule(result, index, rule, f"cannot be evaluated: {e}")
+
+    @staticmethod
+    def _refuse_rule(
+        result: ValidationOutcome, index: int, rule: dict[str, Any], reason: str,
+    ) -> None:
+        result.add_error(
+            code="invalid_rule",
+            message=(
+                f"Template rule {index} ({rule.get('type')}) {reason}; "
+                "fix the template's rules"
+            ),
+            details={"rule_index": index, "rule_type": rule.get("type")},
+        )
+
+    def _pattern(self, data, rule, result) -> None:
+        """When the conditions hold (none = always), a present target value
+        must be a string the pattern matches whole."""
+        if not self._conditions(data, rule.get("conditions") or []):
+            return
+        target = rule["target_field"]
+        value = _get_nested_value(data, target)
+        if value is None:
+            return
+        pattern = rule["pattern"]
+        if not isinstance(value, str) or not re.fullmatch(pattern, value):
+            result.add_error(
+                code="pattern",
+                message=rule.get("error_message") or f"Field '{target}' does not match required pattern",
+                field=target,
+                details={"pattern": pattern},
+            )
+
+    def _range(self, data, rule, result) -> None:
+        """When the conditions hold (none = always), a present target value
+        must be a number (not a bool) within minimum..maximum, either bound
+        optional, both inclusive."""
+        if not self._conditions(data, rule.get("conditions") or []):
+            return
+        target = rule["target_field"]
+        value = _get_nested_value(data, target)
+        if value is None:
+            return
+        minimum, maximum = rule.get("minimum"), rule.get("maximum")
+        number = isinstance(value, (int, float)) and not isinstance(value, bool)
+        if not number or (minimum is not None and value < minimum) or (
+            maximum is not None and value > maximum
+        ):
+            result.add_error(
+                code="range",
+                message=rule.get("error_message") or (
+                    f"Field '{target}' must be a number between "
+                    f"{minimum if minimum is not None else '-∞'} and "
+                    f"{maximum if maximum is not None else '∞'}"
+                ),
+                field=target,
+                details={"minimum": minimum, "maximum": maximum},
+            )
 
     @staticmethod
     def _coerce(actual: Any, expected: Any) -> tuple[Any, Any]:
