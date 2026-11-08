@@ -22,6 +22,14 @@ from pymongo import IndexModel
 
 class RuntimeReservation(Document):
     prefix: str = Field(..., description="The reserved namespace")
+    namespace_id: str | None = Field(
+        default=None,
+        description=(
+            "The identity of the namespace this reservation is for: the "
+            "namespace's own id while it exists, otherwise one minted with the "
+            "reservation. The namespace created under the reservation takes it."
+        ),
+    )
     app: str = Field(
         ...,
         description="The owner: the runtime API key (API reservations) or the app (managed ones)",

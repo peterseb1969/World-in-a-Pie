@@ -113,12 +113,12 @@ def _reader(entities=None, *, provenance=None, raw=None):
         exported_at=datetime(2026, 10, 1, 12, 0, tzinfo=UTC),
         namespaces=[NamespaceEntry(
             prefix=NAMESPACE,
-            namespace_config=NamespaceConfig(prefix=NAMESPACE),
+            namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix=NAMESPACE),
             counts=EntityCounts(),
             provenance=provenance,
         )],
         namespace=NAMESPACE,
-        namespace_config=NamespaceConfig(prefix=NAMESPACE),
+        namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix=NAMESPACE),
     )
     reader = MagicMock()
     reader.read_manifest = MagicMock(return_value=manifest)

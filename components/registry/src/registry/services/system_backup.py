@@ -129,6 +129,7 @@ from ..models.namespace import Namespace
 from ..models.reservation import RuntimeReservation
 from .key_salt import adopt as adopt_salt
 from .key_salt import current_salt
+from .namespace_identity import id_held_for
 
 logger = logging.getLogger("registry.system_backup")
 
@@ -264,12 +265,24 @@ class ArchiveGrant(BaseModel):
         default=False, description="Orphaned on the source; a restore keeps it orphaned"
     )
     orphaned_at: datetime | None = None
+    namespace_id: str | None = Field(
+        ...,
+        description=(
+            "The identity of the namespace the grant is for: its own on an "
+            "orphan, else that of the namespace (or reservation) holding the name "
+            "on the source; null when neither held it. Required: an archive "
+            "without namespace ids is refused."
+        ),
+    )
 
 
 class ArchiveReservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prefix: str
+    namespace_id: str = Field(
+        ..., description="The identity of the namespace reserved. Required."
+    )
     app: str
     settings: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime | None = None
@@ -504,6 +517,13 @@ def _norm_dt(value: datetime | None) -> datetime | None:
     return value.replace(microsecond=value.microsecond // 1000 * 1000)
 
 
+def _require_id(r: RuntimeReservation) -> str:
+    if not r.namespace_id:
+        # The startup migration gives every reservation its id first.
+        raise RuntimeError(f"reservation of '{r.prefix}' has no namespace_id")
+    return r.namespace_id
+
+
 def _grant_id(namespace: str, subject_type: str, subject: str) -> str:
     return f"{namespace}/{subject_type}:{subject}"
 
@@ -515,12 +535,16 @@ def _key_content(k: StoredAPIKey | ArchiveKey) -> tuple:
     )
 
 
-def _grant_content(g: NamespaceGrant | ArchiveGrant, orphaned: bool | None = None) -> tuple:
-    return (g.permission, _norm_dt(g.expires_at), g.orphaned if orphaned is None else orphaned)
+def _grant_content(
+    g: NamespaceGrant | ArchiveGrant, orphaned: bool | None = None, namespace_id: str | None = None,
+) -> tuple:
+    if orphaned is None:
+        return (g.permission, _norm_dt(g.expires_at), g.orphaned, g.namespace_id if g.orphaned else None)
+    return (g.permission, _norm_dt(g.expires_at), orphaned, namespace_id if orphaned else None)
 
 
-def _reservation_content(r: RuntimeReservation | ArchiveReservation) -> tuple:
-    return (r.app, r.settings)
+def _reservation_content(r: RuntimeReservation | ArchiveReservation, namespace_id: str | None) -> tuple:
+    return (r.app, r.settings, namespace_id)
 
 
 # --- Backup ---
@@ -562,6 +586,10 @@ async def build_archive(
         stored = {k.name for k in keys}
         scope.keys_left_out = sorted((touched & stored) - carried_names)
         keys = carried
+    held: dict[str, str | None] = {}
+    for g in grants:
+        if not g.orphaned and g.namespace not in held:
+            held[g.namespace] = await id_held_for(g.namespace)
     return SystemArchive(
         created_at=datetime.now(UTC),
         source=ArchiveSource(
@@ -583,12 +611,14 @@ async def build_archive(
                 permission=g.permission, granted_by=g.granted_by, granted_at=g.granted_at,
                 expires_at=g.expires_at, managed_by=g.managed_by, origin=g.origin,
                 orphaned=g.orphaned, orphaned_at=g.orphaned_at,
+                namespace_id=g.namespace_id if g.orphaned else held[g.namespace],
             )
             for g in sorted(grants, key=lambda g: (g.namespace, g.subject_type, g.subject))
         ],
         reservations=[
             ArchiveReservation(
-                prefix=r.prefix, app=r.app, settings=dict(r.settings), created_at=r.created_at,
+                prefix=r.prefix, namespace_id=_require_id(r), app=r.app,
+                settings=dict(r.settings), created_at=r.created_at,
                 created_by=r.created_by, managed_by=r.managed_by, origin=r.origin,
             )
             for r in sorted(reservations, key=lambda r: r.prefix)
@@ -762,10 +792,10 @@ async def restore_archive(
                else "skipped; pass include_user_grants to restore them.")
         )
 
-    await _restore_reservations(archive, report, dry_run, overwrite, restored_by)
+    planned = await _restore_reservations(archive, report, dry_run, overwrite, restored_by)
     written_keys = await _restore_keys(archive, report, dry_run, overwrite, config_key_names)
     removed_keys = {k.name for k in plan.keys} if plan is not None else set()
-    await _restore_grants(archive, report, dry_run, overwrite, user_grants, removed_keys)
+    await _restore_grants(archive, report, dry_run, overwrite, user_grants, planned, removed_keys)
     await _restore_attachments(archive, report, dry_run, overwrite, restored_by)
     removed_hashes: list[str] = []
     if plan is not None and not dry_run:
@@ -904,7 +934,7 @@ async def _caller_replacement(
 def _as_archive_grant(g: NamespaceGrant) -> ArchiveGrant:
     return ArchiveGrant(
         namespace=g.namespace, subject=g.subject, subject_type=g.subject_type,
-        permission=g.permission,
+        permission=g.permission, namespace_id=g.namespace_id,
     )
 
 
@@ -1130,19 +1160,28 @@ async def _restore_attachments(
 async def _restore_reservations(
     archive: SystemArchive, report: SystemRestoreReport, dry_run: bool, overwrite: bool,
     restored_by: str,
-) -> None:
+) -> dict[str, str]:
+    """Restore the archive's reservations. Returns {prefix: namespace_id} for
+    each one written or planned (a dry run writes nothing), so the grants
+    decide against what the restore leaves.
+
+    A reservation of a name whose namespace exists here reserves that
+    namespace and takes its id; otherwise it keeps the archive's."""
     out = report.reservations
     scope = archive.source.scope
+    planned: dict[str, str] = {}
     for r in archive.reservations:
         if scope is not None and r.prefix not in scope.namespaces:
             out.skipped.append(_skip_reservation(r.prefix, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
             continue
+        ns = await Namespace.find_one(Namespace.prefix == r.prefix)
+        target_id = ns.namespace_id if ns is not None and ns.namespace_id else r.namespace_id
         existing = await RuntimeReservation.find_one(RuntimeReservation.prefix == r.prefix)
         if existing is not None:
             if existing.managed_by is not None:
                 out.skipped.append(_skip_reservation(r.prefix, "managed_by_deployer", _MANAGED))
                 continue
-            if _reservation_content(existing) == _reservation_content(r):
+            if _reservation_content(existing, existing.namespace_id) == _reservation_content(r, target_id):
                 out.unchanged.append(r.prefix)
                 continue
             if not overwrite:
@@ -1151,10 +1190,11 @@ async def _restore_reservations(
             out.replaced.append(r.prefix)
         else:
             out.created.append(r.prefix)
+        planned[r.prefix] = target_id
         if dry_run:
             continue
         fields = {
-            "app": r.app, "settings": dict(r.settings),
+            "namespace_id": target_id, "app": r.app, "settings": dict(r.settings),
             "created_at": r.created_at or datetime.now(UTC),
             "created_by": r.created_by or restored_by,
             "managed_by": None, "origin": "restored",
@@ -1163,6 +1203,7 @@ async def _restore_reservations(
             await existing.set(fields)
         else:
             await RuntimeReservation(prefix=r.prefix, **fields).insert()
+    return planned
 
 
 async def _restore_keys(
@@ -1207,25 +1248,26 @@ async def _restore_keys(
     return written
 
 
-async def _grantable(
-    namespace: str, report: SystemRestoreReport, dry_run: bool, archive_owners: dict[str, str],
-) -> bool:
-    """Whether a grant is written effective: on a namespace that exists here
-    (active or archived), or on a prefix reserved here by the owner the
-    archive's reservation names. A reservation by another owner is another
-    namespace of that name, so the archive's grants on it are written
-    orphaned, as on an absent prefix: its owner's own create does not
-    activate them. That protection ends when a platform admin creates the
-    namespace, which activates every orphan on the name (see
-    activate_orphaned_grants): orphans do not record why they were written,
-    and a namespace has no identity beyond its name to match them against.
-    A dry run counts the reservations it would restore."""
-    if await Namespace.find_one({"prefix": namespace, "status": {"$in": ["active", "archived"]}}):
+async def _grantable(g: ArchiveGrant, planned: dict[str, str]) -> bool:
+    """Whether a grant is written effective: its namespace is here.
+
+    That is a namespace (active or archived), or a reservation (as this
+    restore leaves it: ``planned``), holding the namespace id the grant was
+    archived with. A namespace or reservation of the same name with another
+    id is another namespace: the grant is written orphaned, with its id, and a
+    namespace created later with that id activates it. A grant archived
+    without an id (no namespace or reservation held its name on the source)
+    is written as it was: effective, for whichever namespace takes the name.
+    """
+    if g.namespace_id is None:
         return True
-    if dry_run and namespace in (*report.reservations.created, *report.reservations.replaced):
-        return True
-    doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == namespace)
-    return doc is not None and archive_owners.get(namespace) == doc.app
+    ns = await Namespace.find_one({"prefix": g.namespace, "status": {"$in": ["active", "archived"]}})
+    if ns is not None:
+        return ns.namespace_id == g.namespace_id
+    if g.namespace in planned:
+        return planned[g.namespace] == g.namespace_id
+    doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == g.namespace)
+    return doc is not None and doc.namespace_id == g.namespace_id
 
 
 async def _grant_owned_by_file(g: ArchiveGrant, existing: NamespaceGrant | None) -> bool:
@@ -1239,12 +1281,10 @@ async def _grant_owned_by_file(g: ArchiveGrant, existing: NamespaceGrant | None)
 
 async def _restore_grants(
     archive: SystemArchive, report: SystemRestoreReport, dry_run: bool, overwrite: bool,
-    user_grants: bool, removed_keys: set[str] | None = None,
+    user_grants: bool, planned: dict[str, str], removed_keys: set[str] | None = None,
 ) -> None:
     out = report.grants
     scope = archive.source.scope
-    active: dict[str, bool] = {}
-    archive_owners = {r.prefix: r.app for r in archive.reservations}
     for g in archive.grants:
         gid = _grant_id(g.namespace, g.subject_type, g.subject)
         if scope is not None and g.namespace not in scope.namespaces:
@@ -1270,9 +1310,7 @@ async def _restore_grants(
         if await _grant_owned_by_file(g, existing):
             out.skipped.append(_skip_grant(g, "managed_by_deployer", _MANAGED))
             continue
-        if g.namespace not in active:
-            active[g.namespace] = await _grantable(g.namespace, report, dry_run, archive_owners)
-        orphaned = g.orphaned or not active[g.namespace]
+        orphaned = g.orphaned or not await _grantable(g, planned)
         if existing is not None and not existing.orphaned and g.orphaned:
             # An archived orphan was never access on its source. Replacing an
             # effective grant here with it would take access away, or (with a
@@ -1282,7 +1320,7 @@ async def _restore_grants(
             ))
             continue
         if existing is not None:
-            if _grant_content(existing) == _grant_content(g, orphaned):
+            if _grant_content(existing) == _grant_content(g, orphaned, g.namespace_id):
                 out.unchanged.append(gid)
                 continue
             if not overwrite:
@@ -1308,6 +1346,7 @@ async def _restore_grants(
             "managed_by": None, "origin": "restored",
             "orphaned": orphaned,
             "orphaned_at": (g.orphaned_at or datetime.now(UTC)) if orphaned else None,
+            "namespace_id": g.namespace_id if orphaned else None,
         }
         if existing is not None:
             await existing.set(fields)

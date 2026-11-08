@@ -7,6 +7,43 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Namespaces have an id of their own; archives without it are refused
+
+A namespace was known only by its name, so a grant made for one namespace and
+a later namespace that happened to have the same name could not be told
+apart. Every namespace now has a `namespace_id` (UUID7) minted by the
+Registry.
+
+- **Lifecycle.** A reservation holds an id (the namespace's own while it
+  exists); the namespace created under it takes it. A plain create mints one.
+  Deleting a namespace ends its id, and a reservation that outlives it gets a
+  new one. An existing namespace's id never changes.
+- **Restores.** A platform admin's ID-preserving restore (and the Registry's
+  namespace import) re-creates the namespace under its archived id, via
+  `namespace_id` on `PUT /api/registry/namespaces/{prefix}`: platform admins
+  only (403 otherwise), honoured only when the call creates the namespace.
+  An id a live namespace already holds makes a copy with a new id (a
+  warning, also on the response's new `warnings`). Onto a name reserved here
+  for another id the create is refused with 409. A fresh restore is a copy
+  and carries no id.
+- **Orphaned grants** carry the id they were made for, and are activated when
+  a namespace with that id is created, **by whoever creates it**, a
+  reservation's holder included. A plain create no longer activates orphans
+  by name. A system restore writes a grant orphaned when the namespace (or
+  reservation) holding its name here has another id: an unrelated namespace
+  of the same name no longer receives the archive's grants.
+- **Hard cut-over: archives without namespace ids are refused.** That covers
+  system archives (grants and reservations), namespace archives
+  (`namespace_config.namespace_id`, wip-archive 0.30.0) and Registry
+  namespace exports. To bring an old archive forward, restore it on a WIP
+  from before this change, start this version, and back up again.
+- **Startup migration**, once: every namespace and reservation without an id
+  gets one; orphaned grants without one are deleted and logged, since nothing
+  says which namespace they were made for. A count on six installs found
+  none.
+- `NamespaceResponse.namespace_id`; `@wip/client` 0.88.0 (`Namespace.namespace_id`,
+  `warnings`); WIP-Toolkit 0.26.0 (its exporter writes the id).
+
 ### A deleted namespace clears every service's caches at once (where NATS runs)
 
 Services cache Registry answers for up to 30 seconds: resolutions of names to

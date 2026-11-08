@@ -74,7 +74,7 @@ def _archive(entities, referents=None):
     reader.read_manifest = MagicMock(return_value=Manifest(
         format_version="3.0",
         namespace=SOURCE,
-        namespace_config=NamespaceConfig(prefix=SOURCE, isolation_mode="open"),
+        namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix=SOURCE, isolation_mode="open"),
         counts=EntityCounts(),
         referents=None if referents is None else len(referents),
     ))

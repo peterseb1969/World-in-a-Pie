@@ -114,6 +114,7 @@ def run_export(
     if ns_config_data:
         ns_config = NamespaceConfig(
             prefix=ns_config_data.get("prefix", namespace),
+            namespace_id=ns_config_data["namespace_id"],
             description=ns_config_data.get("description", ""),
             isolation_mode=ns_config_data.get("isolation_mode", "open"),
             id_config=ns_config_data.get("id_config"),

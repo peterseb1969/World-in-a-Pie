@@ -71,9 +71,9 @@ def _derived_archive(path: Path, derived_from) -> Path:
     writer.add_entity("terminologies", dict(TERMINOLOGY), namespace=NAMESPACE)
     writer.write(Manifest(
         namespace=NAMESPACE,
-        namespace_config=NamespaceConfig(prefix=NAMESPACE),
+        namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix=NAMESPACE),
         namespaces=[NamespaceEntry(
-            prefix=NAMESPACE, namespace_config=NamespaceConfig(prefix=NAMESPACE),
+            prefix=NAMESPACE, namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix=NAMESPACE),
         )],
     ))
     stamped = path.with_suffix(".derived.zip")

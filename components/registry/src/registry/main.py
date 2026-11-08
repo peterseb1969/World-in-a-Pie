@@ -83,8 +83,10 @@ async def lifespan(app: FastAPI):
     # Ensure the 'wip' system namespace exists with default grants
     existing_wip = await Namespace.find_one({"prefix": "wip"})
     if not existing_wip:
+        from .services.namespace_identity import new_namespace_id
         wip_ns = Namespace(
             prefix="wip",
+            namespace_id=new_namespace_id(),
             description="Default World In a Pie namespace",
             isolation_mode="open",
             id_config={},
@@ -129,6 +131,12 @@ async def lifespan(app: FastAPI):
     # be up yet), and retried until steps waiting on those services have run.
     from .api.namespace_deletion import get_deletion_service
     get_deletion_service().start_recovery()
+
+    # Give namespaces and reservations stored before namespace ids their id,
+    # and delete orphaned grants that have none (nothing says which namespace
+    # they were made for). Before anything that creates or matches a namespace.
+    from .services.namespace_identity import migrate_namespace_ids
+    await migrate_namespace_ids()
 
     # Store each namespace's claimed `prefixed` ID prefixes and report the
     # ones it cannot claim (a prefix two namespaces already share) — configs

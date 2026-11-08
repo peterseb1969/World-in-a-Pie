@@ -120,7 +120,7 @@ async def test_the_engine_refuses_before_creating_the_target(tmp_path):
     }
     manifest = Manifest(
         format_version="3.0",
-        namespaces=[NamespaceEntry(prefix=ns, namespace_config=NamespaceConfig(prefix=ns), counts=EntityCounts())
+        namespaces=[NamespaceEntry(prefix=ns, namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix=ns), counts=EntityCounts())
                     for ns in per_ns],
         counts=EntityCounts(),
     )

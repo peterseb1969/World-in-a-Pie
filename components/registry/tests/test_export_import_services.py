@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 import zipfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -373,7 +374,9 @@ def _build_archive(tmp_path, manifest: dict, jsonl_files: dict[str, list[dict]])
     """Build a minimal export zip with manifest + jsonl files."""
     zip_path = tmp_path / "test-export.zip"
     with zipfile.ZipFile(zip_path, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
+        # Every export carries its namespace's id; an archive without one is
+        # refused (tested separately).
+        zf.writestr("manifest.json", json.dumps({"namespace_id": str(uuid.uuid4()), **manifest}))
         for filename, items in jsonl_files.items():
             content = "\n".join(json.dumps(item) for item in items)
             zf.writestr(filename, content)

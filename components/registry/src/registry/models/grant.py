@@ -49,16 +49,26 @@ class NamespaceGrant(Document):
     orphaned: bool = Field(
         default=False,
         description=(
-            "Written by a system restore onto a namespace that did not exist and "
-            "was not reserved by the archive's owner. An orphaned grant counts "
-            "as no grant until it is activated: when a platform admin creates "
-            "the namespace, or when a namespace admin activates it. (A key whose "
-            "own namespaces list names the prefix still reads it, as any such key "
-            "does without a grant.)"
+            "Written by a system restore for a namespace that is not here: no "
+            "namespace or reservation on this install has the identity "
+            "(namespace_id) the grant was made for. An orphaned grant counts as "
+            "no grant until it is activated: when a namespace with its "
+            "namespace_id is created, by whoever creates it, or when a namespace "
+            "admin activates it. (A key whose own namespaces list names the "
+            "prefix still reads it, as any such key does without a grant.)"
         ),
     )
     orphaned_at: datetime | None = Field(
         default=None, description="When the grant was written orphaned"
+    )
+    namespace_id: str | None = Field(
+        default=None,
+        description=(
+            "On an orphaned grant: the identity of the namespace it was made "
+            "for, which a namespace created with that id activates. Unset on "
+            "an effective grant, which belongs to whichever namespace holds "
+            "its name."
+        ),
     )
 
     def is_expired(self) -> bool:

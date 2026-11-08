@@ -80,7 +80,7 @@ def _archive(per_namespace: dict[str, dict[str, list[dict]]]):
         namespaces=[
             NamespaceEntry(
                 prefix=ns,
-                namespace_config=NamespaceConfig(prefix=ns, isolation_mode="open"),
+                namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix=ns, isolation_mode="open"),
                 counts=EntityCounts(),
             )
             for ns in per_namespace

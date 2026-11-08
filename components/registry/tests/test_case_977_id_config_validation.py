@@ -10,6 +10,7 @@ mints from, and the tolerant read for values stored before validation.
 """
 
 import json
+import uuid
 import zipfile
 
 import pytest
@@ -163,6 +164,7 @@ async def test_import_refuses_a_manifest_with_bad_id_config(client: AsyncClient,
             json.dumps({
                 "version": "2.0",
                 "prefix": "idc-import",
+                "namespace_id": str(uuid.uuid4()),
                 "id_config": {"terms": {"algorithm": "prefixed"}},
             }),
         )

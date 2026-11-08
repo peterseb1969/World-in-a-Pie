@@ -11,6 +11,7 @@ startup check only reports them.
 """
 
 import json
+import uuid
 import zipfile
 
 import pytest
@@ -109,7 +110,7 @@ async def test_import_cannot_take_a_held_prefix(client: AsyncClient, tmp_path):
     archive = tmp_path / "export.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("manifest.json", json.dumps({
-            "prefix": "default", "description": "copy",
+            "prefix": "default", "namespace_id": str(uuid.uuid4()), "description": "copy",
             "isolation_mode": "open", "allowed_external_refs": [],
             "id_config": _cfg(templates="TPL-"),
         }))

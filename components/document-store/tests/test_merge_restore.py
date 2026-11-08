@@ -120,7 +120,7 @@ def _archive(entities=None, *, blobs=(), ns_config=None):
         format_version="3.0",
         namespace=NAMESPACE,
         namespace_config=ns_config
-        or NamespaceConfig(prefix=NAMESPACE, isolation_mode="open"),
+        or NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix=NAMESPACE, isolation_mode="open"),
         counts=EntityCounts(),
     )
     reader = MagicMock()
@@ -216,7 +216,7 @@ class TestMergePreconditions:
 
         await _run_merge(
             mongo,
-            _archive(ns_config=NamespaceConfig(
+            _archive(ns_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084",
                 prefix=NAMESPACE, isolation_mode="open"
             )),
             events,
@@ -779,7 +779,7 @@ def _archive_from_other(entities=None):
     reader.read_manifest = MagicMock(return_value=Manifest(
         format_version="3.0",
         namespace=OTHER_NAMESPACE,
-        namespace_config=NamespaceConfig(
+        namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084",
             prefix=OTHER_NAMESPACE, isolation_mode="open"
         ),
         counts=EntityCounts(),

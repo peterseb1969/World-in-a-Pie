@@ -16,6 +16,7 @@ import pytest
 from registry.main import providers as _app_providers
 from registry.models.api_key import StoredAPIKey
 from registry.models.grant import NamespaceGrant
+from registry.models.namespace import Namespace
 from registry.models.reservation import RuntimeReservation
 from registry.services import key_shadowing
 from registry.services.system_backup import salt_fingerprint
@@ -200,7 +201,8 @@ async def test_a_grant_without_its_namespace_is_written_orphaned(fresh, auth_hea
     await _make_state(client, auth_headers)
     archive = await _backup(client, auth_headers)
     archive["grants"].append({**archive["grants"][0], "namespace": "later-ns",
-                              "subject": "late-group", "subject_type": "group"})
+                              "subject": "late-group", "subject_type": "group",
+                              "namespace_id": str(uuid.uuid4())})
     report = await _restore(client, auth_headers, archive, dry_run=False)
     assert report["grants"]["created"] == ["later-ns/group:late-group"]
     assert report["grants"]["orphaned"] == ["later-ns/group:late-group"]
@@ -219,6 +221,7 @@ async def test_managed_source_records_arrive_unmanaged(fresh, auth_headers):
     archive["grants"].append({
         "namespace": "default", "subject": "deployed-app", "subject_type": "api_key",
         "permission": "write", "managed_by": "wip-deploy", "origin": "file",
+        "namespace_id": (await Namespace.find_one(Namespace.prefix == "default")).namespace_id,
     })
     await _restore(client, auth_headers, archive, dry_run=False)
     doc = await StoredAPIKey.find_one(StoredAPIKey.name == "deployed-app")

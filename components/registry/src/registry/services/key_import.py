@@ -60,6 +60,7 @@ from ..models.api_key import StoredAPIKey, key_name_error
 from ..models.grant import NamespaceGrant
 from ..models.reservation import RuntimeReservation
 from .managed import WIP_DEPLOY
+from .namespace_identity import reservation_namespace_id
 from .reservations import RESERVATIONS_FILE_ENV, ReservationsUnavailable, load_reservations
 
 logger = logging.getLogger("registry.key_import")
@@ -414,10 +415,13 @@ async def _import_reservations(report: ImportReport) -> None:
     for prefix, r in reservations.items():
         settings = r.settings.model_dump(exclude_none=True)
         doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
+        # A takeover (another owner) reserves another namespace: a new id,
+        # unless the namespace exists, which is then the one reserved.
+        namespace_id = await reservation_namespace_id(prefix, r.app, doc)
         if doc is None:
             await RuntimeReservation(
-                prefix=prefix, app=r.app, settings=settings, created_by=WIP_DEPLOY,
-                managed_by=WIP_DEPLOY, origin="file",
+                prefix=prefix, namespace_id=namespace_id, app=r.app, settings=settings,
+                created_by=WIP_DEPLOY, managed_by=WIP_DEPLOY, origin="file",
             ).insert()
             report.reservations_changed.append(prefix)
             continue
@@ -428,11 +432,14 @@ async def _import_reservations(report: ImportReport) -> None:
                 "keeps its grants.", prefix, doc.app, r.app, doc.app,
             )
             report.taken_over.append(f"reservation:{prefix}")
-        if (doc.managed_by, doc.app, doc.settings, doc.origin) != (WIP_DEPLOY, r.app, settings, "file"):
+        if (doc.managed_by, doc.app, doc.settings, doc.origin, doc.namespace_id) != (
+            WIP_DEPLOY, r.app, settings, "file", namespace_id,
+        ):
             doc.managed_by = WIP_DEPLOY
             doc.app = r.app
             doc.settings = settings
             doc.origin = "file"
+            doc.namespace_id = namespace_id
             await doc.save()
             report.reservations_changed.append(prefix)
 

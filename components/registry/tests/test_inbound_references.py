@@ -6,6 +6,7 @@ enforce it (wip_auth.reference_policy); the Registry stores and serves it.
 """
 
 import json
+import uuid
 import zipfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -118,7 +119,7 @@ async def test_export_carries_the_setting(client: AsyncClient):
 @pytest.mark.parametrize(("manifest_value", "expected"), [("open", "open"), (None, "closed")])
 async def test_import_applies_the_setting(client: AsyncClient, tmp_path, manifest_value, expected):
     prefix = f"inb-import-{expected}"
-    manifest = {"version": "2.0", "prefix": prefix}
+    manifest = {"version": "2.0", "prefix": prefix, "namespace_id": str(uuid.uuid4())}
     if manifest_value is not None:
         manifest["inbound_references"] = manifest_value
     archive = tmp_path / "ns.zip"

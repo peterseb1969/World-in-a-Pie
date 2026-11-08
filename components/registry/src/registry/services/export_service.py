@@ -75,6 +75,7 @@ class ExportService:
                 "version": "2.0",
                 "exported_at": datetime.now(UTC).isoformat(),
                 "prefix": namespace.prefix,
+                "namespace_id": namespace.namespace_id,
                 "description": namespace.description,
                 "isolation_mode": namespace.isolation_mode,
                 "allowed_external_refs": namespace.allowed_external_refs,

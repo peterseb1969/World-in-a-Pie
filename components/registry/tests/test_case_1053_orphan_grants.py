@@ -1,11 +1,13 @@
 """Orphaned grants: the system restore and the data restore in either order,
 and a reservation that stays its owner's approval to create the namespace.
 
-A system restore writes a grant whose namespace neither exists nor is reserved
-as `orphaned`. An orphan gives nothing. It becomes effective when a platform
-admin creates the namespace (the data restore an admin runs does), when a
+A system restore writes a grant whose namespace is not here (no namespace or
+reservation holds the namespace id the grant was archived with) as
+`orphaned`. An orphan gives nothing. It becomes effective when a namespace
+with its id is created (the ID-preserving data restore does), when a
 namespace admin activates it, or when an admin grants it again. A key that
-reserves the prefix later and creates the namespace does not inherit it.
+reserves the prefix later and creates the namespace does not inherit it: that
+is another namespace, with another id.
 
 The owner of a runtime reservation (the key that reserved the prefix) may
 create the namespace without holding a grant, and gets its `admin` grant back
@@ -18,6 +20,7 @@ import pytest
 
 from registry.models.grant import NamespaceGrant
 from registry.models.namespace import Namespace
+from registry.models.reservation import RuntimeReservation
 
 KEYS = "/api/registry/api-keys"
 NS = "/api/registry/namespaces"
@@ -43,16 +46,29 @@ async def _restore(client, headers, archive, **params) -> dict:
     return resp.json()
 
 
-async def _archive_with_grant(client, headers, namespace, subject, permission="write") -> dict:
-    """A system backup of this instance plus one key grant on `namespace`."""
+async def _archive_with_grant(
+    client, headers, namespace, subject, permission="write", namespace_id=None,
+) -> dict:
+    """A system backup of this instance plus one key grant on `namespace`,
+    archived for the namespace `namespace_id` (by default: the one holding
+    the name here, else a namespace this instance has never seen)."""
     resp = await client.post(BACKUP, headers=headers)
     assert resp.status_code == 200, resp.text
     archive = resp.json()
     archive["grants"].append({
         "namespace": namespace, "subject": subject, "subject_type": "api_key",
         "permission": permission, "granted_by": "someone",
+        "namespace_id": namespace_id or await _held_id(namespace) or str(uuid.uuid4()),
     })
     return archive
+
+
+async def _held_id(prefix: str) -> str | None:
+    ns = await Namespace.find_one(Namespace.prefix == prefix)
+    if ns is not None:
+        return ns.namespace_id
+    r = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
+    return r.namespace_id if r is not None else None
 
 
 async def _permission(client, key_headers, prefix) -> int | str:
@@ -68,12 +84,13 @@ async def _drop_namespace(prefix: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_system_restore_first_then_an_admin_create_activates(client, auth_headers):
+async def test_system_restore_first_then_the_data_restore_activates(client, auth_headers):
     """The disaster-recovery order the guide used to forbid: system first,
-    then the data restore (an admin creating the namespace)."""
+    then the data restore (re-creating the namespace with its archived id)."""
     prefix, reader = _p("later"), _p("reader")
     reader_key = await _key(client, auth_headers, reader, [prefix])
-    archive = await _archive_with_grant(client, auth_headers, prefix, reader)
+    archived_id = str(uuid.uuid4())
+    archive = await _archive_with_grant(client, auth_headers, prefix, reader, namespace_id=archived_id)
 
     dry = await _restore(client, auth_headers, archive)
     gid = f"{prefix}/api_key:{reader}"
@@ -84,9 +101,11 @@ async def test_system_restore_first_then_an_admin_create_activates(client, auth_
     assert report["grants"]["orphaned"] == [gid]
     stored = await NamespaceGrant.find_one({"namespace": prefix, "subject": reader})
     assert stored.orphaned and stored.orphaned_at is not None
+    assert stored.namespace_id == archived_id
 
-    created = await client.put(f"{NS}/{prefix}", json={}, headers=auth_headers)
+    created = await client.put(f"{NS}/{prefix}", json={"namespace_id": archived_id}, headers=auth_headers)
     assert created.status_code == 200, created.text
+    assert created.json()["namespace_id"] == archived_id
     assert created.json()["activated_orphan_grants"] == [gid]
     assert await _permission(client, reader_key, prefix) == "write"
 
@@ -124,12 +143,10 @@ async def test_a_later_reservation_holder_does_not_inherit_orphans(client, auth_
     assert await _permission(client, reader_key, prefix) == "read"
     assert await _permission(client, owner_key, prefix) == "admin"
 
-    # Re-running the system restore names the orphan instead of reviving it.
+    # Re-running the system restore leaves the orphan as it is: the namespace
+    # here has another id, so the archive's grant is still not its own.
     report = await _restore(client, auth_headers, archive, dry_run=False)
-    reasons = {s["id"]: s["reason"] for s in report["grants"]["skipped"]}
-    assert "orphaned on this instance" in reasons[f"{prefix}/api_key:{reader}"]
-    codes = {r["id"]: r["reason_code"] for r in report["grants"]["skipped"]}
-    assert codes[f"{prefix}/api_key:{reader}"] == "orphaned_here"
+    assert f"{prefix}/api_key:{reader}" in report["grants"]["unchanged"]
 
     # The namespace's admin adopts it explicitly.
     resp = await client.post(f"{NS}/{prefix}/grants/activate", headers=owner_key, json=[
@@ -213,7 +230,9 @@ async def test_a_grant_on_an_existing_or_reserved_namespace_is_written_effective
     assert (await client.put(f"{NS}/{existing}", json={}, headers=auth_headers)).status_code == 200
     await _key(client, auth_headers, _p("owner"), [reserved], reserve=[{"prefix": reserved}])
     archive = await _archive_with_grant(client, auth_headers, existing, reader)
-    archive["grants"].append({**archive["grants"][-1], "namespace": reserved})
+    archive["grants"].append({
+        **archive["grants"][-1], "namespace": reserved, "namespace_id": await _held_id(reserved),
+    })
     report = await _restore(client, auth_headers, archive, dry_run=False)
     assert report["grants"]["orphaned"] == []
     for prefix in (existing, reserved):
@@ -309,8 +328,11 @@ async def test_another_owners_reservation_does_not_inherit_the_archives_grants(c
     prefix, reader, owner = _p("foo"), _p("reader"), _p("owner")
     reader_key = await _key(client, auth_headers, reader, [prefix])
     owner_key = await _key(client, auth_headers, owner, [prefix], reserve=[{"prefix": prefix}])
-    archive = await _archive_with_grant(client, auth_headers, prefix, reader, "admin")
-    archive["reservations"] = [{"prefix": prefix, "app": "someone-else"}]
+    archived_id = str(uuid.uuid4())
+    archive = await _archive_with_grant(
+        client, auth_headers, prefix, reader, "admin", namespace_id=archived_id,
+    )
+    archive["reservations"] = [{"prefix": prefix, "app": "someone-else", "namespace_id": archived_id}]
 
     report = await _restore(client, auth_headers, archive, dry_run=False)
     assert [s["id"] for s in report["reservations"]["skipped"]] == [prefix]

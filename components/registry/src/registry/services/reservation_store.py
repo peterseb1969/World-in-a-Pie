@@ -149,11 +149,18 @@ async def save_reservation(
     doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
     if doc is not None and doc.managed_by is not None:
         raise reservation_refusal(prefix, doc.app)
+    from .namespace_identity import reservation_namespace_id
+
+    namespace_id = await reservation_namespace_id(prefix, owner, doc)
     if doc is None:
-        doc = RuntimeReservation(prefix=prefix, app=owner, settings=stored, created_by=actor)
+        doc = RuntimeReservation(
+            prefix=prefix, namespace_id=namespace_id, app=owner, settings=stored,
+            created_by=actor,
+        )
         await doc.insert()
     else:
         doc.settings = stored
+        doc.namespace_id = namespace_id
         await doc.save()
     return doc
 

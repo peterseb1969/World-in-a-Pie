@@ -19,6 +19,11 @@ class NamespaceConfig(BaseModel):
     clear an existing namespace's allowlist.
     """
     prefix: str
+    # The namespace's identity on its source. Required: an ID-preserving
+    # restore re-creates the namespace under it, so the orphaned grants a
+    # system restore wrote for it are activated; an archive without it
+    # predates namespace ids and is refused.
+    namespace_id: str
     description: str = ""
     isolation_mode: str = "open"
     id_config: dict[str, Any] | None = None

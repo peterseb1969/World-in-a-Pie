@@ -160,7 +160,9 @@ async def test_mirror_keeps_managed_bootstrap_and_unrestored_user_grants(fresh, 
         namespace="vendor1", subject="admins", subject_type="group", permission="admin",
         granted_by=BOOTSTRAP_GRANTOR,
     ).insert()
-    await RuntimeReservation(prefix="resv-m", app="cooking", managed_by="wip-deploy").insert()
+    await RuntimeReservation(
+        prefix="resv-m", namespace_id=str(uuid.uuid4()), app="cooking", managed_by="wip-deploy",
+    ).insert()
     await _grant(client, auth_headers, "vendor1", "ann@example.org", subject_type="user")
 
     dry = await _restore(client, auth_headers, archive, mode="mirror")

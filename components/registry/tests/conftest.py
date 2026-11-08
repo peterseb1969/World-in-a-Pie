@@ -1,6 +1,7 @@
 """Pytest configuration and fixtures for Registry tests."""
 
 import os
+import uuid
 from collections.abc import AsyncGenerator
 
 import pytest
@@ -119,14 +120,17 @@ async def _create_test_namespaces():
     namespaces = [
         Namespace(
             prefix="default",
+            namespace_id=str(uuid.uuid4()),
             description="Default namespace for testing"
         ),
         Namespace(
             prefix="vendor1",
+            namespace_id=str(uuid.uuid4()),
             description="Vendor 1 namespace for testing"
         ),
         Namespace(
             prefix="vendor2",
+            namespace_id=str(uuid.uuid4()),
             description="Vendor 2 namespace for testing"
         ),
     ]

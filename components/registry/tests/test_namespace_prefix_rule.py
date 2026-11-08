@@ -9,6 +9,7 @@ stays writable.
 """
 
 import json
+import uuid
 import zipfile
 
 import pytest
@@ -72,7 +73,7 @@ async def test_import_refuses_to_create_an_invalid_prefix(client, tmp_path):
     archive = tmp_path / "export.zip"
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("manifest.json", json.dumps({
-            "prefix": "source", "description": "copy",
+            "prefix": "source", "namespace_id": str(uuid.uuid4()), "description": "copy",
             "isolation_mode": "open", "allowed_external_refs": [], "id_config": {},
         }))
     svc = ImportService(

@@ -55,6 +55,18 @@ class Namespace(Document):
         ...,
         description="Unique prefix for this namespace (e.g., 'wip', 'dev', 'customer-abc')"
     )
+    namespace_id: str | None = Field(
+        default=None,
+        description=(
+            "The namespace's identity (UUID7, minted by the Registry). The name "
+            "says which namespace holds it now; the id says whether two of them "
+            "are the same namespace: a reservation and the namespace created "
+            "under it share one, an ID-preserving restore re-creates the "
+            "archived one, a namespace deleted and created again under its name "
+            "gets a new one. Set on every namespace (a startup migration fills "
+            "namespaces stored before the field)."
+        ),
+    )
     description: str = Field(
         default="",
         description="Human-readable description of this namespace"
@@ -156,6 +168,12 @@ class Namespace(Document):
         name = "namespaces"
         indexes: ClassVar[list[IndexModel]] = [
             IndexModel([("prefix", 1)], unique=True, name="prefix_unique_idx"),
+            IndexModel(
+                [("namespace_id", 1)],
+                unique=True,
+                name="namespace_id_unique_idx",
+                partialFilterExpression={"namespace_id": {"$type": "string"}},
+            ),
             IndexModel([("status", 1)], name="status_idx"),
             # Multikey: unique across namespaces, not within one (a namespace
             # whose entity types share a prefix is refused before the write).

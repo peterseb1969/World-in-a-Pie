@@ -761,8 +761,17 @@ class DirectBackupEngine:
         )
         if ns_doc is None:
             return None
+        if not ns_doc.get("namespace_id"):
+            # The Registry's startup gives every namespace its id; one without
+            # cannot be archived, since its restore could not be told apart
+            # from another namespace of the same name.
+            raise RuntimeError(
+                f"Namespace '{namespace}' has no namespace_id: restart the Registry "
+                "(its startup gives every namespace one) and back up again"
+            )
         return NamespaceConfig(
             prefix=ns_doc.get("prefix", namespace),
+            namespace_id=ns_doc["namespace_id"],
             description=ns_doc.get("description", ""),
             isolation_mode=ns_doc.get("isolation_mode", "open"),
             id_config=ns_doc.get("id_config"),
@@ -5238,6 +5247,7 @@ class DirectRestoreEngine:
                 {"prefix": namespace}, {"id_config": 1}
             )
             live = {**live, "id_config": (stored or {}).get("id_config") or {}}
+        self._check_identity(namespace, body.get("namespace_id"), live)
         for field in _NAMESPACE_SETTINGS:
             if field in body and body[field] != live.get(field):
                 self._emit("warning", (
@@ -5257,6 +5267,11 @@ class DirectRestoreEngine:
             body["isolation_mode"] = ns_config.isolation_mode
             if preserve_id_config and ns_config.id_config:
                 body["id_config"] = ns_config.id_config
+            # An ID-preserving restore re-creates the archived namespace, so
+            # it carries its id (applied only when the call creates it). A
+            # fresh restore is a copy: a new namespace, a new id.
+            if preserve_id_config:
+                body["namespace_id"] = ns_config.namespace_id
             # None means the archive predates these manifest fields — omit
             # them so the PUT leaves an existing namespace's config untouched
             # instead of resetting it to platform defaults. An explicit value
@@ -5307,8 +5322,25 @@ class DirectRestoreEngine:
                     f"Failed to upsert namespace '{namespace}': "
                     f"{resp.status_code} — {resp.text}"
                 )
+        self._check_identity(namespace, body.get("namespace_id"), resp.json())
         if not dry_run:
             logger.info("Upserted namespace %s from manifest config", namespace)
+
+    def _check_identity(
+        self, namespace: str, archived_id: str | None, live: dict[str, Any],
+    ) -> None:
+        """Warn when the namespace restored into is not the archived one:
+        the grants a system restore wrote for the archived namespace then
+        stay orphaned."""
+        for warning in live.get("warnings") or []:
+            self._emit("warning", f"Namespace '{namespace}': {warning}")
+        if archived_id and live.get("namespace_id") != archived_id:
+            self._emit("warning", (
+                f"Namespace '{namespace}' here is not the archived namespace (id "
+                f"{live.get('namespace_id')} here, {archived_id} in the archive): the "
+                "archive's data is restored into it, and grants a system restore "
+                "wrote for the archived namespace stay orphaned"
+            ))
 
     async def _insert_batch(
         self,

@@ -832,25 +832,32 @@ in §5.5.
     The keys, grants and other attachments are restored all the same;
   - an entry the source's wip-deploy manages is skipped: the install that
     deploys the app re-creates it.
-- **Either order.** A grant on a namespace that exists (active or archived),
-  or on a prefix reserved here by the archive's owner, is written as it was
-  (a reserving key needs its grant to create the namespace). Any other grant
-  is written **orphaned**, including one on a prefix another owner reserves
-  here: it counts as no grant until it is activated, and the report lists
-  it. (A key whose own `namespaces` list names the prefix still reads it, as
-  any such key does without a grant.) A grant the archive holds orphaned
-  never replaces one that is effective here. It is activated
-  when a platform admin creates the namespace, which a namespace restore run
-  by an admin does, or when a namespace admin activates it (`POST
-  /api/registry/namespaces/{prefix}/grants/activate`) or grants it again. A key
-  that reserves the prefix later and creates the namespace does not inherit
-  it. **A platform admin's create activates every orphan on the name**,
-  including those written because another owner reserves it here: a
-  namespace is known only by its name, so they cannot be told apart. Before
-  an admin creates such a namespace, list its orphans and revoke any that
-  should not apply. `GET /api/registry/grants?orphaned=true` lists every orphan. So the
-  system backup and the namespace backups can be restored in either order,
-  and re-running the system restore is safe.
+- **Either order.** Every namespace has a `namespace_id`, its identity apart
+  from its name, and the archive records the one each grant is for. A grant
+  whose namespace is here (a namespace, active or archived, or a reservation,
+  holding that id) is written as it was. Any other grant is written
+  **orphaned**, with the id: on a name nobody holds here, and on a name held
+  here by *another* namespace (a namespace or reservation of the same name
+  with another id, such as another owner's reservation). An orphan counts as
+  no grant until it is activated, and the report lists it. (A key whose own
+  `namespaces` list names the prefix still reads it, as any such key does
+  without a grant.) A grant the archive holds orphaned never replaces one
+  that is effective here. An orphan is activated when a namespace **with its
+  id** is created, by whoever creates it, which the ID-preserving namespace
+  restore does; or when a namespace admin activates it (`POST
+  /api/registry/namespaces/{prefix}/grants/activate`) or grants it again. A
+  plain create of the name, or a key that reserves the prefix later and
+  creates the namespace, makes another namespace with another id and
+  activates none of them. `GET /api/registry/grants?orphaned=true` lists
+  every orphan. So the system backup and the namespace backups can be
+  restored in either order, and re-running the system restore is safe. A
+  disaster recovery done with a *fresh* restore (new ids, a copy) leaves the
+  grants orphaned: activate them on the copy if they should apply there.
+- **Archives without namespace ids are refused**, system and namespace
+  archives alike. To bring one forward, restore it on a WIP from before
+  namespace ids, start this version (its startup gives every namespace and
+  reservation an id, and deletes orphaned grants it cannot match), and back
+  up again.
 - **A namespace restore creates namespaces as the requester.** A platform
   admin's namespace restore applies the archive's namespace settings. Anyone
   else's never changes a namespace's settings: an existing namespace keeps
@@ -864,6 +871,15 @@ in §5.5.
   not carried over and new ids are minted the reservation's way from then
   on; the job's warnings say so. Have a platform admin run the restore when
   the archive's settings must apply.
+- **The restored namespace's id.** A platform admin's ID-preserving restore
+  re-creates the namespace under its archived `namespace_id`, unless a
+  namespace on this install already holds that id (restoring beside the
+  original makes a copy, with a new id; the job warns). Onto a name reserved
+  here for another id it is refused (409): release the reservation first. A
+  reservation holder's restore creates the namespace under the reservation's
+  id, and a fresh restore under a new one; the job warns when the namespace
+  is not the archived one, since the archive's orphaned grants then stay
+  orphaned.
 - **Restoring onto an instance in use brings back old access.** If the
   instance already holds keys, grants or reservations of its own, the report
   opens with a warning. Access revoked since the backup comes back too:

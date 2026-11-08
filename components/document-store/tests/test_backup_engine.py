@@ -97,7 +97,12 @@ def _make_mongo_mock(*, docs_per_collection=None, counts_per_collection=None,
         )
         # find_one is async; for namespaces, returns namespace_config_doc
         if coll_name == "namespaces":
-            coll.find_one = AsyncMock(return_value=namespace_config_doc)
+            # A Registry namespace record: every one carries its id.
+            doc = (
+                {"namespace_id": "019a0000-0000-7000-8000-0000000c1084", **namespace_config_doc}
+                if namespace_config_doc is not None else None
+            )
+            coll.find_one = AsyncMock(return_value=doc)
         else:
             coll.find_one = AsyncMock(return_value=None)
         # insert_many is async (success by default)
@@ -611,7 +616,7 @@ class TestUpsertNamespace:
         manifest = Manifest(
             format_version="3.0",
             namespace="kb",
-            namespace_config=NamespaceConfig(
+            namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084",
                 prefix="kb",
                 description="Knowledge base",
                 isolation_mode="strict",
@@ -654,7 +659,7 @@ class TestUpsertNamespace:
             registry_base_url="http://registry:8001",
             registry_api_key="test-key",
         )
-        config = NamespaceConfig(
+        config = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084",
             prefix="library",
             allowed_external_refs=[],
             deletion_mode="retain",
@@ -691,7 +696,7 @@ class TestUpsertNamespace:
             registry_base_url="http://registry:8001",
             registry_api_key="test-key",
         )
-        config = NamespaceConfig(
+        config = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084",
             prefix="src",
             description="prefixed source",
             isolation_mode="open",
@@ -730,7 +735,7 @@ class TestUpsertNamespace:
             registry_base_url="http://registry:8001",
             registry_api_key="test-key",
         )
-        config = NamespaceConfig(prefix="kb", description="old archive")
+        config = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="kb", description="old archive")
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -762,7 +767,7 @@ class TestUpsertNamespace:
             registry_base_url="http://registry:8001",
             registry_api_key="test-key",
         )
-        config = NamespaceConfig(
+        config = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084",
             prefix="lab",
             allowed_external_refs=["wip"],
             deletion_mode="full",
@@ -802,7 +807,7 @@ class TestUpsertNamespace:
         manifest = Manifest(
             format_version="3.0",
             namespace="kb",
-            namespace_config=NamespaceConfig(prefix="kb"),
+            namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="kb"),
             counts=EntityCounts(),
         )
 
@@ -828,7 +833,7 @@ def _dry_registry(put_status: int = 200, put_body: dict | None = None):
     with patch("httpx.AsyncClient") as cls:
         client = MagicMock()
         client.get = AsyncMock(return_value=_response(404))
-        client.put = AsyncMock(return_value=_response(put_status, put_body or {"prefix": "kb"}))
+        client.put = AsyncMock(return_value=_response(put_status, put_body or {"prefix": "kb", "namespace_id": "019a0000-0000-7000-8000-0000000c1084"}))
         client.__aenter__ = AsyncMock(return_value=client)
         client.__aexit__ = AsyncMock(return_value=None)
         cls.return_value = client
@@ -849,11 +854,12 @@ class TestUpsertNamespaceAsRequester:
     restore applies the archive's settings; anyone else's never changes a
     namespace's settings, and each one not applied is a job warning."""
 
-    CONFIG = NamespaceConfig(
+    CONFIG = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084",
         prefix="aa-x", description="App", isolation_mode="open",
         inbound_references="open", deletion_mode="full",
     )
-    LIVE: ClassVar[dict] = {"prefix": "aa-x", "description": "App", "isolation_mode": "strict",
+    LIVE: ClassVar[dict] = {"prefix": "aa-x", "namespace_id": "019a0000-0000-7000-8000-0000000c1084",
+                            "description": "App", "isolation_mode": "strict",
                             "inbound_references": "closed", "deletion_mode": "retain"}
 
     def _engine(self, requester, events, stored=None):
@@ -975,7 +981,7 @@ class TestUpsertNamespaceAsRequester:
         merged in; the archive holds it as stored. Only a real difference
         warns."""
         scheme = {"documents": {"algorithm": "prefixed", "prefix": "P-", "pad": 6}}
-        config = NamespaceConfig(prefix="aa-x", description="App", id_config=scheme)
+        config = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="aa-x", description="App", id_config=scheme)
         view = {t: {"algorithm": "uuid7"} for t in ("terminologies", "terms", "templates", "files")}
         view["documents"] = {"algorithm": "prefixed", "prefix": "P-", "pad": 6, "start": 1}
         stored = {"prefix": "aa-x", "id_config": {
@@ -1087,7 +1093,7 @@ class TestRunRestoreBasicFlow:
         manifest = Manifest(
             format_version="3.0",
             namespace="kb",
-            namespace_config=NamespaceConfig(prefix="kb", isolation_mode="open"),
+            namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="kb", isolation_mode="open"),
             counts=EntityCounts(terminologies=2, documents=3),
         )
 
@@ -1141,7 +1147,7 @@ class TestRunRestoreBasicFlow:
         manifest = Manifest(
             format_version="3.0",
             namespace="kb",
-            namespace_config=NamespaceConfig(prefix="kb"),
+            namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="kb"),
             counts=EntityCounts(),
         )
         mock_reader = MagicMock()
@@ -1169,7 +1175,7 @@ class TestRestoreRedirectGuard:
         manifest = Manifest(
             format_version="3.0",
             namespace=namespace,
-            namespace_config=NamespaceConfig(prefix=namespace),
+            namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix=namespace),
             counts=EntityCounts(),
         )
         mock_reader = MagicMock()
@@ -1228,7 +1234,7 @@ class TestRunRestoreDryRun:
         manifest = Manifest(
             format_version="3.0",
             namespace="kb",
-            namespace_config=NamespaceConfig(prefix="kb", isolation_mode="open"),
+            namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="kb", isolation_mode="open"),
             counts=EntityCounts(terminologies=2, documents=3),
         )
         mock_reader = MagicMock()
@@ -1572,7 +1578,7 @@ class TestRestoreIdentityPrecondition:
         manifest = Manifest(
             format_version="3.0",
             namespace="kb",
-            namespace_config=NamespaceConfig(prefix="kb", isolation_mode="open"),
+            namespace_config=NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="kb", isolation_mode="open"),
             counts=EntityCounts(terminologies=2),
         )
         mock_reader = MagicMock()
@@ -1595,6 +1601,7 @@ class TestRestoreIdentityPrecondition:
 
     def _httpx_ok(self):
         ok_resp = MagicMock(status_code=200, text="ok")
+        ok_resp.json.return_value = {"namespace_id": "019a0000-0000-7000-8000-0000000c1084"}
         mock_httpx = MagicMock()
         mock_httpx.put = AsyncMock(return_value=ok_resp)
         mock_httpx.__aenter__ = AsyncMock(return_value=mock_httpx)

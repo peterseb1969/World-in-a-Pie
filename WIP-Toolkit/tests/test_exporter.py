@@ -26,6 +26,7 @@ def mock_collector():
     collector = MagicMock()
     collector.fetch_namespace_config.return_value = {
         "prefix": "wip",
+        "namespace_id": "019a0000-0000-7000-8000-0000000c1084",
         "description": "Test namespace",
         "isolation_mode": "open",
     }

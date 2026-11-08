@@ -88,6 +88,17 @@ class NamespaceUpdate(StrictModel):
             "existing namespace. Mirrors the safety guard on the narrow PATCH route."
         ),
     )
+    namespace_id: str | None = Field(
+        default=None,
+        description=(
+            "Platform admins only, and only honoured when the call creates the "
+            "namespace: the id of the namespace an ID-preserving restore or "
+            "import re-creates, from its archive. It is adopted unless a live "
+            "namespace holds it (then a new id, and a warning); onto a name "
+            "reserved here under another id the create is refused (409). On an "
+            "existing namespace it is not applied: a namespace keeps its id."
+        ),
+    )
     updated_by: str | None = None
 
 
@@ -95,6 +106,14 @@ class NamespaceResponse(BaseModel):
     """Response model for a user-facing namespace."""
 
     prefix: str
+    namespace_id: str | None = Field(
+        default=None,
+        description=(
+            "The namespace's identity (UUID7): the same namespace keeps it across "
+            "an ID-preserving restore; a namespace deleted and created again under "
+            "its name has a new one"
+        ),
+    )
     description: str
     isolation_mode: str
     allowed_external_refs: list[str]
@@ -109,10 +128,14 @@ class NamespaceResponse(BaseModel):
     activated_orphan_grants: list[str] = Field(
         default_factory=list,
         description=(
-            "Set by a create only: the orphaned grants on this prefix that "
-            "became effective because a platform admin created the namespace "
-            "(as 'namespace/subject_type:subject'). Empty otherwise."
+            "Set by a create only: the orphaned grants made for this namespace "
+            "(its namespace_id) that became effective, as "
+            "'namespace/subject_type:subject'. Empty otherwise."
         ),
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description="Set by a create only: e.g. an archived namespace_id that could not be adopted",
     )
 
 

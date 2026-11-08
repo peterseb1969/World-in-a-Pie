@@ -2447,6 +2447,12 @@ declare class FileStoreService extends BaseService {
 
 interface Namespace {
     prefix: string;
+    /**
+     * The namespace's identity (UUID7), apart from its name: an ID-preserving
+     * restore keeps it; a namespace deleted and created again under its name
+     * has a new one.
+     */
+    namespace_id: string;
     description: string;
     isolation_mode: 'open' | 'strict';
     /** Who may reference this namespace from another one: 'closed' only writers who can read it. */
@@ -2460,12 +2466,13 @@ interface Namespace {
     updated_at: string;
     updated_by: string | null;
     /**
-     * Set by a create only: the orphaned grants on this prefix that became
-     * effective because a platform admin created the namespace, as
-     * 'namespace/subject_type:subject'. Empty otherwise; absent from
-     * Registries that predate orphaned grants.
+     * Set by a create only: the orphaned grants made for this namespace (its
+     * namespace_id) that became effective, as 'namespace/subject_type:subject'.
+     * Empty otherwise.
      */
     activated_orphan_grants?: string[];
+    /** Set by a create only: e.g. an archived namespace_id that could not be adopted. */
+    warnings?: string[];
 }
 interface NamespaceStats {
     prefix: string;

@@ -135,32 +135,6 @@ def _grant_label(grant: NamespaceGrant) -> str:
     return f"{grant.namespace}/{grant.subject_type}:{grant.subject}"
 
 
-async def activate_orphaned_grants(prefix: str, actor: str) -> list[str]:
-    """Make every orphaned grant on `prefix` effective; returns them as
-    'namespace/subject_type:subject'.
-
-    Called when a platform admin creates the namespace: an admin could grant
-    each of them anyway, and a disaster-recovery restore of the namespace
-    data then needs no second system restore. Every orphan is activated,
-    including those a restore wrote because another owner reserves the
-    name here: an orphan does not record why it was written, and a
-    namespace is known only by its name, so the two cannot be told apart. A namespace created under a
-    reservation by its holder does not call this: an orphan exists because
-    the archive held no reservation of the prefix, so the holder is not the
-    namespace the grant was made for.
-    """
-    orphans = await NamespaceGrant.find({"namespace": prefix, "orphaned": True}).to_list()
-    for grant in orphans:
-        await grant.set({"orphaned": False, "orphaned_at": None})
-    labels = sorted(_grant_label(g) for g in orphans)
-    if labels:
-        logger.warning(
-            "Namespace '%s' created by %s: activated %d orphaned grant(s): %s",
-            prefix, actor, len(labels), ", ".join(labels),
-        )
-    return labels
-
-
 async def reservation_owner(identity: UserIdentity, prefix: str) -> str | None:
     """The calling key's name when it owns the runtime reservation of
     `prefix`, else None.
@@ -433,6 +407,7 @@ async def create_grants(
                 existing.granted_at = datetime.now(UTC)
                 existing.orphaned = False
                 existing.orphaned_at = None
+                existing.namespace_id = None
                 await existing.save()
                 results.append({
                     "index": i, "status": "updated",
@@ -526,9 +501,10 @@ async def activate_grants(
     identity: UserIdentity = Depends(require_api_key),
 ):
     """Make orphaned grants effective. An orphaned grant is one a system
-    restore wrote while its namespace did not exist and was not reserved; it
-    counts as no grant until activated here, re-granted, or the namespace is
-    created by a platform admin. Needs admin on the namespace, which must
+    restore wrote for a namespace not on this install (no namespace or
+    reservation holds its namespace_id); it counts as no grant until activated
+    here, re-granted, or a namespace with its namespace_id is created. Activated
+    here, it belongs to this namespace, whatever it was made for. Needs admin on the namespace, which must
     exist. Revoking an orphan works like revoking any grant.
 
     Per item: activated, unchanged (not orphaned), not_found, or error
@@ -558,7 +534,7 @@ async def activate_grants(
         elif not grant.orphaned:
             results.append({"index": i, "status": "unchanged", "subject": subject})
         else:
-            await grant.set({"orphaned": False, "orphaned_at": None})
+            await grant.set({"orphaned": False, "orphaned_at": None, "namespace_id": None})
             logger.info(
                 "%s activated orphaned grant %s", identity.identity_string, _grant_label(grant)
             )

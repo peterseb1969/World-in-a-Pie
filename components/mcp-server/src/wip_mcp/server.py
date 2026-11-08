@@ -658,6 +658,16 @@ Binary files stored in the object store (Garage), referenced by documents.
 - Upload returns a file_id (UUID7 format)
 - Link the file_id to a document's file field
 
+## Namespaces
+A namespace is the container every other entity lives in, addressed by its
+name (prefix). It also has a namespace_id (UUID7), its identity apart from
+the name: a reservation and the namespace created under it share one, an
+ID-preserving restore re-creates the namespace under its archived id, and a
+namespace deleted and created again under the same name gets a new one. The
+id answers "is this the same namespace?", e.g. for which namespace an
+orphaned grant was made; everything else (references, keys, reporting
+schemas, events) addresses a namespace by name.
+
 ## Registry & Synonyms
 The Registry assigns canonical IDs (UUID7) to all entities. Any entity can have
 multiple identifiers (synonyms) — external IDs, vendor codes, alternate names.

@@ -115,7 +115,7 @@ class TestManifest:
         assert m.counts.terms == 100
 
     def test_manifest_with_namespace_config(self):
-        ns_config = NamespaceConfig(
+        ns_config = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084",
             prefix="wip",
             description="Test namespace",
             isolation_mode="strict",
@@ -247,23 +247,23 @@ class TestNamespaceConfig:
     """Test NamespaceConfig model."""
 
     def test_prefix_required(self):
-        ns = NamespaceConfig(prefix="wip")
+        ns = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="wip")
         assert ns.prefix == "wip"
 
     def test_default_description_empty(self):
-        ns = NamespaceConfig(prefix="wip")
+        ns = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="wip")
         assert ns.description == ""
 
     def test_default_isolation_mode(self):
-        ns = NamespaceConfig(prefix="wip")
+        ns = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="wip")
         assert ns.isolation_mode == "open"
 
     def test_default_id_config_none(self):
-        ns = NamespaceConfig(prefix="wip")
+        ns = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084", prefix="wip")
         assert ns.id_config is None
 
     def test_custom_values(self):
-        ns = NamespaceConfig(
+        ns = NamespaceConfig(namespace_id="019a0000-0000-7000-8000-0000000c1084",
             prefix="medical",
             description="Medical data namespace",
             isolation_mode="strict",

@@ -84,6 +84,14 @@ class ImportService:
 
             source_prefix = manifest["prefix"]
             prefix = target_prefix or source_prefix
+            archived_id = manifest.get("namespace_id")
+            if not archived_id:
+                raise ValueError(
+                    "Invalid export archive: the manifest has no namespace_id (it "
+                    "predates namespace ids). Import it on a Registry from before "
+                    "namespace ids, let this version's startup give the namespace "
+                    "its id, and export it again."
+                )
 
             # Check if namespace exists
             existing_ns = await Namespace.find_one({"prefix": prefix})
@@ -144,9 +152,22 @@ class ImportService:
             elif not existing_ns:
                 if error := prefix_error(prefix):
                     raise ValueError(error)
+                from .namespace_identity import (
+                    NamespaceIdentityConflict,
+                    activate_orphans,
+                    adopt_on_reservation,
+                    id_for_create,
+                )
+                try:
+                    namespace_id, identity_warning = await id_for_create(prefix, archived_id)
+                except NamespaceIdentityConflict as e:
+                    raise ValueError(e.detail) from e
+                if identity_warning:
+                    logger.warning("Import of '%s': %s", prefix, identity_warning)
                 id_prefixes = await claim_for_write(prefix, imported_id_config)
                 namespace = Namespace(
                     prefix=prefix,
+                    namespace_id=namespace_id,
                     description=manifest.get("description", f"Imported from {source_prefix}"),
                     isolation_mode=manifest.get("isolation_mode", "open"),
                     allowed_external_refs=manifest.get("allowed_external_refs", []),
@@ -156,11 +177,10 @@ class ImportService:
                     created_by=imported_by,
                 )
                 await namespace.create()
-                # Import is a platform admin's: orphaned grants waiting for
-                # this prefix become effective, as on any admin create.
-                from ..api.grants import activate_orphaned_grants
-
-                await activate_orphaned_grants(prefix, imported_by or "a namespace import")
+                await adopt_on_reservation(prefix, namespace_id)
+                # Orphaned grants made for the imported namespace (its id)
+                # become effective, as on any create.
+                await activate_orphans(namespace, imported_by or "a namespace import")
             else:
                 # mode='merge' on existing — return the existing record
                 namespace = existing_ns

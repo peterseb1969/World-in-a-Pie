@@ -171,7 +171,8 @@ async def test_a_scoped_archive_never_writes_a_grant_outside_its_scope(fresh, au
     a, z = await _two_namespaces(client, auth_headers)
     archive = await _backup(client, auth_headers, namespaces=a)
     archive["grants"].append(
-        {"namespace": z, "subject": "edited-in", "subject_type": "group", "permission": "admin"}
+        {"namespace": z, "subject": "edited-in", "subject_type": "group", "permission": "admin",
+         "namespace_id": str(uuid.uuid4())}
     )
 
     report = await _restore(client, auth_headers, archive, dry_run=False)
@@ -191,7 +192,9 @@ async def test_a_scoped_archive_never_writes_any_record_outside_its_scope(fresh,
     archive = await _backup(client, auth_headers, namespaces=a)
     outside_key, outside_app = _p("edited-key"), _p("edited-app")
     archive["api_keys"].append({"name": outside_key, "key_hash": "x" * 60, "namespaces": [z]})
-    archive["reservations"].append({"prefix": _p("edited-ns"), "app": "someone"})
+    archive["reservations"].append(
+        {"prefix": _p("edited-ns"), "app": "someone", "namespace_id": str(uuid.uuid4())}
+    )
     archive["attachments"].append({
         "name": outside_app, "upstream": "https://edited.apps.example", "auth_required": True,
         "allowed_groups": [], "status": "active",

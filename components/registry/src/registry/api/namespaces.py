@@ -38,13 +38,20 @@ from ..services.id_prefixes import (
     collision_error,
     is_prefix_collision,
 )
+from ..services.namespace_identity import (
+    NamespaceIdentityConflict,
+    activate_orphans,
+    adopt_on_reservation,
+    id_for_create,
+    new_namespace_id,
+)
 from ..services.reservation_store import find_reservation
 from ..services.reservations import (
     SETTING_DEFAULTS,
     SETTING_FIELDS,
     ReservationsUnavailable,
 )
-from .grants import _resolve_permission, activate_orphaned_grants, reservation_owner
+from .grants import _resolve_permission, reservation_owner
 
 router = APIRouter()
 logger = logging.getLogger("registry.namespaces")
@@ -74,6 +81,7 @@ def namespace_to_response(ns: Namespace) -> NamespaceResponse:
 
     return NamespaceResponse(
         prefix=ns.prefix,
+        namespace_id=ns.namespace_id,
         description=ns.description,
         isolation_mode=ns.isolation_mode,
         allowed_external_refs=ns.allowed_external_refs,
@@ -137,7 +145,7 @@ async def _restore_owner_grant(prefix: str, owner: str) -> None:
         ).create()
         logger.info("Namespace '%s' created by its reservation's owner: granted '%s' admin", prefix, owner)
     elif grant.orphaned:
-        await grant.set({"orphaned": False, "orphaned_at": None})
+        await grant.set({"orphaned": False, "orphaned_at": None, "namespace_id": None})
 
 
 async def _check_reserved_upsert(
@@ -327,10 +335,12 @@ async def create_namespace(
         raise HTTPException(status_code=400, detail=error)
 
     id_config = request.model_dump(exclude_unset=True).get("id_config") or {}
+    namespace_id, _ = await id_for_create(request.prefix)
     with _id_prefix_errors(request.prefix):
         id_prefixes = await claim_for_write(request.prefix, id_config)
         ns = Namespace(
             prefix=request.prefix,
+            namespace_id=namespace_id,
             description=request.description,
             isolation_mode=request.isolation_mode,
             allowed_external_refs=request.allowed_external_refs,
@@ -342,9 +352,10 @@ async def create_namespace(
         )
         await ns.create()
 
+    await adopt_on_reservation(ns.prefix, namespace_id)
     response = namespace_to_response(ns)
-    response.activated_orphan_grants = await activate_orphaned_grants(
-        ns.prefix, request.created_by or "a platform admin"
+    response.activated_orphan_grants = await activate_orphans(
+        ns, request.created_by or "a platform admin"
     )
     return response
 
@@ -416,6 +427,15 @@ async def upsert_namespace(
 
     reserved = await _reserved_settings(prefix)
     is_admin = identity.has_any_group(get_auth_config().admin_groups)
+    archived_id = update_data.pop("namespace_id", None)
+    if archived_id is not None and not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only a platform admin may send namespace_id: it decides which "
+                "namespace's orphaned grants a create activates"
+            ),
+        )
     owner: str | None = None
     if not is_admin:
         owner = await reservation_owner(identity, prefix)
@@ -464,10 +484,15 @@ async def upsert_namespace(
             **{k: update_data[k] for k in SETTING_FIELDS if update_data.get(k) is not None},
         }
         id_config = settings["id_config"]
+        try:
+            namespace_id, identity_warning = await id_for_create(prefix, archived_id)
+        except NamespaceIdentityConflict as e:
+            raise HTTPException(status_code=e.status_code, detail=e.detail) from e
         with _id_prefix_errors(prefix):
             id_prefixes = await claim_for_write(prefix, id_config)
             ns = Namespace(
                 prefix=prefix,
+                namespace_id=namespace_id,
                 description=settings["description"],
                 isolation_mode=settings["isolation_mode"],
                 allowed_external_refs=settings["allowed_external_refs"],
@@ -477,15 +502,19 @@ async def upsert_namespace(
                 deletion_mode=settings["deletion_mode"],
                 created_by=actor,
             )
+            response = namespace_to_response(ns)
+            if identity_warning:
+                response.warnings.append(identity_warning)
             if dry_run:
-                return namespace_to_response(ns)
+                return response
             await ns.create()
-        response = namespace_to_response(ns)
-        if is_admin:
-            response.activated_orphan_grants = await activate_orphaned_grants(
-                prefix, identity.identity_string
-            )
-        elif owner is not None:
+        if identity_warning:
+            logger.warning("Namespace '%s': %s", prefix, identity_warning)
+        await adopt_on_reservation(prefix, namespace_id)
+        # Orphans made for this namespace (its id) are activated whoever
+        # creates it: the id, not the creator, says they are its own.
+        response.activated_orphan_grants = await activate_orphans(ns, identity.identity_string)
+        if owner is not None:
             await _restore_owner_grant(prefix, owner)
         return response
 
@@ -586,6 +615,7 @@ async def initialize_wip_namespace(
 
     ns = Namespace(
         prefix="wip",
+        namespace_id=new_namespace_id(),
         description="Default World In a Pie namespace",
         isolation_mode="open",
         id_config={},  # Empty = defaults to UUID7 for everything

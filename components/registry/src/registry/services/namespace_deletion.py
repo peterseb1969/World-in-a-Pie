@@ -719,6 +719,11 @@ class NamespaceDeletionService:
                 continue
             try:
                 deleted = await self._execute_step(step, journal.namespace)
+                if step.store == "mongodb" and step.collection == "namespaces":
+                    # The namespace is gone, and its id with it: a reservation
+                    # that stays reserves a new namespace of that name.
+                    from .namespace_identity import after_namespace_deleted
+                    await after_namespace_deleted(journal.namespace)
                 # Best-effort executors (object store/PostgreSQL) record a swallowed
                 # failure on step.error instead of raising — surface it as a
                 # degraded outcome rather than a clean completion.
