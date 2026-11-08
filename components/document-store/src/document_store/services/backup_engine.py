@@ -4915,67 +4915,17 @@ class DirectRestoreEngine:
             plan = plans.get(entity_type)
             if plan is None:
                 continue
-
             db_name, coll_name = COLLECTION_MAP[entity_type]
             collection = self._mongo[db_name][coll_name]
-
-            if entity_type == "documents":
-                # The structural gate a plain restore runs after templates:
-                # the reporting tables the namespace's templates imply must
-                # exist and be correctly shaped before any document moves. A
-                # merge plans templates separately (definitions), so it runs
-                # here, once, ahead of the documents.
-                await self._reporting_phase_structure(namespace)
-
-            if entity_type == "documents" and streamed is not None:
-                inserted = 0
-                batch: list[dict[str, Any]] = []
-                for chain in streamed.inserted_chains():
-                    batch.extend(chain)
-                    if len(batch) >= batch_size:
-                        await self._insert_batch(collection, batch, entity_type)
-                        inserted += len(batch)
-                        batch = []
-                if batch:
-                    await self._insert_batch(collection, batch, entity_type)
-                    inserted += len(batch)
-                if inserted:
-                    self._emit(
-                        f"phase_{entity_type}",
-                        f"[{namespace}] inserted {inserted} {entity_type}",
-                    )
-                if on_clash in ("overwrite", "newer"):
-                    await self._overwrite_documents(
-                        namespace, plan, doc_groups,
-                        on_clash=on_clash, older_versions=older_versions,
-                        sources=streamed.clash_sources(), batch_size=batch_size,
-                    )
+            if entity_type != "documents":
+                await self._merge_insert_rows(
+                    namespace, collection, entity_type, plan.to_insert, batch_size,
+                )
                 continue
-
-            rows = plan.to_insert
-            if entity_type == "documents":
-                # An inserted document brings its whole version chain.
-                rows = [
-                    row
-                    for head in plan.to_insert
-                    for row in doc_groups.get(head.get("document_id", ""), [head])
-                ]
-
-            for start in range(0, len(rows), batch_size):
-                await self._insert_batch(
-                    collection, rows[start:start + batch_size], entity_type
-                )
-            if rows:
-                self._emit(
-                    f"phase_{entity_type}",
-                    f"[{namespace}] inserted {len(rows)} {entity_type}",
-                )
-
-            if entity_type == "documents" and on_clash in ("overwrite", "newer"):
-                await self._overwrite_documents(
-                    namespace, plan, doc_groups,
-                    on_clash=on_clash, older_versions=older_versions,
-                )
+            await self._merge_documents(
+                namespace, collection, plan, doc_groups, on_clash=on_clash,
+                older_versions=older_versions, batch_size=batch_size, streamed=streamed,
+            )
 
         if plans.get("documents") is not None or plans.get("files") is not None:
             await self._recount_file_references(namespace)
@@ -4986,6 +4936,92 @@ class DirectRestoreEngine:
                 namespace, entries_plan.to_insert
             )
             self._report_claims(namespace, claimed, taken_by_other)
+
+    async def _merge_documents(
+        self,
+        namespace: str,
+        collection: Any,
+        plan: EntityPlan,
+        doc_groups: dict[str, list[dict[str, Any]]],
+        *,
+        on_clash: str,
+        older_versions: str,
+        batch_size: int,
+        streamed: _StreamedDocuments | None,
+    ) -> None:
+        """A merge's documents: the reporting structure gate, the inserted
+        chains (streamed from the archive, or from ``doc_groups``), then the
+        clashes when the policy overwrites them."""
+        # The structural gate a plain restore runs after templates: the
+        # reporting tables the namespace's templates imply must exist and be
+        # correctly shaped before any document moves. A merge plans templates
+        # separately (definitions), so it runs here, once, ahead of the
+        # documents.
+        await self._reporting_phase_structure(namespace)
+
+        overwrites = on_clash in ("overwrite", "newer")
+        if streamed is not None:
+            await self._merge_insert_streamed(namespace, collection, streamed, batch_size)
+            if overwrites:
+                await self._overwrite_documents(
+                    namespace, plan, doc_groups,
+                    on_clash=on_clash, older_versions=older_versions,
+                    sources=streamed.clash_sources(), batch_size=batch_size,
+                )
+            return
+
+        # An inserted document brings its whole version chain.
+        rows = [
+            row
+            for head in plan.to_insert
+            for row in doc_groups.get(head.get("document_id", ""), [head])
+        ]
+        await self._merge_insert_rows(namespace, collection, "documents", rows, batch_size)
+        if overwrites:
+            await self._overwrite_documents(
+                namespace, plan, doc_groups,
+                on_clash=on_clash, older_versions=older_versions,
+            )
+
+    async def _merge_insert_rows(
+        self,
+        namespace: str,
+        collection: Any,
+        entity_type: str,
+        rows: list[dict[str, Any]],
+        batch_size: int,
+    ) -> None:
+        """Insert rows in batches of ``batch_size``, and say how many."""
+        for start in range(0, len(rows), batch_size):
+            await self._insert_batch(collection, rows[start:start + batch_size], entity_type)
+        if rows:
+            self._emit(
+                f"phase_{entity_type}",
+                f"[{namespace}] inserted {len(rows)} {entity_type}",
+            )
+
+    async def _merge_insert_streamed(
+        self,
+        namespace: str,
+        collection: Any,
+        streamed: _StreamedDocuments,
+        batch_size: int,
+    ) -> None:
+        """Insert the streamed inserted chains, whole chains at a time, in
+        batches of at least ``batch_size`` rows, and say how many."""
+        inserted = 0
+        batch: list[dict[str, Any]] = []
+        for chain in streamed.inserted_chains():
+            batch.extend(chain)
+            if len(batch) >= batch_size:
+                await self._insert_batch(collection, batch, "documents")
+                inserted += len(batch)
+                batch = []
+        if batch:
+            await self._insert_batch(collection, batch, "documents")
+            inserted += len(batch)
+        if inserted:
+            self._emit("phase_documents", f"[{namespace}] inserted {inserted} documents")
 
     @staticmethod
     def _as_timestamp(value: Any) -> datetime | None:
