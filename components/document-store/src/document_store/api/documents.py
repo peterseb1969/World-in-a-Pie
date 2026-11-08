@@ -3,6 +3,7 @@
 import asyncio
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from pymongo.errors import OperationFailure
 
 from wip_auth import (
     UserIdentity,
@@ -12,6 +13,7 @@ from wip_auth import (
     resolve_namespace_filter,
     resolve_or_404,
 )
+from wip_auth.fastapi_helpers import unresolved_detail
 
 from ..models.api_models import (
     MAX_BULK_ITEMS,
@@ -37,9 +39,13 @@ from ..services.document_service import DocumentService, get_document_service
 from ..services.errors import DocumentStoreError, error_fields
 from ..services.nats_client import get_throttle_delay
 from ..services.registry_client import get_registry_client
-from .auth import require_api_key
+from .auth import check_readable, require_api_key
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
+
+# MongoDB's codes for an operand it cannot use: BadValue, and an invalid
+# regular expression.
+_BAD_FILTER_CODES = frozenset({2, 51091})
 
 
 @router.post(
@@ -430,7 +436,7 @@ async def list_documents(
     latest_only: bool = Query(False, description="Only return the latest version of each document"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(50, ge=1, le=1000, description="Items per page (max 1000)"),
-    cursor: str | None = Query(None, description="Cursor for cursor-based pagination (MongoDB _id of last item)"),
+    cursor: str | None = Query(None, description="Cursor for cursor-based pagination: 'start' for the first page, then each page's next_cursor"),
     sort_by: str | None = Query(None, description="Sort field: created_at (default), updated_at, version, or data.<path>. Incompatible with cursor."),
     sort_order: str | None = Query(None, description="Sort order: asc | desc (default desc)"),
     identity: UserIdentity = Depends(require_api_key)
@@ -440,9 +446,11 @@ async def list_documents(
     Use latest_only=true to return only the highest version of each document_id;
     a status filter then applies to that latest version. latest_only pages by
     page/page_size and cannot be combined with cursor (422).
-    Use cursor for efficient deep pagination (avoids skip/limit degradation).
-    When cursor is provided, page parameter is ignored and total is -1, and
-    sort_by/sort_order must be omitted (cursor mode is _id-ordered).
+    Use cursor for efficient deep pagination (avoids skip/limit degradation):
+    pass cursor=start for the first page, then each response's next_cursor
+    (null on the last page). When cursor is provided, page parameter is
+    ignored, total is -1 and pages 0, and sort_by/sort_order must be omitted
+    (cursor mode is _id-ordered).
     """
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
@@ -488,6 +496,7 @@ async def get_document(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Get a document by stable ID. Returns latest version by default."""
+    raw_document_id = document_id
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
@@ -496,7 +505,7 @@ async def get_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_namespace_permission(identity, document.namespace, "read")
+    await check_readable(identity, document.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
 
     return document
 
@@ -513,6 +522,7 @@ async def get_document_versions(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Get all versions of a document."""
+    raw_document_id = document_id
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
@@ -524,7 +534,7 @@ async def get_document_versions(
     # Check namespace — fetch the document to get its namespace
     doc = await service.get_document(document_id)
     if doc:
-        await check_namespace_permission(identity, doc.namespace, "read")
+        await check_readable(identity, doc.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
 
     return versions
 
@@ -542,6 +552,7 @@ async def get_document_version(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Get a specific version of a document."""
+    raw_document_id = document_id
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
@@ -550,7 +561,7 @@ async def get_document_version(
     if not document:
         raise HTTPException(status_code=404, detail="Document version not found")
 
-    await check_namespace_permission(identity, document.namespace, "read")
+    await check_readable(identity, document.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
 
     return document
 
@@ -572,6 +583,7 @@ async def get_latest_document(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Get the latest version of a document."""
+    raw_document_id = document_id
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
@@ -580,7 +592,7 @@ async def get_latest_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_namespace_permission(identity, document.namespace, "read")
+    await check_readable(identity, document.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
 
     return document
 
@@ -653,6 +665,7 @@ async def get_document_relationships(
     identity: UserIdentity = Depends(require_api_key),
 ):
     """List relationships incident to a document."""
+    raw_document_id = document_id
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
@@ -660,7 +673,7 @@ async def get_document_relationships(
     if not seed:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_namespace_permission(identity, seed.namespace, "read")
+    await check_readable(identity, seed.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
 
@@ -718,6 +731,7 @@ async def traverse_document_relationships(
     identity: UserIdentity = Depends(require_api_key),
 ):
     """Traverse relationship graph from a document."""
+    raw_document_id = document_id
     document_id = await resolve_or_404(document_id, "document", namespace=namespace, param_name="document_id")
 
     service = get_document_service()
@@ -725,7 +739,7 @@ async def traverse_document_relationships(
     if not seed:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_namespace_permission(identity, seed.namespace, "read")
+    await check_readable(identity, seed.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
 
@@ -876,6 +890,14 @@ async def query_documents(
         return await service.query_documents(request, ns_filter=ns_filter.query)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e)) from e
+    except OperationFailure as e:
+        # MongoDB refusing a filter's operand (a pattern it cannot compile,
+        # BadValue) is the request's fault, not the server's.
+        if e.code in _BAD_FILTER_CODES:
+            raise HTTPException(
+                status_code=422, detail=f"Invalid filter: {e.details.get('errmsg', e) if e.details else e}",
+            ) from e
+        raise
 
 
 @router.get(

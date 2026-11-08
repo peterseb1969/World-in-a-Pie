@@ -1894,7 +1894,10 @@ interface NamespaceIntegritySummary {
     /** References whose held document id lives in another namespace than the reference names. */
     misplaced_document_refs: number;
     orphaned_file_refs: number;
+    /** Documents whose stored identity hash differs from the one recomputed. */
     identity_hash_mismatches: number;
+    /** Documents whose identity could not be compared (a value or resolution missing, or the pinned template version not found). */
+    identity_unverified: number;
 }
 /**
  * The outcome of a namespace validation job.

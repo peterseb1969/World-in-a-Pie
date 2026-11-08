@@ -9,6 +9,7 @@ Use cases:
 - Reporting and data analysis
 """
 
+import json
 from collections.abc import AsyncIterator
 from enum import StrEnum
 from itertools import product
@@ -77,7 +78,11 @@ class TableViewResponse(BaseModel):
     pages: int
     array_handling: Literal["flattened", "json", "none"] = Field(
         ...,
-        description="How arrays were handled: 'flattened', 'json', or 'none' (no arrays in the result set)"
+        description=(
+            "How arrays were handled on this page: 'flattened', 'json' (at "
+            "least one document's arrays exceeded max_cross_product), or "
+            "'none' (no arrays on this page)"
+        )
     )
 
 
@@ -234,7 +239,6 @@ def _flatten_document(
             value = _get_field_value(data, col.name)
             if isinstance(value, dict):
                 # Keep objects as JSON
-                import json
                 base_row[col.name] = json.dumps(value)
             else:
                 base_row[col.name] = value
@@ -248,10 +252,11 @@ def _flatten_document(
 
     if cross_product_size > max_cross_product:
         # Too large - keep arrays as JSON
-        import json
         for field_path in array_fields:
             value = _get_field_value(data, field_path)
-            base_row[field_path] = json.dumps(value) if value else None
+            # None stays empty; an empty array or object is "[]" / "{}",
+            # not erased into a missing value.
+            base_row[field_path] = json.dumps(value) if value is not None else None
         return [base_row], "json"
 
     # Flatten arrays via cross-product
@@ -269,7 +274,11 @@ def _flatten_document(
         for combo in product(*array_values):
             row = base_row.copy()
             for field_path, value in combo:
-                row[field_path] = value
+                # An object or array item is JSON, like every other object
+                # cell — written raw, CSV got its Python repr ({'a': 1}).
+                row[field_path] = (
+                    json.dumps(value) if isinstance(value, (dict, list)) else value
+                )
             rows.append(row)
     else:
         rows.append(base_row)

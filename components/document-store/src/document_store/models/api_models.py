@@ -204,8 +204,9 @@ class DocumentListResponse(BaseModel):
     pages: int
     next_cursor: str | None = Field(
         default=None,
-        description="Cursor for next page (MongoDB _id of last item). "
-                    "Null on last page or when using offset pagination."
+        description="Cursor for the next page (MongoDB _id of its last item), "
+                    "in cursor mode (start it with cursor=start). Null on the "
+                    "last page and in offset pagination."
     )
 
 
@@ -627,7 +628,13 @@ class TemplateImpactStatsResponse(BaseModel):
 
     template_id: str
     namespace: str
-    total_live_docs: int
+    total_live_docs: int = Field(
+        ...,
+        description=(
+            "Active rows on the template: one per document, except a document "
+            "a restore kept with several active versions, counted per row"
+        ),
+    )
     docs_per_version: dict[str, int] = Field(
         description="Active-document count per template_version (keys are stringified version numbers)"
     )

@@ -7,6 +7,37 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Document-store: import bounds, hidden reads, filter operands, empty pages, cursor start, integrity counts; `@wip/client` 0.95.0
+
+- **`POST /import` and `/import/preview` refuse an upload over
+  `WIP_MAX_UPLOAD_SIZE` with 413**, read in chunks as file uploads are, and
+  `/import` backs off between row batches while the reporting consumer lags,
+  as every other write does. There is no row cap.
+- **A document or file in a namespace the caller cannot read answers exactly
+  as an id that names nothing**: 404 `Could not resolve document_id '<id>' in
+  namespace '<ns>'` (or `file_id`). It answered `Namespace not found`, which
+  confirmed that the id exists.
+- **An ill-formed filter operand is 422**, not 500: `in` / `nin` without a
+  list, `exists` without true/false, `regex` without a string or with a
+  pattern MongoDB cannot compile.
+- **`pages` is 0 for an empty result** on `GET /documents`, `POST
+  /documents/query`, `GET /files` and `GET /files/{id}/documents`, as the
+  documented `ceil(total / page_size)` says (it was 1). Cursor mode also
+  reports 0.
+- **Cursor pagination can start**: pass `cursor=start` for the first page,
+  then each response's `next_cursor`. A cursor was only ever handed out by a
+  cursor-mode page, so there was no way in.
+- **Namespace validation**: a document pinned to a template version the
+  template store does not have is reported (`template_version_not_found`).
+  `identity_hash_mismatches` now counts only hashes compared and found
+  different; a document whose identity could not be compared is counted in
+  the new **`identity_unverified`**.
+- **Table view and CSV**: a flattened array item that is an object or array
+  is written as JSON (CSV carried its Python repr, `{'a': 1}`), and an empty
+  array kept as JSON is `[]`, not an empty cell.
+- reporting-sync refusing a batch sync or schema drop is logged.
+- **`@wip/client` 0.95.0**: `NamespaceIntegritySummary.identity_unverified`.
+
 ### Backups leave out inactive template versions nothing needs; a merge does not refuse over a template's status; `@wip/client` 0.94.0
 
 **Backup** (`POST /api/document-store/backup/namespaces/{namespace}/backup`,

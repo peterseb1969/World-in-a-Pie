@@ -230,6 +230,23 @@ def _declared_field_names(tpl: dict[str, Any]) -> set[str]:
     return out
 
 
+# The cursor value that opens cursor pagination at the first page.
+CURSOR_START = "start"
+
+
+def _filter_value_problem(operator: str, value: Any) -> str | None:
+    """Why a filter operand cannot be used with its operator, or None."""
+    if operator in ("in", "nin") and not isinstance(value, list):
+        return f"'{operator}' takes a list of values"
+    if operator == "exists" and not isinstance(value, bool):
+        return "'exists' takes true or false"
+    if operator == "regex" and not isinstance(value, str):
+        # Only the type: the pattern is MongoDB's (PCRE) to judge, and the
+        # query route turns its refusal into a 422 as well.
+        return "'regex' takes a string pattern"
+    return None
+
+
 def _document_id_mismatch(
     request: DocumentCreateRequest, resolved_id: str, is_new: bool,
 ) -> dict[str, Any] | None:
@@ -2167,7 +2184,8 @@ class DocumentService:
 
         When cursor is provided, uses cursor-based pagination (more efficient
         for deep pages). The cursor is the MongoDB _id of the last item from
-        the previous page. When using cursor, skip/total count are avoided.
+        the previous page, or CURSOR_START for the first page. When using
+        cursor, skip/total count are avoided.
         Cursor mode is _id-ordered by construction; sort_by is incompatible.
 
         sort_by / sort_order honour the same allow-list as POST /documents/query
@@ -2207,12 +2225,15 @@ class DocumentService:
                     "sort_by/sort_order are incompatible with cursor pagination "
                     "(cursor mode is _id-ordered by construction)."
                 )
-            # Cursor-based pagination: use _id > cursor, sorted by _id ASC
-            try:
-                cursor_oid = ObjectId(cursor)
-            except Exception as e:
-                raise ValueError(f"Invalid cursor: {cursor}") from e
-            query["_id"] = {"$gt": cursor_oid}
+            # Cursor-based pagination: use _id > cursor, sorted by _id ASC.
+            # CURSOR_START opens it at the beginning: a cursor is otherwise
+            # only ever handed out by a cursor-mode page.
+            if cursor != CURSOR_START:
+                try:
+                    cursor_oid = ObjectId(cursor)
+                except Exception as e:
+                    raise ValueError(f"Invalid cursor: {cursor}") from e
+                query["_id"] = {"$gt": cursor_oid}
 
             # No total count for cursor mode (expensive and unnecessary)
             total = -1
@@ -2246,7 +2267,7 @@ class DocumentService:
             total=total,
             page=page,
             page_size=page_size,
-            pages=math.ceil(total / page_size) if total > 0 else 1,
+            pages=math.ceil(total / page_size) if total > 0 else 0,
             next_cursor=next_cursor,
         )
 
@@ -2644,7 +2665,7 @@ class DocumentService:
             total=total,
             page=request.page,
             page_size=request.page_size,
-            pages=math.ceil(total / request.page_size) if total > 0 else 1,
+            pages=math.ceil(total / request.page_size) if total > 0 else 0,
             query=request
         )
 
@@ -2759,6 +2780,10 @@ class DocumentService:
                 query[field] = {"$lt": value}
             elif operator == "lte":
                 query[field] = {"$lte": value}
+            elif (problem := _filter_value_problem(operator, value)) is not None:
+                # Refused here, as a 422: handed to MongoDB, an ill-formed
+                # operand fails the query as a server error.
+                raise ValueError(f"Filter on {field!r}: {problem}")
             elif operator == "in":
                 query[field] = {"$in": value}
             elif operator == "nin":
@@ -3751,11 +3776,19 @@ class DocumentService:
         # A known identity with no active version is soft-deleted: the write
         # follows its latest version and brings it back as the successor (see
         # _find_latest_by_document_id). Rare, so looked up only for those.
-        for doc_id in dict.fromkeys(registry_doc_ids):
-            if isinstance(doc_id, str) and doc_id not in existing_by_doc_id:
-                latest = await self._find_latest_by_document_id(doc_id, namespace=namespace)
-                if latest is not None:
-                    existing_by_doc_id[doc_id] = latest
+        retired_ids = [
+            doc_id for doc_id in dict.fromkeys(registry_doc_ids)
+            if isinstance(doc_id, str) and doc_id not in existing_by_doc_id
+        ]
+        # One query per chunk, as for the active rows above; the newest row
+        # of each comes first.
+        for first in range(0, len(retired_ids), BULK_WRITE_CHUNK):
+            rows = await Document.find({
+                "namespace": namespace,
+                "document_id": {"$in": retired_ids[first:first + BULK_WRITE_CHUNK]},
+            }).sort([("version", SortDirection.DESCENDING)]).to_list()
+            for row in rows:
+                existing_by_doc_id.setdefault(row.document_id, row)
         timing["3_find_existing"] = (time.perf_counter() - start) * 1000
 
         # Stage 4: Create all documents
@@ -4331,6 +4364,11 @@ class DocumentService:
         means the key exists and is neither null nor the empty string — an
         empty array or object counts as non-empty, which errs toward NOT
         offering an automatic migration (the safe direction).
+
+        The counts are of ACTIVE ROWS. A write retires the version it
+        replaces, so a document has one active row and is counted once — except
+        a document a restore kept with several active versions (older_versions
+        'keep'), counted once per active row, each under its template_version.
 
         Read-only and advisory: consumed by template-store's create-as-upsert
         to attach consequence data to a version event.

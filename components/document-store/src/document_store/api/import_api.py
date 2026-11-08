@@ -1,5 +1,6 @@
 """CSV/XLSX import API for bulk document creation."""
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -12,7 +13,9 @@ from wip_auth.term_resolution import term_resolution_batch
 from ..models.api_models import DocumentCreateRequest
 from ..services.document_service import DocumentService
 from ..services.import_service import ImportService
+from ..services.nats_client import get_throttle_delay
 from ..services.template_store_client import get_template_store_client
+from .uploads import read_upload
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +32,7 @@ async def preview_import(
     Upload a file to see its structure before importing. Use the headers
     to build a column_mapping for the import endpoint.
     """
-    content = await file.read()
+    content = await read_upload(file)
     if not content:
         return {"error": "Empty file"}
 
@@ -78,7 +81,7 @@ async def import_documents(
         bypass_cache=True,
     )
 
-    content = await file.read()
+    content = await read_upload(file)
     if not content:
         return {"error": "Empty file"}
 
@@ -123,7 +126,8 @@ async def import_documents(
     if not documents:
         return {"error": "No documents to import (file may be empty)"}
 
-    # Create documents using existing bulk create
+    # Each row is created through the single-item create path (its own
+    # Registry call and write), so a failing row is reported by row number.
     doc_service = DocumentService()
 
     total = len(documents)
@@ -175,6 +179,9 @@ async def import_documents(
 
             if not skip_errors and errors:
                 break
+            # Write endpoints back off while the reporting consumer lags
+            # (nats_client.get_throttle_delay); an import is the largest of them.
+            await asyncio.sleep(get_throttle_delay())
 
     return {
         "total_rows": total,

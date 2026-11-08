@@ -162,6 +162,36 @@ class TestIdentityHash:
         assert result.summary.identity_hash_mismatches == 1
 
     @pytest.mark.asyncio
+    async def test_a_missing_template_version_is_reported_and_counted_unverified(self, db):
+        """A document pinned to a version the template store does not have:
+        the template exists (no orphaned-template finding), so nothing else
+        reports it. Provenance: CASE-1146."""
+        async def get_template(template_id=None, version=None, **_):
+            if version is not None:
+                return None
+            return {"status": "active", "identity_fields": IDENTITY_FIELDS}
+
+        db["template_store"].get_template = AsyncMock(side_effect=get_template)
+        await _document("D1")
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert _types(result) == ["template_version_not_found"]
+        assert result.summary.identity_unverified == 1
+        assert result.summary.identity_hash_mismatches == 0
+
+    @pytest.mark.asyncio
+    async def test_an_unverifiable_identity_is_not_counted_a_mismatch(self, db):
+        """identity_hash_mismatches counts hashes compared and found different;
+        a document that could not be compared is identity_unverified."""
+        await _document("D1", data={"other": "value"}, identity_hash="x")
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.summary.identity_hash_mismatches == 0
+        assert result.summary.identity_unverified == 1
+
+    @pytest.mark.asyncio
     async def test_a_missing_identity_field_is_reported_not_raised(self, db):
         await _document("D1", data={"other": "value"}, identity_hash="x")
 

@@ -521,7 +521,7 @@ class FileService:
             total=total,
             page=page,
             page_size=page_size,
-            pages=math.ceil(total / page_size) if total > 0 else 1,
+            pages=math.ceil(total / page_size) if total > 0 else 0,
         )
 
     async def update_reference_count(

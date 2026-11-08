@@ -76,7 +76,13 @@ class ReportingSyncClient:
                     params={"namespace": namespace},
                     headers=self._headers(),
                 )
-                return resp.status_code < 300
+                if resp.status_code < 300:
+                    return True
+                logger.warning(
+                    "reporting batch sync for %s refused: HTTP %s %s",
+                    namespace, resp.status_code, resp.text[:200],
+                )
+                return False
         except httpx.HTTPError as e:
             logger.warning("reporting-sync unreachable for batch sync(%s): %s", namespace, e)
             return False
@@ -89,7 +95,13 @@ class ReportingSyncClient:
                     f"{self._base}/api/reporting-sync/namespace/{namespace}",
                     headers=self._headers(),
                 )
-                return resp.status_code < 300
+                if resp.status_code < 300:
+                    return True
+                logger.warning(
+                    "reporting schema drop for %s refused: HTTP %s %s",
+                    namespace, resp.status_code, resp.text[:200],
+                )
+                return False
         except httpx.HTTPError as e:
             logger.warning("reporting-sync unreachable for drop(%s): %s", namespace, e)
             return False

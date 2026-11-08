@@ -16,7 +16,7 @@ from wip_auth import (
     resolve_accessible_namespaces,
     resolve_namespace_filter,
 )
-from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404
+from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404, unresolved_detail
 from wip_auth.permissions import _is_superadmin
 
 from ..models.api_models import (
@@ -41,7 +41,8 @@ from ..services.file_storage_client import (
 )
 from ..services.nats_client import get_throttle_delay
 from ..services.registry_client import get_registry_client
-from .auth import require_api_key, require_groups
+from .auth import check_readable, require_api_key, require_groups
+from .uploads import read_upload
 
 logger = logging.getLogger(__name__)
 
@@ -130,20 +131,7 @@ async def upload_file(
     service = get_file_service()
 
     # Read file content with size limit to prevent OOM on resource-constrained devices
-    from ..main import settings as app_settings
-    max_size = app_settings.MAX_UPLOAD_SIZE
-    buffer = bytearray()
-    while True:
-        chunk = await file.read(65536)  # 64KB chunks
-        if not chunk:
-            break
-        buffer.extend(chunk)
-        if len(buffer) > max_size:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File too large. Maximum upload size is {max_size // (1024 * 1024)}MB"
-            )
-    content: bytes = bytes(buffer)
+    content: bytes = await read_upload(file)
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
@@ -228,6 +216,7 @@ async def get_file(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Get file metadata by ID."""
+    raw_file_id = file_id
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     from ..models.file import File as FileModel
@@ -241,7 +230,7 @@ async def get_file(
     # Check namespace permission (File model has namespace, FileResponse doesn't)
     file_doc = await FileModel.find_one({"file_id": file_id})
     if file_doc:
-        await check_namespace_permission(identity, file_doc.namespace, "read")
+        await check_readable(identity, file_doc.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"))
 
     return file_response
 
@@ -265,6 +254,7 @@ async def get_download_url(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Get a pre-signed download URL for a file."""
+    raw_file_id = file_id
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     service = get_file_service()
@@ -274,7 +264,7 @@ async def get_download_url(
     file_doc = await FileModel.find_one({"file_id": file_id})
     if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
-    await check_namespace_permission(identity, file_doc.namespace, "read")
+    await check_readable(identity, file_doc.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"))
 
     try:
         response = await service.get_download_url(file_id, expires_in)
@@ -297,6 +287,7 @@ async def download_file_content(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Download file content directly, streamed from storage."""
+    raw_file_id = file_id
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     from ..models.file import File as FileModel
@@ -311,7 +302,7 @@ async def download_file_content(
         raise HTTPException(status_code=409, detail="File has been deleted")
 
     # Check namespace permission
-    await check_namespace_permission(identity, file_doc.namespace, "read")
+    await check_readable(identity, file_doc.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"))
 
     # Stream chunks directly from the object store → browser (no full buffering).
     # The first chunk is read before the response starts: once the status line
@@ -445,6 +436,7 @@ async def get_file_documents(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """List documents that reference this file."""
+    raw_file_id = file_id
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
     from ..models.document import Document as DocumentModel
@@ -455,7 +447,7 @@ async def get_file_documents(
     if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
 
-    await check_namespace_permission(identity, file_doc.namespace, "read")
+    await check_readable(identity, file_doc.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"))
 
     # Query documents with this file_id in file_references. A document in
     # another namespace may reference the file; list only those the caller
@@ -496,7 +488,7 @@ async def get_file_documents(
         total=total,
         page=page,
         page_size=page_size,
-        pages=math.ceil(total / page_size) if total > 0 else 1,
+        pages=math.ceil(total / page_size) if total > 0 else 0,
     )
 
 

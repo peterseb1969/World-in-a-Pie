@@ -226,9 +226,29 @@ async def resolve_or_404(
     except AmbiguousEntityError as e:
         raise _ambiguous_409(e) from None
     except EntityNotFoundError:
-        label = param_name or entity_type
-        detail = f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'"
-        raise HTTPException(status_code=404, detail=detail) from None
+        raise HTTPException(
+            status_code=404,
+            detail=unresolved_detail(raw_id, entity_type, namespace, param_name),
+        ) from None
+
+
+def unresolved_detail(
+    raw_id: str,
+    entity_type: str,
+    namespace: str | None,
+    param_name: str | None = None,
+) -> str:
+    """The 404 detail resolve_or_404 gives an identifier that names nothing.
+
+    A read that resolves an id and then finds the entity in a namespace the
+    caller cannot read answers with this same text, so the answer cannot tell
+    "exists, hidden" from "does not exist". ``namespace`` is the one the
+    caller passed (None derives it as resolve_or_404 does).
+    """
+    if namespace is None:
+        namespace = _derive_namespace_from_identity()
+    label = param_name or entity_type
+    return f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'"
 
 
 async def resolve_term_by_fields_or_404(

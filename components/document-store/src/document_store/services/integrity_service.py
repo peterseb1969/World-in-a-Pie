@@ -64,7 +64,7 @@ class IntegrityIssue(BaseModel):
             "orphaned_term_ref, orphaned_document_ref, "
             "misplaced_document_ref, orphaned_file_ref, "
             "identity_hash_mismatch, identity_field_missing, "
-            "identity_resolution_missing"
+            "identity_resolution_missing, template_version_not_found"
         )
     )
     severity: str = Field(
@@ -94,7 +94,18 @@ class IntegritySummary(BaseModel):
     orphaned_document_refs: int = 0
     misplaced_document_refs: int = 0
     orphaned_file_refs: int = 0
-    identity_hash_mismatches: int = 0
+    identity_hash_mismatches: int = Field(
+        default=0,
+        description="Documents whose stored identity hash differs from the one recomputed",
+    )
+    identity_unverified: int = Field(
+        default=0,
+        description=(
+            "Documents whose identity could not be compared: an identity value "
+            "or resolution missing, or the template version they are pinned "
+            "to not found"
+        ),
+    )
 
 
 class IntegrityCheckResult(BaseModel):
@@ -114,12 +125,10 @@ class IntegrityCheckResult(BaseModel):
 # Cache for checked references to avoid repeated lookups
 _template_check_cache: dict[str, tuple[bool, str]] = {}  # template_id -> (exists, status)
 _term_check_cache: dict[str, bool] = {}  # term_id -> exists
-# (template_id, version) -> identity_fields, or None when the template could
-# not be read. Identity verification needs the field list, and fetching it per
-# document would be one HTTP call per row.
-_identity_fields_cache: dict[
-    tuple[str, int], tuple[list[str], list[dict[str, Any]], list[str] | None] | None
-] = {}
+# (template_id, version) -> its identity shape, or _MISSING when the template
+# store has no such version. Identity verification needs the field list, and
+# fetching it per document would be one HTTP call per row.
+_identity_fields_cache: dict[tuple[str, int], Any] = {}
 
 
 def clear_integrity_cache():
@@ -406,11 +415,16 @@ async def check_batch_references(
                 ))
 
 
+# _identity_shape_for's answer for a template version the store does not have.
+_MISSING = object()
+
+
 async def _identity_shape_for(
     template_id: str, version: int
-) -> tuple[list[str], list[dict[str, Any]], list[str] | None] | None:
+) -> Any:
     """The template version's (identity_fields, fields, referent_identity_paths),
-    cached. None = unreadable.
+    cached. ``_MISSING`` = the store has no such version (cached); None = the
+    store could not be asked (not cached).
 
     Both halves are needed to recompute a hash: identity_fields names the
     feed, and the field definitions decide which identity fields are
@@ -427,8 +441,8 @@ async def _identity_shape_for(
         )
     except TemplateStoreError:
         return None  # not cached: a transient failure should not stick
-    shape = (
-        None
+    shape: Any = (
+        _MISSING
         if template is None
         else (
             list(template.get("identity_fields") or []),
@@ -458,8 +472,28 @@ async def check_identity_hash(
     shape = await _identity_shape_for(
         document.template_id, document.template_version
     )
+    if shape is _MISSING:
+        # The template store has no such version. A template missing whole is
+        # the orphaned-template check's to report; a missing VERSION of an
+        # existing template is reported by nothing else.
+        known = _template_check_cache.get(document.template_id)
+        if known is None or known[0]:
+            issues.append(IntegrityIssue(
+                type="template_version_not_found",
+                severity="error",
+                document_id=document.document_id,
+                template_id=document.template_id,
+                version=document.version,
+                field_path=None,
+                reference=f"{document.template_id}@v{document.template_version}",
+                message=(
+                    f"Template version {document.template_version} not found; "
+                    "the document's identity cannot be verified"
+                ),
+            ))
+        return
     if shape is None:
-        return  # template unreadable — the orphaned-template check reports it
+        return  # template store unreachable: not a finding, and not cached
     identity_fields, template_fields, referent_paths = shape
 
     if not identity_fields:
@@ -679,11 +713,14 @@ async def check_all_documents(
             1 for i in all_issues if i.type == "orphaned_file_ref"
         ),
         identity_hash_mismatches=sum(
+            1 for i in all_issues if i.type == "identity_hash_mismatch"
+        ),
+        identity_unverified=sum(
             1 for i in all_issues
             if i.type in (
-                "identity_hash_mismatch",
                 "identity_field_missing",
                 "identity_resolution_missing",
+                "template_version_not_found",
             )
         ),
     )
