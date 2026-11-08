@@ -486,7 +486,7 @@ curlk -s -X PUT -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
 # Response includes: "version": 2, "is_new_version": true
 ```
 
-**Important:** When updating a child template that uses inheritance, send ONLY the child's own fields. Including inherited fields turns them into overrides, breaking inheritance.
+**Important:** A template that extends another declares only its own fields and rules. A field or rule its parent chain already declares is refused (`field_defined_by_parent` / `rule_defined_by_parent`), on create and on update. `GET /templates/{id}` serves the composed template, so update from `GET /templates/{id}/raw` (the child's own fields). Identity belongs to the composed template: a child may name any of its fields in `identity_fields`, and with none of its own it uses its parent's.
 
 ### Check template dependencies
 

@@ -593,6 +593,10 @@ class TemplateService:
                 parent_namespace = parent.namespace
                 TemplateService._refuse_inactive_parent(parent, is_draft)
 
+        # What extends another declares only its own fields and rules. A
+        # restore trusts its archive, as for renames.
+        await TemplateService._refuse_create_inheritance_conflicts(request, bool(is_restore))
+
         # Normalize all field references to canonical IDs — skip for drafts.
         # Normalization implicitly validates (raises EntityNotFoundError for invalid refs),
         # which is converted to ValueError for the API boundary.
@@ -758,6 +762,152 @@ class TemplateService:
             )
 
         return TemplateService._to_template_response(template)
+
+    @staticmethod
+    async def _ancestor_parts(
+        template_id: str | None,
+        extends: str | None,
+        extends_version: int | None,
+        overrides: dict[tuple[str, int], Template] | None = None,
+    ) -> tuple[set[str], list[dict], list[str]] | None:
+        """What a template's pinned parent chain already declares: its field
+        names, its rules, and the identity the template inherits. None when
+        there is no parent, or (for a draft) when the chain cannot be read
+        yet; activation checks it then."""
+        if not extends:
+            return None
+        try:
+            chain = await InheritanceService.walk_ancestors(
+                template_id, extends, extends_version, overrides
+            )
+        except InheritanceError:
+            return None
+        names = {f.name for t in chain for f in t.fields}
+        rules = [r.model_dump() for t in chain for r in t.rules]
+        identity = next((list(t.identity_fields) for t in chain if t.identity_fields), [])
+        return names, rules, identity
+
+    @staticmethod
+    def _refuse_parent_collisions(
+        fields: list[FieldDefinition],
+        rules: list[ValidationRule] | None,
+        parts: tuple[set[str], list[dict], list[str]] | None,
+    ) -> None:
+        """A template that extends another declares only what is its own: a
+        field or rule its parent chain already declares is a conflict. (A GET
+        serves the composed template; sending that back is refused here
+        rather than turning the parent's fields into the child's own copies,
+        which stop following the parent.) Identity is the composed
+        template's: the child may name any of its fields, own or inherited."""
+        if parts is None:
+            return
+        names, parent_rules, _identity = parts
+        clashing = sorted(f.name for f in fields if f.name in names)
+        if clashing:
+            raise TemplateError(
+                f"Field(s) {', '.join(clashing)} are already defined by the parent "
+                "template. A template that extends another declares only its own "
+                "fields; send this template's own fields (GET .../raw serves them).",
+                "validation_failed", rule="field_defined_by_parent",
+            )
+        if any(r.model_dump() in parent_rules for r in rules or []):
+            raise TemplateError(
+                "A rule is already defined by the parent template. A template that "
+                "extends another declares only its own rules.",
+                "validation_failed", rule="rule_defined_by_parent",
+            )
+
+    @staticmethod
+    async def _effective_identity(template: Template) -> list[str]:
+        """The identity a template's documents are hashed by: its own
+        identity_fields, else the nearest parent's (what GET serves)."""
+        if template.identity_fields:
+            return list(template.identity_fields)
+        parts = await TemplateService._ancestor_parts(
+            template.template_id, template.extends, template.extends_version
+        )
+        return parts[2] if parts else []
+
+    @staticmethod
+    async def _as_stored_identity(
+        identity_fields: list[str] | None, existing: Template,
+    ) -> list[str] | None:
+        """A sent identity equal to the existing template's effective one is
+        its stored declaration: sending back what GET served is no change."""
+        if (
+            identity_fields is not None
+            and list(identity_fields) != list(existing.identity_fields or [])
+            and list(identity_fields) == await TemplateService._effective_identity(existing)
+        ):
+            return list(existing.identity_fields or [])
+        return identity_fields
+
+    @staticmethod
+    async def _refuse_create_inheritance_conflicts(
+        request: CreateTemplateRequest, is_restore: bool,
+    ) -> None:
+        """A create that extends another declares only its own fields and
+        rules. A restore trusts its archive, as for renames."""
+        if is_restore:
+            return
+        TemplateService._refuse_parent_collisions(
+            request.fields, request.rules,
+            await TemplateService._ancestor_parts(None, request.extends, request.extends_version),
+        )
+
+    @staticmethod
+    async def _refuse_version_inheritance_conflicts(
+        original: Template,
+        request: UpdateTemplateRequest,
+        fields: list[FieldDefinition],
+        extends: str | None,
+        extends_version: int | None,
+    ) -> None:
+        """A new version keeps its effective identity across a new parent and
+        declares nothing its parent chain declares."""
+        await TemplateService._refuse_identity_reparent(original, extends, extends_version)
+        rules = request.rules if request.rules is not None else original.rules
+        TemplateService._refuse_parent_collisions(
+            fields, rules,
+            await TemplateService._ancestor_parts(original.template_id, extends, extends_version),
+        )
+
+    @staticmethod
+    async def _with_served_identity_kept(
+        item: CreateTemplateRequest, existing: Template,
+    ) -> CreateTemplateRequest:
+        """The re-post with a served (inherited) identity read as the stored
+        declaration, so sending back what GET served is no identity change."""
+        kept = await TemplateService._as_stored_identity(item.identity_fields, existing)
+        if kept == item.identity_fields:
+            return item
+        sent = set(item.model_fields_set)
+        merged = item.model_copy(update={"identity_fields": kept})
+        object.__setattr__(merged, "__pydantic_fields_set__", sent)
+        return merged
+
+    @staticmethod
+    async def _refuse_identity_reparent(
+        original: Template, extends: str | None, extends_version: int | None,
+    ) -> None:
+        """A new parent (or parent version) must leave the template's
+        effective identity as it is: a different identity is a new template."""
+        if (extends, extends_version) == (original.extends, original.extends_version):
+            return
+        async def effective(ext: str | None, ver: int | None) -> list[str]:
+            if original.identity_fields:
+                return list(original.identity_fields)
+            parts = await TemplateService._ancestor_parts(original.template_id, ext, ver)
+            return parts[2] if parts else []
+        old = await effective(original.extends, original.extends_version)
+        new = await effective(extends, extends_version)
+        if old != new:
+            raise TemplateError(
+                f"The new parent changes the identity of '{original.value}' "
+                f"(inherited: {old}, would inherit: {new}). Changing identity is a "
+                "fork: create a new template.",
+                "identity_fields_immutable",
+            )
 
     @staticmethod
     def _refuse_inactive_parent(parent: Template, is_draft: bool) -> None:
@@ -1570,6 +1720,11 @@ class TemplateService:
         # Same rule as create: an edge type's endpoint constraint is derived on
         # serve, so what a caller sends for it is neither compared nor stored.
         TemplateService._strip_endpoint_projection(original.usage, request.fields)
+        # The parent's identity, served on the composed template and sent
+        # back unchanged, is not a change of the template's own.
+        request.identity_fields = await TemplateService._as_stored_identity(
+            request.identity_fields, original
+        )
 
         # Check if anything has actually changed
         if not await TemplateService._template_has_changed(original, request):
@@ -1763,6 +1918,9 @@ class TemplateService:
         await TemplateService._validate_relationship_template_shape(
             original.usage, original.source_templates, original.target_templates,
             new_fields,
+        )
+        await TemplateService._refuse_version_inheritance_conflicts(
+            original, request, new_fields, extends_value or None, new_extends_version
         )
         TemplateService.validate_rules_for_write(
             request.rules if request.rules is not None else original.rules
@@ -2545,6 +2703,7 @@ class TemplateService:
                 # What was omitted keeps the existing value: every list
                 # property defaults to [], which is not a request to empty it.
                 item = TemplateService._with_omitted_kept(item, existing)
+                item = await TemplateService._with_served_identity_kept(item, existing)
                 verdict, diff = await TemplateService.compute_template_compatibility(
                     existing, item, namespace=item.namespace,
                 )
@@ -2905,6 +3064,14 @@ class TemplateService:
                 "created_at": now, "created_by": actor,
                 "updated_at": now, "updated_by": actor,
             })
+            # The new parent version may now declare one of the child's own
+            # fields or rules: that conflict refuses this child, as on update.
+            TemplateService._refuse_parent_collisions(
+                new_child.fields, new_child.rules,
+                await TemplateService._ancestor_parts(
+                    new_child.template_id, new_child.extends, new_child.extends_version
+                ),
+            )
             await TemplateService._stamp_referent_paths(new_child)
             await new_child.insert()
             await publish_template_event(
@@ -3278,6 +3445,13 @@ class TemplateService:
         for t in activation_set:
             await TemplateService._refuse_unresolvable_inheritance(
                 t.template_id, t.extends, t.extends_version, overrides=set_by_version
+            )
+            # A draft's chain may not have been readable at its create.
+            TemplateService._refuse_parent_collisions(
+                t.fields, t.rules,
+                await TemplateService._ancestor_parts(
+                    t.template_id, t.extends, t.extends_version, overrides=set_by_version
+                ),
             )
 
         # Work out each member's referent identity paths before saving any,

@@ -45,7 +45,9 @@ async def test_portable_rewrites_target_templates_and_extends(
 ):
     await _create(client, auth_headers, _entity("PARENT_843"))
     await _create(client, auth_headers, {
-        **_entity("CHILD_843"),
+        **_entity("CHILD_843", fields=[
+            {"name": "child_note", "label": "Note", "type": "string"},
+        ]),
         "extends": "PARENT_843",
         "extends_version": 1,
     })

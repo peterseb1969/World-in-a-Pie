@@ -7,6 +7,20 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A template that extends another cannot redefine its parent's fields
+
+- A child field with the same name as a field of its parent chain overrode
+  it. A GET serves the composed template, so fetching a child and saving it
+  back stored the parent's fields as the child's own copies, which then
+  stopped following the parent. Such a field, or a rule identical to a
+  parent's, is now refused on create, update, cascade and activation
+  (`validation_failed`, `field_defined_by_parent` / `rule_defined_by_parent`).
+- Sending back the identity GET served (the parent's) is no change; a new
+  parent or parent version that changes a child's effective identity is
+  refused as a fork (`identity_fields_immutable`).
+- **Action:** a template that overrides a parent field stays readable; its
+  next update must drop the override (send the child's own fields, as
+  `GET …/raw` serves them).
 ### A key change reaches every service within a few seconds
 
 - Services learned runtime keys only by polling the Registry every 30 s: a

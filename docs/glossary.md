@@ -82,7 +82,7 @@ Authentication mode where both API keys and JWT tokens are accepted. Default mod
 A message published to [NATS](#nats) when something changes in WIP. Contains the full entity data (self-contained). Types include `document.created`, `document.updated`, `template.created`, etc. Used by [Reporting-Sync](#reporting-sync) for PostgreSQL synchronization.
 
 ### Extends
-Template inheritance. A template can extend another template, inheriting its fields and rules while adding or overriding its own. Example: EMPLOYEE extends PERSON. The `extends_version` field can pin inheritance to a specific parent version.
+Template inheritance. A template can extend another template, inheriting its fields and rules and adding its own; redefining a field or rule the parent declares is refused. Its identity_fields may name any field of the composed template, and default to the parent's. Example: EMPLOYEE extends PERSON. The `extends_version` field can pin inheritance to a specific parent version.
 
 ---
 

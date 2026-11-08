@@ -74,9 +74,9 @@ async def test_an_active_create_refuses_a_retired_parent(client: AsyncClient, au
 @pytest.mark.asyncio
 async def test_a_draft_may_still_extend_a_draft(client: AsyncClient, auth_headers):
     await _post(client, auth_headers, _entity("C1169_DP2", status="draft"))
-    item = await _post(client, auth_headers, _entity(
-        "C1169_DC2", status="draft", extends="C1169_DP2", extends_version=1,
-    ))
+    child = _entity("C1169_DC2", status="draft", extends="C1169_DP2", extends_version=1)
+    child["fields"] = [{"name": "note", "type": "string", "label": "Note"}]
+    item = await _post(client, auth_headers, child)
     assert item["status"] == "created", item
 
 

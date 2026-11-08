@@ -70,9 +70,10 @@ async def _validate(client, headers, template_id: str) -> dict:
 @pytest.mark.asyncio
 async def test_a_draft_extending_ns_value_activates(client: AsyncClient, auth_headers):
     await _post(client, auth_headers, _entity("C1169A_PARENT"))
-    draft = await _post(client, auth_headers, _entity(
-        "C1169A_CHILD", status="draft", extends="wip:C1169A_PARENT", extends_version=1,
-    ))
+    child = _entity("C1169A_CHILD", status="draft", extends="wip:C1169A_PARENT",
+                    extends_version=1)
+    child["fields"] = [{"name": "note", "type": "string", "label": "Note"}]
+    draft = await _post(client, auth_headers, child)
     body = await _activate(client, auth_headers, draft["id"])
     assert body["total_activated"] == 1, body
 

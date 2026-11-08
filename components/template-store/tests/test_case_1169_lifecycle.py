@@ -168,7 +168,8 @@ async def test_a_reactivated_draft_is_in_its_active_form(client: AsyncClient, au
 async def test_a_version_whose_parent_retired_is_not_reactivated(client: AsyncClient, auth_headers):
     parent = await _post(client, auth_headers, _entity("C1169L_PARENT"))
     child_payload = _entity("C1169L_CHILD")
-    child_payload.update(extends="C1169L_PARENT", extends_version=1)
+    child_payload.update(extends="C1169L_PARENT", extends_version=1,
+                         fields=[{"name": "note", "type": "string", "label": "Note"}])
     child = await _post(client, auth_headers, child_payload)
     assert child["status"] == "created", child
     await _soft_delete(client, auth_headers, child["id"])

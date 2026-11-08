@@ -94,7 +94,9 @@ async def test_versionless_deactivate_is_invalid_request(client: AsyncClient, au
 @pytest.mark.asyncio
 async def test_deleting_a_parent_is_invalid_state(client: AsyncClient, auth_headers: dict):
     [parent] = await _create(client, auth_headers, _tpl("EC_PARENT"))
-    [child] = await _create(client, auth_headers, _tpl("EC_CHILD", extends="EC_PARENT", extends_version=1))
+    child_tpl = {**_tpl("EC_CHILD", extends="EC_PARENT", extends_version=1),
+                 "fields": [{"name": "note", "label": "note", "type": "string"}]}
+    [child] = await _create(client, auth_headers, child_tpl)
     assert child["status"] == "created", child
     resp = await client.request("DELETE", TEMPLATES, headers=auth_headers, json=[
         {"id": parent["id"], "version": 1},

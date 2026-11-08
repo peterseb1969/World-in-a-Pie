@@ -160,9 +160,12 @@ async def test_get_template_raw(client: AsyncClient, auth_headers: dict):
 
 
 @pytest.mark.asyncio
-async def test_field_override(client: AsyncClient, auth_headers: dict):
-    """Test that child fields override parent fields of the same name."""
-    # Create parent template
+async def test_a_child_cannot_redefine_a_parent_field(client: AsyncClient, auth_headers: dict):
+    """A field the parent already declares is a conflict, on create as on
+    update: a template that extends another declares only its own fields.
+    (Overriding by name was removed: a GET serves the composed template, and
+    sending it back turned the parent's fields into the child's own copies,
+    which then stopped following the parent.)"""
     parent_response = await client.post(
         "/api/template-store/templates",
         headers=auth_headers,
@@ -171,50 +174,44 @@ async def test_field_override(client: AsyncClient, auth_headers: dict):
             "value": "OVERRIDE_PARENT",
             "label": "Override Parent",
             "fields": [
-                {
-                    "name": "common_field",
-                    "label": "Parent Label",
-                    "type": "string",
-                    "mandatory": False
-                }
-            ]
-        }]
+                {"name": "common_field", "label": "Parent Label", "type": "string",
+                 "mandatory": False},
+            ],
+        }],
     )
     parent_id = parent_response.json()["results"][0]["id"]
 
-    # Create child template with override
-    child_response = await client.post(
-        "/api/template-store/templates",
-        headers=auth_headers,
-        json=[{
-            "namespace": "wip",
-            "value": "OVERRIDE_CHILD",
-            "label": "Override Child",
-            "extends": parent_id,
-            "extends_version": 1,
-            "fields": [
-                {
-                    "name": "common_field",
-                    "label": "Child Label",
-                    "type": "string",
-                    "mandatory": True
-                }
-            ]
-        }]
-    )
-    child_id = child_response.json()["results"][0]["id"]
+    child = {
+        "namespace": "wip",
+        "value": "OVERRIDE_CHILD",
+        "label": "Override Child",
+        "extends": parent_id,
+        "extends_version": 1,
+        "fields": [
+            {"name": "common_field", "label": "Child Label", "type": "string",
+             "mandatory": True},
+        ],
+    }
+    response = await client.post("/api/template-store/templates", headers=auth_headers,
+                                  json=[child])
+    item = response.json()["results"][0]
+    assert item["status"] == "error", item
+    assert item["details"]["rule"] == "field_defined_by_parent", item
 
-    # Get resolved child template
-    response = await client.get(
-        f"/api/template-store/templates/{child_id}",
-        headers=auth_headers
-    )
-    data = response.json()
-
-    # Child's field should override parent's
-    assert len(data["fields"]) == 1
-    assert data["fields"][0]["label"] == "Child Label"
-    assert data["fields"][0]["mandatory"] is True
+    # Its own field only: created, and the update that adds the parent's
+    # field back is refused the same way.
+    child["fields"] = [{"name": "own", "label": "Own", "type": "string"}]
+    response = await client.post("/api/template-store/templates", headers=auth_headers,
+                                 json=[child])
+    item = response.json()["results"][0]
+    assert item["status"] == "created", item
+    resolved = (await client.get(f"/api/template-store/templates/{item['id']}",
+                                 headers=auth_headers)).json()
+    response = await client.put("/api/template-store/templates", headers=auth_headers,
+                                json=[{"template_id": item["id"], "fields": resolved["fields"]}])
+    result = response.json()["results"][0]
+    assert result["status"] == "error", result
+    assert result["details"]["rule"] == "field_defined_by_parent", result
 
 
 @pytest.mark.asyncio

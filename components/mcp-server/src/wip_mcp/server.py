@@ -548,7 +548,12 @@ A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
 
 ## Templates
 A template defines a document schema — like a form definition.
-- Templates support inheritance (extends another template)
+- Templates support inheritance (extends another template). A template that
+  extends another declares only its own fields and rules: one its parent chain
+  already declares is refused (field_defined_by_parent / rule_defined_by_parent).
+  get_template serves the composed template; update from get_template_raw.
+  identity_fields may name any field of the composed template, and default to
+  the parent's; a new parent that changes the identity is refused (a fork).
 - Templates are versioned: same template_id, incrementing version
 - Multiple versions can be active simultaneously — see conventions resource
 - Templates can define identity_fields for document deduplication
