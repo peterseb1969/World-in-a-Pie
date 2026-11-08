@@ -1973,106 +1973,24 @@ class ValidationService:
         are cached by lookup key to avoid repeated MongoDB queries for the
         same reference across documents in a batch.
         """
-        from ..models.document import Document, DocumentStatus
-
-        # Build a cache key for this lookup
+        # Build a cache key for this lookup. The field's target_templates
+        # narrow a bare value's candidates, so they are part of what the
+        # lookup means.
         cache_key = None
         if doc_ref_cache is not None and isinstance(value, str):
-            # The field's target_templates narrow a bare value's candidates,
-            # so they are part of what the lookup means.
             cache_key = f"doc:{value}|{','.join(sorted(target_templates))}"
             if cache_key in doc_ref_cache:
-                doc = doc_ref_cache[cache_key]
-                # The gate is per write, never cached: a refused target in
-                # one item may be carried in another.
-                if doc is not None and await gate_refuses(doc.namespace, doc.document_id):
-                    doc = None
-                # Jump straight to template verification (doc may be None)
-                if doc is None:
-                    result.add_error(
-                        code="reference_not_found",
-                        message=f"Referenced document not found for field '{field_path}'",
-                        field=field_path,
-                        details={"value": str(value), "target_templates": target_templates}
-                    )
-                    return None
-                # Skip to template verification below
-                return await self._verify_ref_template_and_build_result(
-                    doc, target_templates, result, field_path, version_strategy,
-                    namespace=namespace,
+                return await self._accept_referenced_document(
+                    doc_ref_cache[cache_key], value, target_templates, result,
+                    field_path, version_strategy, namespace,
                 )
 
-        # Determine lookup method based on value format
         if isinstance(value, str):
-            if self._is_uuid7(value):
-                # Direct document_id lookup
-                doc = await Document.find_one({
-                    "document_id": value,
-                    "status": DocumentStatus.ACTIVE
-                })
-                if not doc:
-                    # Try inactive too for pinned references
-                    doc = await Document.find_one({"document_id": value})
-            else:
-                # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
-                # Qualified form: explicit NS:VALUE resolves in the named
-                # namespace (same syntax the resolve layer uses for schema
-                # references); bare values never cross. The resolved reference
-                # still passes the namespace-isolation check downstream, so a
-                # qualified ref into an undeclared namespace surfaces as
-                # reference_violation, not not_found.
-                #
-                # hash:<identity_hash> names a document by its identity hash,
-                # in the caller's namespace. The Registry holds the bare digest
-                # among a document's key values, so the prefix is removed
-                # before the lookup; it is never read as a namespace. The same
-                # digest under two templates (one identity under two schemas)
-                # is narrowed by target_templates like any bare value, and is
-                # refused as ambiguous when that leaves several.
-                if value.startswith("hash:"):
-                    ref_ns, ref_value = None, value[len("hash:"):]
-                else:
-                    ref_ns, ref_value = split_qualified_value(value)
-                doc, candidates = await self._resolve_bare_document_reference(
-                    ref_value, ref_ns or namespace, target_templates,
-                )
-                if candidates:
-                    # Several documents carry the value and the field's
-                    # target_templates do not narrow them to one: refused,
-                    # never resolved to an arbitrary one. Not cached — the
-                    # cache's None means "not found".
-                    result.add_error(
-                        code="ambiguous_reference",
-                        message=(
-                            f"Reference '{value}' in field '{field_path}' matches "
-                            "several documents; use a document_id or a "
-                            "qualified value"
-                        ),
-                        field=field_path,
-                        details={"value": str(value), "candidates": candidates},
-                    )
-                    return None
-
-                if not doc:
-                    # CASE-435: the Registry didn't resolve this string reference.
-                    # The old service-local business-key fallback (a direct Mongo
-                    # query on data.<identity_field>) is REMOVED — it could resolve
-                    # a value the Registry doesn't know, a "guardrail that works
-                    # sometimes" (Vision §"References Must Resolve"). String refs
-                    # now resolve through the Registry only. Verified the fallback
-                    # was unreachable for correctly-registered docs: the
-                    # identity-values synonym flattens the value into search_values,
-                    # which the by-id lookup already matches. Log the miss so an
-                    # under-registered target (missing Registry synonym) surfaces
-                    # instead of being silently papered over by a Mongo bypass.
-                    logger.warning(
-                        "CASE-435: string reference %r (field %r, ns %r) did not "
-                        "resolve via the Registry; the business-key Mongo fallback "
-                        "was removed — treating as unresolved. If this should "
-                        "resolve, the target's Registry synonym is missing "
-                        "(registration gap).",
-                        value, field_path, namespace,
-                    )
+            doc, refused = await self._lookup_string_reference(
+                value, target_templates, result, field_path, namespace,
+            )
+            if refused:
+                return None
         elif isinstance(value, dict):
             # Composite business key: the referenced document's identity,
             # resolved through the Registry like every other identifier.
@@ -2094,10 +2012,30 @@ class ValidationService:
         if cache_key is not None and doc_ref_cache is not None:
             doc_ref_cache[cache_key] = doc
 
-        if doc and await gate_refuses(doc.namespace, doc.document_id):
-            doc = None
+        return await self._accept_referenced_document(
+            doc, value, target_templates, result, field_path, version_strategy, namespace,
+        )
 
-        if not doc:
+    async def _accept_referenced_document(
+        self,
+        doc: Any,
+        value: Any,
+        target_templates: list[str],
+        result: ValidationResult,
+        field_path: str,
+        version_strategy: str,
+        namespace: str,
+    ) -> dict[str, Any] | None:
+        """Pass a looked-up (or cached) referent through the inbound gate and
+        the template check; reference_not_found when there is none or the
+        gate refuses it.
+
+        The gate is asked on every use, cached referents included: it is per
+        write, so a target refused in one item may be carried in another.
+        """
+        if doc is not None and await gate_refuses(doc.namespace, doc.document_id):
+            doc = None
+        if doc is None:
             result.add_error(
                 code="reference_not_found",
                 message=f"Referenced document not found for field '{field_path}'",
@@ -2105,11 +2043,87 @@ class ValidationService:
                 details={"value": str(value), "target_templates": target_templates}
             )
             return None
-
         return await self._verify_ref_template_and_build_result(
             doc, target_templates, result, field_path, version_strategy,
             namespace=namespace,
         )
+
+    async def _lookup_string_reference(
+        self,
+        value: str,
+        target_templates: list[str],
+        result: ValidationResult,
+        field_path: str,
+        namespace: str,
+    ) -> tuple[Any, bool]:
+        """Look a string reference up: (the document or None, refused).
+
+        A UUID7 is a document_id, read active first and then in any status
+        (for pinned references). Anything else resolves through the Registry;
+        refused is True when several documents carry the value (the error is
+        on ``result``).
+        """
+        from ..models.document import Document, DocumentStatus
+
+        if self._is_uuid7(value):
+            doc = await Document.find_one({"document_id": value, "status": DocumentStatus.ACTIVE})
+            return doc or await Document.find_one({"document_id": value}), False
+
+        # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
+        # Qualified form: explicit NS:VALUE resolves in the named
+        # namespace (same syntax the resolve layer uses for schema
+        # references); bare values never cross. The resolved reference
+        # still passes the namespace-isolation check downstream, so a
+        # qualified ref into an undeclared namespace surfaces as
+        # reference_violation, not not_found.
+        #
+        # hash:<identity_hash> names a document by its identity hash,
+        # in the caller's namespace. The Registry holds the bare digest
+        # among a document's key values, so the prefix is removed
+        # before the lookup; it is never read as a namespace. The same
+        # digest under two templates (one identity under two schemas)
+        # is narrowed by target_templates like any bare value, and is
+        # refused as ambiguous when that leaves several.
+        if value.startswith("hash:"):
+            ref_ns, ref_value = None, value[len("hash:"):]
+        else:
+            ref_ns, ref_value = split_qualified_value(value)
+        doc, candidates = await self._resolve_bare_document_reference(
+            ref_value, ref_ns or namespace, target_templates,
+        )
+        if candidates:
+            # Several documents carry the value and the field's
+            # target_templates do not narrow them to one: refused, never
+            # resolved to an arbitrary one. Not cached — the cache's None
+            # means "not found".
+            result.add_error(
+                code="ambiguous_reference",
+                message=(
+                    f"Reference '{value}' in field '{field_path}' matches "
+                    "several documents; use a document_id or a "
+                    "qualified value"
+                ),
+                field=field_path,
+                details={"value": str(value), "candidates": candidates},
+            )
+            return None, True
+
+        if not doc:
+            # CASE-435: string references resolve through the Registry only.
+            # The service-local business-key fallback (a direct Mongo query on
+            # data.<identity_field>) was removed: it could resolve a value the
+            # Registry does not know, a guardrail that works only sometimes.
+            # It was unreachable for correctly registered documents, whose
+            # identity-values synonym puts the value into search_values. The
+            # miss is logged so an under-registered target (a missing
+            # Registry synonym) surfaces instead of being papered over.
+            logger.warning(
+                "string reference %r (field %r, ns %r) did not resolve via the "
+                "Registry and is treated as unresolved; if it should resolve, "
+                "the target is missing its Registry synonym (registration gap)",
+                value, field_path, namespace,
+            )
+        return doc, False
 
     async def _verify_ref_template_and_build_result(
         self,
