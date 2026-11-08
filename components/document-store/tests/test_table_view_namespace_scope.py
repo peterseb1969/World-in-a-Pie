@@ -62,14 +62,15 @@ async def test_a_reader_of_both_sees_both_and_namespace_narrows(client, two_name
     assert resp.status_code == 200, resp.text
     assert {r["_document_id"] for r in resp.json()["rows"]} == set(two_namespaces.values())
 
+    # PERSON lives in 'wip': in another namespace it is named wip:PERSON.
     for ns, doc_id in two_namespaces.items():
-        narrowed = await client.get(f"{API}/table/PERSON", headers=BOTH_READER, params={"namespace": ns})
+        narrowed = await client.get(f"{API}/table/wip:PERSON", headers=BOTH_READER, params={"namespace": ns})
         assert narrowed.status_code == 200, narrowed.text
         assert [r["_document_id"] for r in narrowed.json()["rows"]] == [doc_id]
         assert narrowed.json()["total_documents"] == 1
 
         narrowed_csv = await client.get(
-            f"{API}/table/PERSON/csv", headers=BOTH_READER, params={"namespace": ns}
+            f"{API}/table/wip:PERSON/csv", headers=BOTH_READER, params={"namespace": ns}
         )
         assert narrowed_csv.status_code == 200, narrowed_csv.text
         assert _csv_ids(narrowed_csv.text) == {doc_id}
@@ -105,3 +106,37 @@ async def test_reading_documents_does_not_open_the_templates_layout(client, two_
         )
         assert resp.status_code == 404, (path, resp.text)
         assert two_namespaces["xns-closed"] not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_with_a_namespace_a_bare_value_is_that_namespaces_template(client, two_namespaces):
+    """namespace narrows the documents and is the context a bare template
+    value resolves in, as on GET /documents. PERSON lives in 'wip', so in
+    'xns-closed' it is named wip:PERSON; a bare value never falls back."""
+    for path in ("table/PERSON", "table/PERSON/csv"):
+        found = await client.get(f"{API}/{path}", headers=BOTH_READER, params={"namespace": "wip"})
+        assert found.status_code == 200, (path, found.text)
+        missing = await client.get(f"{API}/{path}", headers=BOTH_READER, params={"namespace": "xns-closed"})
+        assert missing.status_code == 404, (path, missing.text)
+        qualified = await client.get(
+            f"{API}/{path.replace('PERSON', 'wip:PERSON')}", headers=BOTH_READER,
+            params={"namespace": "xns-closed"},
+        )
+        assert qualified.status_code == 200, (path, qualified.text)
+
+    rows = (await client.get(f"{API}/table/wip:PERSON", headers=BOTH_READER,
+                             params={"namespace": "xns-closed"})).json()["rows"]
+    assert [r["_document_id"] for r in rows] == [two_namespaces["xns-closed"]]
+
+
+@pytest.mark.asyncio
+async def test_a_canonical_template_id_crosses_namespaces(client, two_namespaces):
+    """A template id needs no namespace and is not bound to one: the id of
+    wip's PERSON with namespace=xns-closed shows xns-closed's documents."""
+    head = (await client.get(f"{API}/table/wip:PERSON", headers=BOTH_READER,
+                             params={"namespace": "wip"})).json()
+    template_id = head["template_id"]
+    resp = await client.get(f"{API}/table/{template_id}", headers=BOTH_READER,
+                            params={"namespace": "xns-closed"})
+    assert resp.status_code == 200, resp.text
+    assert [r["_document_id"] for r in resp.json()["rows"]] == [two_namespaces["xns-closed"]]

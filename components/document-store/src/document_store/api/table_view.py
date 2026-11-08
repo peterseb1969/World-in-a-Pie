@@ -18,7 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from wip_auth import UserIdentity, check_namespace_permission, resolve_namespace_filter
+from wip_auth import UserIdentity, check_namespace_permission, resolve_namespace_filter, resolve_or_404
 from wip_auth.csv_cells import escape_cell
 
 from ..models.document import Document, DocumentStatus
@@ -92,6 +92,16 @@ MAX_TABLE_ROWS = 10_000
 
 # The CSV export sends the rows in chunks of about this many characters.
 CSV_CHUNK_CHARS = 64 * 1024
+
+
+async def _template_in(template_id: str, namespace: str | None) -> str:
+    """The template a table is for. With ``namespace``, a bare value is that
+    namespace's template, as on GET /documents: a value never falls back to
+    another namespace, so a shared template is named ``wip:PATIENT`` (or by
+    id). Without it, the identifier is passed on as before."""
+    if not namespace:
+        return template_id
+    return await resolve_or_404(template_id, "template", namespace, param_name="template_id")
 
 
 async def _documents_query(
@@ -314,8 +324,10 @@ async def get_table_view(
     namespace: str | None = Query(
         None,
         description=(
-            "Only documents in this namespace. Without it, the documents of "
-            "every namespace the caller can read."
+            "Only documents in this namespace, which is also where a bare "
+            "template value is resolved (a shared template: wip:PATIENT or "
+            "its id). Without it, the documents of every namespace the caller "
+            "can read."
         ),
     ),
     page: int = Query(1, ge=1, description="Page number"),
@@ -335,7 +347,9 @@ async def get_table_view(
 
     # Fetch template (resolve synonym first)
     template_client = get_template_store_client()
-    template = await template_client.get_template_resolved(template_id)
+    template = await template_client.get_template_resolved(
+        await _template_in(template_id, namespace)
+    )
 
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -449,8 +463,10 @@ async def export_table_csv(
     namespace: str | None = Query(
         None,
         description=(
-            "Only documents in this namespace. Without it, the documents of "
-            "every namespace the caller can read."
+            "Only documents in this namespace, which is also where a bare "
+            "template value is resolved (a shared template: wip:PATIENT or "
+            "its id). Without it, the documents of every namespace the caller "
+            "can read."
         ),
     ),
     max_cross_product: int = Query(
@@ -471,7 +487,9 @@ async def export_table_csv(
 
     # Fetch template (resolve synonym via template-store client)
     template_client = get_template_store_client()
-    template = await template_client.get_template_resolved(template_id)
+    template = await template_client.get_template_resolved(
+        await _template_in(template_id, namespace)
+    )
 
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")

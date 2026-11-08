@@ -344,7 +344,9 @@ and document counts. Now:
   `GET /documents` already does. Read on the template's namespace is still
   required.
 - **New `namespace` parameter** limits the documents to one namespace; naming
-  one the caller cannot read is refused (403/404).
+  one the caller cannot read is refused (403/404). It is also the namespace a
+  bare template value resolves in, as on `GET /documents`: a shared template
+  is named `wip:PATIENT` (or by id), never found by falling back.
 - **The MCP `get_table_view` and `export_table_csv` tools** forward their
   `namespace` to it. Before, it only chose where the template value was
   resolved.
