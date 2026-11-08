@@ -87,7 +87,7 @@ class ReportingConfig(BaseModel):
     )
     sync_strategy: str = Field(
         default="latest_only",
-        description="Sync strategy: 'latest_only' (upsert) or 'all_versions' (insert all)"
+        description="Sync strategy: 'latest_only' (upsert the latest version), 'all_versions' (insert every version) or 'disabled'"
     )
     table_name: str | None = Field(
         default=None,

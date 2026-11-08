@@ -1,6 +1,8 @@
 """Template API endpoints."""
 
+import logging
 import math
+from collections.abc import Awaitable
 from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
@@ -13,6 +15,7 @@ from wip_auth import (
     resolve_or_404,
 )
 from wip_auth.fastapi_helpers import unresolved_detail
+from wip_auth.registry_client import RegistryUnavailableError
 
 from ..models.api_models import (
     ActivateTemplateResponse,
@@ -36,6 +39,8 @@ from ..services.portable import template_with_portable_refs
 from ..services.registry_client import RegistryError
 from ..services.template_service import TemplateService
 from .auth import require_api_key
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/templates",
@@ -145,9 +150,13 @@ async def list_templates(
     identity = require_current_identity()
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
-    # Resolve extends synonym if provided
+    # Resolve extends synonym if provided. Strict: an identifier that cannot
+    # be resolved (a bare value with no namespace to read it in) is a 404,
+    # never a filter that matches nothing and answers an empty page.
     if extends:
-        extends = await resolve_or_404(extends, "template", namespace, param_name="extends")
+        extends = await resolve_or_404(
+            extends, "template", namespace, param_name="extends", strict=True,
+        )
 
     templates, total = await TemplateService.list_templates(
         status=status,
@@ -418,6 +427,30 @@ async def get_template_versions_by_id(template_id: str):
     )
 
 
+async def _item_result(
+    i: int, item_id: str, verb: str, op: Awaitable[BulkResultItem],
+) -> BulkResultItem:
+    """Await one bulk item's operation and turn a refusal or fault into that
+    item's error. A refusal keeps its code; a Registry rejection is
+    registry_error; an unexpected fault is internal_error (logged), never a
+    500 that loses every other item's result. A 403/404 or a Registry outage
+    (503) is the whole request's answer and propagates."""
+    try:
+        return await op
+    except ValueError as e:
+        return BulkResultItem(index=i, status="error", id=item_id, **error_fields(e))
+    except RegistryError as e:
+        return BulkResultItem(
+            index=i, status="error", id=item_id,
+            error=f"Registry error: {e!s}", error_code="registry_error",
+        )
+    except (HTTPException, RegistryUnavailableError):
+        raise
+    except Exception as e:
+        logger.exception("Template %s failed for %s", verb, item_id)
+        return BulkResultItem(index=i, status="error", id=item_id, **error_fields(e))
+
+
 @router.put("", response_model=BulkResponse)
 async def update_templates(
     items: list[UpdateTemplateItem] = Body(...),
@@ -444,42 +477,36 @@ async def update_templates(
             if ns:
                 await check_namespace_permission(identity, ns, "write")
 
-    results = []
-    for i, item in enumerate(items):
-        try:
-            result = await TemplateService.update_template(item.template_id, item)
-            if not result:
-                results.append(BulkResultItem(index=i, status="error", id=item.template_id, error="Template not found", error_code="not_found"))
-            else:
-                # A version event carries its consequences on this path too,
-                # not only on create-as-upsert: same schema diff, same live
-                # documents, same migration question. Advisory — None here
-                # means the description failed, never the update.
-                details = None
-                if result.is_new_version:
-                    details = await TemplateService.version_event_details(
-                        result.template_id, result.version,
-                        result.previous_version, item.renames,
-                    )
-                # "updated" means the template changed — a new version, or a
-                # reporting change made in place (is_new_version false). A
-                # caller acting on a new version (deactivating the previous
-                # one) reads is_new_version.
-                results.append(BulkResultItem(
-                    index=i,
-                    status="updated" if result.changed else "unchanged",
-                    id=result.template_id,
-                    value=result.value, version=result.version,
-                    is_new_version=result.is_new_version,
-                    details=details,
-                ))
-        except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.template_id, **error_fields(e)))
-        except RegistryError as e:
-            results.append(BulkResultItem(
-                index=i, status="error", id=item.template_id,
-                error=f"Registry error: {e!s}", error_code="registry_error",
-            ))
+    async def update_one(i: int, item: UpdateTemplateItem) -> BulkResultItem:
+        result = await TemplateService.update_template(item.template_id, item)
+        if not result:
+            return BulkResultItem(index=i, status="error", id=item.template_id, error="Template not found", error_code="not_found")
+        # A version event carries its consequences on this path too, not only
+        # on create-as-upsert: same schema diff, same live documents, same
+        # migration question. Advisory — None here means the description
+        # failed, never the update.
+        details = None
+        if result.is_new_version:
+            details = await TemplateService.version_event_details(
+                result.template_id, result.version,
+                result.previous_version, item.renames,
+            )
+        # "updated" means the template changed — a new version, or a reporting
+        # change made in place (is_new_version false). A caller acting on a new
+        # version (deactivating the previous one) reads is_new_version.
+        return BulkResultItem(
+            index=i,
+            status="updated" if result.changed else "unchanged",
+            id=result.template_id,
+            value=result.value, version=result.version,
+            is_new_version=result.is_new_version,
+            details=details,
+        )
+
+    results = [
+        await _item_result(i, item.template_id, "update", update_one(i, item))
+        for i, item in enumerate(items)
+    ]
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
@@ -543,125 +570,121 @@ async def delete_templates(
             if ns:
                 await check_namespace_permission(identity, ns, "write")
 
-    results = []
-    for i, item in enumerate(items):
-        try:
-            # A soft-delete REQUIRES an explicit version. The old default
-            # (version-less = deactivate the LATEST) was a foot-gun: right
-            # after a version event the overwhelmingly common intent is
-            # "retire the PREVIOUS version", and the default silently did
-            # the opposite — once retiring a doc-bearing version and making
-            # its namespace's archives unrestorable at the reporting gate.
-            # A UI that loses the selected version in transit now gets this
-            # loud error instead of retiring the wrong version. Hard-delete
-            # without a version keeps its distinct, deliberate meaning:
-            # remove ALL versions (namespace-teardown flows).
-            if not item.hard_delete and item.version is None:
-                version_rows = await Template.find(
-                    {"template_id": item.id}
-                ).sort("version").to_list()
-                # An unknown template falls through to the normal not-found
-                # path — "version is required" would be nonsense there.
-                if version_rows:
-                    listing = ", ".join(
-                        f"v{t.version} ({getattr(t.status, 'value', t.status)})"
-                        for t in version_rows
-                    )
-                    results.append(BulkResultItem(
-                        index=i, status="error", id=item.id,
-                        error=(
-                            "version is required to deactivate a template: a "
-                            "version-less deactivate targeted the LATEST version, "
-                            "which silently retires the wrong one right after a "
-                            f"version event. This template's versions: {listing}. "
-                            "Pass the version to retire. (hard_delete=true without "
-                            "a version still means: remove all versions.)"
-                        ),
-                        error_code="invalid_request", details={"rule": "version_required"},
-                    ))
-                    continue
-
-            # Check dependencies
-            deps = await DependencyService.check_template_dependencies(item.id)
-
-            # Block if child templates exist
-            if deps.child_template_count > 0:
-                results.append(BulkResultItem(
+    async def delete_one(i: int, item: DeleteItem) -> BulkResultItem:
+        # A soft-delete REQUIRES an explicit version. The old default
+        # (version-less = deactivate the LATEST) was a foot-gun: right
+        # after a version event the overwhelmingly common intent is
+        # "retire the PREVIOUS version", and the default silently did
+        # the opposite — once retiring a doc-bearing version and making
+        # its namespace's archives unrestorable at the reporting gate.
+        # A UI that loses the selected version in transit now gets this
+        # loud error instead of retiring the wrong version. Hard-delete
+        # without a version keeps its distinct, deliberate meaning:
+        # remove ALL versions (namespace-teardown flows).
+        if not item.hard_delete and item.version is None:
+            version_rows = await Template.find(
+                {"template_id": item.id}
+            ).sort("version").to_list()
+            # An unknown template falls through to the normal not-found
+            # path — "version is required" would be nonsense there.
+            if version_rows:
+                listing = ", ".join(
+                    f"v{t.version} ({getattr(t.status, 'value', t.status)})"
+                    for t in version_rows
+                )
+                return BulkResultItem(
                     index=i, status="error", id=item.id,
-                    error=f"Cannot deactivate: {deps.child_template_count} template(s) extend this template",
-                    error_code="invalid_state", details={"rule": "has_children"},
-                ))
-                continue
+                    error=(
+                        "version is required to deactivate a template: a "
+                        "version-less deactivate targeted the LATEST version, "
+                        "which silently retires the wrong one right after a "
+                        f"version event. This template's versions: {listing}. "
+                        "Pass the version to retire. (hard_delete=true without "
+                        "a version still means: remove all versions.)"
+                    ),
+                    error_code="invalid_request", details={"rule": "version_required"},
+                )
 
-            if item.hard_delete:
-                # Hard-delete is irreversible and orphans every document row
-                # that still carries this template_id, whatever its status.
-                # So it refuses whenever such rows exist — `force` (which
-                # means "deactivate anyway", a reversible act) does not apply
-                # — and refuses when the count is unknown, never treating
-                # "could not check" as "none".
-                force_note = " force=true does not apply to hard-delete." if item.force else ""
-                try:
-                    rows = await DependencyService.hard_delete_document_rows(item.id)
-                except Exception as e:
-                    results.append(BulkResultItem(
-                        index=i, status="error", id=item.id,
-                        error=(
-                            "Hard-delete refused: cannot verify that no documents use this "
-                            f"template ({e}).{force_note}"
-                        ),
-                        error_code="invalid_state", details={"rule": "documents_unverifiable"},
-                    ))
-                    continue
-                if rows > 0:
-                    results.append(BulkResultItem(
-                        index=i, status="error", id=item.id,
-                        error=(
-                            f"Hard-delete refused: {rows} document row(s) of any status, "
-                            "across all versions, reference this template. Delete them first "
-                            f"(hard_delete=true per document in this namespace).{force_note}"
-                        ),
-                        error_code="invalid_state", details={"rule": "has_documents"},
-                    ))
-                    continue
-            # Soft-delete: refused while active documents are on THIS version,
-            # unless force. Documents on other versions do not depend on it.
-            # An unknown count does not refuse: deactivation is reversible
-            # (unlike hard delete above, which refuses on "unknown").
-            elif not item.force:
-                assert item.version is not None  # required above for a soft delete
-                try:
-                    on_version = await DependencyService.active_documents_on_version(
-                        item.id, item.version,
-                    )
-                except Exception:
-                    on_version = 0
-                if on_version > 0:
-                    results.append(BulkResultItem(
-                        index=i, status="error", id=item.id,
-                        error=(
-                            f"Version {item.version} has {on_version} active document(s). "
-                            "Migrate them to another version (migrate_documents) or use "
-                            "force=true to deactivate anyway."
-                        ),
-                        error_code="invalid_state",
-                        details={
-                            "rule": "has_documents", "version": item.version,
-                            "document_count": on_version,
-                        },
-                    ))
-                    continue
+        # Check dependencies
+        deps = await DependencyService.check_template_dependencies(item.id)
 
-            deleted = await TemplateService.delete_template(
-                item.id, item.updated_by, version=item.version,
-                hard_delete=item.hard_delete,
+        # Block if child templates exist
+        if deps.child_template_count > 0:
+            return BulkResultItem(
+                index=i, status="error", id=item.id,
+                error=f"Cannot deactivate: {deps.child_template_count} template(s) extend this template",
+                error_code="invalid_state", details={"rule": "has_children"},
             )
-            if not deleted:
-                results.append(BulkResultItem(index=i, status="error", id=item.id, error="Template not found", error_code="not_found"))
-            else:
-                results.append(BulkResultItem(index=i, status="deleted", id=item.id))
-        except ValueError as e:
-            results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
+
+        if item.hard_delete:
+            # Hard-delete is irreversible and orphans every document row
+            # that still carries this template_id, whatever its status.
+            # So it refuses whenever such rows exist — `force` (which
+            # means "deactivate anyway", a reversible act) does not apply
+            # — and refuses when the count is unknown, never treating
+            # "could not check" as "none".
+            force_note = " force=true does not apply to hard-delete." if item.force else ""
+            try:
+                rows = await DependencyService.hard_delete_document_rows(item.id)
+            except Exception as e:
+                return BulkResultItem(
+                    index=i, status="error", id=item.id,
+                    error=(
+                        "Hard-delete refused: cannot verify that no documents use this "
+                        f"template ({e}).{force_note}"
+                    ),
+                    error_code="invalid_state", details={"rule": "documents_unverifiable"},
+                )
+            if rows > 0:
+                return BulkResultItem(
+                    index=i, status="error", id=item.id,
+                    error=(
+                        f"Hard-delete refused: {rows} document row(s) of any status, "
+                        "across all versions, reference this template. Delete them first "
+                        f"(hard_delete=true per document in this namespace).{force_note}"
+                    ),
+                    error_code="invalid_state", details={"rule": "has_documents"},
+                )
+        # Soft-delete: refused while active documents are on THIS version,
+        # unless force. Documents on other versions do not depend on it.
+        # An unknown count does not refuse: deactivation is reversible
+        # (unlike hard delete above, which refuses on "unknown").
+        elif not item.force:
+            assert item.version is not None  # required above for a soft delete
+            try:
+                on_version = await DependencyService.active_documents_on_version(
+                    item.id, item.version,
+                )
+            except Exception:
+                on_version = 0
+            if on_version > 0:
+                return BulkResultItem(
+                    index=i, status="error", id=item.id,
+                    error=(
+                        f"Version {item.version} has {on_version} active document(s). "
+                        "Migrate them to another version (migrate_documents) or use "
+                        "force=true to deactivate anyway."
+                    ),
+                    error_code="invalid_state",
+                    details={
+                        "rule": "has_documents", "version": item.version,
+                        "document_count": on_version,
+                    },
+                )
+
+        deleted = await TemplateService.delete_template(
+            item.id, item.updated_by, version=item.version,
+            hard_delete=item.hard_delete,
+        )
+        if not deleted:
+            return BulkResultItem(index=i, status="error", id=item.id, error="Template not found", error_code="not_found")
+        else:
+            return BulkResultItem(index=i, status="deleted", id=item.id)
+
+    results = [
+        await _item_result(i, item.id, "delete", delete_one(i, item))
+        for i, item in enumerate(items)
+    ]
     return BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),

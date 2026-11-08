@@ -68,14 +68,9 @@ async def _entries(value: str) -> int:
 
 @pytest.mark.asyncio
 async def test_a_failed_insert_releases_the_identity(client: AsyncClient, auth_headers):
-    # An unexpected database error is not a per-item refusal: it propagates
-    # (the in-process transport re-raises it). What matters here is what it
-    # leaves behind.
-    with (
-        patch.object(Template, "insert", side_effect=RuntimeError("mongo went away")),
-        pytest.raises(RuntimeError),
-    ):
-        await client.post(API, headers=auth_headers, json=[_entity("C1171_INSERT")])
+    with patch.object(Template, "insert", side_effect=RuntimeError("mongo went away")):
+        resp = await client.post(API, headers=auth_headers, json=[_entity("C1171_INSERT")])
+    assert resp.json()["results"][0]["error_code"] == "internal_error", resp.text
     assert await _entries("C1171_INSERT") == 0
     item = await _post(client, auth_headers, _entity("C1171_INSERT"))
     assert item["status"] == "created", item

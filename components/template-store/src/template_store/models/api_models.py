@@ -97,6 +97,8 @@ def endpoint_lookups(items: list[Any] | None) -> list[str]:
 # (``sample__v3`` vs ``sample`` v3), so the suffix is rejected at the API
 # boundary — the only collision class the naming scheme has.
 _RESERVED_TABLE_SUFFIX = re.compile(r"__v[0-9]+$")
+# Characters that would split a NATS subject token or make it a wildcard.
+_SUBJECT_UNSAFE = re.compile(r"[.*>\s]")
 
 
 def _reject_reserved_suffix(value: str, what: str) -> str:
@@ -229,6 +231,13 @@ class CreateTemplateRequest(StrictModel):
     @field_validator("value")
     @classmethod
     def _value_reserved_suffix(cls, v: str) -> str:
+        if _SUBJECT_UNSAFE.search(v):
+            raise ValueError(
+                f"Template value {v!r} contains '.', '*', '>' or whitespace: the "
+                "value is a token of the template's event subject "
+                "(wip.templates.<value>.<event>), which those would split or "
+                "turn into a wildcard"
+            )
         return _reject_reserved_suffix(v, "Template value")
 
     @field_validator("rules", mode="before")

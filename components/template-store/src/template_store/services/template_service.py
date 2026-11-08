@@ -235,8 +235,12 @@ class TemplateService:
         Operates on the *final* fields list and reporting config so it
         can be called from both create and update paths.
 
+        Also refuses a sync_strategy reporting-sync does not know (every
+        create and update passes its reporting config through here).
+
         Raises ValueError on violation.
         """
+        TemplateService._refuse_unknown_sync_strategy(reporting)
         indexed_fields = [
             f for f in fields if getattr(f, "full_text_indexed", None)
         ]
@@ -262,6 +266,19 @@ class TemplateService:
             raise TemplateError(
                 f"full_text_indexed requires reporting.sync_enabled=true; "
                 f"field(s) {indexed_names} cannot be indexed without sync", "validation_failed", rule="full_text_indexed"
+            )
+
+    _SYNC_STRATEGIES = ("latest_only", "all_versions", "disabled")
+
+    @staticmethod
+    def _refuse_unknown_sync_strategy(reporting: ReportingConfig | None) -> None:
+        """reporting-sync knows three strategies; anything else was stored and
+        only failed at the consumer. Write-time, so stored rows stay readable."""
+        if reporting is not None and reporting.sync_strategy not in TemplateService._SYNC_STRATEGIES:
+            raise TemplateError(
+                f"sync_strategy {reporting.sync_strategy!r} is not one of "
+                f"{', '.join(TemplateService._SYNC_STRATEGIES)}",
+                "validation_failed", rule="sync_strategy",
             )
 
     @staticmethod
@@ -1187,7 +1204,7 @@ class TemplateService:
         if value:
             query["value"] = value
 
-        if latest_only and not value:
+        if latest_only:
             # Use aggregation to get only the latest version of each
             # template. The group key is template_id — the stable canonical
             # handle for one (namespace, value) identity — NOT the bare
@@ -2858,6 +2875,15 @@ class TemplateService:
                     value=item.value,
                     error=f"Registry error: {e!s}",
                     error_code="registry_error",
+                ))
+            except RegistryUnavailableError:
+                raise  # a whole-request 503, not a per-item fault
+            except Exception as e:
+                # An unexpected fault is this item's error (internal_error),
+                # not a 500 that loses every other item's result.
+                logger.exception("Template create failed for %s", item.value)
+                results.append(BulkResultItem(
+                    index=i, status="error", value=item.value, **error_fields(e),
                 ))
 
         return results
