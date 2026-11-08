@@ -957,7 +957,7 @@ var DocumentStoreService = class extends BaseService {
     return this.postFormData("/import", form);
   }
   // ---- Replay ----
-  async startReplay(request = {}) {
+  async startReplay(request) {
     return this.post("/replay/start", request);
   }
   async getReplayStatus(sessionId) {

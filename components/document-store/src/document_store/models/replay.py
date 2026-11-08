@@ -22,13 +22,15 @@ class ReplayFilter(StrictModel):
     """Filter for replay — which documents to replay."""
     template_id: str | None = None
     template_value: str | None = None
-    namespace: str = "wip"
+    # Required: a replay republishes a namespace's documents downstream, so
+    # which namespace is never implied.
+    namespace: str = Field(..., min_length=1, description="Namespace whose documents are replayed")
     status: str = "active"
 
 
 class ReplayRequest(StrictModel):
     """Request to start a replay session."""
-    filter: ReplayFilter = Field(default_factory=ReplayFilter)
+    filter: ReplayFilter
     throttle_ms: int = Field(default=10, ge=0, le=5000, description="Delay between events in milliseconds")
     batch_size: int = Field(default=100, ge=10, le=1000, description="Documents per batch")
 
@@ -54,7 +56,11 @@ class ReplaySessionResponse(BaseModel):
     """API response for replay session."""
     session_id: str
     status: ReplayStatus
+    namespace: str = Field(..., description="Namespace whose documents this session replays")
     total_count: int = 0
     published: int = 0
     throttle_ms: int = 10
     message: str = ""
+    error: str | None = Field(
+        default=None, description="Why the session failed (status 'failed')"
+    )

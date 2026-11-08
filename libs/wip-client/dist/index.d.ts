@@ -1532,21 +1532,26 @@ type ReplayStatus = 'pending' | 'running' | 'paused' | 'completed' | 'cancelled'
 interface ReplayFilter {
     template_id?: string;
     template_value?: string;
-    namespace?: string;
+    /** The namespace whose documents are replayed. Required: never implied. */
+    namespace: string;
     status?: string;
 }
 interface ReplayRequest {
-    filter?: ReplayFilter;
+    filter: ReplayFilter;
     throttle_ms?: number;
     batch_size?: number;
 }
 interface ReplaySessionResponse {
     session_id: string;
     status: ReplayStatus;
+    /** The namespace this session replays. */
+    namespace: string;
     total_count: number;
     published: number;
     throttle_ms: number;
     message: string;
+    /** Why the session failed, when status is 'failed'. */
+    error?: string | null;
 }
 /**
  * Params for `GET /api/document-store/documents/{id}/relationships`.
@@ -2288,7 +2293,7 @@ declare class DocumentStoreService extends BaseService {
     rehashIdentities(request: RehashIdentitiesRequest): Promise<RehashIdentitiesResponse>;
     previewImport(file: Blob, filename: string): Promise<ImportPreviewResponse>;
     importDocuments(file: Blob, filename: string, options: ImportDocumentsOptions): Promise<ImportDocumentsResponse>;
-    startReplay(request?: ReplayRequest): Promise<ReplaySessionResponse>;
+    startReplay(request: ReplayRequest): Promise<ReplaySessionResponse>;
     getReplayStatus(sessionId: string): Promise<ReplaySessionResponse>;
     pauseReplay(sessionId: string): Promise<ReplaySessionResponse>;
     resumeReplay(sessionId: string): Promise<ReplaySessionResponse>;

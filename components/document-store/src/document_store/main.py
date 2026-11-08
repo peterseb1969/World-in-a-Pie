@@ -240,35 +240,41 @@ async def lifespan(app: FastAPI):
     if retired:
         print(f"Retired the 'archived' status on {retired} document row(s) (now 'inactive').")
 
-    # Run startup integrity check (non-blocking, log warnings only)
-    # Only check template refs, skip term refs for faster startup
+    # Startup integrity check, in the background: it counts every active
+    # document and checks up to 500, which on a large instance takes longer
+    # than a startup probe allows, and nothing waits on its result (it only
+    # logs). Startup goes on; shutdown stops it if it is still running.
     import logging
     logger = logging.getLogger("document_store.startup")
-    try:
-        logger.info("Running startup integrity check...")
-        result = await check_all_documents(
-            status_filter="active",
-            limit=500,
-            check_term_refs=False  # Skip term refs for faster startup
-        )
-        if result.status == "healthy":
-            logger.info(f"Integrity check: OK ({result.summary.total_documents} documents checked)")
-        else:
-            logger.warning(f"Integrity check found {len(result.issues)} issues:")
-            # Group issues by type
-            issue_counts: dict[str, int] = {}
-            for issue in result.issues:
-                issue_counts[issue.type] = issue_counts.get(issue.type, 0) + 1
-            for issue_type, count in issue_counts.items():
-                logger.warning(f"  - {issue_type}: {count}")
-            # Log first few specific issues
-            for issue in result.issues[:5]:
-                doc_id_short = issue.document_id[:12] if len(issue.document_id) > 12 else issue.document_id
-                logger.warning(f"  [{doc_id_short}...] {issue.field_path or 'template_id'}: {issue.message}")
-            if len(result.issues) > 5:
-                logger.warning(f"  ... and {len(result.issues) - 5} more issues")
-    except Exception as e:
-        logger.warning(f"Startup integrity check failed: {e}")
+
+    async def _startup_integrity_check() -> None:
+        try:
+            logger.info("Running startup integrity check...")
+            result = await check_all_documents(
+                status_filter="active",
+                limit=500,
+                check_term_refs=False  # Skip term refs for faster startup
+            )
+            if result.status == "healthy":
+                logger.info(f"Integrity check: OK ({result.summary.total_documents} documents checked)")
+            else:
+                logger.warning(f"Integrity check found {len(result.issues)} issues:")
+                # Group issues by type
+                issue_counts: dict[str, int] = {}
+                for issue in result.issues:
+                    issue_counts[issue.type] = issue_counts.get(issue.type, 0) + 1
+                for issue_type, count in issue_counts.items():
+                    logger.warning(f"  - {issue_type}: {count}")
+                # Log first few specific issues
+                for issue in result.issues[:5]:
+                    doc_id_short = issue.document_id[:12] if len(issue.document_id) > 12 else issue.document_id
+                    logger.warning(f"  [{doc_id_short}...] {issue.field_path or 'template_id'}: {issue.message}")
+                if len(result.issues) > 5:
+                    logger.warning(f"  ... and {len(result.issues) - 5} more issues")
+        except Exception as e:
+            logger.warning(f"Startup integrity check failed: {e}")
+
+    integrity_task = asyncio.create_task(_startup_integrity_check())
 
     # Start key sync (picks up runtime API keys from Registry)
     key_sync = await setup_key_sync(
@@ -283,6 +289,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("Shutting down WIP Document Store Service...")
+    if not integrity_task.done():
+        integrity_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await integrity_task
     if key_sync:
         await key_sync.stop()
 

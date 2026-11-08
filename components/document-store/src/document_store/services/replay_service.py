@@ -10,6 +10,11 @@ from typing import Any, cast
 
 logger = logging.getLogger(__name__)
 
+# How long an unconsumed replay event stays in its NATS stream.
+REPLAY_STREAM_MAX_AGE_SECONDS = 24 * 60 * 60
+# Finished sessions kept readable (status, error) before the oldest are forgotten.
+KEEP_FINISHED_SESSIONS = 50
+
 
 class ReplayService:
     """Manages replay sessions that publish stored documents as NATS events."""
@@ -50,14 +55,19 @@ class ReplayService:
         if replay_filter.template_value:
             match["template_value"] = replay_filter.template_value
 
+        if count_only:
+            # How many documents, not which version of each: no sort and no
+            # row bodies, so the count never meets the in-memory sort limit.
+            return [
+                {"$match": match},
+                {"$group": {"_id": "$document_id"}},
+                {"$count": "total"},
+            ]
         pipeline: list[dict[str, Any]] = [
             {"$match": match},
             {"$sort": {"document_id": 1, "version": -1}},
             {"$group": {"_id": "$document_id", "doc": {"$first": "$$ROOT"}}},
         ]
-        if count_only:
-            pipeline.append({"$count": "total"})
-            return pipeline
         pipeline.append({"$replaceRoot": {"newRoot": "$doc"}})
         # Deterministic order so skip/limit pagination never repeats or
         # drops a document across batches.
@@ -91,9 +101,9 @@ class ReplayService:
         # Count matching documents — distinct document_ids whose latest
         # matching version would be published, via the shared pipeline.
         from ..models.document import Document
-        count_rows = await Document.aggregate(
-            self._latest_docs_pipeline(replay_filter, count_only=True)
-        ).to_list()
+        count_rows = await Document.get_motor_collection().aggregate(
+            self._latest_docs_pipeline(replay_filter, count_only=True), allowDiskUse=True,
+        ).to_list(None)
         total_count = count_rows[0]["total"] if count_rows else 0
 
         if total_count == 0:
@@ -118,6 +128,10 @@ class ReplayService:
                 retention=RetentionPolicy.WORK_QUEUE,
                 storage=StorageType.MEMORY,
                 max_msgs=total_count + 10,
+                # Unconsumed replay events expire on their own, so a stream
+                # nobody drains (or one a pod restart orphaned, out of reach
+                # of cancel) does not hold its documents in NATS memory.
+                max_age=REPLAY_STREAM_MAX_AGE_SECONDS,
             )
         )
 
@@ -131,6 +145,7 @@ class ReplayService:
             batch_size=batch_size,
         )
 
+        self._evict_finished()
         self._sessions[session_id] = session
 
         # Create pause flag (set = running, cleared = paused)
@@ -143,6 +158,20 @@ class ReplayService:
         self._tasks[session_id] = task
 
         return session.model_dump(mode="json")
+
+    def _evict_finished(self) -> None:
+        """Forget finished sessions beyond the newest KEEP_FINISHED_SESSIONS:
+        state kept for every session ever started grew without bound. A
+        session that just finished stays readable for a while."""
+        from ..models.replay import ReplayStatus
+        finished = [
+            sid for sid, s in self._sessions.items()
+            if s.status in (ReplayStatus.COMPLETED, ReplayStatus.CANCELLED, ReplayStatus.FAILED)
+        ]
+        for sid in finished[: max(0, len(finished) - KEEP_FINISHED_SESSIONS)]:
+            self._sessions.pop(sid, None)
+            self._tasks.pop(sid, None)
+            self._pause_flags.pop(sid, None)
 
     def get_session(self, session_id: str) -> dict | None:
         """Get replay session state."""
@@ -239,11 +268,14 @@ class ReplayService:
                 # pipeline the precondition count ran — raw dicts, since an
                 # aggregation does not return Document instances.
                 skip = (page - 1) * batch_size
-                docs = await Document.aggregate(
+                # allowDiskUse: the per-document sort runs over whole rows and
+                # would otherwise fail on a large namespace (100 MB limit).
+                docs = await Document.get_motor_collection().aggregate(
                     self._latest_docs_pipeline(
                         session.filter, skip=skip, limit=batch_size
-                    )
-                ).to_list()
+                    ),
+                    allowDiskUse=True,
+                ).to_list(None)
 
                 if not docs:
                     break

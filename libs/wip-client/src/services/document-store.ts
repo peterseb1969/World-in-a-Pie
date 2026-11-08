@@ -361,7 +361,7 @@ export class DocumentStoreService extends BaseService {
 
   // ---- Replay ----
 
-  async startReplay(request: ReplayRequest = {}): Promise<ReplaySessionResponse> {
+  async startReplay(request: ReplayRequest): Promise<ReplaySessionResponse> {
     return this.post('/replay/start', request)
   }
 

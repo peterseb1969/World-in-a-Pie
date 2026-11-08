@@ -339,12 +339,13 @@ export type ReplayStatus = 'pending' | 'running' | 'paused' | 'completed' | 'can
 export interface ReplayFilter {
   template_id?: string
   template_value?: string
-  namespace?: string
+  /** The namespace whose documents are replayed. Required: never implied. */
+  namespace: string
   status?: string
 }
 
 export interface ReplayRequest {
-  filter?: ReplayFilter
+  filter: ReplayFilter
   throttle_ms?: number
   batch_size?: number
 }
@@ -352,10 +353,14 @@ export interface ReplayRequest {
 export interface ReplaySessionResponse {
   session_id: string
   status: ReplayStatus
+  /** The namespace this session replays. */
+  namespace: string
   total_count: number
   published: number
   throttle_ms: number
   message: string
+  /** Why the session failed, when status is 'failed'. */
+  error?: string | null
 }
 
 // ----------------------------------------------------------------------------

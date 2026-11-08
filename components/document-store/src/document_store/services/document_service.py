@@ -57,6 +57,7 @@ from .reference_validator import (
 )
 from .registry_client import RegistryError, get_registry_client, qualified_synonym_values
 from .template_store_client import get_template_store_client
+from .timing_stats import TimingStats
 from .validation_service import ValidationService
 
 logger = logging.getLogger(__name__)
@@ -288,51 +289,27 @@ class DocumentService:
     Includes timing instrumentation for performance analysis.
     """
 
-    # Class-level timing statistics for document creation
-    _creation_timing: ClassVar[dict[str, list[float]]] = {}
-    _creation_count: int = 0
+    # Class-level timing statistics for document creation, in bounded
+    # memory (timing_stats).
+    _creation_timing: ClassVar[TimingStats] = TimingStats()
 
     @classmethod
     def get_creation_timing_stats(cls) -> dict[str, Any]:
         """Get aggregated timing statistics for document creation."""
-        if cls._creation_count == 0:
-            return {"creation_count": 0, "stages": {}}
-
-        stats: dict[str, Any] = {
-            "creation_count": cls._creation_count,
-            "stages": {}
+        return {
+            "creation_count": cls._creation_timing.runs,
+            "stages": cls._creation_timing.stages(),
         }
-
-        for stage, times in cls._creation_timing.items():
-            if times:
-                sorted_times = sorted(times)
-                n = len(sorted_times)
-                stats["stages"][stage] = {
-                    "count": n,
-                    "avg_ms": sum(times) / n,
-                    "min_ms": sorted_times[0],
-                    "max_ms": sorted_times[-1],
-                    "p50_ms": sorted_times[n // 2],
-                    "p95_ms": sorted_times[int(n * 0.95)] if n >= 20 else sorted_times[-1],
-                    "p99_ms": sorted_times[int(n * 0.99)] if n >= 100 else sorted_times[-1],
-                }
-
-        return stats
 
     @classmethod
     def reset_creation_timing_stats(cls):
         """Reset creation timing statistics."""
-        cls._creation_timing = {}
-        cls._creation_count = 0
+        cls._creation_timing = TimingStats()
 
     @classmethod
     def _record_creation_timing(cls, timing: dict[str, float]):
         """Record timing from a document creation."""
-        cls._creation_count += 1
-        for stage, ms in timing.items():
-            if stage not in cls._creation_timing:
-                cls._creation_timing[stage] = []
-            cls._creation_timing[stage].append(ms)
+        cls._creation_timing.record(timing)
 
     def __init__(self):
         self.validation_service = ValidationService()

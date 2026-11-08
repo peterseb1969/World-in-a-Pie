@@ -1,6 +1,7 @@
 """Event replay API endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException
+from pymongo.errors import PyMongoError
 
 from wip_auth import UserIdentity, check_namespace_permission, require_api_key
 
@@ -8,6 +9,21 @@ from ..models.replay import ReplayRequest, ReplaySessionResponse
 from ..services.replay_service import get_replay_service
 
 router = APIRouter(prefix="/replay", tags=["Replay"])
+
+
+def _response(session: dict, message: str) -> ReplaySessionResponse:
+    """A session as the API reports it, with the namespace it replays and,
+    for a failed one, the reason."""
+    return ReplaySessionResponse(
+        session_id=session["session_id"],
+        status=session["status"],
+        namespace=session["filter"]["namespace"],
+        total_count=session["total_count"],
+        published=session["published"],
+        throttle_ms=session["throttle_ms"],
+        message=message,
+        error=session.get("error"),
+    )
 
 
 async def _enforce_replay_admin(session_id: str) -> dict:
@@ -64,18 +80,17 @@ async def start_replay(
             throttle_ms=request.throttle_ms,
             batch_size=request.batch_size,
         )
-        return ReplaySessionResponse(
-            session_id=session["session_id"],
-            status=session["status"],
-            total_count=session["total_count"],
-            published=session["published"],
-            throttle_ms=session["throttle_ms"],
-            message=f"Replay started: {session['total_count']} documents to publish",
-        )
+        return _response(session, f"Replay started: {session['total_count']} documents to publish")
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e)) from e
+    except PyMongoError as e:
+        # The count query failed (MongoDB unreachable, a query limit): an
+        # outage-shaped answer naming the cause, not a bare 500.
+        raise HTTPException(
+            status_code=503, detail=f"Replay could not count the documents to publish: {e}",
+        ) from e
 
 
 @router.get("/{session_id}", response_model=ReplaySessionResponse)
@@ -86,14 +101,7 @@ async def get_replay_session(
     """Get the current state of a replay session."""
     session = await _enforce_replay_admin(session_id)
 
-    return ReplaySessionResponse(
-        session_id=session["session_id"],
-        status=session["status"],
-        total_count=session["total_count"],
-        published=session["published"],
-        throttle_ms=session["throttle_ms"],
-        message=f"{session['published']}/{session['total_count']} published",
-    )
+    return _response(session, f"{session['published']}/{session['total_count']} published")
 
 
 @router.post("/{session_id}/pause", response_model=ReplaySessionResponse)
@@ -111,14 +119,7 @@ async def pause_replay(
 
     session = service.get_session(session_id)
     assert session is not None  # pause() succeeded → session exists
-    return ReplaySessionResponse(
-        session_id=session["session_id"],
-        status=session["status"],
-        total_count=session["total_count"],
-        published=session["published"],
-        throttle_ms=session["throttle_ms"],
-        message="Replay paused",
-    )
+    return _response(session, "Replay paused")
 
 
 @router.post("/{session_id}/resume", response_model=ReplaySessionResponse)
@@ -136,14 +137,7 @@ async def resume_replay(
 
     session = service.get_session(session_id)
     assert session is not None  # resume() succeeded → session exists
-    return ReplaySessionResponse(
-        session_id=session["session_id"],
-        status=session["status"],
-        total_count=session["total_count"],
-        published=session["published"],
-        throttle_ms=session["throttle_ms"],
-        message="Replay resumed",
-    )
+    return _response(session, "Replay resumed")
 
 
 @router.delete("/{session_id}", response_model=ReplaySessionResponse)
@@ -161,11 +155,4 @@ async def cancel_replay(
 
     session = service.get_session(session_id)
     assert session is not None  # cancel() succeeded → session exists
-    return ReplaySessionResponse(
-        session_id=session["session_id"],
-        status=session["status"],
-        total_count=session["total_count"],
-        published=session["published"],
-        throttle_ms=session["throttle_ms"],
-        message="Replay cancelled and stream deleted",
-    )
+    return _response(session, "Replay cancelled and stream deleted")

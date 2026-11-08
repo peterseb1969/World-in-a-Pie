@@ -7,6 +7,58 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### CSV exports cannot carry spreadsheet formulas; the table view is bounded and counts documents; `wip-archive` 0.35.0
+
+- **Formula escape in every CSV WIP writes:** document-store's table export,
+  reporting-sync's `/export/csv`, def-store's terminology export, and
+  `wip-toolkit export-csv` (wip-archive).
+  - A string cell or column name starting with `=`, `+`, `-`, `@`, tab or CR
+    gets a leading `'`, so a spreadsheet shows it as text instead of running
+    it.
+  - Numbers are written as they are.
+  - A string that already starts with `'` followed by one of those characters
+    gets one more `'`, so the escape stays reversible.
+- **WIP's CSV importers reverse it:** the file import (`import_documents_csv`)
+  and the terminology CSV import drop that one leading `'`, so exporting and
+  re-importing gives back the original values. An ordinary `'90s` is never
+  touched.
+- **`GET /table/{template_id}` refuses a page that flattens to more than
+  10,000 rows** (422). It used to reach `page_size` × `max_cross_product`, up
+  to 10 million. Lower either knob.
+- **`GET /table/{template_id}/csv` streams** from a cursor in chunks. It used
+  to hold every document, every row and the whole file in memory at once.
+- **Both show each document once, at its latest version.** A document with
+  several active rows, as a merge restore with `older_versions: keep` leaves
+  it, used to appear once per row and be counted once per row.
+  - `total_documents` counts those documents.
+  - `total_rows` is described as what it always was: the rows on this page.
+
+### Replay names its namespace and its errors, and frees what it held; startup no longer waits on the integrity scan; `@wip/client` 0.93.0
+
+- **`POST /replay/start` requires `filter.namespace`** (422 without it).
+  - It used to replay `wip` when the filter or namespace was left out.
+  - Every session response carries `namespace`, and a failed session carries
+    `error`, where it used to say only `failed`.
+  - `@wip/client` 0.93.0: `ReplayRequest.filter` and `ReplayFilter.namespace`
+    are required, `startReplay()` takes no default request, and
+    `ReplaySessionResponse` gains `namespace` and `error`.
+- **The count no longer sorts**, and the publish scan may spill to disk, so a
+  large namespace no longer hits MongoDB's in-memory sort limit. A MongoDB
+  failure counting the documents is a 503 naming the cause, not a bare 500.
+- **Replay streams expire unconsumed events after 24 hours** (`max_age`), so a
+  stream nobody drains, or one a pod restart orphaned, no longer holds its
+  documents in NATS memory. Finished sessions beyond the newest 50 are
+  forgotten.
+- **The startup integrity scan runs in the background.** It used to be awaited
+  before the service served, contrary to its comment, and it counts every
+  active document on the instance. Startup no longer waits on it.
+- **`/debug/timing` statistics are bounded:**
+  - counts, totals, min and max cover every run;
+  - the percentiles cover the last 1,000 samples per stage, given as
+    `percentile_window`.
+
+  They used to keep one float per stage per call for the life of the pod.
+
 ### Namespace writes accept `deletion_mode` only as `retain` or `full`
 
 `POST /api/registry/namespaces` and `PUT /api/registry/namespaces/{prefix}`

@@ -786,6 +786,18 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('status=active')
     })
 
+    it('startReplay sends the namespace and returns it with any error', async () => {
+      mockJsonResponse({
+        session_id: 'r1', status: 'failed', namespace: 'clinic-a', total_count: 2,
+        published: 1, throttle_ms: 10, message: '1/2 published', error: 'boom',
+      })
+      const result = await client.documents.startReplay({ filter: { namespace: 'clinic-a' } })
+      const [, options] = fetchMock.mock.calls[0]
+      expect(JSON.parse(options.body).filter.namespace).toBe('clinic-a')
+      expect(result.namespace).toBe('clinic-a')
+      expect(result.error).toBe('boom')
+    })
+
     it('updateDocument sends the revision as if_match', async () => {
       mockJsonResponse({
         results: [{ index: 0, status: 'updated', document_id: 'D-1', version: 1, revision: 3 }],

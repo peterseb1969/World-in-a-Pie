@@ -20,6 +20,7 @@ from .identity_service import IdentityService
 from .inbound_gate import InboundGate, current_gate, gate_refuses, reset_gate, use_gate
 from .reference_validator import RegistryUnavailableError
 from .template_store_client import TemplateStoreError, get_template_store_client
+from .timing_stats import TimingStats
 
 logger = logging.getLogger(__name__)
 
@@ -190,51 +191,25 @@ class ValidationService:
     # Time units terminology value (system-provided)
     TIME_UNITS_TERMINOLOGY = "_TIME_UNITS"
 
-    # Class-level timing statistics
-    _timing_stats: ClassVar[dict[str, list[float]]] = {}
-    _validation_count: int = 0
+    # Class-level timing statistics, in bounded memory (timing_stats).
+    # Recorded for validations that complete; one that stops at an early
+    # refusal records nothing, so validation_count counts completed ones.
+    _timing: ClassVar[TimingStats] = TimingStats()
 
     @classmethod
     def get_timing_stats(cls) -> dict[str, Any]:
-        """Get aggregated timing statistics across all validations."""
-        if cls._validation_count == 0:
-            return {"validation_count": 0, "stages": {}}
-
-        stats: dict[str, Any] = {
-            "validation_count": cls._validation_count,
-            "stages": {}
-        }
-
-        for stage, times in cls._timing_stats.items():
-            if times:
-                sorted_times = sorted(times)
-                n = len(sorted_times)
-                stats["stages"][stage] = {
-                    "count": n,
-                    "avg_ms": sum(times) / n,
-                    "min_ms": sorted_times[0],
-                    "max_ms": sorted_times[-1],
-                    "p50_ms": sorted_times[n // 2],
-                    "p95_ms": sorted_times[int(n * 0.95)] if n >= 20 else sorted_times[-1],
-                    "p99_ms": sorted_times[int(n * 0.99)] if n >= 100 else sorted_times[-1],
-                }
-
-        return stats
+        """Get aggregated timing statistics across completed validations."""
+        return {"validation_count": cls._timing.runs, "stages": cls._timing.stages()}
 
     @classmethod
     def reset_timing_stats(cls):
         """Reset timing statistics."""
-        cls._timing_stats = {}
-        cls._validation_count = 0
+        cls._timing = TimingStats()
 
     @classmethod
     def _record_timing(cls, timing: dict[str, float]):
         """Record timing from a validation run."""
-        cls._validation_count += 1
-        for stage, ms in timing.items():
-            if stage not in cls._timing_stats:
-                cls._timing_stats[stage] = []
-            cls._timing_stats[stage].append(ms)
+        cls._timing.record(timing)
 
     async def validate(
         self,
