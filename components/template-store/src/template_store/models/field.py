@@ -141,13 +141,13 @@ class FieldDefinition(BaseModel):
     # For type=term: reference to Def-Store terminology (legacy)
     terminology_ref: str | None = Field(
         default=None,
-        description="Canonical terminology_id for term validation (resolved from value at creation)"
+        description="Terminology for term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)"
     )
 
     # For type=object: reference to another template
     template_ref: str | None = Field(
         default=None,
-        description="Canonical template_id for nested template (resolved from value at creation)"
+        description="Template for the nested object: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)"
     )
     # The pinned version of the nested template. Mandatory whenever template_ref
     # is set (enforced at template create/activate/update). Nested-object data is
@@ -167,7 +167,7 @@ class FieldDefinition(BaseModel):
     )
     target_templates: list[str] | None = Field(
         default=None,
-        description="Canonical template_ids for allowed document reference targets (resolved from values at creation)"
+        description="Allowed document reference targets: stored as canonical template_ids once the template is active (a draft keeps the submitted forms until activation). On an edge type's source_ref / target_ref this is derived from the template-level declaration when served, and discarded on write"
     )
     include_subtypes: bool | None = Field(
         default=None,
@@ -175,7 +175,7 @@ class FieldDefinition(BaseModel):
     )
     target_terminologies: list[str] | None = Field(
         default=None,
-        description="Canonical terminology_ids for allowed term reference targets (resolved from values at creation)"
+        description="Allowed term reference targets: stored as canonical terminology_ids once the template is active (a draft keeps the submitted forms until activation)"
     )
     version_strategy: VersionStrategy | None = Field(
         default=None,
@@ -195,11 +195,11 @@ class FieldDefinition(BaseModel):
     )
     array_terminology_ref: str | None = Field(
         default=None,
-        description="Canonical terminology_id for array item term validation (resolved from value at creation)"
+        description="Terminology for array item term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)"
     )
     array_template_ref: str | None = Field(
         default=None,
-        description="Canonical template_id for array item template (resolved from value at creation)"
+        description="Template for array items: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)"
     )
     # Pinned version of the array-item template. Mandatory whenever
     # array_template_ref is set (same rationale as template_ref_version — CASE-493).

@@ -166,7 +166,8 @@ class Template(Document):
         description="Unique ID from Registry (UUID by default)"
     )
 
-    # Human-friendly identifier (mutable)
+    # Human-friendly identifier: the template's identity (namespace, value),
+    # immutable across versions — a rename is a fork, a new template
     value: str = Field(
         ...,
         description="Human-readable value (e.g., 'PERSON'). Must be unique within namespace."

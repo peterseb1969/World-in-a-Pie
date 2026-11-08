@@ -571,8 +571,9 @@ class TemplateService:
             if existing:
                 raise TemplateError(f"Template with value '{request.value}' already exists in namespace '{namespace}'", "already_exists")
 
-        # A create has no previous version, so every reference it names is new
-        # and passes the inbound gate.
+        # A create has no previous version, so nothing it names is carried:
+        # every reference passes the inbound gate (and one it refuses is not
+        # found).
         gate = InboundGate(namespace)
 
         # Validate extends if provided
@@ -654,8 +655,8 @@ class TemplateService:
             ]
 
         # CASE-493: every schema reference (extends + nested template refs) must
-        # pin an explicit version. Presence is enforced on all paths (nested via
-        # the FieldDefinition model validator, extends here); existence of the
+        # pin an explicit version. Presence is enforced on all paths (nested by
+        # validate_fields_for_write, extends here); existence of the
         # pinned (template_id, version) pairs is checked on non-draft writes —
         # drafts re-check at activation, when their referents must exist.
         await TemplateService._validate_pinned_versions(
@@ -1602,7 +1603,8 @@ class TemplateService:
 
         Returns a (verdict, diff) tuple where verdict is one of:
         - "identical": no schema differences — proposed matches existing exactly
-        - "compatible": only differences are added optional fields (mandatory=false)
+        - "compatible": only differences are added fields that are optional, or
+          mandatory with a default value
         - "incompatible": any other change (removed field, type change, made-required,
           identity_fields change, modified existing field, added required field,
           changed source/target_templates on a relationship template)
@@ -4128,8 +4130,9 @@ class TemplateService:
 
         Two checks:
         - **Presence** (always): the version is set whenever the ref is set.
-          Nested-ref presence is also guarded by FieldDefinition's model
-          validator; ``extends_version`` presence is enforced here because it
+          Nested-ref presence is also enforced at the write seam by
+          validate_fields_for_write (not on the model, which hydrates stored
+          rows); ``extends_version`` presence is enforced here because it
           lives on the template, not a field.
         - **Existence** (``check_existence``): the pinned ``(template_id,
           version)`` pair actually exists. Skipped for draft writes — a draft

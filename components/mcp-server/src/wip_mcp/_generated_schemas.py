@@ -635,14 +635,19 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                          'version': {'type': 'integer',
                                                                      'description': 'Pre-assigned '
                                                                                     'version (for '
-                                                                                    'restore/migration '
-                                                                                    '— skips '
-                                                                                    'Registry and '
-                                                                                    'version '
-                                                                                    'computation '
-                                                                                    'when used '
+                                                                                    'restore/migration, '
                                                                                     'with '
-                                                                                    'template_id)'},
+                                                                                    'template_id): '
+                                                                                    'skips the '
+                                                                                    'existing-value '
+                                                                                    'check and '
+                                                                                    'version '
+                                                                                    'computation; '
+                                                                                    'the identity '
+                                                                                    'is still '
+                                                                                    'registered '
+                                                                                    'with the '
+                                                                                    'Registry'},
                                                          'namespace': {'type': 'string',
                                                                        'description': 'Namespace '
                                                                                       'for the '
@@ -1119,27 +1124,52 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                               'not '
                                                                                                                               'provided'},
                                                                                              'terminology_ref': {'type': 'string',
-                                                                                                                 'description': 'Canonical '
-                                                                                                                                'terminology_id '
+                                                                                                                 'description': 'Terminology '
                                                                                                                                 'for '
                                                                                                                                 'term '
-                                                                                                                                'validation '
-                                                                                                                                '(resolved '
-                                                                                                                                'from '
-                                                                                                                                'value '
-                                                                                                                                'at '
-                                                                                                                                'creation)'},
+                                                                                                                                'validation: '
+                                                                                                                                'stored '
+                                                                                                                                'as '
+                                                                                                                                'its '
+                                                                                                                                'canonical '
+                                                                                                                                'terminology_id '
+                                                                                                                                'once '
+                                                                                                                                'the '
+                                                                                                                                'template '
+                                                                                                                                'is '
+                                                                                                                                'active '
+                                                                                                                                '(a '
+                                                                                                                                'draft '
+                                                                                                                                'keeps '
+                                                                                                                                'the '
+                                                                                                                                'submitted '
+                                                                                                                                'form '
+                                                                                                                                'until '
+                                                                                                                                'activation)'},
                                                                                              'template_ref': {'type': 'string',
-                                                                                                              'description': 'Canonical '
-                                                                                                                             'template_id '
+                                                                                                              'description': 'Template '
                                                                                                                              'for '
+                                                                                                                             'the '
                                                                                                                              'nested '
+                                                                                                                             'object: '
+                                                                                                                             'stored '
+                                                                                                                             'as '
+                                                                                                                             'its '
+                                                                                                                             'canonical '
+                                                                                                                             'template_id '
+                                                                                                                             'once '
+                                                                                                                             'the '
                                                                                                                              'template '
-                                                                                                                             '(resolved '
-                                                                                                                             'from '
-                                                                                                                             'value '
-                                                                                                                             'at '
-                                                                                                                             'creation)'},
+                                                                                                                             'is '
+                                                                                                                             'active '
+                                                                                                                             '(a '
+                                                                                                                             'draft '
+                                                                                                                             'keeps '
+                                                                                                                             'the '
+                                                                                                                             'submitted '
+                                                                                                                             'form '
+                                                                                                                             'until '
+                                                                                                                             'activation)'},
                                                                                              'template_ref_version': {'type': 'integer',
                                                                                                                       'description': 'Pinned '
                                                                                                                                      'version '
@@ -1167,18 +1197,47 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                                'type)'},
                                                                                              'target_templates': {'items': {'type': 'string'},
                                                                                                                   'type': 'array',
-                                                                                                                  'description': 'Canonical '
-                                                                                                                                 'template_ids '
-                                                                                                                                 'for '
-                                                                                                                                 'allowed '
+                                                                                                                  'description': 'Allowed '
                                                                                                                                  'document '
                                                                                                                                  'reference '
-                                                                                                                                 'targets '
-                                                                                                                                 '(resolved '
+                                                                                                                                 'targets: '
+                                                                                                                                 'stored '
+                                                                                                                                 'as '
+                                                                                                                                 'canonical '
+                                                                                                                                 'template_ids '
+                                                                                                                                 'once '
+                                                                                                                                 'the '
+                                                                                                                                 'template '
+                                                                                                                                 'is '
+                                                                                                                                 'active '
+                                                                                                                                 '(a '
+                                                                                                                                 'draft '
+                                                                                                                                 'keeps '
+                                                                                                                                 'the '
+                                                                                                                                 'submitted '
+                                                                                                                                 'forms '
+                                                                                                                                 'until '
+                                                                                                                                 'activation). '
+                                                                                                                                 'On '
+                                                                                                                                 'an '
+                                                                                                                                 'edge '
+                                                                                                                                 "type's "
+                                                                                                                                 'source_ref '
+                                                                                                                                 '/ '
+                                                                                                                                 'target_ref '
+                                                                                                                                 'this '
+                                                                                                                                 'is '
+                                                                                                                                 'derived '
                                                                                                                                  'from '
-                                                                                                                                 'values '
-                                                                                                                                 'at '
-                                                                                                                                 'creation)'},
+                                                                                                                                 'the '
+                                                                                                                                 'template-level '
+                                                                                                                                 'declaration '
+                                                                                                                                 'when '
+                                                                                                                                 'served, '
+                                                                                                                                 'and '
+                                                                                                                                 'discarded '
+                                                                                                                                 'on '
+                                                                                                                                 'write'},
                                                                                              'include_subtypes': {'type': 'boolean',
                                                                                                                   'description': 'When '
                                                                                                                                  'true, '
@@ -1193,18 +1252,27 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                                  'inheritance)'},
                                                                                              'target_terminologies': {'items': {'type': 'string'},
                                                                                                                       'type': 'array',
-                                                                                                                      'description': 'Canonical '
-                                                                                                                                     'terminology_ids '
-                                                                                                                                     'for '
-                                                                                                                                     'allowed '
+                                                                                                                      'description': 'Allowed '
                                                                                                                                      'term '
                                                                                                                                      'reference '
-                                                                                                                                     'targets '
-                                                                                                                                     '(resolved '
-                                                                                                                                     'from '
-                                                                                                                                     'values '
-                                                                                                                                     'at '
-                                                                                                                                     'creation)'},
+                                                                                                                                     'targets: '
+                                                                                                                                     'stored '
+                                                                                                                                     'as '
+                                                                                                                                     'canonical '
+                                                                                                                                     'terminology_ids '
+                                                                                                                                     'once '
+                                                                                                                                     'the '
+                                                                                                                                     'template '
+                                                                                                                                     'is '
+                                                                                                                                     'active '
+                                                                                                                                     '(a '
+                                                                                                                                     'draft '
+                                                                                                                                     'keeps '
+                                                                                                                                     'the '
+                                                                                                                                     'submitted '
+                                                                                                                                     'forms '
+                                                                                                                                     'until '
+                                                                                                                                     'activation)'},
                                                                                              'version_strategy': {'type': 'string',
                                                                                                                   'enum': ['latest',
                                                                                                                            'pinned'],
@@ -1298,30 +1366,53 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                                                                 'array '
                                                                                                                                 'type)'},
                                                                                              'array_terminology_ref': {'type': 'string',
-                                                                                                                       'description': 'Canonical '
-                                                                                                                                      'terminology_id '
+                                                                                                                       'description': 'Terminology '
                                                                                                                                       'for '
                                                                                                                                       'array '
                                                                                                                                       'item '
                                                                                                                                       'term '
-                                                                                                                                      'validation '
-                                                                                                                                      '(resolved '
-                                                                                                                                      'from '
-                                                                                                                                      'value '
-                                                                                                                                      'at '
-                                                                                                                                      'creation)'},
+                                                                                                                                      'validation: '
+                                                                                                                                      'stored '
+                                                                                                                                      'as '
+                                                                                                                                      'its '
+                                                                                                                                      'canonical '
+                                                                                                                                      'terminology_id '
+                                                                                                                                      'once '
+                                                                                                                                      'the '
+                                                                                                                                      'template '
+                                                                                                                                      'is '
+                                                                                                                                      'active '
+                                                                                                                                      '(a '
+                                                                                                                                      'draft '
+                                                                                                                                      'keeps '
+                                                                                                                                      'the '
+                                                                                                                                      'submitted '
+                                                                                                                                      'form '
+                                                                                                                                      'until '
+                                                                                                                                      'activation)'},
                                                                                              'array_template_ref': {'type': 'string',
-                                                                                                                    'description': 'Canonical '
-                                                                                                                                   'template_id '
+                                                                                                                    'description': 'Template '
                                                                                                                                    'for '
                                                                                                                                    'array '
-                                                                                                                                   'item '
+                                                                                                                                   'items: '
+                                                                                                                                   'stored '
+                                                                                                                                   'as '
+                                                                                                                                   'its '
+                                                                                                                                   'canonical '
+                                                                                                                                   'template_id '
+                                                                                                                                   'once '
+                                                                                                                                   'the '
                                                                                                                                    'template '
-                                                                                                                                   '(resolved '
-                                                                                                                                   'from '
-                                                                                                                                   'value '
-                                                                                                                                   'at '
-                                                                                                                                   'creation)'},
+                                                                                                                                   'is '
+                                                                                                                                   'active '
+                                                                                                                                   '(a '
+                                                                                                                                   'draft '
+                                                                                                                                   'keeps '
+                                                                                                                                   'the '
+                                                                                                                                   'submitted '
+                                                                                                                                   'form '
+                                                                                                                                   'until '
+                                                                                                                                   'activation)'},
                                                                                              'array_template_ref_version': {'type': 'integer',
                                                                                                                             'description': 'Pinned '
                                                                                                                                            'version '
@@ -1820,22 +1911,35 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                     'if not '
                                                                                     'provided'},
                                                    'terminology_ref': {'type': 'string',
-                                                                       'description': 'Canonical '
-                                                                                      'terminology_id '
+                                                                       'description': 'Terminology '
                                                                                       'for term '
-                                                                                      'validation '
-                                                                                      '(resolved '
-                                                                                      'from value '
-                                                                                      'at '
-                                                                                      'creation)'},
+                                                                                      'validation: '
+                                                                                      'stored as '
+                                                                                      'its '
+                                                                                      'canonical '
+                                                                                      'terminology_id '
+                                                                                      'once the '
+                                                                                      'template is '
+                                                                                      'active (a '
+                                                                                      'draft keeps '
+                                                                                      'the '
+                                                                                      'submitted '
+                                                                                      'form until '
+                                                                                      'activation)'},
                                                    'template_ref': {'type': 'string',
-                                                                    'description': 'Canonical '
+                                                                    'description': 'Template for '
+                                                                                   'the nested '
+                                                                                   'object: stored '
+                                                                                   'as its '
+                                                                                   'canonical '
                                                                                    'template_id '
-                                                                                   'for nested '
-                                                                                   'template '
-                                                                                   '(resolved from '
-                                                                                   'value at '
-                                                                                   'creation)'},
+                                                                                   'once the '
+                                                                                   'template is '
+                                                                                   'active (a '
+                                                                                   'draft keeps '
+                                                                                   'the submitted '
+                                                                                   'form until '
+                                                                                   'activation)'},
                                                    'template_ref_version': {'type': 'integer',
                                                                             'description': 'Pinned '
                                                                                            'version '
@@ -1860,17 +1964,37 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                      'type)'},
                                                    'target_templates': {'items': {'type': 'string'},
                                                                         'type': 'array',
-                                                                        'description': 'Canonical '
-                                                                                       'template_ids '
-                                                                                       'for '
-                                                                                       'allowed '
+                                                                        'description': 'Allowed '
                                                                                        'document '
                                                                                        'reference '
-                                                                                       'targets '
-                                                                                       '(resolved '
-                                                                                       'from '
-                                                                                       'values at '
-                                                                                       'creation)'},
+                                                                                       'targets: '
+                                                                                       'stored as '
+                                                                                       'canonical '
+                                                                                       'template_ids '
+                                                                                       'once the '
+                                                                                       'template '
+                                                                                       'is active '
+                                                                                       '(a draft '
+                                                                                       'keeps the '
+                                                                                       'submitted '
+                                                                                       'forms '
+                                                                                       'until '
+                                                                                       'activation). '
+                                                                                       'On an edge '
+                                                                                       "type's "
+                                                                                       'source_ref '
+                                                                                       '/ '
+                                                                                       'target_ref '
+                                                                                       'this is '
+                                                                                       'derived '
+                                                                                       'from the '
+                                                                                       'template-level '
+                                                                                       'declaration '
+                                                                                       'when '
+                                                                                       'served, '
+                                                                                       'and '
+                                                                                       'discarded '
+                                                                                       'on write'},
                                                    'include_subtypes': {'type': 'boolean',
                                                                         'description': 'When true, '
                                                                                        'target_templates '
@@ -1883,18 +2007,27 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                        'inheritance)'},
                                                    'target_terminologies': {'items': {'type': 'string'},
                                                                             'type': 'array',
-                                                                            'description': 'Canonical '
-                                                                                           'terminology_ids '
-                                                                                           'for '
-                                                                                           'allowed '
+                                                                            'description': 'Allowed '
                                                                                            'term '
                                                                                            'reference '
-                                                                                           'targets '
-                                                                                           '(resolved '
-                                                                                           'from '
-                                                                                           'values '
-                                                                                           'at '
-                                                                                           'creation)'},
+                                                                                           'targets: '
+                                                                                           'stored '
+                                                                                           'as '
+                                                                                           'canonical '
+                                                                                           'terminology_ids '
+                                                                                           'once '
+                                                                                           'the '
+                                                                                           'template '
+                                                                                           'is '
+                                                                                           'active '
+                                                                                           '(a '
+                                                                                           'draft '
+                                                                                           'keeps '
+                                                                                           'the '
+                                                                                           'submitted '
+                                                                                           'forms '
+                                                                                           'until '
+                                                                                           'activation)'},
                                                    'version_strategy': {'type': 'string',
                                                                         'enum': ['latest',
                                                                                  'pinned'],
@@ -1980,29 +2113,50 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                       '(for array '
                                                                                       'type)'},
                                                    'array_terminology_ref': {'type': 'string',
-                                                                             'description': 'Canonical '
-                                                                                            'terminology_id '
+                                                                             'description': 'Terminology '
                                                                                             'for '
                                                                                             'array '
                                                                                             'item '
                                                                                             'term '
-                                                                                            'validation '
-                                                                                            '(resolved '
-                                                                                            'from '
-                                                                                            'value '
-                                                                                            'at '
-                                                                                            'creation)'},
+                                                                                            'validation: '
+                                                                                            'stored '
+                                                                                            'as '
+                                                                                            'its '
+                                                                                            'canonical '
+                                                                                            'terminology_id '
+                                                                                            'once '
+                                                                                            'the '
+                                                                                            'template '
+                                                                                            'is '
+                                                                                            'active '
+                                                                                            '(a '
+                                                                                            'draft '
+                                                                                            'keeps '
+                                                                                            'the '
+                                                                                            'submitted '
+                                                                                            'form '
+                                                                                            'until '
+                                                                                            'activation)'},
                                                    'array_template_ref': {'type': 'string',
-                                                                          'description': 'Canonical '
-                                                                                         'template_id '
+                                                                          'description': 'Template '
                                                                                          'for '
                                                                                          'array '
-                                                                                         'item '
+                                                                                         'items: '
+                                                                                         'stored '
+                                                                                         'as its '
+                                                                                         'canonical '
+                                                                                         'template_id '
+                                                                                         'once the '
                                                                                          'template '
-                                                                                         '(resolved '
-                                                                                         'from '
-                                                                                         'value at '
-                                                                                         'creation)'},
+                                                                                         'is '
+                                                                                         'active '
+                                                                                         '(a draft '
+                                                                                         'keeps '
+                                                                                         'the '
+                                                                                         'submitted '
+                                                                                         'form '
+                                                                                         'until '
+                                                                                         'activation)'},
                                                    'array_template_ref_version': {'type': 'integer',
                                                                                   'description': 'Pinned '
                                                                                                  'version '
@@ -2231,7 +2385,7 @@ value (string, REQUIRED): Human-readable value (e.g., 'PERSON')
 label (string, REQUIRED): Display label
 description (string): Detailed description
 template_id (string): Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)
-version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
+version (integer): Pre-assigned version (for restore/migration, with template_id): skips the existing-value check and version computation; the identity is still registered with the Registry
 namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent.
@@ -2257,19 +2411,19 @@ fields (array of object): Field definitions
     type (enum, REQUIRED): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Supported field types for template fields.
     mandatory (boolean, default: false): Whether field is required
     default_value (object): Default value if not provided
-    terminology_ref (string): Canonical terminology_id for term validation (resolved from value at creation)
-    template_ref (string): Canonical template_id for nested template (resolved from value at creation)
+    terminology_ref (string): Terminology for term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)
+    template_ref (string): Template for the nested object: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)
     template_ref_version (integer): Pinned version of the nested template (mandatory when template_ref is set)
     reference_type (enum): One of: document, term, terminology, template. Type of entity being referenced (for reference type)
-    target_templates (array of string): Canonical template_ids for allowed document reference targets (resolved from values at creation)
+    target_templates (array of string): Allowed document reference targets: stored as canonical template_ids once the template is active (a draft keeps the submitted forms until activation). On an edge type's source_ref / target_ref this is derived from the template-level declaration when served, and discarded on write
     include_subtypes (boolean): When true, target_templates also accepts documents from child templates (via inheritance)
-    target_terminologies (array of string): Canonical terminology_ids for allowed term reference targets (resolved from values at creation)
+    target_terminologies (array of string): Allowed term reference targets: stored as canonical terminology_ids once the template is active (a draft keeps the submitted forms until activation)
     version_strategy (enum): One of: latest, pinned. How to resolve reference versions (default: latest)
     file_config (object): Configuration for file fields (allowed types, size limits)
       (nested object — see full schema)
     array_item_type (enum): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Type of array items (for array type)
-    array_terminology_ref (string): Canonical terminology_id for array item term validation (resolved from value at creation)
-    array_template_ref (string): Canonical template_id for array item template (resolved from value at creation)
+    array_terminology_ref (string): Terminology for array item term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)
+    array_template_ref (string): Template for array items: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)
     array_template_ref_version (integer): Pinned version of the array-item template (mandatory when array_template_ref is set)
     array_file_config (object): File configuration for array items if file type
       (nested object — see full schema)
@@ -2317,19 +2471,19 @@ FieldDefinition fields:
   type (enum, REQUIRED): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Supported field types for template fields.
   mandatory (boolean, default: false): Whether field is required
   default_value (object): Default value if not provided
-  terminology_ref (string): Canonical terminology_id for term validation (resolved from value at creation)
-  template_ref (string): Canonical template_id for nested template (resolved from value at creation)
+  terminology_ref (string): Terminology for term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)
+  template_ref (string): Template for the nested object: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)
   template_ref_version (integer): Pinned version of the nested template (mandatory when template_ref is set)
   reference_type (enum): One of: document, term, terminology, template. Type of entity being referenced (for reference type)
-  target_templates (array of string): Canonical template_ids for allowed document reference targets (resolved from values at creation)
+  target_templates (array of string): Allowed document reference targets: stored as canonical template_ids once the template is active (a draft keeps the submitted forms until activation). On an edge type's source_ref / target_ref this is derived from the template-level declaration when served, and discarded on write
   include_subtypes (boolean): When true, target_templates also accepts documents from child templates (via inheritance)
-  target_terminologies (array of string): Canonical terminology_ids for allowed term reference targets (resolved from values at creation)
+  target_terminologies (array of string): Allowed term reference targets: stored as canonical terminology_ids once the template is active (a draft keeps the submitted forms until activation)
   version_strategy (enum): One of: latest, pinned. How to resolve reference versions (default: latest)
   file_config (object): Configuration for file fields (allowed types, size limits)
     (nested object — see full schema)
   array_item_type (enum): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Type of array items (for array type)
-  array_terminology_ref (string): Canonical terminology_id for array item term validation (resolved from value at creation)
-  array_template_ref (string): Canonical template_id for array item template (resolved from value at creation)
+  array_terminology_ref (string): Terminology for array item term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)
+  array_template_ref (string): Template for array items: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)
   array_template_ref_version (integer): Pinned version of the array-item template (mandatory when array_template_ref is set)
   array_file_config (object): File configuration for array items if file type
     (nested object — see full schema)
@@ -2350,7 +2504,7 @@ value (string, REQUIRED): Human-readable value (e.g., 'PERSON')
 label (string, REQUIRED): Display label
 description (string): Detailed description
 template_id (string): Pre-assigned template ID (for restore/migration — Registry uses as-is instead of generating)
-version (integer): Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)
+version (integer): Pre-assigned version (for restore/migration, with template_id): skips the existing-value check and version computation; the identity is still registered with the Registry
 namespace (string, REQUIRED): Namespace for the template
 extends (string): Parent template ID for inheritance
 extends_version (integer): Pinned parent version. Required (non-null) whenever the template declares 'extends' — a null there is rejected; the parent is validated against this exact pinned version, never 'latest'. Null only when there is no parent.
@@ -2376,19 +2530,19 @@ fields (array of object): Field definitions
     type (enum, REQUIRED): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Supported field types for template fields.
     mandatory (boolean, default: false): Whether field is required
     default_value (object): Default value if not provided
-    terminology_ref (string): Canonical terminology_id for term validation (resolved from value at creation)
-    template_ref (string): Canonical template_id for nested template (resolved from value at creation)
+    terminology_ref (string): Terminology for term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)
+    template_ref (string): Template for the nested object: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)
     template_ref_version (integer): Pinned version of the nested template (mandatory when template_ref is set)
     reference_type (enum): One of: document, term, terminology, template. Type of entity being referenced (for reference type)
-    target_templates (array of string): Canonical template_ids for allowed document reference targets (resolved from values at creation)
+    target_templates (array of string): Allowed document reference targets: stored as canonical template_ids once the template is active (a draft keeps the submitted forms until activation). On an edge type's source_ref / target_ref this is derived from the template-level declaration when served, and discarded on write
     include_subtypes (boolean): When true, target_templates also accepts documents from child templates (via inheritance)
-    target_terminologies (array of string): Canonical terminology_ids for allowed term reference targets (resolved from values at creation)
+    target_terminologies (array of string): Allowed term reference targets: stored as canonical terminology_ids once the template is active (a draft keeps the submitted forms until activation)
     version_strategy (enum): One of: latest, pinned. How to resolve reference versions (default: latest)
     file_config (object): Configuration for file fields (allowed types, size limits)
       (nested object — see full schema)
     array_item_type (enum): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Type of array items (for array type)
-    array_terminology_ref (string): Canonical terminology_id for array item term validation (resolved from value at creation)
-    array_template_ref (string): Canonical template_id for array item template (resolved from value at creation)
+    array_terminology_ref (string): Terminology for array item term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)
+    array_template_ref (string): Template for array items: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)
     array_template_ref_version (integer): Pinned version of the array-item template (mandatory when array_template_ref is set)
     array_file_config (object): File configuration for array items if file type
       (nested object — see full schema)
@@ -2436,19 +2590,19 @@ FieldDefinition fields:
   type (enum, REQUIRED): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Supported field types for template fields.
   mandatory (boolean, default: false): Whether field is required
   default_value (object): Default value if not provided
-  terminology_ref (string): Canonical terminology_id for term validation (resolved from value at creation)
-  template_ref (string): Canonical template_id for nested template (resolved from value at creation)
+  terminology_ref (string): Terminology for term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)
+  template_ref (string): Template for the nested object: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)
   template_ref_version (integer): Pinned version of the nested template (mandatory when template_ref is set)
   reference_type (enum): One of: document, term, terminology, template. Type of entity being referenced (for reference type)
-  target_templates (array of string): Canonical template_ids for allowed document reference targets (resolved from values at creation)
+  target_templates (array of string): Allowed document reference targets: stored as canonical template_ids once the template is active (a draft keeps the submitted forms until activation). On an edge type's source_ref / target_ref this is derived from the template-level declaration when served, and discarded on write
   include_subtypes (boolean): When true, target_templates also accepts documents from child templates (via inheritance)
-  target_terminologies (array of string): Canonical terminology_ids for allowed term reference targets (resolved from values at creation)
+  target_terminologies (array of string): Allowed term reference targets: stored as canonical terminology_ids once the template is active (a draft keeps the submitted forms until activation)
   version_strategy (enum): One of: latest, pinned. How to resolve reference versions (default: latest)
   file_config (object): Configuration for file fields (allowed types, size limits)
     (nested object — see full schema)
   array_item_type (enum): One of: string, number, integer, boolean, date, datetime, term, reference, file, object, array. Type of array items (for array type)
-  array_terminology_ref (string): Canonical terminology_id for array item term validation (resolved from value at creation)
-  array_template_ref (string): Canonical template_id for array item template (resolved from value at creation)
+  array_terminology_ref (string): Terminology for array item term validation: stored as its canonical terminology_id once the template is active (a draft keeps the submitted form until activation)
+  array_template_ref (string): Template for array items: stored as its canonical template_id once the template is active (a draft keeps the submitted form until activation)
   array_template_ref_version (integer): Pinned version of the array-item template (mandatory when array_template_ref is set)
   array_file_config (object): File configuration for array items if file type
     (nested object — see full schema)

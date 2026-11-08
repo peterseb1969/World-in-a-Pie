@@ -190,7 +190,10 @@ The Template Store service manages document schemas (templates) for the WIP ecos
 
 ### Authentication
 
-All endpoints require API key authentication via the `X-API-Key` header.
+Every API endpoint requires authentication: an API key in the `X-API-Key`
+header, or an OIDC bearer token where OIDC is configured. Anonymous by
+design: the service root (`/`, `/api/template-store/`) and the health probes
+(`/health`, `/api/template-store/health`, `/ready`, `/livez`).
 
 ### Integration
 

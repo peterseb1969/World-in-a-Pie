@@ -136,7 +136,7 @@ class CreateTemplateRequest(StrictModel):
     )
     version: int | None = Field(
         default=None,
-        description="Pre-assigned version (for restore/migration — skips Registry and version computation when used with template_id)"
+        description="Pre-assigned version (for restore/migration, with template_id): skips the existing-value check and version computation; the identity is still registered with the Registry"
     )
     namespace: str = Field(
         ...,
