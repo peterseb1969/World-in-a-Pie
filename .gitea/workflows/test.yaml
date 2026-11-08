@@ -391,6 +391,36 @@ jobs:
           . .venv/bin/activate
           pytest libs/wip-archive/tests/ -v --tb=short
 
+  # The TypeScript libraries apps vendor (@wip/client, @wip/react, @wip/proxy):
+  # a clean install from the committed lockfile, the type check and the unit
+  # tests. A clean `npm ci` is part of the check: a lockfile out of step with
+  # package.json (wip-react's once still recorded @wip/client 0.62.0 against
+  # 0.92.0) fails here instead of on the next person's checkout.
+  test-ts-libs:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lib: [wip-client, wip-react, wip-proxy]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Install from the lockfile
+        working-directory: libs/${{ matrix.lib }}
+        run: npm ci --no-audit --no-fund
+
+      - name: Type check
+        working-directory: libs/${{ matrix.lib }}
+        run: npm run typecheck
+
+      - name: Unit tests
+        working-directory: libs/${{ matrix.lib }}
+        run: npm test
+
   # Deployer (wip-deploy CLI) — pure unit tests, no DB or NATS needed
   test-deployer:
     runs-on: ubuntu-latest
