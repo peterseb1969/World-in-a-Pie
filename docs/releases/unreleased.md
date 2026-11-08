@@ -7,7 +7,7 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
-### PATCH and migrate enforce the edge namespace rule; the outbound gate sees retired templates
+### PATCH and migrate enforce the edge namespace rule
 
 - **PATCH and migrate run the relationship constraints** that create runs.
   An edge lives in its source's namespace: a PATCH that re-points an edge's
@@ -19,12 +19,13 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 - **Action:** an edge that already carries a source in another namespace
   (written before the rule, or landed by a restore) can no longer be patched
   or migrated; write it in its source's namespace.
-- **A strict namespace's allow-list now applies to retired templates.** A
-  reference to a template with no active version still resolves, but the
-  Registry no longer places it, and the outbound gate skipped what it could
-  not place. Validation now hands the gate the namespace of every template
-  and terminology it resolves, so the gate no longer depends on the Registry
-  for them.
+- **The outbound gate takes a template's or terminology's namespace from
+  validation**, which resolved it, instead of looking it up in the Registry.
+  No behaviour changes today: a retired template's Registry entry stays
+  active, so the lookup already placed it and a strict namespace's
+  allow-list already applied. The gate no longer depends on that lookup for
+  these referents (a referent whose entry is inactive would otherwise be
+  skipped).
 
 ### The table view and its CSV export show only documents the caller can read
 

@@ -5,8 +5,9 @@
    cross_namespace_relationship, as POST refuses it.
 2. The outbound reference gate gets a template's or terminology's namespace
    from validation, which resolved it, instead of depending on the Registry
-   placing the id: a retired template still resolves but is no longer placed,
-   and a strict namespace's allow-list was skipped for it.
+   placing the id. (A retired template's entry stays active, so the Registry
+   places it; the change matters for an entry that is not active, which the
+   lookup skips.)
 """
 
 from __future__ import annotations
