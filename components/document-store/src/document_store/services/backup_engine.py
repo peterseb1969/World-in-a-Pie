@@ -319,31 +319,59 @@ def _scan_unresolved_references(
             if not hits:
                 continue
             doc_id = str(row.get("document_id") or "")
-            endpoints = [
-                target for field_path, target in hits
-                if field_path in _EDGE_ENDPOINT_FIELDS
-                and unresolved[target].entity_type == "documents"
-            ]
+            endpoints = _unresolved_document_endpoints(hits, unresolved)
             if endpoints and row.get("template_id") in edge_templates:
-                entry = dropped.setdefault(doc_id, {
-                    "namespace": src,
-                    "document_id": doc_id,
-                    "template_id": row.get("template_id"),
-                    "source_ref": None,
-                    "target_ref": None,
-                    "unresolved_endpoints": [],
-                })
-                for ref in row.get("references") or []:
-                    field_path = ref.get("field_path")
-                    if field_path in _EDGE_ENDPOINT_FIELDS and entry[field_path] is None:
-                        entry[field_path] = (ref.get("resolved") or {}).get("document_id")
-                entry["unresolved_endpoints"] = sorted(
-                    set(entry["unresolved_endpoints"]) | set(endpoints)
-                )
+                _record_dropped_edge(dropped, src, doc_id, row, endpoints)
                 continue
             for field_path, target in hits:
                 referrers.setdefault((src, target), {}).setdefault(doc_id, set()).add(field_path)
+    return _unresolved_reference_report(referrers, dropped, unresolved), dropped
 
+
+def _unresolved_document_endpoints(
+    hits: list[tuple[str, str]], unresolved: dict[str, _UnresolvedReferent],
+) -> list[str]:
+    """The unresolved referents among a row's hits that are edge endpoints
+    pointing at a document — the only kind of hit that drops an edge."""
+    return [
+        target for field_path, target in hits
+        if field_path in _EDGE_ENDPOINT_FIELDS
+        and unresolved[target].entity_type == "documents"
+    ]
+
+
+def _record_dropped_edge(
+    dropped: dict[str, dict[str, Any]],
+    src: str,
+    doc_id: str,
+    row: dict[str, Any],
+    endpoints: list[str],
+) -> None:
+    """Record one version of an edge to drop: the edge entry (created by its
+    first such version) takes each endpoint from the first version that
+    names it, and gathers every unresolved endpoint any version has."""
+    entry = dropped.setdefault(doc_id, {
+        "namespace": src,
+        "document_id": doc_id,
+        "template_id": row.get("template_id"),
+        "source_ref": None,
+        "target_ref": None,
+        "unresolved_endpoints": [],
+    })
+    for ref in row.get("references") or []:
+        field_path = ref.get("field_path")
+        if field_path in _EDGE_ENDPOINT_FIELDS and entry[field_path] is None:
+            entry[field_path] = (ref.get("resolved") or {}).get("document_id")
+    entry["unresolved_endpoints"] = sorted(set(entry["unresolved_endpoints"]) | set(endpoints))
+
+
+def _unresolved_reference_report(
+    referrers: dict[tuple[str, str], dict[str, set[str]]],
+    dropped: dict[str, dict[str, Any]],
+    unresolved: dict[str, _UnresolvedReferent],
+) -> list[dict[str, Any]]:
+    """One entry per (namespace, referent) still referenced once the dropped
+    edges are left out: how many documents, and sorted, capped samples."""
     references: list[dict[str, Any]] = []
     for (src, target), by_document in sorted(referrers.items()):
         by_document = {d: f for d, f in by_document.items() if d not in dropped}
@@ -362,7 +390,7 @@ def _scan_unresolved_references(
             "documents": len(by_document),
             "samples": samples,
         })
-    return references, dropped
+    return references
 
 
 class _StreamedDocuments:
