@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -2904,7 +2905,8 @@ class TemplateService:
         be activated together.
 
         For each reference:
-        - If it points to a draft template -> add to set, recurse
+        - If it points to a draft template in ``namespace`` -> add to set, recurse
+        - If it points to a draft elsewhere -> skip (validation refuses it)
         - If it points to an active template -> skip (already valid)
         - If not found -> skip (validation will catch it later)
 
@@ -2932,7 +2934,11 @@ class TemplateService:
                     continue
                 visited.add(target.template_id)
 
-                if target.status == "draft":
+                # Only the namespace being activated: a draft elsewhere is not
+                # this caller's to activate. Left out of the set, a reference
+                # to it is checked like any other (visibility, inbound gate)
+                # and fails as a reference to a template that is not active.
+                if target.status == "draft" and target.namespace == namespace:
                     activation_set.append(target)
                     queue.append(target)
                 # If active or other status, no need to recurse
@@ -2966,6 +2972,7 @@ class TemplateService:
 
         # Build lookups for the activation set
         set_ids = {t.template_id for t in activation_set}
+        set_namespaces = TemplateService._set_namespaces(activation_set)
         set_values = {t.value for t in activation_set}
         # CASE-493: version-aware membership for pinned-ref existence — a pinned
         # (ref, version) is satisfied by a co-activating template only if that
@@ -3026,6 +3033,7 @@ class TemplateService:
             gate = InboundGate(
                 namespace,
                 carried=carried_ids(await TemplateService._previous_version(template)),
+                placed=set_namespaces,
             )
 
             # Check extends
@@ -3292,6 +3300,10 @@ class TemplateService:
                 warnings=warnings,
             )
 
+        # The set's own drafts: their Registry entries are reserved, so the
+        # gates learn their (same) namespace from the set itself.
+        set_namespaces = TemplateService._set_namespaces(activation_set)
+
         # Build known_templates from activation set for cross-resolution
         known_templates = {}
         for t in activation_set:
@@ -3303,7 +3315,7 @@ class TemplateService:
         try:
             for t in activation_set:
                 previous = await TemplateService._previous_version(t)
-                gate = InboundGate(namespace, carried=carried_ids(previous))
+                gate = InboundGate(namespace, carried=carried_ids(previous), placed=set_namespaces)
                 act_template_ids, act_terminology_ids = (
                     await TemplateService._normalize_field_references(
                         t.fields, namespace,
@@ -3337,9 +3349,9 @@ class TemplateService:
                     t.extends = parent_id
                 # Isolation check — drafts skipped it at create; activation is
                 # where their coverage lands. Activation-set members are
-                # same-namespace by construction and pass trivially; external
-                # refs are checked. (Reserved-status externals are invisible
-                # to the namespace lookup and thus skipped — active-only route.)
+                # same-namespace by construction (their reserved entries are
+                # placed from the set); any other reference must have an
+                # active Registry entry the lookup can place, or is refused.
                 await TemplateService._check_reference_isolation(
                     namespace,
                     template_ids=[
@@ -3349,6 +3361,7 @@ class TemplateService:
                     terminology_ids=act_terminology_ids,
                     extends_template_id=t.extends,
                     previous=previous,
+                    known_namespaces=set_namespaces,
                 )
         except EntityNotFoundError as e:
             raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
@@ -3807,6 +3820,25 @@ class TemplateService:
         return ids
 
     @staticmethod
+    def _set_namespaces(activation_set: list[Template]) -> dict[str, str]:
+        """Each activation-set member's namespace. Their Registry entries are
+        reserved, so the reference gates learn the namespace from the set."""
+        return {t.template_id: t.namespace for t in activation_set}
+
+    @staticmethod
+    def _placed_or_refuse(ids: set[str], ns_map: dict[str, str]) -> dict[str, str]:
+        """``ns_map`` when it places every id; otherwise the write is refused,
+        since a reference whose namespace is unknown cannot be checked."""
+        unplaced = sorted(i for i in ids if i not in ns_map)
+        if unplaced:
+            raise TemplateError(
+                f"Cannot check the namespace of {', '.join(unplaced)}: "
+                "the Registry has no active entry for it",
+                "reference_violation", rule="unresolved_reference",
+            )
+        return ns_map
+
+    @staticmethod
     async def _check_reference_isolation(
         namespace: str,
         template_ids: list[str],
@@ -3814,6 +3846,7 @@ class TemplateService:
         extends_namespace: str | None = None,
         extends_template_id: str | None = None,
         previous: Any | None = None,
+        known_namespaces: Mapping[str, str] | None = None,
     ) -> None:
         """Apply the outbound gate to a template's references.
 
@@ -3823,8 +3856,10 @@ class TemplateService:
         resolution, so a reference it refused never reaches this check. Pass
         extends_namespace when the caller already knows it (single create),
         or extends_template_id to have it looked up with the rest (update /
-        activation). IDs the lookup can't see (inactive/reserved) are skipped —
-        the lookup route filters to active entries.
+        activation). The lookup reports active entries only; ``known_namespaces``
+        supplies the ones the caller already knows (an activation set's own
+        drafts, reserved in the Registry). A reference whose namespace is still
+        unknown is refused: an unanswered lookup is not a pass.
 
         References the template's ``previous`` version already held are not
         re-checked, so a template stays updatable after its writer loses read
@@ -3855,6 +3890,7 @@ class TemplateService:
                 f"Cannot check the namespaces of the template's references: {e}",
                 "registry_error", rule="unreachable",
             ) from e
+        ns_map = TemplateService._placed_or_refuse(ids, {**ns_map, **(known_namespaces or {})})
         if extends_namespace is None and extends_template_id:
             extends_namespace = ns_map.get(extends_template_id)
         try:
@@ -3862,8 +3898,8 @@ class TemplateService:
             await validator.validate_template_references(
                 template_namespace=namespace,
                 extends_template_namespace=extends_namespace,
-                terminology_namespaces=[ns_map[i] for i in terminology_ids if i in ns_map],
-                template_ref_namespaces=[ns_map[i] for i in template_ids if i in ns_map],
+                terminology_namespaces=[ns_map[i] for i in terminology_ids],
+                template_ref_namespaces=[ns_map[i] for i in template_ids],
             )
         except ReferenceValidationError as e:
             raise TemplateError(f"Cross-namespace reference violation: {e.violations}", "cross_namespace_reference") from e

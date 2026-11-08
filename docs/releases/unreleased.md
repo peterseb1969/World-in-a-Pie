@@ -7,6 +7,11 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Activation stays in its namespace; a template reference whose namespace cannot be learned is refused
+
+- **Cascading activation stays in its namespace.** `POST /api/template-store/templates/{id}/activate` used to activate every draft its template referenced, in any namespace. A key with write on one namespace could activate another namespace's draft by referencing that draft's id from a draft of its own. Only drafts of the namespace being activated are now activated together. A reference to a draft elsewhere is checked like any other reference, and refused because the template it names is not active.
+- **Unplaceable references are refused.** The inbound reference gate and the outbound isolation check let a referenced id through when the Registry could not say which namespace it belongs to; that is any entry that is not active. Both now refuse it (`reference_violation`, rule `unresolved_reference`). The drafts being activated together are placed from the activation set itself.
+
 ### Template cascade reaches only the parent's own children, as the caller may change them, and writes each child whole
 
 `POST /api/template-store/templates/{id}/cascade` used to:

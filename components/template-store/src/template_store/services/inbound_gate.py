@@ -23,6 +23,7 @@ resolves anything, so one enforcing pass is enough.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 import httpx
@@ -52,17 +53,31 @@ class InboundGate:
         *,
         carried: frozenset[str] = frozenset(),
         identity: UserIdentity | None = None,
+        placed: Mapping[str, str] | None = None,
     ) -> None:
         self.source_namespace = source_namespace
         self.carried = carried
         self.identity = identity
-        self._placed: dict[str, str | None] = {}
+        # Namespaces the caller already knows (an activation set's own drafts,
+        # whose Registry entries are reserved and so not placed by the lookup).
+        self._placed: dict[str, str | None] = dict(placed or {})
 
     async def refuses(self, target_namespace: str | None, entity_id: str | None) -> bool:
-        """Should the target be treated as not found?"""
-        if not target_namespace or target_namespace in (self.source_namespace, WIP_NAMESPACE):
-            return False
+        """Should the target be treated as not found?
+
+        A target whose namespace could not be learned is refused: the Registry
+        has no active entry for it, so no gate can say it may be referenced.
+        """
         if entity_id and entity_id in self.carried:
+            return False
+        if not target_namespace:
+            logger.warning(
+                "Reference refused: %s writing a template in '%s' names %s, "
+                "whose namespace the Registry does not report",
+                get_identity_string(), self.source_namespace, entity_id,
+            )
+            return True
+        if target_namespace in (self.source_namespace, WIP_NAMESPACE):
             return False
         # When the target's settings or the writer's permission cannot be
         # read, the write is refused rather than let through unchecked.
@@ -98,7 +113,8 @@ class InboundGate:
         }
 
     async def _place(self, entity_ids: list[str]) -> None:
-        """Learn the namespace of each active Registry entry, in one lookup."""
+        """Learn the namespace of each active Registry entry, in one lookup;
+        an id the lookup does not report stays unplaced (None)."""
         pending = sorted({i for i in entity_ids if i not in self._placed})
         if not pending:
             return
