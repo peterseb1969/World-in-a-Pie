@@ -296,6 +296,261 @@ def _identity_hash_of(identity_values: dict[str, Any] | None) -> str | None:
         return None
 
 
+def _peer_id(item: Any, seed_document_id: str) -> str | None:
+    """The OTHER end of an edge, direction-agnostic; a self-loop resolves to
+    the seed itself."""
+    data = item.data or {}
+    source_ref = data.get("source_ref")
+    target_ref = data.get("target_ref")
+    return cast("str | None", target_ref if source_ref == seed_document_id else source_ref)
+
+
+def _peer_ids(items: list[Any], seed_document_id: str) -> set[str]:
+    """The peers a page of edges names, each once."""
+    return {peer_id for item in items if (peer_id := _peer_id(item, seed_document_id))}
+
+
+async def _latest_peer_documents(peer_ids: set[str]) -> dict[str, Document]:
+    """Batched lookup: latest version of each peer document_id. PoNIF #1 —
+    inactive peers still resolve, so no status filter. The aggregation
+    pipeline mirrors list_documents(latest_only=True)."""
+    peer_pipeline: list[dict] = [
+        {"$match": {"document_id": {"$in": list(peer_ids)}}},
+        {"$sort": {"document_id": 1, "version": -1}},
+        {"$group": {"_id": "$document_id", "doc": {"$first": "$$ROOT"}}},
+        {"$replaceRoot": {"newRoot": "$doc"}},
+    ]
+    peer_docs = await Document.aggregate(peer_pipeline).to_list()
+    return {doc["document_id"]: Document(**doc) for doc in peer_docs}
+
+
+async def _can_read_namespace(identity: Any, ns: str, cache: dict[str, str]) -> bool:
+    """Read on a peer's namespace, resolved once per namespace."""
+    from wip_auth.permissions import permission_sufficient, resolve_permission
+
+    if identity is None:
+        return False  # nothing vouches for the caller
+    if ns not in cache:
+        cache[ns] = await resolve_permission(identity, ns)
+    return permission_sufficient(cache[ns], "read")
+
+
+async def _projection_paths_by_template(template_ids: set[str]) -> dict[str, list[str]]:
+    """Each peer template's projection paths; an unreadable template gets
+    the legacy compact default."""
+    template_client = get_template_store_client()
+    paths_by_tid: dict[str, list[str]] = {}
+    for tid in template_ids:
+        try:
+            tpl = await template_client.get_template(template_id=tid)
+        except Exception:
+            tpl = None
+        paths_by_tid[tid] = _projection_paths(tpl) if tpl else ["title", "doc_status"]
+    return paths_by_tid
+
+
+def _projection_paths(tpl: dict[str, Any]) -> list[str]:
+    """Template-aware header_fields lookup (CASE-343, refined by CASE-354).
+    Three-tier resolution per peer template:
+
+      1. `header_fields` (explicit) — tier 1, no auto-include. Use this to
+         opt out of auto-include too: setting `header_fields=["case_number"]`
+         projects identity ONLY.
+      2. `identity_fields` + auto-include `title`/`doc_status` if the
+         template declares those fields (tier 2, CASE-354). The "if
+         declared" guard reads inheritance-resolved fields (get_template
+         default resolves the chain) so inherited title/doc_status counts.
+         Applies uniformly to entity and edge-type templates.
+      3. `["title", "doc_status"]` legacy compact default — tier 3, fires
+         only when both header_fields and identity_fields are empty.
+
+    Edge case: a template that sets `header_fields=[]` (explicitly empty, as
+    opposed to absent) falls through to tier 2 today — the auto-include WILL
+    fire. To project identity-only, populate `header_fields` with the
+    desired field names explicitly (tier 1 wins).
+    """
+    header_fields = tpl.get("header_fields") or []
+    identity_fields = tpl.get("identity_fields") or []
+    if header_fields:
+        # Tier 1 — explicit override wins, no auto-include.
+        return list(header_fields)
+    if not identity_fields:
+        # Tier 3 — legacy compact default.
+        return ["title", "doc_status"]
+    # Tier 2 — identity + display-label sugar (CASE-354).
+    paths = list(identity_fields)
+    declared = _declared_field_names(tpl)
+    for extra in ("title", "doc_status"):
+        if extra in declared and extra not in paths:
+            paths.append(extra)
+    return paths
+
+
+def _metadata_custom(doc: Document) -> dict[str, Any]:
+    """A document's metadata.custom, empty when it has none."""
+    peer_metadata: dict[str, Any] = doc.metadata.model_dump() if doc.metadata else {}
+    return cast(dict[str, Any], (
+        peer_metadata.get("custom", {})
+        if isinstance(peer_metadata, dict)
+        else getattr(peer_metadata, "custom", {}) or {}
+    ))
+
+
+def _project_peer(peer_doc: Document, paths: list[str]) -> PeerProjection:
+    """Template-declared projection (CASE-343). Bare names target peer.data;
+    "metadata.custom.<name>" paths target peer.metadata.custom. Missing
+    fields are silently skipped (no error). Applied uniformly to entity
+    templates and edge types — both can declare header_fields."""
+    peer_data = peer_doc.data or {}
+    peer_metadata_custom = _metadata_custom(peer_doc)
+    projected_data: dict[str, Any] = {}
+    projected_metadata_custom: dict[str, Any] = {}
+    for path in paths:
+        if path.startswith("metadata.custom."):
+            key = path[len("metadata.custom."):]
+            if key in peer_metadata_custom:
+                projected_metadata_custom[key] = peer_metadata_custom[key]
+        elif "." in path:
+            # Other metadata.* paths or nested data paths — out of
+            # scope for v1; skip silently. Future: dotted traversal.
+            continue
+        elif path in peer_data:
+            projected_data[path] = peer_data[path]
+
+    return PeerProjection(
+        document_id=peer_doc.document_id,
+        namespace=peer_doc.namespace,
+        template_id=peer_doc.template_id,
+        template_value=peer_doc.template_value,
+        status=peer_doc.status,
+        data=projected_data,
+        metadata={"custom": projected_metadata_custom} if projected_metadata_custom else None,
+    )
+
+
+async def _traverse_seed_namespace(
+    document_id: str, direction: str, depth: int, namespace: str | None,
+) -> str:
+    """Check a traversal's arguments and its seed; returns the namespace a
+    missing endpoint is recorded under (the given one, else the seed's)."""
+    if direction not in ("incoming", "outgoing", "both"):
+        raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
+    if depth < 1 or depth > 10:
+        raise ValueError("depth must be between 1 and 10")
+
+    # Seed doc must exist; namespace defaults to its namespace if not given.
+    seed = await Document.find_one({"document_id": document_id})
+    if seed is None:
+        raise ValueError(f"Document not found: {document_id}")
+    return namespace or seed.namespace
+
+
+def _hop_query(
+    frontier: set[str],
+    direction: str,
+    namespace: str | None,
+    allowed_namespaces: list[str] | None,
+) -> dict[str, Any]:
+    """The per-hop query: relationship docs whose source/target references
+    one of the frontier doc_ids."""
+    base: dict[str, Any] = {"status": DocumentStatus.ACTIVE.value}
+    if namespace:
+        base["namespace"] = namespace
+    elif allowed_namespaces is not None:
+        base["namespace"] = {"$in": allowed_namespaces}
+    by_source = {"data.source_ref": {"$in": list(frontier)}}
+    by_target = {"data.target_ref": {"$in": list(frontier)}}
+    if direction == "outgoing":
+        return {**base, **by_source}
+    if direction == "incoming":
+        return {**base, **by_target}
+    return {**base, "$or": [by_source, by_target]}
+
+
+def _hop_endpoints(rel: Document, frontier: set[str], direction: str) -> list[tuple[str, str]]:
+    """(endpoint, parent) pairs an edge leads to from the frontier. For
+    "both", an edge touched by the frontier could be reached via either
+    endpoint; every endpoint is reported."""
+    rel_data = rel.data or {}
+    src_ref = rel_data.get("source_ref")
+    tgt_ref = rel_data.get("target_ref")
+    candidates: list[tuple[str, str]] = []
+    if direction in ("outgoing", "both") and src_ref in frontier and tgt_ref:
+        candidates.append((tgt_ref, src_ref))
+    if direction in ("incoming", "both") and tgt_ref in frontier and src_ref:
+        candidates.append((src_ref, tgt_ref))
+    return candidates
+
+
+async def _collect_hop(
+    hop_query: dict[str, Any],
+    frontier: set[str],
+    direction: str,
+    visited: set[str],
+    room: int,
+) -> tuple[list[tuple[str, str, str]], bool]:
+    """New endpoints of this hop, in discovery order: (other, parent, edge).
+    Reading stops once ``room`` (the node cap less the nodes found) is used;
+    returns the endpoints and whether the cap cut the hop short."""
+    found: list[tuple[str, str, str]] = []
+    claimed: set[str] = set()
+    async for rel in Document.find(hop_query):
+        for other_id, parent_id in _hop_endpoints(rel, frontier, direction):
+            if other_id in visited or other_id in claimed:
+                continue
+            if len(found) >= room:
+                return found, True
+            claimed.add(other_id)
+            found.append((other_id, parent_id, rel.document_id))
+    return found, False
+
+
+def _record_hop(
+    found: list[tuple[str, str, str]],
+    endpoint_docs: dict[str, Document],
+    nodes: list[TraverseNode],
+    visited: set[str],
+    path_by_id: dict[str, list[str]],
+    *,
+    depth: int,
+    fallback_namespace: str,
+    namespace: str | None,
+    allowed_namespaces: list[str] | None,
+) -> set[str]:
+    """Add a hop's endpoints to ``nodes``; returns the next frontier. The
+    walk stops at a namespace the caller cannot read."""
+    next_frontier: set[str] = set()
+    for other_id, parent_id, rel_id in found:
+        visited.add(other_id)
+        other_doc = endpoint_docs.get(other_id)
+        if other_doc is not None and not _node_readable(
+            other_doc.namespace, namespace, allowed_namespaces,
+        ):
+            continue
+        new_path = [*path_by_id[parent_id], other_id]
+        path_by_id[other_id] = new_path
+        next_frontier.add(other_id)
+        # A reference to something missing records what is known of it.
+        nodes.append(TraverseNode(
+            document_id=other_doc.document_id if other_doc else other_id,
+            template_id=other_doc.template_id if other_doc else "",
+            template_value=other_doc.template_value if other_doc else None,
+            namespace=other_doc.namespace if other_doc else fallback_namespace,
+            depth=depth,
+            via_relationship=rel_id,
+            path=new_path,
+        ))
+    return next_frontier
+
+
+def _node_readable(
+    node_ns: str, namespace: str | None, allowed_namespaces: list[str] | None,
+) -> bool:
+    if namespace:
+        return node_ns == namespace
+    return allowed_namespaces is None or node_ns in allowed_namespaces
+
+
 def _add_validation_timing(validation_results: list[Any], timing: dict[str, float]) -> None:
     """Aggregate per-stage validation timing from all individual results."""
     val_stage_totals: dict[str, float] = {}
@@ -1955,162 +2210,34 @@ class DocumentService:
         if not items:
             return
 
-        peer_ids: set[str] = set()
-        for item in items:
-            data = item.data or {}
-            source_ref = data.get("source_ref")
-            target_ref = data.get("target_ref")
-            peer_id = (
-                target_ref if source_ref == seed_document_id else source_ref
-            )
-            if peer_id:
-                peer_ids.add(peer_id)
-
+        peer_ids = _peer_ids(items, seed_document_id)
         if not peer_ids:
             return
 
-        # Batched lookup: latest version of each peer document_id.
-        # PoNIF #1 — inactive peers still resolve, so no status filter.
-        # The aggregation pipeline mirrors list_documents(latest_only=True).
-        peer_pipeline: list[dict] = [
-            {"$match": {"document_id": {"$in": list(peer_ids)}}},
-            {"$sort": {"document_id": 1, "version": -1}},
-            {"$group": {"_id": "$document_id", "doc": {"$first": "$$ROOT"}}},
-            {"$replaceRoot": {"newRoot": "$doc"}},
-        ]
-        peer_docs = await Document.aggregate(peer_pipeline).to_list()
-        peer_lookup: dict[str, Document] = {
-            doc["document_id"]: Document(**doc) for doc in peer_docs
-        }
+        peer_lookup = await _latest_peer_documents(peer_ids)
+        projection_paths_by_tid = await _projection_paths_by_template(
+            {doc.template_id for doc in peer_lookup.values() if doc.template_id}
+        )
 
         # Permission cache per namespace — avoid re-checking same ns N times.
-        from wip_auth.permissions import permission_sufficient, resolve_permission
         ns_permission_cache: dict[str, str] = {}
-
-        async def can_read_namespace(ns: str) -> bool:
-            if identity is None:
-                return False  # nothing vouches for the caller
-            if ns not in ns_permission_cache:
-                ns_permission_cache[ns] = await resolve_permission(identity, ns)
-            return permission_sufficient(ns_permission_cache[ns], "read")
-
-        # Template-aware header_fields lookup (CASE-343, refined by
-        # CASE-354). Three-tier resolution per peer template:
-        #
-        #   1. `header_fields` (explicit) — tier 1, no auto-include.
-        #      Use this to opt out of auto-include too: setting
-        #      `header_fields=["case_number"]` projects identity ONLY.
-        #   2. `identity_fields` + auto-include `title`/`doc_status`
-        #      if the template declares those fields (tier 2, CASE-354).
-        #      The "if declared" guard reads inheritance-resolved
-        #      fields (get_template default resolves the chain) so
-        #      inherited title/doc_status counts. Applies uniformly
-        #      to entity and edge-type templates.
-        #   3. `["title", "doc_status"]` legacy compact default — tier 3,
-        #      fires only when both header_fields and identity_fields
-        #      are empty.
-        #
-        # Edge case: a template that sets `header_fields=[]` (explicitly
-        # empty, as opposed to absent) falls through to tier 2 today —
-        # the auto-include WILL fire. To project identity-only,
-        # populate `header_fields` with the desired field names
-        # explicitly (tier 1 wins).
-        peer_template_ids: set[str] = {
-            doc.template_id for doc in peer_lookup.values() if doc.template_id
-        }
-        template_client = get_template_store_client()
-        projection_paths_by_tid: dict[str, list[str]] = {}
-        for tid in peer_template_ids:
-            try:
-                tpl = await template_client.get_template(template_id=tid)
-            except Exception:
-                tpl = None
-            if not tpl:
-                projection_paths_by_tid[tid] = ["title", "doc_status"]
-                continue
-
-            header_fields = tpl.get("header_fields") or []
-            identity_fields = tpl.get("identity_fields") or []
-
-            if header_fields:
-                # Tier 1 — explicit override wins, no auto-include.
-                paths = list(header_fields)
-            elif identity_fields:
-                # Tier 2 — identity + display-label sugar (CASE-354).
-                paths = list(identity_fields)
-                declared = _declared_field_names(tpl)
-                for extra in ("title", "doc_status"):
-                    if extra in declared and extra not in paths:
-                        paths.append(extra)
-            else:
-                # Tier 3 — legacy compact default.
-                paths = ["title", "doc_status"]
-
-            projection_paths_by_tid[tid] = paths
-
         for item in items:
-            data = item.data or {}
-            source_ref = data.get("source_ref")
-            target_ref = data.get("target_ref")
-            peer_id = (
-                target_ref if source_ref == seed_document_id else source_ref
-            )
+            peer_id = _peer_id(item, seed_document_id)
             if not peer_id:
                 # Edge with no resolvable peer field — leave peer=None silently.
                 continue
 
             peer_doc = peer_lookup.get(peer_id)
-            if peer_doc is None:
+            if peer_doc is None or not await _can_read_namespace(
+                identity, peer_doc.namespace, ns_permission_cache,
+            ):
                 item.peer_error_code = "not_found"
                 item.peer_error = f"Peer document '{peer_id}' not found"
                 continue
 
-            if not await can_read_namespace(peer_doc.namespace):
-                item.peer_error_code = "not_found"
-                item.peer_error = f"Peer document '{peer_id}' not found"
-                continue
-
-            # Template-declared projection (CASE-343).
-            # Bare names target peer.data; "metadata.custom.<name>" paths
-            # target peer.metadata.custom. Missing fields are silently
-            # skipped (no error). Applied uniformly to entity templates
-            # and edge types — both can declare header_fields.
-            peer_data = peer_doc.data or {}
-            peer_metadata: dict[str, Any] = peer_doc.metadata.model_dump() if peer_doc.metadata else {}
-            peer_metadata_custom = (
-                peer_metadata.get("custom", {})
-                if isinstance(peer_metadata, dict)
-                else getattr(peer_metadata, "custom", {}) or {}
-            )
-            projected_data: dict[str, Any] = {}
-            projected_metadata_custom: dict[str, Any] = {}
-            paths = projection_paths_by_tid.get(
-                peer_doc.template_id, ["title", "doc_status"]
-            )
-            for path in paths:
-                if path.startswith("metadata.custom."):
-                    key = path[len("metadata.custom."):]
-                    if key in peer_metadata_custom:
-                        projected_metadata_custom[key] = peer_metadata_custom[key]
-                elif "." in path:
-                    # Other metadata.* paths or nested data paths — out of
-                    # scope for v1; skip silently. Future: dotted traversal.
-                    continue
-                elif path in peer_data:
-                    projected_data[path] = peer_data[path]
-
-            projected_metadata: dict[str, Any] | None = None
-            if projected_metadata_custom:
-                projected_metadata = {"custom": projected_metadata_custom}
-
-            item.peer = PeerProjection(
-                document_id=peer_doc.document_id,
-                namespace=peer_doc.namespace,
-                template_id=peer_doc.template_id,
-                template_value=peer_doc.template_value,
-                status=peer_doc.status,
-                data=projected_data,
-                metadata=projected_metadata,
+            item.peer = _project_peer(
+                peer_doc,
+                projection_paths_by_tid.get(peer_doc.template_id, ["title", "doc_status"]),
             )
 
     @staticmethod
@@ -2170,21 +2297,7 @@ class DocumentService:
         namespaces; None = unrestricted). A node in a namespace the caller
         cannot read is neither returned nor expanded: the walk stops there.
         """
-        if direction not in ("incoming", "outgoing", "both"):
-            raise ValueError(f"direction must be incoming|outgoing|both (got '{direction}')")
-        if depth < 1 or depth > 10:
-            raise ValueError("depth must be between 1 and 10")
-
-        # Seed doc must exist; namespace defaults to its namespace if not given.
-        seed = await Document.find_one({"document_id": document_id})
-        if seed is None:
-            raise ValueError(f"Document not found: {document_id}")
-        ns = namespace or seed.namespace
-
-        def readable(node_ns: str) -> bool:
-            if namespace:
-                return node_ns == namespace
-            return allowed_namespaces is None or node_ns in allowed_namespaces
+        ns = await _traverse_seed_namespace(document_id, direction, depth, namespace)
 
         visited: set[str] = {document_id}
         path_by_id: dict[str, list[str]] = {document_id: []}
@@ -2195,93 +2308,21 @@ class DocumentService:
         for current_depth in range(1, depth + 1):
             if not frontier:
                 break
-
-            # Build the per-hop query: relationship docs whose source/target
-            # references one of the frontier doc_ids.
-            base: dict[str, Any] = {"status": DocumentStatus.ACTIVE.value}
-            if namespace:
-                base["namespace"] = namespace
-            elif allowed_namespaces is not None:
-                base["namespace"] = {"$in": allowed_namespaces}
-            hop_query: dict[str, Any]
-            if direction == "outgoing":
-                hop_query = {**base, "data.source_ref": {"$in": list(frontier)}}
-            elif direction == "incoming":
-                hop_query = {**base, "data.target_ref": {"$in": list(frontier)}}
-            else:
-                hop_query = {
-                    **base,
-                    "$or": [
-                        {"data.source_ref": {"$in": list(frontier)}},
-                        {"data.target_ref": {"$in": list(frontier)}},
-                    ],
-                }
+            hop_query = _hop_query(frontier, direction, namespace, allowed_namespaces)
             hop_query["template_id"] = {
                 "$in": type_ids if type_ids else await self._edge_type_ids(hop_query)
             }
-
-            # New endpoints of this hop, in discovery order: (other, parent,
-            # edge). Reading stops once the node cap is reached.
-            found: list[tuple[str, str, str]] = []
-            claimed: set[str] = set()
-            async for rel in Document.find(hop_query):
-                rel_data = rel.data or {}
-                src_ref = rel_data.get("source_ref")
-                tgt_ref = rel_data.get("target_ref")
-                # For "both", a rel touched by the frontier could be reached
-                # via either endpoint; report every endpoint not yet seen.
-                candidates: list[tuple[str, str]] = []
-                if direction in ("outgoing", "both") and src_ref in frontier and tgt_ref:
-                    candidates.append((tgt_ref, src_ref))
-                if direction in ("incoming", "both") and tgt_ref in frontier and src_ref:
-                    candidates.append((src_ref, tgt_ref))
-                for other_id, parent_id in candidates:
-                    if other_id in visited or other_id in claimed:
-                        continue
-                    if len(nodes) + len(found) >= max_nodes:
-                        truncated = True
-                        break
-                    claimed.add(other_id)
-                    found.append((other_id, parent_id, rel.document_id))
-                if truncated:
-                    break
-
+            found, truncated = await _collect_hop(
+                hop_query, frontier, direction, visited, max_nodes - len(nodes),
+            )
             endpoint_docs = await self._latest_rows([other for other, _, _ in found])
-            next_frontier: set[str] = set()
-            for other_id, parent_id, rel_id in found:
-                visited.add(other_id)
-                other_doc = endpoint_docs.get(other_id)
-                if other_doc is not None and not readable(other_doc.namespace):
-                    # The walk stops at a namespace the caller cannot read.
-                    continue
-                new_path = [*path_by_id[parent_id], other_id]
-                path_by_id[other_id] = new_path
-                next_frontier.add(other_id)
-                if other_doc is None:
-                    # Reference pointed at something missing — record what we
-                    # know and skip.
-                    nodes.append(TraverseNode(
-                        document_id=other_id,
-                        template_id="",
-                        template_value=None,
-                        namespace=ns,
-                        depth=current_depth,
-                        via_relationship=rel_id,
-                        path=new_path,
-                    ))
-                    continue
-                nodes.append(TraverseNode(
-                    document_id=other_doc.document_id,
-                    template_id=other_doc.template_id,
-                    template_value=other_doc.template_value,
-                    namespace=other_doc.namespace,
-                    depth=current_depth,
-                    via_relationship=rel_id,
-                    path=new_path,
-                ))
+            frontier = _record_hop(
+                found, endpoint_docs, nodes, visited, path_by_id,
+                depth=current_depth, fallback_namespace=ns,
+                namespace=namespace, allowed_namespaces=allowed_namespaces,
+            )
             if truncated:
                 break
-            frontier = next_frontier
 
         return TraverseResponse(
             seed_document_id=document_id,
