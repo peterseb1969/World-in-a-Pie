@@ -12,7 +12,7 @@ then CORS.
 """
 
 import pytest
-from fastapi import Depends, FastAPI
+from fastapi import APIRouter, Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 
@@ -46,14 +46,20 @@ def client(monkeypatch):
         allow_headers=["*"],
     )
 
-    @app.get("/api/svc/thing")
+    # Routes in an included router, as every service mounts its API: FastAPI
+    # 0.162 keeps them behind one _IncludedRouter entry, which slowapi's own
+    # route lookup cannot see into (it then exempts the request).
+    router = APIRouter()
+
+    @router.get("/api/svc/thing")
     async def thing(identity: UserIdentity = Depends(require_identity())):
         return {"user": identity.username}
 
-    @app.get("/api/svc/health")
+    @router.get("/api/svc/health")
     async def health():
         return {"status": "healthy"}
 
+    app.include_router(router)
     yield TestClient(app)
     reset_auth_config()
 
@@ -66,6 +72,13 @@ def test_a_client_past_the_limit_gets_429_with_its_retry_window(client):
     assert "Rate limit exceeded" in refused.json()["detail"]
     assert int(refused.headers["Retry-After"]) > 0
     assert refused.headers["X-RateLimit-Limit"] == "3"
+
+
+def test_every_response_through_the_proxy_reports_its_budget(client):
+    first = client.get("/api/svc/thing", headers={**KEY, **_client("203.0.113.14")})
+    assert (first.headers["X-RateLimit-Limit"], first.headers["X-RateLimit-Remaining"]) == ("3", "2")
+    internal = client.get("/api/svc/thing", headers=KEY)
+    assert "X-RateLimit-Limit" not in internal.headers
 
 
 def test_each_client_address_has_its_own_bucket(client):

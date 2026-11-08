@@ -38,7 +38,7 @@ from typing import Any
 
 from slowapi import Limiter
 from slowapi.errors import RateLimitExceeded
-from slowapi.middleware import SlowAPIMiddleware
+from slowapi.middleware import SlowAPIMiddleware, sync_check_limits
 from slowapi.util import get_remote_address
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -81,15 +81,35 @@ def is_rate_limited(request: Request) -> bool:
     return "x-forwarded-for" in request.headers
 
 
+def _service() -> None:
+    """The one limit target: the default limit counts a client's requests to
+    the whole service, whichever route they reach."""
+
+
 class WipRateLimitMiddleware(SlowAPIMiddleware):
-    """slowapi's middleware, applied only where is_rate_limited says so
-    (slowapi's default limits take no exemption of their own)."""
+    """slowapi's limit check, applied only where is_rate_limited says so.
+
+    It does not use SlowAPIMiddleware.dispatch: that looks the route up among
+    the app's routes, cannot see into a router added with include_router
+    (FastAPI keeps those behind one _IncludedRouter entry), and exempts a
+    request whose route it cannot find, which is every API route of every
+    service. The check runs against _service instead, so each client has one
+    budget per service.
+    """
 
     async def dispatch(self, request: Request, call_next: Any) -> Response:
-        if not is_rate_limited(request):
+        limiter = request.app.state.limiter
+        if not limiter.enabled or not is_rate_limited(request):
             response: Response = await call_next(request)
             return response
-        return await super().dispatch(request, call_next)
+        refused, inject = sync_check_limits(limiter, request, _service, request.app)
+        if refused is not None:
+            refusal: Response = refused
+            return refusal
+        response = await call_next(request)
+        if inject:
+            response = limiter._inject_headers(response, request.state.view_rate_limit)
+        return response
 
 
 def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded) -> Response:
