@@ -7,6 +7,24 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### File-store lows
+
+- `GET /files?sort_by=size` sorts by size; it sorted on a field that does not
+  exist, so by file id.
+- `GET /files?content_type=*/*` (or `*`) lists every type; `*/*` matched none.
+- `PATCH /files`, `DELETE /files` and `POST /files/reactivate` accept at most
+  1000 items, like every other bulk write (422 over that).
+- `GET /files/{id}` authorizes on the record it read, in every case — a file
+  hard-deleted between two reads skipped the check.
+- Files are indexed by `file_id` and by `storage_key` alone: most file routes
+  look a file up by id without a namespace, and none of the namespace-leading
+  indexes served them.
+- A download into a local file (archive materialization) removes the partial
+  file when the store becomes unreachable mid-download, too.
+- The object-store health check probes the configured bucket (creating it when
+  missing, as the first write would) and logs why it failed: a missing bucket
+  reported `connected`, and refused credentials looked like an outage.
+
 ### A file's bytes are never reclaimed while a document uses them; a refused delete is not reported as done (@wip/client 0.98.0)
 
 - **Reference counts are atomic.** A file's count was read, changed in Python

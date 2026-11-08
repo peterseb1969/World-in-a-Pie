@@ -64,7 +64,7 @@ class _S3:
     async def put_object(self, **kwargs):
         self.put = kwargs
 
-    async def generate_presigned_url(self, op, Params, ExpiresIn):  # noqa: N803 — boto's names
+    async def generate_presigned_url(self, op, Params, ExpiresIn):
         self.presign = Params
         return "https://store/presigned"
 

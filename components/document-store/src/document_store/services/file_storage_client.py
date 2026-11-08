@@ -1,6 +1,7 @@
 """S3-compatible storage client for file operations (Garage, or any S3 store)."""
 
 import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -13,6 +14,8 @@ from botocore.exceptions import ClientError, HTTPClientError
 from botocore.exceptions import ConnectionError as BotocoreConnectionError
 
 from .file_validation import content_disposition
+
+logger = logging.getLogger(__name__)
 
 # Storage was the only outbound dependency in this service with no timeout of
 # its own: botocore defaults to 60s connect AND 60s read, with retry_mode
@@ -337,7 +340,9 @@ class FileStorageClient:
                     fh.write(chunk)
                     written += len(chunk)
             return written
-        except (FileStorageError, OSError):
+        except (FileStorageError, FileStorageUnavailableError, OSError):
+            # An outage mid-download is the case this cleanup exists for: it
+            # raises FileStorageUnavailableError, which is not a FileStorageError.
             # Never leave a partial file behind masquerading as an archive.
             import contextlib
             import os as _os
@@ -495,13 +500,31 @@ class FileStorageClient:
             raise FileStorageError(f"Failed to get file info: {e}") from e
 
     async def health_check(self) -> bool:
-        """Check if the storage service is healthy."""
+        """Whether the store answers for the bucket this service uses.
+
+        Probes the bucket itself (head_bucket): listing the account's buckets
+        succeeded with the bucket missing or unusable. A missing bucket is
+        created, as the first write would create it — a fresh install is
+        healthy before its first upload. A failure is logged with its reason:
+        credentials refused and store unreachable both answer False, and only
+        the log tells them apart.
+        """
         try:
             async with self._get_client(_HEALTH_CONFIG) as client:
-                # Try to list buckets as a health check
-                await client.list_buckets()
+                try:
+                    await client.head_bucket(Bucket=self.bucket)
+                except ClientError as e:
+                    if e.response.get("Error", {}).get("Code", "") not in ("404", "NoSuchBucket"):
+                        raise
+                    await client.create_bucket(Bucket=self.bucket)
+                self._bucket_ensured = True
                 return True
-        except Exception:
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            logger.warning("Object store health check: bucket %r answered %s", self.bucket, code or e)
+            return False
+        except Exception as e:
+            logger.warning("Object store health check failed: %s", e)
             return False
 
     async def ensure_bucket_exists(self) -> bool:

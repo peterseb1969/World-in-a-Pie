@@ -154,6 +154,11 @@ class File(BeanieDocument):
             IndexModel([("metadata.category", 1)], name="file_category_idx", sparse=True),
             # Uploader queries
             IndexModel([("uploaded_by", 1)], name="file_uploaded_by_idx", sparse=True),
+            # Lookups by id alone (most file routes: file ids are globally
+            # unique, so they carry no namespace) and by storage key (the
+            # namespace-deletion storage cleanup).
+            IndexModel([("file_id", 1)], name="file_id_idx"),
+            IndexModel([("storage_key", 1)], name="file_storage_key_idx"),
         ]
 
 

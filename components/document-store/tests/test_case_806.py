@@ -72,10 +72,10 @@ async def test_data_operations_get_the_bounded_data_config():
 async def test_health_check_gets_the_tighter_health_config():
     c, session = _client_with_capture()
 
-    async def _buckets(**_kwargs):
-        return {"Buckets": []}
+    async def _bucket(**_kwargs):
+        return {}
 
-    session.client.list_buckets = _buckets
+    session.client.head_bucket = _bucket  # the probe checks the configured bucket
     assert await c.health_check() is True
 
     assert session.kwargs["config"] is _HEALTH_CONFIG

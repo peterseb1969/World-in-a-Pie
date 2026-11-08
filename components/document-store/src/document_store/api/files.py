@@ -20,6 +20,7 @@ from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404, unresolve
 from wip_auth.permissions import _is_superadmin
 
 from ..models.api_models import (
+    MAX_BULK_ITEMS,
     BulkResponse,
     BulkResultItem,
     DeleteItem,
@@ -229,19 +230,17 @@ async def get_file(
     raw_file_id = file_id
     file_id = await resolve_or_404(file_id, "file", namespace=namespace, param_name="file_id")
 
-    from ..models.file import File as FileModel
-
     service = get_file_service()
     file_response = await service.get_file(file_id)
 
     if not file_response:
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Check namespace permission (File model has namespace, FileResponse doesn't)
-    file_doc = await FileModel.find_one({"file_id": file_id})
-    if file_doc:
-        await check_readable(identity, file_doc.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"))
-
+    # The namespace of the record just read: one read, and the check always
+    # runs (a second read could miss a file hard-deleted in between and skip it).
+    await check_readable(
+        identity, file_response.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"),
+    )
     return file_response
 
 
@@ -350,7 +349,7 @@ async def download_file_content(
     dependencies=[Depends(require_file_storage)]
 )
 async def update_files_metadata(
-    items: list[UpdateFileItem] = Body(...),
+    items: list[UpdateFileItem] = Body(..., max_length=MAX_BULK_ITEMS),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     identity: UserIdentity = Depends(require_api_key)
 ):
@@ -399,7 +398,7 @@ async def update_files_metadata(
     dependencies=[Depends(require_file_storage)]
 )
 async def delete_files(
-    items: list[DeleteItem] = Body(...),
+    items: list[DeleteItem] = Body(..., max_length=MAX_BULK_ITEMS),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     identity: UserIdentity = Depends(require_api_key)
 ):
@@ -462,7 +461,7 @@ Per item:
     dependencies=[Depends(require_file_storage)]
 )
 async def reactivate_files(
-    items: list[ReactivateFileItem] = Body(...),
+    items: list[ReactivateFileItem] = Body(..., max_length=MAX_BULK_ITEMS),
     namespace: str | None = Query(None, description="Namespace for synonym resolution"),
     identity: UserIdentity = Depends(require_api_key)
 ):

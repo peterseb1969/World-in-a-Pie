@@ -79,6 +79,22 @@ class FileServiceError(Exception):
         self.details: dict[str, Any] | None = {"rule": rule} if rule else None
 
 
+def _content_type_filter(content_type: str | None) -> Any:
+    """The ``content_type`` condition of a file listing, or None for none.
+
+    "*/*" (the platform's any-type spelling) and "*" filter nothing. A value
+    ending in "*" is a prefix, by the allowlist's rule (content_type_matches):
+    "image/*" lists image/png. The prefix is caller text landing in a pattern —
+    escaped so a stray metacharacter can neither 500 the query nor widen the
+    match (same literal-text rule as term search). Anything else is exact.
+    """
+    if not content_type or content_type.strip() in ("*", "*/*"):
+        return None
+    if content_type.endswith("*"):
+        return {"$regex": f"^{re.escape(content_type[:-1])}"}
+    return content_type
+
+
 def _integrity_status(issues: list, summary: dict[str, int]) -> str:
     """error / warning by the worst issue; incomplete when some objects went
     unchecked and nothing was found; healthy only when everything was checked."""
@@ -322,6 +338,11 @@ class FileService:
 
         Returns:
             FileDownloadResponse with pre-signed URL, or None if not found
+
+        Raises:
+            FileServiceError: invalid_state — rule storage_disabled (storage
+                off) or file_deleted (the file is inactive).
+            FileStorageUnavailableError: the object store is unreachable.
         """
         if not is_file_storage_enabled():
             raise FileServiceError("File storage is not enabled", "invalid_state", rule="storage_disabled")
@@ -361,6 +382,11 @@ class FileService:
 
         Returns:
             Tuple of (content bytes, File document), or None if not found
+
+        Raises:
+            FileServiceError: invalid_state — rule storage_disabled or
+                file_deleted; internal_error when the store fails the read.
+            FileStorageUnavailableError: the object store is unreachable.
         """
         if not is_file_storage_enabled():
             raise FileServiceError("File storage is not enabled", "invalid_state", rule="storage_disabled")
@@ -598,6 +624,11 @@ class FileService:
 
         Returns:
             Updated FileResponse, or None if not found
+
+        Raises:
+            FileServiceError: invalid_state, rule file_deleted (the file is
+                inactive); validation_failed, rule unresolved_template (an
+                allowed_templates entry names no template).
         """
         file_doc = await File.find_one({"file_id": file_id})
         if not file_doc:
@@ -636,6 +667,10 @@ class FileService:
 
         return self._to_response(file_doc)
 
+    # Public sort names whose stored field is named differently ("size" was
+    # published before the field was called size_bytes; sorting on "size"
+    # sorted on nothing).
+    _FILE_SORT_STORAGE: ClassVar[dict[str, str]] = {"size": "size_bytes"}
     _FILE_SORT_FIELDS: ClassVar[frozenset[str]] = frozenset(
         {"uploaded_at", "filename", "content_type", "size"}
     )
@@ -659,16 +694,22 @@ class FileService:
         Args:
             status: Filter by status
             content_type: Filter by MIME type: exact, or a prefix ending in "*"
-                (e.g. "image/*", "application/vnd.openxmlformats-officedocument.*")
+                (e.g. "image/*", "application/vnd.openxmlformats-officedocument.*");
+                "*/*" or "*" filters nothing
             category: Filter by category
             tags: Filter by tags (all must match)
             uploaded_by: Filter by uploader
             page: Page number (1-indexed)
             page_size: Items per page
             ns_filter: Namespace filter dict from resolve_namespace_filter()
+            sort_by: uploaded_at (default), filename, content_type or size
+            sort_order: asc or desc (default); ties break on file_id
 
         Returns:
             FileListResponse with paginated results
+
+        Raises:
+            ValueError: an unknown sort field or order.
         """
         query: dict = {}
         if ns_filter:
@@ -676,17 +717,9 @@ class FileService:
 
         if status:
             query["status"] = status.value
-        if content_type:
-            if content_type.endswith("*"):
-                # A prefix, by the allowlist's rule (content_type_matches):
-                # "image/*" lists image/png. The prefix is caller text landing
-                # in a pattern — escape it so a stray metacharacter can
-                # neither 500 the query nor widen the match (same
-                # literal-text rule as term search).
-                prefix = re.escape(content_type[:-1])
-                query["content_type"] = {"$regex": f"^{prefix}"}
-            else:
-                query["content_type"] = content_type
+        type_filter = _content_type_filter(content_type)
+        if type_filter is not None:
+            query["content_type"] = type_filter
         if category:
             query["metadata.category"] = category
         if tags:
@@ -709,7 +742,7 @@ class FileService:
             )
         direction = SortDirection.ASCENDING if order == "asc" else SortDirection.DESCENDING
         files = await File.find(query).skip(skip).limit(page_size).sort(
-            [(field, direction), ("file_id", SortDirection.ASCENDING)]
+            [(self._FILE_SORT_STORAGE.get(field, field), direction), ("file_id", SortDirection.ASCENDING)]
         ).to_list()
 
         return FileListResponse(

@@ -823,7 +823,7 @@ class Document(BaseModel):
     )
     file_references: list[dict[str, Any]] = Field(
         default_factory=list,
-        description="Resolved file refs: [{field_path, file_id, filename, content_type, size_bytes}]"
+        description="Resolved file refs: [{field_path, file_id, filename, content_type, size_bytes, description}]"
     )
 
     metadata: DocumentMetadata = Field(
