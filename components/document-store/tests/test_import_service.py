@@ -181,14 +181,15 @@ def test_parse_rows_xlsx():
 
 
 def test_parse_rows_xlsx_numeric_values():
-    """Numeric XLSX cells are converted to strings."""
+    """Numeric XLSX cells keep their type; build_documents converts them to
+    their field's type (a string field gets the text)."""
     content = _make_xlsx(["id", "score"], [[1, 99.5], [2, 100]])
     headers, rows = ImportService.parse_rows(content, "numbers.xlsx")
     assert headers == ["id", "score"]
-    assert rows[0]["id"] == "1"
-    assert rows[0]["score"] == "99.5"
-    assert rows[1]["id"] == "2"
-    assert rows[1]["score"] == "100"
+    assert rows[0]["id"] == 1
+    assert rows[0]["score"] == 99.5
+    assert rows[1]["id"] == 2
+    assert rows[1]["score"] == 100
 
 
 def test_parse_rows_xlsx_empty_cells():

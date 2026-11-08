@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### File import converts each cell to its field's type
+
+`POST /api/document-store/import` (and the MCP `import_documents_csv` tool)
+passed every cell to validation as text, so a mapped number, integer or
+boolean column failed every row, and an XLSX date cell (read as
+`"1990-04-12 00:00:00"`) failed a date field. CSV date columns already worked.
+
+- **Now:** each cell is converted to its template field's type first.
+  Integer fields take whole numbers, number fields finite numbers (`1e3`
+  works), boolean fields `true`/`false`, `yes`/`no` or `1`/`0` in any case,
+  date fields `YYYY-MM-DD` or an XLSX date cell (refused if it carries a time
+  of day), datetime fields ISO 8601 or an XLSX date-time cell. Every other
+  field keeps the text as written; a whole-number XLSX cell in a text field
+  reads without `.0`.
+- **A cell its field's type cannot read fails its row**, reported in
+  `errors` with the field and column (`age (column 'age'): 'thirty' is not an
+  integer`), like any validation failure; the other rows import.
+- **`/import/preview`** builds only the five rows it shows and counts the
+  rest, instead of holding the whole file as rows.
+
 ### `/search/by-fields` matches only keys holding every field
 
 `POST /api/registry/search/by-fields` (and `/search/across-namespaces`)

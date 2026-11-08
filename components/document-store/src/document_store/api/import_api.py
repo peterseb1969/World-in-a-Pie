@@ -12,6 +12,7 @@ from wip_auth.term_resolution import term_resolution_batch
 from ..models.api_models import DocumentCreateRequest
 from ..services.document_service import DocumentService
 from ..services.import_service import ImportService
+from ..services.template_store_client import get_template_store_client
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,12 @@ async def import_documents(
 
     Term fields: use human-readable values in the CSV (e.g., "United Kingdom").
     WIP resolves them to term_ids automatically.
+
+    Cells are converted to their field's type before validation: number and
+    integer fields take numerals, boolean fields true/false, yes/no or 1/0
+    (any case), date fields YYYY-MM-DD (an XLSX date cell works as is),
+    datetime fields ISO 8601. A cell that cannot be read as its field's type
+    fails its row, reported in ``errors`` like a validation failure.
     """
     await check_namespace_permission(identity, namespace, "write")
 
@@ -99,8 +106,19 @@ async def import_documents(
             "available_columns": headers,
         }
 
+    # The latest version's field types, as validation will use: each cell is
+    # converted to its field's type before the row is validated.
+    template = await get_template_store_client().get_template(template_id=template_id)
+    field_types = {
+        f["name"]: f.get("type")
+        for f in (template or {}).get("fields") or []
+        if isinstance(f, dict) and f.get("name")
+    }
+
     # Build documents
-    documents = ImportService.build_documents(rows, template_id, mapping, namespace)
+    documents = ImportService.build_documents(
+        rows, template_id, mapping, namespace, field_types=field_types,
+    )
 
     if not documents:
         return {"error": "No documents to import (file may be empty)"}
@@ -126,6 +144,9 @@ async def import_documents(
             for i, doc in enumerate(batch):
                 row_num = batch_start + i + 2  # +2 for 1-indexed + header row
                 try:
+                    conversion_errors = doc.pop("conversion_errors", None)
+                    if conversion_errors:
+                        raise ValueError("; ".join(conversion_errors))
                     req = DocumentCreateRequest(**doc)
                     result, error = await doc_service.create_document(
                         req, namespace=namespace
