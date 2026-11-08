@@ -393,6 +393,60 @@ def _unresolved_reference_report(
     return references
 
 
+@dataclass
+class _OverwriteTally:
+    """What a merge's clash overwrite did, for its summary."""
+
+    appended: int = 0
+    replaced: int = 0
+    kept: int = 0
+    identical: int = 0
+    undecidable: int = 0
+    retired: int = 0
+
+
+def _clash_heads(
+    clashes: list[Clash], doc_groups: dict[str, list[dict[str, Any]]],
+) -> Iterator[tuple[Clash, dict[str, Any]]]:
+    """Each clash with the archive's head of its document, from the
+    in-memory version chains (the clash's own entity when it has none)."""
+    for clash in clashes:
+        yield clash, head_of(doc_groups.get(clash.entity.get("document_id", ""), [clash.entity]))
+
+
+def _is_unversioned(versioned: dict[str, bool], clash: Clash) -> bool:
+    """Whether the clash's template is versioned:false (unknown counts as
+    versioned)."""
+    return versioned.get(clash.entity.get("template_id") or "", True) is False
+
+
+async def _retire_superseded(
+    collection: Any, namespace: str, rows: list[dict[str, Any]], older_versions: str,
+) -> int:
+    """Under ``older_versions='retire'``, soft-delete each row's document's
+    active versions below the row's own; returns how many were retired."""
+    if older_versions != "retire":
+        return 0
+    now = datetime.now(UTC)
+    count = 0
+    for row in rows:
+        result = await collection.update_many(
+            {
+                "namespace": namespace,
+                "document_id": row["document_id"],
+                "version": {"$lt": row["version"]},
+                "status": "active",
+            },
+            {"$set": {
+                "status": "inactive",
+                "updated_at": now,
+                "updated_by": "restore-merge",
+            }},
+        )
+        count += result.modified_count
+    return count
+
+
 class _StreamedDocuments:
     """A merge's documents, read from the archive chain by chain.
 
@@ -5106,12 +5160,7 @@ class DirectRestoreEngine:
         )
 
         if sources is None:
-            sources = (
-                (clash, head_of(doc_groups.get(
-                    clash.entity.get("document_id", ""), [clash.entity]
-                )))
-                for clash in clashes
-            )
+            sources = _clash_heads(clashes, doc_groups)
 
         # The plan read the target through a projection, so it cannot tell an
         # identical clash from a differing one. The full target heads are read
@@ -5119,130 +5168,143 @@ class DirectRestoreEngine:
         # adds no version: a new version that changes nothing is noise.
         target_heads = await self._full_target_heads(collection, namespace, clashes)
 
-        appended = 0
-        replaced = 0
-        kept = 0
-        identical = 0
-        undecidable = 0
-        retired = 0
+        tally = _OverwriteTally()
         new_rows: list[dict[str, Any]] = []
-
-        async def _retire_superseded(rows: list[dict[str, Any]]) -> int:
-            if older_versions != "retire":
-                return 0
-            now = datetime.now(UTC)
-            count = 0
-            for row in rows:
-                result = await collection.update_many(
-                    {
-                        "namespace": namespace,
-                        "document_id": row["document_id"],
-                        "version": {"$lt": row["version"]},
-                        "status": "active",
-                    },
-                    {"$set": {
-                        "status": "inactive",
-                        "updated_at": now,
-                        "updated_by": "restore-merge",
-                    }},
-                )
-                count += result.modified_count
-            return count
-
-        async def _flush(rows: list[dict[str, Any]]) -> int:
-            """Insert one batch of appended heads, then retire what they
-            supersede — after the insert, so a failed insert never leaves a
-            document with no active version. A batch that fails partway still
-            retires what the rows that did land supersede, so no document is
-            left with two active versions, and the error says how many
-            landed."""
-            try:
-                await self._insert_batch(collection, rows, "documents")
-            except RestoreEngineError as exc:
-                landed = await self._landed_rows(collection, namespace, rows)
-                await _retire_superseded(landed)
-                raise RestoreEngineError(
-                    f"{exc} — in '{namespace}', {len(landed)} of {len(rows)} "
-                    "overwriting version(s) in that batch were written (their "
-                    "older versions retired as the policy says); the merge "
-                    "stopped there."
-                ) from exc
-            return await _retire_superseded(rows)
-
         for clash, latest in sources:
             target_head = max(clash.targets, key=lambda r: r.get("version", 1))
             full_head = target_heads.get(
                 (target_head.get("document_id"), target_head.get("version", 1))
             )
-            if full_head is not None and _same_document_content(latest, full_head):
-                identical += 1
+            if not self._archive_wins(latest, target_head, full_head, on_clash, tally):
                 continue
-
-            if on_clash == "newer":
-                verdict = self._archive_is_newer(latest, target_head)
-                if verdict is None:
-                    undecidable += 1
-                    kept += 1
-                    continue
-                if not verdict:
-                    kept += 1
-                    continue
 
             row = dict(latest)
             row["document_id"] = target_head.get("document_id")
             retire_archived_row(row)
 
-            if versioned.get(clash.entity.get("template_id") or "", True) is False:
-                row["version"] = target_head.get("version", 1)
-                # Replacing the row in place is a write like any other: its
-                # if_match token moves on, so a writer still holding the old
-                # one cannot overwrite what the merge brought in.
-                head_revision = (full_head or target_head).get("revision")
-                row["revision"] = (
-                    head_revision if head_revision is not None else row["version"]
-                ) + 1
-                # Archive rows carry ISO strings; the services store dates.
-                # _insert_batch re-hydrates for every other write path.
-                _rehydrate_timestamps(row)
-                await collection.replace_one(
-                    {
-                        "namespace": namespace,
-                        "document_id": row["document_id"],
-                        "version": row["version"],
-                    },
-                    row,
+            if _is_unversioned(versioned, clash):
+                await self._replace_unversioned(collection, namespace, row, target_head, full_head)
+                tally.replaced += 1
+                continue
+            row["version"] = target_head.get("version", 1) + 1
+            new_rows.append(row)
+            tally.appended += 1
+            if len(new_rows) >= batch_size:
+                tally.retired += await self._flush_overwrites(
+                    collection, namespace, new_rows, older_versions,
                 )
-                replaced += 1
-            else:
-                row["version"] = target_head.get("version", 1) + 1
-                new_rows.append(row)
-                appended += 1
-                if len(new_rows) >= batch_size:
-                    retired += await _flush(new_rows)
-                    new_rows = []
+                new_rows = []
 
         if new_rows:
-            retired += await _flush(new_rows)
+            tally.retired += await self._flush_overwrites(
+                collection, namespace, new_rows, older_versions,
+            )
+        self._report_overwrites(namespace, tally, on_clash=on_clash, older_versions=older_versions)
 
+    def _archive_wins(
+        self,
+        latest: dict[str, Any],
+        target_head: dict[str, Any],
+        full_head: dict[str, Any] | None,
+        on_clash: str,
+        tally: _OverwriteTally,
+    ) -> bool:
+        """Whether the archive's copy is written over the target's, counting
+        the clashes it is not: an identical copy adds nothing, and under
+        ``newer`` a copy not strictly newer (or not comparable) keeps the
+        target."""
+        if full_head is not None and _same_document_content(latest, full_head):
+            tally.identical += 1
+            return False
+        if on_clash != "newer":
+            return True
+        verdict = self._archive_is_newer(latest, target_head)
+        if verdict is None:
+            tally.undecidable += 1
+        if not verdict:
+            tally.kept += 1
+            return False
+        return True
+
+    @staticmethod
+    async def _replace_unversioned(
+        collection: Any,
+        namespace: str,
+        row: dict[str, Any],
+        target_head: dict[str, Any],
+        full_head: dict[str, Any] | None,
+    ) -> None:
+        """Replace the single row of a versioned:false document in place."""
+        row["version"] = target_head.get("version", 1)
+        # Replacing the row in place is a write like any other: its
+        # if_match token moves on, so a writer still holding the old
+        # one cannot overwrite what the merge brought in.
+        head_revision = (full_head or target_head).get("revision")
+        row["revision"] = (
+            head_revision if head_revision is not None else row["version"]
+        ) + 1
+        # Archive rows carry ISO strings; the services store dates.
+        # _insert_batch re-hydrates for every other write path.
+        _rehydrate_timestamps(row)
+        await collection.replace_one(
+            {
+                "namespace": namespace,
+                "document_id": row["document_id"],
+                "version": row["version"],
+            },
+            row,
+        )
+
+    async def _flush_overwrites(
+        self,
+        collection: Any,
+        namespace: str,
+        rows: list[dict[str, Any]],
+        older_versions: str,
+    ) -> int:
+        """Insert one batch of appended heads, then retire what they
+        supersede — after the insert, so a failed insert never leaves a
+        document with no active version. A batch that fails partway still
+        retires what the rows that did land supersede, so no document is
+        left with two active versions, and the error says how many
+        landed. Returns the versions retired."""
+        try:
+            await self._insert_batch(collection, rows, "documents")
+        except RestoreEngineError as exc:
+            landed = await self._landed_rows(collection, namespace, rows)
+            await _retire_superseded(collection, namespace, landed, older_versions)
+            raise RestoreEngineError(
+                f"{exc} — in '{namespace}', {len(landed)} of {len(rows)} "
+                "overwriting version(s) in that batch were written (their "
+                "older versions retired as the policy says); the merge "
+                "stopped there."
+            ) from exc
+        return await _retire_superseded(collection, namespace, rows, older_versions)
+
+    def _report_overwrites(
+        self, namespace: str, tally: _OverwriteTally, *, on_clash: str, older_versions: str,
+    ) -> None:
+        """Say what the overwrite did, and warn about clashes it could not
+        compare by update time."""
         summary = (
-            f"[{namespace}] {appended + replaced} clashing document(s) taken "
-            f"from the archive ({appended} appended as a new version, "
-            f"{replaced} replaced in place on versioned:false templates)"
+            f"[{namespace}] {tally.appended + tally.replaced} clashing document(s) taken "
+            f"from the archive ({tally.appended} appended as a new version, "
+            f"{tally.replaced} replaced in place on versioned:false templates)"
         )
         if older_versions == "retire":
-            summary += f", {retired} older version(s) retired"
+            summary += f", {tally.retired} older version(s) retired"
         else:
             summary += ", older versions kept active"
         if on_clash == "newer":
-            summary += f", {kept} kept because the target's copy is not older"
-        if identical:
-            summary += f", {identical} left alone because the archive's copy is identical"
+            summary += f", {tally.kept} kept because the target's copy is not older"
+        if tally.identical:
+            summary += f", {tally.identical} left alone because the archive's copy is identical"
         self._emit("phase_documents", summary)
 
-        if undecidable:
+        if tally.undecidable:
             self._emit(
                 "warning",
-                f"[{namespace}] {undecidable} document(s) could not be compared "
+                f"[{namespace}] {tally.undecidable} document(s) could not be compared "
                 "by update time (a missing or unparseable updated_at on one "
                 "side) — the target's copy was kept for those.",
             )
