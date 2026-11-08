@@ -4,6 +4,7 @@ import csv
 import io
 import logging
 import math
+from collections.abc import Callable
 from datetime import date, datetime, time
 from itertools import islice
 from typing import Any
@@ -39,63 +40,89 @@ def convert_cell(value: Any, field_type: str | None) -> Any:
     that cannot be read as its field's type raises CellConversionError, which
     fails the row, never the file.
     """
-    if field_type == "integer":
-        if isinstance(value, bool):
-            raise CellConversionError(f"{value!r} is a boolean, not an integer")
-        if isinstance(value, int):
-            return value
-        if isinstance(value, float):
-            if value.is_integer():
-                return int(value)
-            raise CellConversionError(f"{value!r} is not a whole number")
-        text = str(value).strip()
-        try:
-            return int(text)
-        except ValueError:
-            raise CellConversionError(f"'{text}' is not an integer") from None
-    if field_type == "number":
-        if isinstance(value, bool):
-            raise CellConversionError(f"{value!r} is a boolean, not a number")
-        if isinstance(value, int | float):
-            number: int | float = value
-        else:
-            text = str(value).strip()
-            try:
-                number = int(text)
-            except ValueError:
-                try:
-                    number = float(text)
-                except ValueError:
-                    raise CellConversionError(f"'{text}' is not a number") from None
-        if isinstance(number, float) and not math.isfinite(number):
-            raise CellConversionError(f"{value!r} is not a finite number")
-        return number
-    if field_type == "boolean":
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, int) and value in (0, 1):
-            return bool(value)
-        text = str(value).strip().lower()
-        if text in _TRUE:
-            return True
-        if text in _FALSE:
-            return False
-        raise CellConversionError(
-            f"'{value}' is not a boolean (true/false, yes/no or 1/0)"
-        )
-    if field_type == "date":
-        if isinstance(value, datetime):
-            if value.time() != time(0, 0):
-                raise CellConversionError(f"'{value}' has a time of day; the field is a date")
-            return value.date().isoformat()
-        if isinstance(value, date):
-            return value.isoformat()
-        return str(value).strip()
-    if field_type == "datetime":
-        if isinstance(value, datetime):
-            return value.isoformat()
-        return str(value).strip()
-    return _as_text(value)
+    converter = _CONVERTERS.get(field_type or "")
+    return converter(value) if converter is not None else _as_text(value)
+
+
+def _to_integer(value: Any) -> int:
+    if isinstance(value, bool):
+        raise CellConversionError(f"{value!r} is a boolean, not an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        raise CellConversionError(f"{value!r} is not a whole number")
+    text = str(value).strip()
+    try:
+        return int(text)
+    except ValueError:
+        raise CellConversionError(f"'{text}' is not an integer") from None
+
+
+def _to_number(value: Any) -> int | float:
+    if isinstance(value, bool):
+        raise CellConversionError(f"{value!r} is a boolean, not a number")
+    number = value if isinstance(value, int | float) else _parse_number(str(value).strip())
+    if isinstance(number, float) and not math.isfinite(number):
+        raise CellConversionError(f"{value!r} is not a finite number")
+    return number
+
+
+def _parse_number(text: str) -> int | float:
+    """A numeral as an int when it is one, else as a float."""
+    try:
+        return int(text)
+    except ValueError:
+        pass
+    try:
+        return float(text)
+    except ValueError:
+        raise CellConversionError(f"'{text}' is not a number") from None
+
+
+def _to_boolean(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in _TRUE:
+        return True
+    if text in _FALSE:
+        return False
+    raise CellConversionError(
+        f"'{value}' is not a boolean (true/false, yes/no or 1/0)"
+    )
+
+
+def _to_date(value: Any) -> str:
+    """A sheet's date (or a midnight datetime) as ISO; text as written,
+    for validation to judge."""
+    if isinstance(value, datetime):
+        if value.time() != time(0, 0):
+            raise CellConversionError(f"'{value}' has a time of day; the field is a date")
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value).strip()
+
+
+def _to_datetime(value: Any) -> str:
+    """A sheet's datetime as ISO; text as written, for validation to judge."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value).strip()
+
+
+# The field types a cell is converted to; every other field takes the text.
+_CONVERTERS: dict[str, Callable[[Any], Any]] = {
+    "integer": _to_integer,
+    "number": _to_number,
+    "boolean": _to_boolean,
+    "date": _to_date,
+    "datetime": _to_datetime,
+}
 
 
 def _as_text(value: Any) -> str:
