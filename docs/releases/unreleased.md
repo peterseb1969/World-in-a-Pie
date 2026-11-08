@@ -7,6 +7,16 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Template reactivate and endpoint widening need write on the template's own namespace
+
+`POST /api/template-store/templates/{id}/reactivate` and `…/{id}/endpoints`
+checked write on the `namespace` query parameter, then changed whichever
+template the id named. A key with write on one namespace could reactivate a
+frozen version of another namespace's template, or widen its edge type, by
+naming the template's id. Both routes now require write on the namespace the
+template lives in. A caller who can read that namespace but not write it gets
+403. A caller who cannot see it gets the 404 of an id that names nothing.
+`namespace` is still required, but it now only resolves a value or synonym.
 ### Concurrent writes to one Registry entry keep each other's changes
 
 Synonym add and remove read an entry, changed its synonym list in memory and

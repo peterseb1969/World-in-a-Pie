@@ -146,6 +146,7 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     "_check_job_permission",        # document_store.api.backup: every namespace a job spans
     "write_refusals",               # document_store.api.auth: write on every namespace a bulk write spans
     "_batch_write_refusals",        # document_store.api.documents: write_refusals for the documents a batch names
+    "_require_write_on_template",   # template_store.api.templates: write on the template row's own namespace
 })
 
 # Names that count as valid permission gates when they appear as the

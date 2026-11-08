@@ -12,6 +12,7 @@ from wip_auth import (
     resolve_namespace_filter,
     resolve_or_404,
 )
+from wip_auth.fastapi_helpers import unresolved_detail
 
 from ..models.api_models import (
     ActivateTemplateResponse,
@@ -728,6 +729,31 @@ async def activate_template(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+async def _require_write_on_template(template_id: str, raw_id: str, namespace: str) -> None:
+    """Write on the namespace the template itself lives in.
+
+    The ``namespace`` a caller passes only resolves a synonym; a canonical id
+    names one template wherever it lives. So the gate is the template row's own
+    namespace, not the parameter, or a key with write on one namespace could
+    change another namespace's template by naming its id. A template the caller
+    cannot see answers with the text of an id that names nothing
+    (unresolved_detail), so the answer does not confirm that it exists.
+    """
+    hidden = HTTPException(
+        status_code=404,
+        detail=unresolved_detail(raw_id, "template", namespace, param_name="template_id"),
+    )
+    row = await Template.find_one({"template_id": template_id})
+    if row is None:
+        raise hidden
+    try:
+        await check_namespace_permission(require_current_identity(), row.namespace, "write")
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise hidden from None
+        raise
+
+
 @router.post("/{template_id}/reactivate", response_model=TemplateResponse)
 async def reactivate_template(
     template_id: str,
@@ -744,10 +770,9 @@ async def reactivate_template(
     address an inactive version). Idempotent on an already-active version;
     a draft version is rejected (use `/activate`).
     """
-    identity = require_current_identity()
-    await check_namespace_permission(identity, namespace, "write")
-
+    raw_id = template_id
     template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
+    await _require_write_on_template(template_id, raw_id, namespace)
 
     try:
         return await TemplateService.reactivate_template(
@@ -802,10 +827,9 @@ async def add_edge_type_endpoints(
     not "no change" (see PoNIF #7). No reindex / reporting migration — the
     relationship indexes and reporting columns are generic.
     """
-    identity = require_current_identity()
-    await check_namespace_permission(identity, namespace, "write")
-
+    raw_id = template_id
     template_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
+    await _require_write_on_template(template_id, raw_id, namespace)
 
     try:
         return await TemplateService.add_edge_type_endpoints(

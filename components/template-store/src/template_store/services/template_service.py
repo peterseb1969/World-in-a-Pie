@@ -1956,8 +1956,9 @@ class TemplateService:
         ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         template = by_id[0] if by_id else None
         if not template:
+            # A bare value names a template in the caller's namespace only.
             by_value = await Template.find(
-                {"value": template_id, "status": "active"}
+                {"value": template_id, "namespace": namespace, "status": "active"}
             ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
             template = by_value[0] if by_value else None
         if not template:
