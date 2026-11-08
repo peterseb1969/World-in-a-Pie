@@ -7,46 +7,7 @@ retired with force=true — which also bypassed the check for a version that
 still carries documents.
 """
 
-from types import SimpleNamespace
-
-import httpx
 import pytest
-
-from template_store.services import dependency_service
-
-_REAL_ASYNC_CLIENT = httpx.AsyncClient
-
-
-class FakeDocumentStore:
-    """Answers the active-document count per template version."""
-
-    def __init__(self):
-        self.active_by_version: dict[int, int] = {}
-        self.unreachable = False
-        self.requests: list[dict] = []
-
-    def handle(self, request: httpx.Request) -> httpx.Response:
-        if self.unreachable:
-            raise httpx.ConnectError("Connection refused", request=request)
-        params = dict(request.url.params)
-        self.requests.append(params)
-        if "template_version" in params:
-            total = self.active_by_version.get(int(params["template_version"]), 0)
-        else:
-            total = sum(self.active_by_version.values())
-        return httpx.Response(200, json={"items": [], "total": total})
-
-
-@pytest.fixture(autouse=True)
-def doc_store(monkeypatch):
-    fake = FakeDocumentStore()
-    shim = SimpleNamespace(
-        AsyncClient=lambda **kw: _REAL_ASYNC_CLIENT(
-            transport=httpx.MockTransport(fake.handle), **kw
-        )
-    )
-    monkeypatch.setattr(dependency_service, "httpx", shim)
-    return fake
 
 
 async def _template_with_two_versions(client, auth_headers, value: str) -> str:
@@ -101,8 +62,12 @@ async def test_force_still_deactivates_a_version_with_documents(client, auth_hea
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_count_still_deactivates(client, auth_headers, doc_store):
-    # Unchanged: deactivation is reversible, so "could not count" does not refuse it.
-    tid = await _template_with_two_versions(client, auth_headers, "C1003_UNKNOWN")
+@pytest.mark.parametrize("force", [False, True])
+async def test_an_unknown_count_refuses_the_deactivation(client, auth_headers, doc_store, force):
+    # Reversed (Peter, 2026-11-09): if Document Store cannot answer, no
+    # deletion goes ahead, force included.
+    tid = await _template_with_two_versions(client, auth_headers, f"C1003_UNKNOWN_{force}".upper())
     doc_store.unreachable = True
-    assert (await _deactivate(client, auth_headers, tid, 1))["status"] == "deleted"
+    result = await _deactivate(client, auth_headers, tid, 1, force=force)
+    assert result["status"] == "error", result
+    assert result["details"] == {"rule": "documents_unverifiable"}, result

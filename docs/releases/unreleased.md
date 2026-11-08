@@ -7,6 +7,25 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### No template is deleted while Document Store cannot answer
+
+- A template delete asks Document Store how many documents use the version.
+  When it could not answer, a hard delete was refused but a soft delete went
+  ahead (the count read as 0). Now every delete is refused
+  (`invalid_state`, `documents_unverifiable`), **`force=true` included**:
+  force means "even though documents use it", not "even though nobody could
+  check".
+- `GET /templates/{id}/dependencies` with the count unknown answers
+  `has_dependencies: null` and `can_deactivate: false`.
+- When the last version is hard-deleted, the Registry entry is removed first:
+  a Registry that refuses leaves nothing deleted (it was logged, and the item
+  said "deleted"). The all-versions hard delete's event names no version, so
+  reporting drops the whole template.
+- "N template(s) extend this template" counts child templates still in use,
+  not version rows: a parent whose children are all retired can be
+  deactivated (a hard delete is still blocked by any child).
+- **Action:** a script that soft-deletes with `force=true` during a Document
+  Store outage now gets an error item; retry when it is back.
 ### A namespace's `created_by` / `updated_by` name the authenticated caller
 
 - Namespace create, upsert, archive, restore and the deletion-mode PATCH
@@ -3252,8 +3271,8 @@ documented lifecycle, needed `force=true`, which also skips the check for a
 version that still has documents. Now only active documents on the named
 version block it. The refusal names the version and its count
 (`details: {rule: has_documents, version, document_count}`). A count that
-cannot be read still lets the deactivation through, as before: deactivation
-is reversible.
+cannot be read refuses the deactivation (see "No template is deleted while
+Document Store cannot answer" above).
 
 `GET /api/document-store/documents` takes a new `template_version` filter.
 **Action:** none. Callers that passed `force=true` only to get past the old

@@ -28,8 +28,10 @@ class TemplateDependencies(BaseModel):
     # Documents that use this template
     document_count: int = 0
 
-    # Summary
-    has_dependencies: bool = False
+    # Summary. When Document Store cannot be asked (document_count -1),
+    # whether anything depends on the template is unknown (None) and it
+    # cannot be deactivated: a delete is refused until the count is known.
+    has_dependencies: bool | None = False
     can_deactivate: bool = True
     warning_message: str | None = None
 
@@ -64,8 +66,8 @@ class DependencyService:
             template_value=template.value
         )
 
-        # Check child templates (extends this template)
-        children = await InheritanceService.get_children(template_id)
+        # Child templates still in use (an active version extends this one)
+        children = await InheritanceService.get_children(template_id, active_only=True)
         result.child_template_count = len(children)
         result.child_templates = [
             {"template_id": c.template_id, "value": c.value, "label": c.label}
@@ -81,10 +83,10 @@ class DependencyService:
             # Set to -1 to indicate unknown
             result.document_count = -1
 
-        # Calculate summary
+        # Calculate summary; an unknown count is not "no documents"
         result.has_dependencies = (
-            result.child_template_count > 0 or
-            result.document_count > 0
+            None if result.document_count == -1 and result.child_template_count == 0
+            else result.child_template_count > 0 or result.document_count > 0
         )
 
         # Build warning message
@@ -99,8 +101,11 @@ class DependencyService:
         if warnings:
             result.warning_message = "This template has dependencies: " + ", ".join(warnings)
 
-        # Can only deactivate if no active children (documents can remain)
-        result.can_deactivate = result.child_template_count == 0
+        # Can only deactivate with no active children (documents can remain,
+        # with force) and a count Document Store could give.
+        result.can_deactivate = (
+            result.child_template_count == 0 and result.document_count != -1
+        )
 
         return result
 

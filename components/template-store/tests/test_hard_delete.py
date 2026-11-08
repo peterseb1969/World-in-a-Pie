@@ -397,9 +397,11 @@ class TestHardDeleteDocumentGuard:
         assert resp.json()["status"] == "inactive"
 
     @pytest.mark.asyncio
-    async def test_soft_delete_with_unreachable_document_store_still_deactivates(self, client, auth_headers, doc_store):
-        # Deliberately unchanged: deactivation is reversible.
+    async def test_soft_delete_with_unreachable_document_store_is_refused(self, client, auth_headers, doc_store):
+        # Reversed (Peter, 2026-11-09): if Document Store cannot answer, no
+        # deletion goes ahead, a reversible one included.
         tid = await _create_template(client, auth_headers, "HDG_SOFT_DOWN", "Guard Soft Down")
         doc_store.unreachable = True
         data = await _delete_template(client, auth_headers, tid, version=1)
-        assert data["succeeded"] == 1
+        assert data["failed"] == 1
+        assert data["results"][0]["details"] == {"rule": "documents_unverifiable"}

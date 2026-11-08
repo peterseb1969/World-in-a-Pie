@@ -2030,8 +2030,13 @@ class TemplateService:
         Returns:
             True if deleted, False if not found
         """
-        # Check if any templates extend this one (blocks both soft and hard delete)
-        children = await InheritanceService.get_children(template_id)
+        # A template another one extends cannot go: a soft delete is blocked
+        # by children that are still in use (an active version), a hard
+        # delete by any child, since a retired child still resolves through
+        # its parent.
+        children = await InheritanceService.get_children(
+            template_id, active_only=not hard_delete
+        )
         if children:
             raise TemplateError(
                 f"Cannot delete template: {len(children)} template(s) extend it", "invalid_state", rule="has_children"
@@ -2054,44 +2059,7 @@ class TemplateService:
                     f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')", "invalid_state", rule="deletion_mode_retain"
                 )
 
-            if version is not None:
-                # Version-specific hard-delete
-                target = await Template.find_one({"template_id": template_id, "version": version})
-                if not target:
-                    return False
-
-                event_payload = TemplateService._template_to_event_payload(target)
-                event_payload["hard_delete"] = True
-                event_payload["version"] = version
-
-                await target.delete()
-
-                # Check if any versions remain
-                remaining = await Template.find({"template_id": template_id}).count()
-                if remaining == 0:
-                    try:
-                        await client.hard_delete_entry(template_id, updated_by=actor)
-                    except Exception as e:
-                        logger.warning(f"Failed to hard-delete Registry entry for template {template_id}: {e}")
-            else:
-                # All versions hard-delete
-                event_payload = TemplateService._template_to_event_payload(any_version)
-                event_payload["hard_delete"] = True
-
-                await Template.find({"template_id": template_id}).delete()
-
-                try:
-                    await client.hard_delete_entry(template_id, updated_by=actor)
-                except Exception as e:
-                    logger.warning(f"Failed to hard-delete Registry entry for template {template_id}: {e}")
-
-            # Publish template deleted event
-            await publish_template_event(
-                EventType.TEMPLATE_DELETED,
-                event_payload,
-                changed_by=actor,
-            )
-            return True
+            return await TemplateService._hard_delete(template_id, version, actor)
 
         # SOFT DELETE path (existing behavior)
         if version is not None:
@@ -2119,6 +2087,41 @@ class TemplateService:
             changed_by=actor
         )
 
+        return True
+
+    @staticmethod
+    async def _hard_delete(template_id: str, version: int | None, actor: str) -> bool:
+        """Remove one version, or all, for good. When the last version goes,
+        the Registry entry goes first: the identity authority refusing (or
+        unreachable) leaves nothing deleted, and a retry after a failed row
+        delete finds the entry gone and finishes. A version delete that
+        leaves only retired versions tells the Registry the template is
+        retired, as a soft delete does."""
+        query: dict[str, Any] = {"template_id": template_id}
+        if version is not None:
+            query["version"] = version
+        target = await Template.find_one(query)
+        if not target:
+            return False
+        others = await Template.find(
+            {"template_id": template_id, "version": {"$ne": version}}
+        ).count() if version is not None else 0
+        if others == 0:
+            await get_registry_client().hard_delete_entry(template_id, updated_by=actor)
+
+        event_payload = TemplateService._template_to_event_payload(target)
+        event_payload["hard_delete"] = True
+        if version is None:
+            # Every version goes: the event names none, which is what tells
+            # reporting to drop the whole template rather than one version.
+            event_payload.pop("version", None)
+        await Template.find(query).delete()
+        if others > 0 and target.status == "active":
+            await TemplateService._sync_registry_lifecycle(template_id, actor)
+
+        await publish_template_event(
+            EventType.TEMPLATE_DELETED, event_payload, changed_by=actor,
+        )
         return True
 
     @staticmethod

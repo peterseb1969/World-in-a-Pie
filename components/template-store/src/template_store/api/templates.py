@@ -647,17 +647,25 @@ async def delete_templates(
                 )
         # Soft-delete: refused while active documents are on THIS version,
         # unless force. Documents on other versions do not depend on it.
-        # An unknown count does not refuse: deactivation is reversible
-        # (unlike hard delete above, which refuses on "unknown").
-        elif not item.force:
+        # A count Document Store cannot give refuses every delete, force
+        # included: force means "even though documents use it", not "even
+        # though nobody could check".
+        else:
             assert item.version is not None  # required above for a soft delete
             try:
                 on_version = await DependencyService.active_documents_on_version(
                     item.id, item.version,
                 )
-            except Exception:
-                on_version = 0
-            if on_version > 0:
+            except Exception as e:
+                return BulkResultItem(
+                    index=i, status="error", id=item.id,
+                    error=(
+                        "Deactivation refused: cannot establish how many documents "
+                        f"use version {item.version} ({e})."
+                    ),
+                    error_code="invalid_state", details={"rule": "documents_unverifiable"},
+                )
+            if on_version > 0 and not item.force:
                 return BulkResultItem(
                     index=i, status="error", id=item.id,
                     error=(

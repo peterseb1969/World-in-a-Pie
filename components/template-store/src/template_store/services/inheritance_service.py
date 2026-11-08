@@ -2,6 +2,8 @@
 
 from typing import cast
 
+from beanie.odm.enums import SortDirection
+
 from ..models.field import FieldDefinition
 from ..models.rule import ValidationRule
 from ..models.template import Template
@@ -251,17 +253,28 @@ class InheritanceService:
         return []
 
     @staticmethod
-    async def get_children(template_id: str) -> list[Template]:
+    async def get_children(template_id: str, active_only: bool = False) -> list[Template]:
         """
-        Get all templates that directly extend this template.
+        The templates that directly extend this template: one entry per
+        child template (its latest version extending this one), not one per
+        version row.
 
         Args:
             template_id: The parent template ID
+            active_only: only children with an active version extending it
+                (a fully retired child is left out)
 
         Returns:
             List of child templates
         """
-        return await Template.find({"extends": template_id}).to_list()
+        query: dict = {"extends": template_id}
+        if active_only:
+            query["status"] = "active"
+        rows = await Template.find(query).sort([("version", SortDirection.DESCENDING)]).to_list()
+        latest: dict[str, Template] = {}
+        for row in rows:
+            latest.setdefault(row.template_id, row)
+        return list(latest.values())
 
     @staticmethod
     async def get_descendants(template_id: str) -> list[Template]:

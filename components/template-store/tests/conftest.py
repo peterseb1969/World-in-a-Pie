@@ -13,8 +13,10 @@ import os
 import sys
 from collections.abc import AsyncGenerator
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import httpx
 import pytest
 import pytest_asyncio
 from beanie import init_beanie
@@ -82,6 +84,7 @@ from registry.services.auth import AuthService  # noqa: E402
 from template_store.api.auth import set_api_key  # noqa: E402
 from template_store.main import app  # noqa: E402
 from template_store.models.template import Template  # noqa: E402
+from template_store.services import dependency_service  # noqa: E402
 from template_store.services.def_store_client import DefStoreClient  # noqa: E402
 from template_store.services.registry_client import RegistryClient  # noqa: E402
 from wip_auth.resolve import clear_resolution_cache, set_resolve_transport  # noqa: E402
@@ -293,3 +296,42 @@ def _drop_worker_database():
             mongo_client.drop_database(os.environ["DATABASE_NAME"])
         finally:
             mongo_client.close()
+
+# --- Document Store stand-in -------------------------------------------------
+# Template deletes ask Document Store how many documents use a version, and
+# refuse when it cannot answer. Every test gets a reachable stand-in that
+# answers 0 unless the test sets counts or makes it unreachable.
+
+_REAL_ASYNC_CLIENT = httpx.AsyncClient
+
+
+class FakeDocumentStore:
+    """Answers the active-document count per template version."""
+
+    def __init__(self):
+        self.active_by_version: dict[int, int] = {}
+        self.unreachable = False
+        self.requests: list[dict] = []
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        if self.unreachable:
+            raise httpx.ConnectError("Connection refused", request=request)
+        params = dict(request.url.params)
+        self.requests.append(params)
+        if "template_version" in params:
+            total = self.active_by_version.get(int(params["template_version"]), 0)
+        else:
+            total = sum(self.active_by_version.values())
+        return httpx.Response(200, json={"items": [], "total": total})
+
+
+@pytest.fixture(autouse=True)
+def doc_store(monkeypatch):
+    fake = FakeDocumentStore()
+    shim = SimpleNamespace(
+        AsyncClient=lambda **kw: _REAL_ASYNC_CLIENT(
+            transport=httpx.MockTransport(fake.handle), **kw
+        )
+    )
+    monkeypatch.setattr(dependency_service, "httpx", shim)
+    return fake

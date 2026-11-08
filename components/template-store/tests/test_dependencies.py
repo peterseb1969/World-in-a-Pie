@@ -231,8 +231,10 @@ async def test_dependencies_document_store_unavailable(
     assert data["warning_message"] is not None
     assert "unavailable" in data["warning_message"].lower()
 
-    # Can still deactivate (no child templates)
-    assert data["can_deactivate"] is True
+    # Whether anything depends on it is unknown, and with the count unknown
+    # no deletion goes ahead.
+    assert data["has_dependencies"] is None
+    assert data["can_deactivate"] is False
 
 
 @pytest.mark.asyncio
