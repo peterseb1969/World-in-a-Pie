@@ -17,13 +17,40 @@ from wip_auth.bulk_models import (
 )
 
 from .field import FieldDefinition
-from .rule import ValidationRule
+from .rule import Condition, ValidationRule
 from .template import EndpointRef, ReportingConfig, TemplateMetadata, TemplateUsage
 
 
 class StrictModel(BaseModel):
     """Base for API request models — rejects unknown fields."""
     model_config = ConfigDict(extra='forbid')
+
+
+def _reject_unknown_rule_keys(rules: Any) -> Any:
+    """Refuse a rule or condition key the models do not know.
+
+    ValidationRule and Condition also hydrate stored templates, so they stay
+    lenient; the request side is checked here instead. Ignored, a misspelled
+    key changes what the rule means without a word: a rule written with
+    ``condition`` (singular) loses its condition and holds for every
+    document.
+    """
+    if not isinstance(rules, list):
+        return rules
+    for i, rule in enumerate(rules):
+        if not isinstance(rule, dict):
+            continue
+        unknown = set(rule) - set(ValidationRule.model_fields)
+        if unknown:
+            raise ValueError(f"rules[{i}]: unknown key(s) {sorted(unknown)}")
+        for j, condition in enumerate(rule.get("conditions") or []):
+            if isinstance(condition, dict):
+                unknown = set(condition) - set(Condition.model_fields)
+                if unknown:
+                    raise ValueError(
+                        f"rules[{i}].conditions[{j}]: unknown key(s) {sorted(unknown)}"
+                    )
+    return rules
 
 
 class EndpointRefIn(StrictModel):
@@ -204,6 +231,11 @@ class CreateTemplateRequest(StrictModel):
     def _value_reserved_suffix(cls, v: str) -> str:
         return _reject_reserved_suffix(v, "Template value")
 
+    @field_validator("rules", mode="before")
+    @classmethod
+    def _rules_known_keys(cls, v: Any) -> Any:
+        return _reject_unknown_rule_keys(v)
+
     @model_validator(mode="after")
     def _table_name_reserved_suffix(self) -> "CreateTemplateRequest":
         if self.reporting and self.reporting.table_name:
@@ -280,6 +312,11 @@ class UpdateTemplateRequest(StrictModel):
         default=None,
         description="User or system updating this template"
     )
+
+    @field_validator("rules", mode="before")
+    @classmethod
+    def _rules_known_keys(cls, v: Any) -> Any:
+        return _reject_unknown_rule_keys(v)
 
     @model_validator(mode="after")
     def _update_reserved_suffix(self) -> "UpdateTemplateRequest":

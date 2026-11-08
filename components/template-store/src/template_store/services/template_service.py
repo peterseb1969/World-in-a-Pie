@@ -31,6 +31,7 @@ from ..models.api_models import (
     endpoint_lookups,
 )
 from ..models.field import FieldDefinition, FieldType, ReferenceType
+from ..models.rule import ValidationRule
 from ..models.template import (
     EndpointRef,
     ReportingConfig,
@@ -51,6 +52,7 @@ from .reference_validator import (
     get_reference_validator,
 )
 from .registry_client import RegistryError, get_registry_client
+from .rule_shape import rule_shape_error
 
 logger = logging.getLogger(__name__)
 
@@ -276,6 +278,22 @@ class TemplateService:
             )
 
     @staticmethod
+    def validate_rules_for_write(rules: list[ValidationRule] | None) -> None:
+        """Refuse a rule document-store could not evaluate (see rule_shape
+        for what each type needs).
+
+        Called from create and update, never on hydration, so stored
+        templates stay readable. Purely declarative, no DB calls.
+        """
+        for i, rule in enumerate(rules or []):
+            why = rule_shape_error(rule)
+            if why:
+                raise TemplateError(
+                    f"Rule {i} ({rule.type.value}): {why}",
+                    "validation_failed", rule="invalid_rule",
+                )
+
+    @staticmethod
     def _validate_renames(
         renames: dict[str, str] | None,
         previous_fields: list[FieldDefinition],
@@ -457,6 +475,7 @@ class TemplateService:
             request.versioned, request.identity_fields
         )
         TemplateService.validate_fields_for_write(request.fields)
+        TemplateService.validate_rules_for_write(request.rules)
 
         # Check if value already exists within namespace — skip in restore mode
         # (restoring version 2+ of a template will find version 1 already present)
@@ -1634,6 +1653,9 @@ class TemplateService:
             original.versioned, new_identity_fields
         )
         TemplateService.validate_fields_for_write(new_fields)
+        TemplateService.validate_rules_for_write(
+            request.rules if request.rules is not None else original.rules
+        )
 
         # Declared renames for this new version are validated against the
         # version they rename FROM (the current latest) and the merged new
