@@ -82,6 +82,11 @@ spec:
       - "$JS.API.CONSUMER.DURABLE.CREATE.WIP_EVENTS.reporting-sync-durable"
       - "$JS.API.CONSUMER.MSG.NEXT.WIP_EVENTS.reporting-sync-durable"
       - "$JS.ACK.WIP_EVENTS.reporting-sync-durable.>"
+    # The Registry's cache-invalidation messages (wip_auth.cache_events).
+    subscribe:
+      - "wip.cache.namespace.deleted"
+      - "wip.cache.entries.changed"
+      - "wip.cache.access.changed"
 
   routes:
     - {path: /api/reporting-sync, auth_required: false}

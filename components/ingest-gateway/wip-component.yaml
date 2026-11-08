@@ -70,6 +70,11 @@ spec:
       - "$JS.API.CONSUMER.DURABLE.CREATE.WIP_INGEST.ingest-gateway-durable"
       - "$JS.API.CONSUMER.MSG.NEXT.WIP_INGEST.ingest-gateway-durable"
       - "$JS.ACK.WIP_INGEST.ingest-gateway-durable.>"
+    # The Registry's cache-invalidation messages (wip_auth.cache_events).
+    subscribe:
+      - "wip.cache.namespace.deleted"
+      - "wip.cache.entries.changed"
+      - "wip.cache.access.changed"
 
   routes:
     - {path: /api/ingest-gateway, auth_required: false}

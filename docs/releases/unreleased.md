@@ -27,6 +27,12 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   keeps the plain message.
 - The create/revoke routes, the MCP `create_api_key` / `revoke_api_key`
   tools and `wip://conventions` state the timing.
+- **Action:** the install's NATS users must be allowed the new subject —
+  re-render with `wip-deploy redeploy` (the Registry publishes
+  `wip.cache.access.changed`; every resolving service, now including
+  ingest-gateway and reporting-sync, subscribes to the three cache subjects).
+  Until then NATS refuses it, the services log a permissions violation, and
+  key changes still arrive by the 30 s poll.
 
 ### A runtime key's `namespaces` list is a scope, not a permission
 

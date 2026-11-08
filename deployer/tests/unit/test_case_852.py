@@ -144,12 +144,17 @@ class TestRenderedConfig:
         # The Registry may publish only its cache-invalidation messages; the
         # services that cache Registry answers may receive them.
         conf = _conf(_deployment(), discovery)
-        subjects = ['"wip.cache.namespace.deleted"', '"wip.cache.entries.changed"']
+        subjects = [
+            '"wip.cache.namespace.deleted"', '"wip.cache.entries.changed"',
+            '"wip.cache.access.changed"',
+        ]
         registry = conf.split('user: "registry"', 1)[1].split("} }", 1)[0]
         publish = registry.split("publish", 1)[1].split("]", 1)[0]
         assert publish.count('"') == 2 * len(subjects)
         assert all(s in publish for s in subjects)
-        for name in ("def-store", "document-store", "template-store"):
+        for name in (
+            "def-store", "document-store", "template-store", "reporting-sync", "ingest-gateway",
+        ):
             block = conf.split(f'user: "{name}"', 1)[1].split("} }", 1)[0]
             assert all(s in block.split("subscribe", 1)[1] for s in subjects)
 

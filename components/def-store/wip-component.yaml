@@ -72,6 +72,7 @@ spec:
     subscribe:
       - "wip.cache.namespace.deleted"
       - "wip.cache.entries.changed"
+      - "wip.cache.access.changed"
 
   # MongoDB user for this service (config_gen/mongodb.py): its own database.
   mongo_client:
