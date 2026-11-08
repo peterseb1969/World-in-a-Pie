@@ -7,6 +7,27 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Document bulk writes report every item and stop where asked; validation and integrity bounds hold
+
+- **`DELETE /documents` and `PATCH /documents` report a namespace refusal
+  per item.** One document in a namespace the caller could not write turned
+  `DELETE` into a 403/404 after earlier documents had been deleted, with
+  none of them reported, and refused `PATCH` whole with a 403. Both now
+  answer 200, with the refused item reported as an error: `forbidden` when
+  the caller can read the namespace, and `not_found` with the text of a
+  missing document when the caller cannot see it. The rest of the batch
+  proceeds. An authorization outage (503) refuses the request before any
+  document changes.
+- **`POST /documents?continue_on_error=false` stops at the first refusal by
+  the reference gates.** These are the relationship constraints and
+  namespace isolation. The items after the refused one were still written;
+  they are now reported `skipped`, as for a validation failure.
+- **`POST /validation/validate-candidate` accepts at most 1000 `documents`**
+  (422 beyond), like every other bulk surface.
+- **An integrity check's `limit` bounds what is read.** A limit under 500 was
+  ignored, and the first 500 documents were checked.
+- **Restore no longer counts a namespace as reporting-synced when its batch
+  sync started no job** (no template syncs, or every job failed to start).
 ### A soft-deleted file can come back (@wip/client 0.96.0)
 
 Soft-deleting a file kept its record and its bytes, but nothing could return

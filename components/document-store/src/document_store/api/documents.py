@@ -39,7 +39,7 @@ from ..services.document_service import DocumentService, get_document_service
 from ..services.errors import DocumentStoreError, error_fields
 from ..services.nats_client import get_throttle_delay
 from ..services.registry_client import get_registry_client
-from .auth import check_readable, require_api_key
+from .auth import check_readable, require_api_key, write_refusals
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
 
@@ -224,25 +224,50 @@ async def patch_documents(
         items, "document_id", "document", namespace=namespace, bypass_cache=True
     )
 
-    # CASE-384 — enforce write permission on each document's actual
-    # namespace before mutating. Batched lookup: one find query over all
-    # document_ids in the bulk, then per-id permission check (cache
-    # amortises repeated namespaces). Aborts on first failure to match
-    # the bulk-create convention.
-    from ..models.document import Document as _Doc
-    doc_ids = [item.document_id for item in items if item.document_id]
-    if doc_ids:
-        existing_docs = await _Doc.find({"document_id": {"$in": doc_ids}}).to_list()
-        id_to_namespace = {d.document_id: d.namespace for d in existing_docs}
-        for item in items:
-            ns = id_to_namespace.get(item.document_id)
-            if ns:
-                await check_namespace_permission(identity, ns, "write")
+    # Write permission on each document's own namespace, asked before any
+    # item is patched: a refused item is reported on its row and the rest of
+    # the batch proceeds; an authorization outage refuses the request whole,
+    # with nothing written.
+    id_to_namespace = await _document_namespaces([item.document_id for item in items])
+    refusals = await write_refusals(
+        identity, set(id_to_namespace.values()), "Document not found"
+    )
+    refused: dict[int, BulkResultItem] = {}
+    allowed: list[int] = []
+    for i, item in enumerate(items):
+        ns = id_to_namespace.get(item.document_id)
+        if ns in refusals:
+            error, code = refusals[ns]
+            refused[i] = BulkResultItem(
+                index=i, status="error", document_id=item.document_id,
+                error=error, error_code=code,
+            )
+        else:
+            allowed.append(i)
 
     service = get_document_service()
-    result = await service.bulk_patch(items)
+    patched = await service.bulk_patch([items[i] for i in allowed]) if allowed else None
+    results = dict(refused)
+    for row in patched.results if patched else []:
+        original = allowed[row.index]
+        results[original] = row.model_copy(update={"index": original})
+    rows = [results[i] for i in range(len(items))]
     await asyncio.sleep(get_throttle_delay())
-    return result
+    return BulkResponse(
+        results=rows, total=len(items),
+        succeeded=sum(1 for r in rows if r.status != "error"),
+        failed=sum(1 for r in rows if r.status == "error"),
+    )
+
+
+async def _document_namespaces(document_ids: list[str]) -> dict[str, str]:
+    """The namespace of each named document that exists, in one query."""
+    from ..models.document import Document as _Doc
+    ids = list({d for d in document_ids if d})
+    if not ids:
+        return {}
+    docs = await _Doc.find({"document_id": {"$in": ids}}).to_list()
+    return {d.document_id: d.namespace for d in docs}
 
 
 @router.post(
@@ -807,6 +832,13 @@ async def delete_documents(
     )
 
     service = get_document_service()
+    # Write permission on each document's own namespace, asked before any item
+    # is deleted (see patch_documents).
+    refusals = await write_refusals(
+        identity,
+        set((await _document_namespaces([item.id for item in items])).values()),
+        "Document not found",
+    )
     deleted_with = await _hard_delete_exemptions(service, items, identity)
     results = []
     for i, item in enumerate(items):
@@ -826,7 +858,12 @@ async def delete_documents(
             if not doc:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
                 continue
-            await check_namespace_permission(identity, doc.namespace, "write")
+            if doc.namespace in refusals:
+                error, code = refusals[doc.namespace]
+                results.append(BulkResultItem(
+                    index=i, status="error", id=item.id, error=error, error_code=code,
+                ))
+                continue
             warnings: list[str] = []
             broken: list[dict] = []
             success = await service.delete_document(

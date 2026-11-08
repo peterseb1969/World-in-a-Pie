@@ -678,6 +678,9 @@ async def check_all_documents(
     find_q = Document.find(query)
     if recent_first:
         find_q = find_q.sort([("created_at", SortDirection.DESCENDING)])
+    if limit > 0:
+        # The cursor stops at the limit, so nothing past it is read or checked.
+        find_q = find_q.limit(limit)
 
     async for document in find_q:
         batch.append(document)

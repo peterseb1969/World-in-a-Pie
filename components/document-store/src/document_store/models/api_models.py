@@ -847,7 +847,11 @@ class CandidateValidationRequest(StrictModel):
     )
     documents: list[dict] | None = Field(
         default=None,
-        description="Explicit data payloads to validate (mutually exclusive with sample_template_id)"
+        max_length=MAX_BULK_ITEMS,
+        description=(
+            "Explicit data payloads to validate (mutually exclusive with "
+            f"sample_template_id); at most {MAX_BULK_ITEMS}"
+        ),
     )
     sample_template_id: str | None = Field(
         default=None,

@@ -42,7 +42,7 @@ from ..services.file_storage_client import (
 )
 from ..services.nats_client import get_throttle_delay
 from ..services.registry_client import get_registry_client
-from .auth import check_readable, require_api_key, require_groups
+from .auth import check_readable, require_api_key, require_groups, write_refusals
 from .uploads import read_upload
 
 logger = logging.getLogger(__name__)
@@ -337,32 +337,6 @@ async def download_file_content(
     )
 
 
-async def _write_refusals(
-    identity: UserIdentity, namespaces: set[str]
-) -> dict[str, tuple[str, str]]:
-    """Per namespace, why ``identity`` may not write there, as (error,
-    error_code); a namespace absent from the result may be written.
-
-    Asked once per namespace and before any item of a batch is written, so a
-    refusal is reported on its items while the rest of the batch proceeds,
-    and an authorization outage (503) refuses the whole request before any
-    item has changed. A namespace the caller cannot see answers exactly like
-    a missing file, so the response does not confirm that it exists.
-    """
-    refusals: dict[str, tuple[str, str]] = {}
-    for ns in sorted(namespaces):
-        try:
-            await check_namespace_permission(identity, ns, "write")
-        except HTTPException as exc:
-            if exc.status_code == 403:
-                refusals[ns] = (str(exc.detail), "forbidden")
-            elif exc.status_code == 404:
-                refusals[ns] = ("File not found", "not_found")
-            else:
-                raise
-    return refusals
-
-
 @router.patch(
     "",
     response_model=BulkResponse,
@@ -383,8 +357,8 @@ async def update_files_metadata(
     from ..models.file import File as FileModel
     service = get_file_service()
     file_docs = [await FileModel.find_one({"file_id": item.file_id}) for item in items]
-    refusals = await _write_refusals(
-        identity, {doc.namespace for doc in file_docs if doc}
+    refusals = await write_refusals(
+        identity, {doc.namespace for doc in file_docs if doc}, "File not found"
     )
     results = []
     for i, (item, file_doc) in enumerate(zip(items, file_docs, strict=True)):
@@ -432,8 +406,8 @@ async def delete_files(
     from ..models.file import File as FileModel
     service = get_file_service()
     file_docs = [await FileModel.find_one({"file_id": item.id}) for item in items]
-    refusals = await _write_refusals(
-        identity, {doc.namespace for doc in file_docs if doc}
+    refusals = await write_refusals(
+        identity, {doc.namespace for doc in file_docs if doc}, "File not found"
     )
     results = []
     for i, (item, file_doc) in enumerate(zip(items, file_docs, strict=True)):
@@ -495,8 +469,8 @@ async def reactivate_files(
     from ..models.file import File as FileModel
     service = get_file_service()
     file_docs = [await FileModel.find_one({"file_id": item.id}) for item in items]
-    refusals = await _write_refusals(
-        identity, {doc.namespace for doc in file_docs if doc}
+    refusals = await write_refusals(
+        identity, {doc.namespace for doc in file_docs if doc}, "File not found"
     )
     results = []
     for i, (item, file_doc) in enumerate(zip(items, file_docs, strict=True)):

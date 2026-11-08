@@ -144,7 +144,7 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     "_enforce_replay_admin",        # document_store.api.replay
     "check_readable",               # document_store.api.auth: read, 404 text of an unknown id
     "_check_job_permission",        # document_store.api.backup: every namespace a job spans
-    "_write_refusals",              # document_store.api.files: write on every namespace a file batch spans
+    "write_refusals",               # document_store.api.auth: write on every namespace a bulk write spans
 })
 
 # Names that count as valid permission gates when they appear as the

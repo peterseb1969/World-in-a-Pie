@@ -3642,7 +3642,8 @@ class DocumentService:
         except RegistryUnavailableError:
             placements = None
         rel_checked: list = []
-        for entry in validation_results:
+        stopped_at: int | None = None
+        for pos, entry in enumerate(validation_results):
             idx, req, vr = entry
             tmpl = await template_client.get_template_resolved(req.template_id)
             if tmpl and tmpl.get("usage") == "relationship":
@@ -3655,6 +3656,9 @@ class DocumentService:
                     results.append(BulkResultItem(
                         index=idx, status="error", error=message, error_code=code,
                     ))
+                    if not continue_on_error:
+                        stopped_at = pos
+                        break
                     continue
                 # Relationship indexes are created lazily on first write. Doing it
                 # only on the single-item path left a namespace that ingests edges
@@ -3680,8 +3684,19 @@ class DocumentService:
                 # item is refused rather than written unchecked.
                 failed += 1
                 results.append(BulkResultItem(index=idx, status="error", **error_fields(e)))
+                if not continue_on_error:
+                    stopped_at = pos
+                    break
                 continue
             rel_checked.append(entry)
+        if stopped_at is not None:
+            # Stop on the first refusal, as stages 1 and 4 do: the items checked
+            # before it are still written, every later one is skipped.
+            for later_idx, _, _ in validation_results[stopped_at + 1:]:
+                results.append(BulkResultItem(
+                    index=later_idx, status="skipped",
+                    error="Stopped due to previous error",
+                ))
         validation_results = rel_checked
         timing["1b_reference_gates"] = (time.perf_counter() - start) * 1000
 
@@ -4664,6 +4679,10 @@ class DocumentService:
                     "registry_error",
                     "Could not check write access: the Registry is unreachable",
                 )
+            if permission == "none":
+                # Invisible namespace: answer as an id that names nothing, so
+                # the response does not confirm that the document exists.
+                raise PatchError("not_found", "Document not found")
             if not permission_sufficient(permission, "write"):
                 raise PatchError(
                     "forbidden",

@@ -63,11 +63,16 @@ class ReportingSyncClient:
             return None
 
     async def trigger_batch_sync(self, namespace: str) -> bool:
-        """Kick a full namespace batch sync. True when accepted.
+        """Kick a full namespace batch sync. True when it queued a job.
 
         The namespace travels as a query parameter — reporting-sync's
         route reads it from the query string; a JSON body is silently
         ignored by FastAPI and the sync degrades to whole-instance.
+
+        The route only acknowledges: its jobs run after it answers, so their
+        outcome is not known here. What the answer does say is which jobs it
+        started, one per template; an empty list (no template syncs) started
+        nothing, and a job already failed when it answered did not start.
         """
         try:
             async with httpx.AsyncClient(timeout=30) as client:
@@ -76,8 +81,8 @@ class ReportingSyncClient:
                     params={"namespace": namespace},
                     headers=self._headers(),
                 )
-                if resp.status_code < 300:
-                    return True
+                if 200 <= resp.status_code < 300:
+                    return self._queued_any(namespace, resp)
                 logger.warning(
                     "reporting batch sync for %s refused: HTTP %s %s",
                     namespace, resp.status_code, resp.text[:200],
@@ -86,6 +91,31 @@ class ReportingSyncClient:
         except httpx.HTTPError as e:
             logger.warning("reporting-sync unreachable for batch sync(%s): %s", namespace, e)
             return False
+
+    @staticmethod
+    def _queued_any(namespace: str, resp: httpx.Response) -> bool:
+        """Whether a batch-sync answer started at least one job; logs those
+        that failed to start and an answer that started none."""
+        try:
+            jobs = resp.json()
+        except ValueError:
+            jobs = None
+        if not isinstance(jobs, list):
+            logger.warning(
+                "reporting batch sync for %s: unexpected answer %s",
+                namespace, resp.text[:200],
+            )
+            return False
+        failed = [j for j in jobs if isinstance(j, dict) and j.get("status") == "failed"]
+        for job in failed:
+            logger.warning(
+                "reporting batch sync for %s: template %s did not start: %s",
+                namespace, job.get("template_value"), job.get("message"),
+            )
+        if len(jobs) == len(failed):
+            logger.warning("reporting batch sync for %s queued no job", namespace)
+            return False
+        return True
 
     async def drop_namespace_schema(self, namespace: str) -> bool:
         """Drop the namespace's reporting schema. True on success."""

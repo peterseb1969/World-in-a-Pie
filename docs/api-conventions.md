@@ -146,8 +146,8 @@ Codes defined by `PATCH /documents`:
 
 | `error_code` | When |
 |--------------|------|
-| `not_found` | Document does not exist or has been soft-deleted |
-| `forbidden` | Caller lacks write permission on the document's namespace |
+| `not_found` | Document does not exist or has been soft-deleted, or lives in a namespace the caller cannot see (same text, so its existence is not confirmed) |
+| `forbidden` | Caller can read the document's namespace but lacks write permission on it. `DELETE /documents`, `PATCH /files` and `DELETE /files` report these two refusals the same way, per item, while the rest of the batch proceeds; an authorization outage refuses the request whole (503) before any item is written |
 | `identity_field_change` | Patch attempts to change a template-defined identity field — not allowed (a term or reference identity field changes only when it names a different referent; another alias of the same term is accepted) |
 | `append_only` | Template has empty `identity_fields` (append-only) — the document has no logical identity, only a surrogate `document_id`, so it cannot be PATCHed. The error carries remediation: create a new document, or declare `identity_fields` on the template (CASE-478) |
 | `concurrency_conflict` | `if_match` mismatch, or internal version race lost after retries |
