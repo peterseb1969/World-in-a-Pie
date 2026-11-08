@@ -1679,6 +1679,24 @@ class DocumentService:
     # PHASE 4 — RELATIONSHIP QUERY APIS
     # =========================================================================
 
+    async def _edge_type_ids(self, query: dict[str, Any]) -> list[str]:
+        """The edge types (usage='relationship') among the templates of the
+        documents ``query`` matches.
+
+        A source_ref / target_ref field makes nothing an edge on its own: an
+        entity template may declare one. The template store says which
+        templates are edge types (cached); a template it cannot read is not
+        counted as one.
+        """
+        candidate_ids = await Document.get_motor_collection().distinct("template_id", query)
+        client = get_template_store_client()
+        edge_ids: list[str] = []
+        for template_id in candidate_ids:
+            template = await client.get_template_resolved(template_id)
+            if template and template.get("usage") == "relationship":
+                edge_ids.append(template_id)
+        return edge_ids
+
     async def find_relationships(
         self,
         document_id: str,
@@ -1699,9 +1717,9 @@ class DocumentService:
         Backed by the (template_id, data.source_ref) and
         (template_id, data.target_ref) Mongo indexes that Phase 2's
         DocumentService._ensure_relationship_indexes laid down. Only
-        relationship templates have data.source_ref / data.target_ref
-        fields, so a query on those keys naturally filters to
-        relationship documents.
+        documents of edge types (usage='relationship') count: an entity
+        template may declare a field named source_ref too. Without a type
+        filter the query is narrowed to the edge types among its matches.
 
         When include_peers=True, each item is decorated with the peer
         entity at the OTHER end of the edge — direction-agnostic, latest
@@ -1741,8 +1759,9 @@ class DocumentService:
                 {"data.target_ref": document_id},
             ]
 
-        if template_ids:
-            query["template_id"] = {"$in": template_ids}
+        query["template_id"] = {
+            "$in": template_ids if template_ids else await self._edge_type_ids(query)
+        }
 
         total = await Document.find(query).count()
         skip = (page - 1) * page_size
@@ -1947,6 +1966,23 @@ class DocumentService:
                 metadata=projected_metadata,
             )
 
+    @staticmethod
+    async def _latest_rows(document_ids: list[str]) -> dict[str, "Document"]:
+        """Each document's latest row (active first), in one query per chunk."""
+        out: dict[str, Document] = {}
+        for first in range(0, len(document_ids), 1000):
+            chunk = document_ids[first:first + 1000]
+            rows = await Document.find({"document_id": {"$in": chunk}}).sort(
+                [("version", SortDirection.DESCENDING)]
+            ).to_list()
+            for row in rows:
+                held = out.get(row.document_id)
+                if held is None or (
+                    held.status != DocumentStatus.ACTIVE and row.status == DocumentStatus.ACTIVE
+                ):
+                    out[row.document_id] = row
+        return out
+
     async def traverse_relationships(
         self,
         document_id: str,
@@ -1967,7 +2003,10 @@ class DocumentService:
         incoming), then add the *other* endpoint document_ids of those
         relationship docs to the next frontier. Visited docs are
         skipped — cycles terminate naturally. Capped at depth=10 and
-        max_nodes (default 1000) to keep the cost bounded.
+        max_nodes (default 1000) to keep the cost bounded: a hop stops
+        reading edges once the node cap is reached, and the endpoint
+        documents of a hop are read in one query. Only documents of edge
+        types (usage='relationship') are edges.
 
         Returns nodes only (a flat list with depth + path). Edges are
         implicit in `path` and `via_relationship`. Callers wanting the
@@ -2017,9 +2056,6 @@ class DocumentService:
                 base["namespace"] = namespace
             elif allowed_namespaces is not None:
                 base["namespace"] = {"$in": allowed_namespaces}
-            if type_ids:
-                base["template_id"] = {"$in": type_ids}
-
             hop_query: dict[str, Any]
             if direction == "outgoing":
                 hop_query = {**base, "data.source_ref": {"$in": list(frontier)}}
@@ -2033,63 +2069,69 @@ class DocumentService:
                         {"data.target_ref": {"$in": list(frontier)}},
                     ],
                 }
+            hop_query["template_id"] = {
+                "$in": type_ids if type_ids else await self._edge_type_ids(hop_query)
+            }
 
-            rel_docs = await Document.find(hop_query).to_list()
-            next_frontier: set[str] = set()
-
-            for rel in rel_docs:
+            # New endpoints of this hop, in discovery order: (other, parent,
+            # edge). Reading stops once the node cap is reached.
+            found: list[tuple[str, str, str]] = []
+            claimed: set[str] = set()
+            async for rel in Document.find(hop_query):
                 rel_data = rel.data or {}
                 src_ref = rel_data.get("source_ref")
                 tgt_ref = rel_data.get("target_ref")
-                # Determine which endpoint(s) of this rel are NEW nodes.
-                # For "both", a rel touched by frontier could be reached
-                # via either endpoint; report all not-yet-visited ones.
+                # For "both", a rel touched by the frontier could be reached
+                # via either endpoint; report every endpoint not yet seen.
                 candidates: list[tuple[str, str]] = []
-                # (other_endpoint_doc_id, parent_doc_id_in_frontier)
                 if direction in ("outgoing", "both") and src_ref in frontier and tgt_ref:
                     candidates.append((tgt_ref, src_ref))
                 if direction in ("incoming", "both") and tgt_ref in frontier and src_ref:
                     candidates.append((src_ref, tgt_ref))
-
                 for other_id, parent_id in candidates:
-                    if other_id in visited:
+                    if other_id in visited or other_id in claimed:
                         continue
-                    if len(nodes) >= max_nodes:
+                    if len(nodes) + len(found) >= max_nodes:
                         truncated = True
                         break
-                    visited.add(other_id)
-                    # Look up the document to get its template + namespace.
-                    other_doc = await Document.find_one({"document_id": other_id})
-                    if other_doc is not None and not readable(other_doc.namespace):
-                        # The walk stops at a namespace the caller cannot read.
-                        continue
-                    new_path = [*path_by_id[parent_id], other_id]
-                    path_by_id[other_id] = new_path
-                    next_frontier.add(other_id)
-                    if other_doc is None:
-                        # Reference pointed at something missing — record
-                        # what we know and skip.
-                        nodes.append(TraverseNode(
-                            document_id=other_id,
-                            template_id="",
-                            template_value=None,
-                            namespace=ns,
-                            depth=current_depth,
-                            via_relationship=rel.document_id,
-                            path=new_path,
-                        ))
-                        continue
-                    nodes.append(TraverseNode(
-                        document_id=other_doc.document_id,
-                        template_id=other_doc.template_id,
-                        template_value=other_doc.template_value,
-                        namespace=other_doc.namespace,
-                        depth=current_depth,
-                        via_relationship=rel.document_id,
-                        path=new_path,
-                    ))
+                    claimed.add(other_id)
+                    found.append((other_id, parent_id, rel.document_id))
                 if truncated:
                     break
+
+            endpoint_docs = await self._latest_rows([other for other, _, _ in found])
+            next_frontier: set[str] = set()
+            for other_id, parent_id, rel_id in found:
+                visited.add(other_id)
+                other_doc = endpoint_docs.get(other_id)
+                if other_doc is not None and not readable(other_doc.namespace):
+                    # The walk stops at a namespace the caller cannot read.
+                    continue
+                new_path = [*path_by_id[parent_id], other_id]
+                path_by_id[other_id] = new_path
+                next_frontier.add(other_id)
+                if other_doc is None:
+                    # Reference pointed at something missing — record what we
+                    # know and skip.
+                    nodes.append(TraverseNode(
+                        document_id=other_id,
+                        template_id="",
+                        template_value=None,
+                        namespace=ns,
+                        depth=current_depth,
+                        via_relationship=rel_id,
+                        path=new_path,
+                    ))
+                    continue
+                nodes.append(TraverseNode(
+                    document_id=other_doc.document_id,
+                    template_id=other_doc.template_id,
+                    template_value=other_doc.template_value,
+                    namespace=other_doc.namespace,
+                    depth=current_depth,
+                    via_relationship=rel_id,
+                    path=new_path,
+                ))
             if truncated:
                 break
             frontier = next_frontier

@@ -299,7 +299,8 @@ class TraverseNode(BaseModel):
 
     Each node is a document discovered during BFS expansion from the
     starting document. `depth` is the number of relationship-document
-    hops away from the start (depth=0 is the start itself).
+    hops away from the start, 1 for a direct neighbour; the start itself
+    is not listed.
     `path` is the chain of document_ids visited to reach this node,
     starting from the seed doc and excluding it (so a depth-1 node has
     a 1-element path containing only itself).
@@ -309,7 +310,7 @@ class TraverseNode(BaseModel):
     template_id: str
     template_value: str | None = None
     namespace: str
-    depth: int = Field(..., ge=0, le=10)
+    depth: int = Field(..., ge=1, le=10, description="Hops from the seed (1 = a direct neighbour)")
     via_relationship: str | None = Field(
         default=None,
         description="document_id of the relationship document that was traversed to reach this node (None for the seed)."

@@ -7,6 +7,17 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `/relationships` and `/traverse` count only edge-type documents
+
+- **Only documents of edge types (`usage: "relationship"`) are edges.** Both
+  routes found edges by `data.source_ref` / `data.target_ref` alone, so a
+  document of an entity template that declares a field of that name was
+  listed, counted in `total`, and walked as an edge.
+- **`/traverse` stops reading a hop once `max_nodes` is reached**, and reads
+  a hop's endpoint documents in one query instead of one per node.
+- `TraverseNode.depth` is documented as it is: 1 for a direct neighbour; the
+  seed is not listed.
+
 ### Document validation: `enum` on every scalar type, `max_files`, exact email
 
 - **`validation.enum` holds for number, integer and boolean fields**, not
