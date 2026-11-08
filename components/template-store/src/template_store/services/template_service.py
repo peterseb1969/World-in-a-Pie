@@ -461,6 +461,13 @@ class TemplateService:
         # projected rather than supplied, there is nothing here that needs the
         # Registry or the database.
         await TemplateService._validate_relationship_template_shape(request)
+        # The endpoint constraint on source_ref/target_ref is derived from the
+        # declaration when the template is served, so what a caller sends
+        # there is discarded before anything resolves it: a typo there, or a
+        # served edge type carrying another install's ids, is not a reference.
+        TemplateService._strip_endpoint_projection(
+            request.usage or TemplateUsage.ENTITY, request.fields
+        )
 
         # Structural validation for full_text_indexed fields (also
         # purely declarative — runs in draft mode too).
@@ -579,12 +586,6 @@ class TemplateService:
                 EndpointRef(lookup_value=ref)
                 for ref in endpoint_lookups(request.target_templates)
             ]
-        # The endpoint constraint on source_ref/target_ref is derived from
-        # the declaration when the template is served, so it is not
-        # persisted (drafts included).
-        TemplateService._strip_endpoint_projection(
-            request.usage or TemplateUsage.ENTITY, request.fields
-        )
 
         # CASE-493: every schema reference (extends + nested template refs) must
         # pin an explicit version. Presence is enforced on all paths (nested via
@@ -1871,7 +1872,8 @@ class TemplateService:
             )
 
         if template.status == "active":
-            return template  # idempotent — already active
+            # Idempotent: already active, served like every other response.
+            return TemplateService._to_template_response(template)
 
         actor = get_identity_string()
         template.status = "active"
@@ -1985,6 +1987,13 @@ class TemplateService:
         # An endpoint the edge type already declares is carried; a new one
         # passes the inbound gate, and a refused one is not found.
         ns = template.namespace
+        # A legacy lookup-only entry is resolved first (and healed in place,
+        # the "fills at the next write" promise for rows that predate the
+        # two-half shape), so the endpoints the edge type already declares
+        # are carried in either form: naming one again is not a new reference.
+        healed = await TemplateService._heal_endpoint_entries(
+            [*(template.source_templates or []), *(template.target_templates or [])], ns,
+        )
         gate = InboundGate(ns, carried=carried_ids(template))
         try:
             resolved = (
@@ -2014,24 +2023,10 @@ class TemplateService:
         # Union into the existing entry lists, order-stable, deduplicated by
         # canonical identity (CASE-515: comparing a resolved addition against
         # raw stored strings appended already-allowed endpoints a second time
-        # in the other form; the resolved half is the comparison key now).
-        async def _entry_key(entry: EndpointRef) -> str:
-            # The resolved half is the key. A legacy lookup-only entry is
-            # resolved here — and healed in place, which is the "fills at the
-            # next write" promise for rows that predate the two-half shape.
-            # Fall back to the raw lookup if it no longer resolves — never
-            # drop an entry (data loss); its resolved half stays None and
-            # fails closed where an exact id is required.
-            if entry.resolved:
-                return entry.resolved
-            try:
-                entry.resolved = await resolve_entity_id(
-                    entry.lookup_value, "template", ns, bypass_cache=True
-                )
-                return entry.resolved
-            except EntityNotFoundError:
-                return entry.lookup_value
-
+        # in the other form; the resolved half is the comparison key now). An
+        # entry that no longer resolves keys on its raw lookup — never dropped
+        # (data loss); its resolved half stays None and fails closed where an
+        # exact id is required.
         async def _widen(
             existing: list[EndpointRef] | None, additions: dict[str, str]
         ) -> tuple[list[EndpointRef], bool]:
@@ -2044,14 +2039,13 @@ class TemplateService:
             seen: set[str] = set()
             changed = False
             for entry in existing or []:
-                had_resolved = entry.resolved is not None
-                key = await _entry_key(entry)
+                key = entry.resolved or entry.lookup_value
                 if key in seen:
                     changed = True  # canonical duplicate collapsed
                     continue
                 out.append(entry)
                 seen.add(key)
-                if entry.resolved is not None and not had_resolved:
+                if id(entry) in healed:
                     changed = True  # legacy entry healed in place
             for lookup, canonical in additions.items():
                 if canonical in seen:
@@ -2092,6 +2086,22 @@ class TemplateService:
         )
 
         return TemplateService._to_template_response(template)
+
+    @staticmethod
+    async def _heal_endpoint_entries(entries: list[EndpointRef], namespace: str) -> set[int]:
+        """Fill the resolved half of each lookup-only entry that resolves in
+        ``namespace``; return the ``id()`` of every entry filled. One that does
+        not resolve keeps a null resolved half."""
+        healed: set[int] = set()
+        for entry in entries:
+            if entry.resolved:
+                continue
+            with contextlib.suppress(EntityNotFoundError):
+                entry.resolved = await resolve_entity_id(
+                    entry.lookup_value, "template", namespace, bypass_cache=True
+                )
+                healed.add(id(entry))
+        return healed
 
     @staticmethod
     async def get_namespace_template_stamp(namespace: str) -> str:
@@ -2600,7 +2610,7 @@ class TemplateService:
         # Check terminology refs in fields
         if check_terminologies:
             def_store = get_def_store_client()
-            for field in template.fields:
+            for field in TemplateService._project_endpoint_constraints(template):
                 if field.terminology_ref:
                     try:
                         exists = await def_store.terminology_exists(
@@ -2639,7 +2649,7 @@ class TemplateService:
 
         # Check template refs in fields
         if check_templates:
-            for field in template.fields:
+            for field in TemplateService._project_endpoint_constraints(template):
                 if field.template_ref:
                     ref_template = await TemplateService._find_template_by_ref(
                         field.template_ref, template.namespace
@@ -2875,7 +2885,9 @@ class TemplateService:
         Collect all template IDs/values referenced by a template.
 
         Walks extends, field template_ref, array_template_ref, and
-        reference-type target_templates.
+        reference-type target_templates. An edge type's fields are read in
+        their served form, so its declared source/target endpoints are walked
+        as the target_templates of source_ref/target_ref.
 
         Returns:
             List of template IDs or values referenced
@@ -2885,7 +2897,7 @@ class TemplateService:
         if template.extends:
             refs.append(template.extends)
 
-        for field in template.fields:
+        for field in TemplateService._project_endpoint_constraints(template):
             if field.template_ref:
                 refs.append(field.template_ref)
             if field.array_template_ref:
@@ -3075,7 +3087,7 @@ class TemplateService:
                     ))
 
             # Check fields
-            for field in template.fields:
+            for field in TemplateService._project_endpoint_constraints(template):
                 # Terminology refs
                 if field.terminology_ref:
                     try:
@@ -3436,6 +3448,10 @@ class TemplateService:
             "extends": t.extends,
             "extends_version": t.extends_version,
             "identity_fields": t.identity_fields,
+            # Reporting builds an edge type's endpoint columns from the event's
+            # template, so the event says what kind of template it carries.
+            "usage": (t.usage or TemplateUsage.ENTITY).value,
+            "versioned": t.versioned,
             "fields": [f.model_dump() for f in t.fields] if t.fields else [],
             "rules": [r.model_dump() for r in t.rules] if t.rules else [],
             "metadata": t.metadata.model_dump() if t.metadata else {},

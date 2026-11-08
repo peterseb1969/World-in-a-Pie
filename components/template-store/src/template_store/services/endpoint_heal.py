@@ -17,6 +17,7 @@ the null half keeps failing closed wherever an exact id is required.
 
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from wip_auth.resolve import EntityNotFoundError, resolve_entity_id
@@ -58,7 +59,8 @@ async def heal_endpoints(namespace: str, dry_run: bool = True) -> HealReport:
     Walks every stored relationship-template row (all versions — a
     pinned-version read serves its own stored entries) and persists the
     resolved half in place. No version bump: this is a representation fill
-    on the declaration the caller already made, not a schema change.
+    on the declaration the caller already made, not a schema change. The
+    row's updated_at does move, as for any in-place change.
     """
     report = HealReport(namespace=namespace, dry_run=dry_run)
 
@@ -104,6 +106,10 @@ async def heal_endpoints(namespace: str, dry_run: bool = True) -> HealReport:
         if healed_here:
             report.templates_changed += 1
             if not dry_run:
+                # The row changed, so the namespace's change stamp
+                # (count:max(updated_at)) must move: consumers caching
+                # templates by that stamp re-read it only then.
+                template.updated_at = datetime.now(UTC)
                 await template.save()
 
     return report

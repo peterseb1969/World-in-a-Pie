@@ -820,8 +820,10 @@ async def add_edge_type_endpoints(
     """
     Additively widen an edge type's allowed endpoint set.
 
-    Adds source/target endpoint template(s) to an existing relationship template
-    IN PLACE, preserving every existing edge. Additive-only — it never removes
+    Adds source/target endpoint template(s) to the latest active version of a
+    relationship template IN PLACE, preserving every existing edge. Earlier
+    versions keep the endpoints they were declared with: a document pinned to
+    one validates against that version's declaration. Additive-only — it never removes
     (endpoints are append-only); each new endpoint must be a real template;
     idempotent. The frozen-endpoints invariant becomes "no in-place removal",
     not "no change" (see PoNIF #7). No reindex / reporting migration — the
