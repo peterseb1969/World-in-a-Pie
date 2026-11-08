@@ -7,6 +7,21 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Template cascade reaches only the parent's own children, as the caller may change them, and writes each child whole
+
+`POST /api/template-store/templates/{id}/cascade` used to:
+- find the parent's children by the parent's bare value, in every namespace. Another namespace's template with the same value counted as the parent, and its children were re-pointed;
+- keep one child per bare value, so same-named children elsewhere were skipped;
+- number new versions across namespaces;
+- write into children's namespaces without checking write there;
+- rebuild each child without its `usage`, endpoints, `versioned`, `header_fields` and `renames`. A cascaded edge-type child became an entity template.
+
+Now:
+- **Which children.** The children are the templates whose `extends` is the parent's id, each cascaded once and numbered within itself.
+- **Permission.** A child in a namespace the caller can read but not write is reported per child with `forbidden`. A child in a namespace it cannot see is neither changed nor reported.
+- **Whole copy.** The new version is the child unchanged except for its version, its `extends_version` pin and its stamps.
+- **Unchanged.** A child already pinned to the parent's version is reported `unchanged`.
+
 ### Upload filenames: the blocklist judges the stored name; any name uploads and downloads
 
 - **A file is refused when the name it would be stored under ends in a

@@ -8,6 +8,12 @@ from typing import Any, ClassVar
 import httpx
 from beanie.odm.enums import SortDirection
 
+from wip_auth.identity import require_current_identity
+from wip_auth.permissions import (
+    PERMISSION_UNAVAILABLE,
+    permission_sufficient,
+    resolve_permission,
+)
 from wip_auth.resolve import (
     EntityNotFoundError,
     resolve_entity_id,
@@ -2754,116 +2760,38 @@ class TemplateService:
         if not parent:
             raise TemplateError(f"Template '{template_id}' not found", "not_found")
 
-        # Find all versions of this template's value to get ALL possible old template_ids
-        all_parent_versions = await Template.find({"value": parent.value}).to_list()
-        all_parent_ids = [t.template_id for t in all_parent_versions]
-
-        # Find all active children extending ANY version of this parent
+        # A template keeps one template_id across its versions, so its children
+        # are the templates whose extends names that id. A bare value is not an
+        # identity: another namespace's template can carry the same value.
         children = await Template.find({
-            "extends": {"$in": all_parent_ids},
-            "status": "active"
+            "extends": parent.template_id, "status": "active",
         }).to_list()
-
-        if not children:
-            return CascadeResponse(
-                parent_template_id=parent.template_id,
-                parent_value=parent.value,
-                parent_version=parent.version,
-                total=0,
-                updated=0,
-                unchanged=0,
-                failed=0,
-                results=[]
-            )
-
-        # Get authenticated identity
-        actor = get_identity_string()
-
-        results = []
-        updated = 0
-        unchanged = 0
-        failed = 0
-
-        # Group children by value (only cascade latest version of each child)
-        children_by_value: dict[str, Template] = {}
+        # The latest active version of each child template.
+        latest: dict[str, Template] = {}
         for child in children:
-            existing = children_by_value.get(child.value)
-            if not existing or child.version > existing.version:
-                children_by_value[child.value] = child
+            held = latest.get(child.template_id)
+            if held is None or child.version > held.version:
+                latest[child.template_id] = child
 
-        for child in children_by_value.values():
-            try:
-                # Skip if already extending the target parent AND the child
-                # was created/updated after the parent's latest version
-                # (meaning this child version already accounts for the parent update)
-                if child.extends == template_id and child.created_at and parent.created_at and child.created_at >= parent.created_at:
-                    unchanged += 1
-                    results.append(CascadeResult(
-                        value=child.value,
-                        old_template_id=child.template_id,
-                        status="unchanged"
-                    ))
-                    continue
-
-                # Calculate new version for this child
-                max_ver = await Template.find(
-                    {"value": child.value}
-                ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
-                new_version = max_ver[0].version + 1 if max_ver else 1
-
-                # Stable ID: reuse child's template_id (no Registry call)
-                # Create new child version with updated extends pointer
-                new_child = Template(
-                    namespace=child.namespace,
-                    template_id=child.template_id,
-                    value=child.value,
-                    label=child.label,
-                    description=child.description,
-                    version=new_version,
-                    extends=template_id,  # Point to new parent
-                    # CASE-493: re-pin the child to the parent's NEW version.
-                    # Cascade IS the explicit re-pin operation — the new child
-                    # version inherits from this exact parent version, never
-                    # "latest".
-                    extends_version=parent.version,
-                    identity_fields=child.identity_fields,
-                    fields=child.fields,  # Preserve child's own fields
-                    rules=child.rules,
-                    metadata=child.metadata,
-                    reporting=child.reporting,
-                    status="active",
-                    created_at=datetime.now(UTC),
-                    created_by=actor,
-                    updated_at=datetime.now(UTC),
-                    updated_by=actor,
-                )
-                await TemplateService._stamp_referent_paths(new_child)
-                await new_child.insert()
-
-                # Publish event
-                await publish_template_event(
-                    EventType.TEMPLATE_UPDATED,
-                    TemplateService._template_to_event_payload(new_child),
-                    changed_by=actor
-                )
-
-                updated += 1
+        actor = get_identity_string()
+        identity = require_current_identity()
+        results = []
+        for child in latest.values():
+            refusal = await TemplateService._cascade_refusal(identity, child)
+            if refusal == "hidden":
+                # A namespace the caller cannot see: its templates are neither
+                # changed nor reported.
+                continue
+            if isinstance(refusal, tuple):
                 results.append(CascadeResult(
-                    value=child.value,
-                    old_template_id=child.template_id,
-                    new_template_id=child.template_id,
-                    new_version=new_version,
-                    status="updated"
+                    value=child.value, old_template_id=child.template_id,
+                    status="error", error=refusal[0], error_code=refusal[1],
                 ))
-
-            except Exception as e:
-                failed += 1
-                results.append(CascadeResult(
-                    value=child.value,
-                    old_template_id=child.template_id,
-                    status="error",
-                    **error_fields(e),
-                ))
+            else:
+                results.append(await TemplateService._cascade_child(child, parent, actor))
+        updated = sum(1 for r in results if r.status == "updated")
+        unchanged = sum(1 for r in results if r.status == "unchanged")
+        failed = sum(1 for r in results if r.status == "error")
 
         return CascadeResponse(
             parent_template_id=parent.template_id,
@@ -2874,6 +2802,66 @@ class TemplateService:
             unchanged=unchanged,
             failed=failed,
             results=results
+        )
+
+    @staticmethod
+    async def _cascade_refusal(identity: Any, child: Template) -> tuple[str, str] | str | None:
+        """Why the caller may not cascade into ``child``: "hidden" for a
+        namespace it cannot see, (error, error_code) for one it may only read
+        or whose permission the Registry could not answer, or None to proceed."""
+        permission = await resolve_permission(identity, child.namespace)
+        if permission == PERMISSION_UNAVAILABLE:
+            return ("Could not check write access: the Registry is unreachable",
+                    "registry_error")
+        if permission == "none":
+            return "hidden"
+        if not permission_sufficient(permission, "write"):
+            return (f"Requires write access to namespace '{child.namespace}'", "forbidden")
+        return None
+
+    @staticmethod
+    async def _cascade_child(child: Template, parent: Template, actor: str) -> CascadeResult:
+        """Write the next version of ``child``, re-pinned to ``parent``'s
+        version and otherwise exactly the child (usage, endpoints, versioned,
+        header fields, renames and all), or report why not."""
+        if child.extends_version == parent.version:
+            return CascadeResult(value=child.value, old_template_id=child.template_id,
+                                 status="unchanged")
+        try:
+            # The new extends must pass the reference gates, as on any update.
+            await TemplateService._check_reference_isolation(
+                child.namespace, template_ids=[], terminology_ids=[],
+                extends_template_id=parent.template_id, previous=child,
+            )
+            latest = await Template.find({"template_id": child.template_id}).sort(
+                [("version", SortDirection.DESCENDING)]
+            ).limit(1).to_list()
+            now = datetime.now(UTC)
+            new_child = child.model_copy(update={
+                "id": None,
+                "version": latest[0].version + 1,
+                "extends": parent.template_id,
+                # Cascade is the explicit re-pin: the new version inherits from
+                # this exact parent version, never "latest".
+                "extends_version": parent.version,
+                "status": "active",
+                "created_at": now, "created_by": actor,
+                "updated_at": now, "updated_by": actor,
+            })
+            await TemplateService._stamp_referent_paths(new_child)
+            await new_child.insert()
+            await publish_template_event(
+                EventType.TEMPLATE_UPDATED,
+                TemplateService._template_to_event_payload(new_child),
+                changed_by=actor,
+            )
+        except Exception as e:
+            return CascadeResult(value=child.value, old_template_id=child.template_id,
+                                 status="error", **error_fields(e))
+        return CascadeResult(
+            value=child.value, old_template_id=child.template_id,
+            new_template_id=child.template_id, new_version=new_child.version,
+            status="updated",
         )
 
     # =========================================================================
