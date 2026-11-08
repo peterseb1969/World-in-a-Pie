@@ -861,11 +861,15 @@ in §5.5.
 - **A namespace restore creates namespaces as the requester.** A platform
   admin's namespace restore applies the archive's namespace settings. Anyone
   else's never changes a namespace's settings: an existing namespace keeps
-  its own, and a missing one is created with the requester's own key, as
-  reserved (so a reservation's holder gets the reservation's settings, and
-  anyone else is refused). Each archive setting not applied is a warning on
-  the job. Creating a namespace this way needs an API key; a login can
-  restore only into a namespace that exists. One consequence for disaster
+  its own, and a missing one is created with the requester's own
+  credential, as reserved (so a reservation's holder gets the reservation's
+  settings, and anyone else is refused). Each archive setting not applied is
+  a warning on the job. Every namespace create or configure goes out with
+  the requester's credential, never document-store's key: an API key, or an
+  OIDC login's bearer token, which the Registry validates itself. A login
+  forwarded by a gateway has no credential of its own to pass on, so it can
+  restore only into an existing namespace, and not as a platform admin
+  (whose restore always configures the namespace). One consequence for disaster
   recovery: a reservation holder's restore of a missing namespace gets the
   reservation's `id_config`, not the archive's, so a prefixed id scheme is
   not carried over and new ids are minted the reservation's way from then

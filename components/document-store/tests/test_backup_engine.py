@@ -40,6 +40,7 @@ from wip_archive.models import EntityCounts, Manifest, NamespaceConfig, Progress
 from document_store.services.backup_engine import (
     BACKUP_ENTITY_ORDER,
     COLLECTION_MAP,
+    SERVICE_REQUESTER,
     DirectBackupEngine,
     DirectRestoreEngine,
     RestoreEngineError,
@@ -889,7 +890,7 @@ class TestUpsertNamespaceAsRequester:
     @pytest.mark.asyncio
     async def test_an_existing_namespace_keeps_its_settings(self):
         events: list = []
-        engine = self._engine(RestoreRequester("holder-key", platform_admin=False), events)
+        engine = self._engine(RestoreRequester({"X-API-Key": "holder-key"}, platform_admin=False), events)
         with self._registry(get=_response(200, self.LIVE)) as reg:
             await engine._upsert_namespace("aa-x", self.CONFIG)
         reg.put.assert_not_called()
@@ -902,7 +903,7 @@ class TestUpsertNamespaceAsRequester:
     @pytest.mark.asyncio
     async def test_a_missing_namespace_is_created_as_the_requester(self):
         events: list = []
-        engine = self._engine(RestoreRequester("holder-key", platform_admin=False), events)
+        engine = self._engine(RestoreRequester({"X-API-Key": "holder-key"}, platform_admin=False), events)
         created = {**self.LIVE, "inbound_references": "open"}
         with self._registry(get=_response(404), put=_response(200, created)) as reg:
             await engine._upsert_namespace("aa-x", self.CONFIG)
@@ -915,7 +916,7 @@ class TestUpsertNamespaceAsRequester:
 
     @pytest.mark.asyncio
     async def test_a_refused_create_fails_the_restore(self):
-        engine = self._engine(RestoreRequester("plain-key", platform_admin=False), [])
+        engine = self._engine(RestoreRequester({"X-API-Key": "plain-key"}, platform_admin=False), [])
         refused = _response(403, {"detail": "requires a platform admin key"})
         with self._registry(get=_response(404), put=refused), \
                 pytest.raises(RestoreEngineError, match="Failed to create namespace 'aa-x': 403"):
@@ -923,7 +924,7 @@ class TestUpsertNamespaceAsRequester:
 
     @pytest.mark.asyncio
     async def test_a_dry_run_asks_the_registry_the_same_question(self):
-        engine = self._engine(RestoreRequester("holder-key", platform_admin=False), [])
+        engine = self._engine(RestoreRequester({"X-API-Key": "holder-key"}, platform_admin=False), [])
         with self._registry(get=_response(404), put=_response(200, self.LIVE)) as reg:
             await engine._upsert_namespace("aa-x", self.CONFIG, dry_run=True)
         put = reg.put.await_args.kwargs
@@ -934,7 +935,7 @@ class TestUpsertNamespaceAsRequester:
     async def test_a_dry_run_meets_the_real_refusal(self):
         """The case the dry run used to pass: a requester the Registry will
         not let create the namespace."""
-        engine = self._engine(RestoreRequester("plain-key", platform_admin=False), [])
+        engine = self._engine(RestoreRequester({"X-API-Key": "plain-key"}, platform_admin=False), [])
         refused = _response(403, {"detail": "requires a platform admin key"})
         with self._registry(get=_response(404), put=refused), \
                 pytest.raises(RestoreEngineError, match="Failed to create namespace 'aa-x': 403"):
@@ -944,13 +945,13 @@ class TestUpsertNamespaceAsRequester:
     async def test_a_dry_run_by_a_login_is_refused_like_the_real_one(self):
         engine = self._engine(RestoreRequester(None, platform_admin=False), [])
         with self._registry(get=_response(404)) as reg, \
-                pytest.raises(RestoreEngineError, match="requester's own API key"):
+                pytest.raises(RestoreEngineError, match="cannot be passed on"):
             await engine._upsert_namespace("aa-x", self.CONFIG, dry_run=True)
         reg.put.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_an_admin_dry_run_sends_the_flag(self):
-        engine = self._engine(RestoreRequester("admin-key", platform_admin=True), [])
+        engine = self._engine(RestoreRequester({"X-API-Key": "admin-key"}, platform_admin=True), [])
         with self._registry(put=_response(200, self.LIVE)) as reg:
             await engine._upsert_namespace("aa-x", self.CONFIG, dry_run=True)
         assert reg.put.await_args.kwargs["params"] == {"dry_run": "true"}
@@ -959,7 +960,7 @@ class TestUpsertNamespaceAsRequester:
     async def test_a_login_cannot_create_a_namespace(self):
         engine = self._engine(RestoreRequester(None, platform_admin=False), [])
         with self._registry(get=_response(404)) as reg, \
-                pytest.raises(RestoreEngineError, match="requester's own API key"):
+                pytest.raises(RestoreEngineError, match="cannot be passed on"):
             await engine._upsert_namespace("aa-x", self.CONFIG)
         reg.put.assert_not_called()
 
@@ -987,7 +988,7 @@ class TestUpsertNamespaceAsRequester:
         stored = {"prefix": "aa-x", "id_config": {
             "documents": {"algorithm": "prefixed", "prefix": stored_scheme, "pad": 6}}}
         events: list = []
-        engine = self._engine(RestoreRequester("holder-key", platform_admin=False), events, stored)
+        engine = self._engine(RestoreRequester({"X-API-Key": "holder-key"}, platform_admin=False), events, stored)
         live = {**self.LIVE, "isolation_mode": "open", "id_config": view}
         with self._registry(get=_response(200, live)):
             await engine._upsert_namespace("aa-x", config)
@@ -995,7 +996,7 @@ class TestUpsertNamespaceAsRequester:
 
     @pytest.mark.asyncio
     async def test_a_platform_admin_upserts_with_its_own_key(self):
-        engine = self._engine(RestoreRequester("admin-key", platform_admin=True), [])
+        engine = self._engine(RestoreRequester({"X-API-Key": "admin-key"}, platform_admin=True), [])
         with self._registry(put=_response(200)) as reg:
             await engine._upsert_namespace("aa-x", self.CONFIG)
         reg.get.assert_not_called()
@@ -1004,8 +1005,43 @@ class TestUpsertNamespaceAsRequester:
         assert put["json"]["deletion_mode"] == "full"
 
     @pytest.mark.asyncio
-    async def test_a_platform_admin_login_upserts_with_the_service_key(self):
+    async def test_a_platform_admin_login_upserts_with_its_own_token(self):
+        """An OIDC login's bearer token goes to the Registry, which judges
+        the caller — never the service's key."""
+        requester = RestoreRequester(
+            {"Authorization": "Bearer user-token"}, platform_admin=True, actor="admin@example.org",
+        )
+        engine = self._engine(requester, [])
+        with self._registry(put=_response(200)) as reg:
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+        put = reg.put.await_args.kwargs
+        assert put["headers"]["Authorization"] == "Bearer user-token"
+        assert "X-API-Key" not in put["headers"]
+        assert put["json"]["updated_by"] == "admin@example.org"
+
+    @pytest.mark.asyncio
+    async def test_a_platform_admin_whose_credential_cannot_be_passed_on_is_refused(self):
         engine = self._engine(RestoreRequester(None, platform_admin=True), [])
+        with self._registry(put=_response(200)) as reg, \
+                pytest.raises(RestoreEngineError, match="cannot be passed on"):
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+        reg.put.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_login_creates_a_namespace_with_its_own_token(self):
+        requester = RestoreRequester(
+            {"Authorization": "Bearer holder-token"}, platform_admin=False, actor="holder@example.org",
+        )
+        engine = self._engine(requester, [])
+        with self._registry(get=_response(404), put=_response(200, self.LIVE)) as reg:
+            await engine._upsert_namespace("aa-x", self.CONFIG)
+        put = reg.put.await_args.kwargs
+        assert put["headers"]["Authorization"] == "Bearer holder-token"
+        assert put["json"] == {"description": "App", "updated_by": "holder@example.org"}
+
+    @pytest.mark.asyncio
+    async def test_only_the_service_acting_as_itself_uses_the_service_key(self):
+        engine = self._engine(SERVICE_REQUESTER, [])
         with self._registry(put=_response(200)) as reg:
             await engine._upsert_namespace("aa-x", self.CONFIG)
         assert reg.put.await_args.kwargs["headers"]["X-API-Key"] == "service-key"

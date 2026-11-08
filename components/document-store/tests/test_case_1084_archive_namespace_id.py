@@ -57,7 +57,7 @@ def _restore_engine(events: list) -> DirectRestoreEngine:
     return DirectRestoreEngine(
         _mongo(None), None, events.append,
         registry_base_url="http://registry:8001", registry_api_key="service-key",
-        requester=RestoreRequester("admin-key", platform_admin=True),
+        requester=RestoreRequester({"X-API-Key": "admin-key"}, platform_admin=True),
     )
 
 

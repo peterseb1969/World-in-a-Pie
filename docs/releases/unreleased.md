@@ -7,6 +7,28 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A restore acts as its requester at the Registry, logins included
+
+A restore creates and configures namespaces at the Registry with the
+requester's own credential. A platform admin who logged in (OIDC) used to
+have this done with document-store's own Registry key, so the Registry could
+not tell who asked. Now:
+
+- **An OIDC login's bearer token is passed on**, as an API key always was.
+  The Registry validates it and judges the caller. A login can now also
+  create a namespace by restore (a reservation's holder, as reserved), which
+  used to need an API key.
+- **A login a gateway forwarded is refused** wherever the restore would
+  create or configure a namespace: its request carries the gateway's key,
+  not the user's, so it has no credential to pass on. That covers every
+  platform admin restore, since an admin's restore always applies the
+  archive's settings, and any restore into a namespace that does not exist.
+  The error says to use an API key or a direct login.
+- **The Registry records who asked**: the upsert carries the requester as
+  `updated_by`, so a namespace a restore creates has a `created_by`.
+- document-store's own key is used only when the service acts as itself
+  (tests and tooling inside the service), never for a request.
+
 ### `if_match` guards versioned:false documents: send `revision`; `@wip/client` 0.92.0
 
 A `versioned: false` document stays at version 1, and `if_match` compared
@@ -1612,12 +1634,11 @@ Now:
   normal rules: a reservation's holder gets the reservation's settings,
   anyone else is refused. Every archive setting that is not applied is a
   warning on the job.
-- **Creating a namespace by restore needs an API key** unless the requester
-  is a platform admin. A login (OIDC) has no key to pass on: such a restore
-  into a namespace that does not exist fails, and the error says to use a key
-  or have an admin create the namespace first. Restoring into an existing
-  namespace works with a login as before.
-- The key is held in the restore job's memory only, never on the job record.
+- **Creating a namespace by restore needs the requester's own credential**
+  — see "A restore acts as its requester at the Registry" above for what
+  that is for a login.
+- The credential is held in the restore job's memory only, never on the job
+  record.
 
 **Orphaned grants.** A system restore no longer skips a grant whose namespace
 neither exists nor is reserved. It writes it with `orphaned: true`:

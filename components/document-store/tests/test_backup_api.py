@@ -1094,39 +1094,59 @@ async def test_admin_of_a_single_namespace_backup_can_still_delete_it(client: As
 
 
 class TestRestoreRequester:
-    """The key a restore creates namespaces with is the caller's own, read
-    only for a caller that authenticated with it: a gateway-forwarded login
-    arrives with the proxy's key in the header, which is not the user's."""
+    """A restore creates and configures namespaces with the caller's own
+    credential, passed on as it arrived: an API key, or an OIDC login's
+    bearer token. A gateway-forwarded login arrives with the proxy's key in
+    the header, which is not the user's, so it has none to pass on."""
 
     @staticmethod
-    def _request(key: str | None):
+    def _request(key: str | None = None, bearer: str | None = None):
         from starlette.requests import Request
 
         headers = [(b"x-api-key", key.encode())] if key else []
+        if bearer:
+            headers.append((b"authorization", f"Bearer {bearer}".encode()))
         return Request({"type": "http", "headers": headers})
 
     @staticmethod
     def _identity(method: str, groups: list[str]):
         from wip_auth import UserIdentity
 
-        return UserIdentity(user_id="u", username="u", groups=groups, auth_method=method)
+        return UserIdentity(
+            user_id="u", username="u", email="u@example.org", groups=groups, auth_method=method,
+        )
 
     def test_an_api_key_caller_is_presented_by_its_key(self):
         from document_store.api.backup import _restore_requester
 
         req = _restore_requester(self._request("k1"), self._identity("api_key", []))
-        assert (req.api_key, req.platform_admin) == ("k1", False)
+        assert (req.credential, req.platform_admin) == ({"X-API-Key": "k1"}, False)
+        assert req.actor == "apikey:u"
+
+    def test_an_oidc_login_is_presented_by_its_bearer_token(self):
+        from document_store.api.backup import _restore_requester
+
+        req = _restore_requester(self._request(bearer="tok"), self._identity("jwt", []))
+        assert req.credential == {"Authorization": "Bearer tok"}
+        assert req.actor == "u@example.org"
+
+    def test_with_auth_off_there_is_nothing_to_pass_on(self):
+        from document_store.api.backup import _restore_requester
+
+        req = _restore_requester(self._request(), self._identity("none", []))
+        assert req.credential == {}
 
     def test_a_forwarded_login_never_passes_the_proxy_key_on(self):
         from document_store.api.backup import _restore_requester
 
         req = _restore_requester(self._request("proxy-key"), self._identity("gateway_oidc", []))
-        assert req.api_key is None
+        assert req.credential is None
 
     def test_a_platform_admin_is_recognised(self):
         from document_store.api.backup import _restore_requester
         from wip_auth import get_auth_config
 
         admin_group = next(iter(get_auth_config().admin_groups))
-        req = _restore_requester(self._request(None), self._identity("jwt", [admin_group]))
-        assert (req.api_key, req.platform_admin) == (None, True)
+        req = _restore_requester(self._request(bearer="tok"), self._identity("jwt", [admin_group]))
+        assert req.platform_admin is True
+        assert not req.service

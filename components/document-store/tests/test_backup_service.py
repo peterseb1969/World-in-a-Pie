@@ -27,7 +27,7 @@ from document_store.models.backup_job import (
 from document_store.services import backup_service
 from document_store.services.backup_engine import RestoreRequester
 
-_REQUESTER = RestoreRequester(api_key="requester-key", platform_admin=False)
+_REQUESTER = RestoreRequester(credential={"X-API-Key": "requester-key"}, platform_admin=False)
 
 
 def _make_runner(*args, **kwargs):

@@ -211,16 +211,29 @@ def _validate_allow_missing_identity(mode: str, allow_missing_identity: bool) ->
 
 def _restore_requester(request: Request, identity: UserIdentity) -> RestoreRequester:
     """Who starts this restore, as the engine presents them to the Registry
-    when it creates a namespace. The key is the caller's own, read only for
-    a caller that authenticated with it (a gateway-forwarded login carries
-    the proxy's key, not the user's), and lives only in the job's memory."""
+    when it creates or configures a namespace: with the caller's own
+    credential, passed on as it arrived, so the Registry judges the caller.
+    An API key and an OIDC login's bearer token are passed on; with auth off
+    there is nothing to pass (the Registry runs the same mode). A login a
+    gateway forwarded has no credential of its own here — the request carries
+    the gateway's key — so it has none to pass on. The credential lives only
+    in the job's memory."""
     from ..services.backup_engine import RestoreRequester
 
     config = get_auth_config()
-    key = request.headers.get(config.api_key_header) if identity.auth_method == "api_key" else None
+    credential: dict[str, str] | None = None
+    if identity.auth_method == "api_key":
+        key = request.headers.get(config.api_key_header)
+        credential = {"X-API-Key": key} if key else None
+    elif identity.auth_method == "jwt":
+        bearer = request.headers.get("Authorization")
+        credential = {"Authorization": bearer} if bearer else None
+    elif identity.auth_method == "none":
+        credential = {}
     return RestoreRequester(
-        api_key=key or None,
+        credential=credential,
         platform_admin=identity.has_any_group(list(config.admin_groups)),
+        actor=identity.identity_string,
     )
 
 

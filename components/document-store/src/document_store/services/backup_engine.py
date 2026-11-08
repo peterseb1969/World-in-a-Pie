@@ -438,25 +438,35 @@ class RestoreRequester(NamedTuple):
 
     The Registry decides who may create a namespace and with which settings:
     a platform admin freely, a reservation's holder only as reserved, nobody
-    else. It can decide that only when it sees the requester, so for anyone
-    but a platform admin the upsert goes out with the requester's own key,
-    never the service's.
+    else. It can decide that only when it sees the requester, so every
+    namespace create or configure a restore makes goes out with the
+    requester's own credential — never the service's key.
 
-    - ``api_key``: the requester's own key, held in memory for the run and
-      never written to the job record; None for a login (OIDC), which has
-      no key to pass on.
+    - ``credential``: the headers that authenticated the requester, passed
+      on as they arrived (an API key, or an OIDC login's bearer token, which
+      the Registry validates itself); ``{}`` when auth is off. Held in
+      memory for the run, never written to the job record. None when the
+      requester's credential cannot be passed on (a login a gateway
+      forwarded, whose request carries the gateway's key): such a restore
+      cannot create or configure a namespace.
     - ``platform_admin``: whether the requester is in the platform admin
-      groups. A platform admin logged in without a key is presented by the
-      service's key, which the Registry treats the same way.
+      groups — the restore then applies the archive's namespace settings.
+    - ``actor``: who the requester is, recorded by the Registry as the
+      namespace's creator or last updater.
+    - ``service``: the engine acting as the service itself (tests, tooling
+      inside the service); the only requester presented by the service's
+      key. The API never builds one.
     """
 
-    api_key: str | None
+    credential: dict[str, str] | None
     platform_admin: bool
+    actor: str | None = None
+    service: bool = False
 
 
 # An engine run with no requester (tests, tooling inside the service) acts as
 # the service itself. The API's restore runner always passes the requester.
-SERVICE_REQUESTER = RestoreRequester(api_key=None, platform_admin=True)
+SERVICE_REQUESTER = RestoreRequester(credential=None, platform_admin=True, service=True)
 
 # Namespace settings a restore carries in its manifest. Only a platform admin
 # changes them; for anyone else a differing value is reported, not applied.
@@ -5206,8 +5216,8 @@ class DirectRestoreEngine:
         params = {"dry_run": "true"} if dry_run else None
         if self._requester.platform_admin:
             await self._admin_upsert_namespace(
-                namespace, body, self._requester.api_key or self._registry_api_key,
-                dry_run=dry_run,
+                namespace, {**body, **self._actor_field()},
+                self._requester_headers(namespace), dry_run=dry_run,
             )
             return
 
@@ -5222,16 +5232,10 @@ class DirectRestoreEngine:
             if resp.status_code == 200:
                 live = resp.json()
             elif resp.status_code == 404:
-                if not self._requester.api_key:
-                    raise RestoreEngineError(
-                        f"Namespace '{namespace}' does not exist, and a restore that "
-                        "creates it does so with the requester's own API key, which a "
-                        "login does not have. Start the restore with an API key, or "
-                        "have a platform admin create the namespace first."
-                    )
                 create = {"description": body["description"]} if "description" in body else {}
-                resp = await client.put(url, json=create, params=params, headers={
-                    "X-API-Key": self._requester.api_key,
+                resp = await client.put(url, json={**create, **self._actor_field()}, params=params,
+                                        headers={
+                    **self._requester_headers(namespace),
                     "Content-Type": "application/json",
                 })
                 if resp.status_code not in (200, 201):
@@ -5263,6 +5267,26 @@ class DirectRestoreEngine:
                     "admin changes a namespace's settings"
                 ))
 
+    def _requester_headers(self, namespace: str) -> dict[str, str]:
+        """The credential a namespace create or configure goes out with: the
+        requester's own. Only the service acting as itself uses the
+        service's key."""
+        if self._requester.service:
+            return {"X-API-Key": self._registry_api_key}
+        if self._requester.credential is None:
+            raise RestoreEngineError(
+                f"Namespace '{namespace}': a restore creates and configures "
+                "namespaces with its requester's own credential, and this login's "
+                "cannot be passed on (it arrived through a gateway). Start the "
+                "restore with an API key or a direct login, or have a platform "
+                "admin create the namespace first."
+            )
+        return dict(self._requester.credential)
+
+    def _actor_field(self) -> dict[str, str]:
+        """Who the Registry records as the namespace's creator or updater."""
+        return {"updated_by": self._requester.actor} if self._requester.actor else {}
+
     @staticmethod
     def _namespace_body(
         ns_config: NamespaceConfig | None, *, preserve_id_config: bool
@@ -5292,16 +5316,15 @@ class DirectRestoreEngine:
         return body
 
     async def _admin_upsert_namespace(
-        self, namespace: str, body: dict[str, Any], api_key: str, *, dry_run: bool = False,
+        self, namespace: str, body: dict[str, Any], credential: dict[str, str], *,
+        dry_run: bool = False,
     ) -> None:
-        """A platform admin's upsert: the archive's settings, as sent."""
+        """A platform admin's upsert: the archive's settings, as sent, with
+        the requester's credential."""
         import httpx
 
         url = f"{self._registry_url}/api/registry/namespaces/{namespace}"
-        headers = {
-            "X-API-Key": api_key,
-            "Content-Type": "application/json",
-        }
+        headers = {**credential, "Content-Type": "application/json"}
         params = {"dry_run": "true"} if dry_run else None
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.put(url, json=body, params=params, headers=headers)
