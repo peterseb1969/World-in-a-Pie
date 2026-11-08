@@ -161,6 +161,23 @@ def _fetch_filtered(root: Path, filt: str) -> dict[str, dict]:
     return records
 
 
+def stored_body(text: str) -> str:
+    """The body kb-write.py stores for a doc: the frontmatter between a
+    leading '---' fence and the next one goes into the record's fields, and
+    data.body is the rest, joined by line (so without a trailing newline)
+    with leading blank lines dropped. A doc without frontmatter is stored
+    as it is. Compared against the whole file instead, every doc with
+    frontmatter reads as drifted while the store holds exactly what the
+    writer put there (and reports a re-push as unchanged)."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return text
+    i = 1
+    while i < len(lines) and lines[i].strip() != "---":
+        i += 1
+    return "\n".join(lines[i + 1:]).lstrip("\n") if i < len(lines) else ""
+
+
 def fetch_kb_docs(root: Path) -> dict[str, dict]:
     """Every KB DOCUMENT for this REPOSITORY, keyed by repo-relative path.
 
@@ -255,7 +272,7 @@ def main() -> int:
             bucket = "absent" if mandatory else "unmirrored"
             findings[bucket].append(rel)
             continue
-        disk = (root / rel).read_text()
+        disk = stored_body((root / rel).read_text())
         if (record.get("body") or "") == disk:
             findings["in_sync"] += 1
         else:
