@@ -2592,12 +2592,11 @@ class TemplateService:
         check_templates: bool = True
     ) -> ValidateTemplateResponse:
         """
-        Validate a template's references.
-
-        Checks that:
-        - terminology_ref fields point to existing terminologies
-        - template_ref fields point to existing templates
-        - extends points to existing template
+        Validate a template's latest version against the checks activation
+        applies: references exist, are active and pass the reference gates,
+        pinned versions exist, reference fields declare what they reference,
+        an edge type's endpoints are real templates. A draft is checked with
+        the drafts it would activate alongside it.
 
         Args:
             template_id: Template to validate
@@ -2620,172 +2619,54 @@ class TemplateService:
                 )]
             )
 
-        # Draft templates: validate via activation set and return cascade preview
+        # One set of checks: what activation demands of a draft is what an
+        # active (or retired) version is held to, so /validate previews the
+        # write doors faithfully, reference gates included. A draft is
+        # checked with the drafts it would activate alongside it.
         if template.status == "draft":
             activation_set = await TemplateService._build_activation_set(
                 template, template.namespace
             )
-            errors, warnings = await TemplateService._validate_activation_set(
-                activation_set, template.namespace
-            )
-            # Collect other draft template IDs that would also activate
-            other_ids = [
-                t.template_id for t in activation_set
-                if t.template_id != template_id
-            ]
-            return ValidateTemplateResponse(
-                valid=len(errors) == 0,
-                template_id=template_id,
-                errors=errors,
-                warnings=warnings,
-                will_also_activate=other_ids if other_ids else None
-            )
-
-        errors = []
-        warnings = []
-
-        # Check extends
-        if check_templates and template.extends:
-            parent = await Template.find_one({"template_id": template.extends})
-            if not parent:
-                errors.append(ValidationError(
-                    field="extends",
-                    code="invalid_reference",
-                    message=f"Parent template '{template.extends}' not found"
-                ))
-
-        # Check terminology refs in fields
-        if check_terminologies:
-            def_store = get_def_store_client()
-            for field in TemplateService._project_endpoint_constraints(template):
-                if field.terminology_ref:
-                    try:
-                        exists = await def_store.terminology_exists(
-                            field.terminology_ref, namespace=template.namespace
-                        )
-                        if not exists:
-                            errors.append(ValidationError(
-                                field=f"fields.{field.name}.terminology_ref",
-                                code="invalid_reference",
-                                message=f"Terminology '{field.terminology_ref}' not found or inactive"
-                            ))
-                    except DefStoreError as e:
-                        warnings.append(ValidationWarning(
-                            field=f"fields.{field.name}.terminology_ref",
-                            code="validation_failed",
-                            message=f"Could not validate terminology: {e!s}"
-                        ))
-
-                if field.array_terminology_ref:
-                    try:
-                        exists = await def_store.terminology_exists(
-                            field.array_terminology_ref, namespace=template.namespace
-                        )
-                        if not exists:
-                            errors.append(ValidationError(
-                                field=f"fields.{field.name}.array_terminology_ref",
-                                code="invalid_reference",
-                                message=f"Terminology '{field.array_terminology_ref}' not found or inactive"
-                            ))
-                    except DefStoreError as e:
-                        warnings.append(ValidationWarning(
-                            field=f"fields.{field.name}.array_terminology_ref",
-                            code="validation_failed",
-                            message=f"Could not validate terminology: {e!s}"
-                        ))
-
-        # Check template refs in fields
-        if check_templates:
-            for field in TemplateService._project_endpoint_constraints(template):
-                if field.template_ref:
-                    ref_template = await TemplateService._find_template_by_ref(
-                        field.template_ref, template.namespace
-                    )
-                    if not ref_template:
-                        errors.append(ValidationError(
-                            field=f"fields.{field.name}.template_ref",
-                            code="invalid_reference",
-                            message=f"Template '{field.template_ref}' not found"
-                        ))
-
-                if field.array_template_ref:
-                    ref_template = await TemplateService._find_template_by_ref(
-                        field.array_template_ref, template.namespace
-                    )
-                    if not ref_template:
-                        errors.append(ValidationError(
-                            field=f"fields.{field.name}.array_template_ref",
-                            code="invalid_reference",
-                            message=f"Template '{field.array_template_ref}' not found"
-                        ))
-
-                # Check reference type fields
-                if field.type.value == "reference":
-                    # reference_type is required
-                    if not field.reference_type:
-                        errors.append(ValidationError(
-                            field=f"fields.{field.name}.reference_type",
-                            code="required",
-                            message="reference_type is required for reference fields"
-                        ))
-                    else:
-                        # Validate target_templates for document references
-                        if field.reference_type.value == "document":
-                            if not field.target_templates:
-                                # target_templates is optional — document-store
-                                # resolves references by identity lookup even
-                                # without it.  Warn but don't block activation.
-                                warnings.append(ValidationWarning(
-                                    field=f"fields.{field.name}.target_templates",
-                                    code="recommended",
-                                    message="target_templates is recommended for document references"
-                                ))
-                            elif check_templates:
-                                for tpl_ref in field.target_templates:
-                                    ref_tpl = await TemplateService._find_template_by_ref(
-                                        tpl_ref, template.namespace
-                                    )
-                                    if not ref_tpl:
-                                        errors.append(ValidationError(
-                                            field=f"fields.{field.name}.target_templates",
-                                            code="invalid_reference",
-                                            message=f"Template '{tpl_ref}' not found"
-                                        ))
-
-                        # Validate target_terminologies for term references
-                        elif field.reference_type.value == "term":
-                            if not field.target_terminologies:
-                                errors.append(ValidationError(
-                                    field=f"fields.{field.name}.target_terminologies",
-                                    code="required",
-                                    message="target_terminologies is required for term references"
-                                ))
-                            elif check_terminologies:
-                                def_store = get_def_store_client()
-                                for term_val in field.target_terminologies:
-                                    try:
-                                        exists = await def_store.terminology_exists(
-                                            term_val, namespace=template.namespace
-                                        )
-                                        if not exists:
-                                            errors.append(ValidationError(
-                                                field=f"fields.{field.name}.target_terminologies",
-                                                code="invalid_reference",
-                                                message=f"Terminology '{term_val}' not found or inactive"
-                                            ))
-                                    except DefStoreError as e:
-                                        warnings.append(ValidationWarning(
-                                            field=f"fields.{field.name}.target_terminologies",
-                                            code="validation_failed",
-                                            message=f"Could not validate terminology: {e!s}"
-                                        ))
-
+        else:
+            activation_set = [template]
+        errors, warnings = await TemplateService._validate_activation_set(
+            activation_set, template.namespace
+        )
+        errors = TemplateService._findings_in_scope(errors, check_terminologies, check_templates)
+        warnings = TemplateService._findings_in_scope(warnings, check_terminologies, check_templates)
+        other_ids = [
+            t.template_id for t in activation_set if t.template_id != template_id
+        ]
         return ValidateTemplateResponse(
             valid=len(errors) == 0,
             template_id=template_id,
             errors=errors,
-            warnings=warnings
+            warnings=warnings,
+            will_also_activate=other_ids or None,
         )
+
+    @staticmethod
+    def _findings_in_scope(findings: list, terminologies: bool, templates: bool) -> list:
+        """The findings a /validate call asked for: check_terminologies=false
+        drops those about terminology references, check_templates=false those
+        about template references. Shape findings (a missing reference_type)
+        are always kept."""
+        terminology_attrs = {"terminology_ref", "array_terminology_ref", "target_terminologies"}
+        template_attrs = {
+            "extends", "extends_version", "template_ref", "template_ref_version",
+            "array_template_ref", "array_template_ref_version", "target_templates",
+        }
+
+        def wanted(finding: Any) -> bool:
+            # The last path segment names the attribute; earlier ones are the
+            # caller's field names and say nothing about the kind.
+            attr = finding.field.rsplit(".", 1)[-1]
+            if attr in terminology_attrs:
+                return terminologies
+            if attr in template_attrs:
+                return templates
+            return True
+        return [f for f in findings if wanted(f)]
 
     # =========================================================================
     # CASCADE
@@ -3027,7 +2908,7 @@ class TemplateService:
         Returns:
             Tuple of (errors, warnings) as ValidationError/ValidationWarning lists
         """
-        from ..models.api_models import ValidationError, ValidationWarning
+        from ..models.api_models import ValidationError
 
         # Build lookups for the activation set
         set_ids = {t.template_id for t in activation_set}
@@ -3082,10 +2963,100 @@ class TemplateService:
                 {"template_id": resolved.template_id, "version": version}
             ) is not None
 
-        errors = []
-        warnings = []
+        errors: list[ValidationError] = []
+        warnings: list[ValidationWarning] = []
 
         def_store = get_def_store_client()
+
+        async def _template_ref_problem(
+            ref: str, gate: InboundGate, what: str = "Template",
+        ) -> str | None:
+            """Why a template reference does not hold, or None. A member of
+            the set holds by id, value, or any form that finds it (ns:VALUE,
+            a synonym); anything else must be a visible, active template."""
+            if ref in set_ids or ref in set_values:
+                return None
+            target = await _visible(
+                await TemplateService._find_template_by_ref(ref, namespace), gate,
+            )
+            if target is None:
+                return f"{what} '{ref}' not found"
+            if target.template_id in set_ids or target.status == "active":
+                return None
+            return f"{what} '{ref}' is {target.status}, not active"
+
+        def _error(field: str, code: str, message: str) -> None:
+            errors.append(ValidationError(field=field, code=code, message=message))
+
+        async def _check_template_ref(field: str, ref: str, gate: InboundGate) -> None:
+            problem = await _template_ref_problem(ref, gate)
+            if problem:
+                _error(field, "invalid_reference", problem)
+
+        async def _check_terminology(field: str, ref: str, gate: InboundGate) -> None:
+            try:
+                if not await _terminology_exists(ref, gate):
+                    _error(field, "invalid_reference", f"Terminology '{ref}' not found or inactive")
+            except DefStoreError as e:
+                warnings.append(ValidationWarning(
+                    field=field, code="validation_failed",
+                    message=f"Could not validate terminology: {e!s}",
+                ))
+
+        async def _check_pinned(
+            field: str, ref: str, version: int | None, gate: InboundGate, what: str,
+        ) -> None:
+            # CASE-493: a schema reference must pin an existing version.
+            if not await _pinned_version_exists(ref, version, gate):
+                _error(field, "invalid_reference", f"{what} '{ref}' has no version {version}")
+
+        async def _check_extends(
+            template: Template, extends: str, prefix: str, gate: InboundGate,
+        ) -> None:
+            problem = await _template_ref_problem(extends, gate, "Parent template")
+            if problem:
+                _error(f"{prefix}extends", "invalid_reference", problem)
+            if template.extends_version is None:
+                _error(f"{prefix}extends_version", "invalid_reference",
+                       "extends_version is required when 'extends' is set (CASE-493)")
+            else:
+                await _check_pinned(f"{prefix}extends_version", extends,
+                                    template.extends_version, gate, "Parent template")
+
+        async def _check_reference_field(field: Any, path: str, gate: InboundGate) -> None:
+            if not field.reference_type:
+                _error(f"{path}.reference_type", "required",
+                       "reference_type is required for reference fields")
+            elif field.reference_type.value == "document":
+                if not field.target_templates:
+                    # target_templates is optional — warn only
+                    warnings.append(ValidationWarning(
+                        field=f"{path}.target_templates", code="recommended",
+                        message="target_templates is recommended for document references",
+                    ))
+                for tpl_val in field.target_templates or []:
+                    await _check_template_ref(f"{path}.target_templates", tpl_val, gate)
+            elif field.reference_type.value == "term":
+                if not field.target_terminologies:
+                    _error(f"{path}.target_terminologies", "required",
+                           "target_terminologies is required for term references")
+                for term_val in field.target_terminologies or []:
+                    await _check_terminology(f"{path}.target_terminologies", term_val, gate)
+
+        async def _check_field(field: Any, prefix: str, gate: InboundGate) -> None:
+            path = f"{prefix}fields.{field.name}"
+            for attr in ("terminology_ref", "array_terminology_ref"):
+                if getattr(field, attr):
+                    await _check_terminology(f"{path}.{attr}", getattr(field, attr), gate)
+            for attr, what in (("template_ref", "Nested template"),
+                               ("array_template_ref", "Array-item template")):
+                ref = getattr(field, attr)
+                if ref:
+                    await _check_template_ref(f"{path}.{attr}", ref, gate)
+                    await _check_pinned(f"{path}.{attr}_version", ref,
+                                        getattr(field, f"{attr}_version"), gate, what)
+            if field.type.value == "reference":
+                await _check_reference_field(field, path, gate)
 
         for template in activation_set:
             prefix = f"[{template.value}] "
@@ -3094,193 +3065,12 @@ class TemplateService:
                 carried=carried_ids(await TemplateService._previous_version(template)),
                 placed=set_namespaces,
             )
-
-            # Check extends
             if template.extends:
-                # Resolve: is it in the set (by ID or value) or active?
-                in_set = (
-                    template.extends in set_ids or
-                    template.extends in set_values
-                )
-                if not in_set:
-                    parent = await _visible(await TemplateService._find_template_by_ref(
-                        template.extends, namespace
-                    ), gate)
-                    if not parent:
-                        errors.append(ValidationError(
-                            field=f"{prefix}extends",
-                            code="invalid_reference",
-                            message=f"Parent template '{template.extends}' not found"
-                        ))
-                    elif parent.status != "active":
-                        errors.append(ValidationError(
-                            field=f"{prefix}extends",
-                            code="invalid_reference",
-                            message=f"Parent template '{template.extends}' is {parent.status}, not active"
-                        ))
-
-                # CASE-493: extends must pin an existing parent version.
-                if template.extends_version is None:
-                    errors.append(ValidationError(
-                        field=f"{prefix}extends_version",
-                        code="invalid_reference",
-                        message="extends_version is required when 'extends' is set (CASE-493)"
-                    ))
-                elif not await _pinned_version_exists(template.extends, template.extends_version, gate):
-                    errors.append(ValidationError(
-                        field=f"{prefix}extends_version",
-                        code="invalid_reference",
-                        message=f"Parent template '{template.extends}' has no version {template.extends_version}"
-                    ))
-
-            # Check fields
+                await _check_extends(template, template.extends, prefix, gate)
+            # Fields in their served form: an edge type's declared endpoints
+            # are checked as the target_templates of source_ref / target_ref.
             for field in TemplateService._project_endpoint_constraints(template):
-                # Terminology refs
-                if field.terminology_ref:
-                    try:
-                        exists = await _terminology_exists(field.terminology_ref, gate)
-                        if not exists:
-                            errors.append(ValidationError(
-                                field=f"{prefix}fields.{field.name}.terminology_ref",
-                                code="invalid_reference",
-                                message=f"Terminology '{field.terminology_ref}' not found or inactive"
-                            ))
-                    except DefStoreError as e:
-                        warnings.append(ValidationWarning(
-                            field=f"{prefix}fields.{field.name}.terminology_ref",
-                            code="validation_failed",
-                            message=f"Could not validate terminology: {e!s}"
-                        ))
-
-                if field.array_terminology_ref:
-                    try:
-                        exists = await _terminology_exists(field.array_terminology_ref, gate)
-                        if not exists:
-                            errors.append(ValidationError(
-                                field=f"{prefix}fields.{field.name}.array_terminology_ref",
-                                code="invalid_reference",
-                                message=f"Terminology '{field.array_terminology_ref}' not found or inactive"
-                            ))
-                    except DefStoreError as e:
-                        warnings.append(ValidationWarning(
-                            field=f"{prefix}fields.{field.name}.array_terminology_ref",
-                            code="validation_failed",
-                            message=f"Could not validate terminology: {e!s}"
-                        ))
-
-                # Template refs
-                if field.template_ref:
-                    in_set = field.template_ref in set_ids or field.template_ref in set_values
-                    if not in_set:
-                        ref_tpl = await _visible(await TemplateService._find_template_by_ref(
-                            field.template_ref, namespace
-                        ), gate)
-                        if not ref_tpl:
-                            errors.append(ValidationError(
-                                field=f"{prefix}fields.{field.name}.template_ref",
-                                code="invalid_reference",
-                                message=f"Template '{field.template_ref}' not found"
-                            ))
-                        elif ref_tpl.status not in ("active",):
-                            errors.append(ValidationError(
-                                field=f"{prefix}fields.{field.name}.template_ref",
-                                code="invalid_reference",
-                                message=f"Template '{field.template_ref}' is {ref_tpl.status}, not active"
-                            ))
-                    # CASE-493: the nested ref must pin an existing version.
-                    if not await _pinned_version_exists(field.template_ref, field.template_ref_version, gate):
-                        errors.append(ValidationError(
-                            field=f"{prefix}fields.{field.name}.template_ref_version",
-                            code="invalid_reference",
-                            message=f"Nested template '{field.template_ref}' has no version {field.template_ref_version}"
-                        ))
-
-                if field.array_template_ref:
-                    in_set = field.array_template_ref in set_ids or field.array_template_ref in set_values
-                    if not in_set:
-                        ref_tpl = await _visible(await TemplateService._find_template_by_ref(
-                            field.array_template_ref, namespace
-                        ), gate)
-                        if not ref_tpl:
-                            errors.append(ValidationError(
-                                field=f"{prefix}fields.{field.name}.array_template_ref",
-                                code="invalid_reference",
-                                message=f"Template '{field.array_template_ref}' not found"
-                            ))
-                        elif ref_tpl.status not in ("active",):
-                            errors.append(ValidationError(
-                                field=f"{prefix}fields.{field.name}.array_template_ref",
-                                code="invalid_reference",
-                                message=f"Template '{field.array_template_ref}' is {ref_tpl.status}, not active"
-                            ))
-                    # CASE-493: the array-item ref must pin an existing version.
-                    if not await _pinned_version_exists(field.array_template_ref, field.array_template_ref_version, gate):
-                        errors.append(ValidationError(
-                            field=f"{prefix}fields.{field.name}.array_template_ref_version",
-                            code="invalid_reference",
-                            message=f"Array-item template '{field.array_template_ref}' has no version {field.array_template_ref_version}"
-                        ))
-
-                # Reference type fields
-                if field.type.value == "reference":
-                    if not field.reference_type:
-                        errors.append(ValidationError(
-                            field=f"{prefix}fields.{field.name}.reference_type",
-                            code="required",
-                            message="reference_type is required for reference fields"
-                        ))
-                    else:
-                        if field.reference_type.value == "document":
-                            if not field.target_templates:
-                                # target_templates is optional — warn only
-                                warnings.append(ValidationWarning(
-                                    field=f"{prefix}fields.{field.name}.target_templates",
-                                    code="recommended",
-                                    message="target_templates is recommended for document references"
-                                ))
-                            else:
-                                for tpl_val in field.target_templates:
-                                    in_set = tpl_val in set_values or tpl_val in set_ids
-                                    if not in_set:
-                                        ref_tpl = await _visible(await TemplateService._find_template_by_ref(
-                                            tpl_val, namespace
-                                        ), gate)
-                                        if not ref_tpl:
-                                            errors.append(ValidationError(
-                                                field=f"{prefix}fields.{field.name}.target_templates",
-                                                code="invalid_reference",
-                                                message=f"Template '{tpl_val}' not found"
-                                            ))
-                                        elif ref_tpl.status not in ("active",):
-                                            errors.append(ValidationError(
-                                                field=f"{prefix}fields.{field.name}.target_templates",
-                                                code="invalid_reference",
-                                                message=f"Template '{tpl_val}' is {ref_tpl.status}, not active"
-                                            ))
-
-                        elif field.reference_type.value == "term":
-                            if not field.target_terminologies:
-                                errors.append(ValidationError(
-                                    field=f"{prefix}fields.{field.name}.target_terminologies",
-                                    code="required",
-                                    message="target_terminologies is required for term references"
-                                ))
-                            else:
-                                for term_val in field.target_terminologies:
-                                    try:
-                                        exists = await _terminology_exists(term_val, gate)
-                                        if not exists:
-                                            errors.append(ValidationError(
-                                                field=f"{prefix}fields.{field.name}.target_terminologies",
-                                                code="invalid_reference",
-                                                message=f"Terminology '{term_val}' not found or inactive"
-                                            ))
-                                    except DefStoreError as e:
-                                        warnings.append(ValidationWarning(
-                                            field=f"{prefix}fields.{field.name}.target_terminologies",
-                                            code="validation_failed",
-                                            message=f"Could not validate terminology: {e!s}"
-                                        ))
+                await _check_field(field, prefix, gate)
 
         return errors, warnings
 
@@ -3367,6 +3157,7 @@ class TemplateService:
         known_templates = {}
         for t in activation_set:
             known_templates[t.value] = t.template_id
+            known_templates[f"{t.namespace}:{t.value}"] = t.template_id
             known_templates[t.template_id] = t.template_id
 
         # Normalize all references to canonical IDs (include reserved for activation set)
@@ -3634,12 +3425,14 @@ class TemplateService:
         namespace: str
     ) -> Template | None:
         """
-        Find a template by reference (ID or value).
+        Find a template by reference: its id, its value, or any identifier
+        the Registry resolves to it (``ns:VALUE``, a synonym).
 
-        Returns the latest version. Tries ID lookup first, then value lookup within namespace.
+        Returns the latest version, at any status — callers judge the status.
+        Tries the id, then the value within ``namespace``, then the Registry.
 
         Args:
-            ref: Template ID or value
+            ref: Template ID, value, or another registered identifier
             namespace: Namespace for value lookups
         """
         # Try by template_id within namespace first (return latest version)
@@ -3652,6 +3445,19 @@ class TemplateService:
             return results[0]
         # Try by value within namespace (return latest version)
         results = await Template.find({"namespace": namespace, "value": ref}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
+        if results:
+            return results[0]
+        # Any other form goes through the Registry, the identity authority. A
+        # draft's or a retired template's entry is not active, so every
+        # status is asked for; the caller decides what the status means.
+        try:
+            template_id = await resolve_entity_id(
+                ref, "template", namespace,
+                include_statuses=["active", "reserved", "inactive"],
+            )
+        except EntityNotFoundError:
+            return None
+        results = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         return results[0] if results else None
 
     @staticmethod

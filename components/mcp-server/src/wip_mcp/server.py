@@ -3135,10 +3135,13 @@ async def get_template_versions(
 
 @mcp.tool()
 async def validate_template(template_id: str, namespace: str | None = None) -> str:
-    """Validate a template's references (terminologies, parent templates).
+    """Validate a template against the checks activation applies.
 
-    Checks that all terminology_ref and extends references point to
-    active entities. Useful for draft templates before activation.
+    Its references (parent, nested templates, terminologies, document
+    reference targets, an edge type's endpoints) must exist, be active and be
+    readable by the caller; pinned versions must exist; reference fields must
+    declare what they reference. A draft is checked together with the drafts
+    it would activate alongside it (will_also_activate).
 
     Args:
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
