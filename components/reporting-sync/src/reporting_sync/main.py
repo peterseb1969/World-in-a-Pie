@@ -36,6 +36,7 @@ from wip_auth import (
     setup_auth,
     setup_key_sync,
 )
+from wip_auth.cache_events import subscribe_cache_invalidation
 from wip_auth.csv_cells import escape_cell
 from wip_auth.events import WIP_EVENTS_STREAM, EventBus, StreamSpec
 from wip_auth.ratelimit import setup_rate_limiting
@@ -617,6 +618,9 @@ async def lifespan(app: FastAPI):
     # disables the service. /status and /health read the live state.
     state.bus = EventBus(settings.nats_url, name="reporting-sync", streams=[_events_stream()])
     await state.bus.start()
+    # The Registry announces key, grant and namespace changes; caches here
+    # drop what they held and keys re-sync at once (wip_auth.cache_events).
+    subscribe_cache_invalidation(state.bus)
 
     # Search works with or without PostgreSQL; it gets the reader pool once
     # PostgreSQL is up.

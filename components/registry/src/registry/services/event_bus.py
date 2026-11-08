@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from wip_auth.cache_events import announce_entries_changed
+from wip_auth.cache_events import announce_access_changed, announce_entries_changed
 from wip_auth.events import EventBus
 
 _bus: EventBus = EventBus(None, name="registry")
@@ -36,3 +36,10 @@ async def entries_changed(entry_ids: Iterable[str]) -> None:
     """Tell other services' caches that these entries lost names or are gone
     (deleted, synonyms removed or released, merged into another entry)."""
     await announce_entries_changed(_bus, entry_ids)
+
+
+async def access_changed(keys: bool = True) -> None:
+    """Tell other services that grants changed and, with ``keys``, that
+    runtime keys did: they drop their cached grants and re-sync their keys at
+    once, instead of at their next poll (30 s) and their grant cache's TTL."""
+    await announce_access_changed(_bus, keys)

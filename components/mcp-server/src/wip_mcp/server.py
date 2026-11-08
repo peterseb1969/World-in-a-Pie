@@ -391,6 +391,18 @@ values pass through unresolved.
 This matters for apps: use a single-namespace key scoped to your app's namespace,
 and you can skip the `namespace` parameter on all API and MCP tool calls.
 
+**A key's access is its grants.** The `namespaces` list caps where a key may
+act and gives nothing itself; creating a key writes a grant on each listed
+namespace (`grant_permission`, else read). Revoking the grant ends the access.
+
+**A new key reaches the other services shortly after the Registry.** The
+Registry accepts a key it just created at once. Every other service learns of
+it within about a second where the install runs NATS, otherwise at its next
+key sync (up to 30 s); until then it answers 401 "Invalid API key (… may not
+have reached this service yet …)". Retry such a 401 shortly rather than
+recreating the key. A revoked key, and a changed grant, take effect on the
+same timescale.
+
 ## Ontology Relations
 Terms can be connected via typed relations to model hierarchies and
 associations. This is powerful for taxonomies, classification trees, org charts,
@@ -1547,6 +1559,9 @@ async def create_api_key(
 ) -> str:
     """Create a runtime API key. Returns the plaintext key (shown once, never stored).
 
+    The Registry accepts a new or changed key at once; the other services pick it up within about a second where the install runs NATS, otherwise within one key sync (up to 30 s). A 401 from another service right after creating the key means it
+    has not arrived there yet: retry shortly, do not recreate the key.
+
     Args:
         name: Unique name for the key (e.g., 'my-app')
         owner: Owner identifier (default 'system')
@@ -1596,6 +1611,9 @@ async def list_api_keys() -> str:
 @mcp.tool()
 async def revoke_api_key(name: str) -> str:
     """Revoke (hard-delete) a runtime API key. Keys wip-deploy manages (from the install's key file) cannot be revoked here.
+
+    The Registry refuses the key at once; the other services within about a
+    second where the install runs NATS, otherwise within one key sync (up to 30 s).
 
     Args:
         name: Name of the runtime key to revoke

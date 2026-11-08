@@ -7,6 +7,27 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A key change reaches every service within about a second
+
+- Services learned runtime keys only by polling the Registry every 30 s: a
+  key the Registry had just created was refused elsewhere with 401 "Invalid
+  API key" for up to 30 s (14–30 s measured on wip-pi), and a revoked key
+  kept working there as long. The Registry now announces every key write
+  (create, update, widen, narrow, revoke, key-file import) and grant write
+  (create, revoke, activate) on NATS subject `wip.cache.access.changed`;
+  every service drops its cached grants and, for a key change, re-syncs its
+  keys at once. Without NATS the 30 s poll remains the bound.
+- ingest-gateway and reporting-sync now subscribe to the Registry's cache
+  messages too (before, only def-store, template-store and document-store
+  did), so they also drop caches for deleted namespaces and changed entries
+  at once.
+- A service refusing a key it does not know says so: "Invalid API key (a key
+  created or changed in the last 30 seconds may not have reached this
+  service yet; retry shortly)". The Registry, which knows every key at once,
+  keeps the plain message.
+- The create/revoke routes, the MCP `create_api_key` / `revoke_api_key`
+  tools and `wip://conventions` state the timing.
+
 ### A runtime key's `namespaces` list is a scope, not a permission
 
 - A runtime (Console) key read every namespace its `namespaces` list named,

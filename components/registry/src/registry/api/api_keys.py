@@ -35,6 +35,7 @@ from ..models.grant import NamespaceGrant
 from ..models.reservation import RuntimeReservation
 from ..services import key_import, key_salt, key_shadowing, reservation_store
 from ..services.auth import require_admin_key, require_groups
+from ..services.event_bus import access_changed
 from ..services.managed import key_refusal
 from ..services.reservation_store import ReservationRefused
 from ..services.reservations import ReservationSettings, ReservationsUnavailable
@@ -222,6 +223,9 @@ async def create_api_key(
     `namespaces`) and gets `admin` on each, so it can create them with the
     reserved settings: an app key for an app wip-deploy does not manage.
     Every reservation is checked before anything is written.
+
+    The Registry accepts a new or changed key at once; the other services pick it up within about a second where the install runs NATS, otherwise within one key sync (up to 30 s). Until then another service answers 401 "Invalid API key" with a
+    note that the key may not have arrived yet.
     """
     provider = _get_provider()
 
@@ -318,6 +322,7 @@ async def create_api_key(
         )
     if reserve:
         logger.info("Runtime key %s reserves %s", doc.name, reserved_prefixes)
+    await access_changed()
 
     return APIKeyCreatedResponse(
         granted_namespaces=granted_namespaces,
@@ -509,6 +514,7 @@ async def update_api_key(
 
     await doc.save()
     await _refresh_provider(doc)
+    await access_changed()
 
     logger.info("Updated runtime API key: name=%s by=%s", name, get_identity_string())
 
@@ -566,6 +572,7 @@ async def add_key_namespace(
         await doc.save()
         await _refresh_provider(doc)
     await _set_grant(name, prefix, permission)
+    await access_changed()
     if request.reserve is not None:
         await reservation_store.save_reservation(
             prefix, request.reserve, name, get_identity_string()
@@ -600,6 +607,7 @@ async def remove_key_namespace(
     await doc.save()
     await _refresh_provider(doc)
     await NamespaceGrant.find(_grant_query(name, prefix)).delete()
+    await access_changed()
     reservation = None
     held = await RuntimeReservation.find_one(
         RuntimeReservation.prefix == prefix
@@ -627,6 +635,9 @@ async def delete_api_key(
     _admin: str = Depends(require_admin_key),
 ) -> dict:
     """Hard-delete a runtime API key and its namespace grants.
+
+    The Registry refuses the key at once; the other services within about a
+    second where the install runs NATS, otherwise within one key sync (up to 30 s).
 
     Config-file keys cannot be deleted. The response lists the namespaces
     whose grants to the key were revoked with it (`revoked_grants`). The
@@ -661,6 +672,7 @@ async def delete_api_key(
     if grants:
         await NamespaceGrant.find(grant_query).delete()
     revoked_grants = sorted({g.namespace for g in grants})
+    await access_changed()
 
     # Its reservations: released when the namespace was never created, kept
     # (and reported) when it exists, so an operator decides. The namespace

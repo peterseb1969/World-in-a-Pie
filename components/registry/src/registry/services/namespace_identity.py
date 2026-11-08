@@ -119,6 +119,9 @@ async def activate_orphans(ns: Namespace, actor: str) -> list[str]:
             "Namespace '%s' (id %s) created by %s: activated %d orphaned grant(s) "
             "made for it: %s", ns.prefix, ns.namespace_id, actor, len(labels), ", ".join(labels),
         )
+        from .event_bus import access_changed
+
+        await access_changed(keys=False)
     return labels
 
 

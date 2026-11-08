@@ -26,6 +26,12 @@ drops the resolutions it cached to those ids, whatever spelling they were
 cached under, so a name re-created for another entity, or moved to one,
 resolves to it at once.
 
+When a key or a grant changes, the Registry publishes
+``ACCESS_CHANGED_SUBJECT``: every process drops its grant cache, and — when
+keys changed (created, changed, narrowed, widened, revoked) — re-syncs the
+runtime keys at once instead of at its next poll, so a key created a moment
+ago is accepted, and a revoked one refused, everywhere within about a second.
+
 The message is plain NATS publish/subscribe, at most once, and stored by no
 stream: a message that is lost (NATS down, a process reconnecting) leaves the
 caches to expire on their TTL, which stays the bound. Without NATS — a
@@ -56,11 +62,17 @@ ENTRIES_CHANGED_SUBJECT = "wip.cache.entries.changed"
 """Published by the Registry when entries lost names or were removed;
 payload ``{"entry_ids": [...]}``. Outside every stream, like the above."""
 
+ACCESS_CHANGED_SUBJECT = "wip.cache.access.changed"
+"""Published by the Registry when keys or grants changed; payload
+``{"keys": true|false}`` (true: the runtime key set changed, re-sync it).
+Outside every stream, like the above."""
+
 # Ids per message: a bulk delete of thousands stays far below NATS's payload
 # limit (a UUID is ~40 bytes in JSON).
 _IDS_PER_MESSAGE = 1000
 
 _namespace_flushers: list[Callable[[str], None]] = []
+_key_resyncers: list[Callable[[], None]] = []
 
 
 def on_namespace_deleted(flush: Callable[[str], None]) -> None:
@@ -86,6 +98,32 @@ def flush_namespace(prefix: str) -> None:
     logger.info("caches flushed for deleted namespace '%s'", prefix)
 
 
+def on_keys_changed(resync: Callable[[], None]) -> None:
+    """Register ``resync()``, called when the Registry says runtime keys
+    changed. KeySyncService registers its immediate sync. Registering the
+    same callable twice is a no-op."""
+    if resync not in _key_resyncers:
+        _key_resyncers.append(resync)
+
+
+def off_keys_changed(resync: Callable[[], None]) -> None:
+    """Unregister a callable registered with ``on_keys_changed``."""
+    if resync in _key_resyncers:
+        _key_resyncers.remove(resync)
+
+
+def access_changed(keys: bool) -> None:
+    """Drop this process's cached grants; when ``keys``, re-sync its keys."""
+    clear_permission_cache()
+    if not keys:
+        return
+    for resync in list(_key_resyncers):
+        try:
+            resync()
+        except Exception:  # one broken listener must not keep the others stale
+            logger.exception("key re-sync after a key change failed to start")
+
+
 def forget_entries(entry_ids: Iterable[str]) -> int:
     """Drop this process's cached resolutions to ``entry_ids``."""
     dropped = forget_resolutions(entry_ids)
@@ -97,6 +135,9 @@ def forget_entries(entry_ids: Iterable[str]) -> int:
 async def _handle(msg: Any) -> None:
     try:
         body = json.loads(msg.data)
+        if msg.subject == ACCESS_CHANGED_SUBJECT:
+            access_changed(bool(body.get("keys")))
+            return
         if msg.subject == ENTRIES_CHANGED_SUBJECT:
             ids = body["entry_ids"]
             if not isinstance(ids, list):
@@ -129,6 +170,7 @@ def subscribe_cache_invalidation(bus: EventBus) -> asyncio.Task[None] | None:
         subs = [
             await nc.subscribe(NAMESPACE_DELETED_SUBJECT, cb=_handle),
             await nc.subscribe(ENTRIES_CHANGED_SUBJECT, cb=_handle),
+            await nc.subscribe(ACCESS_CHANGED_SUBJECT, cb=_handle),
         ]
         try:
             await asyncio.Event().wait()  # until the supervisor cancels us
@@ -181,3 +223,14 @@ async def announce_entries_changed(bus: EventBus, entry_ids: Iterable[str]) -> b
         for start in range(0, len(ids), _IDS_PER_MESSAGE)
     ]
     return await _publish(bus, ENTRIES_CHANGED_SUBJECT, payloads, f"{len(ids)} changed entr(ies)")
+
+
+async def announce_access_changed(bus: EventBus, keys: bool) -> bool:
+    """Tell every subscribed process that grants changed and, with ``keys``,
+    that runtime keys changed too. True when handed to NATS; False when the
+    bus is not configured or not connected (then keys wait for the next poll
+    and grants for their cache TTL)."""
+    payload = json.dumps({"keys": keys}).encode()
+    return await _publish(
+        bus, ACCESS_CHANGED_SUBJECT, [payload], "changed keys" if keys else "changed grants",
+    )

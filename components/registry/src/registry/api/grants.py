@@ -29,6 +29,7 @@ from ..models.namespace import Namespace
 from ..models.reservation import RuntimeReservation
 from ..services.auth import require_admin_key, require_api_key
 from ..services.errors import error_fields
+from ..services.event_bus import access_changed
 from ..services.managed import MANAGED_BY_DEPLOYER, grant_refusal
 
 # The wire-level set of auth_method values UserIdentity accepts. Mirrors
@@ -340,6 +341,12 @@ class NamespaceAccess:
 # =============================================================================
 
 
+async def _announce_grant_changes(results: list[dict], changed: tuple[str, ...]) -> None:
+    """Tell other services' grant caches when any item changed a grant."""
+    if any(r["status"] in changed for r in results):
+        await access_changed(keys=False)
+
+
 @router.get(
     "/{prefix}/grants",
     response_model=list[GrantResponse],
@@ -433,6 +440,7 @@ async def create_grants(
             })
 
     succeeded = sum(1 for r in results if r["status"] != "error")
+    await _announce_grant_changes(results, ("created", "updated"))
     return {
         "results": results,
         "total": len(items),
@@ -481,6 +489,7 @@ async def revoke_grants(
             results.append({"index": i, "status": "not_found", "subject": subject})
 
     succeeded = sum(1 for r in results if r["status"] == "revoked")
+    await _announce_grant_changes(results, ("revoked",))
     return {
         "results": results,
         "total": len(items),
@@ -539,6 +548,7 @@ async def activate_grants(
             )
             results.append({"index": i, "status": "activated", "subject": subject})
 
+    await _announce_grant_changes(results, ("activated",))
     return {
         "results": results,
         "total": len(items),

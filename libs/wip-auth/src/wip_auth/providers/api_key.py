@@ -330,6 +330,18 @@ class APIKeyProvider:
         self._runtime_ttl = ttl_seconds
         self._runtime_deadline = _monotonic() + ttl_seconds
 
+    def _invalid_message(self) -> str:
+        """The refusal of a key this process does not know. Where the runtime
+        keys are a synced copy of the Registry's, a key the Registry created
+        or changed a moment ago may simply not have arrived yet, and the
+        message says so: "invalid" alone reads as "this key is wrong"."""
+        if self._runtime_ttl is None:
+            return "Invalid API key"
+        return (
+            "Invalid API key (a key created or changed in the last 30 seconds "
+            "may not have reached this service yet; retry shortly)"
+        )
+
     def runtime_keys_expired(self) -> bool:
         """Whether the runtime keys are past their deadline."""
         deadline = self._runtime_deadline
@@ -391,7 +403,7 @@ class APIKeyProvider:
         if rejected:
             if expired:
                 raise self._unverifiable()
-            return None, "Invalid API key"
+            return None, self._invalid_message()
 
         # Slow path: bcrypt verify against the registered keys — only the
         # config keys once the runtime copy is past its deadline.
@@ -413,7 +425,7 @@ class APIKeyProvider:
             self._reject(fingerprint)
         if expired:
             raise self._unverifiable()
-        return None, "Invalid API key"
+        return None, self._invalid_message()
 
     def _recently_rejected(self, fingerprint: str) -> bool:
         expiry = self._rejected.get(fingerprint)

@@ -496,6 +496,10 @@ async def run_pass(provider: APIKeyProvider | None = None) -> ImportReport:
                 report.keys_created, report.keys_updated, report.keys_removed,
                 report.grants_changed, report.reservations_changed, report.taken_over,
             )
+        if any(changes[:5]):
+            from .event_bus import access_changed
+
+            await access_changed(keys=any(changes[:4]))
         return report
 
 

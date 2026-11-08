@@ -22,6 +22,7 @@ from wip_auth import (
     setup_auth,
     setup_key_sync,
 )
+from wip_auth.cache_events import subscribe_cache_invalidation
 from wip_auth.events import EventBus, StreamSpec
 from wip_auth.security import check_production_security
 
@@ -111,6 +112,9 @@ async def lifespan(app: FastAPI):
     # vanished NATS never blocks startup or leaves the worker dead.
     state.bus = EventBus(settings.nats_url, name="ingest-gateway", streams=_ingest_streams())
     await state.bus.start()
+    # The Registry announces key, grant and namespace changes; caches here
+    # drop what they held and keys re-sync at once (wip_auth.cache_events).
+    subscribe_cache_invalidation(state.bus)
 
     # Initialize HTTP client
     state.http_client = IngestHTTPClient()

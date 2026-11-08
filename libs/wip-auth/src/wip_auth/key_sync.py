@@ -12,6 +12,12 @@ succeeds again; a failed sync never extends the deadline. Config keys are
 not a copy of the Registry and keep working. Before the first successful
 sync the runtime keys count as unconfirmed.
 
+Between polls, a service also syncs at once when the Registry announces over
+NATS that keys changed (``cache_events.ACCESS_CHANGED_SUBJECT``): a key the
+Registry just created, narrowed or revoked reaches the service in about a
+second. Announcements that overlap a running sync are folded into one more
+sync after it. Without NATS, the poll is the whole mechanism.
+
 The response carries the salt the Registry hashes runtime keys with, in the
 RUNTIME_SALT_HEADER header; the provider verifies runtime keys under it from
 the same sync on. A response without the header (a Registry older than the
@@ -24,6 +30,7 @@ import logging
 
 import httpx
 
+from .cache_events import off_keys_changed, on_keys_changed
 from .models import APIKeyRecord
 from .providers.api_key import APIKeyProvider
 
@@ -55,12 +62,16 @@ class KeySyncService:
         self.ttl_seconds = ttl_seconds if ttl_seconds is not None else 3 * interval_seconds
         self._task: asyncio.Task | None = None
         self._running = False
+        self._sync_lock = asyncio.Lock()
+        self._again = False
+        self._pending: set[asyncio.Task] = set()
 
     async def start(self) -> None:
         """Start the background polling loop."""
         self.provider.expire_runtime_keys()
         self._running = True
         self._task = asyncio.create_task(self._poll_loop())
+        on_keys_changed(self.request_sync)
         logger.info(
             "Key sync started: registry=%s interval=%ds ttl=%gs",
             self.registry_url,
@@ -71,21 +82,45 @@ class KeySyncService:
     async def stop(self) -> None:
         """Stop the background polling loop."""
         self._running = False
+        off_keys_changed(self.request_sync)
+        for task in list(self._pending):
+            task.cancel()
         if self._task and not self._task.done():
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
         logger.info("Key sync stopped.")
 
+    def request_sync(self) -> None:
+        """Sync now, in the background (the Registry announced a key change)."""
+        if not self._running:
+            return
+        task = asyncio.get_running_loop().create_task(self.sync_now())
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
+
+    async def sync_now(self) -> None:
+        """Sync, or — when a sync is already running — sync once more after
+        it, so a change announced mid-sync is never missed."""
+        if self._sync_lock.locked():
+            self._again = True
+            return
+        async with self._sync_lock:
+            while True:
+                self._again = False
+                await self._sync_once()
+                if not self._again:
+                    break
+
     async def _poll_loop(self) -> None:
         """Polling loop — runs until stopped."""
         # Initial sync immediately
-        await self._sync_once()
+        await self.sync_now()
         while self._running:
             try:
                 await asyncio.sleep(self.interval_seconds)
                 if self._running:
-                    await self._sync_once()
+                    await self.sync_now()
             except asyncio.CancelledError:
                 break
             except Exception:
