@@ -59,7 +59,8 @@ unhandled error. Now:
 - **MongoDB serves with `--noscripting`.** No WIP query uses `$where`,
   `$function` or `$accumulator`. An existing install picks it up on its next
   `wip-deploy redeploy` (the MongoDB start script changes, so MongoDB
-  restarts once).
+  restarts once). `wip-deploy verify --security` reports an install still
+  rendered without it ("MongoDB server-side JavaScript").
 
 ### A namespace locked for deletion stays locked
 

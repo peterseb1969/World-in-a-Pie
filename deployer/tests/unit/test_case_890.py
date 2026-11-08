@@ -53,7 +53,7 @@ from wip_deploy.spec import (
     PlatformSpec,
     SecretsSpec,
 )
-from wip_deploy.verify_security import check_mongodb_authentication
+from wip_deploy.verify_security import check_mongodb_authentication, check_mongodb_scripting
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 _ALL_DBS = ["wip_def_store", "wip_document_store", "wip_registry", "wip_template_store"]
@@ -242,3 +242,26 @@ class TestVerifySecurity:
         tree.write(tmp_path / "install")
         (tmp_path / "install" / ENTRYPOINT_RENDER_PATH).write_text("exec mongod --bind_ip_all\n")
         assert not check_mongodb_authentication(tmp_path / "install", d).passed
+
+    @pytest.mark.parametrize("target", ["compose", "dev", "k8s"])
+    def test_fresh_render_runs_without_scripting(
+        self, target: str, tmp_path: Path, discovery: Discovery
+    ) -> None:
+        tree, _, d = _render(target, tmp_path, discovery)
+        tree.write(tmp_path / "install")
+        result = check_mongodb_scripting(tmp_path / "install", d)
+        assert result.passed, result.message
+
+    def test_script_rendered_before_noscripting_fails(
+        self, tmp_path: Path, discovery: Discovery
+    ) -> None:
+        # The exact serving line installs rendered before the flag carry.
+        tree, _, d = _render("compose", tmp_path, discovery)
+        tree.write(tmp_path / "install")
+        script = tmp_path / "install" / ENTRYPOINT_RENDER_PATH
+        script.write_text(script.read_text().replace(" --noscripting", ""))
+        result = check_mongodb_scripting(tmp_path / "install", d)
+        assert not result.passed
+        assert result.fix_hint and "redeploy" in result.fix_hint
+        # Authentication is a separate guarantee and still passes.
+        assert check_mongodb_authentication(tmp_path / "install", d).passed

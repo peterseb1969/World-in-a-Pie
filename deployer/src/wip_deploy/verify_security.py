@@ -639,6 +639,37 @@ def check_mongodb_authentication(install_dir: Path, deployment: Deployment) -> C
     return CheckResult(name, True, f"{len(users)} MongoDB users ({', '.join(sorted(users))})")
 
 
+def check_mongodb_scripting(install_dir: Path, deployment: Deployment) -> CheckResult:
+    """The serving MongoDB runs no server-side JavaScript (--noscripting).
+
+    No WIP query needs $where, $function or $accumulator, so a mongod that
+    can run them only adds what a filter that slipped past validation could
+    execute on the database every service shares."""
+    name = "MongoDB server-side JavaScript"
+    try:
+        deployed, script = _rendered_mongodb_entrypoint(install_dir, deployment)
+    except yaml.YAMLError as exc:
+        return CheckResult(name, False, f"could not parse the rendered manifests: {exc}")
+    if not deployed:
+        return CheckResult(name, True, "not applicable (MongoDB not deployed)")
+    serving = [
+        line for line in (script or "").splitlines() if line.strip().startswith("exec mongod")
+    ]
+    if not serving or not all("--noscripting" in line.split() for line in serving):
+        return CheckResult(
+            name,
+            False,
+            "MongoDB serves with server-side JavaScript enabled",
+            fix_hint=(
+                "This install was rendered before MongoDB was started with\n"
+                "--noscripting, so $where and $function can run JavaScript on it.\n"
+                "Re-render it with the current deployer: `wip-deploy redeploy\n"
+                "--name <install>` (MongoDB restarts once)."
+            ),
+        )
+    return CheckResult(name, True, "serving mongod runs with --noscripting")
+
+
 # ────────────────────────────────────────────────────────────────────
 # Top-level entry
 # ────────────────────────────────────────────────────────────────────
@@ -657,6 +688,7 @@ def verify_security(install_dir: Path, deployment: Deployment) -> SecurityReport
         check_caddy_security_headers(install_dir, deployment),
         check_nats_authentication(install_dir, deployment),
         check_mongodb_authentication(install_dir, deployment),
+        check_mongodb_scripting(install_dir, deployment),
     ]
     return SecurityReport(install_dir=install_dir, results=results)
 
