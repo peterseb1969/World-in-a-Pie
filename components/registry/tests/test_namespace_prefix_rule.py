@@ -8,15 +8,11 @@ path that creates one; a namespace that already exists keeps its name and
 stays writable.
 """
 
-import json
-import uuid
-import zipfile
 
 import pytest
 from httpx import AsyncClient
 
 from registry.models.namespace import Namespace, prefix_error
-from registry.services.import_service import ImportService
 
 BAD = ["a.b", "UPPER", "with space", "star*", "tail>", "-leading", "_leading", "", "ns/x"]
 GOOD = ["a", "dev", "customer-abc", "kb_research", "0day", "p991-src"]
@@ -68,19 +64,3 @@ async def test_an_existing_namespace_keeps_its_name_and_stays_writable(
     assert response.json()["description"] == "updated"
 
 
-@pytest.mark.asyncio
-async def test_import_refuses_to_create_an_invalid_prefix(client, tmp_path):
-    archive = tmp_path / "export.zip"
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("manifest.json", json.dumps({
-            "prefix": "source", "namespace_id": str(uuid.uuid4()), "description": "copy",
-            "isolation_mode": "open", "allowed_external_refs": [], "id_config": {},
-        }))
-    svc = ImportService(
-        def_store_url="http://def", template_store_url="http://tpl",
-        document_store_url="http://doc", api_key="k",
-    )
-
-    with pytest.raises(ValueError, match="Invalid namespace prefix"):
-        await svc.import_namespace(str(archive), target_prefix="bad.prefix", mode="create")
-    assert await Namespace.find_one({"prefix": "bad.prefix"}) is None

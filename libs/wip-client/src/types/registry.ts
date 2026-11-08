@@ -235,22 +235,6 @@ export interface MergeRequest {
   updated_by?: string
 }
 
-// ---- Namespace Export/Import ----
-
-export interface ExportResponse {
-  export_id: string
-  prefix: string
-  download_url: string
-  stats: Record<string, number>
-}
-
-export interface ImportResponse {
-  prefix: string
-  mode: 'create' | 'merge' | 'replace'
-  stats: Record<string, number>
-  source_prefix: string | null
-}
-
 // ---- Grants ----
 
 export type GrantSubjectType = 'user' | 'api_key' | 'group'

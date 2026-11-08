@@ -5,23 +5,19 @@ Each namespace has configurable ID algorithms per entity type.
 """
 
 import logging
-import os
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import FileResponse
 from pydantic import ValidationError
 from pymongo.errors import DuplicateKeyError
 
 from wip_auth import UserIdentity, get_auth_config
 
 from ..models.api_models import (
-    ExportResponse,
-    ImportResponse,
     NamespaceCreate,
     NamespaceResponse,
     NamespaceStatsResponse,
@@ -623,144 +619,3 @@ async def initialize_wip_namespace(
     await ns.create()
 
     return namespace_to_response(ns)
-
-
-# =============================================================================
-# Export/Import Endpoints
-# =============================================================================
-
-@router.post(
-    "/{prefix}/export",
-    response_model=ExportResponse,
-    summary="Export namespace"
-)
-async def export_namespace(
-    prefix: str,
-    include_files: bool = Query(False, description="Include binary file content"),
-    api_key: str = Depends(require_admin_key)
-) -> ExportResponse:
-    """Export a namespace to a downloadable archive."""
-    from ..services.export_service import ExportService
-
-    ns = await Namespace.find_one({"prefix": prefix})
-    if not ns:
-        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
-
-    def_store_url = os.getenv("DEF_STORE_URL", "http://localhost:8002")
-    template_store_url = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
-    document_store_url = os.getenv("DOCUMENT_STORE_URL", "http://localhost:8004")
-
-    export_service = ExportService(
-        def_store_url=def_store_url,
-        template_store_url=template_store_url,
-        document_store_url=document_store_url,
-        api_key=api_key,
-    )
-
-    try:
-        zip_path, stats = await export_service.export_namespace(
-            namespace=ns, include_files=include_files,
-        )
-        export_id = os.path.basename(zip_path).replace(".zip", "")
-        return ExportResponse(
-            export_id=export_id,
-            prefix=prefix,
-            download_url=f"/api/registry/namespaces/exports/{export_id}",
-            stats=stats,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Export failed: {e!s}") from e
-
-
-@router.get(
-    "/exports/{export_id}",
-    summary="Download export file"
-)
-async def download_export(
-    export_id: str,
-    identity: UserIdentity = Depends(require_api_key)
-):
-    """Download an exported namespace archive."""
-    import tempfile
-
-    zip_path = os.path.join(tempfile.gettempdir(), f"{export_id}.zip")
-
-    if not os.path.exists(zip_path):
-        raise HTTPException(status_code=404, detail="Export file not found or expired")
-
-    return FileResponse(
-        path=zip_path,
-        filename=f"{export_id}.zip",
-        media_type="application/zip",
-    )
-
-
-@router.post(
-    "/import",
-    response_model=ImportResponse,
-    summary="Import namespace"
-)
-async def import_namespace(
-    file: UploadFile = File(..., description="Export ZIP file to import"),
-    target_prefix: str = Query(None, description="Optional new prefix"),
-    mode: Literal["create", "merge", "replace"] = Query("create", description="Import mode: create, merge, replace"),
-    imported_by: str = Query(None, description="User performing import"),
-    api_key: str = Depends(require_admin_key)
-) -> ImportResponse:
-    """Import a namespace from an exported archive."""
-    import shutil
-    import tempfile
-
-    from ..services.import_service import ImportService
-
-    if mode not in ("create", "merge", "replace"):
-        raise HTTPException(status_code=400, detail="Invalid mode. Must be one of: create, merge, replace")
-
-    # delete=False is the point: the handle is closed right after the copy,
-    # the PATH then outlives it for ImportService to read, and the finally
-    # below unlinks it — a with-block would add nothing but nesting.
-    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".zip")  # noqa: SIM115
-    try:
-        shutil.copyfileobj(file.file, temp_file)
-        temp_file.close()
-
-        def_store_url = os.getenv("DEF_STORE_URL", "http://localhost:8002")
-        template_store_url = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
-        document_store_url = os.getenv("DOCUMENT_STORE_URL", "http://localhost:8004")
-
-        import_service = ImportService(
-            def_store_url=def_store_url,
-            template_store_url=template_store_url,
-            document_store_url=document_store_url,
-            api_key=api_key,
-        )
-
-        ns, stats = await import_service.import_namespace(
-            zip_path=temp_file.name,
-            target_prefix=target_prefix,
-            mode=mode,
-            imported_by=imported_by,
-        )
-
-        import json
-        import zipfile
-        source_prefix = None
-        with zipfile.ZipFile(temp_file.name, "r") as zf, zf.open("manifest.json") as mf:
-            manifest = json.load(mf)
-            source_prefix = manifest.get("prefix")
-
-        return ImportResponse(
-            prefix=ns.prefix,
-            mode=mode,
-            stats=stats,
-            source_prefix=source_prefix if source_prefix != ns.prefix else None,
-        )
-
-    except IdPrefixError as e:
-        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Import failed: {e!s}") from e
-    finally:
-        os.unlink(temp_file.name)

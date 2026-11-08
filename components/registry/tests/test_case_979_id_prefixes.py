@@ -10,16 +10,12 @@ before the rule are grandfathered: re-sending them is never refused, and the
 startup check only reports them.
 """
 
-import json
-import uuid
-import zipfile
 
 import pytest
 from httpx import AsyncClient
 
 from registry.models.namespace import Namespace
-from registry.services.id_prefixes import IdPrefixError, backfill_id_prefixes
-from registry.services.import_service import ImportService
+from registry.services.id_prefixes import backfill_id_prefixes
 
 
 def _cfg(**by_type: str) -> dict:
@@ -98,30 +94,6 @@ async def test_re_sending_the_stored_config_is_never_refused(
     assert ok.status_code == 200
     again = await _put(client, auth_headers, "pfx-own", {"id_config": _cfg(files="OWN-")})
     assert again.status_code == 200, again.text
-
-
-@pytest.mark.asyncio
-async def test_import_cannot_take_a_held_prefix(client: AsyncClient, tmp_path):
-    held = await Namespace.find_one({"prefix": "default"})
-    held.id_config = _cfg(templates="TPL-")
-    held.id_prefixes = ["TPL-"]
-    await held.save()
-
-    archive = tmp_path / "export.zip"
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("manifest.json", json.dumps({
-            "prefix": "default", "namespace_id": str(uuid.uuid4()), "description": "copy",
-            "isolation_mode": "open", "allowed_external_refs": [],
-            "id_config": _cfg(templates="TPL-"),
-        }))
-    svc = ImportService(
-        def_store_url="http://def", template_store_url="http://tpl",
-        document_store_url="http://doc", api_key="k",
-    )
-    with pytest.raises(IdPrefixError) as exc:
-        await svc.import_namespace(str(archive), target_prefix="default-copy", mode="create")
-    assert exc.value.status_code == 409
-    assert await Namespace.find_one({"prefix": "default-copy"}) is None
 
 
 @pytest.mark.asyncio

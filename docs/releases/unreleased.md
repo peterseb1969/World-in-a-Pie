@@ -7,6 +7,21 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### The Registry's namespace export/import is gone; use backup/restore
+
+`POST /api/registry/namespaces/{prefix}/export`,
+`GET /api/registry/namespaces/exports/{export_id}` and
+`POST /api/registry/namespaces/import` are removed, with `@wip/client`'s
+`exportNamespace`, `downloadExport` and `importNamespace` (`@wip/client`
+0.89.0; the `ExportResponse` and `ImportResponse` types go too). The import
+posted one object per request to endpoints that take a list, so it restored
+only the namespace record and still answered 200 with zero errors; the export
+broke off silently at the first failed page. Back up and restore a namespace
+with the document-store engine: `wip-toolkit backup` / `restore`, the MCP
+`start_backup` / `start_restore` tools, or
+`POST /api/document-store/backup/namespaces/{namespace}/backup` and
+`…/restore`. `POST /api/registry/entries/export` (used by that engine) stays.
+
 ### Namespaces have an id of their own; archives without it are refused
 
 A namespace was known only by its name, so a grant made for one namespace and
@@ -18,8 +33,8 @@ Registry.
   exists); the namespace created under it takes it. A plain create mints one.
   Deleting a namespace ends its id, and a reservation that outlives it gets a
   new one. An existing namespace's id never changes.
-- **Restores.** A platform admin's ID-preserving restore (and the Registry's
-  namespace import) re-creates the namespace under its archived id, via
+- **Restores.** A platform admin's ID-preserving restore re-creates the
+  namespace under its archived id, via
   `namespace_id` on `PUT /api/registry/namespaces/{prefix}`: platform admins
   only (403 otherwise), honoured only when the call creates the namespace.
   An id a live namespace already holds makes a copy with a new id (a
@@ -34,8 +49,8 @@ Registry.
   of the same name no longer receives the archive's grants.
 - **Hard cut-over: archives without namespace ids are refused.** That covers
   system archives (grants and reservations), namespace archives
-  (`namespace_config.namespace_id`, wip-archive 0.30.0) and Registry
-  namespace exports. To bring an old archive forward, restore it on a WIP
+  (`namespace_config.namespace_id`, wip-archive 0.30.0). To bring an old
+  archive forward, restore it on a WIP
   from before this change, start this version, and back up again.
 - **Startup migration**, once: every namespace and reservation without an id
   gets one; orphaned grants without one are deleted and logged, since nothing

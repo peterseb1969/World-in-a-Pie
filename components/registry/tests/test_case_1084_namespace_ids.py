@@ -14,15 +14,12 @@ Provenance: CASE-1084.
 
 import json
 import uuid
-import zipfile
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from registry.models.grant import NamespaceGrant
 from registry.models.namespace import Namespace
 from registry.models.reservation import RuntimeReservation
-from registry.services.import_service import ImportService
 
 KEYS = "/api/registry/api-keys"
 NS = "/api/registry/namespaces"
@@ -263,52 +260,6 @@ async def test_an_archive_without_namespace_ids_is_refused(client, auth_headers)
     archive["reservations"].append({"prefix": _p("old"), "app": "someone"})
     resp = await _restore(client, auth_headers, archive)
     assert resp.status_code == 422, resp.text
-
-
-# --- namespace import ---------------------------------------------------------
-
-
-def _http_returning_nothing() -> MagicMock:
-    empty = MagicMock(status_code=200)
-    empty.json.return_value = {"items": [], "total": 0, "pages": 1}
-    http = MagicMock()
-    http.get = AsyncMock(return_value=empty)
-    http.post = AsyncMock(return_value=empty)
-    http.__aenter__ = AsyncMock(return_value=http)
-    http.__aexit__ = AsyncMock(return_value=None)
-    return http
-
-
-async def _import(tmp_path, manifest: dict) -> None:
-    archive = tmp_path / "ns.zip"
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-    with patch("httpx.AsyncClient", return_value=_http_returning_nothing()):
-        await ImportService(
-            def_store_url="http://def", template_store_url="http://tpl",
-            document_store_url="http://doc", api_key="k",
-        ).import_namespace(str(archive), mode="create", imported_by="tester")
-
-
-@pytest.mark.asyncio
-async def test_an_import_re_creates_the_archived_namespace(client, tmp_path):
-    prefix, archived = _p("imp"), _uuid()
-    await _orphan(prefix, "mine", archived)
-    await _import(tmp_path, {"version": "2.0", "prefix": prefix, "namespace_id": archived})
-    ns = await Namespace.find_one(Namespace.prefix == prefix)
-    assert ns.namespace_id == archived
-    assert not await _is_orphan(prefix, "mine")
-
-
-@pytest.mark.asyncio
-async def test_an_import_without_a_namespace_id_is_refused(client, tmp_path):
-    prefix = _p("imp-old")
-    with pytest.raises(ValueError, match="namespace_id"):
-        await _import(tmp_path, {"version": "2.0", "prefix": prefix})
-    assert await Namespace.find_one(Namespace.prefix == prefix) is None
-
-
-# --- migration -----------------------------------------------------------------
 
 
 @pytest.mark.asyncio

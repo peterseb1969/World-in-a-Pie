@@ -27,8 +27,6 @@ ADMIN_ROUTES = [
     ("POST", "/api/registry/namespaces/case844/archive", None),
     ("POST", "/api/registry/namespaces/case844/restore", None),
     ("POST", "/api/registry/namespaces/initialize-wip", None),
-    ("POST", "/api/registry/namespaces/case844/export", None),
-    ("POST", "/api/registry/namespaces/import", None),
     ("DELETE", "/api/registry/namespaces/case844", None),
     ("POST", "/api/registry/namespaces/case844/resume-delete", None),
     ("PATCH", "/api/registry/namespaces/case844", {"deletion_mode": "retain"}),

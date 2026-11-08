@@ -1324,18 +1324,6 @@ var RegistryService = class extends BaseService {
     );
     return resp.results[0];
   }
-  // ---- Namespace Export/Import ----
-  async exportNamespace(prefix, options) {
-    return this.post(`/namespaces/${prefix}/export`, null, options);
-  }
-  async downloadExport(exportId) {
-    return this.getBlob(`/namespaces/exports/${exportId}`);
-  }
-  async importNamespace(file, options) {
-    const form = new FormData();
-    form.append("file", file);
-    return this.postFormData("/namespaces/import", form, options);
-  }
   // ---- Grants ----
   async listGrants(prefix) {
     return this.get(`/namespaces/${prefix}/grants`);

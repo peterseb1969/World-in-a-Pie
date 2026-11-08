@@ -5,17 +5,11 @@ writing key can read this namespace; 'open' accepts any writer. The stores
 enforce it (wip_auth.reference_policy); the Registry stores and serves it.
 """
 
-import json
-import uuid
-import zipfile
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from httpx import AsyncClient
 
 from registry.models.namespace import Namespace
-from registry.services.export_service import ExportService
-from registry.services.import_service import ImportService
 
 
 async def _put(client: AsyncClient, headers: dict, prefix: str, body: dict):
@@ -85,49 +79,3 @@ async def test_a_stored_wip_reads_open_whatever_was_stored(client: AsyncClient):
     )
     ns = await Namespace.find_one({"prefix": "wip"})
     assert ns.inbound_references == "open"
-
-
-def _http_returning_nothing() -> MagicMock:
-    empty = MagicMock(status_code=200)
-    empty.json.return_value = {"items": [], "total": 0, "pages": 1}
-    http = MagicMock()
-    http.get = AsyncMock(return_value=empty)
-    http.post = AsyncMock(return_value=empty)
-    http.__aenter__ = AsyncMock(return_value=http)
-    http.__aexit__ = AsyncMock(return_value=None)
-    return http
-
-
-def _services(cls):
-    return cls(
-        def_store_url="http://def", template_store_url="http://tpl",
-        document_store_url="http://doc", api_key="k",
-    )
-
-
-@pytest.mark.asyncio
-async def test_export_carries_the_setting(client: AsyncClient):
-    await Namespace(prefix="inb-export", inbound_references="open").insert()
-    ns = await Namespace.find_one({"prefix": "inb-export"})
-    with patch("httpx.AsyncClient", return_value=_http_returning_nothing()):
-        zip_path, _stats = await _services(ExportService).export_namespace(ns)
-    with zipfile.ZipFile(zip_path) as zf, zf.open("manifest.json") as m:
-        assert json.load(m)["inbound_references"] == "open"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(("manifest_value", "expected"), [("open", "open"), (None, "closed")])
-async def test_import_applies_the_setting(client: AsyncClient, tmp_path, manifest_value, expected):
-    prefix = f"inb-import-{expected}"
-    manifest = {"version": "2.0", "prefix": prefix, "namespace_id": str(uuid.uuid4())}
-    if manifest_value is not None:
-        manifest["inbound_references"] = manifest_value
-    archive = tmp_path / "ns.zip"
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("manifest.json", json.dumps(manifest))
-    with patch("httpx.AsyncClient", return_value=_http_returning_nothing()):
-        await _services(ImportService).import_namespace(
-            str(archive), mode="create", imported_by="tester",
-        )
-    ns = await Namespace.find_one({"prefix": prefix})
-    assert ns.inbound_references == expected

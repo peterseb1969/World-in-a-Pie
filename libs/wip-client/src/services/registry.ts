@@ -14,8 +14,6 @@ import type {
   AddSynonymRequest,
   RemoveSynonymRequest,
   MergeRequest,
-  ExportResponse,
-  ImportResponse,
   Grant,
   CreateGrantRequest,
   RevokeGrantRequest,
@@ -199,28 +197,6 @@ export class RegistryService extends BaseService {
       [{ entry_id: entryId, updated_by: updatedBy }],
     )
     return resp.results[0]
-  }
-
-  // ---- Namespace Export/Import ----
-
-  async exportNamespace(prefix: string, options?: {
-    include_files?: boolean
-  }): Promise<ExportResponse> {
-    return this.post(`/namespaces/${prefix}/export`, null, options)
-  }
-
-  async downloadExport(exportId: string): Promise<Blob> {
-    return this.getBlob(`/namespaces/exports/${exportId}`)
-  }
-
-  async importNamespace(file: Blob, options?: {
-    target_prefix?: string
-    mode?: 'create' | 'merge' | 'replace'
-    imported_by?: string
-  }): Promise<ImportResponse> {
-    const form = new FormData()
-    form.append('file', file)
-    return this.postFormData('/namespaces/import', form, options)
   }
 
   // ---- Grants ----

@@ -970,8 +970,6 @@ class BulkMergeResponse(BaseModel):
 
 
 # =============================================================================
-# Export/Import API Models
-# =============================================================================
 
 # =============================================================================
 # Unified Search API Models
@@ -1037,51 +1035,3 @@ class EntryDetailResponse(BaseModel):
     created_by: str | None = None
     updated_at: datetime
     updated_by: str | None = None
-
-
-# =============================================================================
-# Export/Import API Models
-# =============================================================================
-
-class ExportResponse(BaseModel):
-    """Response model for namespace export."""
-
-    export_id: str
-    prefix: str
-    download_url: str
-    stats: dict[str, int] = Field(
-        default_factory=dict,
-        description="Count of exported entities by type"
-    )
-
-
-class ImportRequest(StrictModel):
-    """Request model for namespace import."""
-
-    target_prefix: str | None = Field(
-        default=None,
-        description="Optional new prefix for the imported namespace"
-    )
-    mode: str = Field(
-        default="create",
-        description="Import mode: create (fail if exists), merge (add new), replace (overwrite)"
-    )
-    imported_by: str | None = Field(
-        default=None,
-        description="User performing the import"
-    )
-
-
-class ImportResponse(BaseModel):
-    """Response model for namespace import."""
-
-    prefix: str
-    mode: str
-    stats: dict[str, int] = Field(
-        default_factory=dict,
-        description="Count of imported entities by type"
-    )
-    source_prefix: str | None = Field(
-        default=None,
-        description="Original prefix from the export (if remapped)"
-    )
