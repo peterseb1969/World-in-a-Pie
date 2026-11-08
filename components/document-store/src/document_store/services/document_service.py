@@ -551,6 +551,75 @@ def _node_readable(
     return allowed_namespaces is None or node_ns in allowed_namespaces
 
 
+async def _read_patch_target(document_id: str) -> Document:
+    """1. Read latest version (regardless of status — a soft-deleted
+    document must answer not_found, not be patched). Re-posting its full
+    data brings it back as a successor version."""
+    latest = await Document.find(
+        {"document_id": document_id}
+    ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
+    if not latest or latest[0].status == DocumentStatus.INACTIVE:
+        raise PatchError("not_found", "Document not found")
+    return latest[0]
+
+
+async def _check_patch_permission(namespace: str) -> None:
+    """2. Permission check on the document's namespace. Uses
+    resolve_permission directly to produce a per-item 'forbidden' error
+    instead of an HTTP 403 from check_namespace_permission."""
+    # Lazy imports to avoid module-level coupling with FastAPI/wip-auth
+    from wip_auth import (
+        permission_sufficient,
+        require_current_identity,
+        resolve_permission,
+    )
+    from wip_auth.permissions import PERMISSION_UNAVAILABLE
+
+    permission = await resolve_permission(require_current_identity(), namespace)
+    if permission == PERMISSION_UNAVAILABLE:
+        raise PatchError(
+            "registry_error",
+            "Could not check write access: the Registry is unreachable",
+        )
+    if permission == "none":
+        # Invisible namespace: answer as an id that names nothing, so
+        # the response does not confirm that the document exists.
+        raise PatchError("not_found", "Document not found")
+    if not permission_sufficient(permission, "write"):
+        raise PatchError(
+            "forbidden",
+            f"Requires write access to namespace '{namespace}'",
+        )
+
+
+def _same_referent(field_path: str, stored_feed: dict[str, Any] | None, validation_result: Any) -> bool:
+    """Whether a changed term/reference identity field still names the
+    referent the document's stored identity feed holds."""
+    return bool(
+        field_path in validation_result.referent_identity_fields
+        and stored_feed is not None
+        and field_path in stored_feed
+        and stored_feed[field_path] == validation_result.identity_values.get(field_path)
+    )
+
+
+def _patch_result(
+    index: int, doc: Document, status: str, warnings: list[Any], *, revision: bool = True,
+) -> BulkResultItem:
+    """A PATCH item's result row. A new version's row carries no revision."""
+    return BulkResultItem(
+        index=index,
+        status=status,
+        id=doc.document_id,
+        document_id=doc.document_id,
+        identity_hash=doc.identity_hash,
+        version=doc.version,
+        revision=current_revision(doc) if revision else None,
+        is_new=False,
+        warnings=warnings,
+    )
+
+
 def _add_validation_timing(validation_results: list[Any], timing: dict[str, float]) -> None:
     """Aggregate per-stage validation timing from all individual results."""
     val_stage_totals: dict[str, float] = {}
@@ -4945,52 +5014,10 @@ class DocumentService:
 
         Raises PatchError on per-item failures (caller wraps into BulkResultItem).
         """
-        from pymongo.errors import DuplicateKeyError
-
-        # Lazy imports to avoid module-level coupling with FastAPI/wip-auth
-        from wip_auth import (
-            permission_sufficient,
-            require_current_identity,
-            resolve_permission,
-        )
-        from wip_auth.permissions import PERMISSION_UNAVAILABLE
-
         for attempt in range(max_retries):
-            # 1. Read latest version (regardless of status — a soft-deleted
-            #    document must answer not_found, not be patched).
-            latest = await Document.find(
-                {"document_id": item.document_id}
-            ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
-
-            if not latest:
-                raise PatchError("not_found", "Document not found")
-
-            current = latest[0]
-
-            # Soft-deleted document — not_found. Re-posting its full data
-            # brings it back as a successor version.
-            if current.status == DocumentStatus.INACTIVE:
-                raise PatchError("not_found", "Document not found")
-
-            # 2. Permission check on the document's namespace.
-            #    Use resolve_permission directly so we can produce a per-item
-            #    'forbidden' error instead of an HTTP 403 from check_namespace_permission.
-            identity = require_current_identity()
-            permission = await resolve_permission(identity, current.namespace)
-            if permission == PERMISSION_UNAVAILABLE:
-                raise PatchError(
-                    "registry_error",
-                    "Could not check write access: the Registry is unreachable",
-                )
-            if permission == "none":
-                # Invisible namespace: answer as an id that names nothing, so
-                # the response does not confirm that the document exists.
-                raise PatchError("not_found", "Document not found")
-            if not permission_sufficient(permission, "write"):
-                raise PatchError(
-                    "forbidden",
-                    f"Requires write access to namespace '{current.namespace}'",
-                )
+            # 1. Read latest version; 2. permission on its namespace.
+            current = await _read_patch_target(item.document_id)
+            await _check_patch_permission(current.namespace)
 
             # 3. Optimistic concurrency control (per-item if_match), against
             #    the row's write token: its version, or on a row overwritten
@@ -5016,83 +5043,9 @@ class DocumentService:
                 else dict(current.metadata.custom)
             )
 
-            # 5. Re-validate the merged document against the SAME template
-            #    version the existing document was created with (design §13).
-            validation_result = await self._validate_as_writer(
-                current.template_id,
-                merged_data,
-                current.namespace,
-                template_version=current.template_version,
-                previous=current,
-            )
-            if not validation_result.valid:
-                # CASE-490: a PATCH whose pinned template version is inactive
-                # (the version was deactivated after the doc was created) gets a
-                # distinct, branchable error_code instead of being buried in the
-                # generic validation_failed — so a caller (and the kb gateway,
-                # which should map it to a 4xx, not a 502) can detect a "frozen
-                # template" cleanly. Remediation: reactivate the version
-                # (reactivate_template), or migrate the doc to an active version.
-                if any(e.get("code") == "template_inactive" for e in validation_result.errors):
-                    raise PatchError(
-                        "template_inactive",
-                        self._format_validation_errors(validation_result.errors),
-                    )
-                raise PatchError(
-                    "validation_failed",
-                    self._format_validation_errors(validation_result.errors),
-                )
-
-            # 5b. Append-only guard (CASE-478). A template with no
-            #     identity_fields declares append-only: every document is a
-            #     standalone record addressed only by a surrogate document_id,
-            #     not a logical identity. PATCH operates on logical entities, so
-            #     there is nothing to update here — fail loud with remediation
-            #     rather than silently mutating a surrogate-keyed row (which
-            #     would let any holder of the document_id repurpose it). The
-            #     guard reads identity_fields off the template (via the
-            #     validation result), not the per-doc identity_hash. It sits
-            #     after the validity check so identity_fields is populated, and
-            #     in the shared apply loop so REST, MCP update_document, and
-            #     bulk_patch all enforce it identically.
-            if not validation_result.identity_fields:
-                raise PatchError(
-                    "append_only",
-                    "This template declares no identity_fields (append-only): "
-                    "each document is a standalone record addressed only by "
-                    "document_id, not a logical identity, so it cannot be "
-                    "PATCHed. To change the data, create a new document; to "
-                    "make this template updatable, declare identity_fields on "
-                    "the template.",
-                )
-
-            # 6. Identity-field invariant (design §3). An identity field may
-            #    change its spelling but not what it names: a term or
-            #    reference identity field is compared by the referent it
-            #    resolves to (another alias of the same term is the same
-            #    identity), every other field by value. Dot-path lookup keeps
-            #    nested identity fields (e.g. "address.city") in reach.
-            stored_feed = self._stored_identity_feed(current, validation_result)
-            for field_path in validation_result.identity_fields or []:
-                old_val = IdentityService._get_nested_value(current.data, field_path)
-                new_val = IdentityService._get_nested_value(merged_data, field_path)
-                if old_val == new_val:
-                    continue
-                if (
-                    field_path in validation_result.referent_identity_fields
-                    and stored_feed is not None
-                    and field_path in stored_feed
-                    and stored_feed[field_path]
-                    == validation_result.identity_values.get(field_path)
-                ):
-                    continue
-                raise PatchError(
-                    "identity_field_change",
-                    f"Cannot patch identity field '{field_path}': the change "
-                    "names a different entity, and a document's identity "
-                    "cannot change. POST the new values to create a separate "
-                    "document (this one stays as it is).",
-                )
+            # 5-6. Validate against the document's own template version, and
+            #      keep its identity.
+            validation_result = await self._validate_patch(current, merged_data)
 
             # 7. No-op detection — if data, all 3 reference arrays, and the
             #    merged custom metadata are byte-equal to the current version,
@@ -5106,182 +5059,29 @@ class DocumentService:
                 validation_result.file_references,
                 new_metadata_custom=merged_custom,
             ):
-                return BulkResultItem(
-                    index=index,
-                    status="unchanged",
-                    id=current.document_id,
-                    document_id=current.document_id,
-                    identity_hash=current.identity_hash,
-                    version=current.version,
-                    revision=current_revision(current),
-                    is_new=False,
-                    warnings=validation_result.warnings,
-                )
+                return _patch_result(index, current, "unchanged", validation_result.warnings)
 
-            # 7b. Relationship constraints, as on create and before the gates:
-            #    an edge's source lives in the edge's namespace, whatever the
-            #    namespace settings. A PATCH re-pointing source_ref (an edge
-            #    type whose identity does not include it) is refused.
-            rel_error = await self._relationship_refusal(
-                current.template_id, current.template_version,
-                validation_result, current.namespace,
-            )
-            if rel_error:
-                raise PatchError(*rel_error)
-
-            # 8. Cross-namespace reference validation, the same gates as the
-            #    POST flow. A PATCH is a new write, so a reference it adds is
-            #    checked; references the current version already holds carry
-            #    over unchecked, so a document whose references a namespace
-            #    setting or a revoked grant would now refuse stays patchable.
-            try:
-                validator = get_reference_validator()
-                await validator.validate_document_references(
-                    document_namespace=current.namespace,
-                    template_namespace=validation_result.template_namespace
-                    or current.namespace,
-                    term_references=validation_result.term_references,
-                    file_references=validation_result.file_references,
-                    document_references=validation_result.references,
-                    previous=current,
-                    placements=validation_result.referent_namespaces or None,
-                )
-            except ReferenceValidationError as exc:
-                raise PatchError(
-                    "reference_violation",
-                    f"Cross-namespace reference violation: {exc.violations}",
-                ) from exc
-            except RegistryUnavailableError as exc:
-                raise PatchError("registry_error", str(exc)) from exc
+            # 7b-8. Relationship constraints and the reference gates.
+            await self._check_patch_references(current, validation_result)
 
             # 9. Write. Phase-3 branch: templates with versioned=False
-            #    overwrite the existing document in place. Same
-            #    document_id, same version, fresh data + updated_at, and the
-            #    row's revision moves on. The write is conditional on the
-            #    revision read in step 1, so a concurrent writer is detected
-            #    at the write itself, not only at step 3.
+            #    overwrite the existing document in place.
             actor = get_identity_string()
             now = datetime.now(UTC)
-
             if not await self._is_template_versioned(current.template_id):
-                previous_file_refs = list(current.file_references)
-                current.data = merged_data
-                current.term_references = validation_result.term_references
-                current.references = validation_result.references
-                current.file_references = validation_result.file_references
-                current.metadata = DocumentMetadata(
-                    source_system=current.metadata.source_system,
-                    warnings=validation_result.warnings,
-                    custom=merged_custom,
+                written = await self._patch_in_place(
+                    index, item, current, read_revision, merged_data, merged_custom,
+                    validation_result, actor, now,
                 )
-                current.updated_at = now
-                current.updated_by = actor
-                if not await self._write_in_place(current, read_revision):
-                    if item.if_match is not None:
-                        # The caller's token was current at step 3 and is not
-                        # now: another write landed in between.
-                        raise PatchError(
-                            "concurrency_conflict",
-                            f"Expected revision {item.if_match}; the document "
-                            "was written concurrently",
-                        )
-                    # No token held: re-read and re-merge onto the winner.
-                    continue
-
-                await publish_document_event(
-                    EventType.DOCUMENT_UPDATED,
-                    await self._document_to_event_payload(current),
-                    changed_by=actor,
+            else:
+                written = await self._patch_new_version(
+                    index, current, merged_data, merged_custom, validation_result,
+                    actor, now, last_attempt=attempt >= max_retries - 1,
+                    max_retries=max_retries,
                 )
-                await self._update_file_reference_counts(previous_file_refs, delta=-1)
-                await self._update_file_reference_counts(validation_result.file_references, delta=1)
-
-                return BulkResultItem(
-                    index=index,
-                    status="updated",
-                    id=current.document_id,
-                    document_id=current.document_id,
-                    identity_hash=current.identity_hash,
-                    version=current.version,
-                    revision=current_revision(current),
-                    is_new=False,
-                    warnings=validation_result.warnings,
-                )
-
-            # versioned=True: existing flow — deactivate current, insert v+1.
-            prior = {current.id: (current.updated_at, current.updated_by)}
-            current.status = DocumentStatus.INACTIVE
-            current.updated_at = now
-            current.updated_by = actor
-            await current.save()
-
-            # Carry the merged custom metadata (identical to the current
-            # version's when no metadata_patch was supplied). Warnings come
-            # from the new validation (they describe the merged state).
-            new_metadata = DocumentMetadata(
-                source_system=current.metadata.source_system,
-                warnings=validation_result.warnings,
-                custom=merged_custom,
-            )
-
-            try:
-                new_doc = await self._insert_or_restore(
-                    prior,
-                    namespace=current.namespace,
-                    document_id=current.document_id,
-                    template_id=current.template_id,
-                    template_version=current.template_version,
-                    template_value=cast(str, current.template_value),
-                    identity_hash=current.identity_hash,  # invariant under PATCH
-                    version=current.version + 1,
-                    data=merged_data,
-                    term_references=validation_result.term_references,
-                    references=validation_result.references,
-                    file_references=validation_result.file_references,
-                    metadata=new_metadata,
-                    actor=actor,
-                    now=now,
-                    # PATCH writes a successor version — the entity was created
-                    # when v1 was written, not now (CASE-802).
-                    entity_created_at=current.created_at,
-                )
-            except DuplicateKeyError:
-                # Lost the version race even after _insert_with_retry's internal
-                # retries. Try the whole read-merge-write cycle again.
-                if attempt >= max_retries - 1:
-                    raise PatchError(
-                        "concurrency_conflict",
-                        f"Failed after {max_retries} retries due to concurrent writers",
-                    ) from None
-                continue
-
-            # 10. NATS event — reuse DOCUMENT_UPDATED so reporting-sync needs
-            #     no changes (a PATCH is just a new version, semantically).
-            await publish_document_event(
-                EventType.DOCUMENT_UPDATED,
-                await self._document_to_event_payload(new_doc),
-                changed_by=actor,
-            )
-
-            # 11. File reference counts: decrement the old version's refs,
-            #     increment the new ones. Same as _create_new_version.
-            await self._update_file_reference_counts(
-                current.file_references, delta=-1
-            )
-            await self._update_file_reference_counts(
-                validation_result.file_references, delta=1
-            )
-
-            return BulkResultItem(
-                index=index,
-                status="updated",
-                id=new_doc.document_id,
-                document_id=new_doc.document_id,
-                identity_hash=new_doc.identity_hash,
-                version=new_doc.version,
-                is_new=False,
-                warnings=validation_result.warnings,
-            )
+            if written is not None:
+                return written
+            # Lost a race: re-read and re-merge onto the winner.
 
         # All retries exhausted — should be unreachable because the loop body
         # either returns or raises, but defensive in case the loop falls through.
@@ -5289,6 +5089,248 @@ class DocumentService:
             "concurrency_conflict",
             f"Failed after {max_retries} retries due to concurrent writers",
         )
+
+    async def _validate_patch(self, current: Document, merged_data: dict[str, Any]) -> Any:
+        """Steps 5-6: the merged document must validate, its template must
+        declare an identity, and that identity must not change."""
+        # 5. Re-validate the merged document against the SAME template
+        #    version the existing document was created with (design §13).
+        validation_result = await self._validate_as_writer(
+            current.template_id,
+            merged_data,
+            current.namespace,
+            template_version=current.template_version,
+            previous=current,
+        )
+        if not validation_result.valid:
+            # CASE-490: a PATCH whose pinned template version is inactive
+            # (the version was deactivated after the doc was created) gets a
+            # distinct, branchable error_code instead of being buried in the
+            # generic validation_failed — so a caller (and the kb gateway,
+            # which should map it to a 4xx, not a 502) can detect a "frozen
+            # template" cleanly. Remediation: reactivate the version
+            # (reactivate_template), or migrate the doc to an active version.
+            frozen = any(e.get("code") == "template_inactive" for e in validation_result.errors)
+            raise PatchError(
+                "template_inactive" if frozen else "validation_failed",
+                self._format_validation_errors(validation_result.errors),
+            )
+
+        # 5b. Append-only guard (CASE-478). A template with no
+        #     identity_fields declares append-only: every document is a
+        #     standalone record addressed only by a surrogate document_id,
+        #     not a logical identity. PATCH operates on logical entities, so
+        #     there is nothing to update here — fail loud with remediation
+        #     rather than silently mutating a surrogate-keyed row (which
+        #     would let any holder of the document_id repurpose it). The
+        #     guard reads identity_fields off the template (via the
+        #     validation result), not the per-doc identity_hash. It sits
+        #     after the validity check so identity_fields is populated, and
+        #     in the shared apply loop so REST, MCP update_document, and
+        #     bulk_patch all enforce it identically.
+        if not validation_result.identity_fields:
+            raise PatchError(
+                "append_only",
+                "This template declares no identity_fields (append-only): "
+                "each document is a standalone record addressed only by "
+                "document_id, not a logical identity, so it cannot be "
+                "PATCHed. To change the data, create a new document; to "
+                "make this template updatable, declare identity_fields on "
+                "the template.",
+            )
+        self._check_identity_unchanged(current, merged_data, validation_result)
+        return validation_result
+
+    def _check_identity_unchanged(
+        self, current: Document, merged_data: dict[str, Any], validation_result: Any,
+    ) -> None:
+        """6. Identity-field invariant (design §3). An identity field may
+        change its spelling but not what it names: a term or reference
+        identity field is compared by the referent it resolves to (another
+        alias of the same term is the same identity), every other field by
+        value. Dot-path lookup keeps nested identity fields (e.g.
+        "address.city") in reach."""
+        stored_feed = self._stored_identity_feed(current, validation_result)
+        for field_path in validation_result.identity_fields or []:
+            old_val = IdentityService._get_nested_value(current.data, field_path)
+            new_val = IdentityService._get_nested_value(merged_data, field_path)
+            if old_val == new_val or _same_referent(field_path, stored_feed, validation_result):
+                continue
+            raise PatchError(
+                "identity_field_change",
+                f"Cannot patch identity field '{field_path}': the change "
+                "names a different entity, and a document's identity "
+                "cannot change. POST the new values to create a separate "
+                "document (this one stays as it is).",
+            )
+
+    async def _check_patch_references(self, current: Document, validation_result: Any) -> None:
+        """7b. Relationship constraints, as on create and before the gates: an
+        edge's source lives in the edge's namespace, whatever the namespace
+        settings. A PATCH re-pointing source_ref (an edge type whose identity
+        does not include it) is refused.
+
+        8. Cross-namespace reference validation, the same gates as the POST
+        flow. A PATCH is a new write, so a reference it adds is checked;
+        references the current version already holds carry over unchecked,
+        so a document whose references a namespace setting or a revoked grant
+        would now refuse stays patchable."""
+        rel_error = await self._relationship_refusal(
+            current.template_id, current.template_version,
+            validation_result, current.namespace,
+        )
+        if rel_error:
+            raise PatchError(*rel_error)
+        try:
+            validator = get_reference_validator()
+            await validator.validate_document_references(
+                document_namespace=current.namespace,
+                template_namespace=validation_result.template_namespace
+                or current.namespace,
+                term_references=validation_result.term_references,
+                file_references=validation_result.file_references,
+                document_references=validation_result.references,
+                previous=current,
+                placements=validation_result.referent_namespaces or None,
+            )
+        except ReferenceValidationError as exc:
+            raise PatchError(
+                "reference_violation",
+                f"Cross-namespace reference violation: {exc.violations}",
+            ) from exc
+        except RegistryUnavailableError as exc:
+            raise PatchError("registry_error", str(exc)) from exc
+
+    async def _patch_in_place(
+        self,
+        index: int,
+        item: PatchDocumentItem,
+        current: Document,
+        read_revision: Any,
+        merged_data: dict[str, Any],
+        merged_custom: dict[str, Any],
+        validation_result: Any,
+        actor: str,
+        now: datetime,
+    ) -> BulkResultItem | None:
+        """A versioned:false template overwrites the existing document in
+        place: same document_id, same version, fresh data + updated_at, and
+        the row's revision moves on. The write is conditional on the revision
+        read at step 1, so a concurrent writer is detected at the write
+        itself, not only at step 3. None when it lost that race without a
+        token (re-read and re-merge onto the winner)."""
+        previous_file_refs = list(current.file_references)
+        current.data = merged_data
+        current.term_references = validation_result.term_references
+        current.references = validation_result.references
+        current.file_references = validation_result.file_references
+        current.metadata = DocumentMetadata(
+            source_system=current.metadata.source_system,
+            warnings=validation_result.warnings,
+            custom=merged_custom,
+        )
+        current.updated_at = now
+        current.updated_by = actor
+        if not await self._write_in_place(current, read_revision):
+            if item.if_match is not None:
+                # The caller's token was current at step 3 and is not
+                # now: another write landed in between.
+                raise PatchError(
+                    "concurrency_conflict",
+                    f"Expected revision {item.if_match}; the document "
+                    "was written concurrently",
+                )
+            return None
+
+        await publish_document_event(
+            EventType.DOCUMENT_UPDATED,
+            await self._document_to_event_payload(current),
+            changed_by=actor,
+        )
+        await self._update_file_reference_counts(previous_file_refs, delta=-1)
+        await self._update_file_reference_counts(validation_result.file_references, delta=1)
+        return _patch_result(index, current, "updated", validation_result.warnings)
+
+    async def _patch_new_version(
+        self,
+        index: int,
+        current: Document,
+        merged_data: dict[str, Any],
+        merged_custom: dict[str, Any],
+        validation_result: Any,
+        actor: str,
+        now: datetime,
+        *,
+        last_attempt: bool,
+        max_retries: int,
+    ) -> BulkResultItem | None:
+        """versioned=True: deactivate current, insert v+1. None when it lost
+        the version race and another attempt is left."""
+        from pymongo.errors import DuplicateKeyError
+
+        prior = {current.id: (current.updated_at, current.updated_by)}
+        current.status = DocumentStatus.INACTIVE
+        current.updated_at = now
+        current.updated_by = actor
+        await current.save()
+
+        # Carry the merged custom metadata (identical to the current
+        # version's when no metadata_patch was supplied). Warnings come
+        # from the new validation (they describe the merged state).
+        new_metadata = DocumentMetadata(
+            source_system=current.metadata.source_system,
+            warnings=validation_result.warnings,
+            custom=merged_custom,
+        )
+
+        try:
+            new_doc = await self._insert_or_restore(
+                prior,
+                namespace=current.namespace,
+                document_id=current.document_id,
+                template_id=current.template_id,
+                template_version=current.template_version,
+                template_value=cast(str, current.template_value),
+                identity_hash=current.identity_hash,  # invariant under PATCH
+                version=current.version + 1,
+                data=merged_data,
+                term_references=validation_result.term_references,
+                references=validation_result.references,
+                file_references=validation_result.file_references,
+                metadata=new_metadata,
+                actor=actor,
+                now=now,
+                # PATCH writes a successor version — the entity was created
+                # when v1 was written, not now (CASE-802).
+                entity_created_at=current.created_at,
+            )
+        except DuplicateKeyError:
+            # Lost the version race even after _insert_with_retry's internal
+            # retries. Try the whole read-merge-write cycle again.
+            if last_attempt:
+                raise PatchError(
+                    "concurrency_conflict",
+                    f"Failed after {max_retries} retries due to concurrent writers",
+                ) from None
+            return None
+
+        # 10. NATS event — reuse DOCUMENT_UPDATED so reporting-sync needs
+        #     no changes (a PATCH is just a new version, semantically).
+        await publish_document_event(
+            EventType.DOCUMENT_UPDATED,
+            await self._document_to_event_payload(new_doc),
+            changed_by=actor,
+        )
+
+        # 11. File reference counts: decrement the old version's refs,
+        #     increment the new ones. Same as _create_new_version.
+        await self._update_file_reference_counts(
+            current.file_references, delta=-1
+        )
+        await self._update_file_reference_counts(
+            validation_result.file_references, delta=1
+        )
+        return _patch_result(index, new_doc, "updated", validation_result.warnings, revision=False)
 
 
 # Singleton instance
