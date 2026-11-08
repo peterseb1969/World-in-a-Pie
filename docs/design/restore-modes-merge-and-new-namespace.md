@@ -127,21 +127,32 @@ namespace's bootstrap it documents. For EXISTING namespaces that still
 carry the unprefixed value, there is deliberately no drop parameter and no
 platform special-case — the remediation is an operational recipe made of
 first-class operations, self-expiring once the last unprefixed pair is
-retired. Either variant works; both rely on the definitions pass comparing
-per (value, version) over the archive's entities. Note that an export carries
-every template version, inactive ones included (documents pin them), so the
-source's retired versions arrive in the archive and are compared too:
+retired. It relies on two rules of the definitions pass and the export:
 
-1. *Retire the source's record*: deactivate the source namespace's
-   bootstrap template and archive its record(s), re-export, merge. The
-   target keeps its own provenance; the source's stays recoverable in the
-   source (soft states only). If the source must stay pristine, reactivate
-   after the export.
-2. *Converge*: update BOTH sides' templates from one identical payload
-   (version slots must align), `migrate` the source's records to the
-   converged version (dry-run first), deactivate the source's old version,
-   re-export, merge — both provenance trails survive the merge as
-   documents of the shared shape.
+- **A template's status alone never refuses a merge.** A retired version
+  whose schema matches the target's is the same definition; the target
+  keeps its own status, and the difference is reported. A schema difference
+  still refuses.
+- **A backup leaves out the inactive template versions nothing in the
+  archive needs** (unless `include_inactive_templates`). It still carries
+  every inactive version an exported document — of any status — is pinned
+  to, every version a carried template extends, and the highest version of
+  a template whose versions are all inactive.
+
+The recipe — *converge*: update BOTH sides' templates from one identical
+payload (version slots must align, or merge with `align_templates`),
+`migrate` every one of the source's records to the converged version
+(dry-run first; archived records too — a record still on the old version
+keeps that version in the archive), deactivate the source's old version,
+re-export, merge. The old version is no longer needed, so the export leaves
+it out and pass 1 compares only the converged shape, which both sides share.
+Both provenance trails survive the merge as documents of that shape.
+
+Retiring the source's record instead (deactivate the template, archive the
+records) does not work, and is not offered: the archived records pin the
+retired version, so the export carries it, and its shape still differs from
+the target's. Even with no records left, a template whose versions are all
+inactive keeps its highest version in the archive.
 
 ## Mode: fresh
 

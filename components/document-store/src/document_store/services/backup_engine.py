@@ -510,9 +510,15 @@ class DirectBackupEngine:
         include_files: bool = False,
         skip_documents: bool = False,
         latest_only: bool = False,
+        include_inactive_templates: bool = False,
         tmp_dir: Path | None = None,
     ) -> None:
         """Run the full backup pipeline over one or more namespaces (CASE-542).
+
+        Inactive template versions nothing in the archive needs are left out
+        unless ``include_inactive_templates`` (see
+        ``_template_versions_to_leave_out``); every other entity is carried in
+        every status.
 
         Each namespace is read independently and written to its own
         ``namespaces/<prefix>/`` subtree of the v3 archive; the manifest carries
@@ -531,10 +537,23 @@ class DirectBackupEngine:
             percent=0,
         )
 
+        left_out: dict[str, list[tuple[str, int]]] = {}
+        if not include_inactive_templates:
+            left_out = await self._template_versions_to_leave_out(namespaces, skip_documents)
+            dropped = sum(len(v) for v in left_out.values())
+            if dropped:
+                self._emit(
+                    "phase_templates",
+                    f"Leaving out {dropped} inactive template version(s) that no "
+                    "document or template in the archive needs "
+                    "(include_inactive_templates keeps them)",
+                    percent=0,
+                )
+
         # Pre-count entities across all namespaces for percent calculation
         per_ns_counts: dict[str, dict[str, int]] = {}
         for ns in namespaces:
-            per_ns_counts[ns] = await self._pre_count(ns, skip_documents)
+            per_ns_counts[ns] = await self._pre_count(ns, skip_documents, left_out.get(ns, []))
         total_entities = sum(sum(c.values()) for c in per_ns_counts.values())
 
         writer = ArchiveWriter(archive_path, tmp_dir=tmp_dir)
@@ -550,7 +569,7 @@ class DirectBackupEngine:
                     db_name, coll_name = COLLECTION_MAP[entity_type]
                     collection = self._mongo[db_name][coll_name]
 
-                    query = self._build_query(ns)
+                    query = self._entity_query(ns, entity_type, left_out.get(ns, []))
 
                     phase_name = f"phase_{entity_type}"
                     expected = per_ns_counts[ns].get(entity_type, 0)
@@ -655,27 +674,106 @@ class DirectBackupEngine:
             raise
 
     async def _pre_count(
-        self, namespace: str, skip_documents: bool
+        self, namespace: str, skip_documents: bool,
+        left_out: list[tuple[str, int]] | None = None,
     ) -> dict[str, int]:
         """Count documents per entity type for progress reporting."""
-        query = self._build_query(namespace)
         counts: dict[str, int] = {}
         for entity_type in BACKUP_ENTITY_ORDER:
             if skip_documents and entity_type == "documents":
                 counts[entity_type] = 0
                 continue
             db_name, coll_name = COLLECTION_MAP[entity_type]
-            counts[entity_type] = await self._mongo[db_name][coll_name].count_documents(query)
+            counts[entity_type] = await self._mongo[db_name][coll_name].count_documents(
+                self._entity_query(namespace, entity_type, left_out or [])
+            )
         return counts
 
+    def _entity_query(
+        self, namespace: str, entity_type: str, left_out: list[tuple[str, int]],
+    ) -> dict[str, Any]:
+        """The namespace's query for one entity type: every entity, minus the
+        template versions this backup leaves out."""
+        query = self._build_query(namespace)
+        if entity_type == "templates" and left_out:
+            query["$nor"] = [{"template_id": tid, "version": v} for tid, v in left_out]
+        return query
+
+    async def _template_versions_to_leave_out(
+        self, namespaces: list[str], skip_documents: bool,
+    ) -> dict[str, list[tuple[str, int]]]:
+        """Per namespace, the inactive template versions nothing in the
+        archive needs.
+
+        A version is carried when it is not inactive (drafts are carried), when
+        an exported document is pinned to it (any document status — an
+        archived document restores with its schema too), or when a carried
+        version extends it. A template whose versions would all be left out
+        keeps its highest one: other definitions name templates by id and the
+        template's Registry entry travels, so the template itself never
+        vanishes from the archive. A document whose pin has no version keeps
+        every version of its template. Pins and parents are read across every
+        namespace of the archive, since a document in one may pin a template
+        in another.
+        """
+        t_db, t_coll = COLLECTION_MAP["templates"]
+        rows = [
+            r async for r in self._mongo[t_db][t_coll].find(
+                {"namespace": {"$in": namespaces}},
+                {"_id": 0, "namespace": 1, "template_id": 1, "version": 1,
+                 "status": 1, "extends": 1, "extends_version": 1},
+            )
+        ]
+        versions: dict[str, list[int]] = {}
+        parents: dict[tuple[str, int], tuple[str, int]] = {}
+        for r in rows:
+            key = (r["template_id"], r["version"])
+            versions.setdefault(key[0], []).append(key[1])
+            if r.get("extends") and r.get("extends_version") is not None:
+                parents[key] = (r["extends"], r["extends_version"])
+        needed = {(r["template_id"], r["version"]) for r in rows if r.get("status") != "inactive"}
+
+        if not skip_documents:
+            d_db, d_coll = COLLECTION_MAP["documents"]
+            async for pin in self._mongo[d_db][d_coll].aggregate([
+                {"$match": {"namespace": {"$in": namespaces}}},
+                {"$group": {"_id": {"t": "$template_id", "v": "$template_version"}}},
+            ]):
+                tid, version = pin["_id"].get("t"), pin["_id"].get("v")
+                if version is None:
+                    needed.update((tid, v) for v in versions.get(tid, []))
+                else:
+                    needed.add((tid, version))
+
+        def close_over_parents() -> None:
+            frontier = list(needed)
+            while frontier:
+                parent = parents.get(frontier.pop())
+                if parent is not None and parent not in needed and parent[1] in versions.get(parent[0], []):
+                    needed.add(parent)
+                    frontier.append(parent)
+
+        close_over_parents()
+        for tid, vs in versions.items():
+            if not any((tid, v) in needed for v in vs):
+                needed.add((tid, max(vs)))
+        close_over_parents()
+
+        left_out: dict[str, list[tuple[str, int]]] = {}
+        for r in rows:
+            key = (r["template_id"], r["version"])
+            if key not in needed:
+                left_out.setdefault(r["namespace"], []).append(key)
+        return left_out
+
     def _build_query(self, namespace: str) -> dict[str, Any]:
-        # A backup is a full copy of the namespace — every entity, every
-        # status, deliberately. Live data references inactive and archived
-        # entities (documents pin inactive template versions, edges point at
-        # archived documents), so an archive missing them would be a restore
-        # trap. The retired include_inactive flag's status filter matched a
-        # status no persisted entity ever carried; the query is the namespace
-        # alone.
+        # Every entity, every status: live data references inactive and
+        # archived entities (documents pin inactive template versions, edges
+        # point at archived documents), so an archive missing them would be a
+        # restore trap. The one exception — inactive template versions nothing
+        # in the archive needs — is applied per entity type by _entity_query.
+        # The retired include_inactive flag's status filter matched a status
+        # no persisted entity ever carried.
         return {"namespace": namespace}
 
     async def _backup_blobs(

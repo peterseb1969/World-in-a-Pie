@@ -1694,6 +1694,7 @@ class WipClient:
         namespace: str | None = None,
         include_files: bool = False,
         skip_documents: bool = False,
+        include_inactive_templates: bool = False,
     ) -> dict:
         """Kick off a namespace backup. Returns the initial BackupJobSnapshot (HTTP 202).
 
@@ -1706,6 +1707,7 @@ class WipClient:
         body: dict[str, Any] = {
             "include_files": include_files,
             "skip_documents": skip_documents,
+            "include_inactive_templates": include_inactive_templates,
         }
         return await self._post(
             self.document_store_url,

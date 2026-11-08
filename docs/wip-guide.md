@@ -673,7 +673,11 @@ version back). For **logical, per-namespace** data management — portable
 archives, namespace cloning, scripted/headless workflows — use the
 `wip-toolkit` CLI. It is a separate surface from the React Console's
 backup/restore (which uses document-store's engine); the CLI is for
-headless, scripted, and composable use.
+headless, scripted, and composable use. Document-store's backup carries
+every entity in every status except the inactive template versions nothing
+in the archive needs. A version a document is pinned to, or that a carried
+template extends, is always kept, and a template whose versions are all
+inactive keeps its highest. `include_inactive_templates` keeps every version.
 
 ```bash
 # Export one namespace to a portable ZIP archive (v3 format;

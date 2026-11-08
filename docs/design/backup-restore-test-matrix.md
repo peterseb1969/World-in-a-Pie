@@ -58,8 +58,11 @@ Producer options that multiply cells (exercise each at least once, on the
 producer where it exists): `include_files` and `skip_documents` (both
 producers); `include_inactive`, `latest_only`, `template_prefixes`,
 `skip_closure`/`skip_synonyms`, and `dry_run` (**P-CLI only** — the
-server backup 400-rejects all five as dead fields). The server backup is
-a full copy of every entity in every status, with **no dry-run by
+server backup 400-rejects all five as dead fields); the server backup's own
+`include_inactive_templates` keeps every inactive template version. The
+server backup is a copy of every entity in every status, except the inactive
+template versions nothing in the archive needs (a version a document pins or
+a carried template extends is always kept), with **no dry-run by
 design**: its predicted counts are just the namespace's entity counts (a
 namespace-stats read, no job machinery needed), a compressed archive size
 cannot be honestly predicted without reading the payload, and the write

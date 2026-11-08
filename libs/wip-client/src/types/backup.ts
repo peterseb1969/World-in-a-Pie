@@ -153,15 +153,21 @@ export interface ValidateNamespaceParams {
  * Only the options the direct backup engine consumes are typed — the
  * endpoint rejects the retired fields (`skip_closure`, `skip_synonyms`,
  * `latest_only`, `template_prefixes`, `dry_run`, `include_inactive`) with a
- * 400 when set. Backups always contain every entity in every status:
- * inactive and archived entities are referenced by live data, so an archive
- * missing them would be a restore trap. Blob bytes stream to the server's
- * backup scratch dir, so `include_files: true` is safe at any content
- * volume.
+ * 400 when set. Backups contain every entity in every status: inactive and
+ * archived entities are referenced by live data, so an archive missing them
+ * would be a restore trap. The one exception is inactive template versions
+ * nothing in the archive needs, which are left out unless
+ * `include_inactive_templates` is set: a version a document is pinned to, or
+ * that a carried template extends, is always kept, and a template whose
+ * versions are all inactive keeps its highest. Blob bytes stream to the
+ * server's backup scratch dir, so `include_files: true` is safe at any
+ * content volume.
  */
 export interface BackupRequest {
   include_files?: boolean
   skip_documents?: boolean
+  /** Keep every inactive template version (default: only those the archive needs). */
+  include_inactive_templates?: boolean
   namespaces?: string[]
   all_namespaces?: boolean
 }

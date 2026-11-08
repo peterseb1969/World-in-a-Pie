@@ -404,6 +404,7 @@ def make_direct_backup_runner(
             include_files=opts.get("include_files", False),
             skip_documents=opts.get("skip_documents", False),
             latest_only=opts.get("latest_only", False),
+            include_inactive_templates=opts.get("include_inactive_templates", False),
             tmp_dir=Path(backup_dir),
         )
 

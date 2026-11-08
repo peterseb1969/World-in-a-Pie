@@ -272,13 +272,23 @@ class BackupRequest(StrictModel):
     )
     include_inactive: bool = Field(
         False,
-        description="Retired parameter — rejected with 400 if set. Backups "
-                    "always include every entity in every status: live data "
-                    "references inactive and archived entities (documents pin "
-                    "inactive template versions), so an archive missing them "
-                    "would be a restore trap. The flag never excluded "
-                    "anything — its filter matched a status no persisted "
-                    "entity carries.",
+        description="Retired parameter — rejected with 400 if set. Its filter "
+                    "matched a status no persisted entity carries, so it never "
+                    "excluded anything. Backups carry every entity in every "
+                    "status; the one exception is inactive template versions "
+                    "nothing in the archive needs (see "
+                    "include_inactive_templates).",
+    )
+    include_inactive_templates: bool = Field(
+        False,
+        description=(
+            "Keep every inactive template version. By default a backup leaves "
+            "out the inactive versions nothing in the archive needs: it carries "
+            "every version that is not inactive (drafts included), every "
+            "inactive version an exported document is pinned to or a carried "
+            "version extends, and the highest version of a template whose "
+            "versions are all inactive."
+        ),
     )
     skip_documents: bool = Field(
         False, description="Skip the documents phase entirely"

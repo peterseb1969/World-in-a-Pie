@@ -7,6 +7,41 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Backups leave out inactive template versions nothing needs; a merge does not refuse over a template's status; `@wip/client` 0.94.0
+
+**Backup** (`POST /api/document-store/backup/namespaces/{namespace}/backup`,
+the Console, MCP `start_backup`) used to carry every template version. It
+now leaves out an inactive version unless something in the archive needs
+it. A version is still carried when:
+
+- it is not inactive (drafts are carried);
+- an exported document of any status is pinned to it — so archives restore
+  and `verify` cleanly, as before;
+- a carried template version extends it;
+- or it is the highest version of a template whose versions are all
+  inactive. A template never disappears from an archive while other
+  definitions and its Registry entry name it.
+
+`include_inactive_templates: true` keeps every version. The job reports how
+many versions it left out. The retired `include_inactive` flag still answers
+400.
+
+**Merge** no longer refuses a template over its status alone. An archive
+version that is inactive where the target's is active (or the reverse), with
+the same schema, is the same definition. The target keeps its own status,
+and the difference is reported among the fields where the target's value
+won. A schema difference still refuses.
+
+Together these make the bootstrap-record *converge* recipe in
+`docs/design/restore-modes-merge-and-new-namespace.md` work. The *retire the
+source's record* recipe is withdrawn: archived records pin the retired
+version, so the archive carries it.
+
+- **`@wip/client` 0.94.0:** `BackupRequest.include_inactive_templates`.
+- **MCP:** `start_backup(include_inactive_templates=…)`.
+- **The WIP-Toolkit CLI export is unchanged.** With `include_inactive` off
+  (the default) it exports only active entities.
+
 ### `/relationships` and `/traverse` count only edge-type documents
 
 - **Only documents of edge types (`usage: "relationship"`) are edges.** Both

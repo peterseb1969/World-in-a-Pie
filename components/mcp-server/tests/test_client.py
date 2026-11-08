@@ -498,6 +498,19 @@ async def test_start_backup_sends_full_body():
 
 
 @pytest.mark.asyncio
+async def test_start_backup_sends_include_inactive_templates():
+    mock_http = _mock_http(_mock_response({"job_id": "bkp-1"}))
+    client = _make_client()
+    with patch.object(client, "_get_client", return_value=mock_http):
+        await client.start_backup(namespace="wip")
+        await client.start_backup(namespace="wip", include_inactive_templates=True)
+
+    first, second = (c.kwargs["json"] for c in mock_http.post.call_args_list)
+    assert first["include_inactive_templates"] is False
+    assert second["include_inactive_templates"] is True
+
+
+@pytest.mark.asyncio
 async def test_start_backup_omits_toolkit_era_fields():
     """start_backup never sends the retired toolkit-export fields — the
     endpoint 400s on them, so the client must not emit them at all."""
