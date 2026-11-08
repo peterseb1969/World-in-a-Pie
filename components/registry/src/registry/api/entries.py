@@ -1348,9 +1348,9 @@ async def _activate_keyed(
     items: list[ActivateItem],
     keyed: list[int],
     results: list[ActivateItemResponse | None],
-) -> tuple[int, int]:
+) -> None:
     """Activate the keyed items of a request in bulk; fills ``results`` at
-    their indices and returns (activated, errors).
+    their indices.
 
     A keyed item finalises a deferred-claim reservation: the entry gets its
     final key, the key is claimed (a collision fails the item, never
@@ -1372,7 +1372,7 @@ async def _activate_keyed(
         for i in keyed:
             results[i] = ActivateItemResponse(
                 index=i, status="error", entry_id=items[i].entry_id, **error_fields(e))
-        return 0, len(keyed)
+        return
 
     candidates: list[tuple[int, RegistryEntry]] = []
     for eid, i in first_index.items():
@@ -1391,7 +1391,6 @@ async def _activate_keyed(
         await _write_activations(items, keyed, to_write, results, token)
 
     _answer_activation_repeats(items, repeats, first_index, results)
-    return _keyed_activation_counts(results, keyed)
 
 
 def _first_and_repeats(
@@ -1603,18 +1602,6 @@ def _answer_activation_repeats(
             results[i] = first.model_copy(update={"index": i})
 
 
-def _keyed_activation_counts(
-    results: list[ActivateItemResponse | None], keyed: list[int],
-) -> tuple[int, int]:
-    """(activated, errors) over the keyed items, from their statuses: an
-    error or a missing entry counts as an error, already_active as neither."""
-    statuses = [cast(ActivateItemResponse, results[i]).status for i in keyed]
-    return (
-        statuses.count("activated"),
-        statuses.count("error") + statuses.count("not_found"),
-    )
-
-
 @router.post(
     "/activate",
     response_model=ActivateBulkResponse,
@@ -1641,116 +1628,133 @@ async def activate_entries(
     per-item errors instead of silently reporting it activated.
     """
     results: list[ActivateItemResponse | None] = [None] * len(items)
-    activated_count = 0
-    error_count = 0
-    entries_coll = RegistryEntry.get_motor_collection()
-
     # A keyed item (composite_key present) is a deferred-claim reservation
     # being finalized: set the FINAL key on the entry, claim it here (a
     # collision fails the item loudly, never duplicating an identity), then
     # flip to active. Keyless items keep the bulk fast path below unchanged.
     keyed = [i for i, it in enumerate(items) if it.composite_key is not None]
     keyless = [i for i, it in enumerate(items) if it.composite_key is None]
-
     if keyed:
-        keyed_activated, keyed_errors = await _activate_keyed(items, keyed, results)
-        activated_count += keyed_activated
-        error_count += keyed_errors
-
+        await _activate_keyed(items, keyed, results)
     if keyless:
-        requested_ids = [items[i].entry_id for i in keyless]
-        status_by_id: dict[str, str] = {}
-        try:
-            # Projected to id + status: activation touches hundreds of thousands
-            # of entries per restore, and pulling full documents (synonyms
-            # included) just to read status would spend the bulk win on payload.
-            async for doc in entries_coll.find(
-                {"entry_id": {"$in": requested_ids}},
-                {"entry_id": 1, "status": 1, "_id": 0},
-            ):
-                status_by_id[doc["entry_id"]] = doc["status"]
-        except Exception as e:
-            for i in keyless:
-                results[i] = ActivateItemResponse(
-                    index=i, status="error", entry_id=items[i].entry_id, **error_fields(e))
-                error_count += 1
-            return ActivateBulkResponse(
-                results=[r for r in results if r is not None],
-                total=len(items), activated=activated_count, errors=error_count,
-            )
+        await _activate_keyless(items, keyless, results)
+    return _activation_response(results, len(items))
 
-        # Deduplicate: a repeated entry_id must not skew the modified-count
-        # cross-check (update_many matches each document once).
-        reserved_ids = [
-            eid for eid in dict.fromkeys(requested_ids)
-            if status_by_id.get(eid) == "reserved"
-        ]
-        flipped_ids: set[str] = set(reserved_ids)
-        update_error: dict | None = None
-        if reserved_ids:
-            try:
-                update_result = await entries_coll.update_many(
-                    {"entry_id": {"$in": reserved_ids}, "status": "reserved"},
-                    {"$set": {
-                        "status": "active",
-                        "updated_at": datetime.now(UTC),
-                    }, "$inc": dict(REVISION_INC)},
-                )
-                if update_result.modified_count != len(reserved_ids):
-                    # A concurrent status change between classify and update: the
-                    # guard kept the write safe; re-read which ids are active now.
-                    # An entry still reserved, or one another request moved off
-                    # reserved (retired, say), was not activated by this request.
-                    flipped_ids = set()
-                    async for doc in entries_coll.find(
-                        {"entry_id": {"$in": reserved_ids}, "status": "active"},
-                        {"entry_id": 1, "_id": 0},
-                    ):
-                        flipped_ids.add(doc["entry_id"])
-            except Exception as e:
-                # Only the items this write was for failed; the classify read
-                # already decided the rest (not_found, already_active, ...).
-                update_error = error_fields(e)
-                flipped_ids = set()
 
+async def _activate_keyless(
+    items: list[ActivateItem],
+    keyless: list[int],
+    results: list[ActivateItemResponse | None],
+) -> None:
+    """Activate the keyless items with one classify read and one guarded
+    update_many; fills ``results`` at their indices."""
+    entries_coll = RegistryEntry.get_motor_collection()
+    requested_ids = [items[i].entry_id for i in keyless]
+    status_by_id: dict[str, str] = {}
+    try:
+        # Projected to id + status: activation touches hundreds of thousands
+        # of entries per restore, and pulling full documents (synonyms
+        # included) just to read status would spend the bulk win on payload.
+        async for doc in entries_coll.find(
+            {"entry_id": {"$in": requested_ids}},
+            {"entry_id": 1, "status": 1, "_id": 0},
+        ):
+            status_by_id[doc["entry_id"]] = doc["status"]
+    except Exception as e:
         for i in keyless:
-            item = items[i]
-            known_status = status_by_id.get(item.entry_id)
-            if known_status is None:
-                results[i] = ActivateItemResponse(
-                    index=i, status="not_found", entry_id=item.entry_id)
-                error_count += 1
-            elif known_status == "active":
-                results[i] = ActivateItemResponse(
-                    index=i, status="already_active", entry_id=item.entry_id)
-            elif known_status != "reserved":
-                results[i] = ActivateItemResponse(
-                    index=i, status="error", entry_id=item.entry_id,
-                    error=f"Cannot activate entry with status '{known_status}'",
-                    error_code="invalid_state", details={"rule": "not_reserved"},
-                )
-                error_count += 1
-            elif item.entry_id in flipped_ids:
-                results[i] = ActivateItemResponse(
-                    index=i, status="activated", entry_id=item.entry_id)
-                activated_count += 1
-            elif update_error is not None:
-                results[i] = ActivateItemResponse(
-                    index=i, status="error", entry_id=item.entry_id, **update_error)
-                error_count += 1
-            else:
-                results[i] = ActivateItemResponse(
-                    index=i, status="error", entry_id=item.entry_id,
-                    error="Entry status changed concurrently; not activated",
-                    error_code="concurrency_conflict",
-                )
-                error_count += 1
+            results[i] = ActivateItemResponse(
+                index=i, status="error", entry_id=items[i].entry_id, **error_fields(e))
+        return
 
+    # Deduplicate: a repeated entry_id must not skew the modified-count
+    # cross-check (update_many matches each document once).
+    reserved_ids = [
+        eid for eid in dict.fromkeys(requested_ids)
+        if status_by_id.get(eid) == "reserved"
+    ]
+    flipped_ids, update_error = await _flip_reserved(entries_coll, reserved_ids)
+    for i in keyless:
+        results[i] = _keyless_answer(i, items[i].entry_id, status_by_id, flipped_ids, update_error)
+
+
+async def _flip_reserved(
+    entries_coll: Any, reserved_ids: list[str],
+) -> tuple[set[str], dict | None]:
+    """Flip the reserved entries active with one guarded write. Returns the
+    ids this request activated, and the write's error fields if it failed
+    (then none were)."""
+    if not reserved_ids:
+        return set(), None
+    try:
+        update_result = await entries_coll.update_many(
+            {"entry_id": {"$in": reserved_ids}, "status": "reserved"},
+            {"$set": {
+                "status": "active",
+                "updated_at": datetime.now(UTC),
+            }, "$inc": dict(REVISION_INC)},
+        )
+        if update_result.modified_count == len(reserved_ids):
+            return set(reserved_ids), None
+        # A concurrent status change between classify and update: the guard
+        # kept the write safe; re-read which ids are active now. An entry
+        # still reserved, or one another request moved off reserved
+        # (retired, say), was not activated by this request.
+        flipped: set[str] = set()
+        async for doc in entries_coll.find(
+            {"entry_id": {"$in": reserved_ids}, "status": "active"},
+            {"entry_id": 1, "_id": 0},
+        ):
+            flipped.add(doc["entry_id"])
+        return flipped, None
+    except Exception as e:
+        # Only the items this write was for failed; the classify read
+        # already decided the rest (not_found, already_active, ...).
+        return set(), error_fields(e)
+
+
+def _keyless_answer(
+    i: int,
+    entry_id: str,
+    status_by_id: dict[str, str],
+    flipped_ids: set[str],
+    update_error: dict | None,
+) -> ActivateItemResponse:
+    """A keyless item's answer, from the status the classify read found and
+    what the write did."""
+    known_status = status_by_id.get(entry_id)
+    if known_status is None:
+        return ActivateItemResponse(index=i, status="not_found", entry_id=entry_id)
+    if known_status == "active":
+        return ActivateItemResponse(index=i, status="already_active", entry_id=entry_id)
+    if known_status != "reserved":
+        return ActivateItemResponse(
+            index=i, status="error", entry_id=entry_id,
+            error=f"Cannot activate entry with status '{known_status}'",
+            error_code="invalid_state", details={"rule": "not_reserved"},
+        )
+    if entry_id in flipped_ids:
+        return ActivateItemResponse(index=i, status="activated", entry_id=entry_id)
+    if update_error is not None:
+        return ActivateItemResponse(index=i, status="error", entry_id=entry_id, **update_error)
+    return ActivateItemResponse(
+        index=i, status="error", entry_id=entry_id,
+        error="Entry status changed concurrently; not activated",
+        error_code="concurrency_conflict",
+    )
+
+
+def _activation_response(
+    results: list[ActivateItemResponse | None], total: int,
+) -> ActivateBulkResponse:
+    """The response, its counts taken from the statuses: activated, and an
+    error or a missing entry as an error (already_active is neither)."""
+    answered = [r for r in results if r is not None]
+    statuses = [r.status for r in answered]
     return ActivateBulkResponse(
-        results=[r for r in results if r is not None],
-        total=len(items),
-        activated=activated_count,
-        errors=error_count,
+        results=answered,
+        total=total,
+        activated=statuses.count("activated"),
+        errors=statuses.count("error") + statuses.count("not_found"),
     )
 
 
