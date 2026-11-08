@@ -7,6 +7,78 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Restores rehash each document against the template it is pinned to; restored Registry rows search by their new keys
+
+- **Fresh restore**: a document's identity hash is recomputed against the
+  template version it is pinned to, in whichever archived namespace that
+  template lives. Before, the definition was looked up by template value in
+  the document's own namespace: a document on another namespace's template
+  kept its archived hash (the next write of that identity made a second
+  document), and one whose namespace held a template of the same value was
+  rehashed by the wrong definition.
+- **Templates the archive does not carry** are read from this install, in
+  fresh, merge and plain restores alike, so documents on them are rehashed
+  too. A keyed document whose template is known nowhere keeps its hash; a
+  fresh restore counts it (`planned.<ns>.unrehashable_documents`) and warns.
+- **Merge and plain restores** rehash with the template's
+  `referent_identity_paths`, so a dotted identity path into a nested template
+  is recomputed instead of kept with a warning.
+- **A fresh restore into a pre-created target with prefixed ids** keys each
+  document on its template's new id. The id was mapped twice, and a new id
+  equal to another template's old id keyed the document on the wrong
+  template.
+- **A merge redirected into another namespace** renames
+  `references[].resolved.namespace`, so the post-merge validation no longer
+  reports every in-archive document reference as `misplaced_document_ref`.
+- **Restored Registry rows' `search_values`** are derived from their keys as
+  written, so a value search finds a rehashed or re-namespaced entry by its
+  new values and no longer by its old ones.
+
+### Namespace deletion dry run, create races, prefix length
+
+- **`DELETE /api/registry/namespaces/{prefix}?dry_run=true`** reports the
+  delete's refusals: new `refusals: [{rule, message}]`
+  (`default_namespace`, `deletion_mode`, `locked`), and `safe_to_delete` is
+  false when any applies. It said `true` for `wip`, retain-mode and locked
+  namespaces, which the delete refuses.
+- **Two creates of one prefix at once** no longer answer 500 to the loser:
+  `POST` answers the 409 an existing namespace gets, `PUT` applies the
+  loser's settings as an update of the winner (under the update guards, so
+  retain→full still needs `confirm_enable_deletion`), and `initialize-wip`
+  answers the namespace.
+- **A namespace prefix is at most 63 characters**, the longest PostgreSQL
+  schema name reporting can hold (it refused longer ones at sync time).
+  Existing namespaces keep their names.
+- A deletion removes only the namespace's own ID counters, even for a name
+  from before the prefix rule that holds a regex character.
+
+### Document writes: bulk auto-synonym, `by-identity`, pinned versions, `document_id`, PATCH identity; `@wip/client` 0.91.0
+
+- **Bulk creates register each new document's template-scoped
+  auto-synonym**, as single creates do. A document whose synonym the
+  Registry refuses fails with `registry_error` and is not written.
+- **`GET /documents/by-identity/{hash}`** accepts a template synonym (its
+  value) as `template_id`, searches only namespaces the caller can read,
+  answers the latest version, and **answers 409 `ambiguous` with the
+  candidates** when several documents match — pass `namespace` and
+  `template_id`. It used to return an arbitrary one.
+- **A pinned version (`document_id` + `version`) that is already taken is
+  refused** with `already_exists` (`details.rule: version_taken`). It used to
+  be written as the next version, retiring the document's current one.
+- **A `document_id` without `version` must be the document the identity
+  resolves to**, or the item is refused with `invalid_request`
+  (`details.rule: document_id_mismatch`). The single-item path dropped it
+  silently; bulk sent it as a restore id, so re-posting a fetched document
+  with its own id failed — it now updates the document.
+- **PATCH** accepts another alias of the same term (or reference) in an
+  identity field; only a different referent is `identity_field_change`.
+- **Migrate dry run** reports the document version the apply writes, and
+  create, upsert and migrate results carry `template_version`.
+- **`validate-candidate`** works out a candidate's nested identity paths
+  instead of refusing them.
+- **`@wip/client` 0.91.0**: result types carry `template_version`;
+  `getDocumentByIdentity` takes `templateId`.
+
 ### `POST /documents`: a batch writes each document into its item's namespace
 
 Each item of `POST /api/document-store/documents` names its namespace, but a

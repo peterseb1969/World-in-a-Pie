@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -91,14 +91,9 @@ class RemapSource:
     source: str
     target: str
     entities_by_type: dict[str, list[dict[str, Any]]]
-    identity_fields: dict[str, list[str]] = field(default_factory=dict)
-    # template value -> field definitions, from the SAME archive templates as
-    # identity_fields: the resolved-referent rehash needs to know which
-    # identity fields are term/reference typed.
-    template_fields: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
-    # template value -> the template's referent_identity_paths (None for an
-    # archive written before the field existed).
-    referent_paths: dict[str, list[str] | None] = field(default_factory=dict)
+    # The identity definition of every template the archive's documents are
+    # pinned to, whichever namespace holds it (see TemplateDefinitions).
+    template_definitions: TemplateDefinitions | None = None
     # Streamed documents: when set, ``entities_by_type["documents"]`` holds
     # ONE compact row per document (what its Registry key needs) and this
     # re-reads the archive's version chains, so the plan never holds the
@@ -115,10 +110,13 @@ class RemapPlan:
     # Documents whose identity hash had to be recomputed because an identity
     # field held a canonical ID that has just changed.
     rehashed_documents: int = 0
+    # Keyed documents on a template whose definition neither the archive nor
+    # this install could give: their identity hash is kept as archived.
+    unrehashable_documents: int = 0
     # Streamed documents (RemapSource.document_chains): the rewritten rows
     # are produced on demand instead of held in ``rows["documents"]``, each
     # paired with whether its identity hash was recomputed.
-    document_stream: Callable[[], Iterator[tuple[dict[str, Any], bool]]] | None = None
+    document_stream: Callable[[], Iterator[tuple[dict[str, Any], bool | None]]] | None = None
     document_rows: int = 0
     # Streamed documents' FINAL Registry keys (after rewrite and rehash), by
     # new document_id — what activation and the synonym restore need, kept
@@ -131,7 +129,7 @@ class RemapPlan:
             return self.document_keys
         keys: dict[str, dict[str, Any]] = {}
         for row in self.rows.get("documents", []):
-            key = composite_key_for("documents", row, namespace, self.id_map)
+            key = final_document_key(row, namespace)
             if key:
                 keys[row["document_id"]] = key
         return keys
@@ -151,6 +149,8 @@ class RemapPlan:
         if self.document_stream is not None:
             counts["documents"] = self.document_rows
         counts["rehashed_documents"] = self.rehashed_documents
+        if self.unrehashable_documents:
+            counts["unrehashable_documents"] = self.unrehashable_documents
         return counts
 
 
@@ -218,6 +218,74 @@ def composite_key_for(
     raise ValueError(f"No composite key shape for entity type '{entity_type}'")
 
 
+def final_document_key(row: dict[str, Any], namespace: str) -> dict[str, Any]:
+    """The Registry key of a document row the restore has already rewritten.
+
+    ``composite_key_for`` maps an ARCHIVED row's template id through the id
+    map. A rewritten row already holds its new template id; mapping it again
+    is a no-op only while new ids never equal old ones. With prefixed ids on a
+    pre-created target a new id can be some other template's old id, and the
+    key would silently name that template.
+    """
+    if not row.get("identity_hash"):
+        return {}
+    return {
+        "ns": namespace,
+        "template_id": row.get("template_id"),
+        "identity_hash": row["identity_hash"],
+    }
+
+
+def template_definition(template: dict[str, Any]) -> dict[str, Any]:
+    """What a rehash needs of one template version."""
+    return {
+        "identity_fields": list(template.get("identity_fields") or []),
+        "fields": list(template.get("fields") or []),
+        "referent_paths": template.get("referent_identity_paths"),
+    }
+
+
+@dataclass
+class TemplateDefinitions:
+    """The identity definition each document's rehash reads.
+
+    A document is rehashed against the template version it is pinned to:
+    its archived (template_id, template_version), which may belong to any
+    namespace of the archive — a document's namespace is independent of its
+    template's. Keying by template VALUE within the document's own namespace
+    missed every cross-namespace template and, where a template of the same
+    value sat in the document's namespace, read the wrong definition.
+
+    A template the archive references but does not carry is read from this
+    install (``external``, by archived template_id): identity_fields are the
+    same in every version of a template (the template store refuses to change
+    them), so its current definition decides which fields feed the hash.
+    """
+
+    archived: dict[tuple[str, int], dict[str, Any]] = field(default_factory=dict)
+    external: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    @classmethod
+    def of_templates(cls, templates: Iterable[dict[str, Any]]) -> TemplateDefinitions:
+        archived: dict[tuple[str, int], dict[str, Any]] = {}
+        for template in templates:
+            template_id = template.get("template_id")
+            if template_id:
+                archived[(str(template_id), int(template.get("version") or 1))] = (
+                    template_definition(template)
+                )
+        return cls(archived=archived)
+
+    def template_ids(self) -> set[str]:
+        return {template_id for template_id, _version in self.archived}
+
+    def lookup(self, document: dict[str, Any]) -> dict[str, Any] | None:
+        """The definition for an ARCHIVED document row, or None."""
+        template_id = str(document.get("template_id"))
+        version = int(document.get("template_version") or 1)
+        return self.archived.get((template_id, version)) or self.external.get(template_id)
+
+
 class RemapRestore:
     """Builds the new-identity plan for one namespace.
 
@@ -232,21 +300,15 @@ class RemapRestore:
         provision: Provisioner,
         remapper: Any,
         *,
-        identity_fields_by_template: dict[str, list[str]] | None = None,
-        template_fields_by_template: dict[str, list[dict[str, Any]]] | None = None,
-        referent_paths_by_template: dict[str, list[str] | None] | None = None,
+        template_definitions: TemplateDefinitions | None = None,
         document_chains: Callable[[], Iterator[list[dict[str, Any]]]] | None = None,
     ):
         self._provision = provision
         self._remapper = remapper
         self._document_chains = document_chains
-        # template value -> identity_fields, used to decide which documents
-        # need their identity hash recomputed after references move.
-        self._identity_fields = identity_fields_by_template or {}
-        # template value -> field definitions — which identity fields are
-        # referent-typed (resolved-referent feed) during the rehash.
-        self._template_fields = template_fields_by_template or {}
-        self._referent_paths = referent_paths_by_template or {}
+        # Which documents need their identity hash recomputed after their
+        # references move, and how: by the template each is pinned to.
+        self._templates = template_definitions or TemplateDefinitions()
 
     async def plan(
         self,
@@ -347,11 +409,16 @@ class RemapRestore:
         if entity_type == "documents" and self._document_chains is not None:
             self._defer_documents(plan, groups, new_ids, namespace)
             return
-        plan.rows[entity_type] = [
-            self._rewrite(entity_type, row, namespace, new_id)
-            for (rows, new_id) in zip(groups.values(), new_ids, strict=True)
-            for row in rows
-        ]
+        rewritten: list[dict[str, Any]] = []
+        for rows, new_id in zip(groups.values(), new_ids, strict=True):
+            for archived in rows:
+                row = self._rewrite(entity_type, archived, namespace, new_id)
+                if entity_type == "documents":
+                    outcome = self._rehash(row, archived)
+                    plan.rehashed_documents += outcome is True
+                    plan.unrehashable_documents += outcome is None
+                rewritten.append(row)
+        plan.rows[entity_type] = rewritten
 
     def _finish(
         self,
@@ -371,16 +438,18 @@ class RemapRestore:
         if plan.document_stream is not None:
             # One counting pass: the plan's summary (and a dry run's report)
             # states how many rows and rehashes the write will produce.
-            rows = rehashed = 0
-            for row, was_rehashed in plan.document_stream():
+            rows = rehashed = unrehashable = 0
+            for row, outcome in plan.document_stream():
                 rows += 1
-                rehashed += was_rehashed
-                key = composite_key_for("documents", row, namespace, plan.id_map)
+                rehashed += outcome is True
+                unrehashable += outcome is None
+                key = final_document_key(row, namespace)
                 if key:
                     plan.document_keys[row["document_id"]] = key
             plan.document_rows, plan.rehashed_documents = rows, rehashed
-        else:
-            plan.rehashed_documents = self._recompute_identity_hashes(plan, namespace)
+            plan.unrehashable_documents = unrehashable
+        # Held documents were rehashed as they were rewritten (_rewrite_type),
+        # with the archived row at hand: that is what names the template.
 
     def _defer_documents(
         self,
@@ -401,14 +470,14 @@ class RemapRestore:
         new_id_by_old = dict(zip(groups, new_ids, strict=True))
         remapper = copy.deepcopy(self._remapper)
 
-        def stream() -> Iterator[tuple[dict[str, Any], bool]]:
+        def stream() -> Iterator[tuple[dict[str, Any], bool | None]]:
             for chain in chains():
                 new_id = new_id_by_old[str(chain[0].get("document_id"))]
                 for entity in chain:
                     row = remapper.remap_document(entity)
                     row["namespace"] = namespace
                     row[ID_FIELDS["documents"]] = new_id
-                    yield row, self._rehash(row)
+                    yield row, self._rehash(row, entity)
 
         plan.document_stream = stream
         plan.rows["documents"] = []
@@ -446,31 +515,27 @@ class RemapRestore:
         row[ID_FIELDS[entity_type]] = new_id
         return row
 
-    def _recompute_identity_hashes(self, plan: RemapPlan, namespace: str) -> int:
-        """Rehash documents whose identity values were themselves ids.
+    def _rehash(self, row: dict[str, Any], archived: dict[str, Any]) -> bool | None:
+        """Recompute one remapped row's identity hash: True if it changed,
+        False if not, None for a keyed row no definition covers.
 
         A document's identity hash is namespace-free, so it survives
         re-minting untouched — unless its feed holds canonical IDs that have
-        just changed. Two ways that happens: an identity DATA value that is
-        itself an id, and (resolved-referent rule) a term/reference identity
-        field, whose feed is the resolution's canonical ID — the remapper has
-        already rewritten both the data values and the stored
-        term_references / references through the id maps, so recomputing from
-        the remapped row yields the hash the new instance's writes will
-        produce. Left alone, such a document would carry a hash that no
-        longer describes its own feed: wrong silently, and the next write on
-        that identity would land somewhere else.
+        just changed: an identity data value that is itself an id, or a
+        term/reference identity field, whose feed is the resolution's
+        canonical ID. The remapper has rewritten both, so recomputing from
+        the remapped row gives the hash the new instance's writes produce.
+        The definition is the template ``archived`` is pinned to; a keyed row
+        whose template is known nowhere keeps its hash, and says so.
         """
-        return sum(self._rehash(row) for row in plan.rows.get("documents", []))
-
-    def _rehash(self, row: dict[str, Any]) -> bool:
-        """Recompute one remapped row's identity hash; True if it changed."""
-        template_value = row.get("template_value") or ""
+        definition = self._templates.lookup(archived)
+        if definition is None:
+            return None if row.get("identity_hash") else False
         return rehash_document_row(
             row,
-            self._identity_fields.get(template_value) or [],
-            self._template_fields.get(template_value) or [],
-            self._referent_paths.get(template_value),
+            definition["identity_fields"],
+            definition["fields"],
+            definition["referent_paths"],
         )
 
 
@@ -546,9 +611,7 @@ async def plan_multi(
         s.source: RemapRestore(
             provision_for_target(s.target),
             remapper,
-            identity_fields_by_template=s.identity_fields,
-            template_fields_by_template=s.template_fields,
-            referent_paths_by_template=s.referent_paths,
+            template_definitions=s.template_definitions,
             document_chains=s.document_chains,
         )
         for s in sources

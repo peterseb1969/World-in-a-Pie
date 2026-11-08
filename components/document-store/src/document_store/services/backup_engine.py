@@ -60,11 +60,14 @@ from .remap_restore import (
     REMAP_ENTITY_ORDER,
     RemapPlan,
     RemapSource,
+    TemplateDefinitions,
     check_collisions_before_writing,
     plan_multi,
     rehash_document_row,
+    template_definition,
 )
 from .reporting_client import ReportingSyncClient
+from .template_store_client import get_template_store_client
 
 logger = logging.getLogger("document_store.backup_engine")
 
@@ -1010,6 +1013,44 @@ def _is_empty(value: Any) -> bool:
     return value is None or value == "" or value == [] or value == {}
 
 
+def registry_search_values(entry: dict[str, Any]) -> list[str]:
+    """A Registry entry row's search_values, derived as the Registry does
+    (RegistryEntry.rebuild_search_values): the string values of the primary
+    key and of every active synonym's key, sorted. A synonym without a status
+    is active; an inactive one's values must not resolve."""
+    values: set[str] = set()
+    keys = [entry.get("primary_composite_key")]
+    keys += [
+        synonym.get("composite_key")
+        for synonym in entry.get("synonyms") or []
+        if isinstance(synonym, dict) and synonym.get("status") != "inactive"
+    ]
+    for key in keys:
+        if isinstance(key, dict):
+            values.update(v for v in key.values() if isinstance(v, str))
+    return sorted(values)
+
+
+def _resolved_in(ref: Any, source: str, target: str) -> Any:
+    """A document reference whose snapshot names ``source``, naming ``target``."""
+    if not isinstance(ref, dict):
+        return ref
+    resolved = ref.get("resolved")
+    if isinstance(resolved, dict) and resolved.get("namespace") == source:
+        return {**ref, "resolved": {**resolved, "namespace": target}}
+    return ref
+
+
+def _archived_template_ids(reader: Any, sources: list[str]) -> set[str]:
+    """The template ids the archive carries in ``sources``."""
+    return {
+        str(template_id)
+        for src in sources
+        for template in reader.read_entities("templates", namespace=src)
+        if (template_id := template.get("template_id"))
+    }
+
+
 class _IdentityRehash:
     """Recompute the identity hash of document rows whose references a
     restore rewrote, and re-key their Registry rows to the new hash.
@@ -1022,23 +1063,27 @@ class _IdentityRehash:
     target's copy of it.
 
     The identity definition comes from the archived template the row was
-    written against, keyed by its archived (template_id, template_version).
-    A row on a template the archive does not carry keeps its hash, as a
-    fresh restore does.
+    written against, keyed by its archived (template_id, template_version),
+    referent_identity_paths included (a dotted identity path into a nested
+    template cannot be classified without them). A template the archive
+    references but does not carry is read from this install
+    (``external``); a row on a template known nowhere keeps its hash.
     """
 
-    def __init__(self, reader: Any, sources: list[str]):
+    def __init__(
+        self,
+        reader: Any,
+        sources: list[str],
+        external: dict[str, dict[str, Any]] | None = None,
+    ):
         # Every archived namespace's templates: a document may use a template
         # of another namespace in the same archive.
-        self._templates: dict[tuple[str, int], dict[str, Any]] = {}
-        for src in sources:
-            for template in reader.read_entities("templates", namespace=src):
-                template_id = template.get("template_id")
-                if template_id:
-                    self._templates[(template_id, int(template.get("version") or 1))] = {
-                        "identity_fields": list(template.get("identity_fields") or []),
-                        "fields": list(template.get("fields") or []),
-                    }
+        self._templates = TemplateDefinitions.of_templates(
+            template
+            for src in sources
+            for template in reader.read_entities("templates", namespace=src)
+        )
+        self._templates.external = dict(external or {})
         self.new_hash: dict[str, str] = {}
 
     def rehash(self, archived: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
@@ -1046,11 +1091,9 @@ class _IdentityRehash:
         hash in place when the rewrite changed a resolution."""
         if all(row.get(k) == archived.get(k) for k in ("references", "term_references")):
             return row
-        template = self._templates.get(
-            (str(archived.get("template_id")), int(archived.get("template_version") or 1))
-        )
+        template = self._templates.lookup(archived)
         if template and rehash_document_row(
-            row, template["identity_fields"], template["fields"]
+            row, template["identity_fields"], template["fields"], template["referent_paths"]
         ):
             self.new_hash[str(row.get("document_id"))] = row["identity_hash"]
         return row
@@ -1085,9 +1128,15 @@ class _PlainRestoreRewrite:
     the next write of that identity computes.
     """
 
-    def __init__(self, remapper: IDRemapper, reader: Any, sources: list[str]):
+    def __init__(
+        self,
+        remapper: IDRemapper,
+        reader: Any,
+        sources: list[str],
+        external: dict[str, dict[str, Any]] | None = None,
+    ):
         self.remapper = remapper
-        self._rehash = _IdentityRehash(reader, sources)
+        self._rehash = _IdentityRehash(reader, sources, external)
 
     @property
     def rehashed_documents(self) -> int:
@@ -1311,7 +1360,13 @@ class DirectRestoreEngine:
             )
             _drop_unchanged_mappings(remapper)
             repoint = (
-                _PlainRestoreRewrite(remapper, reader, [src for src, _tgt in targets])
+                _PlainRestoreRewrite(
+                    remapper, reader, [src for src, _tgt in targets],
+                    await self._external_template_definitions(
+                        reader, manifest, remapper,
+                        _archived_template_ids(reader, [src for src, _tgt in targets]),
+                    ),
+                )
                 if remapper.total_mappings else None
             )
 
@@ -1597,34 +1652,23 @@ class DirectRestoreEngine:
                         rows.append(row)
                     entities_by_type[entity_type] = rows
 
-                # Identity fields come from the ARCHIVE's templates: the
-                # target has none yet, and these are the definitions the
-                # documents were written against. The field definitions ride
-                # along so the rehash can tell referent-typed identity fields
-                # (which feed resolved IDs) from plain ones.
-                identity_fields = {
-                    value: list(template.get("identity_fields") or [])
-                    for template in entities_by_type.get("templates", [])
-                    if isinstance(value := template.get("value"), str) and value
-                }
-                template_fields = {
-                    value: list(template.get("fields") or [])
-                    for template in entities_by_type.get("templates", [])
-                    if isinstance(value := template.get("value"), str) and value
-                }
-                referent_paths = {
-                    value: template.get("referent_identity_paths")
-                    for template in entities_by_type.get("templates", [])
-                    if isinstance(value := template.get("value"), str) and value
-                }
                 remap_sources.append(RemapSource(
                     source=src, target=target,
                     entities_by_type=entities_by_type,
-                    identity_fields=identity_fields,
-                    template_fields=template_fields,
-                    referent_paths=referent_paths,
                     document_chains=document_chains,
                 ))
+
+            # The rehash reads the template each document is pinned to, from
+            # EVERY archived namespace: a document may sit on another
+            # namespace's template. These are the definitions the documents
+            # were written against (the target has none yet).
+            definitions = TemplateDefinitions.of_templates(
+                template
+                for rs in remap_sources
+                for template in rs.entities_by_type.get("templates") or []
+            )
+            for rs in remap_sources:
+                rs.template_definitions = definitions
 
             # Several sources folding into one target may collide on a Registry
             # key. That is refused here, for every type at once, before any
@@ -1666,6 +1710,9 @@ class DirectRestoreEngine:
             referents = await self._map_external_referents(
                 reader, manifest, remapper, ", ".join(targets)
             )
+            definitions.external = await self._external_template_definitions(
+                reader, manifest, remapper, definitions.template_ids(),
+            )
             dropped = await self._report_unresolved_references(
                 reader, list(mapping), remapper, referents, ", ".join(targets),
                 drop_edges=drop_unresolved_edges,
@@ -1684,6 +1731,17 @@ class DirectRestoreEngine:
                 for entity_type, count in plans[src].summary().items():
                     if count:
                         self._emit(phase, f"[{src} → {target}] {entity_type}: {count}")
+                if unrehashable := plans[src].unrehashable_documents:
+                    self._emit(
+                        "warning",
+                        f"[{src} → {target}] {unrehashable} document(s) keep their "
+                        "archived identity hash: their template is neither in the "
+                        "archive nor readable here. If an identity field names a "
+                        "term or document this restore re-minted, the next write of "
+                        "that identity creates a second document — rehash the "
+                        "namespace (POST /api/document-store/maintenance/"
+                        "rehash-identities) once their template exists.",
+                    )
             self.result = {
                 "mode": "fresh",
                 "dry_run": dry_run,
@@ -1943,6 +2001,40 @@ class DirectRestoreEngine:
             return ids
 
         return lambda _target: provision
+
+    async def _external_template_definitions(
+        self,
+        reader: ArchiveReader,
+        manifest: Manifest,
+        remapper: IDRemapper,
+        carried: set[str],
+    ) -> dict[str, dict[str, Any]]:
+        """The identity definitions of templates the archive's documents are
+        pinned to but the archive does not carry, read from this install.
+
+        Run after ``_map_external_referents``: each such template is read
+        under the id it maps to here (its own id when nothing maps it). One
+        this install does not hold, or a template store that does not answer,
+        leaves the template out — its documents keep their hashes, and the
+        plan counts them.
+        """
+        if manifest.referents is None:
+            return {}
+        client = get_template_store_client()
+        out: dict[str, dict[str, Any]] = {}
+        for row in reader.read_referents():
+            archived_id = row.get("entry_id")
+            if row.get("entity_type") != "templates" or not archived_id or archived_id in carried:
+                continue
+            here = remapper.template_map.get(archived_id, archived_id)
+            try:
+                template = await client.get_template_resolved(here)
+            except Exception as exc:  # the documents keep their hashes; counted
+                logger.warning("Template %s not readable for the rehash: %s", here, exc)
+                continue
+            if template:
+                out[str(archived_id)] = template_definition(template)
+        return out
 
     async def _map_external_referents(
         self,
@@ -3148,7 +3240,13 @@ class DirectRestoreEngine:
                 # are rehashed before they are planned: the planner matches on
                 # (template_id, identity_hash), and a stale hash would miss
                 # the target's copy of the same document.
-                rehash = _IdentityRehash(reader, [s for s, _t in targets])
+                rehash = _IdentityRehash(
+                    reader, [s for s, _t in targets],
+                    await self._external_template_definitions(
+                        reader, manifest, remapper,
+                        _archived_template_ids(reader, [s for s, _t in targets]),
+                    ),
+                )
                 archived_doc_groups = doc_groups
                 for entity_type in _MERGE_PLAN_ORDER:
                     if entity_type in DEFINITION_TYPES:
@@ -3531,6 +3629,17 @@ class DirectRestoreEngine:
         result = dict(entity)
         if result.get("namespace") == source:
             result["namespace"] = target
+        if entity_type == "documents":
+            # A document reference snapshots its referent's namespace. The
+            # referents that moved with this one name the target now; left on
+            # the source, the post-merge validation reads every in-archive
+            # reference as pointing at the wrong namespace.
+            references = result.get("references")
+            if isinstance(references, list):
+                result["references"] = [
+                    _resolved_in(ref, source, target) for ref in references
+                ]
+            return result
         if entity_type != "registry_entries":
             return result
 
@@ -5413,6 +5522,15 @@ class DirectRestoreEngine:
             # the same install) or none, and deleting it deletes the other's.
             if entity_type == "files" and row.get("file_id"):
                 row["storage_key"] = row["file_id"]
+            # The Registry answers value searches from search_values, which
+            # it derives from the keys on every write it makes. A restore
+            # that rewrote a key (a rehash, an id or namespace rewrite)
+            # writes the row itself, so it derives them here: the archived
+            # copy would still match the old values and miss the new ones.
+            # An archive always carries the field; a row without it is left
+            # as written.
+            if entity_type == "registry_entries" and "search_values" in row:
+                row["search_values"] = registry_search_values(row)
         try:
             await collection.insert_many(batch, ordered=False)
         except BulkWriteError as exc:

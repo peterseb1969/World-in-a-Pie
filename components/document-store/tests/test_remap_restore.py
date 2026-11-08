@@ -22,6 +22,7 @@ from wip_archive.remap import IDRemapper
 from document_store.services.remap_restore import (
     REMAP_ENTITY_ORDER,
     RemapRestore,
+    TemplateDefinitions,
     composite_key_for,
 )
 from wip_auth.document_identity import compute_hash
@@ -47,10 +48,15 @@ def _provisioner(prefix="NEW"):
 
 
 def _planner(provision=None, identity_fields=None):
+    """``identity_fields``: archived template id -> its identity fields
+    (version 1, no field definitions)."""
     return RemapRestore(
         provision or _provisioner(),
         IDRemapper(),
-        identity_fields_by_template=identity_fields,
+        template_definitions=TemplateDefinitions(archived={
+            (template_id, 1): {"identity_fields": fields, "fields": [], "referent_paths": None}
+            for template_id, fields in (identity_fields or {}).items()
+        }),
     )
 
 
@@ -332,7 +338,7 @@ class TestIdentityHashes:
     @pytest.mark.asyncio
     async def test_a_value_based_hash_is_left_alone(self):
         stored = compute_hash({"patient_id": "P-1"})
-        planner = _planner(identity_fields={"PATIENT": ["patient_id"]})
+        planner = _planner(identity_fields={"T": ["patient_id"]})
 
         plan = await planner.plan(
             {
@@ -356,7 +362,7 @@ class TestIdentityHashes:
         # changed. Left alone the hash would no longer describe the document's
         # own data — wrong silently, and the next write on that identity would
         # land somewhere else.
-        planner = _planner(identity_fields={"VISIT": ["patient_ref"]})
+        planner = _planner(identity_fields={"T": ["patient_ref"]})
 
         plan = await planner.plan(
             {
@@ -389,7 +395,7 @@ class TestIdentityHashes:
     async def test_a_missing_identity_field_leaves_the_hash_as_archived(self):
         # Reported rather than raised: one malformed document should not
         # abort a namespace-sized restore.
-        planner = _planner(identity_fields={"PATIENT": ["patient_id"]})
+        planner = _planner(identity_fields={"T": ["patient_id"]})
 
         plan = await planner.plan(
             {
@@ -423,8 +429,9 @@ class TestTermReferenceIdentity:
                    "target_terminologies": ["KIND"]}]
         planner = RemapRestore(
             _provisioner(), IDRemapper(),
-            identity_fields_by_template={"THING": ["kind"]},
-            template_fields_by_template={"THING": fields},
+            template_definitions=TemplateDefinitions(archived={
+                ("T", 1): {"identity_fields": ["kind"], "fields": fields, "referent_paths": None},
+            }),
         )
 
         def feed(term_id):
