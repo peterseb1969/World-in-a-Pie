@@ -643,51 +643,20 @@ async def check_all_documents(
     """
     clear_integrity_cache()
 
-    query: dict[str, Any] = {}
-    if namespace:
-        query["namespace"] = namespace
-    if status_filter:
-        query["status"] = status_filter
-    if template_id_filter:
-        query["template_id"] = template_id_filter
-
+    query = _document_query(namespace, status_filter, template_id_filter)
     total_count = await Document.find(query).count()
     effective_limit = limit if limit > 0 else total_count
 
     all_issues: list[IntegrityIssue] = []
-    documents_with_issues: set[str] = set()
     documents_checked = 0
     batch: list[Document] = []
 
-    async def _drain(batch: list[Document]) -> None:
-        """Run every check over one batch and fold in its issues."""
-        issues: list[IntegrityIssue] = []
-        for document in batch:
-            await check_template_reference(document.template_id, document, issues)
-            if check_term_refs and document.term_references:
-                for field_path, term_id in extract_term_ids(document.term_references):
-                    await check_term_reference(term_id, document, field_path, issues)
-            if check_identity:
-                await check_identity_hash(document, issues)
-        await check_batch_references(batch, issues)
-
-        for issue in issues:
-            documents_with_issues.add(issue.document_id)
-        all_issues.extend(issues)
-
-    find_q = Document.find(query)
-    if recent_first:
-        find_q = find_q.sort([("created_at", SortDirection.DESCENDING)])
-    if limit > 0:
-        # The cursor stops at the limit, so nothing past it is read or checked.
-        find_q = find_q.limit(limit)
-
-    async for document in find_q:
+    async for document in _scan_cursor(query, recent_first=recent_first, limit=limit):
         batch.append(document)
         if len(batch) < BATCH_SIZE:
             continue
 
-        await _drain(batch)
+        all_issues += await _check_document_batch(batch, check_term_refs, check_identity)
         documents_checked += len(batch)
         batch = []
         if progress is not None:
@@ -700,58 +669,92 @@ async def check_all_documents(
 
     if batch and documents_checked < effective_limit:
         del batch[max(0, effective_limit - documents_checked):]
-        await _drain(batch)
+        all_issues += await _check_document_batch(batch, check_term_refs, check_identity)
         documents_checked += len(batch)
         if progress is not None:
             progress(documents_checked, effective_limit)
 
-    summary = IntegritySummary(
-        total_documents=total_count,
-        documents_checked=documents_checked,
-        documents_with_issues=len(documents_with_issues),
-        orphaned_template_refs=sum(
-            1 for i in all_issues if i.type == "orphaned_template_ref"
-        ),
-        orphaned_term_refs=sum(
-            1 for i in all_issues if i.type == "orphaned_term_ref"
-        ),
-        inactive_template_refs=sum(
-            1 for i in all_issues if i.type == "inactive_template_ref"
-        ),
-        orphaned_document_refs=sum(
-            1 for i in all_issues if i.type == "orphaned_document_ref"
-        ),
-        misplaced_document_refs=sum(
-            1 for i in all_issues if i.type == "misplaced_document_ref"
-        ),
-        orphaned_file_refs=sum(
-            1 for i in all_issues if i.type == "orphaned_file_ref"
-        ),
-        identity_hash_mismatches=sum(
-            1 for i in all_issues if i.type == "identity_hash_mismatch"
-        ),
-        identity_unverified=sum(
-            1 for i in all_issues
-            if i.type in (
-                "identity_field_missing",
-                "identity_resolution_missing",
-                "template_version_not_found",
-            )
-        ),
-    )
-
-    # Anything that breaks resolution or identity is an error; a reference to
-    # a retired-but-present template is a warning (PoNIF #1 — inactive means
-    # retired, and existing data keeps resolving).
-    if any(i.severity == "error" for i in all_issues):
-        status = "error"
-    elif all_issues:
-        status = "warning"
-    else:
-        status = "healthy"
-
     return IntegrityCheckResult(
-        status=status,
-        summary=summary,
+        status=_overall_status(all_issues),
+        summary=_summarize(all_issues, total_count, documents_checked),
         issues=all_issues,
     )
+
+
+def _scan_cursor(query: dict[str, Any], *, recent_first: bool, limit: int) -> Any:
+    find_q = Document.find(query)
+    if recent_first:
+        find_q = find_q.sort([("created_at", SortDirection.DESCENDING)])
+    if limit > 0:
+        # The cursor stops at the limit, so nothing past it is read or checked.
+        find_q = find_q.limit(limit)
+    return find_q
+
+
+def _document_query(
+    namespace: str | None, status_filter: str | None, template_id_filter: str | None,
+) -> dict[str, Any]:
+    query: dict[str, Any] = {}
+    if namespace:
+        query["namespace"] = namespace
+    if status_filter:
+        query["status"] = status_filter
+    if template_id_filter:
+        query["template_id"] = template_id_filter
+    return query
+
+
+async def _check_document_batch(
+    batch: list[Document], check_term_refs: bool, check_identity: bool,
+) -> list[IntegrityIssue]:
+    """Run every check over one batch; returns its issues."""
+    issues: list[IntegrityIssue] = []
+    for document in batch:
+        await check_template_reference(document.template_id, document, issues)
+        if check_term_refs and document.term_references:
+            for field_path, term_id in extract_term_ids(document.term_references):
+                await check_term_reference(term_id, document, field_path, issues)
+        if check_identity:
+            await check_identity_hash(document, issues)
+    await check_batch_references(batch, issues)
+    return issues
+
+
+# The summary counter of each issue type; identity_unverified gathers three.
+_SUMMARY_COUNTERS = {
+    "orphaned_template_ref": "orphaned_template_refs",
+    "orphaned_term_ref": "orphaned_term_refs",
+    "inactive_template_ref": "inactive_template_refs",
+    "orphaned_document_ref": "orphaned_document_refs",
+    "misplaced_document_ref": "misplaced_document_refs",
+    "orphaned_file_ref": "orphaned_file_refs",
+    "identity_hash_mismatch": "identity_hash_mismatches",
+    "identity_field_missing": "identity_unverified",
+    "identity_resolution_missing": "identity_unverified",
+    "template_version_not_found": "identity_unverified",
+}
+
+
+def _summarize(
+    issues: list[IntegrityIssue], total_count: int, documents_checked: int,
+) -> IntegritySummary:
+    counts = dict.fromkeys(set(_SUMMARY_COUNTERS.values()), 0)
+    for issue in issues:
+        counter = _SUMMARY_COUNTERS.get(issue.type)
+        if counter:
+            counts[counter] += 1
+    return IntegritySummary(
+        total_documents=total_count,
+        documents_checked=documents_checked,
+        documents_with_issues=len({issue.document_id for issue in issues}),
+        **counts,
+    )
+
+
+def _overall_status(issues: list[IntegrityIssue]) -> str:
+    """Anything that breaks resolution or identity is an error; a reference to
+    a retired-but-present template is a warning (PoNIF #1 — inactive means
+    retired, and existing data keeps resolving)."""
+    if any(i.severity == "error" for i in issues):
+        return "error"
+    return "warning" if issues else "healthy"
