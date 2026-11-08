@@ -7,6 +7,25 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### PATCH and migrate enforce the edge namespace rule; the outbound gate sees retired templates
+
+- **PATCH and migrate run the relationship constraints** that create runs.
+  An edge lives in its source's namespace: a PATCH that re-points an edge's
+  `source_ref` into another namespace is refused with
+  `cross_namespace_relationship`, as POST refuses it. (Reachable only for an
+  edge type whose `identity_fields` leave out `source_ref`; with it in the
+  identity, PATCH already refused the change.) Migrate refuses to re-pin an
+  edge whose source lies in another namespace.
+- **Action:** an edge that already carries a source in another namespace
+  (written before the rule, or landed by a restore) can no longer be patched
+  or migrated; write it in its source's namespace.
+- **A strict namespace's allow-list now applies to retired templates.** A
+  reference to a template with no active version still resolves, but the
+  Registry no longer places it, and the outbound gate skipped what it could
+  not place. Validation now hands the gate the namespace of every template
+  and terminology it resolves, so the gate no longer depends on the Registry
+  for them.
+
 ### The table view and its CSV export show only documents the caller can read
 
 `GET /api/document-store/table/{template_id}` and `…/csv` checked read on the

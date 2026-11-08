@@ -162,8 +162,10 @@ class ReferenceValidator:
         violations: list[dict[str, Any]] = []
         for kind, entity_id, namespace, _field in targets:
             target_ns = namespace or placed.get(entity_id)
-            # A target the Registry cannot place is not an active entity;
-            # validation reports that, not this check.
+            # Every resolved referent arrives with its namespace: documents in
+            # their reference, templates and terminologies from validation
+            # (placements). A target still unplaced here is an inactive term
+            # or file, which validation itself refuses.
             if not target_ns or target_ns == document_namespace:
                 continue
             if not outbound_allows(document_namespace, source_config, target_ns):

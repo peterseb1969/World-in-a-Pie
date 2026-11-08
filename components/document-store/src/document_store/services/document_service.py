@@ -374,7 +374,10 @@ class DocumentService:
             "term_references": vr.term_references,
             "file_references": vr.file_references,
             "document_references": vr.references,
-            "placements": placements,
+            # What validation already knows (a template's or terminology's
+            # own namespace) wins over a Registry lookup, which does not
+            # place a retired referent.
+            "placements": {**(placements or {}), **(getattr(vr, "referent_namespaces", None) or {})},
         }
         validator = get_reference_validator()
         try:
@@ -408,6 +411,26 @@ class DocumentService:
             return None
         return await Document.find_one(
             {"document_id": document_id}, sort=[("version", SortDirection.DESCENDING)],
+        )
+
+    async def _relationship_refusal(
+        self, template_id: str, template_version: int, validation_result: Any, namespace: str,
+    ) -> tuple[str, str] | None:
+        """The relationship constraints for a write to an existing document
+        (PATCH, migrate), against the template version it validates under.
+        Create and bulk create run the same check inline."""
+        try:
+            template = await get_template_store_client().get_template(
+                template_id=template_id, version=template_version,
+            )
+        except Exception:
+            # As on create: validation already ran against this template, so
+            # a fetch failure here skips only the extra check.
+            template = None
+        if not template:
+            return None
+        return await self._validate_relationship_constraints(
+            template, validation_result, namespace,
         )
 
     async def _validate_relationship_constraints(
@@ -4102,6 +4125,18 @@ class DocumentService:
                 error_code="validation_failed", details={"errors": vr.errors},
             )
 
+        # The relationship constraints, as on every other write: a re-pinned
+        # edge whose source lies in another namespace is refused.
+        rel_error = await self._relationship_refusal(
+            template_id, to_version, vr, namespace,
+        )
+        if rel_error:
+            code, message = rel_error
+            return BulkResultItem(
+                index=index, status="error", document_id=doc.document_id,
+                error=message, error_code=code,
+            )
+
         # The re-pin carries the stored identity hash forward, so it must be the
         # hash the Registry would compute for this document under the target
         # version: the resolved identity feed validation just built. A hash
@@ -4365,6 +4400,17 @@ class DocumentService:
                     warnings=validation_result.warnings,
                 )
 
+            # 7b. Relationship constraints, as on create and before the gates:
+            #    an edge's source lives in the edge's namespace, whatever the
+            #    namespace settings. A PATCH re-pointing source_ref (an edge
+            #    type whose identity does not include it) is refused.
+            rel_error = await self._relationship_refusal(
+                current.template_id, current.template_version,
+                validation_result, current.namespace,
+            )
+            if rel_error:
+                raise PatchError(*rel_error)
+
             # 8. Cross-namespace reference validation, the same gates as the
             #    POST flow. A PATCH is a new write, so a reference it adds is
             #    checked; references the current version already holds carry
@@ -4380,6 +4426,7 @@ class DocumentService:
                     file_references=validation_result.file_references,
                     document_references=validation_result.references,
                     previous=current,
+                    placements=validation_result.referent_namespaces or None,
                 )
             except ReferenceValidationError as exc:
                 raise PatchError(

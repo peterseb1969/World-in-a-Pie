@@ -75,6 +75,12 @@ class ValidationResult:
         self.errors: list[dict[str, Any]] = []
         self.warnings: list[str] = []
         self.identity_hash: str | None = None
+        # Entity id -> namespace for referents whose resolver knows where
+        # they live (templates, terminologies). The outbound reference gate
+        # takes them as placements, so it never depends on the Registry
+        # placing an id it may no longer list as active (a retired template
+        # still resolves).
+        self.referent_namespaces: dict[str, str] = {}
         # The hash feed: resolved-referent rule applied — a term/reference
         # identity field carries its referent's canonical ID here, never the
         # submitted spelling (see wip_auth.document_identity).
@@ -2347,6 +2353,10 @@ class ValidationService:
                 if terminology and not await gate_refuses(
                     terminology.get("namespace"), terminology.get("terminology_id"),
                 ):
+                    if terminology.get("namespace") and terminology.get("terminology_id"):
+                        result.referent_namespaces[str(terminology["terminology_id"])] = (
+                            str(terminology["namespace"])
+                        )
                     return {
                         "terminology_id": terminology.get("terminology_id"),
                         "terminology_value": terminology.get("value"),
@@ -2378,6 +2388,10 @@ class ValidationService:
             if template and not await gate_refuses(
                 template.get("namespace"), template.get("template_id"),
             ):
+                if template.get("namespace") and template.get("template_id"):
+                    result.referent_namespaces[str(template["template_id"])] = (
+                        str(template["namespace"])
+                    )
                 return {
                     "template_id": template.get("template_id"),
                     "template_value": template.get("value"),
