@@ -7,6 +7,18 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `/search/by-fields` matches only keys holding every field
+
+`POST /api/registry/search/by-fields` (and `/search/across-namespaces`)
+returned an entry when **any** queried field matched, even one field in the
+primary key and another in a synonym, and labelled such an entry a
+primary-key match. An entry now matches only when one key, its primary key
+or one active synonym, holds every field at the given value. Values are
+compared as values (a `{"$ne": …}` value no longer acts as a query
+operator), field names cannot contain dots (composite keys are flat), and
+empty `field_criteria` is refused with 422. Single-field searches behave as
+before.
+
 ### `prune` and `filter` keep the templates and terminologies documents name; `wip-archive` 0.34.0
 
 A document can name a template or a terminology through a reference field

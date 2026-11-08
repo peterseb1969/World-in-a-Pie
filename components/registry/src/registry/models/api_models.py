@@ -736,7 +736,12 @@ class SearchItem(StrictModel):
 
     field_criteria: dict[str, Any] = Field(
         ...,
-        description="Field-value pairs to search for in composite keys"
+        min_length=1,
+        description=(
+            "Field-value pairs a key must hold, all of them: an entry matches "
+            "when its primary key, or one of its active synonyms, has every "
+            "field at the given value"
+        ),
     )
     restrict_to_namespaces: list[str] | None = Field(
         default=None,

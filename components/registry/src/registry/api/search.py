@@ -74,9 +74,16 @@ async def search_by_fields(
 
             search_results = []
             for entry in entries:
-                matched_in, matched_ns, matched_et, matched_key = SearchService.find_match_location(
-                    entry, item.field_criteria
-                )
+                location = SearchService.find_match_location(entry, item.field_criteria)
+                if location is None:
+                    # The query and the match check disagree: report it, and
+                    # do not answer with a key that does not hold the fields.
+                    logger.warning(
+                        "search_by_fields: entry %s matched the query but no key holds %s",
+                        entry.entry_id, sorted(item.field_criteria),
+                    )
+                    continue
+                matched_in, matched_ns, matched_et, matched_key = location
                 search_results.append(SearchResult(
                     registry_id=entry.entry_id,
                     namespace=entry.namespace,

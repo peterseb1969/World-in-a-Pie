@@ -28,39 +28,28 @@ class SearchService:
         Returns:
             MongoDB query dictionary
         """
-        or_conditions = []
-
+        # A match is one key holding every field: the primary key, or one
+        # active synonym. Each value is compared as a value ($eq), never read
+        # as a query operator.
+        if not field_criteria:
+            raise ValueError("field_criteria needs at least one field")
+        primary_condition: dict[str, Any] = {}
+        synonym_match: dict[str, Any] = {
+            # A retired entity's synonym does not resolve.
+            "status": {"$ne": "inactive"},
+        }
         for field_name, field_value in field_criteria.items():
             safe_field_name = SearchService._sanitize_field_name(field_name)
+            primary_condition[f"primary_composite_key.{safe_field_name}"] = {"$eq": field_value}
+            synonym_match[f"composite_key.{safe_field_name}"] = {"$eq": field_value}
 
-            # Search in primary composite key
-            primary_condition = {
-                f"primary_composite_key.{safe_field_name}": field_value
-            }
+        # Add namespace/entity_type restriction to synonym search
+        if restrict_to_namespaces:
+            synonym_match["namespace"] = {"$in": restrict_to_namespaces}
+        if restrict_to_entity_types:
+            synonym_match["entity_type"] = {"$in": restrict_to_entity_types}
 
-            # Search in synonym composite keys
-            synonym_condition = {
-                "synonyms": {
-                    "$elemMatch": {
-                        f"composite_key.{safe_field_name}": field_value,
-                        # A retired entity's synonym does not resolve.
-                        "status": {"$ne": "inactive"},
-                    }
-                }
-            }
-
-            # Add namespace/entity_type restriction to synonym search
-            if restrict_to_namespaces:
-                synonym_condition["synonyms"]["$elemMatch"]["namespace"] = {
-                    "$in": restrict_to_namespaces
-                }
-            if restrict_to_entity_types:
-                synonym_condition["synonyms"]["$elemMatch"]["entity_type"] = {
-                    "$in": restrict_to_entity_types
-                }
-
-            or_conditions.append(primary_condition)
-            or_conditions.append(synonym_condition)
+        or_conditions = [primary_condition, {"synonyms": {"$elemMatch": synonym_match}}]
 
         query: dict[str, Any] = {"$or": or_conditions}
 
@@ -156,10 +145,15 @@ class SearchService:
 
     @staticmethod
     def _sanitize_field_name(field_name: str) -> str:
-        """Sanitize a field name to prevent NoSQL injection."""
+        """Sanitize a field name to prevent NoSQL injection.
+
+        A composite key is flat, so a field name has no dots: a dotted one
+        would be read by the query as a nested path and by the match check as
+        a literal key, and the two would disagree.
+        """
         if field_name.startswith("$"):
             raise ValueError(f"Invalid field name: {field_name}")
-        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_.]*$', field_name):
+        if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', field_name):
             raise ValueError(f"Invalid field name format: {field_name}")
         return field_name
 
@@ -167,12 +161,14 @@ class SearchService:
     def find_match_location(
         entry: RegistryEntry,
         field_criteria: dict[str, Any]
-    ) -> tuple[str, str, str, dict[str, Any]]:
+    ) -> tuple[str, str, str, dict[str, Any]] | None:
         """
         Determine where in the entry the match was found.
 
         Returns:
-            Tuple of (matched_in, matched_namespace, matched_entity_type, matched_composite_key)
+            Tuple of (matched_in, matched_namespace, matched_entity_type,
+            matched_composite_key), or None when no single key holds every
+            field: the entry is then not a match, whatever found it.
         """
         if SearchService._matches_criteria(entry.primary_composite_key, field_criteria):
             return "primary", entry.namespace, entry.entity_type, entry.primary_composite_key
@@ -181,7 +177,7 @@ class SearchService:
             if SearchService._matches_criteria(synonym.composite_key, field_criteria):
                 return "synonym", synonym.namespace, synonym.entity_type, synonym.composite_key
 
-        return "primary", entry.namespace, entry.entity_type, entry.primary_composite_key
+        return None
 
     @staticmethod
     def _matches_criteria(composite_key: dict[str, Any], criteria: dict[str, Any]) -> bool:
