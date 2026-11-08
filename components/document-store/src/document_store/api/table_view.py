@@ -258,6 +258,14 @@ All rows include system columns prefixed with underscore:
 - `_status`: Document status
 - `_created_at`: Creation timestamp
 - `_updated_at`: Last update timestamp
+
+**Access:** the caller needs read on the namespace the template lives in —
+the table's columns are the template's full declared layout (inherited
+fields included), and a template's schema is shown only to readers of its
+namespace, as the template store's own reads do. Without it the answer is
+404, even when the caller can read documents on the template in another
+namespace; read those through `GET /documents?template_id=…&namespace=…`.
+The rows are then limited to the namespaces the caller can read.
     """
 )
 async def get_table_view(
@@ -298,7 +306,9 @@ async def get_table_view(
     # Use canonical template_id from resolved template
     canonical_template_id = template.get("template_id", template_id)
 
-    # Check namespace permission
+    # The columns are the template's whole resolved layout: only readers of
+    # the template's namespace see it (the template store gates its own reads
+    # the same way). Reading documents on it elsewhere is not enough.
     ns = template.get("namespace")
     if not ns:
         raise HTTPException(status_code=500, detail="Template response missing namespace")
@@ -381,6 +391,14 @@ async def get_table_view(
 Export documents for a template as a CSV file.
 
 Same flattening logic as the JSON endpoint applies.
+
+**Access:** the caller needs read on the namespace the template lives in —
+the table's columns are the template's full declared layout (inherited
+fields included), and a template's schema is shown only to readers of its
+namespace, as the template store's own reads do. Without it the answer is
+404, even when the caller can read documents on the template in another
+namespace; read those through `GET /documents?template_id=…&namespace=…`.
+The rows are then limited to the namespaces the caller can read.
     """
 )
 async def export_table_csv(
@@ -421,7 +439,9 @@ async def export_table_csv(
 
     canonical_template_id = template.get("template_id", template_id)
 
-    # Check namespace permission
+    # The columns are the template's whole resolved layout: only readers of
+    # the template's namespace see it (the template store gates its own reads
+    # the same way). Reading documents on it elsewhere is not enough.
     ns = template.get("namespace")
     if not ns:
         raise HTTPException(status_code=500, detail="Template response missing namespace")

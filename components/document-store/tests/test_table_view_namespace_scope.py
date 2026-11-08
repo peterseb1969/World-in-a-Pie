@@ -17,6 +17,7 @@ from httpx import AsyncClient
 API = "/api/document-store"
 WIP_READER = {"X-API-Key": "test_xns_writer_key"}  # reads 'wip' only
 BOTH_READER = {"X-API-Key": "test_xns_reader_key"}  # reads 'wip' and 'xns-closed'
+DOCS_ONLY_READER = {"X-API-Key": "test_xns_only_key"}  # reads 'xns-closed', not 'wip'
 
 
 async def _create(client: AsyncClient, headers: dict, namespace: str, national_id: str) -> str:
@@ -79,4 +80,28 @@ async def test_naming_a_namespace_the_caller_cannot_read_is_refused(client, two_
     for path in ("table/PERSON", "table/PERSON/csv"):
         resp = await client.get(f"{API}/{path}", headers=WIP_READER, params={"namespace": "xns-closed"})
         assert resp.status_code in (403, 404), (path, resp.text)
+        assert two_namespaces["xns-closed"] not in resp.text
+
+
+@pytest.mark.asyncio
+async def test_reading_documents_does_not_open_the_templates_layout(client, two_namespaces):
+    """The table needs read on the template's namespace, not only on the
+    documents': the columns are the template's whole declared layout, which
+    the template store shows only to readers of its namespace. Provenance:
+    CASE-1149 (decided: the gate stays)."""
+    from .conftest import SAMPLE_TEMPLATES
+
+    template_id = SAMPLE_TEMPLATES["PERSON"]["template_id"]
+    docs = await client.get(
+        f"{API}/documents", headers=DOCS_ONLY_READER,
+        params={"template_id": template_id, "namespace": "xns-closed"},
+    )
+    assert docs.status_code == 200, docs.text
+    assert [d["document_id"] for d in docs.json()["items"]] == [two_namespaces["xns-closed"]]
+
+    for path in (f"table/{template_id}", f"table/{template_id}/csv"):
+        resp = await client.get(
+            f"{API}/{path}", headers=DOCS_ONLY_READER, params={"namespace": "xns-closed"},
+        )
+        assert resp.status_code == 404, (path, resp.text)
         assert two_namespaces["xns-closed"] not in resp.text

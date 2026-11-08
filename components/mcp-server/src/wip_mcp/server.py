@@ -3828,6 +3828,12 @@ async def get_table_view(
         namespace: Namespace the template value is resolved in and the
             documents are limited to. Without it, the documents of every
             namespace the caller can read.
+
+    Needs read on the namespace the template lives in: the template's
+    layout is shown only to its namespace's readers, so a template the caller
+    cannot read answers not found — at the value lookup or at the table —
+    even when the caller can read documents on it elsewhere. Read those with
+    query_by_template instead.
     """
     try:
         tmpl = await get_client().get_template_by_value(
@@ -3864,6 +3870,12 @@ async def export_table_csv(
         namespace: Namespace the template value is resolved in and the
             documents are limited to. Without it, the documents of every
             namespace the caller can read.
+
+    Needs read on the namespace the template lives in: the template's
+    layout is shown only to its namespace's readers, so a template the caller
+    cannot read answers not found — at the value lookup or at the table —
+    even when the caller can read documents on it elsewhere. Read those with
+    query_by_template instead.
     """
     try:
         tmpl = await get_client().get_template_by_value(

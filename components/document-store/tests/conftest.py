@@ -103,6 +103,16 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "namespaces": ["wip"],
     "grants": {"wip": "write"},
 }, {
+    # Reads 'xns-closed' and nothing else — not 'wip', where the sample
+    # templates live: a reader of documents on a template whose namespace it
+    # cannot read.
+    "name": "test-xns-only",
+    "key": "test_xns_only_key",
+    "owner": "test-xns-only",
+    "groups": [],
+    "namespaces": ["xns-closed"],
+    "grants": {"xns-closed": "read"},
+}, {
     # Admin on 'wip' alone: a backup or restore job that also covers another
     # namespace must stay out of its reach (deleting it needs admin on all).
     "name": "test-wip-admin",
