@@ -7,6 +7,21 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `POST /import` goes on past a failing row by default; `@wip/client` 0.97.0
+
+- **Every row is attempted and reported by default.** `skip_errors` now
+  defaults to `true`, as the MCP tool's already did; send `skip_errors=false`
+  to stop at the first failing row and report the rest skipped, as before.
+  **A caller that relied on the old default now gets the rest of its file
+  written.**
+- **Cut lists say so.** The response lists at most 100 created rows and 50
+  errors, and now carries `results_truncated` and `errors_truncated`. The
+  `succeeded` and `failed` counts always cover every row.
+- **`@wip/client` 0.97.0** sends `skip_errors` whenever the caller sets it.
+  It used to send it only when `true`, so under the new default an explicit
+  `false` would have been dropped. `ImportDocumentsResponse` carries the two
+  truncation flags.
+
 ### A failed document write no longer leaves the document without an active version
 
 A new version is written by retiring the active version first and then

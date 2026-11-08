@@ -307,6 +307,7 @@ export interface ImportDocumentsOptions {
   template_id: string
   column_mapping: Record<string, string>
   namespace: string
+  /** Go on past a failing row (the server's default); false stops at the first one. */
   skip_errors?: boolean
 }
 
@@ -328,8 +329,12 @@ export interface ImportDocumentsResponse {
   succeeded: number
   failed: number
   skipped: number
+  /** The first 100 created rows; results_truncated says when there were more. */
   results: ImportDocumentResult[]
+  results_truncated: boolean
+  /** The first 50 failed rows; errors_truncated says when there were more. */
   errors: ImportDocumentError[]
+  errors_truncated: boolean
 }
 
 // ---- Replay ----

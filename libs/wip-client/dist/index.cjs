@@ -951,8 +951,8 @@ var DocumentStoreService = class extends BaseService {
     form.append("template_id", options.template_id);
     form.append("column_mapping", JSON.stringify(options.column_mapping));
     form.append("namespace", options.namespace);
-    if (options.skip_errors) {
-      form.append("skip_errors", "true");
+    if (options.skip_errors !== void 0) {
+      form.append("skip_errors", String(options.skip_errors));
     }
     return this.postFormData("/import", form);
   }

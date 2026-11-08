@@ -1151,6 +1151,23 @@ describe('Service classes via createWipClient', () => {
       expect(fd.get('extend_terminologies')).toBe('true')
     })
 
+    it('importDocuments sends skip_errors whenever it is set, false included', async () => {
+      const body = { total_rows: 0, succeeded: 0, failed: 0, skipped: 0, results: [],
+        results_truncated: false, errors: [], errors_truncated: false }
+      const file = new Blob(['a,b\n'], { type: 'text/csv' })
+      const base = { template_id: 'T', column_mapping: { a: 'a' }, namespace: 'ns' }
+      const sent: (string | null)[] = []
+      for (const skip_errors of [false, true, undefined]) {
+        fetchMock.mockClear()
+        mockJsonResponse(body)
+        await client.documents.importDocuments(file, 'data.csv', { ...base, skip_errors })
+        const [, options] = fetchMock.mock.calls[0]
+        sent.push((options.body as FormData).get('skip_errors') as string | null)
+      }
+      // undefined leaves it out, so the server's default (go on) applies.
+      expect(sent).toEqual(['false', 'true', null])
+    })
+
     it('startRestore sends align_templates for a merge', async () => {
       mockJsonResponse(backupSnapshot({ kind: 'restore', namespace: 'aa' }))
 

@@ -353,8 +353,10 @@ export class DocumentStoreService extends BaseService {
     form.append('template_id', options.template_id)
     form.append('column_mapping', JSON.stringify(options.column_mapping))
     form.append('namespace', options.namespace)
-    if (options.skip_errors) {
-      form.append('skip_errors', 'true')
+    // Sent whenever the caller sets it: the server's default is to go on past
+    // a failing row, so an explicit false must reach it.
+    if (options.skip_errors !== undefined) {
+      form.append('skip_errors', String(options.skip_errors))
     }
     return this.postFormData('/import', form)
   }

@@ -228,30 +228,20 @@ async def patch_documents(
     # item is patched: a refused item is reported on its row and the rest of
     # the batch proceeds; an authorization outage refuses the request whole,
     # with nothing written.
-    id_to_namespace = await _document_namespaces([item.document_id for item in items])
-    refusals = await write_refusals(
-        identity, set(id_to_namespace.values()), "Document not found"
-    )
-    refused: dict[int, BulkResultItem] = {}
+    id_to_namespace, refusals = await _batch_write_refusals(identity, items, "document_id")
+    results: dict[int, BulkResultItem] = {}
     allowed: list[int] = []
     for i, item in enumerate(items):
-        ns = id_to_namespace.get(item.document_id)
-        if ns in refusals:
-            error, code = refusals[ns]
-            refused[i] = BulkResultItem(
+        refusal = refusals.get(id_to_namespace.get(item.document_id, ""))
+        if refusal:
+            results[i] = BulkResultItem(
                 index=i, status="error", document_id=item.document_id,
-                error=error, error_code=code,
+                error=refusal[0], error_code=refusal[1],
             )
         else:
             allowed.append(i)
 
-    service = get_document_service()
-    patched = await service.bulk_patch([items[i] for i in allowed]) if allowed else None
-    results = dict(refused)
-    for row in patched.results if patched else []:
-        original = allowed[row.index]
-        results[original] = row.model_copy(update={"index": original})
-    rows = [results[i] for i in range(len(items))]
+    rows = await _patch_allowed(items, allowed, results)
     await asyncio.sleep(get_throttle_delay())
     return BulkResponse(
         results=rows, total=len(items),
@@ -260,14 +250,33 @@ async def patch_documents(
     )
 
 
-async def _document_namespaces(document_ids: list[str]) -> dict[str, str]:
-    """The namespace of each named document that exists, in one query."""
+async def _batch_write_refusals(
+    identity: UserIdentity, items: list, id_field: str,
+) -> tuple[dict[str, str], dict[str, tuple[str, str]]]:
+    """For a bulk write: the namespace of each document the items name in
+    ``id_field`` (one query), and the write refusals for those namespaces
+    (write_refusals), asked before any item is written."""
     from ..models.document import Document as _Doc
-    ids = list({d for d in document_ids if d})
-    if not ids:
-        return {}
-    docs = await _Doc.find({"document_id": {"$in": ids}}).to_list()
-    return {d.document_id: d.namespace for d in docs}
+    ids = list({getattr(item, id_field) for item in items if getattr(item, id_field)})
+    docs = await _Doc.find({"document_id": {"$in": ids}}).to_list() if ids else []
+    id_to_namespace = {d.document_id: d.namespace for d in docs}
+    refusals = await write_refusals(
+        identity, set(id_to_namespace.values()), "Document not found"
+    )
+    return id_to_namespace, refusals
+
+
+async def _patch_allowed(
+    items: list[PatchDocumentItem], allowed: list[int], results: dict[int, BulkResultItem],
+) -> list[BulkResultItem]:
+    """Patch the allowed items and merge their rows, renumbered to their
+    position in the request, with the refused rows already in ``results``."""
+    if allowed:
+        patched = await get_document_service().bulk_patch([items[i] for i in allowed])
+        for row in patched.results:
+            original = allowed[row.index]
+            results[original] = row.model_copy(update={"index": original})
+    return [results[i] for i in range(len(items))]
 
 
 @router.post(
@@ -834,11 +843,7 @@ async def delete_documents(
     service = get_document_service()
     # Write permission on each document's own namespace, asked before any item
     # is deleted (see patch_documents).
-    refusals = await write_refusals(
-        identity,
-        set((await _document_namespaces([item.id for item in items])).values()),
-        "Document not found",
-    )
+    _, refusals = await _batch_write_refusals(identity, items, "id")
     deleted_with = await _hard_delete_exemptions(service, items, identity)
     results = []
     for i, item in enumerate(items):
@@ -858,10 +863,10 @@ async def delete_documents(
             if not doc:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="Document not found", error_code="not_found"))
                 continue
-            if doc.namespace in refusals:
-                error, code = refusals[doc.namespace]
+            refusal = refusals.get(doc.namespace)
+            if refusal:
                 results.append(BulkResultItem(
-                    index=i, status="error", id=item.id, error=error, error_code=code,
+                    index=i, status="error", id=item.id, error=refusal[0], error_code=refusal[1],
                 ))
                 continue
             warnings: list[str] = []

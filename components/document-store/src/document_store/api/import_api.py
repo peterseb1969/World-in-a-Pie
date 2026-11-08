@@ -46,13 +46,22 @@ async def preview_import(
         return {"error": f"Failed to parse file: {e}"}
 
 
+# The most created rows and failed rows a response lists; counts stay complete.
+_MAX_LISTED_RESULTS = 100
+_MAX_LISTED_ERRORS = 50
+
+
 @router.post("")
 async def import_documents(
     file: UploadFile = File(..., description="CSV or XLSX file to import"),
     template_id: str = Form(..., description="Template ID for the documents"),
     column_mapping: str = Form(..., description="JSON object mapping CSV columns to template fields, e.g. {\"Name\": \"name\", \"Email\": \"email\"}"),
     namespace: str = Form(..., description="Target namespace"),
-    skip_errors: bool = Form(False, description="Skip rows that fail validation instead of stopping"),
+    skip_errors: bool = Form(
+        True,
+        description="Report a row that fails and go on with the next (the default); "
+                    "false stops at the first failing row and reports the rest skipped",
+    ),
     identity: UserIdentity = Depends(require_api_key),
 ) -> dict[str, Any]:
     """Import documents from a CSV/XLSX file.
@@ -71,6 +80,12 @@ async def import_documents(
     (any case), date fields YYYY-MM-DD (an XLSX date cell works as is),
     datetime fields ISO 8601. A cell that cannot be read as its field's type
     fails its row, reported in ``errors`` like a validation failure.
+
+    Every row is attempted and reported (``skip_errors`` true, the default)
+    unless ``skip_errors`` is false. ``results`` lists at most the first 100
+    created rows and ``errors`` the first 50 failed ones; ``results_truncated``
+    and ``errors_truncated`` say when a list was cut, and ``succeeded`` /
+    ``failed`` always count every row.
     """
     await check_namespace_permission(identity, namespace, "write")
 
@@ -188,6 +203,8 @@ async def import_documents(
         "succeeded": succeeded,
         "failed": failed,
         "skipped": skipped,
-        "results": created_ids[:100],  # Cap to avoid huge responses
-        "errors": errors[:50],  # Cap error list
+        "results": created_ids[:_MAX_LISTED_RESULTS],
+        "results_truncated": len(created_ids) > _MAX_LISTED_RESULTS,
+        "errors": errors[:_MAX_LISTED_ERRORS],
+        "errors_truncated": len(errors) > _MAX_LISTED_ERRORS,
     }

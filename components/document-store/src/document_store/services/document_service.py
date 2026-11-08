@@ -3241,6 +3241,14 @@ class DocumentService:
                     is_new=is_new,
                     warnings=plan.validation_result.warnings,
                 ),
+                # A row this batch superseded is stored inactive, but its
+                # event reports it active: an event describes a version as it
+                # was while it was the live one, as the per-item paths publish
+                # each row before a later write supersedes it. Reporting keeps
+                # the latest version live regardless of arrival order (its
+                # latest_only upsert only replaces a row with a higher
+                # version), and all_versions keeps each version's row as
+                # first written, on every write path alike.
                 (event_type, await self._document_to_event_payload(
                     document if document.status == DocumentStatus.ACTIVE
                     else document.model_copy(update={"status": DocumentStatus.ACTIVE})
@@ -3647,6 +3655,80 @@ class DocumentService:
         with term_resolution_batch(), placement_batch():
             return await self._bulk_create(items, namespace, continue_on_error)
 
+    async def _gate_refusal(
+        self, template_client: Any, idx: int, req: Any, vr: Any,
+        namespace: str, placements: dict[str, str] | None,
+    ) -> BulkResultItem | None:
+        """Stage 1b for one validated item: its refusal row, or None to write it.
+
+        The single-item create path (create_document) enforces the
+        cross-namespace rule for usage=relationship templates and namespace
+        isolation; the bulk path applies the identical checks, in the same
+        order, or the guardrail holds on one path only.
+        """
+        tmpl = await template_client.get_template_resolved(req.template_id)
+        if tmpl and tmpl.get("usage") == "relationship":
+            rel_error = await self._validate_relationship_constraints(tmpl, vr, namespace)
+            if rel_error:
+                code, message = rel_error
+                return BulkResultItem(index=idx, status="error", error=message, error_code=code)
+            # Relationship indexes are created lazily on first write. Doing it
+            # only on the single-item path left a namespace that ingests edges
+            # exclusively in bulk without the data.source_ref / data.target_ref
+            # indexes the /relationships and /traverse queries depend on
+            # (CASE-795 F21). Idempotent and per-template-cached, so the cost
+            # is one call per distinct template in the batch.
+            await self._ensure_relationship_indexes(req.template_id, namespace)
+        # Namespace isolation, after the relationship constraints, so an edge's
+        # cross-namespace source reports cross_namespace_relationship. The
+        # validator caches each namespace's settings, so a batch costs one
+        # lookup per namespace.
+        try:
+            await self._check_new_references(
+                namespace, req.template_id, vr, placements=placements,
+            )
+        except (ReferenceValidationError, RegistryUnavailableError) as e:
+            # RegistryUnavailableError: isolation cannot be checked, so the
+            # item is refused rather than written unchecked.
+            return BulkResultItem(index=idx, status="error", **error_fields(e))
+        return None
+
+    async def _apply_reference_gates(
+        self,
+        validation_results: list,
+        namespace: str,
+        placements: dict[str, str] | None,
+        continue_on_error: bool,
+        results: list[BulkResultItem],
+    ) -> tuple[list, int]:
+        """Stage 1b over the validated items: the ones the reference gates let
+        through, and how many they refused (their rows go into ``results``).
+        Without continue_on_error the first refusal stops the stage, as stages
+        1 and 4 stop: the items before it are still written, the later ones
+        are reported skipped.
+        """
+        template_client = get_template_store_client()
+        checked: list = []
+        refused = 0
+        for pos, entry in enumerate(validation_results):
+            idx, req, vr = entry
+            refusal = await self._gate_refusal(
+                template_client, idx, req, vr, namespace, placements,
+            )
+            if refusal is None:
+                checked.append(entry)
+                continue
+            refused += 1
+            results.append(refusal)
+            if not continue_on_error:
+                results.extend(
+                    BulkResultItem(index=later, status="skipped",
+                                   error="Stopped due to previous error")
+                    for later, _, _ in validation_results[pos + 1:]
+                )
+                break
+        return checked, refused
+
     async def _bulk_create(
         self,
         items: list[DocumentCreateRequest],
@@ -3733,7 +3815,6 @@ class DocumentService:
         # validation_service.validate already populated each reference's resolved
         # {namespace, status}, so this reuses _validate_relationship_constraints.
         start = time.perf_counter()
-        template_client = get_template_store_client()
         # Namespace isolation can only refuse in a strict namespace; there the
         # whole batch's references are placed with one Registry lookup per
         # 500 ids, not one per document. If that lookup fails, each item
@@ -3753,63 +3834,10 @@ class DocumentService:
             )
         except RegistryUnavailableError:
             placements = None
-        rel_checked: list = []
-        stopped_at: int | None = None
-        for pos, entry in enumerate(validation_results):
-            idx, req, vr = entry
-            tmpl = await template_client.get_template_resolved(req.template_id)
-            if tmpl and tmpl.get("usage") == "relationship":
-                rel_error = await self._validate_relationship_constraints(
-                    tmpl, vr, namespace,
-                )
-                if rel_error:
-                    failed += 1
-                    code, message = rel_error
-                    results.append(BulkResultItem(
-                        index=idx, status="error", error=message, error_code=code,
-                    ))
-                    if not continue_on_error:
-                        stopped_at = pos
-                        break
-                    continue
-                # Relationship indexes are created lazily on first write. Doing it
-                # only on the single-item path left a namespace that ingests edges
-                # exclusively in bulk without the data.source_ref / data.target_ref
-                # indexes the /relationships and /traverse queries depend on
-                # (CASE-795 F21). Idempotent and per-template-cached, so the cost
-                # is one call per distinct template in the batch.
-                await self._ensure_relationship_indexes(req.template_id, namespace)
-            # Namespace isolation, exactly as create_document checks it and in
-            # the same order (after the relationship constraints, so an edge's
-            # cross-namespace source reports cross_namespace_relationship).
-            # Without it a strict namespace's allow-list held for one-item
-            # writes and not for batches. The validator caches each
-            # namespace's settings, so a batch costs one lookup per namespace.
-            try:
-                await self._check_new_references(
-                    namespace, req.template_id, vr, placements=placements,
-                )
-            except (
-                ReferenceValidationError, RegistryUnavailableError,
-            ) as e:
-                # RegistryUnavailableError: isolation cannot be checked, so the
-                # item is refused rather than written unchecked.
-                failed += 1
-                results.append(BulkResultItem(index=idx, status="error", **error_fields(e)))
-                if not continue_on_error:
-                    stopped_at = pos
-                    break
-                continue
-            rel_checked.append(entry)
-        if stopped_at is not None:
-            # Stop on the first refusal, as stages 1 and 4 do: the items checked
-            # before it are still written, every later one is skipped.
-            for later_idx, _, _ in validation_results[stopped_at + 1:]:
-                results.append(BulkResultItem(
-                    index=later_idx, status="skipped",
-                    error="Stopped due to previous error",
-                ))
-        validation_results = rel_checked
+        validation_results, refused = await self._apply_reference_gates(
+            validation_results, namespace, placements, continue_on_error, results,
+        )
+        failed += refused
         timing["1b_reference_gates"] = (time.perf_counter() - start) * 1000
 
         if not validation_results:
