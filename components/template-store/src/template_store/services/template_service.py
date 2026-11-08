@@ -640,6 +640,10 @@ class TemplateService:
         # refs and an edge type's declared endpoints — skip for drafts
         # (re-checked at activation)
         if not is_draft:
+            await TemplateService._refuse_inactive_template_refs([
+                *resolved_template_ids,
+                *TemplateService._endpoint_ids(source_entries, target_entries),
+            ])
             await TemplateService._check_reference_isolation(
                 namespace,
                 template_ids=[
@@ -774,6 +778,32 @@ class TemplateService:
             raise TemplateError(
                 f"Parent template '{parent.value}' is {parent.status}, not active",
                 "reference_violation", rule="parent_not_active",
+            )
+
+    @staticmethod
+    async def _refuse_inactive_template_refs(
+        template_ids: list[str], previous: Any | None = None,
+    ) -> None:
+        """A template reference a non-draft write adds must name a template
+        with an active version, as activation demands. The Registry resolves
+        a draft's or a retired template's id like any other, so resolving is
+        not enough. References ``previous`` already held are carried."""
+        carried = (
+            TemplateService._stored_reference_ids(previous) if previous is not None else set()
+        )
+        ids = set(template_ids) - carried
+        if not ids:
+            return
+        active = set(await Template.distinct(
+            "template_id", {"template_id": {"$in": sorted(ids)}, "status": "active"},
+        ))
+        inactive = sorted(ids - active)
+        if inactive:
+            raise TemplateError(
+                f"Referenced template(s) {', '.join(inactive)} have no active "
+                "version (a draft or a retired template); activate or reactivate "
+                "them first",
+                "reference_violation", rule="template_not_active",
             )
 
     @staticmethod
@@ -1645,6 +1675,10 @@ class TemplateService:
             except EntityNotFoundError as e:
                 raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
 
+        if original.status != "draft":
+            await TemplateService._refuse_inactive_template_refs(
+                updated_template_ids, previous=original,
+            )
         # Isolation check over the updated refs + the (possibly unchanged)
         # parent — same boundary as create; extends_value is canonical here
         await TemplateService._check_reference_isolation(
@@ -1744,7 +1778,9 @@ class TemplateService:
             rules=request.rules if request.rules is not None else original.rules,
             metadata=request.metadata if request.metadata is not None else original.metadata,
             reporting=request.reporting if request.reporting is not None else original.reporting,
-            status="active",
+            # A draft's next version is a draft: it becomes active only
+            # through activation, which checks what a draft write skips.
+            status="draft" if original.status == "draft" else "active",
             created_at=datetime.now(UTC),
             created_by=actor,
             updated_at=datetime.now(UTC),
@@ -1758,12 +1794,13 @@ class TemplateService:
         if was_retired:
             await TemplateService._sync_registry_lifecycle(original.template_id, actor)
 
-        # Publish template updated event
-        await publish_template_event(
-            EventType.TEMPLATE_UPDATED,
-            TemplateService._template_to_event_payload(new_template),
-            changed_by=actor
-        )
+        # Publish template updated event — skip for drafts, as create does
+        if new_template.status != "draft":
+            await publish_template_event(
+                EventType.TEMPLATE_UPDATED,
+                TemplateService._template_to_event_payload(new_template),
+                changed_by=actor
+            )
 
         return TemplateUpdateResponse(
             template_id=original.template_id,
@@ -1898,7 +1935,11 @@ class TemplateService:
         version (`activate_template` is draft-only and cannot address this).
 
         Idempotent: an already-active version is returned unchanged. A draft
-        version is rejected — drafts are activated, not reactivated.
+        version is rejected — drafts are activated, not reactivated. The
+        version must pass what activation demands (its references active and
+        readable, its chain resolvable) and is brought to its active form the
+        same way, so a soft-deleted draft cannot become active unchecked and
+        a version whose parent or referents have since retired is refused.
 
         Raises:
             ValueError: version not found, or the version is a draft.
@@ -1921,6 +1962,17 @@ class TemplateService:
         if template.status == "active":
             # Idempotent: already active, served like every other response.
             return TemplateService._to_template_response(template)
+
+        errors, _warnings = await TemplateService._validate_activation_set(
+            [template], template.namespace
+        )
+        if errors:
+            raise TemplateError(
+                f"Template '{template.value}' version {version} cannot be "
+                "reactivated: " + "; ".join(e.message for e in errors),
+                "validation_failed", rule="not_activatable",
+            )
+        await TemplateService._prepare_activation([template], template.namespace)
 
         actor = get_identity_string()
         template.status = "active"
@@ -2058,8 +2110,12 @@ class TemplateService:
         resolved_source = {ref: resolved[ref] for ref in add_source}
         resolved_target = {ref: resolved[ref] for ref in add_target}
 
-        # Widening adds references: the endpoints not already declared pass
-        # the same two gates as any other template reference.
+        # Widening adds references: the endpoints not already declared must
+        # be active templates and pass the same two gates as any other
+        # template reference.
+        await TemplateService._refuse_inactive_template_refs(
+            [*resolved_source.values(), *resolved_target.values()], previous=template,
+        )
         await TemplateService._check_reference_isolation(
             ns,
             template_ids=[*resolved_source.values(), *resolved_target.values()],
@@ -3075,6 +3131,102 @@ class TemplateService:
         return errors, warnings
 
     @staticmethod
+    async def _prepare_activation(activation_set: list[Template], namespace: str) -> None:
+        """Bring a validated activation set to its active form, in memory:
+        references normalized to canonical ids, endpoint declarations
+        resolved, the reference gates applied, the inheritance chain and the
+        referent identity paths worked out. Raises TemplateError, and nothing
+        is saved, when any member cannot be brought there. Used by activation
+        and by reactivation, so a version becomes active only in this form."""
+        # The set's own members: their Registry entries are not active (a
+        # draft's is retired until activation), so the gates learn their
+        # (same) namespace from the set itself.
+        set_namespaces = TemplateService._set_namespaces(activation_set)
+
+        # Build known_templates from activation set for cross-resolution
+        known_templates = {}
+        for t in activation_set:
+            known_templates[t.value] = t.template_id
+            known_templates[f"{t.namespace}:{t.value}"] = t.template_id
+            known_templates[t.template_id] = t.template_id
+
+        # Normalize all references to canonical IDs. Validation has already
+        # held every reference outside the set to an active template, so the
+        # other statuses only ever reach a set member named in a form
+        # known_templates does not list (a synonym).
+        activation_statuses = ["active", "reserved", "inactive"]
+        try:
+            for t in activation_set:
+                previous = await TemplateService._previous_version(t)
+                gate = InboundGate(namespace, carried=carried_ids(previous), placed=set_namespaces)
+                act_template_ids, act_terminology_ids = (
+                    await TemplateService._normalize_field_references(
+                        t.fields, namespace,
+                        known_templates=known_templates,
+                        include_statuses=activation_statuses,
+                        gate=gate,
+                    )
+                )
+                # Endpoint declarations resolve here too: a draft skipped
+                # resolution at create, so activation is where its entries'
+                # resolved halves fill (lookups stay verbatim).
+                if t.usage == TemplateUsage.RELATIONSHIP:
+                    t.source_templates, t.target_templates = (
+                        await TemplateService._resolve_endpoint_declarations(
+                            t.source_templates, t.target_templates, namespace,
+                            known_templates=known_templates,
+                            include_statuses=activation_statuses,
+                            gate=gate,
+                        )
+                    )
+                # Also resolve extends (known_templates checked first, then Registry)
+                if t.extends and t.extends in known_templates:
+                    t.extends = known_templates[t.extends]
+                elif t.extends:
+                    parent_id = await resolve_entity_id(
+                        t.extends, "template", namespace,
+                        include_statuses=activation_statuses,
+                    )
+                    if await gate.refuses_entry(parent_id):
+                        raise EntityNotFoundError(t.extends, "template", namespace)
+                    t.extends = parent_id
+                # Isolation check — drafts skipped it at create; activation is
+                # where their coverage lands. Activation-set members are
+                # same-namespace by construction (their reserved entries are
+                # placed from the set); any other reference must have an
+                # active Registry entry the lookup can place, or is refused.
+                await TemplateService._check_reference_isolation(
+                    namespace,
+                    template_ids=[
+                        *act_template_ids,
+                        *TemplateService._endpoint_ids(t.source_templates, t.target_templates),
+                    ],
+                    terminology_ids=act_terminology_ids,
+                    extends_template_id=t.extends,
+                    previous=previous,
+                    known_namespaces=set_namespaces,
+                )
+        except EntityNotFoundError as e:
+            raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
+
+        # Every activating template's pinned chain must resolve. Set members
+        # are walked in their normalized in-memory form (their stored drafts
+        # may still name parents by value); nothing is saved if one fails.
+        set_by_version = {(t.template_id, t.version): t for t in activation_set}
+        for t in activation_set:
+            await TemplateService._refuse_unresolvable_inheritance(
+                t.template_id, t.extends, t.extends_version, overrides=set_by_version
+            )
+
+        # Work out each member's referent identity paths before saving any,
+        # so nothing is activated if one cannot be classified.
+        for t in activation_set:
+            t.referent_identity_paths = await TemplateService._referent_paths_or_refuse(
+                t, overrides=set_by_version
+            )
+
+
+    @staticmethod
     async def activate_template(
         template_id: str,
         namespace: str,
@@ -3149,88 +3301,7 @@ class TemplateService:
                 warnings=warnings,
             )
 
-        # The set's own drafts: their Registry entries are reserved, so the
-        # gates learn their (same) namespace from the set itself.
-        set_namespaces = TemplateService._set_namespaces(activation_set)
-
-        # Build known_templates from activation set for cross-resolution
-        known_templates = {}
-        for t in activation_set:
-            known_templates[t.value] = t.template_id
-            known_templates[f"{t.namespace}:{t.value}"] = t.template_id
-            known_templates[t.template_id] = t.template_id
-
-        # Normalize all references to canonical IDs (include reserved for activation set)
-        activation_statuses = ["active", "reserved"]
-        try:
-            for t in activation_set:
-                previous = await TemplateService._previous_version(t)
-                gate = InboundGate(namespace, carried=carried_ids(previous), placed=set_namespaces)
-                act_template_ids, act_terminology_ids = (
-                    await TemplateService._normalize_field_references(
-                        t.fields, namespace,
-                        known_templates=known_templates,
-                        include_statuses=activation_statuses,
-                        gate=gate,
-                    )
-                )
-                # Endpoint declarations resolve here too: a draft skipped
-                # resolution at create, so activation is where its entries'
-                # resolved halves fill (lookups stay verbatim).
-                if t.usage == TemplateUsage.RELATIONSHIP:
-                    t.source_templates, t.target_templates = (
-                        await TemplateService._resolve_endpoint_declarations(
-                            t.source_templates, t.target_templates, namespace,
-                            known_templates=known_templates,
-                            include_statuses=activation_statuses,
-                            gate=gate,
-                        )
-                    )
-                # Also resolve extends (known_templates checked first, then Registry)
-                if t.extends and t.extends in known_templates:
-                    t.extends = known_templates[t.extends]
-                elif t.extends:
-                    parent_id = await resolve_entity_id(
-                        t.extends, "template", namespace,
-                        include_statuses=activation_statuses,
-                    )
-                    if await gate.refuses_entry(parent_id):
-                        raise EntityNotFoundError(t.extends, "template", namespace)
-                    t.extends = parent_id
-                # Isolation check — drafts skipped it at create; activation is
-                # where their coverage lands. Activation-set members are
-                # same-namespace by construction (their reserved entries are
-                # placed from the set); any other reference must have an
-                # active Registry entry the lookup can place, or is refused.
-                await TemplateService._check_reference_isolation(
-                    namespace,
-                    template_ids=[
-                        *act_template_ids,
-                        *TemplateService._endpoint_ids(t.source_templates, t.target_templates),
-                    ],
-                    terminology_ids=act_terminology_ids,
-                    extends_template_id=t.extends,
-                    previous=previous,
-                    known_namespaces=set_namespaces,
-                )
-        except EntityNotFoundError as e:
-            raise TemplateError(str(e), "reference_violation", rule="unresolved_reference") from e
-
-        # Every activating template's pinned chain must resolve. Set members
-        # are walked in their normalized in-memory form (their stored drafts
-        # may still name parents by value); nothing is saved if one fails.
-        set_by_version = {(t.template_id, t.version): t for t in activation_set}
-        for t in activation_set:
-            await TemplateService._refuse_unresolvable_inheritance(
-                t.template_id, t.extends, t.extends_version, overrides=set_by_version
-            )
-
-        # Work out each member's referent identity paths before saving any,
-        # so nothing is activated if one cannot be classified.
-        for t in activation_set:
-            t.referent_identity_paths = await TemplateService._referent_paths_or_refuse(
-                t, overrides=set_by_version
-            )
+        await TemplateService._prepare_activation(activation_set, namespace)
 
         # Activate all templates in the set
         actor = get_identity_string()
