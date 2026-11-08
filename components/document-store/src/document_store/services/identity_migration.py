@@ -25,7 +25,7 @@ rest.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from wip_auth.document_identity import (
     build_referent_resolutions,
@@ -173,80 +173,102 @@ async def rehash_identities(
     current_items: list[RehashItem] = []
 
     async for grouped in collection.aggregate(pipeline):
-        row = grouped["row"]
         report.scanned += 1
-        document_id = row["document_id"]
-        template_id = row["template_id"]
-        template_value = row.get("template_value")
-        item = RehashItem(
-            document_id=document_id,
-            template_id=template_id,
-            template_value=template_value,
-            status="unchanged",
-            old_hash=row.get("identity_hash"),
-        )
-
-        shape = await _template_shape(
-            shape_cache, template_id, row.get("template_version", 1)
-        )
-        if shape is None:
-            item.status = "error"
-            item.detail = "template version unreadable"
-            report.errors += 1
-            report.items.append(item)
-            continue
-        identity_fields, template_fields, referent_paths = shape
-        if not identity_fields:
+        item, outcome = await _rehash_row(grouped["row"], shape_cache)
+        if outcome == "not_referent":
             report.unchanged += 1
             continue
-        try:
-            referent_fields = referent_identity_fields(
-                identity_fields, template_fields, referent_paths
-            )
-        except ValueError as exc:
-            item.status = "error"
-            item.detail = str(exc)
+        if outcome == "error":
             report.errors += 1
-            report.items.append(item)
-            continue
-        if not referent_fields:
-            report.unchanged += 1
-            continue
-
-        try:
-            values = extract_identity_values(row.get("data") or {}, identity_fields)
-            values = substitute_resolved_referents(
-                values,
-                referent_fields,
-                build_referent_resolutions(
-                    row.get("term_references"), row.get("references")
-                ),
-            )
-        except ValueError as exc:
-            # A legacy doc written during a resolution outage: no stored
-            # resolution to recompute from. Needs live re-resolution (or
-            # curation) before it can migrate.
-            item.status = "unresolved"
-            item.detail = str(exc)
+        elif outcome == "unresolved":
             report.unresolved += 1
+        if outcome in ("error", "unresolved"):
             report.items.append(item)
             continue
-
-        new_hash = compute_hash(values)
-        item.new_hash = new_hash
-        converge.setdefault((template_id, new_hash), set()).add(document_id)
-
-        if new_hash == row.get("identity_hash"):
+        converge.setdefault((item.template_id, cast(str, item.new_hash)), set()).add(item.document_id)
+        if outcome == "current":
             report.unchanged += 1
             current_items.append(item)
-            continue
+        else:
+            changed_items.append(item)
+            report.items.append(item)
 
-        item.status = "changed"
-        changed_items.append(item)
-        report.items.append(item)
+    _mark_collisions(converge, changed_items, report)
+    if dry_run:
+        return report
+    await _apply_rehash(collection, changed_items, current_items, report)
+    return report
 
-    # Collision pass: >1 document converging on one (template_id, hash) is a
-    # pre-existing fork surfacing. Report; never apply.
+
+async def _rehash_row(
+    row: dict[str, Any],
+    shape_cache: dict[tuple[str, int], tuple[list[str], list[dict[str, Any]], list[str] | None] | None],
+) -> tuple[RehashItem, str]:
+    """Recompute one document's identity hash from its latest version row.
+
+    Returns the item and its outcome: "error" (template unreadable, or
+    identity paths that cannot be classified), "not_referent" (no identity,
+    or no referent identity field: nothing to recompute), "unresolved" (no
+    stored resolution to recompute from), "current" (the stored hash is the
+    recomputed one) or "changed" (``item.new_hash`` differs).
+    """
+    item = RehashItem(
+        document_id=row["document_id"],
+        template_id=row["template_id"],
+        template_value=row.get("template_value"),
+        status="unchanged",
+        old_hash=row.get("identity_hash"),
+    )
+    shape = await _template_shape(shape_cache, item.template_id, row.get("template_version", 1))
+    if shape is None:
+        item.status = "error"
+        item.detail = "template version unreadable"
+        return item, "error"
+    identity_fields, template_fields, referent_paths = shape
+    if not identity_fields:
+        return item, "not_referent"
+    try:
+        referent_fields = referent_identity_fields(
+            identity_fields, template_fields, referent_paths
+        )
+    except ValueError as exc:
+        item.status = "error"
+        item.detail = str(exc)
+        return item, "error"
+    if not referent_fields:
+        return item, "not_referent"
+
+    try:
+        values = extract_identity_values(row.get("data") or {}, identity_fields)
+        values = substitute_resolved_referents(
+            values,
+            referent_fields,
+            build_referent_resolutions(
+                row.get("term_references"), row.get("references")
+            ),
+        )
+    except ValueError as exc:
+        # A legacy doc written during a resolution outage: no stored
+        # resolution to recompute from. Needs live re-resolution (or
+        # curation) before it can migrate.
+        item.status = "unresolved"
+        item.detail = str(exc)
+        return item, "unresolved"
+
+    item.new_hash = compute_hash(values)
+    if item.new_hash == row.get("identity_hash"):
+        return item, "current"
+    item.status = "changed"
+    return item, "changed"
+
+
+def _mark_collisions(
+    converge: dict[tuple[str, str], set[str]],
+    changed_items: list[RehashItem],
+    report: RehashReport,
+) -> None:
+    """Collision pass: >1 document converging on one (template_id, hash) is a
+    pre-existing fork surfacing. Report; never apply."""
     collided_ids: set[str] = set()
     for (template_id, new_hash), doc_ids in converge.items():
         if len(doc_ids) > 1:
@@ -268,10 +290,14 @@ async def rehash_identities(
         else:
             report.changed += 1
 
-    if dry_run:
-        return report
 
-    # Apply: Mongo rows first, then the Registry claims, in bounded batches.
+async def _apply_rehash(
+    collection: Any,
+    changed_items: list[RehashItem],
+    current_items: list[RehashItem],
+    report: RehashReport,
+) -> None:
+    """Apply: Mongo rows first, then the Registry claims, in bounded batches."""
     to_apply = [i for i in changed_items if i.status == "changed"]
     for item in to_apply:
         result = await collection.update_many(
@@ -283,25 +309,16 @@ async def rehash_identities(
     to_rekey = to_apply + current_items
     registry = get_registry_client()
     for start in range(0, len(to_rekey), REKEY_BATCH_SIZE):
-        batch = to_rekey[start:start + REKEY_BATCH_SIZE]
-        try:
-            rekey_results = await registry.rekey_identity([
-                {"entry_id": i.document_id, "identity_hash": i.new_hash}
-                for i in batch
-            ])
-        except RegistryError as exc:
-            logger.error("Registry re-key failed for %d document(s): %s", len(batch), exc)
-            for item in batch:
-                item.registry_status = f"error: {exc}"
-            continue
-        by_id = {r.get("entry_id"): r for r in rekey_results}
-        for item in batch:
-            result_item = by_id.get(item.document_id) or {}
-            item.registry_status = result_item.get("status", "missing")
-            if item.registry_status not in REKEY_OK and result_item.get("error"):
-                item.detail = result_item["error"]
+        await _rekey_batch(registry, to_rekey[start:start + REKEY_BATCH_SIZE])
+    _tally_rekeys(to_apply, current_items, report)
 
-    for item in to_rekey:
+
+def _tally_rekeys(
+    to_apply: list[RehashItem], current_items: list[RehashItem], report: RehashReport,
+) -> None:
+    """Count the Registry leg's outcomes; a current document whose claim had
+    to be re-keyed is listed."""
+    for item in to_apply + current_items:
         if item.registry_status not in REKEY_OK:
             report.registry_failed += 1
         elif item.status == "unchanged" and item.registry_status == "rekeyed":
@@ -310,4 +327,23 @@ async def rehash_identities(
         if item.registry_status != "unchanged":
             report.items.append(item)
     report.applied = sum(1 for i in to_apply if i.registry_status in REKEY_OK)
-    return report
+
+
+async def _rekey_batch(registry: Any, batch: list[RehashItem]) -> None:
+    """Re-key one batch of Registry claims, recording each item's outcome."""
+    try:
+        rekey_results = await registry.rekey_identity([
+            {"entry_id": i.document_id, "identity_hash": i.new_hash}
+            for i in batch
+        ])
+    except RegistryError as exc:
+        logger.error("Registry re-key failed for %d document(s): %s", len(batch), exc)
+        for item in batch:
+            item.registry_status = f"error: {exc}"
+        return
+    by_id = {r.get("entry_id"): r for r in rekey_results}
+    for item in batch:
+        result_item = by_id.get(item.document_id) or {}
+        item.registry_status = result_item.get("status", "missing")
+        if item.registry_status not in REKEY_OK and result_item.get("error"):
+            item.detail = result_item["error"]
