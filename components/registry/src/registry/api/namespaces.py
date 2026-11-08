@@ -54,7 +54,7 @@ from ..services.reservations import (
     SETTING_FIELDS,
     ReservationsUnavailable,
 )
-from .grants import _resolve_permission, reservation_owner
+from .grants import _is_superadmin, _resolve_permission, reservation_owner
 
 router = APIRouter()
 logger = logging.getLogger("registry.namespaces")
@@ -221,14 +221,22 @@ async def list_namespaces(
     # not a current lifecycle state. See the status field on the Namespace
     # model.
     query: dict[str, Any] = (
-        {"status": {"$ne": "deleted"}} if include_archived else {"status": "active"}
+        {"status": {"$ne": "deleted"}} if include_archived
+        else {"status": {"$in": ["active", "locked"]}}
     )
 
     namespaces = await Namespace.find(query).to_list()
 
-    # Filter to accessible namespaces
+    # Filter to accessible namespaces. A namespace locked for deletion grants
+    # no access to anyone; platform admins see it listed (status 'locked'),
+    # so a stuck deletion is visible and can be resumed.
+    superadmin = _is_superadmin(identity)
     accessible = []
     for ns in namespaces:
+        if ns.status == "locked":
+            if superadmin:
+                accessible.append(namespace_to_response(ns))
+            continue
         perm = await _resolve_permission(identity, ns.prefix)
         if perm != "none":
             accessible.append(namespace_to_response(ns))
@@ -249,6 +257,10 @@ async def get_namespace(
     if not ns:
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")
 
+    # A locked namespace (deletion in progress) is shown to platform admins
+    # only, as status 'locked'; it grants no access to anyone.
+    if ns.status == "locked" and _is_superadmin(identity):
+        return namespace_to_response(ns)
     perm = await _resolve_permission(identity, prefix)
     if perm == "none":
         raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}")

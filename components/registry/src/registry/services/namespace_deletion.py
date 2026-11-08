@@ -41,6 +41,14 @@ logger = logging.getLogger("registry.namespace_deletion")
 _recovery_sleep = asyncio.sleep  # replaced in tests
 
 
+# Journal statuses resume_deletion picks up: not finished cleanly.
+_RESUMABLE = ("in_progress", "failed", "completed_with_warnings")
+
+
+class DeletionAlreadyRunning(Exception):
+    """The deletion's journal is being run already; a second run would race it."""
+
+
 class _Unreachable(Exception):
     """A best-effort step's service could not be reached; retry later."""
 
@@ -357,8 +365,10 @@ class NamespaceDeletionService:
             )
         logger.info("Namespace '%s' locked for deletion", prefix)
 
-        # Build journal
+        # Build journal. A failure from here to journal.create() leaves the
+        # namespace locked with no journal; resume_deletion builds one then.
         journal = await self._build_journal(prefix, force, requested_by, inbound_refs)
+        journal.namespace_id = ns.namespace_id
         await journal.create()
         logger.info("Deletion journal created for '%s' with %d steps", prefix, len(journal.steps))
 
@@ -367,13 +377,42 @@ class NamespaceDeletionService:
         return journal
 
     async def resume_deletion(self, prefix: str) -> DeletionJournal:
-        """Resume an incomplete deletion from where it left off."""
-        journal = await DeletionJournal.find_one({
-            "namespace": prefix,
-            "status": "in_progress",
-        })
-        if not journal:
-            raise ValueError(f"No in-progress deletion found for namespace '{prefix}'")
+        """Resume an unfinished deletion from where it left off.
+
+        Unfinished is any deletion that has not completed cleanly: one still
+        in progress, one that stopped on a failed step, and one whose
+        best-effort steps (stored files, reporting rows) were degraded. Every
+        step deletes by namespace, so running one again is safe; completed
+        steps are skipped. A namespace locked with no journal (the deletion
+        stopped before its journal was written) gets one built now. There is
+        no other way out of a deletion: a namespace partly deleted cannot be
+        made whole, so the deletion is finished, never abandoned.
+        """
+        journal = await DeletionJournal.find_one(
+            {"namespace": prefix, "status": {"$in": list(_RESUMABLE)}},
+            sort=[("requested_at", -1)],
+        )
+        if journal is None:
+            ns = await Namespace.find_one({"prefix": prefix})
+            if ns is None or ns.status != "locked":
+                raise ValueError(f"No unfinished deletion found for namespace '{prefix}'")
+            # The deletion was requested and its checks passed before the
+            # lock; the inbound references are recorded again as they are now.
+            inbound_refs = await self._check_inbound_references(prefix)
+            journal = await self._build_journal(prefix, True, "resume-delete", inbound_refs)
+            journal.namespace_id = ns.namespace_id
+            await journal.create()
+            logger.warning(
+                "Namespace '%s' was locked with no deletion journal: built one (%d steps)",
+                prefix, len(journal.steps),
+            )
+        elif journal.status != "in_progress":
+            logger.warning(
+                "Resuming the %s deletion of namespace '%s'", journal.status, prefix,
+            )
+            journal.status = "in_progress"
+            journal.completed_at = None
+            await journal.save()
 
         await self._execute_journal(journal)
         return journal
@@ -395,6 +434,9 @@ class NamespaceDeletionService:
         remaining = 0
         for journal in incomplete:
             if str(journal.id) in self._running:
+                # Being run by a request right now: still unfinished. Counting
+                # it keeps the loop alive in case that run defers a step.
+                remaining += 1
                 continue
             logger.warning(
                 "Found incomplete deletion for namespace '%s', resuming...",
@@ -406,6 +448,10 @@ class NamespaceDeletionService:
                 logger.exception(
                     "Failed to recover deletion of namespace '%s'", journal.namespace
                 )
+                # A failed step ends the run as 'failed' (resumed by an admin);
+                # anything else leaves it in progress, for the next round.
+                if journal.status == "in_progress":
+                    remaining += 1
                 continue
             if journal.status == "in_progress":
                 remaining += 1
@@ -569,14 +615,22 @@ class NamespaceDeletionService:
         # deleted, and the keys are persisted on the step itself, so a step
         # that fails or is retried later still knows what to remove after the
         # file records are gone.
+        # One step per batch of keys: a journal is one MongoDB document, and
+        # every key inline on a single step would outgrow its 16 MiB limit
+        # for a namespace with a few hundred thousand files.
         storage_keys = await self._get_storage_keys(prefix)
-        if storage_keys:
+        for start in range(0, len(storage_keys), _STORAGE_DELETE_BATCH):
+            batch = storage_keys[start:start + _STORAGE_DELETE_BATCH]
             steps.append(DeletionStep(
                 order=order,
                 store="file_storage",
                 action="delete_objects",
-                detail=f"Delete {len(storage_keys)} stored file objects",
-                storage_keys=storage_keys,
+                detail=(
+                    f"Delete {len(batch)} stored file objects"
+                    + (f" (keys {start + 1}-{start + len(batch)} of {len(storage_keys)})"
+                       if len(storage_keys) > _STORAGE_DELETE_BATCH else "")
+                ),
+                storage_keys=batch,
             ))
             order += 1
 
@@ -671,6 +725,10 @@ class NamespaceDeletionService:
     async def _execute_journal(self, journal: DeletionJournal):
         """Execute all pending steps in the journal."""
         journal_id = str(journal.id)
+        if journal_id in self._running:
+            raise DeletionAlreadyRunning(
+                f"The deletion of namespace '{journal.namespace}' is running already"
+            )
         self._running.add(journal_id)
         try:
             await self._run_steps(journal)
@@ -706,7 +764,7 @@ class NamespaceDeletionService:
 
             # A re-run must not inherit the error of an earlier attempt.
             step.error = None
-            if step.store == "postgresql" and await self._namespace_recreated(journal.namespace):
+            if step.store == "postgresql" and await self._namespace_recreated(journal):
                 # A deferred cleanup can run long after the namespace record
                 # is gone. If the prefix was created again meanwhile, its
                 # reporting data is the NEW namespace's: never delete it on
@@ -794,10 +852,20 @@ class NamespaceDeletionService:
         else:
             logger.info("Namespace '%s' deletion completed: %s", journal.namespace, summary)
 
-    async def _namespace_recreated(self, prefix: str) -> bool:
-        """Whether a live namespace holds this prefix again (not the one being deleted)."""
-        live = await Namespace.find_one({"prefix": prefix})
-        return live is not None and live.status != "locked"
+    async def _namespace_recreated(self, journal: DeletionJournal) -> bool:
+        """Whether a namespace holding the prefix now is another one than the
+        namespace this journal deletes: one created again under the name.
+
+        Compared by namespace_id. A journal written before it recorded the id
+        falls back to the status: anything but the deletion's lock is a new
+        namespace.
+        """
+        live = await Namespace.find_one({"prefix": journal.namespace})
+        if live is None:
+            return False
+        if journal.namespace_id and live.namespace_id:
+            return live.namespace_id != journal.namespace_id
+        return live.status != "locked"
 
     async def _execute_step(self, step: DeletionStep, namespace: str) -> int:
         """Execute a single journal step. Returns count of deleted items."""
@@ -869,16 +937,24 @@ class NamespaceDeletionService:
                             f"{len(batch)} keys: {resp.text[:200]}"
                         )
                         continue
-                    data = resp.json()
-                    deleted += int(data.get("deleted") or 0)
-                    if data.get("refused"):
+                    try:
+                        data = resp.json()
+                        deleted += int(data.get("deleted") or 0)
+                        refused, failed = data.get("refused") or [], data.get("failed") or []
+                        if refused:
+                            problems.append(
+                                f"{len(refused)} keys refused (owned by another namespace)"
+                            )
+                        if failed:
+                            problems.append(f"{len(failed)} keys failed to delete")
+                    except (ValueError, TypeError, AttributeError) as e:
                         problems.append(
-                            f"{len(data['refused'])} keys refused (owned by another "
-                            "namespace)"
+                            f"document-store answered 200 with an unreadable body for "
+                            f"{len(batch)} keys ({e}): {resp.text[:200]}"
                         )
-                    if data.get("failed"):
-                        problems.append(f"{len(data['failed'])} keys failed to delete")
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
+        except httpx.TransportError as e:
+            # Connection refused, reset, timed out: the service may be
+            # restarting. Retried, never recorded as a lasting degradation.
             raise _Unreachable(f"could not reach document-store: {e}") from e
         except httpx.HTTPError as e:
             logger.warning("File-storage cleanup through document-store failed: %s", e)
@@ -961,7 +1037,7 @@ class NamespaceDeletionService:
                         "rows may remain"
                     )
                     return 0
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
+        except httpx.TransportError as e:
             raise _Unreachable(f"could not reach reporting-sync: {e}") from e
         except _Unreachable:
             raise

@@ -7,6 +7,28 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A stuck namespace deletion can always be finished
+
+- **`POST /api/registry/namespaces/{prefix}/resume-delete`** now resumes a
+  deletion that stopped on a failed step (`failed`) or finished with
+  degraded best-effort steps (`completed_with_warnings`), not only one still
+  in progress; completed steps are skipped. A namespace left locked with no
+  journal (the deletion stopped before writing it) gets one built at resume.
+  A deletion already running answers 409. There is no abandon: a partly
+  deleted namespace is finished, not undone. The background loop still
+  retries only deletions in progress.
+- **Platform admins see a locked namespace** in `GET /namespaces/{prefix}`
+  and in listings, as `status: locked`, so a stuck deletion is visible.
+  Nobody gets access to its data.
+- **Large namespaces**: stored-file keys are split into steps of 1,000, so
+  the journal stays under MongoDB's document size limit.
+- **Retries**: a connection reset or any transport error from
+  document-store or reporting-sync defers the step for retry instead of
+  recording it as degraded; an unreadable 200 from document-store is a
+  degraded step, not a failed deletion.
+- A journal records the deleted namespace's `namespace_id`, and later
+  steps tell a namespace created again under the name by that id.
+
 ### File import converts each cell to its field's type
 
 `POST /api/document-store/import` (and the MCP `import_documents_csv` tool)

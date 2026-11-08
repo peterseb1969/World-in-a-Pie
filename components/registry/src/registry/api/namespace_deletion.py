@@ -13,7 +13,7 @@ from wip_auth import UserIdentity
 
 from ..models.namespace import LOCKED_DETAIL, Namespace, set_unless_locked
 from ..services.auth import require_admin_key, require_api_key
-from ..services.namespace_deletion import NamespaceDeletionService
+from ..services.namespace_deletion import DeletionAlreadyRunning, NamespaceDeletionService
 
 router = APIRouter()
 
@@ -127,12 +127,18 @@ async def resume_deletion(
     prefix: str,
     api_key: str = Depends(require_admin_key),
 ):
-    """Resume an incomplete deletion from where it left off.
+    """Resume an unfinished deletion from where it left off.
 
-    Used when a backend was unavailable during the initial attempt.
+    Picks up the namespace's deletion that is still in progress, stopped on a
+    failed step, or completed with degraded best-effort steps (stored files,
+    reporting rows), and runs every step not completed. A namespace locked
+    with no journal gets one. 409 while the deletion is running already.
+    There is no abandon: a partly deleted namespace is finished, not undone.
     """
     try:
         journal = await _deletion_service.resume_deletion(prefix)
+    except DeletionAlreadyRunning as e:
+        raise HTTPException(409, str(e)) from None
     except ValueError as e:
         raise HTTPException(404, str(e)) from None
 

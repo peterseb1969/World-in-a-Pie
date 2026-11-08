@@ -67,6 +67,14 @@ class DeletionJournal(Document):
     """
 
     namespace: str = Field(..., description="Namespace being deleted")
+    namespace_id: str | None = Field(
+        default=None,
+        description=(
+            "The namespace_id of the namespace being deleted: a namespace that "
+            "holds the prefix later with another id is a new one, whose data "
+            "the deletion's later steps leave alone"
+        ),
+    )
     # completed_with_warnings: every step executed, but at least one
     # best-effort step (file storage/PostgreSQL) degraded — data may remain in a
     # secondary store. Terminal, like "completed"; the per-step error fields
