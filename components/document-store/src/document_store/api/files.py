@@ -87,6 +87,8 @@ def _file_error_status(e: FileServiceError) -> int:
     rule = (e.details or {}).get("rule")
     if rule in ("storage_disabled", "registry_unavailable"):
         return 503
+    if rule == "storage_refused":
+        return 502  # the object store answered, and refused
     return {"registry_error": 502, "invalid_state": 409, "internal_error": 500}.get(e.code, 400)
 
 

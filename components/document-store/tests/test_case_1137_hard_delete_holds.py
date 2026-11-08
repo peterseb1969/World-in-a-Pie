@@ -36,7 +36,7 @@ async def full_mode():
     await ns.save()
     removed: list[str] = []
 
-    async def record(_self, file_id):
+    async def record(_self, file_id, **_exemption):
         removed.append(file_id)
         return True
 

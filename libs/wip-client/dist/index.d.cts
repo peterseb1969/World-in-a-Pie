@@ -2441,8 +2441,12 @@ interface FileIntegrityIssue {
     message: string;
 }
 interface FileIntegrityResponse {
-    status: 'healthy' | 'warning' | 'error';
+    /** `incomplete`: some stored objects could not be checked (the store refused,
+     * or they were beyond the sweep's limit) and nothing worse was found. */
+    status: 'healthy' | 'warning' | 'error' | 'incomplete';
     checked_at: string;
+    /** Issue counts by type, plus storage_checked, storage_check_failed and
+     * storage_not_checked. */
     summary: Record<string, number>;
     issues: FileIntegrityIssue[];
 }

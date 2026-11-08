@@ -1,6 +1,7 @@
 """File service for managing file entities and storage operations."""
 
 import hashlib
+import logging
 import math
 import re
 from collections.abc import Awaitable, Callable
@@ -9,6 +10,8 @@ from typing import Any, ClassVar
 
 import httpx
 from beanie.odm.enums import SortDirection
+from beanie.odm.utils.encoder import Encoder
+from pymongo import ReturnDocument
 
 from wip_auth.resolve import resolve_entity_ids
 
@@ -26,12 +29,15 @@ from ..models.api_models import (
 from ..models.file import File, FileMetadata, FileReference, FileStatus
 from .file_storage_client import (
     FileStorageError,
+    FileStorageNotFoundError,
     get_file_storage_client,
     is_file_storage_enabled,
 )
 from .file_validation import content_type_matches
 from .nats_client import EventType, publish_file_event
 from .registry_client import RegistryError, get_registry_client
+
+logger = logging.getLogger(__name__)
 
 
 async def resolve_allowed_templates(
@@ -71,6 +77,18 @@ class FileServiceError(Exception):
         super().__init__(message)
         self.code = code
         self.details: dict[str, Any] | None = {"rule": rule} if rule else None
+
+
+def _integrity_status(issues: list, summary: dict[str, int]) -> str:
+    """error / warning by the worst issue; incomplete when some objects went
+    unchecked and nothing was found; healthy only when everything was checked."""
+    if any(i.severity == "error" for i in issues):
+        return "error"
+    if issues:
+        return "warning"
+    if summary["storage_check_failed"] or summary["storage_not_checked"]:
+        return "incomplete"
+    return "healthy"
 
 
 class FileService:
@@ -398,7 +416,7 @@ class FileService:
         file_doc.status = FileStatus.INACTIVE
         file_doc.updated_at = datetime.now(UTC)
         file_doc.updated_by = actor
-        await file_doc.save()
+        await self._set_fields(file_doc, ("status", "updated_at", "updated_by"))
 
         # Publish NATS event
         await publish_file_event(
@@ -408,13 +426,6 @@ class FileService:
         )
 
         return True
-
-    @staticmethod
-    def _live_status(file_doc: File) -> FileStatus:
-        """The status a revived file takes: ACTIVE while documents still
-        reference it (a force-delete keeps the count), ORPHAN otherwise —
-        the same rule update_reference_count applies to a live file."""
-        return FileStatus.ACTIVE if file_doc.reference_count > 0 else FileStatus.ORPHAN
 
     async def _revive_from_upload(
         self,
@@ -462,10 +473,25 @@ class FileService:
         return self._to_response(file_doc)
 
     async def _mark_live(self, file_doc: File, actor: str | None) -> None:
-        file_doc.status = self._live_status(file_doc)
+        """Write a revival: the metadata as changed, and the status derived
+        from the reference count as stored when the write lands (a reference
+        added meanwhile makes it active), in one atomic write."""
         file_doc.updated_at = datetime.now(UTC)
         file_doc.updated_by = actor
-        await file_doc.save()
+        encoded = Encoder().encode(file_doc)
+        stored = await File.get_motor_collection().find_one_and_update(
+            {"file_id": file_doc.file_id},
+            [{"$set": {
+                **{f: {"$literal": encoded[f]}
+                   for f in ("metadata", "allowed_templates", "updated_at", "updated_by")},
+                "status": {"$cond": [{"$gt": ["$reference_count", 0]},
+                                     FileStatus.ACTIVE.value, FileStatus.ORPHAN.value]},
+            }}],
+            return_document=ReturnDocument.AFTER,
+        )
+        if stored:
+            file_doc.status = FileStatus(stored["status"])
+            file_doc.reference_count = stored.get("reference_count", 0)
         await publish_file_event(
             EventType.FILE_UPDATED,
             self._file_to_event_payload(file_doc),
@@ -503,17 +529,27 @@ class FileService:
         await self._mark_live(file_doc, get_identity_string())
         return file_doc, True
 
-    async def hard_delete_file(self, file_id: str) -> bool:
+    async def hard_delete_file(
+        self,
+        file_id: str,
+        *,
+        except_document: str | None = None,
+        except_version: int | None = None,
+    ) -> bool:
         """
         Permanently delete a file from storage and database.
 
-        Only use for cleanup operations. Requires file to be in INACTIVE status.
+        Requires the file to be inactive and referenced by nothing: refused
+        (invalid_state, rule ``referenced``, naming the documents) while its
+        count is above 0 or any active document references it — a
+        force-soft-deleted file keeps both. ``except_document`` (and
+        ``except_version``) leave out a document whose own hard delete is
+        releasing the file. The bytes go before the record; when the object
+        store refuses (access denied, object lock) the record is kept, so the
+        file stays findable, and the refusal is raised (rule
+        ``storage_refused``) — never reported as deleted.
 
-        Args:
-            file_id: File ID (FILE-XXXXXX)
-
-        Returns:
-            True if deleted, False if not found
+        Returns True if deleted, False if not found.
         """
         file_doc = await File.find_one({"file_id": file_id})
         if not file_doc:
@@ -522,17 +558,30 @@ class FileService:
         if file_doc.status != FileStatus.INACTIVE:
             raise FileServiceError("Only inactive files can be hard-deleted", "invalid_state", rule="not_inactive")
 
-        # Delete from the object store
+        holders = await self.live_referrers(
+            file_id, except_document=except_document, except_version=except_version,
+        )
+        if holders or (except_document is None and file_doc.reference_count > 0):
+            named = f": {', '.join(holders)}" if holders else ""
+            raise FileServiceError(
+                f"File {file_id} is still referenced by documents{named} — "
+                "remove those references before hard-deleting it",
+                "invalid_state", rule="referenced",
+            )
+
         if is_file_storage_enabled():
             try:
-                storage = get_file_storage_client()
-                await storage.delete(file_doc.storage_key)
-            except FileStorageError:
-                pass  # Ignore storage errors (file may already be gone)
+                await get_file_storage_client().delete(file_doc.storage_key)
+            except FileStorageNotFoundError:
+                pass  # already gone: nothing left to reclaim
+            except FileStorageError as e:
+                raise FileServiceError(
+                    f"The object store refused to delete the bytes of file {file_id}; "
+                    f"the file record is kept ({e})",
+                    rule="storage_refused",
+                ) from e
 
-        # Delete from MongoDB
         await file_doc.delete()
-
         return True
 
     async def update_metadata(
@@ -576,7 +625,7 @@ class FileService:
 
         file_doc.updated_at = datetime.now(UTC)
         file_doc.updated_by = actor
-        await file_doc.save()
+        await self._set_fields(file_doc, ("metadata", "allowed_templates", "updated_at", "updated_by"))
 
         # Publish NATS event
         await publish_file_event(
@@ -676,35 +725,70 @@ class FileService:
         file_id: str,
         delta: int
     ) -> File | None:
+        """Change a file's reference count by ``delta``, in one atomic write.
+
+        Called when documents add/remove file references. Two writers that
+        attach the same file at once both count: the count is computed by the
+        database from the stored value, never written back from a copy read
+        earlier, and it never goes below 0. The status follows the new count
+        (active above 0, orphan at 0) unless the file is inactive, which a
+        reference never undoes.
+
+        Returns the updated File document, or None if not found.
         """
-        Update file reference count.
+        new_count = {"$max": [0, {"$add": [{"$ifNull": ["$reference_count", 0]}, delta]}]}
+        new_status = {"$cond": [
+            {"$eq": ["$status", FileStatus.INACTIVE.value]},
+            "$status",
+            {"$cond": [{"$gt": ["$reference_count", 0]},
+                       FileStatus.ACTIVE.value, FileStatus.ORPHAN.value]},
+        ]}
+        stored = await File.get_motor_collection().find_one_and_update(
+            {"file_id": file_id},
+            [
+                {"$set": {"reference_count": new_count, "updated_at": datetime.now(UTC)}},
+                {"$set": {"status": new_status}},
+            ],
+            return_document=ReturnDocument.AFTER,
+        )
+        return File.model_validate(stored) if stored else None
 
-        Called when documents add/remove file references.
+    async def live_referrers(
+        self,
+        file_id: str,
+        *,
+        except_document: str | None = None,
+        except_version: int | None = None,
+        limit: int = 10,
+    ) -> list[str]:
+        """Active documents that reference the file, by document_id — the
+        ground truth the reference count only approximates.
 
-        Args:
-            file_id: File ID (FILE-XXXXXX)
-            delta: Change in reference count (+1 for add, -1 for remove)
-
-        Returns:
-            Updated File document, or None if not found
+        ``except_document`` leaves out the document being deleted (every
+        version, or only ``except_version``), whose rows still exist while
+        its files are released. Not namespace-scoped: a document in another
+        namespace may hold the file too.
         """
-        file_doc = await File.find_one({"file_id": file_id})
-        if not file_doc:
-            return None
+        from ..models.document import Document, DocumentStatus
 
-        file_doc.reference_count = max(0, file_doc.reference_count + delta)
+        query: dict[str, Any] = {
+            "file_references.file_id": file_id, "status": DocumentStatus.ACTIVE.value,
+        }
+        if except_document is not None:
+            excluded: dict[str, Any] = {"document_id": except_document}
+            if except_version is not None:
+                excluded["version"] = except_version
+            query["$nor"] = [excluded]
+        ids = await Document.get_motor_collection().distinct("document_id", query)
+        return sorted(ids)[:limit]
 
-        # Update status based on reference count
-        if file_doc.status != FileStatus.INACTIVE:
-            if file_doc.reference_count > 0:
-                file_doc.status = FileStatus.ACTIVE
-            else:
-                file_doc.status = FileStatus.ORPHAN
-
-        file_doc.updated_at = datetime.now(UTC)
-        await file_doc.save()
-
-        return file_doc
+    async def _set_fields(self, file_doc: File, fields: tuple[str, ...]) -> None:
+        """Write only ``fields`` of ``file_doc``: a whole-record save would
+        write back the reference count it read and undo a concurrent change."""
+        encoded = Encoder().encode(file_doc)
+        await File.get_motor_collection().update_one(
+            {"file_id": file_doc.file_id}, {"$set": {f: encoded[f] for f in fields}},
+        )
 
     async def find_orphans(
         self,
@@ -800,9 +884,47 @@ class FileService:
 
         return True, None, file_ref
 
+    #: Live files whose stored object one integrity run checks.
+    STORAGE_SWEEP_LIMIT = 1000
+
+    async def _sweep_storage(self, summary: dict[str, int], issues: list) -> None:
+        """Check that each live file's object is in the store, counting what
+        was checked, what the store refused to answer for, and what lay
+        beyond the sweep's limit."""
+        storage = get_file_storage_client()
+        live = {"status": {"$ne": FileStatus.INACTIVE.value}}
+        active_files = await File.find(live).limit(self.STORAGE_SWEEP_LIMIT).to_list()
+        summary["storage_not_checked"] = max(0, await File.find(live).count() - len(active_files))
+        for file_doc in active_files:
+            try:
+                exists = await storage.exists(file_doc.storage_key)
+            except FileStorageError as e:
+                # The store answered and refused: this object is unchecked.
+                # (An outage raises FileStorageUnavailableError: a 503.)
+                summary["storage_check_failed"] += 1
+                if summary["storage_check_failed"] == 1:
+                    logger.warning("File integrity: the store refused an object check: %s", e)
+                continue
+            summary["storage_checked"] += 1
+            if not exists:
+                summary["missing_storage"] += 1
+                issues.append(FileIntegrityIssue(
+                    type="missing_storage",
+                    severity="error",
+                    file_id=file_doc.file_id,
+                    message=f"File missing from storage: {file_doc.filename}",
+                ))
+
     async def check_integrity(self) -> FileIntegrityResponse:
         """
         Check file integrity (orphans, missing storage, broken references).
+
+        The storage sweep says how much it checked: ``storage_checked``
+        objects answered, ``storage_check_failed`` the store refused to answer
+        for (access denied, a policy), and ``storage_not_checked`` live files
+        beyond the sweep's limit. A check that could not be made is not a
+        clean result: with any of those and no worse finding the status is
+        ``incomplete``, never ``healthy``.
 
         Returns:
             FileIntegrityResponse with issues found
@@ -812,6 +934,9 @@ class FileService:
             "orphan_file": 0,
             "missing_storage": 0,
             "inactive_referenced": 0,
+            "storage_checked": 0,
+            "storage_check_failed": 0,
+            "storage_not_checked": 0,
         }
 
         # Check for orphan files (status=orphan, older than 24 hours)
@@ -827,24 +952,7 @@ class FileService:
 
         # Check for files with storage issues (if storage is enabled)
         if is_file_storage_enabled():
-            storage = get_file_storage_client()
-            active_files = await File.find({
-                "status": {"$ne": FileStatus.INACTIVE.value}
-            }).limit(1000).to_list()
-
-            for file_doc in active_files:
-                try:
-                    exists = await storage.exists(file_doc.storage_key)
-                    if not exists:
-                        summary["missing_storage"] += 1
-                        issues.append(FileIntegrityIssue(
-                            type="missing_storage",
-                            severity="error",
-                            file_id=file_doc.file_id,
-                            message=f"File missing from storage: {file_doc.filename}",
-                        ))
-                except FileStorageError:
-                    pass  # Storage check failed - could be transient
+            await self._sweep_storage(summary, issues)
 
         # Check for inactive files still being referenced
         inactive_referenced = await File.find({
@@ -861,16 +969,8 @@ class FileService:
                 message=f"Deleted file still referenced by {file_doc.reference_count} document(s)",
             ))
 
-        # Determine overall status
-        if any(i.severity == "error" for i in issues):
-            status = "error"
-        elif issues:
-            status = "warning"
-        else:
-            status = "healthy"
-
         return FileIntegrityResponse(
-            status=status,
+            status=_integrity_status(issues, summary),
             checked_at=datetime.now(UTC),
             summary=summary,
             issues=issues,

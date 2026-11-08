@@ -2573,7 +2573,10 @@ class DocumentService:
 
                 if held is not None and held.version == target.version:
                     await self._update_file_reference_counts(target.file_references, delta=-1)
-                await self._hard_delete_orphaned_files(target.file_references, file_service)
+                await self._hard_delete_orphaned_files(
+                    target.file_references, file_service,
+                    deleting=document_id, deleting_version=target.version, warnings=warnings,
+                )
 
                 await target.delete()
 
@@ -2602,7 +2605,9 @@ class DocumentService:
                     ref["file_id"]: ref for doc in all_versions
                     for ref in doc.file_references or [] if ref.get("file_id")
                 }.values())
-                await self._hard_delete_orphaned_files(every_file, file_service)
+                await self._hard_delete_orphaned_files(
+                    every_file, file_service, deleting=document_id, warnings=warnings,
+                )
 
                 await Document.find({"document_id": document_id}).delete()
 
@@ -2741,28 +2746,67 @@ class DocumentService:
             referrers.append(entry)
         return referrers
 
-    async def _hard_delete_orphaned_files(self, file_references: list[dict[str, Any]], file_service) -> None:
-        """Hard-delete files that have reached reference_count=0 and are inactive."""
+    async def _hard_delete_orphaned_files(
+        self,
+        file_references: list[dict[str, Any]],
+        file_service,
+        *,
+        deleting: str,
+        deleting_version: int | None = None,
+        warnings: list[str] | None = None,
+    ) -> None:
+        """Hard-delete the files this hard delete leaves unreferenced.
+
+        A file goes only when its count is 0 AND no active document other
+        than the one being deleted (``deleting``, every version or only
+        ``deleting_version``) references it: the count is a running tally and
+        passes through 0 during an update that keeps a file, so it alone must
+        never decide that bytes can be reclaimed. The file is marked inactive
+        first, guarded on its count still being 0 — from then on a write that
+        validates against it refuses it — and only then are referrers looked
+        for. One that turns up returns the file to active, its count raised to
+        the referrers found. A file whose bytes the store refused to delete
+        stays recorded (inactive) and is named in ``warnings``.
+        """
         from ..models.file import File, FileStatus
         from ..services.file_storage_client import is_file_storage_enabled
 
         if not file_references or not is_file_storage_enabled():
             return
-
+        files = File.get_motor_collection()
         for ref in file_references:
             file_id = ref.get("file_id")
             if not file_id:
                 continue
             try:
-                file_doc = await File.find_one({"file_id": file_id})
-                if file_doc and file_doc.reference_count <= 0:
-                    # Set to inactive first if needed (hard_delete_file requires inactive)
-                    if file_doc.status != FileStatus.INACTIVE:
-                        file_doc.status = FileStatus.INACTIVE
-                        await file_doc.save()
-                    await file_service.hard_delete_file(file_id)
+                retired = await files.update_one(
+                    {"file_id": file_id, "reference_count": {"$lte": 0}},
+                    {"$set": {"status": FileStatus.INACTIVE.value, "updated_at": datetime.now(UTC)}},
+                )
+                if retired.matched_count != 1:
+                    continue  # still counted, or gone
+                holders = await file_service.live_referrers(
+                    file_id, except_document=deleting, except_version=deleting_version,
+                )
+                if holders:
+                    logger.warning(
+                        "File %s has reference count 0 but active documents %s reference it; "
+                        "kept, and its count raised to match",
+                        file_id, holders,
+                    )
+                    await files.update_one(
+                        {"file_id": file_id},
+                        {"$set": {"status": FileStatus.ACTIVE.value},
+                         "$max": {"reference_count": len(holders)}},
+                    )
+                    continue
+                await file_service.hard_delete_file(
+                    file_id, except_document=deleting, except_version=deleting_version,
+                )
             except Exception as e:
                 logger.warning(f"Failed to hard-delete orphaned file {file_id}: {e}")
+                if warnings is not None:
+                    warnings.append(f"File {file_id} was left inactive, not deleted: {e}")
 
     async def query_documents(
         self,

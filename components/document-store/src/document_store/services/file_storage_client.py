@@ -388,6 +388,11 @@ class FileStorageClient:
                     Key=storage_key
                 )
         except ClientError as e:
+            code = e.response.get("Error", {}).get("Code", "")
+            if code in ("404", "NoSuchKey"):
+                raise FileStorageNotFoundError(f"File not found in storage: {storage_key}") from e
+            # Anything else is the store refusing (access denied, object
+            # lock, legal hold): the bytes are still there.
             raise FileStorageError(f"Failed to delete file: {e}") from e
 
     async def exists(self, storage_key: str) -> bool:
@@ -533,6 +538,12 @@ class FileStorageClient:
 class FileStorageError(Exception):
     """Error with file storage operations."""
     pass
+
+
+class FileStorageNotFoundError(FileStorageError):
+    """The object is not in the store. S3 deletes are idempotent, so a delete
+    rarely raises this; any other ``FileStorageError`` from a delete means the
+    store refused it and the bytes remain."""
 
 
 class FileStorageUnavailableError(Exception):

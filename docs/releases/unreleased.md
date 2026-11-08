@@ -7,6 +7,34 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A file's bytes are never reclaimed while a document uses them; a refused delete is not reported as done (@wip/client 0.98.0)
+
+- **Reference counts are atomic.** A file's count was read, changed in Python
+  and saved back, so two documents attaching one file at once counted 1. The
+  count is now one database update, clamped at 0, and writes to a file record
+  set only the fields they change (a metadata edit or soft delete no longer
+  writes back a count it read earlier).
+- **Bytes are reclaimed only when nothing uses them.** A document's hard
+  delete removed any file whose count reached 0 — but the count passes
+  through 0 while an update keeps a file, and could be wrong. A file now goes
+  only when its count is 0 **and** no active document other than the one
+  being deleted references it; one that is still referenced is kept, returned
+  to `active` and its count raised to match.
+- **`DELETE /files/{id}/hard` refuses a referenced file** (409,
+  `invalid_state`, rule `referenced`, naming the documents): an inactive
+  file with a count above 0 (soft-deleted with `force=true`) or any active
+  document referencing it.
+- **A delete the object store refuses is an error** (502, rule
+  `storage_refused`) and the file record is kept, so the file stays findable.
+  It used to be swallowed as "already gone": the record went, the bytes
+  stayed, and the answer was `permanently_deleted`. A document's hard delete
+  names such a file in its `warnings`.
+- **The file integrity check says how much it checked.** `summary` gains
+  `storage_checked`, `storage_check_failed` and `storage_not_checked` (live
+  files beyond the 1000-file sweep), and the status is `incomplete` — not
+  `healthy` — when any object could not be checked and nothing worse was
+  found. `@wip/client`'s `FileIntegrityResponse.status` gains `incomplete`.
+
 ### Activation stays in its namespace; a template reference whose namespace cannot be learned is refused
 
 - **Cascading activation stays in its namespace.** `POST /api/template-store/templates/{id}/activate` used to activate every draft its template referenced, in any namespace. A key with write on one namespace could activate another namespace's draft by referencing that draft's id from a draft of its own. Only drafts of the namespace being activated are now activated together. A reference to a draft elsewhere is checked like any other reference, and refused because the template it names is not active.

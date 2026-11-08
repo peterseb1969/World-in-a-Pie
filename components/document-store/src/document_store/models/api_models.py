@@ -1021,12 +1021,18 @@ class FileIntegrityResponse(BaseModel):
 
     status: str = Field(
         ...,
-        description="healthy, warning, or error"
+        description=(
+            "healthy, warning, error, or incomplete — incomplete when some "
+            "stored objects could not be checked and nothing worse was found"
+        )
     )
     checked_at: datetime
     summary: dict[str, int] = Field(
         default_factory=dict,
-        description="Count of issues by type"
+        description=(
+            "Count of issues by type, and how much of the object store was "
+            "checked: storage_checked, storage_check_failed, storage_not_checked"
+        )
     )
     issues: list[FileIntegrityIssue] = Field(
         default_factory=list,
