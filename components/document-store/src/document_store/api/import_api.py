@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -49,6 +50,138 @@ async def preview_import(
 # The most created rows and failed rows a response lists; counts stay complete.
 _MAX_LISTED_RESULTS = 100
 _MAX_LISTED_ERRORS = 50
+
+
+def _parse_mapping(column_mapping: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """(the column mapping, None), or (None, the error response refusing it)."""
+    try:
+        mapping = json.loads(column_mapping)
+    except json.JSONDecodeError as e:
+        return None, {"error": f"Invalid column_mapping JSON: {e}"}
+    if not isinstance(mapping, dict):
+        return None, {"error": "column_mapping must be a JSON object"}
+    return mapping, None
+
+
+def _parse_file(
+    content: bytes, filename: str,
+) -> tuple[list[str], list[dict[str, Any]]] | dict[str, Any]:
+    """The file's (headers, rows), or the error response when it cannot be read.
+
+    A parser refusal (ValueError) is answered with its own message; any other
+    failure is reported as a parse failure.
+    """
+    try:
+        return ImportService.parse_rows(content, filename)
+    except ValueError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Failed to parse file: {e}"}
+
+
+async def _field_types(template_id: str) -> dict[str, str]:
+    """Each field's type in the template's latest version, as validation will
+    use it: a cell is converted to its field's type before its row is validated."""
+    template = await get_template_store_client().get_template(template_id=template_id)
+    return {
+        str(f["name"]): str(f["type"])
+        for f in (template or {}).get("fields") or []
+        if isinstance(f, dict) and f.get("name") and f.get("type")
+    }
+
+
+# Rows written between two back-off checks.
+_IMPORT_BATCH_SIZE = 50
+
+
+@dataclass
+class _ImportOutcome:
+    total: int
+    succeeded: int = 0
+    failed: int = 0
+    skipped: int = 0
+    created: list[dict[str, Any]] = field(default_factory=list)
+    errors: list[dict[str, Any]] = field(default_factory=list)
+
+
+async def _import_row(
+    doc_service: DocumentService, doc: dict[str, Any], row_num: int, namespace: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Create one row's document: (the created entry, None) or (None, the error entry).
+
+    A cell that could not be converted to its field's type fails the row like
+    a validation failure. The error entry carries the row's data, each value
+    cut to 100 characters, for debugging.
+    """
+    try:
+        conversion_errors = doc.pop("conversion_errors", None)
+        if conversion_errors:
+            raise ValueError("; ".join(conversion_errors))
+        req = DocumentCreateRequest(**doc)
+        result, error = await doc_service.create_document(req, namespace=namespace)
+        if result is None:
+            raise ValueError((error or {}).get("error") or "Validation failed")
+        return {
+            "row": row_num,
+            "document_id": result.document_id,
+            "version": result.version,
+            "is_new": result.is_new,
+        }, None
+    except Exception as e:
+        error_info: dict[str, Any] = {"row": row_num, "error": str(e)}
+        if doc.get("data"):
+            error_info["data"] = {k: str(v)[:100] for k, v in doc["data"].items()}
+        return None, error_info
+
+
+async def _import_rows(
+    documents: list[dict[str, Any]], namespace: str, skip_errors: bool,
+) -> _ImportOutcome:
+    """Create every row's document in order, each through the single-item
+    create path (its own Registry call and write), so a failing row is
+    reported by its row number.
+
+    Without skip_errors the first failing row stops the import and the rows
+    after it are counted as skipped.
+    """
+    doc_service = DocumentService()
+    outcome = _ImportOutcome(total=len(documents))
+
+    # One write batch for the whole file: rows repeating a term value
+    # resolve it once (see wip_auth.term_resolution).
+    with term_resolution_batch():
+        for batch_start in range(0, outcome.total, _IMPORT_BATCH_SIZE):
+            batch = documents[batch_start:batch_start + _IMPORT_BATCH_SIZE]
+            for i, doc in enumerate(batch):
+                row_num = batch_start + i + 2  # +2 for 1-indexed + header row
+                created, error = await _import_row(doc_service, doc, row_num, namespace)
+                if created is not None:
+                    outcome.succeeded += 1
+                    outcome.created.append(created)
+                    continue
+                outcome.failed += 1
+                outcome.errors.append(error or {})
+                if not skip_errors:
+                    outcome.skipped = outcome.total - (outcome.succeeded + outcome.failed)
+                    return outcome
+            # Write endpoints back off while the reporting consumer lags
+            # (nats_client.get_throttle_delay); an import is the largest of them.
+            await asyncio.sleep(get_throttle_delay())
+    return outcome
+
+
+def _import_response(outcome: _ImportOutcome) -> dict[str, Any]:
+    """The import's report: complete counts, the listed rows cut to their caps."""
+    return {
+        "total_rows": outcome.total,
+        "succeeded": outcome.succeeded,
+        "failed": outcome.failed,
+        "skipped": outcome.skipped,
+        "results": outcome.created[:_MAX_LISTED_RESULTS],
+        "results_truncated": len(outcome.created) > _MAX_LISTED_RESULTS,
+        "errors": outcome.errors[:_MAX_LISTED_ERRORS],
+        "errors_truncated": len(outcome.errors) > _MAX_LISTED_ERRORS,
+    }
 
 
 @router.post("")
@@ -100,21 +233,14 @@ async def import_documents(
     if not content:
         return {"error": "Empty file"}
 
-    # Parse column mapping
-    try:
-        mapping = json.loads(column_mapping)
-        if not isinstance(mapping, dict):
-            return {"error": "column_mapping must be a JSON object"}
-    except json.JSONDecodeError as e:
-        return {"error": f"Invalid column_mapping JSON: {e}"}
+    mapping, mapping_error = _parse_mapping(column_mapping)
+    if mapping is None:
+        return mapping_error or {}
 
-    # Parse file
-    try:
-        headers, rows = ImportService.parse_rows(content, file.filename or "data.csv")
-    except ValueError as e:
-        return {"error": str(e)}
-    except Exception as e:
-        return {"error": f"Failed to parse file: {e}"}
+    parsed = _parse_file(content, file.filename or "data.csv")
+    if isinstance(parsed, dict):
+        return parsed
+    headers, rows = parsed
 
     # Validate mapping references valid columns
     invalid_cols = [col for col in mapping if col not in headers]
@@ -124,87 +250,12 @@ async def import_documents(
             "available_columns": headers,
         }
 
-    # The latest version's field types, as validation will use: each cell is
-    # converted to its field's type before the row is validated.
-    template = await get_template_store_client().get_template(template_id=template_id)
-    field_types = {
-        str(f["name"]): str(f["type"])
-        for f in (template or {}).get("fields") or []
-        if isinstance(f, dict) and f.get("name") and f.get("type")
-    }
-
-    # Build documents
     documents = ImportService.build_documents(
-        rows, template_id, mapping, namespace, field_types=field_types,
+        rows, template_id, mapping, namespace,
+        field_types=await _field_types(template_id),
     )
-
     if not documents:
         return {"error": "No documents to import (file may be empty)"}
 
-    # Each row is created through the single-item create path (its own
-    # Registry call and write), so a failing row is reported by row number.
-    doc_service = DocumentService()
-
-    total = len(documents)
-    succeeded = 0
-    failed = 0
-    skipped = 0
-    errors = []
-    created_ids = []
-
-    # One write batch for the whole file: rows repeating a term value
-    # resolve it once (see wip_auth.term_resolution).
-    with term_resolution_batch():
-        # Process in batches to avoid overwhelming the system
-        batch_size = 50
-        for batch_start in range(0, total, batch_size):
-            batch = documents[batch_start:batch_start + batch_size]
-
-            for i, doc in enumerate(batch):
-                row_num = batch_start + i + 2  # +2 for 1-indexed + header row
-                try:
-                    conversion_errors = doc.pop("conversion_errors", None)
-                    if conversion_errors:
-                        raise ValueError("; ".join(conversion_errors))
-                    req = DocumentCreateRequest(**doc)
-                    result, error = await doc_service.create_document(
-                        req, namespace=namespace
-                    )
-                    if result is None:
-                        raise ValueError((error or {}).get("error") or "Validation failed")
-                    succeeded += 1
-                    created_ids.append({
-                        "row": row_num,
-                        "document_id": result.document_id,
-                        "version": result.version,
-                        "is_new": result.is_new,
-                    })
-                except Exception as e:
-                    failed += 1
-                    error_info = {"row": row_num, "error": str(e)}
-                    # Include the data that failed for debugging
-                    if doc.get("data"):
-                        error_info["data"] = {k: str(v)[:100] for k, v in doc["data"].items()}
-                    errors.append(error_info)
-
-                    if not skip_errors:
-                        # Stop on first error
-                        skipped = total - (succeeded + failed)
-                        break
-
-            if not skip_errors and errors:
-                break
-            # Write endpoints back off while the reporting consumer lags
-            # (nats_client.get_throttle_delay); an import is the largest of them.
-            await asyncio.sleep(get_throttle_delay())
-
-    return {
-        "total_rows": total,
-        "succeeded": succeeded,
-        "failed": failed,
-        "skipped": skipped,
-        "results": created_ids[:_MAX_LISTED_RESULTS],
-        "results_truncated": len(created_ids) > _MAX_LISTED_RESULTS,
-        "errors": errors[:_MAX_LISTED_ERRORS],
-        "errors_truncated": len(errors) > _MAX_LISTED_ERRORS,
-    }
+    outcome = await _import_rows(documents, namespace, skip_errors)
+    return _import_response(outcome)
