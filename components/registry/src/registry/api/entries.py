@@ -1698,14 +1698,15 @@ async def activate_entries(
                 )
                 if update_result.modified_count != len(reserved_ids):
                     # A concurrent status change between classify and update: the
-                    # guard kept the write safe; re-read to find which ids missed.
-                    still_reserved: set[str] = set()
+                    # guard kept the write safe; re-read which ids are active now.
+                    # An entry still reserved, or one another request moved off
+                    # reserved (retired, say), was not activated by this request.
+                    flipped_ids = set()
                     async for doc in entries_coll.find(
-                        {"entry_id": {"$in": reserved_ids}, "status": "reserved"},
+                        {"entry_id": {"$in": reserved_ids}, "status": "active"},
                         {"entry_id": 1, "_id": 0},
                     ):
-                        still_reserved.add(doc["entry_id"])
-                    flipped_ids -= still_reserved
+                        flipped_ids.add(doc["entry_id"])
             except Exception as e:
                 # Only the items this write was for failed; the classify read
                 # already decided the rest (not_found, already_active, ...).
@@ -1740,7 +1741,7 @@ async def activate_entries(
             else:
                 results[i] = ActivateItemResponse(
                     index=i, status="error", entry_id=item.entry_id,
-                    error="Entry status changed concurrently; still reserved after update",
+                    error="Entry status changed concurrently; not activated",
                     error_code="concurrency_conflict",
                 )
                 error_count += 1
