@@ -206,6 +206,51 @@ def _unresolved_hits(
                 yield str(ref.get("field_path") or ""), str(target)
 
 
+def _drop_merge_rows(
+    archive_entities: dict[str, list[dict[str, Any]]],
+    doc_groups: dict[str, list[dict[str, Any]]] | None,
+    ids: set[str],
+) -> dict[str, list[dict[str, Any]]] | None:
+    """Leave the given documents out of a merge: their rows and registry
+    entries are removed from ``archive_entities`` in place, and the held
+    document groups returned without them."""
+    for entity_type in ("documents", "registry_entries"):
+        if entity_type in archive_entities:
+            archive_entities[entity_type] = [
+                row for row in archive_entities[entity_type]
+                if not _dropped_row(entity_type, row, ids)
+            ]
+    if doc_groups is not None:
+        doc_groups = {
+            doc_id: rows for doc_id, rows in doc_groups.items()
+            if doc_id not in ids
+        }
+    return doc_groups
+
+
+def _merge_arriving(definitions: Any, built: dict[str, Any]) -> dict[str, set[str]]:
+    """What a merge is about to bring with it — a reference is satisfied by
+    the target OR by something arriving alongside."""
+    empty_documents = EntityPlan(entity_type="documents")
+    empty_files = EntityPlan(entity_type="files")
+    return {
+        "templates": {
+            t["template_id"] for t in definitions.to_add["templates"] if t.get("template_id")
+        },
+        "terms": {
+            t["term_id"] for t in definitions.to_add["terms"] if t.get("term_id")
+        },
+        "documents": {
+            d["document_id"] for d in built.get("documents", empty_documents).to_insert
+            if d.get("document_id")
+        },
+        "files": {
+            f["file_id"] for f in built.get("files", empty_files).to_insert
+            if f.get("file_id")
+        },
+    }
+
+
 def _dropped_row(entity_type: str, row: dict[str, Any], dropped: set[str]) -> bool:
     """Whether this archived row belongs to a dropped edge: one of its
     document versions, or its registry entry."""
@@ -3391,16 +3436,15 @@ class DirectRestoreEngine:
         follows a write and ``dry_run`` is exact rather than indicative: it
         fails on everything a real run would refuse, and nothing else.
         """
-        if on_clash not in self.MERGE_CLASH_POLICIES:
-            raise RestoreEngineError(
-                f"Invalid on_clash '{on_clash}' — must be one of "
-                f"{', '.join(self.MERGE_CLASH_POLICIES)}"
-            )
-        if older_versions not in self.MERGE_OLDER_VERSIONS:
-            raise RestoreEngineError(
-                f"Invalid older_versions '{older_versions}' — must be one of "
-                f"{', '.join(self.MERGE_OLDER_VERSIONS)}"
-            )
+        self._check_merge_policies(on_clash, older_versions)
+        policy = {
+            "on_clash": on_clash,
+            "older_versions": older_versions,
+            "add_missing": add_missing,
+            "extend_terminologies": extend_terminologies,
+            "align_templates": align_templates,
+            "carry_retirements": carry_retirements,
+        }
 
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
@@ -3430,352 +3474,22 @@ class DirectRestoreEngine:
                 await self._check_merge_reporting_precondition(tgt)
 
             entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
-            staged: list[_StagedMerge] = []
-
-            for src, tgt in targets:
-                entry = entry_by_prefix.get(src)
-                ns_config = entry.namespace_config if entry else manifest.namespace_config
-                await self._report_namespace_config_drift(tgt, ns_config)
-
-                archive_entities, doc_groups = await self._off_loop(
-                    self._build_merge_plan_inputs,
-                    reader, src, skip_documents=skip_documents,
-                    skip_files=skip_files,
+            # Nothing is written yet: every namespace is planned and checked
+            # first, so a refusal in a later namespace never follows a write
+            # into an earlier one, and a dry run refuses exactly what the
+            # real run refuses.
+            staged = [
+                await self._stage_merge(
+                    reader, manifest, targets, src, tgt, entry_by_prefix.get(src),
+                    policy=policy, skip_documents=skip_documents, skip_files=skip_files,
+                    drop_unresolved_edges=drop_unresolved_edges, dry_run=dry_run,
                 )
+                for src, tgt in targets
+            ]
+            await self._check_staged_references(staged)
 
-                if src != tgt:
-                    # Redirected merge: the IDs must be free here, and every
-                    # entity has to be moved to the target namespace before it
-                    # is matched — the keys it matches on embed the namespace.
-                    await self._check_ids_are_free(
-                        archive_entities.get("registry_entries") or [], src, tgt
-                    )
-                    for entity_type, entities in archive_entities.items():
-                        archive_entities[entity_type] = [
-                            self._rewrite_namespace(entity_type, entity, src, tgt)
-                            for entity in entities
-                        ]
-                    if doc_groups is not None:
-                        doc_groups = {
-                            doc_id: [
-                                self._rewrite_namespace("documents", row, src, tgt)
-                                for row in rows
-                            ]
-                            for doc_id, rows in doc_groups.items()
-                        }
-                    self._emit(
-                        "phase_merge_plan",
-                        f"[{tgt}] merging from namespace '{src}' — entities "
-                        "and composite keys re-scoped to the target",
-                    )
-
-                # References to entities the archive does not carry (another
-                # namespace's terminology, say) are mapped first: the
-                # definitions pass compares a template's references by what
-                # they name here, and these are some of them. They never
-                # overlap with pass 1's mappings, which are archived entities.
-                remapper = _AligningRemapper()
-                referents = await self._map_external_referents(
-                    reader, manifest, remapper, tgt
-                )
-
-                # ---- Pass 1: definitions -------------------------------
-                definitions = await DefinitionsPlanner(
-                    self._mongo, COLLECTION_MAP,
-                    add_missing=add_missing,
-                    extend_terminologies=extend_terminologies,
-                    align_templates=align_templates,
-                    carry_retirements=carry_retirements,
-                ).plan(archive_entities, tgt, external=remapper)
-                self._emit_definitions_plan(tgt, definitions, dry_run=dry_run)
-                self._enforce_definitions_gate(tgt, definitions)
-
-                # The mapping pass 1 produced is what lets pass 2 point the
-                # incoming data at the definitions that survived.
-                for old_id, new_id in definitions.mapping["terminologies"].items():
-                    remapper.add_terminology_mapping(old_id, new_id)
-                for old_id, new_id in definitions.mapping["terms"].items():
-                    remapper.add_term_mapping(old_id, new_id)
-                for old_id, new_id in definitions.mapping["templates"].items():
-                    remapper.add_template_mapping(old_id, new_id)
-                alignment_report: dict[str, Any] | None = None
-                if definitions.alignment:
-                    unplaceable, report = await self._off_loop(
-                        self._settle_alignment,
-                        definitions.alignment, reader, src, doc_groups,
-                    )
-                    alignment_report = report
-                    remapper.version_map = {
-                        (archive_id, version): target_version
-                        for archive_id, alignment in definitions.alignment.items()
-                        for version, target_version in alignment.version_map().items()
-                    }
-                    self._emit_alignment(tgt, report, dry_run=dry_run)
-                    if unplaceable:
-                        for entity_type in ("documents", "registry_entries"):
-                            if entity_type in archive_entities:
-                                archive_entities[entity_type] = [
-                                    row for row in archive_entities[entity_type]
-                                    if not _dropped_row(entity_type, row, unplaceable)
-                                ]
-                        if doc_groups is not None:
-                            doc_groups = {
-                                doc_id: rows for doc_id, rows in doc_groups.items()
-                                if doc_id not in unplaceable
-                            }
-                dropped = await self._report_unresolved_references(
-                    reader, [src], remapper, referents, tgt,
-                    drop_edges=drop_unresolved_edges,
-                )
-                if dropped:
-                    for entity_type in ("documents", "registry_entries"):
-                        if entity_type in archive_entities:
-                            archive_entities[entity_type] = [
-                                row for row in archive_entities[entity_type]
-                                if not _dropped_row(entity_type, row, dropped)
-                            ]
-                    if doc_groups is not None:
-                        doc_groups = {
-                            doc_id: rows for doc_id, rows in doc_groups.items()
-                            if doc_id not in dropped
-                        }
-
-                # ---- Pass 2: everything else ---------------------------
-                planner = MergePlanner(self._mongo, COLLECTION_MAP)
-                built: dict[str, EntityPlan] = {}
-                rewritten = 0
-                # Streamed documents are rewritten as they are read again,
-                # with the remapper as it stands once documents are planned —
-                # by then it holds every file and document mapping, because
-                # files are planned first and documents until no new mapping
-                # appears (see _MERGE_PLAN_ORDER).
-                chain_transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
-                # Documents whose rewritten references change their identity
-                # are rehashed before they are planned: the planner matches on
-                # (template_id, identity_hash), and a stale hash would miss
-                # the target's copy of the same document.
-                rehash = _IdentityRehash(
-                    reader, [s for s, _t in targets],
-                    await self._external_template_definitions(
-                        reader, manifest, remapper,
-                        _archived_template_ids(reader, [s for s, _t in targets]),
-                    ),
-                )
-                archived_doc_groups = doc_groups
-                for entity_type in _MERGE_PLAN_ORDER:
-                    if entity_type in DEFINITION_TYPES:
-                        continue
-                    raw_entities = archive_entities.get(entity_type)
-                    if raw_entities is None:
-                        continue
-                    while True:
-                        entities, changed = self._rewrite_entities(
-                            entity_type, raw_entities, remapper
-                        )
-                        if entity_type == "documents":
-                            if archived_doc_groups is not None:
-                                entities = [
-                                    rehash.rehash(archived, row)
-                                    for archived, row in zip(raw_entities, entities, strict=True)
-                                ]
-                                doc_groups = self._regroup_documents(
-                                    archived_doc_groups, remapper, rehash
-                                )
-                            else:
-                                chain_transform = self._chain_transform(
-                                    copy.deepcopy(remapper), src, tgt, rehash
-                                )
-                                if remapper.total_mappings:
-                                    # Compact heads carry no references: one
-                                    # pass over the rewritten chains finds the
-                                    # new hashes, which the heads then take.
-                                    await self._off_loop(
-                                        _drain, transformed_chains(reader, src, chain_transform)
-                                    )
-                                    entities = [
-                                        {**head, "identity_hash": rehash.new_hash[str(head.get("document_id"))]}
-                                        if str(head.get("document_id")) in rehash.new_hash else head
-                                        for head in entities
-                                    ]
-                        elif entity_type == "registry_entries":
-                            entities = [rehash.rekey(entry) for entry in entities]
-                        plan = await planner.plan(entity_type, entities, tgt)
-                        # A document the target holds under another ID is
-                        # still a collision for policy, but the ID it survives
-                        # under has to reach everything referencing it — other
-                        # documents included, whose identity may hash that very
-                        # reference. So documents are planned again, from the
-                        # archived rows, until a round discovers nothing new.
-                        # Mappings only grow, so this ends.
-                        if entity_type != "documents":
-                            break
-                        new = {
-                            old_id: new_id for old_id, new_id in plan.mapping.items()
-                            if remapper.document_map.get(old_id) != new_id
-                        }
-                        if not new:
-                            break
-                        for old_id, new_id in new.items():
-                            remapper.add_document_mapping(old_id, new_id)
-                    rewritten += changed
-                    archive_entities[entity_type] = entities
-                    built[entity_type] = plan
-                    for old_id, new_id in plan.mapping.items():
-                        if entity_type == "documents":
-                            remapper.add_document_mapping(old_id, new_id)
-                        elif entity_type == "files":
-                            remapper.add_file_mapping(old_id, new_id)
-
-                if rewritten:
-                    self._emit(
-                        "phase_merge_plan",
-                        f"[{tgt}] {rewritten} incoming entit(ies) had references "
-                        f"rewritten onto the target's definitions",
-                    )
-                self._emit_merge_plan(tgt, built, on_clash=on_clash, dry_run=dry_run)
-                self.result.setdefault("mode", "merge")
-                self.result["dry_run"] = dry_run
-                self.result.setdefault("namespaces", {})[tgt] = {
-                    # Record where this data came from, so a redirected merge
-                    # (src != tgt) is legible on the job record — parity with the
-                    # remap result, which already carries source/target. For a
-                    # same-namespace merge source_namespace == tgt.
-                    "source_namespace": src,
-                    "referents": referents,
-                    "rehashed_documents": len(rehash.new_hash),
-                    "definitions": definitions.summary(),
-                    "incompatibilities": len(definitions.incompatibilities),
-                    "target_wins": len(definitions.target_wins),
-                    "retirements_not_carried": len(definitions.retirements_not_carried),
-                    **({"template_alignment": alignment_report} if alignment_report else {}),
-                    "entities": {
-                        entity_type: plan.summary()
-                        for entity_type, plan in built.items()
-                        if any(plan.summary().values())
-                    },
-                }
-                self._enforce_merge_gates(tgt, built)
-
-                # What this merge is about to bring with it — a reference is
-                # satisfied by the target OR by something arriving alongside.
-                arriving = {
-                    "templates": {
-                        t["template_id"]
-                        for t in definitions.to_add["templates"]
-                        if t.get("template_id")
-                    },
-                    "terms": {
-                        t["term_id"]
-                        for t in definitions.to_add["terms"]
-                        if t.get("term_id")
-                    },
-                    "documents": {
-                        d["document_id"]
-                        for d in built.get(
-                            "documents", EntityPlan(entity_type="documents")
-                        ).to_insert
-                        if d.get("document_id")
-                    },
-                    "files": {
-                        f["file_id"]
-                        for f in built.get(
-                            "files", EntityPlan(entity_type="files")
-                        ).to_insert
-                        if f.get("file_id")
-                    },
-                }
-                documents_plan = built.get("documents")
-                streamed: _StreamedDocuments | None = None
-                if documents_plan is not None and doc_groups is None:
-                    assert chain_transform is not None
-                    streamed = _StreamedDocuments(
-                        reader, src, chain_transform, documents_plan,
-                        overwrite=on_clash != "skip",
-                    )
-                    wanted = await self._off_loop(streamed.referenced_ids, self._referenced_ids)
-                else:
-                    rows_to_write: list[dict[str, Any]] = []
-                    if documents_plan is not None and doc_groups is not None:
-                        for head in documents_plan.to_insert:
-                            rows_to_write.extend(
-                                doc_groups.get(head.get("document_id", ""), [head])
-                            )
-                        if on_clash != "skip":
-                            rows_to_write.extend(
-                                clash.entity for clash in documents_plan.differing_clashes
-                            )
-                    wanted = self._referenced_ids(rows_to_write) if rows_to_write else {}
-
-                # Nothing is written yet: every namespace is planned and
-                # checked first, so a refusal in a later namespace never
-                # follows a write into an earlier one, and a dry run refuses
-                # exactly what the real run refuses.
-                staged.append(_StagedMerge(
-                    src=src, tgt=tgt, definitions=definitions, remapper=remapper,
-                    built=built, doc_groups=doc_groups, streamed=streamed,
-                    arriving=arriving, wanted=wanted,
-                ))
-
-            # References between the archive's namespaces resolve against what
-            # the whole merge supplies, not only what its own namespace does:
-            # a document in one namespace may point at one arriving in another.
-            arriving_anywhere: dict[str, set[str]] = {}
-            for stage in staged:
-                for entity_type, ids in stage.arriving.items():
-                    arriving_anywhere.setdefault(entity_type, set()).update(ids)
-            for stage in staged:
-                if stage.wanted:
-                    await self._check_merge_wanted(stage.tgt, stage.wanted, arriving_anywhere)
-
-            # Bytes before the records that need them: only for files the merge
-            # inserts (a file the target already has keeps its bytes), and all
-            # of them before any namespace is written, so a write that fails
-            # never leaves a file record without its bytes.
-            if not dry_run and not skip_files and self._storage:
-                inserting = {
-                    f["file_id"]
-                    for stage in staged
-                    for f in stage.built.get("files", EntityPlan(entity_type="files")).to_insert
-                    if f.get("file_id")
-                }
-                if inserting:
-                    await self._restore_blobs(reader, targets[0][1], only=inserting)
-
-            for stage in staged:
-                if dry_run:
-                    break
-                src, tgt, built = stage.src, stage.tgt, stage.built
-                await self._apply_definitions(tgt, stage.definitions, stage.remapper, batch_size)
-                await self._apply_merge(
-                    tgt, built, stage.doc_groups or {},
-                    on_clash=on_clash, older_versions=older_versions,
-                    batch_size=batch_size, streamed=stage.streamed,
-                )
-                await self._release_retired_synonyms(tgt)
-                await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
-                # A merge adds to a namespace that already holds data, so its
-                # record says what arrived and under which policy, not that
-                # the namespace came from the archive. The plan summary is
-                # what was planned per entity type; with on_clash "newer" the
-                # clashes actually written are a subset of `clash`.
-                planned = self.result["namespaces"][tgt]
-                await self._write_restore_provenance(
-                    archive_path, manifest, raw_manifest,
-                    source=src, target=tgt, mode="merge",
-                    referents=planned.get("referents"),
-                    merge={
-                        "on_clash": on_clash,
-                        "older_versions": older_versions,
-                        "add_missing": add_missing,
-                        "extend_terminologies": extend_terminologies,
-                        "align_templates": align_templates,
-                        "carry_retirements": carry_retirements,
-                        "definitions": planned.get("definitions"),
-                        **({"template_alignment": planned["template_alignment"]}
-                           if planned.get("template_alignment") else {}),
-                        "entities": planned.get("entities"),
-                    },
-                )
+            if not dry_run and not skip_files:
+                await self._upload_merge_blobs(reader, staged, targets[0][1])
 
             if dry_run:
                 self._emit(
@@ -3786,12 +3500,509 @@ class DirectRestoreEngine:
                 )
                 return
 
+            for stage in staged:
+                await self._apply_staged_merge(
+                    stage, archive_path, manifest, raw_manifest,
+                    policy=policy, batch_size=batch_size, skip_documents=skip_documents,
+                )
 
         self.result["reporting_synced"] = list(self._reporting_synced)
         self._finish_reporting_verification(
             [tgt for _, tgt in targets], "reporting was not verified for this namespace"
         )
         self._emit("complete", "Merge complete", percent=100, details=self.result)
+
+    def _check_merge_policies(self, on_clash: str, older_versions: str) -> None:
+        if on_clash not in self.MERGE_CLASH_POLICIES:
+            raise RestoreEngineError(
+                f"Invalid on_clash '{on_clash}' — must be one of "
+                f"{', '.join(self.MERGE_CLASH_POLICIES)}"
+            )
+        if older_versions not in self.MERGE_OLDER_VERSIONS:
+            raise RestoreEngineError(
+                f"Invalid older_versions '{older_versions}' — must be one of "
+                f"{', '.join(self.MERGE_OLDER_VERSIONS)}"
+            )
+
+    async def _stage_merge(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        targets: list[tuple[str, str]],
+        src: str,
+        tgt: str,
+        entry: Any,
+        *,
+        policy: dict[str, Any],
+        skip_documents: bool,
+        skip_files: bool,
+        drop_unresolved_edges: bool,
+        dry_run: bool,
+    ) -> _StagedMerge:
+        """Plan the merge of one archived namespace into its target, writing
+        nothing: both passes, the gates, and what its writes will need."""
+        ns_config = entry.namespace_config if entry else manifest.namespace_config
+        await self._report_namespace_config_drift(tgt, ns_config)
+
+        archive_entities, doc_groups = await self._off_loop(
+            self._build_merge_plan_inputs,
+            reader, src, skip_documents=skip_documents,
+            skip_files=skip_files,
+        )
+        if src != tgt:
+            doc_groups = await self._rescope_merge_inputs(archive_entities, doc_groups, src, tgt)
+
+        # References to entities the archive does not carry (another
+        # namespace's terminology, say) are mapped first: the
+        # definitions pass compares a template's references by what
+        # they name here, and these are some of them. They never
+        # overlap with pass 1's mappings, which are archived entities.
+        remapper = _AligningRemapper()
+        referents = await self._map_external_referents(
+            reader, manifest, remapper, tgt
+        )
+
+        # ---- Pass 1: definitions -------------------------------
+        definitions = await self._plan_merge_definitions(
+            archive_entities, tgt, remapper, policy=policy, dry_run=dry_run,
+        )
+        alignment_report: dict[str, Any] | None = None
+        if definitions.alignment:
+            doc_groups, alignment_report = await self._align_merge(
+                definitions, reader, src, tgt, archive_entities, doc_groups, remapper,
+                dry_run=dry_run,
+            )
+        dropped = await self._report_unresolved_references(
+            reader, [src], remapper, referents, tgt,
+            drop_edges=drop_unresolved_edges,
+        )
+        if dropped:
+            doc_groups = _drop_merge_rows(archive_entities, doc_groups, dropped)
+
+        # ---- Pass 2: everything else ---------------------------
+        built, rewritten, chain_transform, doc_groups, rehash = await self._plan_merge_entities(
+            reader, manifest, targets, src, tgt, archive_entities, doc_groups, remapper,
+        )
+        self._record_merge_plan(
+            src, tgt, built, rewritten, definitions, referents, rehash, alignment_report,
+            on_clash=policy["on_clash"], dry_run=dry_run,
+        )
+        self._enforce_merge_gates(tgt, built)
+
+        streamed, wanted = await self._merge_wanted_ids(
+            reader, src, built, doc_groups, chain_transform, on_clash=policy["on_clash"],
+        )
+        return _StagedMerge(
+            src=src, tgt=tgt, definitions=definitions, remapper=remapper,
+            built=built, doc_groups=doc_groups, streamed=streamed,
+            arriving=_merge_arriving(definitions, built), wanted=wanted,
+        )
+
+    async def _rescope_merge_inputs(
+        self,
+        archive_entities: dict[str, list[dict[str, Any]]],
+        doc_groups: dict[str, list[dict[str, Any]]] | None,
+        src: str,
+        tgt: str,
+    ) -> dict[str, list[dict[str, Any]]] | None:
+        """Redirected merge: the IDs must be free here, and every entity has
+        to be moved to the target namespace before it is matched — the keys
+        it matches on embed the namespace. Rewrites ``archive_entities`` in
+        place and returns the re-scoped held document groups."""
+        await self._check_ids_are_free(
+            archive_entities.get("registry_entries") or [], src, tgt
+        )
+        for entity_type, entities in archive_entities.items():
+            archive_entities[entity_type] = [
+                self._rewrite_namespace(entity_type, entity, src, tgt)
+                for entity in entities
+            ]
+        if doc_groups is not None:
+            doc_groups = {
+                doc_id: [
+                    self._rewrite_namespace("documents", row, src, tgt)
+                    for row in rows
+                ]
+                for doc_id, rows in doc_groups.items()
+            }
+        self._emit(
+            "phase_merge_plan",
+            f"[{tgt}] merging from namespace '{src}' — entities "
+            "and composite keys re-scoped to the target",
+        )
+        return doc_groups
+
+    async def _plan_merge_definitions(
+        self,
+        archive_entities: dict[str, list[dict[str, Any]]],
+        tgt: str,
+        remapper: _AligningRemapper,
+        *,
+        policy: dict[str, Any],
+        dry_run: bool,
+    ) -> Any:
+        """Pass 1: compare the definitions, refuse a mismatch, and give the
+        remapper the mapping that lets pass 2 point the incoming data at the
+        definitions that survived."""
+        definitions = await DefinitionsPlanner(
+            self._mongo, COLLECTION_MAP,
+            add_missing=policy["add_missing"],
+            extend_terminologies=policy["extend_terminologies"],
+            align_templates=policy["align_templates"],
+            carry_retirements=policy["carry_retirements"],
+        ).plan(archive_entities, tgt, external=remapper)
+        self._emit_definitions_plan(tgt, definitions, dry_run=dry_run)
+        self._enforce_definitions_gate(tgt, definitions)
+
+        # The mapping pass 1 produced is what lets pass 2 point the
+        # incoming data at the definitions that survived.
+        for old_id, new_id in definitions.mapping["terminologies"].items():
+            remapper.add_terminology_mapping(old_id, new_id)
+        for old_id, new_id in definitions.mapping["terms"].items():
+            remapper.add_term_mapping(old_id, new_id)
+        for old_id, new_id in definitions.mapping["templates"].items():
+            remapper.add_template_mapping(old_id, new_id)
+        return definitions
+
+    async def _align_merge(
+        self,
+        definitions: Any,
+        reader: ArchiveReader,
+        src: str,
+        tgt: str,
+        archive_entities: dict[str, list[dict[str, Any]]],
+        doc_groups: dict[str, list[dict[str, Any]]] | None,
+        remapper: _AligningRemapper,
+        *,
+        dry_run: bool,
+    ) -> tuple[dict[str, list[dict[str, Any]]] | None, dict[str, Any]]:
+        """Settle the template alignment: re-pin documents onto the target
+        versions, and leave out the documents whose versions map nowhere.
+        Returns the held document groups and the alignment report."""
+        unplaceable, report = await self._off_loop(
+            self._settle_alignment,
+            definitions.alignment, reader, src, doc_groups,
+        )
+        remapper.version_map = {
+            (archive_id, version): target_version
+            for archive_id, alignment in definitions.alignment.items()
+            for version, target_version in alignment.version_map().items()
+        }
+        self._emit_alignment(tgt, report, dry_run=dry_run)
+        if unplaceable:
+            doc_groups = _drop_merge_rows(archive_entities, doc_groups, unplaceable)
+        return doc_groups, report
+
+    async def _plan_merge_entities(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        targets: list[tuple[str, str]],
+        src: str,
+        tgt: str,
+        archive_entities: dict[str, list[dict[str, Any]]],
+        doc_groups: dict[str, list[dict[str, Any]]] | None,
+        remapper: _AligningRemapper,
+    ) -> tuple[dict[str, EntityPlan], int, Any, Any, _IdentityRehash]:
+        """Pass 2: plan every non-definition type against the target.
+
+        Returns the plans by type, how many entities had references
+        rewritten, the chain transform streamed documents are written
+        through (None when they are held), the held document groups, and the
+        identity rehash.
+        """
+        planner = MergePlanner(self._mongo, COLLECTION_MAP)
+        built: dict[str, EntityPlan] = {}
+        rewritten = 0
+        # Streamed documents are rewritten as they are read again,
+        # with the remapper as it stands once documents are planned —
+        # by then it holds every file and document mapping, because
+        # files are planned first and documents until no new mapping
+        # appears (see _MERGE_PLAN_ORDER).
+        chain_transform: Callable[[list[dict[str, Any]]], list[dict[str, Any]]] | None = None
+        # Documents whose rewritten references change their identity
+        # are rehashed before they are planned: the planner matches on
+        # (template_id, identity_hash), and a stale hash would miss
+        # the target's copy of the same document.
+        rehash = _IdentityRehash(
+            reader, [s for s, _t in targets],
+            await self._external_template_definitions(
+                reader, manifest, remapper,
+                _archived_template_ids(reader, [s for s, _t in targets]),
+            ),
+        )
+        archived_doc_groups = doc_groups
+        for entity_type in _MERGE_PLAN_ORDER:
+            raw_entities = archive_entities.get(entity_type)
+            if entity_type in DEFINITION_TYPES or raw_entities is None:
+                continue
+            while True:
+                entities, changed = self._rewrite_entities(
+                    entity_type, raw_entities, remapper
+                )
+                entities, doc_groups, chain_transform = await self._rehash_merge_round(
+                    entity_type, reader, src, tgt, raw_entities, entities,
+                    archived_doc_groups, remapper, rehash, doc_groups, chain_transform,
+                )
+                plan = await planner.plan(entity_type, entities, tgt)
+                # A document the target holds under another ID is
+                # still a collision for policy, but the ID it survives
+                # under has to reach everything referencing it — other
+                # documents included, whose identity may hash that very
+                # reference. So documents are planned again, from the
+                # archived rows, until a round discovers nothing new.
+                # Mappings only grow, so this ends.
+                if not self._learn_document_mappings(entity_type, plan, remapper):
+                    break
+            rewritten += changed
+            archive_entities[entity_type] = entities
+            built[entity_type] = plan
+            self._record_plan_mappings(entity_type, plan, remapper)
+        return built, rewritten, chain_transform, doc_groups, rehash
+
+    async def _rehash_merge_round(
+        self,
+        entity_type: str,
+        reader: ArchiveReader,
+        src: str,
+        tgt: str,
+        raw_entities: list[dict[str, Any]],
+        entities: list[dict[str, Any]],
+        archived_doc_groups: dict[str, list[dict[str, Any]]] | None,
+        remapper: _AligningRemapper,
+        rehash: _IdentityRehash,
+        doc_groups: dict[str, list[dict[str, Any]]] | None,
+        chain_transform: Any,
+    ) -> tuple[list[dict[str, Any]], Any, Any]:
+        """The identity rehash of one planning round: documents get their
+        new hashes, registry entries the keys that follow them, other types
+        pass through. Returns (entities, doc_groups, chain_transform)."""
+        if entity_type == "documents":
+            return await self._rewrite_merge_documents(
+                reader, src, tgt, raw_entities, entities, archived_doc_groups,
+                remapper, rehash, doc_groups, chain_transform,
+            )
+        if entity_type == "registry_entries":
+            entities = [rehash.rekey(entry) for entry in entities]
+        return entities, doc_groups, chain_transform
+
+    async def _rewrite_merge_documents(
+        self,
+        reader: ArchiveReader,
+        src: str,
+        tgt: str,
+        raw_entities: list[dict[str, Any]],
+        entities: list[dict[str, Any]],
+        archived_doc_groups: dict[str, list[dict[str, Any]]] | None,
+        remapper: _AligningRemapper,
+        rehash: _IdentityRehash,
+        doc_groups: dict[str, list[dict[str, Any]]] | None,
+        chain_transform: Any,
+    ) -> tuple[list[dict[str, Any]], Any, Any]:
+        """One planning round's documents: held ones are rehashed and
+        regrouped; streamed ones get the chain transform their writes go
+        through, and their compact heads take the hashes the rewritten
+        chains produce. Returns (entities, doc_groups, chain_transform)."""
+        if archived_doc_groups is not None:
+            entities = [
+                rehash.rehash(archived, row)
+                for archived, row in zip(raw_entities, entities, strict=True)
+            ]
+            doc_groups = self._regroup_documents(
+                archived_doc_groups, remapper, rehash
+            )
+            return entities, doc_groups, chain_transform
+        chain_transform = self._chain_transform(
+            copy.deepcopy(remapper), src, tgt, rehash
+        )
+        if remapper.total_mappings:
+            # Compact heads carry no references: one
+            # pass over the rewritten chains finds the
+            # new hashes, which the heads then take.
+            await self._off_loop(
+                _drain, transformed_chains(reader, src, chain_transform)
+            )
+            entities = [
+                {**head, "identity_hash": rehash.new_hash[str(head.get("document_id"))]}
+                if str(head.get("document_id")) in rehash.new_hash else head
+                for head in entities
+            ]
+        return entities, doc_groups, chain_transform
+
+    @staticmethod
+    def _learn_document_mappings(
+        entity_type: str, plan: EntityPlan, remapper: _AligningRemapper,
+    ) -> bool:
+        """Whether a documents round found mappings the remapper did not
+        hold yet (and so must be planned again); it learns them. False for
+        every other type."""
+        if entity_type != "documents":
+            return False
+        new = {
+            old_id: new_id for old_id, new_id in plan.mapping.items()
+            if remapper.document_map.get(old_id) != new_id
+        }
+        for old_id, new_id in new.items():
+            remapper.add_document_mapping(old_id, new_id)
+        return bool(new)
+
+    @staticmethod
+    def _record_plan_mappings(
+        entity_type: str, plan: EntityPlan, remapper: _AligningRemapper,
+    ) -> None:
+        """The ids a planned document or file survives under, for what
+        references it."""
+        for old_id, new_id in plan.mapping.items():
+            if entity_type == "documents":
+                remapper.add_document_mapping(old_id, new_id)
+            elif entity_type == "files":
+                remapper.add_file_mapping(old_id, new_id)
+
+    def _record_merge_plan(
+        self,
+        src: str,
+        tgt: str,
+        built: dict[str, EntityPlan],
+        rewritten: int,
+        definitions: Any,
+        referents: Any,
+        rehash: _IdentityRehash,
+        alignment_report: dict[str, Any] | None,
+        *,
+        on_clash: str,
+        dry_run: bool,
+    ) -> None:
+        """Report one namespace's plan, and record it on the job result."""
+        if rewritten:
+            self._emit(
+                "phase_merge_plan",
+                f"[{tgt}] {rewritten} incoming entit(ies) had references "
+                f"rewritten onto the target's definitions",
+            )
+        self._emit_merge_plan(tgt, built, on_clash=on_clash, dry_run=dry_run)
+        self.result.setdefault("mode", "merge")
+        self.result["dry_run"] = dry_run
+        self.result.setdefault("namespaces", {})[tgt] = {
+            # Record where this data came from, so a redirected merge
+            # (src != tgt) is legible on the job record — parity with the
+            # remap result, which already carries source/target. For a
+            # same-namespace merge source_namespace == tgt.
+            "source_namespace": src,
+            "referents": referents,
+            "rehashed_documents": len(rehash.new_hash),
+            "definitions": definitions.summary(),
+            "incompatibilities": len(definitions.incompatibilities),
+            "target_wins": len(definitions.target_wins),
+            "retirements_not_carried": len(definitions.retirements_not_carried),
+            **({"template_alignment": alignment_report} if alignment_report else {}),
+            "entities": {
+                entity_type: plan.summary()
+                for entity_type, plan in built.items()
+                if any(plan.summary().values())
+            },
+        }
+
+    async def _merge_wanted_ids(
+        self,
+        reader: ArchiveReader,
+        src: str,
+        built: dict[str, EntityPlan],
+        doc_groups: dict[str, list[dict[str, Any]]] | None,
+        chain_transform: Any,
+        *,
+        on_clash: str,
+    ) -> tuple[_StreamedDocuments | None, dict[str, Any]]:
+        """The ids the documents this merge writes reference, and for
+        streamed documents the stream they are written from."""
+        documents_plan = built.get("documents")
+        if documents_plan is not None and doc_groups is None:
+            assert chain_transform is not None
+            streamed = _StreamedDocuments(
+                reader, src, chain_transform, documents_plan,
+                overwrite=on_clash != "skip",
+            )
+            return streamed, await self._off_loop(streamed.referenced_ids, self._referenced_ids)
+        rows_to_write: list[dict[str, Any]] = []
+        if documents_plan is not None and doc_groups is not None:
+            for head in documents_plan.to_insert:
+                rows_to_write.extend(
+                    doc_groups.get(head.get("document_id", ""), [head])
+                )
+            if on_clash != "skip":
+                rows_to_write.extend(
+                    clash.entity for clash in documents_plan.differing_clashes
+                )
+        return None, (self._referenced_ids(rows_to_write) if rows_to_write else {})
+
+    async def _check_staged_references(self, staged: list[_StagedMerge]) -> None:
+        """References between the archive's namespaces resolve against what
+        the whole merge supplies, not only what its own namespace does: a
+        document in one namespace may point at one arriving in another."""
+        arriving_anywhere: dict[str, set[str]] = {}
+        for stage in staged:
+            for entity_type, ids in stage.arriving.items():
+                arriving_anywhere.setdefault(entity_type, set()).update(ids)
+        for stage in staged:
+            if stage.wanted:
+                await self._check_merge_wanted(stage.tgt, stage.wanted, arriving_anywhere)
+
+    async def _upload_merge_blobs(
+        self, reader: ArchiveReader, staged: list[_StagedMerge], namespace: str,
+    ) -> None:
+        """Bytes before the records that need them: only for files the merge
+        inserts (a file the target already has keeps its bytes), and all of
+        them before any namespace is written, so a write that fails never
+        leaves a file record without its bytes."""
+        if not self._storage:
+            return
+        inserting = {
+            f["file_id"]
+            for stage in staged
+            for f in stage.built.get("files", EntityPlan(entity_type="files")).to_insert
+            if f.get("file_id")
+        }
+        if inserting:
+            await self._restore_blobs(reader, namespace, only=inserting)
+
+    async def _apply_staged_merge(
+        self,
+        stage: _StagedMerge,
+        archive_path: Path,
+        manifest: Any,
+        raw_manifest: Any,
+        *,
+        policy: dict[str, Any],
+        batch_size: int,
+        skip_documents: bool,
+    ) -> None:
+        """Write one planned namespace, then record what arrived."""
+        src, tgt, built = stage.src, stage.tgt, stage.built
+        await self._apply_definitions(tgt, stage.definitions, stage.remapper, batch_size)
+        await self._apply_merge(
+            tgt, built, stage.doc_groups or {},
+            on_clash=policy["on_clash"], older_versions=policy["older_versions"],
+            batch_size=batch_size, streamed=stage.streamed,
+        )
+        await self._release_retired_synonyms(tgt)
+        await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
+        # A merge adds to a namespace that already holds data, so its
+        # record says what arrived and under which policy, not that
+        # the namespace came from the archive. The plan summary is
+        # what was planned per entity type; with on_clash "newer" the
+        # clashes actually written are a subset of `clash`.
+        planned = self.result["namespaces"][tgt]
+        await self._write_restore_provenance(
+            archive_path, manifest, raw_manifest,
+            source=src, target=tgt, mode="merge",
+            referents=planned.get("referents"),
+            merge={
+                **policy,
+                "definitions": planned.get("definitions"),
+                **({"template_alignment": planned["template_alignment"]}
+                   if planned.get("template_alignment") else {}),
+                "entities": planned.get("entities"),
+            },
+        )
 
     def _build_merge_plan_inputs(
         self,
