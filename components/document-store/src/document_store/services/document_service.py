@@ -2189,14 +2189,25 @@ class DocumentService:
             from .file_service import get_file_service
             file_service = get_file_service()
 
+            # A document holds the file references of its latest version while
+            # that version is active: superseding a version releases its set,
+            # and a soft delete releases the active one. A hard delete releases
+            # only what the document still holds; releasing every removed
+            # row's set again took counts other documents hold, and deleted
+            # files they still reference.
+            latest = await Document.find({"document_id": document_id}).sort(
+                [("version", SortDirection.DESCENDING)]
+            ).limit(1).to_list()
+            held = latest[0] if latest and latest[0].status == DocumentStatus.ACTIVE else None
+
             if target is not None:
                 # Version-specific hard-delete
                 event_payload = await self._document_to_event_payload(target)
                 event_payload["hard_delete"] = True
                 event_payload["version"] = version
 
-                # Decrement file ref counts and cleanup orphans
-                await self._update_file_reference_counts(target.file_references, delta=-1)
+                if held is not None and held.version == target.version:
+                    await self._update_file_reference_counts(target.file_references, delta=-1)
                 await self._hard_delete_orphaned_files(target.file_references, file_service)
 
                 await target.delete()
@@ -2214,11 +2225,19 @@ class DocumentService:
 
                 event_payload = await self._document_to_event_payload(any_doc)
                 event_payload["hard_delete"] = True
+                # Every version goes: no version, so the consumer removes the
+                # document's rows of every version, not one picked at random.
+                event_payload["version"] = None
 
-                # Collect all file references across all versions
-                for doc in all_versions:
-                    await self._update_file_reference_counts(doc.file_references, delta=-1)
-                    await self._hard_delete_orphaned_files(doc.file_references, file_service)
+                if held is not None:
+                    await self._update_file_reference_counts(held.file_references, delta=-1)
+                # Each file any version referenced, once: the ones nothing holds
+                # now (count 0) go, including those a supersede left unheld.
+                every_file = list({
+                    ref["file_id"]: ref for doc in all_versions
+                    for ref in doc.file_references or [] if ref.get("file_id")
+                }.values())
+                await self._hard_delete_orphaned_files(every_file, file_service)
 
                 await Document.find({"document_id": document_id}).delete()
 
@@ -2270,6 +2289,30 @@ class DocumentService:
         )
 
         return True
+
+    async def hard_delete_exemptions(self, candidates: dict[str, bool]) -> frozenset[str]:
+        """The documents of one request whose references to each other do not
+        block their hard deletes.
+
+        ``candidates`` maps each document the request hard-deletes whole, and
+        that passed the per-item checks, to its ``force``. A candidate whose
+        delete would still be refused (referrers outside the set, no force)
+        will not be deleted, so it exempts nobody: it is dropped, and the rest
+        is checked again until nothing changes. Exempting it would let a
+        document it references go while it stays, pointing at nothing.
+        """
+        remaining = dict(candidates)
+        changed = True
+        while changed:
+            changed = False
+            exempt = frozenset(remaining)
+            for document_id, force in list(remaining.items()):
+                if force:
+                    continue
+                if await self._hard_delete_referrers(document_id, None, exempt):
+                    del remaining[document_id]
+                    changed = True
+        return frozenset(remaining)
 
     _REFERRER_SAMPLE = 5
 

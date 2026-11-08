@@ -36,6 +36,7 @@ from ..models.document import DocumentStatus
 from ..services.document_service import get_document_service
 from ..services.errors import error_fields
 from ..services.nats_client import get_throttle_delay
+from ..services.registry_client import get_registry_client
 from .auth import require_api_key
 
 router = APIRouter(prefix="/documents", tags=["Documents"])
@@ -686,6 +687,34 @@ async def traverse_document_relationships(
         raise HTTPException(status_code=400, detail=str(e)) from e
 
 
+async def _hard_delete_exemptions(service, items: list[DeleteItem], identity: UserIdentity) -> frozenset[str]:
+    """Documents this request hard-deletes whole, whose references to each
+    other do not block: a document and its edges can go together without
+    force. Only those that will be deleted count; one refused here (absent,
+    no write, a namespace that keeps its documents, or still referenced from
+    outside the request) exempts nobody, or the documents it references would
+    go while it stays."""
+    candidates: dict[str, bool] = {}
+    modes: dict[str, str] = {}
+    registry = get_registry_client()
+    for item in items:
+        if not (item.hard_delete and item.version is None) or item.id in candidates:
+            continue
+        doc = await service.get_document(item.id)
+        if doc is None:
+            continue
+        try:
+            await check_namespace_permission(identity, doc.namespace, "write")
+        except Exception:
+            continue
+        if doc.namespace not in modes:
+            modes[doc.namespace] = await registry.get_namespace_deletion_mode(doc.namespace)
+        if modes[doc.namespace] != "full":
+            continue
+        candidates[item.id] = bool(item.force)
+    return await service.hard_delete_exemptions(candidates)
+
+
 @router.delete(
     "",
     response_model=BulkResponse,
@@ -703,11 +732,7 @@ async def delete_documents(
     )
 
     service = get_document_service()
-    # Documents this request hard-deletes whole: references between them do
-    # not block, so a document and its edges can go together without force.
-    deleted_with = frozenset(
-        item.id for item in items if item.hard_delete and item.version is None
-    )
+    deleted_with = await _hard_delete_exemptions(service, items, identity)
     results = []
     for i, item in enumerate(items):
         try:

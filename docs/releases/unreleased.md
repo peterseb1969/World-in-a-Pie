@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A document hard delete releases only the files the document still holds
+
+- **File references.** A document holds the files of its latest version
+  while that version is active. The whole-document hard delete released
+  every stored version's files again, so a file another document still used
+  could reach a count of 0 and be deleted with its bytes; a soft-deleted
+  document's files were released twice. Now it releases the latest version's
+  files only when that version is active, and removes, once, each file any
+  version referenced that nothing holds any more. Hard-deleting one version
+  releases its files only when it is the active latest version.
+- **Reporting.** The whole-document hard delete event carried one arbitrary
+  version, so reporting-sync deleted only that version's row (and, under
+  `latest_only`, often none). It now carries `version: null`, which removes
+  the document's rows of every version.
+- **Deleting in one request.** Documents hard-deleted whole in the same
+  request do not block each other, but only those that will be deleted
+  count now: one that is absent, not writable, in a `retain` namespace, or
+  still referenced from outside the request no longer lets the documents it
+  references go while it stays.
+
 ### `inspect --json` lists each outside reference once, with a count; `wip-archive` 0.32.0
 
 The offline archive model kept one entry for every reference to a target
