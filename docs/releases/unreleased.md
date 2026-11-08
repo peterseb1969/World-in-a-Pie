@@ -7,6 +7,16 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A backup of namespaces with no entities can be restored
+
+A backup whose namespaces hold no entities is a zip with only its manifest,
+because empty entity files are not written. Restore, fresh and merge refused
+such an archive as malformed ("the zip has no namespaces/ tree"), so the
+backup reported success but could never be restored. Now an archive whose
+manifest lists its namespaces, all with zero counts, restores their settings
+and nothing else. An archive missing the `namespaces/` tree is still refused
+when its manifest counts entities or lists no namespaces.
+
 ### `WIP_RATE_LIMIT` limits nothing; the security audit says so
 
 `WIP_RATE_LIMIT` is read by every service, but no service installs the

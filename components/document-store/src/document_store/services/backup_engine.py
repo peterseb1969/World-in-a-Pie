@@ -4892,6 +4892,13 @@ class DirectRestoreEngine:
         (hand-assembled or truncated zip). ``namespace_prefixes()`` can be
         non-empty from the manifest alone, so the actual layout is checked too
         — otherwise the same silent zero-entity run happens.
+
+        The one archive that legitimately has no subtree is a backup of
+        namespaces holding no entities: the writer skips empty entity files,
+        so only the manifest remains. It is told apart from a truncated zip by
+        the manifest itself listing its namespaces with every count at zero.
+        A manifest without that list (a legacy shape, or a derived archive that
+        dropped its empty namespaces) proves nothing and is still refused.
         """
         if not manifest.format_version.startswith("3"):
             raise RestoreEngineError(
@@ -4899,7 +4906,12 @@ class DirectRestoreEngine:
                 "engine reads the v3 layout. Convert it first: "
                 "python -m wip_toolkit convert-archive <src> <dst>"
             )
-        if not reader.list_namespaces():
+        declares_only_empty = (
+            bool(manifest.namespaces)
+            and all(entry.counts.total == 0 for entry in manifest.namespaces)
+            and manifest.counts.total == 0
+        )
+        if not reader.list_namespaces() and not declares_only_empty:
             raise RestoreEngineError(
                 "Archive manifest claims v3 but the zip has no namespaces/ "
                 "tree — malformed archive, nothing to restore"
