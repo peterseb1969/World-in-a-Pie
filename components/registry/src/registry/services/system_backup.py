@@ -1267,13 +1267,7 @@ async def _restore_attachments(
     restored_by: str,
 ) -> None:
     """Attachments, by name, under the attach-time rules (module docstring)."""
-    from .attachments import (
-        AttachPolicyUnavailable,
-        UpstreamInvalid,
-        check_upstream,
-        load_policy,
-        resolve_install_addresses,
-    )
+    from .attachments import AttachPolicyUnavailable, load_policy, resolve_install_addresses
 
     out = report.attachments
     if not archive.attachments:
@@ -1284,90 +1278,170 @@ async def _restore_attachments(
         for a in archive.attachments:
             out.skipped.append(_skip_named(a.name, "attach_policy_unavailable", f"attach policy unavailable: {e}"))
         return
-    reserved = set(policy.reserved_names)
     install_addresses = await resolve_install_addresses(policy)
-
-    scope = archive.source.scope
     for a in archive.attachments:
-        if scope is not None and a.name not in scope.attachments:
-            out.skipped.append(_skip_named(a.name, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
-            continue
-        if a.managed_by is not None:
-            out.skipped.append(_skip_named(
-                a.name, "managed_on_source",
-                "managed by wip-deploy on the source; the install that deploys the app re-creates it",
-            ))
-            continue
-        request, why = _validated_attachment(a)
-        if request is None:
-            out.skipped.append(_skip_named(a.name, "invalid_record", why or "invalid"))
-            continue
-        if a.name in reserved:
-            out.skipped.append(_skip_named(
-                a.name, "app_route", f"{a.name!r} is the label of an app this install deploys",
-            ))
-            continue
-        existing = await AppAttachment.find_one(AppAttachment.name == a.name)
-        if existing is not None and existing.managed_by is not None:
-            out.skipped.append(_skip_named(a.name, "managed_by_deployer", _MANAGED))
-            continue
-        fields = _attachment_fields(request)
-        status: Literal["active", "inactive"] = "active" if a.status == "active" else "inactive"
-        if existing is not None and (_attachment_fields(existing), existing.status) == (fields, status):
-            out.unchanged.append(a.name)
-            continue
-        # After the unchanged check: an identical record here is reported as
-        # unchanged, not skipped; only a write is refused without an edge.
-        if status == "active" and not policy.app_edge:
-            out.skipped.append(_skip_named(
-                a.name, "no_app_edge",
-                "this install runs no app edge to serve it (`wip-deploy add-module app-edge`)",
-            ))
-            continue
-        if existing is not None and not overwrite:
-            out.skipped.append(_skip_named(a.name, "differs", _DIFFERS))
-            continue
-        try:
-            check = await check_upstream(request.upstream, policy, install_addresses)
-        except UpstreamInvalid as e:
-            out.skipped.append(_skip_named(a.name, "upstream_invalid", str(e)))
-            continue
-        if check.blocked:
-            out.skipped.append(_skip_named(a.name, "upstream_blocked", f"upstream refused: {check.blocked}"))
-            continue
-        (out.replaced if existing is not None else out.created).append(a.name)
-        if check.warnings:
-            out.unresolved.append(a.name)
-        if dry_run:
-            continue
-        now = datetime.now(UTC)
-        if existing is not None:
-            for k, v in fields.items():
-                setattr(existing, k, v)
-            existing.status = status
-            existing.updated_at = now
-            existing.updated_by = restored_by
-            await existing.save()
-        else:
-            try:
-                await AppAttachment(
-                    name=a.name, **fields, status=status, managed_by=None,
-                    created_at=a.created_at or now, created_by=a.created_by,
-                    updated_at=now, updated_by=restored_by,
-                ).insert()
-            except DuplicateKeyError:
-                out.created.remove(a.name)
-                if a.name in out.unresolved:
-                    out.unresolved.remove(a.name)
-                out.skipped.append(_skip_named(
-                    a.name, "concurrent_write", "attached by another request during the restore",
-                ))
-                continue
+        await _restore_attachment(
+            a, out, archive.source.scope, policy, install_addresses,
+            dry_run=dry_run, overwrite=overwrite, restored_by=restored_by,
+        )
+
+
+def _attachment_refusal(
+    a: ArchiveAttachment, scope: ArchiveScope | None, reserved: set[str],
+) -> tuple[Any, SkippedRecord | None]:
+    """(the attach request the record makes, None), or (None, why it is
+    skipped before the target is read): outside the archive's scope, managed
+    on the source, an invalid record, or an app's own route label."""
+    if scope is not None and a.name not in scope.attachments:
+        return None, _skip_named(a.name, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE)
+    if a.managed_by is not None:
+        return None, _skip_named(
+            a.name, "managed_on_source",
+            "managed by wip-deploy on the source; the install that deploys the app re-creates it",
+        )
+    request, why = _validated_attachment(a)
+    if request is None:
+        return None, _skip_named(a.name, "invalid_record", why or "invalid")
+    if a.name in reserved:
+        return None, _skip_named(
+            a.name, "app_route", f"{a.name!r} is the label of an app this install deploys",
+        )
+    return request, None
+
+
+async def _restore_attachment(
+    a: ArchiveAttachment,
+    out: Any,
+    scope: ArchiveScope | None,
+    policy: Any,
+    install_addresses: Any,
+    *,
+    dry_run: bool,
+    overwrite: bool,
+    restored_by: str,
+) -> None:
+    """Restore (or report) one archived attachment into ``out``."""
+    request, skip = _attachment_refusal(a, scope, set(policy.reserved_names))
+    if skip is not None:
+        out.skipped.append(skip)
+        return
+    existing = await AppAttachment.find_one(AppAttachment.name == a.name)
+    if existing is not None and existing.managed_by is not None:
+        out.skipped.append(_skip_named(a.name, "managed_by_deployer", _MANAGED))
+        return
+    fields = _attachment_fields(request)
+    status: Literal["active", "inactive"] = "active" if a.status == "active" else "inactive"
+    if existing is not None and (_attachment_fields(existing), existing.status) == (fields, status):
+        out.unchanged.append(a.name)
+        return
+    skip = _attachment_write_refusal(a, existing, status, policy, overwrite)
+    if skip is None:
+        check, skip = await _attachment_upstream(a, request, policy, install_addresses)
+    if skip is not None:
+        out.skipped.append(skip)
+        return
+    await _take_attachment(
+        a, out, existing, fields, status, request, check, dry_run=dry_run, restored_by=restored_by,
+    )
+
+
+async def _take_attachment(
+    a: ArchiveAttachment,
+    out: Any,
+    existing: AppAttachment | None,
+    fields: dict[str, Any],
+    status: Literal["active", "inactive"],
+    request: Any,
+    check: Any,
+    *,
+    dry_run: bool,
+    restored_by: str,
+) -> None:
+    """Report an attachment as replaced or created (and unresolved when its
+    upstream check warned), and write it unless this is a dry run."""
+    (out.replaced if existing is not None else out.created).append(a.name)
+    if check.warnings:
+        out.unresolved.append(a.name)
+    if dry_run:
+        return
+    if await _write_attachment(a, existing, fields, status, restored_by, out):
         logger.info(
             "Attachment %s restored (%s) by %s: -> %s",
             a.name, status, restored_by, request.upstream,
         )
 
+
+def _attachment_write_refusal(
+    a: ArchiveAttachment,
+    existing: AppAttachment | None,
+    status: Literal["active", "inactive"],
+    policy: Any,
+    overwrite: bool,
+) -> SkippedRecord | None:
+    """Why a differing attachment is not written: an active one this install
+    has no app edge to serve, or one that differs without overwrite. Checked
+    after the unchanged check: an identical record here is reported as
+    unchanged, not skipped; only a write is refused without an edge."""
+    if status == "active" and not policy.app_edge:
+        return _skip_named(
+            a.name, "no_app_edge",
+            "this install runs no app edge to serve it (`wip-deploy add-module app-edge`)",
+        )
+    if existing is not None and not overwrite:
+        return _skip_named(a.name, "differs", _DIFFERS)
+    return None
+
+
+async def _attachment_upstream(
+    a: ArchiveAttachment, request: Any, policy: Any, install_addresses: Any,
+) -> tuple[Any, SkippedRecord | None]:
+    """The upstream check of an attachment to write: (its result, None), or
+    (None, why its upstream is refused)."""
+    from .attachments import UpstreamInvalid, check_upstream
+
+    try:
+        check = await check_upstream(request.upstream, policy, install_addresses)
+    except UpstreamInvalid as e:
+        return None, _skip_named(a.name, "upstream_invalid", str(e))
+    if check.blocked:
+        return None, _skip_named(a.name, "upstream_blocked", f"upstream refused: {check.blocked}")
+    return check, None
+
+
+async def _write_attachment(
+    a: ArchiveAttachment,
+    existing: AppAttachment | None,
+    fields: dict[str, Any],
+    status: Literal["active", "inactive"],
+    restored_by: str,
+    out: Any,
+) -> bool:
+    """Replace or insert the attachment; False when another request attached
+    the name during the restore (the item becomes a concurrent_write skip)."""
+    now = datetime.now(UTC)
+    if existing is not None:
+        for k, v in fields.items():
+            setattr(existing, k, v)
+        existing.status = status
+        existing.updated_at = now
+        existing.updated_by = restored_by
+        await existing.save()
+        return True
+    try:
+        await AppAttachment(
+            name=a.name, **fields, status=status, managed_by=None,
+            created_at=a.created_at or now, created_by=a.created_by,
+            updated_at=now, updated_by=restored_by,
+        ).insert()
+    except DuplicateKeyError:
+        out.created.remove(a.name)
+        if a.name in out.unresolved:
+            out.unresolved.remove(a.name)
+        out.skipped.append(_skip_named(
+            a.name, "concurrent_write", "attached by another request during the restore",
+        ))
+        return False
+    return True
 
 async def _restore_reservations(
     archive: SystemArchive, report: SystemRestoreReport, dry_run: bool, overwrite: bool,
