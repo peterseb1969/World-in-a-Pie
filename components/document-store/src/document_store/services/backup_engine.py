@@ -1095,7 +1095,7 @@ class _AligningRemapper(IDRemapper):
         self.version_map: dict[tuple[str, int], int] = {}
 
     def remap_document(self, document: dict[str, Any]) -> dict[str, Any]:
-        result = super().remap_document(document)
+        result: dict[str, Any] = super().remap_document(document)
         if self.version_map:
             key = (str(document.get("template_id")), int(document.get("template_version") or 1))
             target_version = self.version_map.get(key)
@@ -3287,16 +3287,17 @@ class DirectRestoreEngine:
                     remapper.add_template_mapping(old_id, new_id)
                 alignment_report: dict[str, Any] | None = None
                 if definitions.alignment:
-                    unplaceable, alignment_report = await self._off_loop(
+                    unplaceable, report = await self._off_loop(
                         self._settle_alignment,
                         definitions.alignment, reader, src, doc_groups,
                     )
+                    alignment_report = report
                     remapper.version_map = {
                         (archive_id, version): target_version
                         for archive_id, alignment in definitions.alignment.items()
                         for version, target_version in alignment.version_map().items()
                     }
-                    self._emit_alignment(tgt, alignment_report, dry_run=dry_run)
+                    self._emit_alignment(tgt, report, dry_run=dry_run)
                     if unplaceable:
                         for entity_type in ("documents", "registry_entries"):
                             if entity_type in archive_entities:
@@ -5687,7 +5688,7 @@ class DirectRestoreEngine:
         restore. Bytes that do not match the file's recorded checksum are not
         restored: a file without bytes is honest, one with wrong bytes is not.
         Each file restored without its bytes is named on the job."""
-        data = reader.read_blob(file_id)
+        data: bytes | None = reader.read_blob(file_id)
         if data is None:
             if report_missing:
                 self._emit(

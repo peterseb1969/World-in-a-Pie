@@ -367,9 +367,11 @@ class DefinitionsPlanner:
         through the plan's mappings, so ids that differ only because the two
         sides minted them separately compare equal."""
         if entity_type == "templates":
-            return remapper.remap_template(entity)
+            remapped: dict[str, Any] = remapper.remap_template(entity)
+            return remapped
         if entity_type == "terms":
-            return remapper.remap_term(entity)
+            remapped = remapper.remap_term(entity)
+            return remapped
         return entity
 
     def _classify(

@@ -584,7 +584,9 @@ async def merge_entries(
 
     # A merged-away entry's id and names now resolve to the preferred entry;
     # caches holding them for the deprecated one drop them.
-    await entries_changed(r.deprecated_id for r in results if r.status == "merged")
+    await entries_changed(
+        r.deprecated_id for r in results if r.status == "merged" and r.deprecated_id
+    )
     return BulkMergeResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status == "merged"),

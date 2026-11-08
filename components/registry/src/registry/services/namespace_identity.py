@@ -78,7 +78,7 @@ async def id_for_create(prefix: str, archived_id: str | None = None) -> tuple[st
     reserved_id = reservation.namespace_id if reservation is not None else None
     if archived_id is None:
         return (reserved_id or new_namespace_id()), None
-    if reserved_id is not None and reserved_id != archived_id:
+    if reservation is not None and reserved_id is not None and reserved_id != archived_id:
         owner = f"app '{reservation.app}'" if reservation.managed_by else f"runtime key '{reservation.app}'"
         raise NamespaceIdentityConflict(
             f"Namespace '{prefix}' is reserved here ({owner}) for namespace id "

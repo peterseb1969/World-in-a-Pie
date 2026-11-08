@@ -786,7 +786,8 @@ async def _hard_delete_exemptions(service, items: list[DeleteItem], identity: Us
         if modes[doc.namespace] != "full":
             continue
         candidates[item.id] = bool(item.force)
-    return await service.hard_delete_exemptions(candidates)
+    exempt: frozenset[str] = await service.hard_delete_exemptions(candidates)
+    return exempt
 
 
 @router.delete(

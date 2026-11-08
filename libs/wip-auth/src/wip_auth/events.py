@@ -643,7 +643,8 @@ async def ensure_stream(
             max_msgs=spec.max_msgs,
             max_bytes=spec.max_bytes,
             max_age=spec.max_age_seconds,
-            **({"duplicate_window": window} if window else {}),
+            # 0 is StreamConfig's own default: the server's window.
+            duplicate_window=window or 0,
         ))
         logger.info("Created stream %s", spec.name)
         return

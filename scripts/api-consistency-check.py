@@ -78,6 +78,49 @@ EXEMPT_FUNCTIONS = {
         "namespace's documents with per-document results — the same shape "
         "as migrate_documents above."
     ),
+    "reconcile_synonym_lifecycle_endpoint": (
+        "Maintenance pass (def-store, document-store, template-store): the "
+        "body is an operation descriptor (namespace, dry_run) and the pass "
+        "is bulk over the namespace's retired entities, with per-entity "
+        "results — the rehash_identities_endpoint shape."
+    ),
+    "heal_endpoints_endpoint": (
+        "Maintenance pass: operation descriptor (namespace, dry_run), bulk "
+        "over the namespace's edge types with per-entry results."
+    ),
+    "registry_ghosts": (
+        "Maintenance pass: query-parameter descriptor (namespace, dry_run), "
+        "bulk over the namespace's Registry entries with per-entry results."
+    ),
+    "reconcile_terminology": (
+        "Snapshot reconcile: the body IS the complete desired term set of one "
+        "terminology, and the response is the per-term diff. A list of "
+        "snapshots would be bulk-of-operations nobody has asked for."
+    ),
+    "delete_namespace_storage_objects": (
+        "Service-to-service cleanup during namespace deletion: the body is "
+        "one namespace plus its storage keys, with per-key outcomes."
+    ),
+    "add_key_namespace": (
+        "Single-key amendment addressed by path (key name, namespace prefix): "
+        "widens ONE runtime key by one namespace, like add_edge_type_endpoints."
+    ),
+    "system_backup": (
+        "Whole-Registry export: the request is a descriptor (scope, "
+        "attachments) and the answer is one archive."
+    ),
+    "system_restore": (
+        "Whole-Registry import: the body is one archive, applied as a unit "
+        "with dry_run / mode, reporting per-record outcomes."
+    ),
+}
+
+# One-off exemptions from the pagination rule, with the rationale literal.
+PAGINATION_EXEMPT_FUNCTIONS = {
+    "get_reservations": (
+        "Admin-only list with one row per reserved namespace — the same size "
+        "as the Registry's namespace list, which is unpaginated too."
+    ),
 }
 
 
@@ -99,6 +142,8 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     # treats the wrapper-call as a valid gate without needing to
     # recurse into module-local definitions.
     "_enforce_replay_admin",        # document_store.api.replay
+    "check_readable",               # document_store.api.auth: read, 404 text of an unknown id
+    "_check_job_permission",        # document_store.api.backup: every namespace a job spans
 })
 
 # Names that count as valid permission gates when they appear as the
@@ -107,6 +152,10 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
 # membership via FastAPI Depends rather than an inline call.
 PERMISSION_DEPENDS_NAMES = frozenset({
     "require_admin_key",            # registry: admin-group-only gate
+    # Factory gate: Depends(require_groups(["wip-admins", "wip-services"])),
+    # usually in the decorator's dependencies=[...]. Those groups bypass
+    # namespace grants by design (privileged service and operator calls).
+    "require_groups",
 })
 
 # Path-substring patterns. Endpoints whose full route matches one of
@@ -252,6 +301,12 @@ IDENTITY_HASH_CANONICAL_FUNCTION_NAMES = frozenset({
 # service legitimately needs a delegate, add it here with rationale.
 IDENTITY_HASH_DELEGATE_PATHS = frozenset({
     "components/document-store/src/document_store/services/identity_service.py",
+    # A verbatim copy, not a delegate: wip-archive checks archives offline and
+    # depends on pydantic alone, so it cannot import wip_auth (whose __init__
+    # pulls in FastAPI and httpx). Guarded by
+    # components/document-store/tests/test_archive_identity_parity.py, which
+    # fails when the copy's source or outputs differ from the original.
+    "libs/wip-archive/src/wip_archive/identity.py",
 })
 
 
@@ -607,21 +662,29 @@ class EndpointVisitor(ast.NodeVisitor):
         if func_name in PERMISSION_EXEMPT_FUNCTIONS:
             return
 
-        # 1. Depends-style gates on function arguments.
-        #    e.g. `_admin: str = Depends(require_admin_key)`. Walk every
-        #    argument default in the canonical FastAPI shapes (args,
-        #    kwonlyargs).
-        for default in list(node.args.defaults) + list(node.args.kw_defaults):
-            if default is None:
-                continue
-            if (
+        # 1. Depends-style gates on function arguments
+        #    (`_admin: str = Depends(require_admin_key)`) or in the route
+        #    decorator's dependencies=[...]. The gate is a name
+        #    (Depends(require_admin_key)) or a factory call
+        #    (Depends(require_groups([...]))).
+        candidates = list(node.args.defaults) + list(node.args.kw_defaults)
+        for decorator in node.decorator_list:
+            if isinstance(decorator, ast.Call):
+                for kw in decorator.keywords:
+                    if kw.arg == "dependencies" and isinstance(kw.value, (ast.List, ast.Tuple)):
+                        candidates.extend(kw.value.elts)
+        for default in candidates:
+            if not (
                 isinstance(default, ast.Call)
                 and isinstance(default.func, ast.Name)
                 and default.func.id == "Depends"
                 and default.args
-                and isinstance(default.args[0], ast.Name)
-                and default.args[0].id in PERMISSION_DEPENDS_NAMES
             ):
+                continue
+            gate = default.args[0]
+            if isinstance(gate, ast.Call):
+                gate = gate.func
+            if isinstance(gate, ast.Name) and gate.id in PERMISSION_DEPENDS_NAMES:
                 return  # Endpoint is gated via Depends.
 
         # 2. Walk the function body for any Call to a recognised helper.
@@ -667,7 +730,10 @@ class EndpointVisitor(ast.NodeVisitor):
 
         # Exempt endpoints that aren't list endpoints
         exempt_patterns = ["/health", "/stats", "/count"]
-        is_exempt = any(p in path for p in exempt_patterns)
+        is_exempt = (
+            any(p in path for p in exempt_patterns)
+            or info.get("function", "") in PAGINATION_EXEMPT_FUNCTIONS
+        )
 
         # Only flag list-shaped endpoints (root path "/" or "" or
         # /{namespace}) without page/page_size params.

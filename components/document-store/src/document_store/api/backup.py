@@ -73,7 +73,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
@@ -908,7 +908,9 @@ async def start_validation(
 # ---------------------------------------------------------------------------
 
 
-async def _check_job_permission(identity: UserIdentity, job: BackupJob, permission: str) -> None:
+async def _check_job_permission(
+    identity: UserIdentity, job: BackupJob, permission: Literal["read", "write", "admin"],
+) -> None:
     """`permission` on every namespace a job spans, not just its anchor.
 
     A backup or restore job may cover several namespaces, and creating one

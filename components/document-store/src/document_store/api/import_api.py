@@ -113,9 +113,9 @@ async def import_documents(
     # converted to its field's type before the row is validated.
     template = await get_template_store_client().get_template(template_id=template_id)
     field_types = {
-        f["name"]: f.get("type")
+        str(f["name"]): str(f["type"])
         for f in (template or {}).get("fields") or []
-        if isinstance(f, dict) and f.get("name")
+        if isinstance(f, dict) and f.get("name") and f.get("type")
     }
 
     # Build documents

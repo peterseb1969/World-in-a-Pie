@@ -2073,7 +2073,8 @@ async def delete_entries(
     # Deleted or deactivated entries stop resolving; other services drop
     # what they cached for them.
     await entries_changed(
-        r.registry_id for r in results if r.status in ("deactivated", "deleted")
+        r.registry_id for r in results
+        if r.status in ("deactivated", "deleted") and r.registry_id
     )
     return BulkDeleteResponse(
         results=results, total=len(items),
@@ -2126,7 +2127,9 @@ async def deactivate_entries(
 
     if not dry_run:
         # Released synonyms stop resolving to these entries.
-        await entries_changed(r.registry_id for r in results if r.status == "deactivated")
+        await entries_changed(
+            r.registry_id for r in results if r.status == "deactivated" and r.registry_id
+        )
     return BulkEntryLifecycleResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status in ("deactivated", "unchanged")),
