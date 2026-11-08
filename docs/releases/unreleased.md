@@ -3101,7 +3101,16 @@ The dry run now reports, and a deletion without `force=true` refuses with
 - `document_reference`: documents referencing documents here, one entry per
   namespace and template with a count of document versions;
 - `term_relation`: term relations touching terms here, one entry per
-  namespace with a count.
+  namespace with a count;
+- `template_use`: documents built on a template here (a template is usable
+  from other namespaces, and its documents record it by id only), one entry
+  per namespace and template with a count of document versions;
+- `term_reference` / `file_reference`: documents whose term or file fields
+  hold a term or a file here, and `template_reference` /
+  `terminology_reference` also for documents whose reference fields name a
+  template or terminology here — each one entry per namespace and template.
+  These were missed when the document's own template lived in the deleted
+  namespace too, so no surviving template recorded what the document used.
 
 Synonym links stay low severity and do not require `force`.
 

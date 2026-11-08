@@ -64,17 +64,41 @@ _FILE_STORAGE_STORES = ("file_storage", "minio")
 _STORAGE_DELETE_BATCH = 1000
 
 # Inbound references that leave another namespace's data dangling: its
-# template loses a parent, a field vocabulary or a reference target, its
-# documents point at documents that are gone, its relations at gone terms.
-# Any of these makes a deletion refuse without force. A synonym link is the
-# one low-severity kind: the external synonym stays valid on its own.
+# template loses a parent, a field vocabulary or a reference target; its
+# documents lose the template they were built on, or point at documents,
+# terms, templates, terminologies or files that are gone; its relations
+# point at gone terms. Any of these makes a deletion refuse without force. A
+# synonym link is the one low-severity kind: the external synonym stays
+# valid on its own.
 _HIGH_SEVERITY_INBOUND = frozenset({
     "template_extends",
     "terminology_reference",
     "template_reference",
     "document_reference",
     "term_relation",
+    "template_use",
+    "term_reference",
+    "file_reference",
 })
+
+# The ids a document holds by bare id, recording no namespace — so another
+# namespace's documents are matched against the ids this namespace owns:
+# (report type, document field, which of this namespace's ids, impact).
+_DOCUMENT_ID_USES = (
+    ("template_use", "template_id", "templates",
+     "Documents are pinned to a template that is gone: they no longer validate, "
+     "update or report."),
+    ("template_reference", "references.resolved.template_id", "templates",
+     "Reference fields point at a template that is gone."),
+    ("terminology_reference", "references.resolved.terminology_id", "terminologies",
+     "Reference fields point at a terminology that is gone."),
+    ("term_reference", "term_references.term_id", "terms",
+     "Term fields point at terms that are gone."),
+    ("term_reference", "references.resolved.term_id", "terms",
+     "Term fields point at terms that are gone."),
+    ("file_reference", "file_references.file_id", "files",
+     "File fields point at files whose records and bytes are gone."),
+)
 
 # Ids per $in when matching other namespaces' rows against this one's terms.
 _INBOUND_TERM_BATCH = 1000
@@ -288,6 +312,57 @@ async def _inbound_from_documents(
             source_entity=f"{group['count']} document version(s) of {label}",
             target_entity=f"documents in {prefix}",
             impact="Reference fields point at documents that are gone.",
+        ))
+    return refs
+
+
+async def _documents_using(
+    documents: Any, prefix: str, owned: dict[str, dict[str, str]],
+) -> dict[tuple[str, str, str | None], int]:
+    """Count other namespaces' document versions holding this namespace's
+    ids, per (type, namespace, template_id). A row matched by two fields of
+    one kind, or in two batches, counts once."""
+    rows: dict[tuple[str, Any], tuple[str, str | None]] = {}
+    for kind, field, source, _impact in _DOCUMENT_ID_USES:
+        ids = list(owned.get(source) or {})
+        for start in range(0, len(ids), _INBOUND_TERM_BATCH):
+            async for row in documents.find(
+                {"namespace": {"$ne": prefix},
+                 field: {"$in": ids[start : start + _INBOUND_TERM_BATCH]}},
+                {"namespace": 1, "template_id": 1},
+            ):
+                rows[(kind, row["_id"])] = (row["namespace"], row.get("template_id"))
+    counts: dict[tuple[str, str, str | None], int] = {}
+    for (kind, _), (ns, template_id) in rows.items():
+        counts[(kind, ns, template_id)] = counts.get((kind, ns, template_id), 0) + 1
+    return counts
+
+
+async def _inbound_from_document_uses(
+    documents: Any, templates: Any, prefix: str, owned: dict[str, dict[str, str]],
+) -> list[InboundReference]:
+    """Documents of other namespaces built on this namespace's templates, or
+    holding its terms, files, templates or terminologies in their fields —
+    one report per (kind, namespace, template) with a count of document
+    versions. ``owned`` maps "templates", "terminologies", "terms" and
+    "files" to {id: value} of this namespace's entities.
+
+    Ids are matched as they are stored. Canonical ids are minted by the
+    Registry and unique install-wide, as the template check assumes too."""
+    counts = await _documents_using(documents, prefix, owned)
+    impacts = {kind: impact for kind, _f, _s, impact in _DOCUMENT_ID_USES}
+    labels: dict[str | None, str] = dict(owned["templates"])
+    refs: list[InboundReference] = []
+    for (kind, ns, template_id), n in sorted(counts.items(), key=lambda kv: [x or "" for x in kv[0]]):
+        if template_id not in labels:
+            tpl = await templates.find_one({"template_id": template_id}, {"value": 1})
+            labels[template_id] = (tpl or {}).get("value") or template_id or "?"
+        label = labels[template_id]
+        target = f"{label} (template)" if kind == "template_use" else f"{kind} targets in {prefix}"
+        refs.append(InboundReference(
+            type=kind, source_namespace=ns,
+            source_entity=f"{n} document version(s) of {label}",
+            target_entity=target, impact=impacts[kind],
         ))
     return refs
 
@@ -588,11 +663,15 @@ class NamespaceDeletionService:
 
         References are stored as canonical ids (a template's ``extends`` and
         field references, edge endpoints' resolved half, a relation's term
-        ids), so each check matches other namespaces' rows against the ids
-        this namespace owns. A document reference also records its target's
-        namespace, which is matched directly. Term usage by documents needs
-        no document scan: a term field draws from the vocabulary its
-        template field names, so the template check covers it.
+        ids, a document's template, terms, files and template/terminology
+        references), so each check matches other namespaces' rows against the
+        ids this namespace owns. A document reference to a document also
+        records its target's namespace, which is matched directly.
+
+        Documents are scanned for their own ids even where a template check
+        exists: a document's template may itself live in this namespace, and
+        is then deleted with it, so no surviving template says which terms
+        and files that document holds.
         """
         refs: list[InboundReference] = []
         motor_client = Namespace.get_motor_collection().database.client
@@ -615,12 +694,24 @@ class NamespaceDeletionService:
             motor_client["wip_document_store"]["documents"], templates_coll, prefix
         ))
 
-        # 3. Term relations in other namespaces touching terms here.
+        # 3. Documents in other namespaces built on templates here, or holding
+        #    its terms, files, templates or terminologies.
+        owned = {
+            "templates": our_templates,
+            "terminologies": our_terminologies,
+            "terms": await _values_by_id(motor_client["wip_def_store"]["terms"], prefix, "term_id"),
+            "files": await _values_by_id(motor_client["wip_document_store"]["files"], prefix, "file_id"),
+        }
+        refs.extend(await _inbound_from_document_uses(
+            motor_client["wip_document_store"]["documents"], templates_coll, prefix, owned,
+        ))
+
+        # 4. Term relations in other namespaces touching terms here.
         refs.extend(await _inbound_from_term_relations(
             motor_client["wip_def_store"], prefix
         ))
 
-        # 4. Synonym links (low severity)
+        # 5. Synonym links (low severity)
         async for entry in RegistryEntry.find({
             "namespace": {"$ne": prefix},
             "synonyms.namespace": prefix,

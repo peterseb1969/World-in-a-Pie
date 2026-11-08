@@ -29,6 +29,7 @@ _SERVICE_COLLECTIONS = (
     ("wip_def_store", "terms"),
     ("wip_def_store", "term_relations"),
     ("wip_document_store", "documents"),
+    ("wip_document_store", "files"),
 )
 
 
@@ -195,7 +196,129 @@ class TestDataIntoTheDoomedNamespace:
         assert report["requires_force"] is True
 
 
+async def _document(namespace, document_id, template_id, **extra):
+    await _coll("wip_document_store", "documents").insert_one({
+        "namespace": namespace, "document_id": document_id, "version": 1,
+        "template_id": template_id, **extra,
+    })
+
+
+class TestDocumentsUsingTheDoomedNamespace:
+    """A document points at its template, its terms, its files and the
+    templates/terminologies of its reference fields by bare id, recording no
+    namespace. Templates, terms and files are usable from other namespaces,
+    so another namespace's documents can depend on the doomed one without
+    any template there saying so."""
+
+    @pytest.mark.asyncio
+    async def test_documents_built_on_a_doomed_template(self, client, auth_headers, spaces):
+        doomed, survivor, i = spaces
+        await _template(doomed, i("TPL-LIB"), "LIBRARY_THING")
+        for n in range(2):
+            await _document(survivor, i(f"D-{n}"), i("TPL-LIB"))
+
+        report = await _dry_run(client, auth_headers, doomed)
+
+        assert _types(report) == ["template_use"]
+        (ref,) = report["inbound_references"]
+        assert ref["source_namespace"] == survivor
+        assert "2 document version(s)" in ref["source_entity"]
+        assert "LIBRARY_THING" in ref["target_entity"]
+        assert report["requires_force"] is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refs", [
+        {"term_references": [{"field_path": "colour", "term_id": "@TARGET"}]},
+        {"references": [{"field_path": "colour", "reference_type": "term",
+                         "resolved": {"term_id": "@TARGET"}}]},
+    ])
+    async def test_documents_holding_a_doomed_term(self, client, auth_headers, spaces, refs):
+        doomed, survivor, i = spaces
+        await _coll("wip_def_store", "terms").insert_one(
+            {"namespace": doomed, "term_id": i("TERM-DOOMED"), "value": "red"}
+        )
+        await _template(survivor, i("TPL-USER"), "USER")
+        await _document(survivor, i("D-1"), i("TPL-USER"), **_bind(refs, i("TERM-DOOMED"), i))
+
+        report = await _dry_run(client, auth_headers, doomed)
+
+        assert _types(report) == ["term_reference"]
+        assert "USER" in report["inbound_references"][0]["source_entity"]
+        assert report["requires_force"] is True
+
+    @pytest.mark.asyncio
+    async def test_documents_referencing_a_doomed_template_or_terminology(
+        self, client, auth_headers, spaces
+    ):
+        doomed, survivor, i = spaces
+        await _template(doomed, i("TPL-DOOMED"), "THING")
+        await _terminology(doomed, i("TY-DOOMED"), "COLOURS")
+        await _template(survivor, i("TPL-USER"), "USER")
+        await _document(survivor, i("D-1"), i("TPL-USER"), references=[
+            {"field_path": "schema", "reference_type": "template",
+             "resolved": {"template_id": i("TPL-DOOMED")}},
+            {"field_path": "vocab", "reference_type": "terminology",
+             "resolved": {"terminology_id": i("TY-DOOMED")}},
+        ])
+
+        report = await _dry_run(client, auth_headers, doomed)
+
+        assert _types(report) == ["template_reference", "terminology_reference"]
+        assert report["requires_force"] is True
+
+    @pytest.mark.asyncio
+    async def test_documents_holding_a_doomed_file(self, client, auth_headers, spaces):
+        doomed, survivor, i = spaces
+        await _coll("wip_document_store", "files").insert_one(
+            {"namespace": doomed, "file_id": i("FILE-DOOMED"), "filename": "scan.png"}
+        )
+        await _template(survivor, i("TPL-USER"), "USER")
+        await _document(survivor, i("D-1"), i("TPL-USER"), file_references=[
+            {"field_path": "scan", "file_id": i("FILE-DOOMED"), "filename": "scan.png"},
+        ])
+
+        report = await _dry_run(client, auth_headers, doomed)
+
+        assert _types(report) == ["file_reference"]
+        assert report["requires_force"] is True
+
+    @pytest.mark.asyncio
+    async def test_the_doomed_namespaces_own_documents_are_not_inbound(
+        self, client, auth_headers, spaces
+    ):
+        doomed, _, i = spaces
+        await _template(doomed, i("TPL-OWN"), "OWN")
+        await _coll("wip_def_store", "terms").insert_one(
+            {"namespace": doomed, "term_id": i("TERM-OWN"), "value": "red"}
+        )
+        await _coll("wip_document_store", "files").insert_one(
+            {"namespace": doomed, "file_id": i("FILE-OWN"), "filename": "a"}
+        )
+        await _document(doomed, i("D-1"), i("TPL-OWN"),
+                        term_references=[{"field_path": "c", "term_id": i("TERM-OWN")}],
+                        file_references=[{"field_path": "f", "file_id": i("FILE-OWN")}])
+
+        report = await _dry_run(client, auth_headers, doomed)
+
+        assert report["inbound_references"] == []
+        assert report["requires_force"] is False
+
+
 class TestDeletionGate:
+    @pytest.mark.asyncio
+    async def test_a_namespace_whose_template_others_use_is_not_deleted_without_force(
+        self, client, auth_headers, spaces
+    ):
+        doomed, survivor, i = spaces
+        await _template(doomed, i("TPL-LIB"), "LIBRARY_THING")
+        await _document(survivor, i("D-1"), i("TPL-LIB"))
+
+        resp = await client.delete(f"/api/registry/namespaces/{doomed}", headers=auth_headers)
+
+        assert resp.status_code != 200 or resp.json().get("status") != "completed"
+        ns = await Namespace.find_one({"prefix": doomed})
+        assert ns is not None and ns.status == "active"
+
     @pytest.mark.asyncio
     async def test_a_referenced_namespace_is_not_deleted_without_force(
         self, client, auth_headers, spaces
