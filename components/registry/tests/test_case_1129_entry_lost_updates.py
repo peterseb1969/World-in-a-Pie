@@ -165,4 +165,4 @@ async def test_endless_contention_is_a_concurrency_conflict(client, auth_headers
     assert _hash(key) not in _active_hashes(await _entry(target))
     # The claim the request took is released, not left to block the key.
     claim = await CompositeKeyClaim.find_one({"composite_key_hash": _hash(key)})
-    assert claim is None or claim.state == "pending" and claim.owner_entry_id == target
+    assert claim is None or (claim.state == "pending" and claim.owner_entry_id == target)

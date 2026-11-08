@@ -34,6 +34,25 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `merged_from = D` and stay claimed, like P's own id and primary key.
 - New fields: `RegistryEntry.merged_into`, `Synonym.merged_from`.
 
+### Register answers every item with an entry that exists
+
+- **A same-batch duplicate of a failed item gets its error.** A second item
+  carrying the same key as an earlier one was answered `already_exists`
+  with the id minted for the earlier one — even when that one then failed
+  at the claim gate or the insert, so the id named an entry that was never
+  written. It is now answered from what became of the earlier item.
+- **A concurrent registration of the same new key** answers `already_exists`
+  with the entry the other request wrote; it was an `error`
+  (`details.rule: key_claimed`). A key held as some other entry's synonym
+  stays a `key_claimed` error — that is a different entity.
+- **Prefixed IDs are reserved per batch:** register and provision take one
+  counter round trip per prefix, however many IDs they mint (they took one
+  per ID).
+- **`POST /entries/provision` refuses `composite_keys` whose length differs
+  from `count`** (422). Extra keys were ignored and missing ones gave
+  reservations no key, which then claimed nothing. Keys with
+  `defer_claim: true` are still accepted, as a fresh restore sends them.
+
 ### File-store lows
 
 - `GET /files?sort_by=size` sorts by size; it sorted on a field that does not

@@ -21,6 +21,7 @@ Raising is a MongoDB `$max`, so it never moves a counter back.
 """
 
 import re
+from typing import cast
 
 from ..models.entry import RegistryEntry
 from ..models.id_algorithm import IdAlgorithmConfig, IdGenerator
@@ -66,38 +67,43 @@ class IdGeneratorService:
     # Prefixes whose counter this process has raised to the existing IDs.
     _floored: set[str] = set()  # noqa: RUF012 — process-wide by design
 
+    @staticmethod
+    def check_config(config: IdAlgorithmConfig, namespace: str, entity_type: str) -> None:
+        """Raise ValueError when ``config`` cannot mint an ID."""
+        if config.algorithm == "prefixed" and not config.prefix:
+            # Stored before writes refused it: bare numbers would be minted
+            # by every such sequence alike.
+            raise ValueError(
+                f"id_config.{entity_type} of namespace '{namespace}' is 'prefixed' "
+                "without a prefix; set a prefix before minting IDs"
+            )
+
     @classmethod
-    async def generate(cls, namespace: str, entity_type: str) -> str:
-        """Generate an ID for the given namespace and entity type.
-
-        Looks up the namespace's ID config and generates accordingly.
-        For prefixed algorithms, uses atomic MongoDB counter.
-        For UUID/nanoid, generates locally.
-        """
-        ns = await Namespace.find_one({"prefix": namespace, "status": "active"})
-        if not ns:
-            raise ValueError(f"Namespace '{namespace}' does not exist or is not active")
-
-        config = ns.get_id_algorithm(entity_type)
-        return await cls.generate_from_config(config, namespace, entity_type)
+    async def generate_many(cls, configs: list[IdAlgorithmConfig]) -> list[str]:
+        """One new ID per config, in order. A prefix's IDs are taken with one
+        counter round trip however many there are; other algorithms mint
+        locally. Every config must pass ``check_config``."""
+        ids: list[str | None] = [None] * len(configs)
+        by_prefix: dict[str, list[int]] = {}
+        for i, config in enumerate(configs):
+            if config.algorithm == "prefixed":
+                by_prefix.setdefault(config.prefix or "", []).append(i)
+            else:
+                ids[i] = IdGenerator.generate(config)
+        for prefix, positions in by_prefix.items():
+            await cls._ensure_floor(prefix)
+            last = await IdCounter.reserve(prefix_counter_key(prefix), len(positions))
+            for seq, i in enumerate(positions, start=last - len(positions) + 1):
+                ids[i] = IdGenerator.generate_prefixed(prefix, seq, configs[i].pad)
+        return cast(list[str], ids)
 
     @classmethod
     async def generate_from_config(
         cls, config: IdAlgorithmConfig, namespace: str, entity_type: str
     ) -> str:
-        """Generate an ID from a specific config."""
-        if config.algorithm == "prefixed":
-            if not config.prefix:
-                # Stored before writes refused it: bare numbers would be
-                # minted by every such sequence alike.
-                raise ValueError(
-                    f"id_config.{entity_type} of namespace '{namespace}' is 'prefixed' "
-                    "without a prefix; set a prefix before minting IDs"
-                )
-            await cls._ensure_floor(config.prefix)
-            seq = await IdCounter.next_val(prefix_counter_key(config.prefix))
-            return IdGenerator.generate_prefixed(config.prefix, seq, config.pad)
-        return IdGenerator.generate(config)
+        """Generate one ID from a specific config."""
+        cls.check_config(config, namespace, entity_type)
+        return (await cls.generate_many([config]))[0]
 
     @classmethod
     async def _ensure_floor(cls, prefix: str) -> None:

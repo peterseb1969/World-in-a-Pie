@@ -29,18 +29,24 @@ class IdCounter(Document):
         ]
 
     @classmethod
-    async def next_val(cls, counter_key: str) -> int:
-        """Atomically increment and return the next sequence value.
+    async def reserve(cls, counter_key: str, count: int) -> int:
+        """Atomically take the next ``count`` sequence values in one round trip
+        and return the last of them: the caller owns last-count+1 … last.
 
         Creates the counter document on first use (upsert).
         """
         result = await cls.get_motor_collection().find_one_and_update(
             {"counter_key": counter_key},
-            {"$inc": {"seq": 1}},
+            {"$inc": {"seq": count}},
             upsert=True,
             return_document=ReturnDocument.AFTER,
         )
         return cast(int, result["seq"])
+
+    @classmethod
+    async def next_val(cls, counter_key: str) -> int:
+        """Atomically increment and return the next sequence value."""
+        return await cls.reserve(counter_key, 1)
 
     @classmethod
     async def set_if_higher(cls, counter_key: str, value: int) -> None:

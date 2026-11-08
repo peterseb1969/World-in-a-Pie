@@ -300,7 +300,10 @@ class ProvisionRequest(StrictModel):
     count: int = Field(default=1, description="Number of IDs to provision", ge=1, le=1000)
     composite_keys: list[dict[str, Any]] | None = Field(
         default=None,
-        description="Optional composite keys to associate with provisioned IDs"
+        description=(
+            "Optional composite keys to associate with provisioned IDs: one "
+            "per ID, in order (exactly `count` of them)"
+        ),
     )
     defer_claim: bool = Field(
         default=False,
@@ -313,6 +316,15 @@ class ProvisionRequest(StrictModel):
                     "at activation. Default False = claim at provision.",
     )
     created_by: str | None = Field(default=None, description="Creator identifier")
+
+    @model_validator(mode="after")
+    def _one_key_per_id(self) -> "ProvisionRequest":
+        if self.composite_keys is not None and len(self.composite_keys) != self.count:
+            raise ValueError(
+                f"composite_keys has {len(self.composite_keys)} keys for count={self.count}: "
+                "give one key per ID, or none"
+            )
+        return self
 
 
 class ProvisionedId(BaseModel):

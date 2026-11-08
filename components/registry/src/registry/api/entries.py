@@ -1,5 +1,6 @@
 """Registry entry management API endpoints."""
 
+import asyncio
 import logging
 import math
 import re
@@ -63,7 +64,7 @@ from ..models.api_models import (
 )
 from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
-from ..models.id_algorithm import VALID_ENTITY_TYPES, IdFormatValidator
+from ..models.id_algorithm import VALID_ENTITY_TYPES, IdAlgorithmConfig, IdFormatValidator
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key, require_privileged_key
 from ..services.claims import (
@@ -569,8 +570,14 @@ async def register_keys(
     # CASE-567: keyed by (namespace, entity_type, key_hash) — the same key
     # under two entity types is two entities (namespace_entity_keyhash_
     # unique_idx). The namespace element is defense-in-depth: Phase 0a
-    # already rejects mixed-namespace batches.
-    seen_in_batch: dict[tuple[str, str, str], str] = {}
+    # already rejects mixed-namespace batches. The value is the index of the
+    # first item with the key; a later one is answered from what became of
+    # it once the batch is written (duplicates).
+    seen_in_batch: dict[tuple[str, str, str], int] = {}
+    duplicates: list[tuple[int, int, str | None]] = []
+    # New ids are minted for the whole batch after the loop: one counter
+    # round trip per prefix, and an item refused here takes no number.
+    to_mint: list[tuple[int, IdAlgorithmConfig]] = []
 
     for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
@@ -645,30 +652,19 @@ async def register_keys(
                     exists_count += 1
                     continue
 
-                # Intra-batch dedup: second item with the same key in the
-                # same namespace+entity_type gets already_exists
+                # Intra-batch dedup: a later item with the same key in the
+                # same namespace+entity_type is answered from the first one.
                 batch_key = (item.namespace, item.entity_type, key_hash)
                 if batch_key in seen_in_batch:
-                    first_entry_id = seen_in_batch[batch_key]
-                    results[i] = RegisterKeyResponse(
-                        index=i,
-                        status="already_exists",
-                        registry_id=first_entry_id,
-                        namespace=item.namespace,
-                        entity_type=item.entity_type,
-                        identity_hash=id_hash,
-                    )
-                    exists_count += 1
+                    duplicates.append((i, seen_in_batch[batch_key], id_hash))
                     continue
 
-            # Generate or use provided ID
-            if item.entry_id:
-                entry_id = item.entry_id
-            else:
-                entry_id = await IdGeneratorService.generate_from_config(
-                    namespace_docs[item.namespace].get_id_algorithm(item.entity_type),
-                    item.namespace, item.entity_type,
-                )
+            # Use the provided ID, or mint one with the batch below.
+            mint_config = None
+            entry_id = item.entry_id or ""
+            if not item.entry_id:
+                mint_config = namespace_docs[item.namespace].get_id_algorithm(item.entity_type)
+                IdGeneratorService.check_config(mint_config, item.namespace, item.entity_type)
 
             # Build synonyms list — add identity_values as a synonym if provided.
             # CASE-430: relationship/edge types set skip_identity_value_synonym
@@ -711,10 +707,12 @@ async def register_keys(
                 metadata=item.metadata,
             )
             entry.rebuild_search_values()
+            if mint_config is not None:
+                to_mint.append((len(entries_to_insert), mint_config))
             entries_to_insert.append(entry)
             insert_indices.append(i)
             if key_hash:
-                seen_in_batch[(item.namespace, item.entity_type, key_hash)] = entry_id
+                seen_in_batch[(item.namespace, item.entity_type, key_hash)] = i
 
         except Exception as e:
             results[i] = RegisterKeyResponse(
@@ -724,26 +722,22 @@ async def register_keys(
             )
             error_count += 1
 
+    minted = await IdGeneratorService.generate_many([config for _, config in to_mint])
+    for (pos, _), new_id in zip(to_mint, minted, strict=True):
+        entries_to_insert[pos].entry_id = new_id
+
     # Phase 3.5: claim-first gate. Every key pair is claimed pending BEFORE
     # the insert (fail-fast on conflict; the item drops out of the batch).
-    # An entry without a claim is thereby unrepresentable by ordering.
+    # An entry without a claim is thereby unrepresentable by ordering. An
+    # item whose own key another request registered meanwhile is answered
+    # with that request's entry.
     lap("3_build_entries")
-    gated_entries: list = []
-    gated_indices: list[int] = []
     token = new_claim_token()
-    conflicts = await claim_entries_keys_pending(entries_to_insert, token)
-    for pos, idx in enumerate(insert_indices):
-        entry = entries_to_insert[pos]
-        conflict = conflicts[pos]
-        if conflict is not None:
-            results[idx] = RegisterKeyResponse(
-                index=idx, status="error", error=conflict,
-                error_code="already_exists", details={"rule": "key_claimed"},
-            )
-            error_count += 1
-            continue
-        gated_entries.append(entry)
-        gated_indices.append(idx)
+    gated_entries, gated_indices, exists, errors = await _gate_on_claims(
+        entries_to_insert, insert_indices, identity_hashes, results, token,
+    )
+    exists_count += exists
+    error_count += errors
 
     lap("3b_claim_keys")
 
@@ -768,6 +762,10 @@ async def register_keys(
                 results[idx] = RegisterKeyResponse(index=idx, status="error", **failure)
                 error_count += 1
 
+    exists, errors = _answer_duplicates(results, duplicates)
+    exists_count += exists
+    error_count += errors
+
     timing["total"] = round((time.perf_counter() - started) * 1000, 1)
     return RegisterBulkResponse(
         results=cast(list[RegisterKeyResponse], results),
@@ -777,6 +775,105 @@ async def register_keys(
         errors=error_count,
         timing=timing,
     )
+
+
+#: How long register waits for the request that holds an item's key to write
+#: its entry: attempts times pause (seconds). The holder writes right after
+#: claiming, so this only bridges that gap.
+_HOLDER_WAIT_ATTEMPTS = 10
+_HOLDER_WAIT_PAUSE = 0.02
+
+
+async def _holder_of_own_key(entry: RegistryEntry) -> RegistryEntry | None:
+    """The existing entry that holds ``entry``'s own primary key, or None.
+
+    Only the item's own key makes it the same entity as the holder: a key
+    held as one of the item's synonyms is a conflict with a different
+    entity. The holder may be another request that claimed the key and is
+    about to write its entry; it is given a moment to do so.
+    """
+    if not entry.primary_composite_key_hash:
+        return None
+    claim = await CompositeKeyClaim.find_existing(
+        entry.namespace, entry.entity_type, entry.primary_composite_key_hash,
+    )
+    if claim is None or claim.owner_entry_id == entry.entry_id:
+        return None
+    for attempt in range(_HOLDER_WAIT_ATTEMPTS):
+        holder = await RegistryEntry.find_one({"entry_id": claim.owner_entry_id, "status": "active"})
+        if holder is not None:
+            return holder if _carries_key(holder, entry) else None
+        if attempt + 1 < _HOLDER_WAIT_ATTEMPTS:
+            await asyncio.sleep(_HOLDER_WAIT_PAUSE)
+    return None
+
+
+def _carries_key(holder: RegistryEntry, entry: RegistryEntry) -> bool:
+    scope = (entry.namespace, entry.entity_type, entry.primary_composite_key_hash)
+    if (holder.namespace, holder.entity_type, holder.primary_composite_key_hash) == scope:
+        return True
+    return any(
+        (s.namespace, s.entity_type, s.composite_key_hash) == scope
+        for s in holder.active_synonyms()
+    )
+
+
+async def _gate_on_claims(
+    entries: list[RegistryEntry], indices: list[int], identity_hashes: list[str | None],
+    results: list[RegisterKeyResponse | None], token: str,
+) -> tuple[list[RegistryEntry], list[int], int, int]:
+    """Claim every entry's keys pending; answer the items that cannot have
+    them. An item whose own key another request registered meanwhile is
+    answered already_exists with that request's entry; any other conflict is
+    a key_claimed error. Returns (entries to insert, their item indices,
+    already_exists, errors) counted."""
+    gated: list[RegistryEntry] = []
+    gated_indices: list[int] = []
+    exists = errors = 0
+    conflicts = await claim_entries_keys_pending(entries, token)
+    for entry, idx, conflict in zip(entries, indices, conflicts, strict=True):
+        if conflict is None:
+            gated.append(entry)
+            gated_indices.append(idx)
+            continue
+        holder = await _holder_of_own_key(entry)
+        if holder is not None:
+            results[idx] = RegisterKeyResponse(
+                index=idx, status="already_exists", registry_id=holder.entry_id,
+                namespace=holder.namespace, entity_type=holder.entity_type,
+                identity_hash=identity_hashes[idx],
+            )
+            exists += 1
+        else:
+            results[idx] = RegisterKeyResponse(
+                index=idx, status="error", error=conflict,
+                error_code="already_exists", details={"rule": "key_claimed"},
+            )
+            errors += 1
+    return gated, gated_indices, exists, errors
+
+
+def _answer_duplicates(
+    results: list[RegisterKeyResponse | None], duplicates: list[tuple[int, int, str | None]],
+) -> tuple[int, int]:
+    """Answer each later item of a batch that repeats an earlier item's key
+    from what became of the earlier one: already_exists with its entry when
+    it was created or found, its error otherwise. Returns (already_exists,
+    errors) counted."""
+    exists = errors = 0
+    for i, first, id_hash in duplicates:
+        answer = cast(RegisterKeyResponse, results[first])
+        if answer.status in ("created", "already_exists"):
+            results[i] = RegisterKeyResponse(
+                index=i, status="already_exists", registry_id=answer.registry_id,
+                namespace=answer.namespace, entity_type=answer.entity_type,
+                identity_hash=id_hash,
+            )
+            exists += 1
+        else:
+            results[i] = answer.model_copy(update={"index": i})
+            errors += 1
+    return exists, errors
 
 
 @router.post(
@@ -947,17 +1044,15 @@ async def provision_ids(
             raise HTTPException(status_code=422, detail=refusal["error"])
 
     config = ns.get_id_algorithm(request.entity_type)
+    try:
+        IdGeneratorService.check_config(config, request.namespace, request.entity_type)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e)) from e
+    minted = await IdGeneratorService.generate_many([config] * request.count)
     ids = []
     entries = []
 
-    for i in range(request.count):
-        try:
-            entry_id = await IdGeneratorService.generate_from_config(
-                config, request.namespace, request.entity_type
-            )
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e)) from e
-
+    for i, entry_id in enumerate(minted):
         # Deferred-claim reservation mints the id with an EMPTY key: the final
         # key is set and claimed at activation. Empty is required, not just
         # convenient — the entry-level unique index on
@@ -965,11 +1060,7 @@ async def provision_ids(
         # non-empty hashes, so two reservations sharing a to-be key must both
         # carry the empty hash to coexist until activation resolves them.
         composite_key = {}
-        if (
-            not request.defer_claim
-            and request.composite_keys
-            and i < len(request.composite_keys)
-        ):
+        if not request.defer_claim and request.composite_keys:
             composite_key = request.composite_keys[i]
 
         key_hash = HashService.compute_composite_key_hash(composite_key) if composite_key else ""
