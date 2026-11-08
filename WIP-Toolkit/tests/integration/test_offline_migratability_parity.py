@@ -163,7 +163,7 @@ def test_inspect_target_version_reports_it(corpus):
     ])
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
-    assert payload["schema"] == "1.2"
+    assert payload["schema"] == "1.3"
     cohort = payload["migratability"]["cohorts"][0]
     assert (cohort["from_version"], cohort["documents"], cohort["ready"]) == (1, 5, 2)
     assert payload["migratability"]["references_checked"] is False

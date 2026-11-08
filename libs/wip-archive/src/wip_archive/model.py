@@ -31,8 +31,12 @@ Memory: definitions (templates, terminologies, terms, files, registry rows)
 are held in full — they are small and every analysis needs random access to
 them. Documents are streamed twice and never retained: pass 1 records each
 document's template pin and highest version, pass 2 accumulates references into
-counters. Peak memory is therefore O(definitions + document ids), not
-O(archive), which keeps the model usable on archives far larger than RAM.
+counters. A reference whose target is outside the archive is counted too: one
+entry per (kind, target, reason, referring template) with an occurrence count
+and the first referrer as a sample, never one per document version. Peak
+memory is therefore O(definitions + document ids + distinct outside targets
+per referring template), not O(archive), which keeps the model usable on
+archives far larger than RAM.
 """
 
 from __future__ import annotations
@@ -49,8 +53,11 @@ from .models import Manifest
 
 # Version of the machine-readable output contract (`to_dict`, and the CLI's
 # `inspect --json`). Consumers branch on it. Additive fields keep the version;
-# removing or re-typing a field is a major bump.
-SCHEMA_VERSION = "1.2"
+# removing or re-typing a field is a major bump. 1.3: an `external` list holds
+# each outside target once per referring template, with `count` and
+# `origin_template`, and the latest-only closure lists only what latest
+# versions reference.
+SCHEMA_VERSION = "1.3"
 
 # Entity types that carry a Registry identity row. Mirrors the restore door's
 # own list: these are the rows whose absence makes a restored namespace look
@@ -121,7 +128,13 @@ class AmbiguousNameError(ValueError):
 
 @dataclass
 class ExternalRef:
-    """A reference whose target is not in the archive, with why."""
+    """References to one target that is not in the archive, with why.
+
+    One entry stands for every occurrence that shares (kind, target, reason,
+    origin template): ``count`` is how many there were, and ``referenced_by``
+    names the first referrer as a sample. Keeping one entry per occurrence
+    would make the model grow with the archive's references.
+    """
 
     kind: str  # "template" | "terminology" | "document" | "term" | "file"
     target_id: str
@@ -131,6 +144,7 @@ class ExternalRef:
     # reports are per-selection, so an external reference held by some other
     # template must not appear in this selection's external list.
     origin_template: str | None = None
+    count: int = 1
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -138,7 +152,29 @@ class ExternalRef:
             "target_id": self.target_id,
             "reason": self.reason,
             "referenced_by": self.referenced_by,
+            "origin_template": self.origin_template,
+            "count": self.count,
         }
+
+
+# (kind, target_id, reason, origin_template): the aggregation key of ExternalRef.
+_ExternalKey = tuple[str, str, str, str | None]
+
+
+def _tally(
+    bucket: dict[_ExternalKey, ExternalRef],
+    kind: str,
+    target_id: str,
+    reason: str,
+    referenced_by: str,
+    origin_template: str | None,
+) -> None:
+    key = (kind, target_id, reason, origin_template)
+    entry = bucket.get(key)
+    if entry is None:
+        bucket[key] = ExternalRef(kind, target_id, reason, referenced_by, origin_template)
+    else:
+        entry.count += 1
 
 
 @dataclass
@@ -308,6 +344,10 @@ class ReferenceGraph:
     )
     # edge type template_id -> number of relationship documents
     relationship_docs: Counter = field(default_factory=Counter)
+    # Document references whose target the archive does not carry, aggregated
+    # per (kind, target_id, reason, origin_template) — per variant, so the
+    # latest-only closure lists only what latest versions reference.
+    external: dict[_ExternalKey, ExternalRef] = field(default_factory=dict)
 
     # Adjacency indexes, built once on first use. Every per-template analysis
     # asks for neighbours, so scanning the reference counter per question would
@@ -505,8 +545,10 @@ class ArchiveModel:
         self.include_files: bool = False
         self.history = ReferenceGraph()
         self.latest = ReferenceGraph()
-        self.external_refs: list[ExternalRef] = []
-        self.dangling: list[ExternalRef] = []
+        # Declared (schema) references the archive cannot resolve; document
+        # references live on the graphs. Both aggregated like ExternalRef.
+        self._declared_external: dict[_ExternalKey, ExternalRef] = {}
+        self._dangling: dict[_ExternalKey, ExternalRef] = {}
         self._islands: list[Island] | None = None
         self._island_of: dict[str, int] = {}
 
@@ -808,7 +850,8 @@ class ArchiveModel:
                 tpl.document_ids.add(doc_id)
 
     def _extract_reference_edges(self, reader: ArchiveReader, ns: str) -> None:
-        """Pass 2: accumulate actual references; retain nothing per document."""
+        """Pass 2: accumulate actual references as counts; nothing is kept
+        per document or per document version."""
         for row in reader.read_entities("documents", namespace=ns):
             doc_id = row.get("document_id")
             if not doc_id:
@@ -831,7 +874,12 @@ class ArchiveModel:
                     tpl.docs_per_template_version[template_version] += 1
             elif template_id:
                 self._record_external(
-                    "template", template_id, EXTERNAL_UNKNOWN, f"document {doc_id}"
+                    "template",
+                    template_id,
+                    self._outside_reason(template_id),
+                    f"document {doc_id}",
+                    None,
+                    targets,
                 )
             for acc in targets:
                 acc.pins[(template_id, template_version)] += 1
@@ -871,14 +919,13 @@ class ArchiveModel:
                     and target_ns in self.namespaces
                     and target_doc not in self.definitions.referents
                 ):
-                    self.dangling.append(
-                        ExternalRef(
-                            "document",
-                            target_doc,
-                            "target-missing-from-archive",
-                            f"document {doc_id}",
-                            template_id,
-                        )
+                    _tally(
+                        self._dangling,
+                        "document",
+                        target_doc,
+                        "target-missing-from-archive",
+                        f"document {doc_id}",
+                        template_id,
                     )
                 else:
                     self._record_external(
@@ -889,6 +936,7 @@ class ArchiveModel:
                         else EXTERNAL_UNKNOWN,
                         f"document {doc_id}",
                         template_id,
+                        targets,
                     )
                 continue
 
@@ -916,9 +964,10 @@ class ArchiveModel:
                 self._record_external(
                     "term",
                     term_id,
-                    EXTERNAL_UNKNOWN,
+                    self._outside_reason(term_id),
                     f"template {self.template_label(template_id)}",
                     template_id,
+                    targets,
                 )
                 continue
             for acc in targets:
@@ -940,9 +989,10 @@ class ArchiveModel:
                 self._record_external(
                     "file",
                     file_id,
-                    EXTERNAL_UNKNOWN,
+                    self._outside_reason(file_id),
                     f"document {doc_id}",
                     template_id,
+                    targets,
                 )
                 continue
             for acc in targets:
@@ -954,11 +1004,42 @@ class ArchiveModel:
         target_id: str,
         reason: str,
         referenced_by: str,
-        origin_template: str | None = None,
+        origin_template: str | None,
+        targets: list[ReferenceGraph] | None = None,
     ) -> None:
-        self.external_refs.append(
-            ExternalRef(kind, target_id, reason, referenced_by, origin_template)
-        )
+        """Count one outside reference: on each closure variant the referring
+        document version belongs to, or, with no ``targets``, as a declared
+        (schema) reference."""
+        if targets is None:
+            _tally(
+                self._declared_external,
+                kind, target_id, reason, referenced_by, origin_template,
+            )
+            return
+        for acc in targets:
+            _tally(acc.external, kind, target_id, reason, referenced_by, origin_template)
+
+    def _outside_reason(self, target_id: str) -> str:
+        """Why an id the archive does not carry is outside it. The referent
+        table records the Registry row of every such id, namespace included,
+        when the archive has one."""
+        row = self.definitions.referents.get(target_id) or {}
+        namespace = row.get("namespace")
+        if namespace and namespace not in self.namespaces:
+            return EXTERNAL_OTHER_NAMESPACE
+        return EXTERNAL_UNKNOWN
+
+    @property
+    def external_refs(self) -> list[ExternalRef]:
+        """Every outside reference, aggregated: declared ones, then those the
+        documents hold across their whole history."""
+        return [*self._declared_external.values(), *self.history.external.values()]
+
+    @property
+    def dangling(self) -> list[ExternalRef]:
+        """References into a carried namespace whose target is absent,
+        aggregated like ``external_refs``."""
+        return list(self._dangling.values())
 
     def _classify_declared_references(self) -> None:
         """Label declared references whose target the archive does not carry.
@@ -1047,7 +1128,9 @@ class ArchiveModel:
         seen: set[str] = set()
         queue = list(template_ids)
         terminologies: set[str] = set()
-        external: list[ExternalRef] = []
+        # Aggregated like the model's own outside references, so a reference
+        # several versions of one template declare is listed once, counted.
+        external: dict[_ExternalKey, ExternalRef] = {}
         while queue:
             current = queue.pop()
             if current in seen:
@@ -1055,9 +1138,7 @@ class ArchiveModel:
             seen.add(current)
             tpl = self.templates.get(current)
             if tpl is None:
-                external.append(
-                    ExternalRef("template", current, EXTERNAL_UNKNOWN, "closure")
-                )
+                _tally(external, "template", current, EXTERNAL_UNKNOWN, "closure", None)
                 continue
             for node in tpl.versions.values():
                 # Declared references were resolved to ids at load; whatever
@@ -1065,19 +1146,12 @@ class ArchiveModel:
                 # an external dependency rather than as a closure member.
                 queue.extend(node.all_declared_templates())
                 terminologies |= node.declared_terminologies
-                external.extend(
-                    ExternalRef(
-                        "template", ref, EXTERNAL_UNKNOWN, f"template {tpl.label}"
-                    )
-                    for ref in node.unresolved_templates
-                )
-                external.extend(
-                    ExternalRef(
-                        "terminology", ref, EXTERNAL_UNKNOWN, f"template {tpl.label}"
-                    )
-                    for ref in node.unresolved_terminologies
-                )
-        return ClosureResult(seen - template_ids, terminologies, external)
+                origin = f"template {tpl.label}"
+                for ref in node.unresolved_templates:
+                    _tally(external, "template", ref, EXTERNAL_UNKNOWN, origin, tpl.template_id)
+                for ref in node.unresolved_terminologies:
+                    _tally(external, "terminology", ref, EXTERNAL_UNKNOWN, origin, tpl.template_id)
+        return ClosureResult(seen - template_ids, terminologies, list(external.values()))
 
     def data_closure(
         self, template_ids: set[str], *, latest_only: bool = False
@@ -1087,7 +1161,8 @@ class ArchiveModel:
         Follows real reference snapshots rather than declared targets, so it
         answers "what would break if I took only this" — a template may
         declare a reference its documents never use, and may hold references
-        the schema no longer declares.
+        the schema no longer declares. ``latest_only`` applies to both halves:
+        the templates reached and the outside references listed.
         """
         acc = self.latest if latest_only else self.history
         seen: set[str] = set()
@@ -1105,7 +1180,7 @@ class ArchiveModel:
         reached = seen | template_ids
         external = [
             e
-            for e in self.external_refs
+            for e in acc.external.values()
             if e.kind in ("document", "term", "file")
             and e.origin_template in reached
         ]
@@ -1426,8 +1501,9 @@ class ArchiveModel:
         """Every analysis result that indicates a problem, most severe first."""
         out: list[Finding] = []
 
-        if self.dangling:
-            by_source: Counter = Counter(e.referenced_by for e in self.dangling)
+        dangling = self.dangling
+        if dangling:
+            by_source = {e.referenced_by for e in dangling}
             out.append(
                 Finding(
                     severity="error",
@@ -1438,7 +1514,7 @@ class ArchiveModel:
                         "this archive carries, but those documents are absent — "
                         "the references will not resolve after restore"
                     ),
-                    count=len(self.dangling),
+                    count=sum(e.count for e in dangling),
                     samples=tuple(sorted(by_source)[:5]),
                 )
             )
@@ -1529,8 +1605,11 @@ class ArchiveModel:
                 )
             )
 
-        if self.external_refs:
-            by_kind: Counter = Counter(e.kind for e in self.external_refs)
+        external = self.external_refs
+        if external:
+            by_kind: Counter = Counter()
+            for e in external:
+                by_kind[e.kind] += e.count
             out.append(
                 Finding(
                     severity="info",
@@ -1541,7 +1620,7 @@ class ArchiveModel:
                         "followed; the restore door resolves them on the target "
                         "instance, so they must exist there"
                     ),
-                    count=len(self.external_refs),
+                    count=sum(by_kind.values()),
                     samples=tuple(
                         f"{kind}:{count}" for kind, count in sorted(by_kind.items())
                     ),

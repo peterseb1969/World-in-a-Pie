@@ -12,8 +12,8 @@ template version it is pinned to:
   records as referenced-but-not-carried;
 - its `identity_hash` must equal the hash recomputed offline from its data.
 
-It streams: one document at a time, counters and capped samples only, so the
-model's memory stays O(definitions + document ids).
+It streams: one document at a time, counters keyed by what failed and capped
+samples only, so it adds nothing per document to the model's memory.
 
 What the archive cannot judge — a template, parent or vocabulary it does not
 carry — is collected as an unverifiable dependency, never counted as a pass

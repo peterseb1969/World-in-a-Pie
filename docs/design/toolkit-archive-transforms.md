@@ -159,8 +159,11 @@ matrix).
 Definitions (templates, terminologies, terms, registry rows) load
 into memory — they are small. Documents stream in two passes: pass 1
 collects ids and pins, pass 2 extracts edges. This mirrors the
-engine's own streaming discipline and keeps the model O(definitions +
-doc-ids), not O(archive).
+engine's own streaming discipline. References whose target is outside
+the archive are counted, not kept per occurrence: one entry per (kind,
+target, reason, referring template), with a count, per closure variant.
+The model is therefore O(definitions + doc-ids + distinct outside
+targets per referring template), not O(archive).
 
 ## 4. Analyses
 

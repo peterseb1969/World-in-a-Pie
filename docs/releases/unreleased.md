@@ -7,6 +7,30 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `inspect --json` lists each outside reference once, with a count; `wip-archive` 0.32.0
+
+The offline archive model kept one entry for every reference to a target
+outside the archive, per document version. An app backup whose documents use
+the shared `wip` vocabularies held memory in proportion to its references,
+and `inspect --json` repeated each target once per occurrence. Now:
+
+- **Aggregated.** An outside or dangling reference is one entry per (kind,
+  target, reason, referring template), with `count` (occurrences) and
+  `origin_template`. `referenced_by` is the first referrer, a sample. The
+  model's memory is O(definitions + document ids + distinct outside targets
+  per referring template).
+- **Latest-only is latest-only.** `data_closure_latest_only.external` lists
+  only what latest document versions reference. It used to repeat the
+  with-history list.
+- **Reasons for terms and files** follow the archive's referent table: a term
+  or file recorded there in a namespace the archive does not carry is
+  `other-namespace-not-in-archive`, as documents already were. They used to be
+  `not-in-archive` always.
+- **The findings' counts are unchanged:** `external_reference` and
+  `dangling_document_reference` still count every occurrence.
+- **JSON schema 1.3.** A consumer that took `len(external)` as an occurrence
+  count must sum `count` instead.
+
 ### Archive transforms keep every row and field (wip-archive 0.31.0, WIP-Toolkit 0.26.1)
 
 - **`migrate`** of a document with several active versions (legal after a
