@@ -54,8 +54,8 @@ class NamespaceGrant(Document):
             "(namespace_id) the grant was made for. An orphaned grant counts as "
             "no grant until it is activated: when a namespace with its "
             "namespace_id is created, by whoever creates it, or when a namespace "
-            "admin activates it. (A key whose own namespaces list names the "
-            "prefix still reads it, as any such key does without a grant.)"
+            "admin activates it. A key's namespaces list does not stand in for "
+            "it: the list is a scope and gives no access by itself."
         ),
     )
     orphaned_at: datetime | None = Field(

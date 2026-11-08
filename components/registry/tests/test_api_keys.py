@@ -253,16 +253,17 @@ class TestDeleteAPIKey:
         assert response.status_code == 200
         assert response.json()["revoked_grants"] == ["vendor1", "vendor2"]
 
-        # A new key under the same name starts with no grants.
+        # A new key under the same name starts with only its own grants: the
+        # read grant creation writes on its listed namespace, not the old write.
         await client.post(
             BASE, json={"name": "granted-key", "namespaces": ["vendor1"]}, headers=auth_headers,
         )
         grants = (await client.get(
             "/api/registry/namespaces/vendor1/grants", headers=auth_headers,
         )).json()
-        subjects = {g["subject"] for g in (grants if isinstance(grants, list) else grants["items"])}
-        assert "granted-key" not in subjects
-        assert "someone-else" in subjects
+        rows = grants if isinstance(grants, list) else grants["items"]
+        assert {g["permission"] for g in rows if g["subject"] == "granted-key"} == {"read"}
+        assert "someone-else" in {g["subject"] for g in rows}
 
     @pytest.mark.asyncio
     async def test_delete_config_key_rejected(self, client: AsyncClient, auth_headers: dict):

@@ -306,6 +306,7 @@ for their grants. Records have two authors:
 | Changed through the API | No — 409, `error_code: managed_by_deployer`; change them with wip-deploy | Yes |
 | Plaintext kept by | The install's secret backend; the app gets it as `WIP_API_KEY` | Nobody: shown once at creation |
 | After a MongoDB wipe or restore | Re-imported by the Registry at its next start (and every 10 s) | Gone unless restored from a backup |
+| Access on a listed namespace | The grants the file declares; a listed namespace without one reads, by name (the install reserves those names) | Its grant there only: the `namespaces` list is a scope and gives nothing. Creating the key writes a grant on each listed namespace (`grant_permission`, else `read`); the access ends with the grant — revoked, purged by a namespace deletion, or written orphaned by a restore |
 | Use case | App keys, standing agent and service keys | Apps wip-deploy does not manage, temporary keys |
 
 **Only the Registry reads the key file.** The deployer renders it into a
@@ -843,9 +844,9 @@ in §5.5.
   **orphaned**, with the id: on a name nobody holds here, and on a name held
   here by *another* namespace (a namespace or reservation of the same name
   with another id, such as another owner's reservation). An orphan counts as
-  no grant until it is activated, and the report lists it. (A key whose own
-  `namespaces` list names the prefix still reads it, as any such key does
-  without a grant.) A grant the archive holds orphaned never replaces one
+  no grant until it is activated, and the report lists it. A key's own
+  `namespaces` list does not stand in for it: the list is the key's scope
+  and gives no access by itself. A grant the archive holds orphaned never replaces one
   that is effective here. An orphan is activated when a namespace **with its
   id** is created, by whoever creates it, which the ID-preserving namespace
   restore does; or when a namespace admin activates it (`POST

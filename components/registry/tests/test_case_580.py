@@ -46,6 +46,16 @@ def _scoped_key_identity(namespaces: list[str]) -> UserIdentity:
     )
 
 
+async def _grant_scoped_key(*prefixes: str) -> None:
+    """The read grants key creation writes on a key's listed namespaces: the
+    list itself is a scope and gives no access."""
+    for prefix in prefixes:
+        await NamespaceGrant(
+            namespace=prefix, subject="case580-scoped", subject_type="api_key",
+            permission="read", granted_by="test-admin",
+        ).insert()
+
+
 async def _seed_entry(namespace: str, value: str) -> None:
     await RegistryEntry(
         entry_id=f"{namespace}-{value}",
@@ -76,10 +86,12 @@ class TestResolveAccessibleNamespaces:
 
     @pytest.mark.asyncio
     async def test_scoped_key_returns_only_in_scope(self, client: AsyncClient):
-        """A key scoped to one namespace resolves 'read' there (the api-key
-        fallback) and 'none' elsewhere, so only that namespace comes back."""
+        """A key scoped to one namespace resolves its grant there and 'none'
+        elsewhere — even with a grant there: the scope caps what grants reach."""
+        await NamespaceGrant.find({"subject": "case580-scoped"}).delete()
         for prefix in ("case580-a", "case580-b"):
             await Namespace(prefix=prefix).insert()
+        await _grant_scoped_key("case580-a", "case580-b")
 
         accessible = await resolve_accessible_namespaces(
             _scoped_key_identity(["case580-a"])
@@ -129,6 +141,8 @@ async def scoped_client(client: AsyncClient):
     app.dependency_overrides[require_api_key] = lambda: _scoped_key_identity(
         ["case580-mine"]
     )
+    await NamespaceGrant.find({"subject": "case580-scoped"}).delete()
+    await _grant_scoped_key("case580-mine", "case580-theirs")
     yield client
     app.dependency_overrides.pop(require_api_key, None)
 

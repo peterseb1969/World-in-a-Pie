@@ -1459,9 +1459,10 @@ async def list_grants(namespace: str) -> str:
     """List permission grants on a namespace (requires admin on it).
 
     Each grant maps a subject (user email, api_key name, or group) to a
-    permission level (read | write | admin). Note: a namespace-scoped API
-    key with NO grant can read its namespaces but not write — see
-    create_api_key's grant_permission for the provisioning shortcut.
+    permission level (read | write | admin). A namespace-scoped API key's
+    access on a namespace is its grant there: its namespaces list only caps
+    what grants reach. create_api_key writes a grant on each listed
+    namespace (read unless grant_permission says otherwise).
 
     Args:
         namespace: Namespace prefix.

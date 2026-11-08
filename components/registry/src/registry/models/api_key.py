@@ -135,9 +135,11 @@ class APIKeyCreateRequest(BaseModel):
         description=(
             "When set, create a namespace grant at this level for "
             "the new key (subject = key name) on each namespace in "
-            "`namespaces`. Requires `namespaces` to be set. Without it, a "
-            "scoped key can read its namespaces but not write — the grant "
-            "is a separate, easily-missed step."
+            "`namespaces`. Requires `namespaces` to be set. Without it the "
+            "key gets a read grant on each: the namespaces list is a scope "
+            "and gives no access by itself, so the key's access on a "
+            "namespace is always a grant, which ends when the namespace is "
+            "deleted or the grant is revoked."
         ),
     )
     reserve: list[NamespaceReserveRequest] | None = Field(
@@ -229,7 +231,10 @@ class APIKeyCreatedResponse(APIKeyResponse):
     plaintext_key: str = Field(description="The plaintext key (shown once, not stored)")
     granted_namespaces: list[str] | None = Field(
         default=None,
-        description="Namespaces a grant was created on (grant_permission)",
+        description=(
+            "Namespaces a grant was created on: every namespace in `namespaces` "
+            "(at grant_permission, read without it, admin where reserved)"
+        ),
     )
 
 

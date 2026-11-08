@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A runtime key's `namespaces` list is a scope, not a permission
+
+- A runtime (Console) key read every namespace its `namespaces` list named,
+  with no grant. That access outlived everything that ends a grant: deleting
+  the namespace and creating another under the name, a system restore
+  writing the key's grant orphaned because the namespace here is a
+  different one, and revoking the key's grant. The list now only caps what
+  the key's grants reach.
+- **Creating a key writes a grant on every listed namespace:** at
+  `grant_permission`, `read` without it, `admin` where the key reserves the
+  namespace. `granted_namespaces` in the response lists them all. So a key
+  created the way it always was keeps reading — through a grant.
+- **One-off at the Registry's first start:** each runtime key gets a `read`
+  grant on every listed namespace that exists and where it holds no grant
+  (an orphaned grant counts as one). It runs once per install (marker in
+  `registry_migrations`), so access that later ends is not handed back.
+- **Action:** a key whose read you revoke by deleting its grant now loses
+  it. Keys from the install's key file are unchanged: their access comes
+  from the file, by name.
+
 ### Namespace routes reveal nothing to a caller without standing
 
 - **`GET /namespaces/{prefix}/deletion-status` is for platform admins only**

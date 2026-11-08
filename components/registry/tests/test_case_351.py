@@ -25,6 +25,17 @@ from registry.api.grants import _build_synthetic_identity
 # _build_synthetic_identity — pure-function unit
 
 
+
+async def _grant(client, auth_headers, prefix: str, key_name: str, permission: str = "read") -> None:
+    """The grant key creation writes on each listed namespace: a key's
+    namespace list is a scope and gives no access by itself."""
+    resp = await client.post(
+        f"/api/registry/namespaces/{prefix}/grants",
+        json=[{"subject": key_name, "subject_type": "api_key", "permission": permission}],
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+
 class TestBuildSyntheticIdentity:
     def test_header_present_populates_raw_claims(self):
         ident = _build_synthetic_identity(
@@ -100,13 +111,14 @@ class TestCheckPermissionWithKeyNamespaces:
     async def test_scoped_key_gets_read_on_in_scope_namespace(
         self, client: AsyncClient, auth_headers: dict
     ):
-        """A key scoped to 'aa' should resolve 'read' on 'aa'."""
+        """A key scoped to 'aa' with its read grant there resolves 'read'."""
         # Provision the namespace.
         await client.post(
             "/api/registry/namespaces",
             json={"prefix": "case351-a"},
             headers=auth_headers,
         )
+        await _grant(client, auth_headers, "case351-a", "laptop-rc")
 
         resp = await client.get(
             "/api/registry/my/check-permission",
@@ -158,6 +170,7 @@ class TestCheckPermissionWithKeyNamespaces:
                 json={"prefix": prefix},
                 headers=auth_headers,
             )
+            await _grant(client, auth_headers, prefix, "multi")
 
         for prefix in ("case351-m1", "case351-m2"):
             resp = await client.get(
@@ -207,7 +220,7 @@ class TestCheckPermissionWithKeyNamespaces:
     ):
         """If an admin has explicitly granted write on the namespace to
         an api-key subject, the explicit grant should still take effect
-        — the namespace-list fallback only fires when no grant exists.
+        — the key's namespace list gives no permission of its own.
         This protects future grant-management UX from the fix changing
         precedence."""
         await client.post(
@@ -236,7 +249,7 @@ class TestCheckPermissionWithKeyNamespaces:
             headers={**auth_headers, "X-Key-Namespaces": "case351-grant"},
         )
         assert resp.status_code == 200
-        # Grant says write — the fallback would have said read.
+        # Grant says write.
         assert resp.json()["permission"] == "write"
 
 
@@ -249,14 +262,15 @@ class TestAccessibleNamespacesWithKeyNamespaces:
     async def test_scoped_key_lists_only_in_scope_namespaces(
         self, client: AsyncClient, auth_headers: dict
     ):
-        """A key scoped to ['x'] should see only 'x' in accessible-
-        namespaces, even if other namespaces exist."""
+        """A key scoped to ['x'] sees only 'x' in accessible-namespaces, even
+        with read grants on the others: the scope caps what grants reach."""
         for prefix in ("case351-acc-x", "case351-acc-y", "case351-acc-z"):
             await client.post(
                 "/api/registry/namespaces",
                 json={"prefix": prefix},
                 headers=auth_headers,
             )
+            await _grant(client, auth_headers, prefix, "laptop")
 
         resp = await client.get(
             "/api/registry/my/accessible-namespaces",

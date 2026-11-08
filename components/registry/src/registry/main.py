@@ -138,6 +138,11 @@ async def lifespan(app: FastAPI):
     from .services.namespace_identity import migrate_namespace_ids
     await migrate_namespace_ids()
 
+    # Once per install: give runtime keys the read grants their namespace
+    # lists used to stand in for (a key's list is a scope and gives nothing).
+    from .services.key_scope_grants import backfill_scope_read_grants
+    await backfill_scope_read_grants()
+
     # Store each namespace's claimed `prefixed` ID prefixes and report the
     # ones it cannot claim (a prefix two namespaces already share) — configs
     # written before the uniqueness rule are reported, never rewritten.

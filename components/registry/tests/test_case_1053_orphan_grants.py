@@ -34,8 +34,14 @@ def _p(tag: str) -> str:
 
 
 async def _key(client, headers, name, namespaces, **extra) -> dict:
+    """A key with the grants it asked for. Without grant_permission or
+    reserve it is a key as a system restore brings it back: its scope and no
+    grant but the ones the test writes (the read grants key creation writes
+    are dropped, so the key's access is the archive's grants)."""
     resp = await client.post(KEYS, headers=headers, json={"name": name, "namespaces": namespaces, **extra})
     assert resp.status_code == 201, resp.text
+    if "grant_permission" not in extra and "reserve" not in extra:
+        await NamespaceGrant.find({"subject": name, "subject_type": "api_key"}).delete()
     return {"X-API-Key": resp.json()["plaintext_key"]}
 
 
@@ -124,8 +130,8 @@ async def test_an_orphan_gives_nothing(client, auth_headers):
         namespace=prefix, subject=reader, subject_type="api_key", permission="admin",
         granted_by="t", orphaned=True,
     ).insert()
-    # The key's scope alone gives read; the orphaned admin adds nothing.
-    assert await _permission(client, reader_key, prefix) == "read"
+    # The orphaned admin gives nothing, and the key's scope gives nothing itself.
+    assert await _permission(client, reader_key, prefix) == 404
     assert (await client.get(f"{NS}/{prefix}/grants", headers=reader_key)).status_code == 403
 
 
@@ -140,7 +146,7 @@ async def test_a_later_reservation_holder_does_not_inherit_orphans(client, auth_
     created = await client.put(f"{NS}/{prefix}", json={}, headers=owner_key)
     assert created.status_code == 200, created.text
     assert created.json()["activated_orphan_grants"] == []
-    assert await _permission(client, reader_key, prefix) == "read"
+    assert await _permission(client, reader_key, prefix) == 404
     assert await _permission(client, owner_key, prefix) == "admin"
 
     # Re-running the system restore leaves the orphan as it is: the namespace
@@ -176,7 +182,7 @@ async def test_granting_again_activates_an_orphan(client, auth_headers):
     archive = await _archive_with_grant(client, auth_headers, prefix, reader)
     await _restore(client, auth_headers, archive, dry_run=False)
     await Namespace(prefix=prefix, description="made without activation").insert()
-    assert await _permission(client, reader_key, prefix) == "read"
+    assert await _permission(client, reader_key, prefix) == 404
 
     resp = await client.post(f"{NS}/{prefix}/grants", headers=auth_headers, json=[
         {"subject": reader, "subject_type": "api_key", "permission": "write"},
@@ -220,7 +226,7 @@ async def test_an_archived_orphan_stays_orphaned_where_its_prefix_exists(client,
     await Namespace(prefix=prefix, description="an unrelated namespace").insert()
     report = await _restore(client, auth_headers, backup, dry_run=False)
     assert f"{prefix}/api_key:{reader}" in report["grants"]["orphaned"]
-    assert await _permission(client, reader_key, prefix) == "read"
+    assert await _permission(client, reader_key, prefix) == 404
 
 
 @pytest.mark.asyncio
@@ -339,7 +345,7 @@ async def test_another_owners_reservation_does_not_inherit_the_archives_grants(c
     assert f"{prefix}/api_key:{reader}" in report["grants"]["orphaned"]
 
     assert (await client.put(f"{NS}/{prefix}", json={}, headers=owner_key)).status_code == 200
-    assert await _permission(client, reader_key, prefix) == "read"
+    assert await _permission(client, reader_key, prefix) == 404
 
 
 @pytest.mark.asyncio
@@ -397,9 +403,9 @@ async def test_the_owner_is_admin_on_its_absent_prefix_for_every_service(client,
 
     assert await check() == "admin"
     # Once the namespace exists, its grants decide: an admin created it and
-    # gave the owner nothing, so its scope gives read.
+    # gave the owner nothing, and its scope gives nothing itself.
     await Namespace(prefix=prefix, description="made by an admin").insert()
-    assert await check() == "read"
+    assert await check() == "none"
 
 
 @pytest.mark.asyncio

@@ -178,8 +178,15 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
          (wip-admins, wip-services); non-privileged unscoped keys get "none"
     3. Direct user grant (by email or API key name)
     4. Group grants (any matching group)
-    5. API key namespace list fallback (read-only if in list but no grant)
-    6. Default: none
+    5. Default: none
+
+    A runtime key's namespace list is a scope, never a permission: it caps
+    what the key's grants reach and gives nothing itself. Key creation
+    writes a read grant on each listed namespace it gives no other
+    permission on, so the access ends with the grant — when the namespace is
+    deleted (its grants are purged), when a restore writes it orphaned, or
+    when it is revoked. A config-file key that declares grants resolves from
+    its own declaration (above).
     """
     # Locked namespaces are inaccessible to everyone
     ns = await Namespace.find_one({"prefix": namespace})
@@ -225,8 +232,6 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
         if namespaces is not None:
             if namespace not in namespaces:
                 return "none"
-            # API key with namespace list but no explicit grant → read
-            # (can be overridden by explicit grant below)
         else:
             # Unscoped key (namespaces=None): only privileged groups may omit scoping
             if not any(g in _PRIVILEGED_GROUPS for g in identity.groups):
@@ -263,12 +268,6 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
             continue
         if _PERMISSION_LEVELS.get(grant.permission, 0) > _PERMISSION_LEVELS.get(best, 0):
             best = grant.permission
-
-    # If no explicit grant but API key has namespace in its list → read
-    if best == "none" and identity.auth_method == "api_key":
-        namespaces = (identity.raw_claims or {}).get("namespaces")
-        if namespaces is not None and namespace in namespaces:
-            best = "read"
 
     return best
 

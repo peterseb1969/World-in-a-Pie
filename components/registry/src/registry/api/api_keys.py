@@ -295,18 +295,16 @@ async def create_api_key(
     # POST /namespaces/{prefix}/grants, with the canonical api_key subject
     # (the bare key name). Namespace existence is intentionally not enforced:
     # key namespace scoping isn't either, and app provisioning may create the
-    # namespace after the key. A reserved namespace always gets admin.
+    # namespace after the key. A reserved namespace always gets admin; a
+    # listed one with no grant_permission gets read — the list itself is a
+    # scope and gives nothing.
     granted_namespaces: list[str] | None = None
-    if (request.grant_permission or reserve) and request.namespaces:
+    if request.namespaces:
         granted_namespaces = []
         for prefix in request.namespaces:
-            permission: Literal["read", "write", "admin"]
-            if prefix in reserved_prefixes:
-                permission = "admin"
-            elif request.grant_permission:
-                permission = request.grant_permission
-            else:
-                continue
+            permission: Literal["read", "write", "admin"] = (
+                "admin" if prefix in reserved_prefixes else request.grant_permission or "read"
+            )
             await _set_grant(doc.name, prefix, permission)
             granted_namespaces.append(prefix)
         logger.info(
