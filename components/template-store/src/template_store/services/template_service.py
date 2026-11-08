@@ -2412,6 +2412,33 @@ class TemplateService:
             )
             return None
 
+    # Create-request properties whose default ([]) would otherwise read as
+    # "empty it" when a re-post of an existing value omits them.
+    _KEPT_WHEN_OMITTED = (
+        "fields", "identity_fields", "header_fields", "rules",
+        "source_templates", "target_templates",
+    )
+
+    @staticmethod
+    def _with_omitted_kept(item: CreateTemplateRequest, existing: Template) -> CreateTemplateRequest:
+        """The re-post with every omitted list property set to the existing
+        template's value. model_fields_set keeps recording what was sent."""
+        kept: dict[str, Any] = {}
+        for name in TemplateService._KEPT_WHEN_OMITTED:
+            if name in item.model_fields_set:
+                continue
+            value = getattr(existing, name)
+            if name in ("source_templates", "target_templates"):
+                value = endpoint_lookups(value)
+            kept[name] = list(value or [])
+        if not kept:
+            return item
+        merged = item.model_copy(update=kept)
+        # model_copy(update=...) marks the updated names as set; restore what
+        # the caller actually sent.
+        object.__setattr__(merged, "__pydantic_fields_set__", set(item.model_fields_set))
+        return merged
+
     @staticmethod
     async def create_templates_with_conflict_policy(
         items: list[CreateTemplateRequest],
@@ -2533,6 +2560,9 @@ class TemplateService:
                     ))
                     continue
 
+                # What was omitted keeps the existing value: every list
+                # property defaults to [], which is not a request to empty it.
+                item = TemplateService._with_omitted_kept(item, existing)
                 verdict, diff = await TemplateService.compute_template_compatibility(
                     existing, item, namespace=item.namespace,
                 )
@@ -2631,6 +2661,11 @@ class TemplateService:
                     metadata=item.metadata,
                     reporting=item.reporting,
                 )
+                # Omitted properties carry the existing values here; None
+                # tells the update path to keep them rather than re-write them.
+                for name in TemplateService._KEPT_WHEN_OMITTED:
+                    if name not in item.model_fields_set and hasattr(update_req, name):
+                        setattr(update_req, name, None)
                 update_resp = await TemplateService.update_template(
                     template_id=existing.template_id,
                     request=update_req,
