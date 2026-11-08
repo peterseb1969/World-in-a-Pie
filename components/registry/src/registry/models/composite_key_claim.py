@@ -275,7 +275,7 @@ class CompositeKeyClaim(Document):
 
         Returns the claim as it was before (to put it back if the merge
         fails), or None when no claim of those owners exists."""
-        return await cls.get_motor_collection().find_one_and_update(
+        before: dict | None = await cls.get_motor_collection().find_one_and_update(
             {
                 "namespace": namespace,
                 "entity_type": entity_type,
@@ -288,6 +288,7 @@ class CompositeKeyClaim(Document):
             }},
             return_document=ReturnDocument.BEFORE,
         )
+        return before
 
     @classmethod
     async def restore(cls, before: dict, current_owner_entry_id: str) -> None:

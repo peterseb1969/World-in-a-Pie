@@ -22,6 +22,7 @@ import logging
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 from pymongo import UpdateOne
 from pymongo.errors import BulkWriteError, DuplicateKeyError
@@ -421,7 +422,8 @@ async def retire_entry_synonyms(
     )
     if written is None or released is UNCHANGED:
         return []
-    for syn in released:
+    retired = cast(list[Synonym], released)
+    for syn in retired:
         try:
             await CompositeKeyClaim.release(
                 syn.namespace, syn.entity_type, syn.composite_key_hash,
@@ -433,7 +435,7 @@ async def retire_entry_synonyms(
                 "the claim is unbacked and heals at the next collision.",
                 syn.composite_key_hash, syn.namespace, syn.entity_type, entry.entry_id,
             )
-    return released
+    return retired
 
 
 def _synonym_scope(syn: Synonym) -> tuple[str, str, str]:
