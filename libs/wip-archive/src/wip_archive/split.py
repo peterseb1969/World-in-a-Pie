@@ -13,9 +13,9 @@ it is verified with its own ``derived_from`` hop.
   documents reference, and the terminologies the island uses. Edge types
   sit in their endpoints' island, so relationships never cross a part. A
   terminology several islands use is copied into each (the model reports
-  these as shared). A terminology no island uses, and a document pinned to
-  a template the archive does not carry, go into a last ``unattached``
-  part, so nothing is lost.
+  these as shared). A terminology no island uses, a document pinned to a
+  template the archive does not carry, and a file no document references go
+  into a last ``unattached`` part, so every row of the archive is in a part.
 """
 
 from __future__ import annotations
@@ -97,7 +97,12 @@ def _by_island(reader: ArchiveReader, model: ArchiveModel) -> list[SplitPart]:
 
     used = set().union(*(p.terminologies for p in parts)) if parts else set()
     unattached.terminologies = set(model.terminologies) - used
-    has_unattached = bool(unattached.terminologies or unattached.documents)
+    # A file no document references follows no document: it would be in no
+    # part, and its row, Registry entry and bytes would be lost.
+    claimed = set().union(unattached.files, *(p.files for p in parts))
+    unreferenced = set(model.files) - claimed
+    unattached.files |= unreferenced
+    has_unattached = bool(unattached.terminologies or unattached.documents or unattached.files)
     if has_unattached:
         parts.append(unattached)
     for part in parts:
@@ -115,7 +120,8 @@ def _by_island(reader: ArchiveReader, model: ArchiveModel) -> list[SplitPart]:
         out.append(SplitPart(
             "unattached",
             f"{len(unattached.terminologies)} terminologies no island uses, "
-            f"{len(unattached.documents)} documents whose template the archive does not carry",
+            f"{len(unattached.documents)} documents whose template the archive does not carry, "
+            f"{len(unreferenced)} files no document references",
             unattached.keep_row,
         ))
     return out

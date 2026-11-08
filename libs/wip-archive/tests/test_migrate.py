@@ -185,3 +185,61 @@ def test_an_inactive_target_and_an_identity_fork_are_refused(tmp_path):
 def test_only_active_documents_migrate(tmp_path):
     path = _archive(tmp_path, documents=[_doc(A, "A"), _doc(B, "B", status="inactive")])
     assert _plan(path, MAPPING).cohort == {(A, 1)}
+
+
+# --- review of the archive transforms (CASE-1111) ---------------------------
+
+
+def test_a_document_with_two_active_versions_migrates_into_two_new_versions(tmp_path):
+    """Several active versions are legal (merge older_versions: keep). Each
+    migrates into its own successor, numbered on from the document's
+    highest version, as the live migration does; no two rows share one."""
+    second = {**_doc(A, "A"), "version": 2}
+    path = _archive(tmp_path, documents=[_doc(A, "A"), second, _doc(B, "B")])
+    plan = _plan(path, MAPPING)
+    result = run_transform(path, tmp_path / "out.zip", transform="migrate", toolkit_version="t",
+                           params=MAPPING, keep_row=plan.keep_row, rewrite_row=plan.rewrite_row,
+                           strict_identity=True, summary=plan.summary())
+    with ArchiveReader(tmp_path / "out.zip") as reader:
+        a_rows = [d for d in reader.read_entities("documents", namespace=NS) if d["document_id"] == A]
+    assert sorted(d["version"] for d in a_rows) == [1, 2, 3, 4]
+    by_version = {d["version"]: d for d in a_rows}
+    assert by_version[1]["status"] == by_version[2]["status"] == "inactive"
+    assert by_version[3]["status"] == by_version[4]["status"] == "active"
+    assert {by_version[3]["template_version"], by_version[4]["template_version"]} == {2}
+    assert plan.summary()["documents_migrated"] == 2  # A and B, not three rows
+    assert result.verdict == "pass", [f.to_dict() for f in result.findings]
+
+
+def test_a_format_fill_takes_dotted_paths_specs_and_conversions(tmp_path):
+    mapping = {"template": "ITEM", "to_version": 2,
+               "fill": {"region": "EU", "label": {"format": "[{code:>3}] {code!r} {region}"}}}
+    _p, _r, rows = _migrate(_archive(tmp_path), tmp_path / "o.zip", mapping)
+    assert rows[(A, 2)]["data"]["label"] == "[  A] 'A' EU"
+
+
+def test_a_format_fill_resolves_a_nested_field_like_copy():
+    from wip_archive.migrate import _fill_value
+    data = {"legacy": {"code": "L-7"}, "n": 3}
+    assert _fill_value({"copy": "legacy.code"}, data, "x") == "L-7"
+    assert _fill_value({"format": "{legacy.code}#{n:03d}"}, data, "x") == "L-7#003"
+    assert _fill_value({"format": "{legacy.missing}"}, data, "x") is None
+
+
+@pytest.mark.parametrize(("pattern", "message"), [
+    ("{}", "empty field"),
+    ("{code:>{w}}", "nests a field"),
+    ("{code", "malformed"),
+])
+def test_a_format_fill_it_cannot_resolve_is_refused_before_any_row(tmp_path, pattern, message):
+    mapping = {"template": "ITEM", "to_version": 2,
+               "fill": {"region": "EU", "label": {"format": pattern}}}
+    with pytest.raises(MigrationRefused, match=message):
+        _plan(_archive(tmp_path), mapping)
+
+
+def test_a_format_spec_that_does_not_fit_the_value_is_refused(tmp_path):
+    mapping = {"template": "ITEM", "to_version": 2,
+               "fill": {"region": "EU", "label": {"format": "{code:d}"}}}
+    with pytest.raises(MigrationRefused, match="does not apply"):
+        _plan(_archive(tmp_path), mapping)

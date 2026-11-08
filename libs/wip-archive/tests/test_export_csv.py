@@ -76,3 +76,36 @@ def test_an_existing_csv_is_refused_and_a_dry_run_writes_nothing(archive, tmp_pa
     with pytest.raises(ExportExistsError):
         _export(archive, out)
     _export(archive, out, overwrite=True)
+
+
+def test_a_data_field_named_like_an_export_column_keeps_its_value(tmp_path):
+    """A data field status, version or document_id, or one ending in
+    __term_id, was overwritten by the export's own column of that name and
+    the header held the name twice. Provenance: CASE-1111."""
+    rows = _rows()
+    odd = _doc(ODD, MONSTER, {"name": "Odd", "status": "sleeping", "version": "7b",
+                              "colour": "red", "colour__term_id": "mine"},
+               terms=[{"field_path": "colour", "term_id": RED}])
+    rows["documents"].append(odd)
+    rows["registry_entries"].append(_registry(ODD, "documents"))
+    path = _write(tmp_path / "in.zip", {NS: rows})
+    _export(path, tmp_path / "out")
+    header, out = _read(tmp_path / "out" / NS / "MONSTER.csv")
+    assert len(header) == len(set(header))
+    row = next(r for r in out if r["document_id"] == ODD)
+    assert row["status"] == "active" and row["data:status"] == "sleeping"
+    assert row["data:version"] == "7b"
+    assert row["colour__term_id"] == RED and row["data:colour__term_id"] == "mine"
+
+
+def test_a_column_taken_twice_refuses_the_export(tmp_path):
+    from wip_archive.export_csv import ExportCollisionError
+
+    rows = _rows()
+    odd = _doc(ODD, MONSTER, {"name": "Odd", "status": "a", "data:status": "b"})
+    rows["documents"].append(odd)
+    rows["registry_entries"].append(_registry(ODD, "documents"))
+    path = _write(tmp_path / "in.zip", {NS: rows})
+    with pytest.raises(ExportCollisionError, match="data:status"):
+        _export(path, tmp_path / "out")
+    assert not (tmp_path / "out").exists()

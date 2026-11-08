@@ -7,6 +7,24 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Archive transforms keep every row and field (wip-archive 0.31.0, WIP-Toolkit 0.26.1)
+
+- **`migrate`** of a document with several active versions (legal after a
+  merge with `older_versions: keep`) wrote every migrated row at the same
+  version, an archive no restore accepts. Each now migrates into its own
+  successor, numbered on from the document's highest version, as the live
+  migration does. `documents_migrated` counts documents, not rows.
+- **`migrate` `format` fills** resolve dotted paths (`{legacy.code}`) like
+  `copy` does, with format specs and conversions; a pattern with an empty
+  field, a field nested in a spec, a malformed brace or a spec that does not
+  fit the value is refused before anything is written, instead of crashing.
+- **`export-csv`**: a data field named `document_id`, `version`, `status`, or
+  ending in `__term_id`, was overwritten by the export's own column and the
+  header held the name twice. Such a field is now written as `data:<name>`;
+  a column taken twice even so refuses the export (nothing written).
+- **`split --by island`**: a file no document references was in no part, so
+  its row, Registry entry and bytes were lost. It goes into `unattached`.
+
 ### The Registry's namespace export/import is gone; use backup/restore
 
 `POST /api/registry/namespaces/{prefix}/export`,

@@ -637,9 +637,9 @@ def split(
     --by namespace (default) writes <ns>.zip per namespace. --by island
     writes island-<n>.zip per island: templates joined by references, with
     their documents, files and terminologies (a terminology several islands
-    use is copied into each). Terminologies no island uses, and documents
-    pinned to a template the archive does not carry, go into
-    unattached.zip. A reference from one part into another becomes a
+    use is copied into each). Terminologies no island uses, documents
+    pinned to a template the archive does not carry, and files no document
+    references go into unattached.zip. A reference from one part into another becomes a
     referent. Every part is verified before it is written and records its
     own derived_from hop. Exits 1 if any part's verdict is fail, or when a
     part archive exists without --force (nothing is written then).
@@ -711,11 +711,12 @@ def export_csv_cmd(
     (--all-versions: every version). Columns: document_id, version, status,
     then the data fields flattened by dot path (arrays as JSON text), in
     the template's field order. A term field is its value plus a
-    <path>__term_id column (a JSON list for an array). No instance needed.
-    An existing CSV refuses the run without --force, before anything is
-    written.
+    <path>__term_id column (a JSON list for an array). A data field named
+    like one of these columns (status, version, document_id, …__term_id) is
+    written as data:<name>. No instance needed. An existing CSV refuses the
+    run without --force, before anything is written.
     """
-    from wip_archive.export_csv import ExportExistsError, export_csv
+    from wip_archive.export_csv import ExportCollisionError, ExportExistsError, export_csv
 
     with ArchiveReader(archive_path) as reader:
         try:
@@ -723,6 +724,9 @@ def export_csv_cmd(
                                all_versions=all_versions, overwrite=force, dry_run=dry_run)
         except ExportExistsError as e:
             console.print(f"[red]{e}[/red] (pass --force to overwrite). Nothing written.")
+            sys.exit(1)
+        except ExportCollisionError as e:
+            console.print(f"[red]{e}[/red]. Nothing written.")
             sys.exit(1)
 
     if as_json:

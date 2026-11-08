@@ -19,6 +19,12 @@ term field is written as the value the document holds plus a
 ``<path>__term_id`` column right after it: the term id, or a JSON list in
 item order when the field is an array (``tags[0]``, ``tags[1]`` …). Empty
 cells mean the field is absent or null.
+
+**Reserved names.** ``document_id``, ``version``, ``status`` and every
+``…__term_id`` name are the export's own columns. A data path with one of
+those names is written as ``data:<path>`` (a field ``status`` becomes the
+column ``data:status``), so neither overwrites the other. Should that name
+be taken too, the export is refused (``ExportCollisionError``).
 """
 
 from __future__ import annotations
@@ -41,6 +47,21 @@ _INDEX = re.compile(r"\[(\d+)\]")
 
 class ExportExistsError(FileExistsError):
     """A CSV the export would write exists and overwriting was not asked for."""
+
+
+class ExportCollisionError(ValueError):
+    """Two values of one row would be written to the same column."""
+
+
+_DATA_PREFIX = "data:"
+
+
+def _data_column(path: str) -> str:
+    """The column a data path is written to: its own name, or ``data:<path>``
+    when the name is one of the export's own columns."""
+    if path in _BASE or path.endswith("__term_id"):
+        return _DATA_PREFIX + path
+    return path
 
 
 def _flatten(data: Any, prefix: str = "") -> Iterator[tuple[str, Any]]:
@@ -84,8 +105,22 @@ def _term_columns(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _row_values(row: dict[str, Any]) -> dict[str, Any]:
-    values = dict(_flatten(row.get("data") or {}))
-    values.update(_term_columns(row))
+    values: dict[str, Any] = {}
+    for path, value in _flatten(row.get("data") or {}):
+        column = _data_column(path)
+        if column in values:
+            raise ExportCollisionError(
+                f"document {row.get('document_id')} v{row.get('version')}: data fields "
+                f"{path!r} and {column!r} would both be written to column {column!r}"
+            )
+        values[column] = value
+    for column, value in _term_columns(row).items():
+        if column in values:
+            raise ExportCollisionError(
+                f"document {row.get('document_id')} v{row.get('version')}: the term column "
+                f"{column!r} collides with a data field of that name"
+            )
+        values[column] = value
     return values
 
 
@@ -107,6 +142,8 @@ def _order(columns: set[str], declared: list[str]) -> list[str]:
     placed: set[str] = set()
 
     def belongs(column: str, name: str) -> bool:
+        if column.startswith(_DATA_PREFIX):
+            column = column[len(_DATA_PREFIX):]
         return column == name or column.startswith(name + ".") \
             or column == f"{name}__term_id" or column.startswith(name + "__")
 

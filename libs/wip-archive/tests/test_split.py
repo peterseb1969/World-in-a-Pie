@@ -116,3 +116,28 @@ def test_an_unknown_by_is_refused(tmp_path):
     src = _write(tmp_path / "in.zip", {NS: _rows()})
     with pytest.raises(SplitError, match="unknown --by"):
         _parts(src, "colour")
+
+
+def _file_ids(path):
+    with ArchiveReader(path) as reader:
+        return [f["file_id"] for ns in reader.list_namespaces()
+                for f in reader.read_entities("files", namespace=ns)]
+
+
+def test_a_file_no_document_references_goes_to_unattached(tmp_path):
+    """Files followed only their documents, so an unreferenced file (and its
+    Registry row) was in no part. Provenance: CASE-1111."""
+    loose = _id("f", 41)
+    rows = _rows()
+    rows["files"].append({"file_id": loose, "namespace": NS, "filename": "loose.bin",
+                          "status": "active"})
+    rows["registry_entries"].append(_registry(loose, "files"))
+    src = _write(tmp_path / "in.zip", {NS: rows})
+    parts = _parts(src, "island")
+    assert parts[-1].name == "unattached" and "1 files no document references" in parts[-1].description
+    seen = []
+    for part in parts:
+        out = tmp_path / f"{part.name}.zip"
+        assert _apply(src, part, out).verdict != "fail"
+        seen += _file_ids(out)
+    assert sorted(seen) == sorted(_file_ids(src))

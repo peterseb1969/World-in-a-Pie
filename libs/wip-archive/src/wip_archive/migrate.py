@@ -78,6 +78,52 @@ def _get(data: dict[str, Any], path: str) -> Any:
     return current
 
 
+def _format_parts(pattern: str, name: str) -> list[tuple[str, str | None, str, str | None]]:
+    """The literal text and fields of a format fill, or MigrationRefused.
+
+    Each field is a data path, dotted for a nested field (resolved like a
+    ``copy``), with an optional plain format spec and conversion. An empty
+    field and a spec with a nested field are refused: there is nothing to
+    look them up by.
+    """
+    try:
+        parts = list(string.Formatter().parse(pattern))
+    except ValueError as e:
+        raise MigrationRefused(f"fill rule for {name!r}: format {pattern!r} is malformed: {e}") from e
+    for _text, field_name, spec, _conv in parts:
+        if field_name is None:
+            continue
+        if not field_name:
+            raise MigrationRefused(f"fill rule for {name!r}: format {pattern!r} has an empty field; name the data path")
+        if spec and ("{" in spec or "}" in spec):
+            raise MigrationRefused(f"fill rule for {name!r}: format {pattern!r} nests a field in a format spec")
+    return parts
+
+
+def _format_fill(pattern: str, data: dict[str, Any], name: str) -> Any:
+    out: list[str] = []
+    for text, field_name, spec, conversion in _format_parts(pattern, name):
+        out.append(text)
+        if field_name is None:
+            continue
+        value = _get(data, field_name)
+        if value is _MISSING or value is None:
+            return None  # a source is empty: leave the field for validation to report
+        if conversion == "r":
+            value = repr(value)
+        elif conversion == "s":
+            value = str(value)
+        elif conversion == "a":
+            value = ascii(value)
+        try:
+            out.append(format(value, spec or ""))
+        except (TypeError, ValueError) as e:
+            raise MigrationRefused(
+                f"fill rule for {name!r}: format spec {spec!r} does not apply to {field_name!r}: {e}"
+            ) from e
+    return "".join(out)
+
+
 def _fill_value(rule: Any, data: dict[str, Any], name: str) -> Any:
     if isinstance(rule, dict) and len(rule) == 1:
         (kind, arg), = rule.items()
@@ -87,11 +133,7 @@ def _fill_value(rule: Any, data: dict[str, Any], name: str) -> Any:
             value = _get(data, str(arg))
             return None if value is _MISSING else value
         if kind == "format":
-            fields = {f for _t, f, _s, _c in string.Formatter().parse(str(arg)) if f}
-            values = {f: _get(data, f) for f in fields}
-            if any(v is _MISSING or v is None for v in values.values()):
-                return None  # a source is empty: leave the field for validation to report
-            return str(arg).format(**values)
+            return _format_fill(str(arg), data, name)
     if isinstance(rule, dict) and set(rule) & {"copy", "format", "value"}:
         raise MigrationRefused(f"fill rule for {name!r} must have exactly one of copy, format, value")
     return rule
@@ -108,7 +150,10 @@ class MigrationPlan:
     target: dict[str, Any]
     versioned: bool
     cohort: set[tuple[str, int]] = field(default_factory=set)  # (document_id, version)
-    next_version: dict[str, int] = field(default_factory=dict)
+    # The version each migrated row is written at, per (document_id, version).
+    # A document with several active versions migrates each of them, into
+    # successive new versions, as the live migration numbers them.
+    next_version: dict[tuple[str, int], int] = field(default_factory=dict)
     failed: list[str] = field(default_factory=list)
     skipped: int = 0
     filled: dict[str, int] = field(default_factory=dict)  # field -> documents filled
@@ -158,7 +203,7 @@ class MigrationPlan:
             return [migrated]
         retired = {**row, "status": "inactive", "updated_at": self.now, "updated_by": ACTOR}
         migrated.update({
-            "version": self.next_version[str(row["document_id"])],
+            "version": self.next_version[(str(row["document_id"]), int(row.get("version") or 1))],
             "status": "active",
             "created_by": ACTOR,
         })
@@ -168,7 +213,7 @@ class MigrationPlan:
         return {
             "template": self.template,
             "to_version": self.to_version,
-            "documents_migrated": len(self.cohort),
+            "documents_migrated": len({doc for doc, _v in self.cohort}),
             "documents_skipped": self.skipped,
             "fields_filled": dict(self.filled),
         }
@@ -217,6 +262,10 @@ def plan_migration(reader: Any, model: ArchiveModel, mapping: dict[str, Any], *,
     )
     identity = list(target.get("identity_fields") or [])
     checked_sources: dict[int, list[str]] = {}
+    highest: dict[str, int] = {}  # document_id -> highest version assigned so far
+    for fname, rule in (mapping.get("fill") or {}).items():
+        if isinstance(rule, dict) and set(rule) == {"format"}:
+            _format_parts(str(rule["format"]), fname)  # refused before any row is read
 
     for ns in model.namespaces:
         for row in reader.read_entities("documents", namespace=ns):
@@ -253,9 +302,12 @@ def plan_migration(reader: Any, model: ArchiveModel, mapping: dict[str, Any], *,
                     plan.failed.append(f"{row.get('document_id')} v{row.get('version')}: {problem}")
                 plan.skipped += 1
                 continue
-            plan.cohort.add((str(row["document_id"]), int(row.get("version") or 1)))
-            entry = model.documents.get(str(row["document_id"]))
-            plan.next_version[str(row["document_id"])] = (entry.max_version if entry else 1) + 1
+            doc_id, version = str(row["document_id"]), int(row.get("version") or 1)
+            plan.cohort.add((doc_id, version))
+            entry = model.documents.get(doc_id)
+            written = highest.get(doc_id, entry.max_version if entry else 1) + 1
+            plan.next_version[(doc_id, version)] = written
+            highest[doc_id] = written
             for fname in filled:
                 plan.filled[fname] = plan.filled.get(fname, 0) + 1
 
