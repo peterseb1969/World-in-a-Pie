@@ -956,27 +956,30 @@ async def _plan_mirror(
     scope = archive.source.scope
     plan = MirrorPlan(scope=scope)
     in_ns = set(scope.namespaces) if scope else None
+    await _mirror_keys(plan, archive, config_key_names, caller_key, in_ns)
+    removed_subjects = set().union(*(_key_subjects(k.name) for k in plan.keys))
+    plan.grants = await _mirror_grants(archive, user_grants, in_ns, removed_subjects)
+    plan.reservations = await _mirror_reservations(archive, in_ns)
+    plan.attachments = await _mirror_attachments(archive)
+    return plan
+
+
+async def _mirror_keys(
+    plan: MirrorPlan,
+    archive: SystemArchive,
+    config_key_names: frozenset[str],
+    caller_key: str | None,
+    in_ns: set[str] | None,
+) -> None:
+    """The unmanaged keys a mirror removes, into ``plan.keys``; the caller's
+    own key is refused instead of removed."""
+    scope = archive.source.scope
     archived_keys = {k.name for k in archive.api_keys}
-    # Keys with a grant outside the scope. Such a grant gives no access while
-    # the key's namespaces lie inside the scope, but it is a record outside
-    # it, and removing the key would delete it with the key.
-    granted_outside: set[str] = set()
-    if in_ns is not None:
-        for g in await NamespaceGrant.find(
-            {"subject_type": "api_key", "namespace": {"$nin": sorted(in_ns)}}
-        ).to_list():
-            granted_outside.add(g.subject.removeprefix("apikey:"))
+    granted_outside = await _keys_granted_outside(in_ns)
     for doc in await StoredAPIKey.find({"managed_by": None}).to_list():
         if doc.name in archived_keys or doc.name in config_key_names:
             continue
-        if scope is not None and (
-            # The archive's own word first: a key the source left out (it held
-            # a namespace outside the scope there) is never removed, even when
-            # this stack's copy of it holds only in-scope namespaces.
-            doc.name in scope.keys_left_out
-            or not scope.holds_key(doc.namespaces, doc.groups)
-            or doc.name in granted_outside
-        ):
+        if scope is not None and _key_outside_scope(doc, scope, granted_outside):
             continue
         if caller_key is not None and doc.name == caller_key:
             plan.refused.append(_skip_named(
@@ -984,39 +987,91 @@ async def _plan_mirror(
             ))
             continue
         plan.keys.append(doc)
-    removed_subjects = set().union(*(_key_subjects(k.name) for k in plan.keys))
 
+
+async def _keys_granted_outside(in_ns: set[str] | None) -> set[str]:
+    """Keys with a grant outside the scope. Such a grant gives no access while
+    the key's namespaces lie inside the scope, but it is a record outside it,
+    and removing the key would delete it with the key."""
+    if in_ns is None:
+        return set()
+    return {
+        g.subject.removeprefix("apikey:")
+        for g in await NamespaceGrant.find(
+            {"subject_type": "api_key", "namespace": {"$nin": sorted(in_ns)}}
+        ).to_list()
+    }
+
+
+def _key_outside_scope(doc: StoredAPIKey, scope: ArchiveScope, granted_outside: set[str]) -> bool:
+    """Whether a scoped mirror must leave a key alone. The archive's own word
+    first: a key the source left out (it held a namespace outside the scope
+    there) is never removed, even when this stack's copy of it holds only
+    in-scope namespaces."""
+    return (
+        doc.name in scope.keys_left_out
+        or not scope.holds_key(doc.namespaces, doc.groups)
+        or doc.name in granted_outside
+    )
+
+
+async def _mirror_grants(
+    archive: SystemArchive,
+    user_grants: bool,
+    in_ns: set[str] | None,
+    removed_subjects: set[str],
+) -> list[NamespaceGrant]:
+    """The unmanaged grants a mirror removes: every grant to a key it removes,
+    and, inside the scope, every grant the archive does not hold and the key
+    file does not own. Bootstrap grants, and user grants a restore would not
+    write, are kept."""
     archived_grants = {_grant_id(g.namespace, g.subject_type, g.subject) for g in archive.grants}
+    removed: list[NamespaceGrant] = []
     for g in await NamespaceGrant.find({"managed_by": None}).to_list():
         if g.granted_by == BOOTSTRAP_GRANTOR:
             continue
         if g.subject_type == "user" and not user_grants:
             continue
         removed_with_key = g.subject_type == "api_key" and g.subject in removed_subjects
-        if not removed_with_key and in_ns is not None and g.namespace not in in_ns:
-            continue
-        if not removed_with_key:
-            if _grant_id(g.namespace, g.subject_type, g.subject) in archived_grants:
-                continue
-            if await _grant_owned_by_file(_as_archive_grant(g), g):
-                continue
-        plan.grants.append(g)
+        if removed_with_key or await _grant_unclaimed(g, in_ns, archived_grants):
+            removed.append(g)
+    return removed
 
+
+async def _grant_unclaimed(
+    g: NamespaceGrant, in_ns: set[str] | None, archived_grants: set[str],
+) -> bool:
+    """A grant inside the scope that neither the archive holds nor the key
+    file owns."""
+    if in_ns is not None and g.namespace not in in_ns:
+        return False
+    if _grant_id(g.namespace, g.subject_type, g.subject) in archived_grants:
+        return False
+    return not await _grant_owned_by_file(_as_archive_grant(g), g)
+
+
+async def _mirror_reservations(
+    archive: SystemArchive, in_ns: set[str] | None,
+) -> list[RuntimeReservation]:
+    """The unmanaged reservations inside the scope the archive does not hold."""
     archived_prefixes = {r.prefix for r in archive.reservations}
-    plan.reservations = [
+    return [
         r for r in await RuntimeReservation.find({"managed_by": None}).to_list()
         if r.prefix not in archived_prefixes and (in_ns is None or r.prefix in in_ns)
     ]
 
+
+async def _mirror_attachments(archive: SystemArchive) -> list[AppAttachment]:
+    """The unmanaged active attachments inside the scope the archive does not
+    hold."""
+    scope = archive.source.scope
     archived_attachments = {a.name for a in archive.attachments}
     in_attachments = set(scope.attachments) if scope else None
-    plan.attachments = [
+    return [
         a for a in await AppAttachment.find({"managed_by": None, "status": "active"}).to_list()
         if a.name not in archived_attachments
         and (in_attachments is None or a.name in in_attachments)
     ]
-    return plan
-
 
 async def _caller_replacement(
     archive: SystemArchive, caller_key: str | None, config_key_names: frozenset[str],
