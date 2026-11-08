@@ -21,7 +21,14 @@ jobs:
       - name: Install tools
         run: |
           . .venv/bin/activate
-          pip install ruff shellcheck-py
+          # radon is pinned like the quality audit's: its complexity counts
+          # shift across releases, and the ratchet compares counts.
+          pip install ruff shellcheck-py radon==6.0.1
+
+      - name: Complexity ratchet (changed files only)
+        run: |
+          . .venv/bin/activate
+          python3 scripts/check-complexity-ratchet.py --base HEAD~1 --head HEAD
 
       - name: Ruff (changed files only)
         run: |
