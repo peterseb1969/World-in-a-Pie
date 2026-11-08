@@ -4,7 +4,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Body, Depends
 
@@ -111,101 +111,16 @@ async def add_synonyms(
     """
     results: list[AddSynonymResponse | None] = [None] * len(items)
     access = NamespaceAccess(identity)
-
     loaded = await _load_active_entries({item.target_id for item in items})
 
     # Decide every item in order, in memory. An addition needs a claim; it is
     # applied to its entry only once the claim holds.
-    planned: list[tuple[int, RegistryEntry, Synonym, Synonym | None]] = []
-    pending: dict[tuple[str, str], int] = {}  # (entry_id, hash) -> planned index
-    dependents: dict[int, list[int]] = {}  # planned index -> items riding on it
+    plan = _AddPlan(results)
     for i, item in enumerate(items):
         try:
-            invalid = invalid_entity_type_fields(item.synonym_entity_type)
-            if invalid:
-                results[i] = AddSynonymResponse(index=i, status="error", **invalid)
-                continue
-
-            entry = loaded.get(item.target_id)
-            if not entry or not await access.allows(entry.namespace, "read"):
-                results[i] = AddSynonymResponse(index=i, status="target_not_found")
-                continue
-
-            refusal = await _write_refusal(access, entry.namespace)
-            if refusal:
-                results[i] = AddSynonymResponse(index=i, status="forbidden", error=refusal)
-                continue
-
-            mismatch = _scope_mismatch(
-                entry, item.synonym_namespace, item.synonym_entity_type,
-            ) or key_scope_refusal(
-                item.synonym_composite_key, entry.namespace, rule="synonym_scope_mismatch",
-            )
-            if mismatch:
-                results[i] = AddSynonymResponse(
-                    index=i, status="error", registry_id=entry.entry_id, **mismatch,
-                )
-                continue
-
-            # Keys starting with "@" qualify system-generated synonyms (a
-            # document's "@template"). Only system callers may write them, so
-            # an explicit synonym cannot claim the key a document will need.
-            reserved = sorted(k for k in item.synonym_composite_key if k.startswith("@"))
-            if reserved and not identity.has_any_group(["wip-admins", "wip-services"]):
-                results[i] = AddSynonymResponse(
-                    index=i, status="forbidden",
-                    error=(
-                        f"Synonym keys {reserved} are reserved for system-generated "
-                        "synonyms (keys starting with '@')"
-                    ),
-                )
-                continue
-
-            synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
-
-            # The same synonym for the same entry earlier in this request: it
-            # shares that item's outcome (already_exists once it is added).
-            earlier = pending.get((entry.entry_id, synonym_hash))
-            if earlier is not None:
-                dependents.setdefault(earlier, []).append(i)
-                continue
-
-            # Fast path: this entry already owns the hash (primary or embedded
-            # synonym) → idempotent already_exists, no claim churn. An inactive
-            # copy (released when the entity was retired) does not count: the
-            # add claims the key again, or reports who holds it now.
-            recorded = entry.find_synonym_by_hash(synonym_hash)
-            if entry.primary_composite_key_hash == synonym_hash or (
-                recorded is not None and recorded.status != "inactive"
-            ):
-                results[i] = AddSynonymResponse(
-                    index=i, status="already_exists", registry_id=entry.entry_id,
-                )
-                continue
-
-            synonym = Synonym(
-                namespace=entry.namespace,
-                entity_type=entry.entity_type,
-                composite_key=item.synonym_composite_key,
-                composite_key_hash=synonym_hash,
-                source_info=item.synonym_source_info,
-                created_by=item.created_by,
-            )
-            pending[(entry.entry_id, synonym_hash)] = len(planned)
-            planned.append((i, entry, synonym, recorded))
+            results[i] = await _decide_add(i, item, loaded.get(item.target_id), access, identity, plan)
         except Exception as e:
             results[i] = AddSynonymResponse(index=i, status="error", **error_fields(e))
-
-    def settle(p: int, response: AddSynonymResponse) -> None:
-        i = planned[p][0]
-        results[i] = response.model_copy(update={"index": i})
-        for d in dependents.get(p, []):
-            follow = response
-            if response.status == "added":
-                follow = AddSynonymResponse(
-                    index=d, status="already_exists", registry_id=response.registry_id,
-                )
-            results[d] = follow.model_copy(update={"index": d})
 
     # Atomic uniqueness gate (CASE-427, two-phase since CASE-554): claim every
     # new hash pending before writing; the unique index is the lock. A claim
@@ -213,15 +128,177 @@ async def add_synonyms(
     # stale holder is healed and retried once, a genuine owner is never
     # stolen from.
     token = new_claim_token()
-    blocked = await claim_keys_pending_bulk([
-        [(entry.namespace, entry.entity_type, synonym.composite_key_hash, entry.entry_id, "synonym")]
-        for _, entry, synonym, _ in planned
-    ], token)
+    blocked = await claim_keys_pending_bulk(
+        [[_add_claim_key(entry, synonym)] for _, entry, synonym, _ in plan.planned], token,
+    )
+    changed = _apply_claimed(plan, blocked)
+    failed, redecided = await _write_synonym_lists(
+        changed, lambda entry_id, entry: _reapply_adds(plan, entry_id, entry),
+    )
+    to_confirm, to_release = _settle_written_adds(plan, failed, redecided)
+    # A failed write releases the claims this request inserted (anything
+    # missed is pending and dies in the reconcile pass); a committed one
+    # confirms them, best-effort.
+    await release_keys_bulk(to_release, token)
+    await confirm_keys_bulk(to_confirm)
+
+    return _add_response(results, len(items))
+
+
+def _add_response(results: list[AddSynonymResponse | None], total: int) -> BulkSynonymAddResponse:
+    done = [r for r in results if r is not None]
+    return BulkSynonymAddResponse(
+        results=done, total=total,
+        succeeded=sum(1 for r in done if r.status == "added"),
+        failed=sum(1 for r in done if r.status in ("target_not_found", "forbidden", "error")),
+    )
+
+
+class _AddPlan:
+    """The additions a synonym-add request decided to make, in item order.
+
+    ``planned`` holds (item index, entry, synonym, the inactive copy it
+    replaces); ``pending`` the planned index of each (entry_id, hash) so a
+    repeat rides on it; ``dependents`` the items riding on each planned one;
+    ``by_entry`` the planned indices whose claims held, per entry.
+    """
+
+    def __init__(self, results: list[AddSynonymResponse | None]) -> None:
+        self.results = results
+        self.planned: list[tuple[int, RegistryEntry, Synonym, Synonym | None]] = []
+        self.pending: dict[tuple[str, str], int] = {}
+        self.dependents: dict[int, list[int]] = {}
+        self.by_entry: dict[str, list[int]] = {}
+
+    def settle(self, p: int, response: AddSynonymResponse) -> None:
+        """Answer a planned item and the repeats riding on it: a repeat of an
+        added synonym is already_exists, any other outcome is shared."""
+        i = self.planned[p][0]
+        self.results[i] = response.model_copy(update={"index": i})
+        for d in self.dependents.get(p, []):
+            follow = response
+            if response.status == "added":
+                follow = AddSynonymResponse(
+                    index=d, status="already_exists", registry_id=response.registry_id,
+                )
+            self.results[d] = follow.model_copy(update={"index": d})
+
+
+def _add_claim_key(entry: RegistryEntry, synonym: Synonym) -> tuple[str, str, str, str, str]:
+    return (entry.namespace, entry.entity_type, synonym.composite_key_hash, entry.entry_id, "synonym")
+
+
+def _holds_key(entry: RegistryEntry, synonym_hash: str) -> tuple[bool, Synonym | None]:
+    """Whether the entry already owns the hash (its primary key, or an active
+    synonym), and the synonym recorded under it. An inactive copy (released
+    when the entity was retired) does not count: the add claims the key
+    again, or reports who holds it now."""
+    recorded = entry.find_synonym_by_hash(synonym_hash)
+    held = entry.primary_composite_key_hash == synonym_hash or (
+        recorded is not None and recorded.status != "inactive"
+    )
+    return held, recorded
+
+
+async def _add_refusal(
+    i: int,
+    item: AddSynonymItem,
+    entry: RegistryEntry | None,
+    access: NamespaceAccess,
+    identity: UserIdentity,
+) -> AddSynonymResponse | None:
+    """The answer refusing an item before its key is looked at: an invalid
+    entity type, a target the caller cannot read (or that is not active), no
+    write on its namespace, or a key it may not hold (_add_key_refusal)."""
+    invalid = invalid_entity_type_fields(item.synonym_entity_type)
+    if invalid:
+        return AddSynonymResponse(index=i, status="error", **invalid)
+    if not entry or not await access.allows(entry.namespace, "read"):
+        return AddSynonymResponse(index=i, status="target_not_found")
+    refusal = await _write_refusal(access, entry.namespace)
+    if refusal:
+        return AddSynonymResponse(index=i, status="forbidden", error=refusal)
+    return _add_key_refusal(i, item, entry, identity)
+
+
+def _add_key_refusal(
+    i: int, item: AddSynonymItem, entry: RegistryEntry, identity: UserIdentity,
+) -> AddSynonymResponse | None:
+    """A synonym scoped to another namespace or entity type, or a reserved
+    '@' key from a caller that is not a system one."""
+    mismatch = _scope_mismatch(
+        entry, item.synonym_namespace, item.synonym_entity_type,
+    ) or key_scope_refusal(
+        item.synonym_composite_key, entry.namespace, rule="synonym_scope_mismatch",
+    )
+    if mismatch:
+        return AddSynonymResponse(index=i, status="error", registry_id=entry.entry_id, **mismatch)
+    # Keys starting with "@" qualify system-generated synonyms (a document's
+    # "@template"). Only system callers may write them, so an explicit
+    # synonym cannot claim the key a document will need.
+    reserved = sorted(k for k in item.synonym_composite_key if k.startswith("@"))
+    if reserved and not identity.has_any_group(["wip-admins", "wip-services"]):
+        return AddSynonymResponse(
+            index=i, status="forbidden",
+            error=(
+                f"Synonym keys {reserved} are reserved for system-generated "
+                "synonyms (keys starting with '@')"
+            ),
+        )
+    return None
+
+
+async def _decide_add(
+    i: int,
+    item: AddSynonymItem,
+    entry: RegistryEntry | None,
+    access: NamespaceAccess,
+    identity: UserIdentity,
+    plan: _AddPlan,
+) -> AddSynonymResponse | None:
+    """Answer an item at once (refused, or the entry holds the key already),
+    or plan it: riding on an earlier item with the same synonym for the same
+    entry, or as an addition to claim. None when it is answered later."""
+    refusal = await _add_refusal(i, item, entry, access, identity)
+    if refusal is not None:
+        return refusal
+    entry = cast(RegistryEntry, entry)
+    synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
+
+    # The same synonym for the same entry earlier in this request: it shares
+    # that item's outcome (already_exists once it is added).
+    earlier = plan.pending.get((entry.entry_id, synonym_hash))
+    if earlier is not None:
+        plan.dependents.setdefault(earlier, []).append(i)
+        return None
+
+    # Fast path: the entry already owns the hash → idempotent already_exists,
+    # no claim churn.
+    held, recorded = _holds_key(entry, synonym_hash)
+    if held:
+        return AddSynonymResponse(index=i, status="already_exists", registry_id=entry.entry_id)
+
+    synonym = Synonym(
+        namespace=entry.namespace,
+        entity_type=entry.entity_type,
+        composite_key=item.synonym_composite_key,
+        composite_key_hash=synonym_hash,
+        source_info=item.synonym_source_info,
+        created_by=item.created_by,
+    )
+    plan.pending[(entry.entry_id, synonym_hash)] = len(plan.planned)
+    plan.planned.append((i, entry, synonym, recorded))
+    return None
+
+
+def _apply_claimed(plan: _AddPlan, blocked: list[str | None]) -> dict[str, RegistryEntry]:
+    """Add each synonym whose claim held to its entry (replacing the inactive
+    copy it re-claims), and answer the others as conflicts. Returns the
+    entries that changed."""
     changed: dict[str, RegistryEntry] = {}
-    by_entry: dict[str, list[int]] = {}
-    for p, ((_i, entry, synonym, recorded), owner) in enumerate(zip(planned, blocked, strict=True)):
+    for p, ((_i, entry, synonym, recorded), owner) in enumerate(zip(plan.planned, blocked, strict=True)):
         if owner is not None:
-            settle(p, AddSynonymResponse(
+            plan.settle(p, AddSynonymResponse(
                 index=0, status="error",
                 error=f"Synonym already registered under different entry: {owner}",
                 error_code="synonym_conflict",
@@ -231,51 +308,52 @@ async def add_synonyms(
             entry.synonyms.remove(recorded)  # the inactive copy it replaces
         entry.synonyms.append(synonym)
         changed[entry.entry_id] = entry
-        by_entry.setdefault(entry.entry_id, []).append(p)
+        plan.by_entry.setdefault(entry.entry_id, []).append(p)
+    return changed
 
-    def reapply_adds(entry_id: str, entry: RegistryEntry) -> SynonymOutcomes:
-        outcomes: SynonymOutcomes = {}
-        for p in by_entry[entry_id]:
-            synonym = planned[p][2]
-            h = synonym.composite_key_hash
-            recorded = entry.find_synonym_by_hash(h)
-            if entry.primary_composite_key_hash == h or (
-                recorded is not None and recorded.status != "inactive"
-            ):
-                outcomes[h] = "already_exists"
-                continue
-            if recorded is not None:
-                entry.synonyms.remove(recorded)
-            entry.synonyms.append(synonym)
-            outcomes[h] = "added"
-        return outcomes
 
-    failed, redecided = await _write_synonym_lists(changed, reapply_adds)
-    claims_to_confirm, claims_to_release = [], []
-    for entry_id, positions in by_entry.items():
+def _reapply_adds(plan: _AddPlan, entry_id: str, entry: RegistryEntry) -> "SynonymOutcomes":
+    """Apply an entry's additions again to the entry as re-read after another
+    writer changed it, deciding each against it as it now is."""
+    outcomes: SynonymOutcomes = {}
+    for p in plan.by_entry[entry_id]:
+        synonym = plan.planned[p][2]
+        h = synonym.composite_key_hash
+        held, recorded = _holds_key(entry, h)
+        if held:
+            outcomes[h] = "already_exists"
+            continue
+        if recorded is not None:
+            entry.synonyms.remove(recorded)
+        entry.synonyms.append(synonym)
+        outcomes[h] = "added"
+    return outcomes
+
+
+def _settle_written_adds(
+    plan: _AddPlan,
+    failed: dict[str, dict],
+    redecided: "dict[str, SynonymOutcomes]",
+) -> tuple[list[tuple[str, str, str, str, str]], list[tuple[str, str, str, str, str]]]:
+    """Answer each written addition: its entry's write error, or added (or
+    what a re-read re-decided). Returns (claims to confirm, claims to
+    release)."""
+    to_confirm: list[tuple[str, str, str, str, str]] = []
+    to_release: list[tuple[str, str, str, str, str]] = []
+    for entry_id, positions in plan.by_entry.items():
         for p in positions:
-            _, entry, synonym, _ = planned[p]
-            key = (entry.namespace, entry.entity_type, synonym.composite_key_hash, entry_id, "synonym")
+            _, entry, synonym, _ = plan.planned[p]
+            key = _add_claim_key(entry, synonym)
             if entry_id in failed:
-                claims_to_release.append(key)
-                settle(p, AddSynonymResponse(index=0, status="error", **failed[entry_id]))
+                to_release.append(key)
+                plan.settle(p, AddSynonymResponse(index=0, status="error", **failed[entry_id]))
             else:
                 # The claim is this entry's either way: confirm it.
-                claims_to_confirm.append(key)
+                to_confirm.append(key)
                 status = redecided.get(entry_id, {}).get(synonym.composite_key_hash, "added")
-                settle(p, AddSynonymResponse(index=0, status=status, registry_id=entry_id))
-    # A failed write releases the claims this request inserted (anything
-    # missed is pending and dies in the reconcile pass); a committed one
-    # confirms them, best-effort.
-    await release_keys_bulk(claims_to_release, token)
-    await confirm_keys_bulk(claims_to_confirm)
+                plan.settle(p, AddSynonymResponse(index=0, status=status, registry_id=entry_id))
+    return to_confirm, to_release
 
-    done = [r for r in results if r is not None]
-    return BulkSynonymAddResponse(
-        results=done, total=len(items),
-        succeeded=sum(1 for r in done if r.status == "added"),
-        failed=sum(1 for r in done if r.status in ("target_not_found", "forbidden", "error")),
-    )
 
 
 async def _load_active_entries(entry_ids: set[str]) -> dict[str, RegistryEntry]:
