@@ -620,6 +620,15 @@ def _patch_result(
     )
 
 
+async def _remove_registry_entry(client: Any, document_id: str, actor: str) -> None:
+    """Remove a hard-deleted document's Registry entry; a failure is logged,
+    the delete stands."""
+    try:
+        await client.hard_delete_entry(document_id, updated_by=actor)
+    except Exception as e:
+        logger.warning(f"Failed to hard-delete Registry entry for document {document_id}: {e}")
+
+
 def _add_validation_timing(validation_results: list[Any], timing: dict[str, float]) -> None:
     """Aggregate per-stage validation timing from all individual results."""
     val_stage_totals: dict[str, float] = {}
@@ -2616,134 +2625,23 @@ class DocumentService:
         """
         # Use authenticated identity (not client-provided)
         actor = get_identity_string()
-
         if hard_delete:
-            # Find any version to get namespace
-            any_doc = await Document.find_one({"document_id": document_id})
-            if not any_doc:
-                return False
-
-            client = get_registry_client()
-            deletion_mode = await client.get_namespace_deletion_mode(any_doc.namespace)
-            if deletion_mode != "full":
-                raise DocumentStoreError(
-                    f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')",
-                    "invalid_state", rule="deletion_mode_retain",
-                )
-
-            target = None
-            if version is not None:
-                target = await Document.find_one({"document_id": document_id, "version": version})
-                if not target:
-                    return False
-            # Removing the last remaining version removes the document.
-            whole = version is None or await Document.find({"document_id": document_id}).count() == 1
-            referrers = await self._hard_delete_referrers(
-                document_id, None if whole else version, deleted_with,
+            return await self._hard_delete_document(
+                document_id, actor, version=version, warnings=warnings, force=force,
+                deleted_with=deleted_with, broken_references=broken_references,
             )
-            if referrers:
-                total = sum(group["documents"] for group in referrers)
-                what = "document" if whole else f"version {version} of document"
-                if not force:
-                    error = DocumentStoreError(
-                        f"Hard-delete refused: {total} other document(s) reference this "
-                        f"{what}, and their references would stop resolving. "
-                        "Pass force=true to delete anyway.",
-                        "invalid_state", rule="referenced",
-                    )
-                    error.details = {"rule": "referenced", "referrers": referrers}
-                    raise error
-                if warnings is not None:
-                    warnings.append(
-                        f"Hard-deleted with force: references from {total} other "
-                        f"document(s) to this {what} no longer resolve"
-                    )
-                if broken_references is not None:
-                    broken_references.extend(referrers)
+        return await self._soft_delete_document(document_id, actor, warnings)
 
-            from .file_service import get_file_service
-            file_service = get_file_service()
-
-            # A document holds the file references of its latest version while
-            # that version is active: superseding a version releases its set,
-            # and a soft delete releases the active one. A hard delete releases
-            # only what the document still holds; releasing every removed
-            # row's set again took counts other documents hold, and deleted
-            # files they still reference.
-            latest = await Document.find({"document_id": document_id}).sort(
-                [("version", SortDirection.DESCENDING)]
-            ).limit(1).to_list()
-            held = latest[0] if latest and latest[0].status == DocumentStatus.ACTIVE else None
-
-            if target is not None:
-                # Version-specific hard-delete
-                event_payload = await self._document_to_event_payload(target)
-                event_payload["hard_delete"] = True
-                event_payload["version"] = version
-
-                if held is not None and held.version == target.version:
-                    await self._update_file_reference_counts(target.file_references, delta=-1)
-                await self._hard_delete_orphaned_files(
-                    target.file_references, file_service,
-                    deleting=document_id, deleting_version=target.version, warnings=warnings,
-                )
-
-                await target.delete()
-
-                # Check if any versions remain
-                remaining = await Document.find({"document_id": document_id}).count()
-                if remaining == 0:
-                    try:
-                        await client.hard_delete_entry(document_id, updated_by=actor)
-                    except Exception as e:
-                        logger.warning(f"Failed to hard-delete Registry entry for document {document_id}: {e}")
-            else:
-                # All versions hard-delete
-                all_versions = await Document.find({"document_id": document_id}).to_list()
-
-                event_payload = await self._document_to_event_payload(any_doc)
-                event_payload["hard_delete"] = True
-                # Every version goes: no version, so the consumer removes the
-                # document's rows of every version, not one picked at random.
-                event_payload["version"] = None
-
-                if held is not None:
-                    await self._update_file_reference_counts(held.file_references, delta=-1)
-                # Each file any version referenced, once: the ones nothing holds
-                # now (count 0) go, including those a supersede left unheld.
-                every_file = list({
-                    ref["file_id"]: ref for doc in all_versions
-                    for ref in doc.file_references or [] if ref.get("file_id")
-                }.values())
-                await self._hard_delete_orphaned_files(
-                    every_file, file_service, deleting=document_id, warnings=warnings,
-                )
-
-                await Document.find({"document_id": document_id}).delete()
-
-                try:
-                    await client.hard_delete_entry(document_id, updated_by=actor)
-                except Exception as e:
-                    logger.warning(f"Failed to hard-delete Registry entry for document {document_id}: {e}")
-
-            # Publish document deleted event
-            await publish_document_event(
-                EventType.DOCUMENT_DELETED,
-                event_payload,
-                changed_by=actor,
-            )
-            return True
-
-        # SOFT DELETE path (existing behavior)
+    async def _soft_delete_document(
+        self, document_id: str, actor: str, warnings: list[str] | None,
+    ) -> bool:
+        """Retire the document's active version; False when it has none."""
         results = await Document.find(
             {"document_id": document_id, "status": DocumentStatus.ACTIVE.value}
         ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
-        document = results[0] if results else None
-        if not document:
+        if not results:
             return False
-
-        if document.status == DocumentStatus.INACTIVE:
-            return True  # Already inactive
+        document = results[0]
 
         document.status = DocumentStatus.INACTIVE
         document.updated_at = datetime.now(UTC)
@@ -2767,8 +2665,178 @@ class DocumentService:
         await self._update_file_reference_counts(
             document.file_references, delta=-1
         )
-
         return True
+
+    async def _hard_delete_document(
+        self,
+        document_id: str,
+        actor: str,
+        *,
+        version: int | None,
+        warnings: list[str] | None,
+        force: bool,
+        deleted_with: frozenset[str],
+        broken_references: list[dict[str, Any]] | None,
+    ) -> bool:
+        """Remove one version, or every version, for good; False when there
+        is nothing to remove."""
+        # Find any version to get namespace
+        any_doc = await Document.find_one({"document_id": document_id})
+        if not any_doc:
+            return False
+
+        client = get_registry_client()
+        deletion_mode = await client.get_namespace_deletion_mode(any_doc.namespace)
+        if deletion_mode != "full":
+            raise DocumentStoreError(
+                f"Hard-delete requires namespace deletion_mode='full' (currently '{deletion_mode}')",
+                "invalid_state", rule="deletion_mode_retain",
+            )
+
+        target = None
+        if version is not None:
+            target = await Document.find_one({"document_id": document_id, "version": version})
+            if not target:
+                return False
+        # Removing the last remaining version removes the document.
+        whole = version is None or await Document.find({"document_id": document_id}).count() == 1
+        await self._refuse_or_note_referrers(
+            document_id, version, whole=whole, force=force, deleted_with=deleted_with,
+            warnings=warnings, broken_references=broken_references,
+        )
+
+        # A document holds the file references of its latest version while
+        # that version is active: superseding a version releases its set,
+        # and a soft delete releases the active one. A hard delete releases
+        # only what the document still holds; releasing every removed
+        # row's set again took counts other documents hold, and deleted
+        # files they still reference.
+        latest = await Document.find({"document_id": document_id}).sort(
+            [("version", SortDirection.DESCENDING)]
+        ).limit(1).to_list()
+        held = latest[0] if latest and latest[0].status == DocumentStatus.ACTIVE else None
+
+        if target is not None:
+            event_payload = await self._hard_delete_version(
+                document_id, target, held, client, actor, warnings,
+            )
+        else:
+            event_payload = await self._hard_delete_all_versions(
+                document_id, any_doc, held, client, actor, warnings,
+            )
+
+        # Publish document deleted event
+        await publish_document_event(
+            EventType.DOCUMENT_DELETED,
+            event_payload,
+            changed_by=actor,
+        )
+        return True
+
+    async def _refuse_or_note_referrers(
+        self,
+        document_id: str,
+        version: int | None,
+        *,
+        whole: bool,
+        force: bool,
+        deleted_with: frozenset[str],
+        warnings: list[str] | None,
+        broken_references: list[dict[str, Any]] | None,
+    ) -> None:
+        """A hard delete is refused while other documents reference what it
+        removes; with force it goes ahead, and says what it broke."""
+        referrers = await self._hard_delete_referrers(
+            document_id, None if whole else version, deleted_with,
+        )
+        if not referrers:
+            return
+        total = sum(group["documents"] for group in referrers)
+        what = "document" if whole else f"version {version} of document"
+        if not force:
+            error = DocumentStoreError(
+                f"Hard-delete refused: {total} other document(s) reference this "
+                f"{what}, and their references would stop resolving. "
+                "Pass force=true to delete anyway.",
+                "invalid_state", rule="referenced",
+            )
+            error.details = {"rule": "referenced", "referrers": referrers}
+            raise error
+        if warnings is not None:
+            warnings.append(
+                f"Hard-deleted with force: references from {total} other "
+                f"document(s) to this {what} no longer resolve"
+            )
+        if broken_references is not None:
+            broken_references.extend(referrers)
+
+    async def _hard_delete_version(
+        self,
+        document_id: str,
+        target: Document,
+        held: Document | None,
+        client: Any,
+        actor: str,
+        warnings: list[str] | None,
+    ) -> dict[str, Any]:
+        """Version-specific hard-delete; the document's Registry entry goes
+        with its last version. Returns the deleted event's payload."""
+        from .file_service import get_file_service
+
+        event_payload = await self._document_to_event_payload(target)
+        event_payload["hard_delete"] = True
+        event_payload["version"] = target.version
+
+        if held is not None and held.version == target.version:
+            await self._update_file_reference_counts(target.file_references, delta=-1)
+        await self._hard_delete_orphaned_files(
+            target.file_references, get_file_service(),
+            deleting=document_id, deleting_version=target.version, warnings=warnings,
+        )
+
+        await target.delete()
+
+        # Check if any versions remain
+        remaining = await Document.find({"document_id": document_id}).count()
+        if remaining == 0:
+            await _remove_registry_entry(client, document_id, actor)
+        return event_payload
+
+    async def _hard_delete_all_versions(
+        self,
+        document_id: str,
+        any_doc: Document,
+        held: Document | None,
+        client: Any,
+        actor: str,
+        warnings: list[str] | None,
+    ) -> dict[str, Any]:
+        """Every version's hard delete. Returns the deleted event's payload."""
+        from .file_service import get_file_service
+
+        all_versions = await Document.find({"document_id": document_id}).to_list()
+
+        event_payload = await self._document_to_event_payload(any_doc)
+        event_payload["hard_delete"] = True
+        # Every version goes: no version, so the consumer removes the
+        # document's rows of every version, not one picked at random.
+        event_payload["version"] = None
+
+        if held is not None:
+            await self._update_file_reference_counts(held.file_references, delta=-1)
+        # Each file any version referenced, once: the ones nothing holds
+        # now (count 0) go, including those a supersede left unheld.
+        every_file = list({
+            ref["file_id"]: ref for doc in all_versions
+            for ref in doc.file_references or [] if ref.get("file_id")
+        }.values())
+        await self._hard_delete_orphaned_files(
+            every_file, get_file_service(), deleting=document_id, warnings=warnings,
+        )
+
+        await Document.find({"document_id": document_id}).delete()
+        await _remove_registry_entry(client, document_id, actor)
+        return event_payload
 
     async def hard_delete_exemptions(self, candidates: dict[str, bool]) -> frozenset[str]:
         """The documents of one request whose references to each other do not
