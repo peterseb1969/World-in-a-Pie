@@ -7,7 +7,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends
-from pymongo.errors import DuplicateKeyError
 
 from wip_auth import UserIdentity
 
@@ -22,7 +21,6 @@ from ..models.api_models import (
     RemoveSynonymItem,
     RemoveSynonymResponse,
 )
-from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
 from ..services.claims import (
@@ -36,6 +34,7 @@ from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.event_bus import entries_changed
 from ..services.hash import HashService
 from ..services.key_scope import key_scope_refusal
+from ..services.merge import MergedEntryChanged, MergeKeyConflict, merge_into
 from .grants import NamespaceAccess
 
 logger = logging.getLogger("registry.synonyms")
@@ -499,7 +498,15 @@ async def merge_entries(
     items: list[MergeItem] = Body(...),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkMergeResponse:
-    """Merge two entries, making the deprecated one a synonym of the preferred.
+    """Merge entries: each deprecated entry becomes an alias of its preferred one.
+
+    The deprecated entry goes inactive and records the entry it was merged
+    into; resolving its id answers that entry. Its keys (its id, its primary
+    key and its synonyms) move to the preferred entry with their claims, so
+    re-registering the deprecated identity answers the preferred entry. A
+    key some third entry holds refuses the merge (``already_exists``, the
+    holder in ``details``) and nothing is merged. Repeating a merge that
+    completed answers ``merged``. Merges are one-way.
 
     Needs write on both entries' namespaces; an entry the caller cannot read
     is reported as not found.
@@ -519,10 +526,21 @@ async def merge_entries(
                 ))
                 continue
 
-            deprecated = await RegistryEntry.find_one({
-                "entry_id": item.deprecated_id, "status": "active"
-            })
-            if not deprecated or not await access.allows(deprecated.namespace, "read"):
+            deprecated = await RegistryEntry.find_one({"entry_id": item.deprecated_id})
+            if (
+                deprecated is not None and deprecated.merged_into == preferred.entry_id
+                and await access.allows(deprecated.namespace, "read")
+            ):
+                # Already merged into this entry: a retry, answered as done.
+                results.append(MergeResponse(
+                    index=i, status="merged",
+                    preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
+                ))
+                continue
+            if (
+                deprecated is None or deprecated.status != "active"
+                or not await access.allows(deprecated.namespace, "read")
+            ):
                 results.append(MergeResponse(
                     index=i, status="deprecated_not_found",
                     deprecated_id=item.deprecated_id,
@@ -583,69 +601,15 @@ async def merge_entries(
                 ))
                 continue
 
-            # Add deprecated entry_id as a synonym (so lookups by old ID resolve)
-            entry_id_key = {"entry_id": deprecated.entry_id}
-            entry_id_hash = HashService.compute_composite_key_hash(entry_id_key)
-            entry_id_synonym = Synonym(
-                namespace=deprecated.namespace,
-                entity_type=deprecated.entity_type,
-                composite_key=entry_id_key,
-                composite_key_hash=entry_id_hash,
-                created_by=item.updated_by,
-            )
-            additions: list[Synonym] = []
-            if not any(s.composite_key_hash == entry_id_hash for s in preferred.synonyms):
-                # CASE-427: claim the entry_id-as-synonym for preferred. The
-                # hash is unique to deprecated's id, so a conflict can only be a
-                # prior partial merge of this pair → transfer to preferred.
-                try:
-                    await CompositeKeyClaim.claim(
-                        deprecated.namespace, deprecated.entity_type,
-                        entry_id_hash, preferred.entry_id, "synonym",
-                    )
-                except DuplicateKeyError:
-                    await CompositeKeyClaim.transfer(
-                        deprecated.namespace, deprecated.entity_type,
-                        entry_id_hash, preferred.entry_id,
-                    )
-                additions.append(entry_id_synonym)
-
-            # Transfer all deprecated synonyms (claim re-points to preferred).
-            # An inactive synonym holds no claim — the key may belong to
-            # another entry by now — so it moves as a record only.
-            for syn in deprecated.synonyms:
-                if not any(s.composite_key_hash == syn.composite_key_hash for s in preferred.synonyms):
-                    if syn.status != "inactive":
-                        await CompositeKeyClaim.transfer(
-                            syn.namespace, syn.entity_type, syn.composite_key_hash,
-                            preferred.entry_id,
-                        )
-                    additions.append(syn)
-
-            # Both writes are guarded on the revision read (entry_writes): a
-            # synonym another request adds to either entry meanwhile is kept.
-            now = datetime.now(UTC)
-
-            def retire(entry: RegistryEntry, now=now, by=item.updated_by) -> None:
-                entry.status = "inactive"
-                entry.updated_at = now
-                entry.updated_by = by
-
-            def absorb(entry: RegistryEntry, now=now, by=item.updated_by, additions=additions) -> None:
-                present = {s.composite_key_hash for s in entry.synonyms}
-                entry.synonyms.extend(s for s in additions if s.composite_key_hash not in present)
-                entry.rebuild_search_values()
-                entry.updated_at = now
-                entry.updated_by = by
-
-            await apply_to_entry(
-                deprecated.entry_id, retire, ("status", "updated_at", "updated_by"),
-                first=deprecated,
-            )
-            await apply_to_entry(
-                preferred.entry_id, absorb,
-                ("synonyms", "search_values", "updated_at", "updated_by"), first=preferred,
-            )
+            try:
+                await merge_into(preferred, deprecated, item.updated_by)
+            except (MergeKeyConflict, MergedEntryChanged) as e:
+                results.append(MergeResponse(
+                    index=i, status="error",
+                    preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
+                    error=str(e), error_code=e.error_code, details=getattr(e, "details", None),
+                ))
+                continue
 
             results.append(MergeResponse(
                 index=i, status="merged",

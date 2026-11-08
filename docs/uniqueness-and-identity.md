@@ -293,9 +293,9 @@ Two canonical entries turn out to represent the same entity. You can **merge** t
 
 1. Choose which entry_id to keep as canonical (typically the newer or more complete one)
 2. Merge via `POST /api/registry/synonyms/merge` with `preferred_id` and `deprecated_id`
-3. The deprecated entry's synonyms and ID are moved to the preferred entry's `search_values`
+3. The deprecated entry goes inactive and records `merged_into` = the preferred entry. Its keys move to the preferred entry with their claims: its ID (as the synonym `{"entry_id": <deprecated>}`), its primary key and its synonyms. The deprecated entry keeps a record of them, all inactive, and its primary key hash is cleared.
 
-Lookups by either ID now resolve to the surviving canonical entry.
+Resolving the deprecated ID (`/entries/resolve`, the path every service uses) now answers the preferred entry, through any chain of merges, so references already stored as the deprecated ID keep resolving. Re-registering the deprecated identity answers the preferred entry. A key a third entry holds refuses the merge, and nothing is merged. A merge is one-way: there is no unmerge.
 
 ### Use Case: Vendor ID Mapping
 

@@ -205,7 +205,7 @@ Registry results keep their reason statuses (`already_exists`, `not_found`, `alr
 |--------------|------|---------------------------|
 | `invalid_request` | The request is invalid: an unknown entity type (on writes, lookups, resolve and search alike), neither `entry_id` nor composite key, a synonym scoped outside its entry's namespace or entity type, merging an entry with itself or with one of another namespace or entity type, merging term entries outside def-store | `invalid_entity_type`, `synonym_scope_mismatch`, `self_merge`, `merge_scope_mismatch`, `terms_merge_in_def_store` |
 | `not_found` | The namespace does not exist or is not active | `namespace` |
-| `already_exists` | An `entry_id` already exists, or a composite key is claimed by another entry | `key_claimed` |
+| `already_exists` | An `entry_id` already exists, or a composite key is claimed by another entry; on a merge, a key the deprecated entry would hand over is held by a third entry (`details.holder` names it; nothing is merged) | `key_claimed`, `key_held_elsewhere` |
 | `synonym_conflict` | The synonym is registered under another entry | — |
 | `invalid_state` | The entry's state forbids the operation | `not_reserved`, `no_identity`, `deletion_mode_retain` |
 | `concurrency_conflict` | The entry changed concurrently | — |

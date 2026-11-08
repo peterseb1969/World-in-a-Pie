@@ -287,7 +287,7 @@ Five resources provide baseline context to the AI without tool calls:
 | `lookup_entry(entry_id?, namespace?, entity_type?, composite_key?)` | Look up by ID or by composite key. Key lookup also searches synonyms. |
 | `add_synonym(target_id, synonym_composite_key, synonym_namespace?, synonym_entity_type?)` | Add an alternative composite key that resolves to an existing entry — external/vendor ID mapping. The synonym takes the entry's namespace and entity type; sent values must match them. Not a cross-namespace link: use `NS:VALUE` for that. |
 | `remove_synonym(target_id, synonym_composite_key, synonym_namespace?, synonym_entity_type?)` | Remove a synonym from a Registry entry. Namespace and type default to the entry's. |
-| `merge_entries(preferred_id, deprecated_id)` | Merge two entries. Deprecated entry becomes inactive; its ID is added as synonym to the preferred entry. Refuses term entries — use `merge_terms`. |
+| `merge_entries(preferred_id, deprecated_id)` | Merge two entries. The deprecated entry becomes inactive and its ID resolves to the preferred entry; its keys (ID, primary key, synonyms) move there. A key held by a third entry refuses the merge. One-way. Refuses term entries — use `merge_terms`. |
 | `search_registry(query)` | Search Registry entries by ID or composite key. |
 
 ### Terminologies (8 tools)

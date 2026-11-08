@@ -375,10 +375,15 @@ async def release_entries_keys(
 
 def releasable_synonyms(entry: RegistryEntry) -> list[Synonym]:
     """The synonyms retiring this entry releases: every active synonym except
-    the auto-synonym (the entity's own address). The primary key is not a
-    synonym and always stays claimed — that is what lets a re-post of the same
-    identity revive the retired entity instead of forking it."""
-    return [s for s in entry.active_synonyms() if not entry.is_auto_synonym(s)]
+    the auto-synonym (the entity's own address) and the keys a merge gave it
+    in a merged-away entry's place (that entry's id and primary key). The
+    primary key is not a synonym and always stays claimed — that is what lets
+    a re-post of the same identity revive the retired entity instead of
+    forking it; a merged-away entry's keys stay for the same reason."""
+    return [
+        s for s in entry.active_synonyms()
+        if not entry.is_auto_synonym(s) and not s.merged_from
+    ]
 
 
 async def retire_entry_synonyms(
@@ -507,6 +512,9 @@ async def revive_entry_synonyms(
     confirm. A claim whose synonym another request removed before the write
     is released.
     """
+    if entry.merged_into:
+        # A merged-away entry's keys belong to the entry it was merged into.
+        return [], []
     token = new_claim_token()
     claimed, taken = await _claim_inactive_synonyms(entry, token)
     if not claimed:

@@ -88,6 +88,7 @@ from ..services.event_bus import entries_changed
 from ..services.hash import HashService
 from ..services.id_generator import IdGeneratorService
 from ..services.key_scope import key_scope_refusal, named_namespace
+from ..services.merge import follow_merges
 from .grants import NamespaceAccess, resolve_accessible_namespaces
 
 logger = logging.getLogger("registry.entries")
@@ -2230,6 +2231,25 @@ async def reactivate_entries(
     )
 
 
+async def _resolve_entry_id(
+    entry_id: str, entity_type: str | None, status_filter: Any,
+) -> RegistryEntry | None:
+    """The entry a canonical id names, following merges: a merged-away
+    entry's id answers the entry it was merged into, whose status the filter
+    then judges."""
+    query: dict[str, Any] = {"entry_id": entry_id}
+    if entity_type:
+        query["entity_type"] = entity_type
+    found = await RegistryEntry.find_one({**query, "$or": [
+        {"status": status_filter}, {"merged_into": {"$nin": [None, ""]}},
+    ]})
+    found = await follow_merges(found)
+    if found is None:
+        return None
+    wanted = status_filter["$in"] if isinstance(status_filter, dict) else [status_filter]
+    return found if found.status in wanted else None
+
+
 @router.post(
     "/resolve",
     response_model=BulkResolveResponse,
@@ -2289,15 +2309,10 @@ async def resolve_synonyms(
             # resolves only as its own type: a template's id is not a
             # terminology. A miss falls through to the composite key, so a
             # value equal to another type's id still finds its own entry.
-            # Namespace stays out: canonical ids are namespace-free.
+            # Namespace stays out: canonical ids are namespace-free. The id of
+            # an entry merged into another resolves to that entry.
             if item.entry_id:
-                id_query: dict[str, Any] = {
-                    "entry_id": item.entry_id,
-                    "status": status_filter,
-                }
-                if item.entity_type:
-                    id_query["entity_type"] = item.entity_type
-                entry = await RegistryEntry.find_one(id_query)
+                entry = await _resolve_entry_id(item.entry_id, item.entity_type, status_filter)
 
             if entry and not await access.allows(entry.namespace, "read"):
                 entry = None

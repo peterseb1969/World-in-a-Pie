@@ -60,6 +60,16 @@ class Synonym(BaseModel):
             "Legacy synonyms carry no status and read as active."
         ),
     )
+    merged_from: str | None = Field(
+        default=None,
+        description=(
+            "Set by a merge on the keys it gave the surviving entry in the "
+            "merged-away entry's place — that entry's id and its primary key "
+            "— to the merged-away entry's id. Retiring the survivor keeps "
+            "these claimed, as it keeps the survivor's own id and primary "
+            "key: they are the merged-away entity's address."
+        ),
+    )
 
 
 # Registry entity types are plural; the auto-synonym's "type" part is singular.
@@ -126,6 +136,16 @@ class RegistryEntry(Document):
     status: str = Field(
         default="active",
         description="Status: reserved, active, or inactive"
+    )
+
+    # Set by a merge on the entry it merged away (which is then inactive):
+    # the entry it was merged into. Resolving this entry's id follows it.
+    merged_into: str | None = Field(
+        default=None,
+        description=(
+            "The entry this one was merged into. Its id resolves to that "
+            "entry (following further merges); its keys moved there."
+        ),
     )
 
     # Timestamps

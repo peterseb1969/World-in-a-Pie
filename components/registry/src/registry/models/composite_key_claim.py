@@ -22,6 +22,7 @@ array is untouched. Claims are kept in lockstep with that read model by the
 write paths + an idempotent reconciliation pass.
 """
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import ClassVar
 
@@ -265,15 +266,41 @@ class CompositeKeyClaim(Document):
         entity_type: str,
         composite_key_hash: str,
         new_owner_entry_id: str,
-    ) -> None:
-        """Re-point an existing claim to a new owner (merge: deprecated →
-        preferred). Marks it kind=synonym since it now lives as a synonym of
-        the preferred entry."""
-        await cls.get_motor_collection().update_one(
+        from_owners: Sequence[str],
+    ) -> dict | None:
+        """Re-point a claim held by one of ``from_owners`` to a new owner
+        (merge: deprecated → preferred) as a pending synonym claim, dated now:
+        the new owner's entry is written next, and the claim is confirmed
+        after. A claim held by anyone else is never moved.
+
+        Returns the claim as it was before (to put it back if the merge
+        fails), or None when no claim of those owners exists."""
+        return await cls.get_motor_collection().find_one_and_update(
             {
                 "namespace": namespace,
                 "entity_type": entity_type,
                 "composite_key_hash": composite_key_hash,
+                "owner_entry_id": {"$in": list(from_owners)},
             },
-            {"$set": {"owner_entry_id": new_owner_entry_id, "kind": "synonym"}},
+            {"$set": {
+                "owner_entry_id": new_owner_entry_id, "kind": "synonym",
+                "state": "pending", "created_at": datetime.now(UTC), "claim_token": None,
+            }},
+            return_document=ReturnDocument.BEFORE,
+        )
+
+    @classmethod
+    async def restore(cls, before: dict, current_owner_entry_id: str) -> None:
+        """Put back a claim ``transfer`` moved, while the new owner still holds it."""
+        await cls.get_motor_collection().update_one(
+            {
+                "namespace": before["namespace"],
+                "entity_type": before["entity_type"],
+                "composite_key_hash": before["composite_key_hash"],
+                "owner_entry_id": current_owner_entry_id,
+            },
+            {"$set": {
+                field: before.get(field)
+                for field in ("owner_entry_id", "kind", "state", "created_at", "claim_token")
+            }},
         )

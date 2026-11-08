@@ -7,6 +7,33 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A merged-away Registry ID resolves to the entry it was merged into
+
+- **The merged-away ID resolves.** After merging D into P, `POST
+  /entries/resolve` (the path every service resolves through) answered
+  `not_found` for D; only by-id lookup and search found P. D now records
+  `merged_into = P` and resolving D answers P, through any chain of merges,
+  so references already stored as D keep resolving. The redirect is the
+  merge's own record: an `{"entry_id": X}` synonym someone adds does not
+  make X resolve to its holder. Entries merged before this release carry no
+  `merged_into` and keep the old behaviour.
+- **D's keys belong to P.** D's primary key now moves to P along with its
+  synonyms; D keeps a record of them, all inactive, and its primary key hash
+  is cleared. Re-registering D's identity answers P — it answered D, an
+  inactive entry nothing resolved to.
+- **A merge takes only keys D or P hold.** A key a third entry holds (e.g.
+  `{"entry_id": D}` added to it as a synonym) refuses the merge with
+  `error_code: already_exists`, `details.rule: key_held_elsewhere`,
+  `details.holder`; nothing is merged. The claim used to be moved to P,
+  leaving two active entries with one key.
+- **A failed merge can be retried.** P is written before D is retired, and a
+  failure before P's write puts the claims back. Retrying a merge that
+  completed answers `merged` (it answered `deprecated_not_found`).
+- **Retiring P keeps D's address.** `/entries/deactivate` on P released the
+  `{"entry_id": D}` synonym; the keys a merge gives P in D's place now carry
+  `merged_from = D` and stay claimed, like P's own id and primary key.
+- New fields: `RegistryEntry.merged_into`, `Synonym.merged_from`.
+
 ### File-store lows
 
 - `GET /files?sort_by=size` sorts by size; it sorted on a field that does not

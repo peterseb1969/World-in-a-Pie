@@ -682,8 +682,9 @@ All synonyms resolve to the same canonical WIP ID via O(1) lookup.
 Key operations:
 - Register a synonym: {"erp_id": "SAP-001"} → resolves to a WIP entity ID
 - Lookup by any synonym: as fast as lookup by canonical ID
-- Merge two IDs: declare one as synonym of the other (currently one-way —
-  no reactivation endpoint exists yet for the deprecated entry)
+- Merge two IDs: the deprecated entry goes inactive and its id resolves to
+  the preferred one from then on; its keys (id, primary key, synonyms) move
+  to the preferred entry. One-way: there is no unmerge
 
 This enables cross-system integration without mapping tables.
 
@@ -1723,7 +1724,12 @@ async def remove_synonym(
 @mcp.tool()
 async def merge_entries(preferred_id: str, deprecated_id: str) -> str:
     """Merge two Registry entries. The deprecated entry becomes inactive and its
-    entry_id is added as a synonym to the preferred entry (for backward compatibility).
+    id resolves to the preferred entry from then on (references already stored
+    as the deprecated id keep resolving). Its keys — its id, its primary key and
+    its synonyms — move to the preferred entry, so re-registering the deprecated
+    identity answers the preferred entry. A key held by a third entry refuses
+    the merge (error_code already_exists, the holder in details) and nothing
+    is merged. Repeating a completed merge answers merged. One-way.
 
     Term entries are refused: use merge_terms, which also moves the absorbed
     term's value and names to the survivor — a Registry-only merge would leave

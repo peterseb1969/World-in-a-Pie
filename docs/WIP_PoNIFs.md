@@ -121,9 +121,9 @@ For `updateTemplate()`, the default should be to keep the previous version activ
 
 **The feature:** Any entity in WIP can have multiple identifiers (synonyms) registered in the Registry. A synonym can be any key-value pair: `{"erp_id": "SAP-001"}`, `{"iban": "CH93 0076..."}`, `{"gandalf_name": "Mithrandir"}`. All synonyms resolve to the same canonical WIP ID. Lookup by any synonym is O(1), as fast as lookup by canonical ID.
 
-Additionally, two WIP IDs can be declared as synonyms of each other (merge), and a WIP ID can be deprecated in favour of another (redirect). The Registry maintains the full resolution chain. A single real-world entity can have multiple WIP IDs, not just one.
+Additionally, two WIP IDs can be merged: the deprecated entry goes inactive, records the entry it was merged into, and its ID resolves to that entry from then on — through any chain of merges. Its keys (its ID, its primary key, its synonyms) move to the surviving entry. A single real-world entity can have multiple WIP IDs, not just one.
 
-**Note on merge reversibility:** Merges are currently effectively one-way. Removing the synonym removes the link, but the deprecated entry remains inactive — there is no inactive → active transition endpoint in the Registry. A reactivation endpoint is planned as a future feature to enable clean unmerge operations. Merging is reversible — delete the synonym that linked the two IDs and they separate again.
+**Merges are one-way.** There is no unmerge: the deprecated entry's keys belong to the survivor afterwards, and nothing brings the deprecated entry back.
 
 An entity can have multiple WIP IDs. This is not a bug or an edge case — it's a legitimate state. Different systems may have independently created Registry entries for the same real-world entity before anyone knew they were the same.
 
@@ -133,7 +133,7 @@ An entity can have multiple WIP IDs. This is not a bug or an edge case — it's 
 - Most systems have one ID per entity. Two at most (internal + external). The idea of an entity with an unlimited number of identifiers, all equally valid for lookup, doesn't match any ORM or API framework's assumptions.
 - The assumption that one entity = one WIP ID is deeply ingrained. In reality, an entity can have as many WIP IDs as you want — and merging them (making one a synonym of another) is how you reconcile duplicates discovered after the fact. This is a PoNIF within the PoNIF.
 - Synonym resolution happens transparently during document creation. If a reference field contains a value that matches a synonym, it resolves. The developer might not even know synonyms are being used — which is both the power and the confusion.
-- Merging two WIP IDs is reversible (delete the synonym to unmerge), but developers trained on "merge = permanent destructive operation" will be afraid to use it, or conversely, will be surprised that an unmerge is possible.
+- Merging two WIP IDs is one-way, but nothing is lost: the merged-away ID keeps resolving, to the survivor, so references stored before the merge stay valid.
 
 **What goes wrong:**
 - A developer assumes each entity has exactly one WIP ID. They discover two IDs for the same entity and panic, thinking the data is corrupt. It's not — it's the normal state before reconciliation. The merge operation exists precisely for this.
