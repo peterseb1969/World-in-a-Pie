@@ -1280,6 +1280,19 @@ def _describe_gap(gap: dict[str, Any]) -> str:
     return f"{gap['name']} {gap['issue']} expected={gap['expected']} actual={gap['actual']}"
 
 
+# The order a plain restore writes a namespace's entities in: definitions
+# before what references them, registry entries last.
+_PLAIN_RESTORE_ORDER = (
+    "terminologies",
+    "terms",
+    "term_relations",
+    "templates",
+    "documents",
+    "files",
+    "registry_entries",
+)
+
+
 class DirectRestoreEngine:
     """Restore a namespace from an archive via direct MongoDB bulk inserts.
 
@@ -1401,120 +1414,27 @@ class DirectRestoreEngine:
                     tgt, drop_stale_reporting, dry_run=dry_run
                 )
 
-            # Identity precondition: an archive that carries entities but no
-            # registry rows restores into a namespace where nothing resolves
-            # by id — every list/query surface looks healthy while point
-            # reads fail, and post-restore integrity validation cannot see it
-            # (it checks MongoDB against itself; identity lives in the
-            # Registry). Refuse up front instead of minting that namespace.
-            entity_types_with_identity = (
-                "terminologies", "terms", "term_relations",
-                "templates", "documents", "files",
-            )
-            for src, _tgt in targets:
-                entity_rows = sum(
-                    reader.entity_count(et, namespace=src)
-                    for et in entity_types_with_identity
-                )
-                registry_rows = reader.entity_count(
-                    "registry_entries", namespace=src
-                )
-                if entity_rows > 0 and registry_rows == 0:
-                    if allow_missing_identity:
-                        self._emit(
-                            "warning",
-                            f"[{src}] archive carries {entity_rows} entity "
-                            "row(s) but NO registry identity rows "
-                            "(allow_missing_identity=true) — id-based reads "
-                            "in the restored namespace will fail to resolve.",
-                        )
-                    else:
-                        raise RestoreEngineError(
-                            f"Archive namespace '{src}' carries "
-                            f"{entity_rows} entity row(s) but no registry "
-                            "identity rows — was it exported with "
-                            "--skip-synonyms? Restoring it would produce a "
-                            "namespace where nothing resolves by id. Pass "
-                            "allow_missing_identity=true to restore anyway."
-                        )
+            self._check_identity_rows(reader, targets, allow_missing_identity)
 
-            # The archive's own ids are preserved — that is this mode's
-            # contract. References to entities it does NOT carry (the wip
-            # namespace's vocabularies, sibling namespaces) name the source
-            # install's ids, which on another install differ or do not
-            # exist; they are pointed at this install's entities. On the
-            # install the archive came from every referent resolves to
-            # itself, nothing is mapped, and rows are written as archived.
-            remapper = IDRemapper()
-            label = ", ".join(tgt for _src, tgt in targets)
-            referents = await self._map_external_referents(
-                reader, manifest, remapper, label,
-            )
-            dropped = await self._report_unresolved_references(
-                reader, [src for src, _tgt in targets], remapper, referents, label,
-                drop_edges=drop_unresolved_edges,
-                unresolved_hint=(
-                    " — if it lives in a namespace restored separately, restore "
-                    "that namespace first, then this one"
-                ),
-            )
-            _drop_unchanged_mappings(remapper)
-            repoint = (
-                _PlainRestoreRewrite(
-                    remapper, reader, [src for src, _tgt in targets],
-                    await self._external_template_definitions(
-                        reader, manifest, remapper,
-                        _archived_template_ids(reader, [src for src, _tgt in targets]),
-                    ),
-                )
-                if remapper.total_mappings else None
+            remapper, referents, dropped, repoint = await self._plain_restore_repoint(
+                reader, manifest, targets, drop_unresolved_edges=drop_unresolved_edges,
             )
 
             entry_by_prefix = {e.prefix: e for e in manifest.namespaces}
-            restore_order = [
-                "terminologies",
-                "terms",
-                "term_relations",
-                "templates",
-                "documents",
-                "files",
-                "registry_entries",
-            ]
+            restore_order = _PLAIN_RESTORE_ORDER
 
             if dry_run:
-                self.result = {
-                    "mode": "restore",
-                    "dry_run": True,
-                    "referents": referents,
-                    "repointed_referents": remapper.total_mappings,
-                    "namespaces": {
-                        tgt: {
-                            entity_type: (
-                                getattr(entry_by_prefix[src].counts, entity_type, 0)
-                                if src in entry_by_prefix
-                                else reader.entity_count(entity_type, namespace=src)
-                            )
-                            for entity_type in restore_order
-                        }
-                        for src, tgt in targets
-                    },
-                }
-                # The one step a restore takes as its requester: asked with
-                # the Registry's dry_run, so its refusals are the real ones.
-                for src, tgt in targets:
-                    entry = entry_by_prefix.get(src)
-                    await self._upsert_namespace(
-                        tgt, entry.namespace_config if entry else manifest.namespace_config,
-                        dry_run=True,
-                    )
-                self._dry_run_report(
-                    reader, targets, entry_by_prefix, restore_order,
+                await self._restore_dry_run(
+                    reader, manifest, targets, entry_by_prefix, referents, remapper,
                     skip_documents=skip_documents, skip_files=skip_files,
                 )
                 return
 
             total = sum(getattr(manifest.counts, et, 0) for et in restore_order)
             processed = 0
+            skipped = {"documents"} if skip_documents else set()
+            if skip_files:
+                skipped.add("files")
 
             # Bytes before the records that need them. Blobs are flat
             # (namespace-agnostic, globally unique file_ids), so the archive's
@@ -1525,99 +1445,20 @@ class DirectRestoreEngine:
                 await self._restore_blobs(reader, targets[0][1])
 
             for src, tgt in targets:
-                entry = entry_by_prefix.get(src)
-                ns_config = entry.namespace_config if entry else manifest.namespace_config
-
-                self._emit(
-                    "phase_namespace",
-                    f"Creating/updating namespace '{tgt}'",
-                    percent=self._pct(processed, total),
-                )
-                await self._upsert_namespace(tgt, ns_config)
-
-                for entity_type in restore_order:
-                    if skip_documents and entity_type == "documents":
-                        continue
-                    if skip_files and entity_type == "files":
-                        continue
-
-                    db_name, coll_name = COLLECTION_MAP[entity_type]
-                    collection = self._mongo[db_name][coll_name]
-
-                    expected = getattr(entry.counts, entity_type, 0) if entry else 0
-                    phase_name = f"phase_{entity_type}"
-                    self._emit(
-                        phase_name,
-                        f"[{tgt}] Restoring {entity_type} ({expected} expected)",
-                        percent=self._pct(processed, total),
-                    )
-
-                    batch: list[dict[str, Any]] = []
-                    count = 0
-                    claimed = 0
-                    taken_by_other = 0
-
-                    for entity in reader.read_entities(entity_type, namespace=src):
-                        entity.pop("_id", None)  # Strip MongoDB internal ID
-                        if dropped and _dropped_row(entity_type, entity, dropped):
-                            continue
-                        if repoint is not None:
-                            entity = repoint.rewrite(entity_type, entity, self)
-                        batch.append(entity)
-
-                        if len(batch) >= batch_size:
-                            await self._insert_batch(collection, batch, entity_type)
-                            if entity_type == "registry_entries":
-                                ok, theirs = await self._claim_inserted_entries(
-                                    tgt, batch
-                                )
-                                claimed += ok
-                                taken_by_other += theirs
-                            count += len(batch)
-                            processed += len(batch)
-                            batch = []
-                            if count % 5000 == 0:
-                                self._emit(
-                                    phase_name,
-                                    f"[{tgt}] {entity_type}: {count}/{expected}",
-                                    percent=self._pct(processed, total),
-                                    current=count,
-                                    total=expected,
-                                )
-
-                    if batch:
-                        await self._insert_batch(collection, batch, entity_type)
-                        if entity_type == "registry_entries":
-                            ok, theirs = await self._claim_inserted_entries(tgt, batch)
-                            claimed += ok
-                            taken_by_other += theirs
-                        count += len(batch)
-                        processed += len(batch)
-
-                    logger.info("Restored %d %s into namespace %s", count, entity_type, tgt)
-                    if entity_type == "registry_entries":
-                        self._report_claims(tgt, claimed, taken_by_other)
-
-                    # Structural gate between templates and documents: the
-                    # reporting tables the restored templates imply must be
-                    # creatable and correctly shaped BEFORE any document
-                    # moves. Catches broken bookkeeping / mis-shaped tables
-                    # at the first template instead of after a full restore.
-                    if entity_type == "templates":
-                        await self._reporting_phase_structure(tgt)
-
-                await self._release_retired_synonyms(tgt)
-
-                # Count parity after the namespace's data is in: expected vs
-                # actual rows, bounded wait. Mismatch completes WITH a
-                # warning — never a hard fail (operator ruling).
-                await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
-                await self._write_restore_provenance(
-                    archive_path, manifest, raw_manifest,
-                    source=src, target=tgt, mode="restore",
-                    referents=_referents_for(referents, src),
+                processed = await self._restore_one_namespace(
+                    reader, manifest, raw_manifest, archive_path, src, tgt,
+                    entry_by_prefix.get(src),
+                    referents=referents, dropped=dropped, repoint=repoint,
+                    skipped=skipped, skip_documents=skip_documents,
+                    batch_size=batch_size, processed=processed, total=total,
                 )
 
+        self._finish_plain_restore(targets, referents, remapper, repoint)
+
+    def _finish_plain_restore(
+        self, targets: list[tuple[str, str]], referents: Any, remapper: IDRemapper, repoint: Any,
+    ) -> None:
+        """Record what a plain restore repointed and synced, and report done."""
         self.result["referents"] = referents
         self.result["repointed_referents"] = remapper.total_mappings
         self.result["rehashed_documents"] = repoint.rehashed_documents if repoint else 0
@@ -1626,6 +1467,265 @@ class DirectRestoreEngine:
             [tgt for _, tgt in targets], "reporting was not verified for this namespace"
         )
         self._emit("complete", "Restore complete", percent=100, details=self.result)
+
+    async def _plain_restore_repoint(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        targets: list[tuple[str, str]],
+        *,
+        drop_unresolved_edges: bool,
+    ) -> tuple[IDRemapper, Any, Any, Any]:
+        """The referents a plain restore points at this install's entities.
+
+        The archive's own ids are preserved — that is this mode's contract.
+        References to entities it does NOT carry (the wip namespace's
+        vocabularies, sibling namespaces) name the source install's ids,
+        which on another install differ or do not exist; they are pointed at
+        this install's entities. On the install the archive came from every
+        referent resolves to itself, nothing is mapped, and rows are written
+        as archived. Returns (remapper, referents, dropped rows, the row
+        rewrite or None when nothing is mapped).
+        """
+        remapper = IDRemapper()
+        label = ", ".join(tgt for _src, tgt in targets)
+        referents = await self._map_external_referents(
+            reader, manifest, remapper, label,
+        )
+        dropped = await self._report_unresolved_references(
+            reader, [src for src, _tgt in targets], remapper, referents, label,
+            drop_edges=drop_unresolved_edges,
+            unresolved_hint=(
+                " — if it lives in a namespace restored separately, restore "
+                "that namespace first, then this one"
+            ),
+        )
+        _drop_unchanged_mappings(remapper)
+        repoint = (
+            _PlainRestoreRewrite(
+                remapper, reader, [src for src, _tgt in targets],
+                await self._external_template_definitions(
+                    reader, manifest, remapper,
+                    _archived_template_ids(reader, [src for src, _tgt in targets]),
+                ),
+            )
+            if remapper.total_mappings else None
+        )
+        return remapper, referents, dropped, repoint
+
+    async def _restore_one_namespace(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        raw_manifest: Any,
+        archive_path: Path,
+        src: str,
+        tgt: str,
+        entry: Any,
+        *,
+        referents: Any,
+        dropped: Any,
+        repoint: Any,
+        skipped: set[str],
+        skip_documents: bool,
+        batch_size: int,
+        processed: int,
+        total: int,
+    ) -> int:
+        """Write one archived namespace into its target; returns the run's
+        processed count after it."""
+        ns_config = entry.namespace_config if entry else manifest.namespace_config
+
+        self._emit(
+            "phase_namespace",
+            f"Creating/updating namespace '{tgt}'",
+            percent=self._pct(processed, total),
+        )
+        await self._upsert_namespace(tgt, ns_config)
+
+        for entity_type in _PLAIN_RESTORE_ORDER:
+            if entity_type in skipped:
+                continue
+            processed += await self._restore_entity_type(
+                reader, entity_type, src, tgt, entry,
+                dropped=dropped, repoint=repoint, batch_size=batch_size,
+                processed=processed, total=total,
+            )
+            # Structural gate between templates and documents: the
+            # reporting tables the restored templates imply must be
+            # creatable and correctly shaped BEFORE any document
+            # moves. Catches broken bookkeeping / mis-shaped tables
+            # at the first template instead of after a full restore.
+            if entity_type == "templates":
+                await self._reporting_phase_structure(tgt)
+
+        await self._release_retired_synonyms(tgt)
+
+        # Count parity after the namespace's data is in: expected vs
+        # actual rows, bounded wait. Mismatch completes WITH a
+        # warning — never a hard fail (operator ruling).
+        await self._reporting_phase_counts(tgt, skip_documents=skip_documents)
+        await self._write_restore_provenance(
+            archive_path, manifest, raw_manifest,
+            source=src, target=tgt, mode="restore",
+            referents=_referents_for(referents, src),
+        )
+        return processed
+
+    def _check_identity_rows(
+        self, reader: ArchiveReader, targets: list[tuple[str, str]], allow_missing_identity: bool,
+    ) -> None:
+        # Identity precondition: an archive that carries entities but no
+        # registry rows restores into a namespace where nothing resolves
+        # by id — every list/query surface looks healthy while point
+        # reads fail, and post-restore integrity validation cannot see it
+        # (it checks MongoDB against itself; identity lives in the
+        # Registry). Refuse up front instead of minting that namespace.
+        entity_types_with_identity = (
+            "terminologies", "terms", "term_relations",
+            "templates", "documents", "files",
+        )
+        for src, _tgt in targets:
+            entity_rows = sum(
+                reader.entity_count(et, namespace=src)
+                for et in entity_types_with_identity
+            )
+            registry_rows = reader.entity_count(
+                "registry_entries", namespace=src
+            )
+            if entity_rows > 0 and registry_rows == 0:
+                if allow_missing_identity:
+                    self._emit(
+                        "warning",
+                        f"[{src}] archive carries {entity_rows} entity "
+                        "row(s) but NO registry identity rows "
+                        "(allow_missing_identity=true) — id-based reads "
+                        "in the restored namespace will fail to resolve.",
+                    )
+                else:
+                    raise RestoreEngineError(
+                        f"Archive namespace '{src}' carries "
+                        f"{entity_rows} entity row(s) but no registry "
+                        "identity rows — was it exported with "
+                        "--skip-synonyms? Restoring it would produce a "
+                        "namespace where nothing resolves by id. Pass "
+                        "allow_missing_identity=true to restore anyway."
+                    )
+
+    async def _restore_dry_run(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        targets: list[tuple[str, str]],
+        entry_by_prefix: dict[str, Any],
+        referents: Any,
+        remapper: IDRemapper,
+        *,
+        skip_documents: bool,
+        skip_files: bool,
+    ) -> None:
+        """What a plain restore would write, without writing it."""
+        restore_order = list(_PLAIN_RESTORE_ORDER)
+
+        self.result = {
+            "mode": "restore",
+            "dry_run": True,
+            "referents": referents,
+            "repointed_referents": remapper.total_mappings,
+            "namespaces": {
+                tgt: {
+                    entity_type: (
+                        getattr(entry_by_prefix[src].counts, entity_type, 0)
+                        if src in entry_by_prefix
+                        else reader.entity_count(entity_type, namespace=src)
+                    )
+                    for entity_type in restore_order
+                }
+                for src, tgt in targets
+            },
+        }
+        # The one step a restore takes as its requester: asked with
+        # the Registry's dry_run, so its refusals are the real ones.
+        for src, tgt in targets:
+            entry = entry_by_prefix.get(src)
+            await self._upsert_namespace(
+                tgt, entry.namespace_config if entry else manifest.namespace_config,
+                dry_run=True,
+            )
+        self._dry_run_report(
+            reader, targets, entry_by_prefix, restore_order,
+            skip_documents=skip_documents, skip_files=skip_files,
+        )
+
+    async def _restore_entity_type(
+        self,
+        reader: ArchiveReader,
+        entity_type: str,
+        src: str,
+        tgt: str,
+        entry: Any,
+        *,
+        dropped: Any,
+        repoint: Any,
+        batch_size: int,
+        processed: int,
+        total: int,
+    ) -> int:
+        """Write one entity type of one namespace in batches of batch_size;
+        returns the rows written. ``processed`` is the run's count before this
+        type, for the progress percentage."""
+        db_name, coll_name = COLLECTION_MAP[entity_type]
+        collection = self._mongo[db_name][coll_name]
+        expected = getattr(entry.counts, entity_type, 0) if entry else 0
+        phase_name = f"phase_{entity_type}"
+        self._emit(
+            phase_name,
+            f"[{tgt}] Restoring {entity_type} ({expected} expected)",
+            percent=self._pct(processed, total),
+        )
+
+        batch: list[dict[str, Any]] = []
+        count = claimed = taken_by_other = 0
+        for entity in reader.read_entities(entity_type, namespace=src):
+            entity.pop("_id", None)  # Strip MongoDB internal ID
+            if dropped and _dropped_row(entity_type, entity, dropped):
+                continue
+            if repoint is not None:
+                entity = repoint.rewrite(entity_type, entity, self)
+            batch.append(entity)
+            if len(batch) < batch_size:
+                continue
+            ok, theirs = await self._write_restore_batch(collection, batch, entity_type, tgt)
+            claimed, taken_by_other = claimed + ok, taken_by_other + theirs
+            count += len(batch)
+            batch = []
+            if count % 5000 == 0:
+                self._emit(
+                    phase_name,
+                    f"[{tgt}] {entity_type}: {count}/{expected}",
+                    percent=self._pct(processed + count, total),
+                    current=count,
+                    total=expected,
+                )
+        if batch:
+            ok, theirs = await self._write_restore_batch(collection, batch, entity_type, tgt)
+            claimed, taken_by_other = claimed + ok, taken_by_other + theirs
+            count += len(batch)
+
+        logger.info("Restored %d %s into namespace %s", count, entity_type, tgt)
+        if entity_type == "registry_entries":
+            self._report_claims(tgt, claimed, taken_by_other)
+        return count
+
+    async def _write_restore_batch(
+        self, collection: Any, batch: list[dict[str, Any]], entity_type: str, namespace: str,
+    ) -> tuple[int, int]:
+        """Insert one batch; for registry entries, claim their keys as well.
+        Returns (keys claimed, keys another entry already owns)."""
+        await self._insert_batch(collection, batch, entity_type)
+        if entity_type != "registry_entries":
+            return 0, 0
+        return await self._claim_inserted_entries(namespace, batch)
 
     # Documents are the only thing a merge resolves by policy. Definitions
     # (terminologies, terms, templates) are a precondition instead: a merge
