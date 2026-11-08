@@ -44,7 +44,7 @@ async def seeded(session_mongo_client):
     db_d, coll_d = COLLECTION_MAP["documents"]
     templates = [
         _template(ns, "T1", 1, "inactive"),               # nothing needs it
-        _template(ns, "T1", 2, "inactive"),               # an archived document pins it
+        _template(ns, "T1", 2, "inactive"),               # an inactive document pins it
         _template(ns, "T1", 3, "active"),
         _template(ns, "T2", 1, "inactive"),               # all versions inactive:
         _template(ns, "T2", 2, "inactive"),               #   the highest stays
@@ -55,7 +55,7 @@ async def seeded(session_mongo_client):
     ]
     await session_mongo_client[db_t][coll_t].insert_many(templates)
     await session_mongo_client[db_d][coll_d].insert_many([
-        _document(ns, "D1", "T1", 2, status="archived"),
+        _document(ns, "D1", "T1", 2, status="inactive"),
         _document(ns, "D2", "T1", 3),
     ])
     yield ns

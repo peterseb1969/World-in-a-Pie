@@ -706,8 +706,9 @@ class DirectBackupEngine:
         archive needs.
 
         A version is carried when it is not inactive (drafts are carried), when
-        an exported document is pinned to it (any document status — an
-        archived document restores with its schema too), or when a carried
+        an exported document row is pinned to it (any status — an inactive
+        document, or a superseded version row of an active one, restores with
+        its schema too), or when a carried
         version extends it. A template whose versions would all be left out
         keeps its highest one: other definitions name templates by id and the
         template's Registry entry travels, so the template itself never

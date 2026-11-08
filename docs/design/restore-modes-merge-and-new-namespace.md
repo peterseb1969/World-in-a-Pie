@@ -124,10 +124,10 @@ The scaffold now namespace-prefixes the value (`KB_BOOTSTRAP_RECORD`,
 bootstrapped namespaces and makes a merged-in record self-labeling: a
 prefixed bootstrap record inside a merged namespace announces which
 namespace's bootstrap it documents. For EXISTING namespaces that still
-carry the unprefixed value, there is deliberately no drop parameter and no
-platform special-case — the remediation is an operational recipe made of
-first-class operations, self-expiring once the last unprefixed pair is
-retired. It relies on two rules of the definitions pass and the export:
+carry the unprefixed value, there is no drop parameter and no platform
+special-case. The intended remediation was an operational recipe made of
+first-class operations; for versioned templates none works yet (CASE-1159).
+What the platform guarantees today:
 
 - **A template's status alone never refuses a merge.** A retired version
   whose schema matches the target's is the same definition; the target
@@ -135,24 +135,18 @@ retired. It relies on two rules of the definitions pass and the export:
   still refuses.
 - **A backup leaves out the inactive template versions nothing in the
   archive needs** (unless `include_inactive_templates`). It still carries
-  every inactive version an exported document — of any status — is pinned
-  to, every version a carried template extends, and the highest version of
-  a template whose versions are all inactive.
+  every inactive version a document row of any status is pinned to, every
+  version a carried template extends, and the highest version of a template
+  whose versions are all inactive.
 
-The recipe — *converge*: update BOTH sides' templates from one identical
-payload (version slots must align, or merge with `align_templates`),
-`migrate` every one of the source's records to the converged version
-(dry-run first; archived records too — a record still on the old version
-keeps that version in the archive), deactivate the source's old version,
-re-export, merge. The old version is no longer needed, so the export leaves
-it out and pass 1 compares only the converged shape, which both sides share.
-Both provenance trails survive the merge as documents of that shape.
-
-Retiring the source's record instead (deactivate the template, archive the
-records) does not work, and is not offered: the archived records pin the
-retired version, so the export carries it, and its shape still differs from
-the target's. Even with no records left, a template whose versions are all
-inactive keeps its highest version in the archive.
+**There is no working recipe yet for a versioned bootstrap template whose
+shapes drifted.** Converging both sides and migrating the source's records
+does not get the old version out of the archive: `migrate` moves only
+active documents, and on a `versioned: true` template it writes a new
+version while the superseded row stays pinned to the old one. The backup
+carries that pinned version, and pass 1 refuses it on the schema difference.
+Retiring the source's records fails the same way. Only a `versioned: false`
+template, whose writes overwrite in place, leaves no superseded pin behind.
 
 ## Mode: fresh
 

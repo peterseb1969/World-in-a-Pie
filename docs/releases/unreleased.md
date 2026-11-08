@@ -15,8 +15,9 @@ now leaves out an inactive version unless something in the archive needs
 it. A version is still carried when:
 
 - it is not inactive (drafts are carried);
-- an exported document of any status is pinned to it — so archives restore
-  and `verify` cleanly, as before;
+- a document row of any status is pinned to it — including the superseded
+  version rows of a document — so archives restore and `verify` cleanly, as
+  before;
 - a carried template version extends it;
 - or it is the highest version of a template whose versions are all
   inactive. A template never disappears from an archive while other
@@ -32,10 +33,11 @@ the same schema, is the same definition. The target keeps its own status,
 and the difference is reported among the fields where the target's value
 won. A schema difference still refuses.
 
-Together these make the bootstrap-record *converge* recipe in
-`docs/design/restore-modes-merge-and-new-namespace.md` work. The *retire the
-source's record* recipe is withdrawn: archived records pin the retired
-version, so the archive carries it.
+Neither change makes a merge of two archives with drifted **versioned**
+bootstrap templates work. `migrate` leaves each document's superseded row
+pinned to the old version, so the backup still carries it and pass 1 still
+refuses. `docs/design/restore-modes-merge-and-new-namespace.md` records this
+as open; it no longer offers a recipe.
 
 - **`@wip/client` 0.94.0:** `BackupRequest.include_inactive_templates`.
 - **MCP:** `start_backup(include_inactive_templates=…)`.
