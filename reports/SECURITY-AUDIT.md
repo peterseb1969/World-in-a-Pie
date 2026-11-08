@@ -46,8 +46,8 @@ A comprehensive security audit was performed on the World In a Pie (WIP) project
 | ID | Finding | Status | Fix |
 |----|---------|--------|-----|
 | C1 | CORS wildcard with credentials | **Fixed** | Default CORS origin changed to `https://localhost:8443`. Restricted `allow_methods` and `allow_headers` to required values only. Configurable via `CORS_ORIGINS` env var. setup.sh generates hostname-specific CORS for prod. |
-| C2 | No file upload size limit | **Fixed** | Added `WIP_MAX_UPLOAD_SIZE` (default 100MB). Upload endpoint reads in 64KB chunks with byte counter, returns HTTP 413 if exceeded. |
-| C3 | No rate limiting | **Fixed** | Added `slowapi` rate limiter to all services. Default 40,000 req/min per IP. Configurable via `WIP_RATE_LIMIT` env var. Shared implementation in `wip_auth.ratelimit`. |
+| C2 | No file upload size limit | **Fixed** | Added `WIP_MAX_UPLOAD_SIZE` (default 100MB). Upload endpoint reads in 64KB chunks with byte counter, returns HTTP 413 if exceeded. Document import (`/import`, `/import/preview`) reads the same way (2026-11-08). |
+| C3 | No rate limiting | **Open — not enforced** | `wip_auth.ratelimit` builds a `slowapi` limiter (default 40,000 req/min per IP, `WIP_RATE_LIMIT`) and every service calls `setup_rate_limiting`, but no service installs the middleware that applies a default limit and no route carries a limit, so nothing is limited. Found 2026-11-08; enforcement tracked in its own case (internal service-to-service calls carry no `X-Forwarded-For`, so a per-IP limit needs a design for them). |
 | C4 | Default API key accepted in production | **Fixed** | Added `check_production_security()` to all service startups. Services refuse to start in `WIP_VARIANT=prod` if the well-known default key `dev_master_key_for_testing` is configured. |
 
 ### HIGH

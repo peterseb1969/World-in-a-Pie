@@ -194,6 +194,9 @@ Codes defined by document-store's create, delete and file writes (`PATCH` above 
 | `synonym_conflict` | An inline synonym is registered to another entry (`on_synonym_conflict="fail"`) | — |
 | `registry_error` | The Registry refused, or could not be reached (to check namespace isolation, or to mint a file ID) | `registry_unavailable` |
 | `force_unsupported` | `force` sent on a document delete without `hard_delete` | — |
+| `invalid_request` | The request item cannot be carried out as sent (`document_id_mismatch`: a `document_id` without `version` that is not the document the identity resolves to) | `document_id_mismatch` |
+| `already_exists` | A pinned version (`document_id` + `version`) is already taken | `version_taken` |
+| `identity_hash_stale` | Migrate: the document's stored identity hash is not the one its identity produces under the target version; `details.stored` / `details.expected` | — |
 | `internal_error` | A fault on the server's side | — |
 
 Registry results keep their reason statuses (`already_exists`, `not_found`, `already_active`, …) — callers branch on them by value. An item whose status is `error` also carries a code:

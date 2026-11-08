@@ -7,6 +7,14 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `WIP_RATE_LIMIT` limits nothing; the security audit says so
+
+`WIP_RATE_LIMIT` is read by every service, but no service installs the
+middleware that applies it, so no request has ever been rate-limited.
+`reports/SECURITY-AUDIT.md` recorded C3 ("No rate limiting") as fixed; it now
+says open, and the docstrings say not enforced. Enforcement is tracked in its
+own case. Nothing changes at runtime.
+
 ### A file's `allowed_templates` is enforced, and stored as template ids
 
 `allowed_templates` on `POST /api/document-store/files` and `PATCH /files`

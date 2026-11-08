@@ -3,6 +3,13 @@
 Provides a shared rate limiter factory so all services use consistent
 configuration. Uses slowapi (built on the limits library).
 
+NOT ENFORCED: setup_rate_limiting stores the limiter and its 429 handler on
+the app, but nothing installs slowapi's middleware (which is what applies
+``default_limits``) and no route carries a ``@limiter.limit``, so no request
+is ever limited. Enforcement is tracked as its own case: service-to-service
+calls carry no X-Forwarded-For, so a per-IP key would put all internal
+traffic in one bucket.
+
 Configuration via environment:
     WIP_RATE_LIMIT=40000/minute   # Default: 40K req/min per IP
     WIP_RATE_LIMIT=                # Empty string disables rate limiting

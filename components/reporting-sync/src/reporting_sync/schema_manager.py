@@ -475,7 +475,7 @@ class SchemaManager:
         # Phase 7 — relationship templates get explicit canonical-id columns
         # for the two endpoints. JOIN like:
         #   doc_experiment_input rel
-        #     JOIN doc_experiment e ON e.identity_hash = rel.source_ref_id
+        #     JOIN doc_experiment e ON e.document_id = rel.source_ref_id
         if usage == "relationship":
             columns.extend([
                 ("source_ref_id", "TEXT"),

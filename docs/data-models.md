@@ -498,6 +498,9 @@ class FieldDefinition(BaseModel):
         None,
         description="How to resolve reference versions: latest (default) or pinned"
     )
+    # Unset (null) means latest: a document's references[].version_strategy
+    # records the declaration as is, so it is null rather than "latest" when
+    # the field declares none.
 
     # For type=file
     file_config: FileFieldConfig | None = None
@@ -1106,18 +1109,23 @@ class EventType(str, Enum):
 class DocumentEvent(BaseModel):
     """An event published when a document changes."""
 
-    event_id: str
     event_type: EventType
     timestamp: datetime
-    document: Document  # Full document included
+    changed_by: str | None  # the identity that made the change
+    document: dict  # the document's payload (see the example)
 ```
+
+The subject is `wip.documents.<template_id>.<action>`. Events carry no id of
+their own; consumers deduplicate by the stream's message id. A file event has
+the same envelope with `file` in place of `document`, on
+`wip.files.<file_id>.<action>`.
 
 **Example Event:**
 ```json
 {
-  "event_id": "evt-123",
   "event_type": "document.created",
   "timestamp": "2024-01-15T10:00:00Z",
+  "changed_by": "apikey:app",
   "document": {
     "namespace": "wip",
     "document_id": "0192abc1-def2-7abc-8def-123456789abc",
@@ -1252,30 +1260,32 @@ class PaginatedResponse(BaseModel, Generic[T]):
     page: int
     page_size: int
     pages: int  # ceil(total / page_size)
-    next_cursor: str | None = None  # optional cursor-based pagination
+    next_cursor: str | None = None  # cursor mode only: start with cursor=start
 ```
+
+`pages` is 0 for an empty result. Cursor mode (`GET /documents?cursor=start`,
+then each page's `next_cursor`) reports `total: -1` and `pages: 0`.
 
 ### Validation Result
 
 ```python
-class ValidationResult(BaseModel):
-    """Result of document validation."""
+class ValidationResponse(BaseModel):
+    """Result of document validation, as /validate, /validate-bulk and
+    /validate-candidate return it."""
 
     valid: bool
-    identity_hash: str | None = None
-    template_version: int | None = None
-    template_value: str | None = None
     errors: list[dict] = []       # [{field, code, message, details}]
     warnings: list[str] = []
+    identity_hash: str | None = None
+    template_version: int | None = None
     term_references: list[dict] = []   # [{field_path, term_id, terminology_ref, matched_via}]
     references: list[dict] = []        # [{field_path, reference_type, resolved: {...}}]
     file_references: list[dict] = []   # [{field_path, file_id, filename, ...}]
-    timing: dict[str, float] = {}      # stage -> milliseconds
 ```
 
 ### Error Codes
 
-These are the per-field validation codes carried in `ValidationResult.errors[].code`
+These are the per-field validation codes carried in `ValidationResponse.errors[].code`
 (all lowercase). They are distinct from the operation-level `error_code` a create or
 PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 `concurrency_conflict`, `reference_violation` — see the PATCH error codes in
@@ -1289,6 +1299,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 | `template_not_found` | The document's template does not exist |
 | `template_inactive` | The template version is deactivated |
 | `template_error` | The template could not be fetched/resolved |
+| `template_unresolvable` | The template exists but its inheritance chain cannot be resolved |
 | `unknown_field` | A field is not declared in the template schema |
 
 **Presence**
@@ -1298,6 +1309,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 | `required` | A mandatory field is missing |
 | `null_value` | A field is present but null where a value is required |
 | `identity_error` | An identity field is missing or null |
+| `identity_resolution_failed` | A term or reference identity field could not be resolved (fail-closed: the identity hash is never computed from the spelling) |
 
 **Type & value constraints**
 
@@ -1330,6 +1342,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 |------|-------------|
 | `invalid_term` | Value is not valid for the field's terminology |
 | `invalid_term_reference` | Term value not found in the allowed terminologies |
+| `ambiguous_term` | An identity field's value is a name several terms bear (an ordinary field resolves to the first bearer with a warning) |
 | `invalid_terminology_reference` | The referenced terminology was not found |
 
 **References**
@@ -1341,6 +1354,8 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 | `invalid_reference_template` | Referenced document's template is not in the allowed `target_templates` |
 | `invalid_template_reference` | The referenced template was not found |
 | `reference_not_found` | The referenced document does not exist |
+| `ambiguous_reference` | The value names several documents the field's `target_templates` allow; the details list the candidates |
+| `missing_endpoint_constraint` | An edge type's `source_ref` / `target_ref` has no endpoint constraint to check against |
 
 **Files**
 
@@ -1348,6 +1363,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 |------|-------------|
 | `invalid_file` | File reference failed validation (type/size/etc.) |
 | `file_validation_error` | The file field could not be validated |
+| `max_files` | A multi-file field holds more files than its `file_config.max_files` |
 
 **Cross-field rules**
 

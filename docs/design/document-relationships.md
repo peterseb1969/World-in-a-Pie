@@ -105,15 +105,14 @@ Implementation: the `versioned` flag lives on the template, not the document. Do
 
 ### Storage model
 
-Relationship documents are MongoDB documents in the namespaced document collections, same as entity documents. Additional indexes:
+Relationship documents are MongoDB documents in the one `documents` collection, same as entity documents (every document carries its `namespace`). Additional indexes, ensured the first time an edge type's document is written:
 
 ```javascript
-// Always, on document-store startup or template registration
-db.documents_<namespace>.createIndex({ template_id: 1, "data.source_ref": 1 })
-db.documents_<namespace>.createIndex({ template_id: 1, "data.target_ref": 1 })
+db.documents.createIndex({ template_id: 1, "data.source_ref": 1 })
+db.documents.createIndex({ template_id: 1, "data.target_ref": 1 })
 ```
 
-Indexes are conditional on the template's `usage: relationship`. Templates with `usage: entity` don't get them.
+Both lead with `template_id`: `/relationships` and `/traverse` narrow every query to edge types (the given `template`/`types` filter, else the edge types among the matches), so the indexes serve the default form too. Indexes are conditional on the template's `usage: relationship`. Templates with `usage: entity` don't get them.
 
 ### Query APIs
 
@@ -189,7 +188,7 @@ The system-terminology data identifier `_ONTOLOGY_RELATIONSHIP_TYPES` was **not*
 
 ### Postgres reporting (optional, archetype-gated)
 
-When `reporting-sync` is deployed, an edge type's reporting table gets two indexed columns: `source_ref_id` (resolved from the `source_ref` reference field's internal storage — identity_hash for `latest`, document_id for `pinned`) and `target_ref_id`. These are indexed btree columns that enable SQL JOINs against the source and target document tables.
+When `reporting-sync` is deployed, an edge type's reporting table gets two indexed columns: `source_ref_id` (the canonical `document_id` of the `source_ref` endpoint, whatever its `version_strategy`) and `target_ref_id`. These are indexed btree columns that enable SQL JOINs against the source and target document tables.
 
 Example queries then become tractable in SQL:
 
@@ -197,8 +196,8 @@ Example queries then become tractable in SQL:
 -- All experiments that used bevacizumab as a catalyst
 SELECT DISTINCT e.*
 FROM doc_experiment_input rel
-JOIN doc_experiment e ON e.identity_hash = rel.source_ref_id
-JOIN doc_molecule m ON m.identity_hash = rel.target_ref_id
+JOIN doc_experiment e ON e.document_id = rel.source_ref_id
+JOIN doc_molecule m ON m.document_id = rel.target_ref_id
 WHERE m.data->>'name' = 'bevacizumab'
   AND rel.data->>'role' = 'catalyst';
 ```
@@ -207,32 +206,34 @@ Materialized views are out of scope for this design — they are a general analy
 
 ### NATS event contract
 
-Relationship documents publish standard document events (`document.created`, `document.updated`, `document.deleted`) on the existing `WIP_EVENTS` stream. The event payload for a relationship document MUST include enough state for an external subscriber (Snowflake, BigQuery, etc.) to rebuild the edge without querying back:
+Relationship documents publish standard document events (`document.created`, `document.updated`, `document.deleted`) on the existing `WIP_EVENTS` stream, in the standard envelope (`event_type`, `timestamp`, `changed_by`, `document`; see `docs/data-models.md`). The `document` payload of a relationship document carries enough state for an external subscriber (Snowflake, BigQuery, etc.) to rebuild the edge without querying back:
 
 ```json
 {
   "event_type": "document.created",
-  "document_id": "...",
-  "template_id": "...",
-  "template_value": "EXPERIMENT_INPUT",
-  "template_version": 3,
-  "template_usage": "relationship",
-  "namespace": "lab-journal",
-  "version": 1,
-  "data": {
-    "source_ref": "...",
-    "source_ref_resolved": "...identity-hash or pinned document_id...",
-    "source_template_value": "EXPERIMENT",
-    "target_ref": "...",
-    "target_ref_resolved": "...",
-    "target_template_value": "MOLECULE",
-    "role": "catalyst",
-    "quantity": "50µg",
-    "concentration": "10mg/mL",
-    "lot_number": "LOT-2026-0412"
-  },
   "timestamp": "2026-04-25T...",
-  "actor": "peter"
+  "changed_by": "apikey:lab-app",
+  "document": {
+    "document_id": "...",
+    "template_id": "...",
+    "template_value": "EXPERIMENT_INPUT",
+    "template_version": 3,
+    "template_usage": "relationship",
+    "namespace": "lab-journal",
+    "version": 1,
+    "data": {
+      "source_ref": "...",
+      "source_ref_resolved": "...the endpoint's canonical document_id...",
+      "source_template_value": "EXPERIMENT",
+      "target_ref": "...",
+      "target_ref_resolved": "...",
+      "target_template_value": "MOLECULE",
+      "role": "catalyst",
+      "quantity": "50µg",
+      "concentration": "10mg/mL",
+      "lot_number": "LOT-2026-0412"
+    }
+  }
 }
 ```
 

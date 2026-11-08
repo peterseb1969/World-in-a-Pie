@@ -301,7 +301,7 @@ providers = setup_auth(app, public_paths=["/api/registry/health"])
 install_liveness(app)
 print(f"Auth setup complete. Providers: {[type(p).__name__ for p in providers]}")
 
-# Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
+# Rate limiting: configured (WIP_RATE_LIMIT) but NOT enforced — see wip_auth.ratelimit
 setup_rate_limiting(app)
 
 # Add CORS middleware

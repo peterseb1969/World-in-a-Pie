@@ -279,7 +279,7 @@ _providers = setup_auth(app, public_paths=["/api/def-store/health"])
 # kept apart from the dependency-checking health and readiness endpoints.
 install_liveness(app)
 
-# Setup rate limiting (reads WIP_RATE_LIMIT, default 40000/minute)
+# Rate limiting: configured (WIP_RATE_LIMIT) but NOT enforced — see wip_auth.ratelimit
 setup_rate_limiting(app)
 
 # Reject unknown query parameters (returns 422 for undeclared params)
