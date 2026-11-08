@@ -1819,56 +1819,11 @@ class DirectRestoreEngine:
                 )
 
             entries = {e.prefix: e for e in manifest.namespaces}
-            remap_sources: list[RemapSource] = []
-            for src, target in mapping.items():
-                entities_by_type: dict[str, list[dict[str, Any]]] = {}
-                document_chains = None
-                for entity_type in (*REMAP_ENTITY_ORDER, "term_relations"):
-                    if skip_documents and entity_type == "documents":
-                        continue
-                    if skip_files and entity_type == "files":
-                        continue
-                    if entity_type == "documents":
-                        # Documents dominate the archive: plan from one key row
-                        # per document and stream the chains where they are
-                        # rewritten and written (CASE-959). An unsorted
-                        # (pre-sort) archive falls back to holding them.
-                        try:
-                            entities_by_type[entity_type] = [
-                                {k: chain[0][k] for k in _DOCUMENT_KEY_FIELDS if k in chain[0]}
-                                for chain in iter_chains(reader, src)
-                            ]
-                            document_chains = functools.partial(iter_chains, reader, src)
-                            continue
-                        except UnsortedArchive as e:
-                            self._emit(
-                                "warning",
-                                f"[{src}] {e} — the restore holds every document "
-                                "in memory; a backup taken with this release streams.",
-                            )
-                    rows = []
-                    for row in reader.read_entities(entity_type, namespace=src):
-                        row.pop("_id", None)
-                        rows.append(row)
-                    entities_by_type[entity_type] = rows
-
-                remap_sources.append(RemapSource(
-                    source=src, target=target,
-                    entities_by_type=entities_by_type,
-                    document_chains=document_chains,
-                ))
-
-            # The rehash reads the template each document is pinned to, from
-            # EVERY archived namespace: a document may sit on another
-            # namespace's template. These are the definitions the documents
-            # were written against (the target has none yet).
-            definitions = TemplateDefinitions.of_templates(
-                template
-                for rs in remap_sources
-                for template in rs.entities_by_type.get("templates") or []
+            remap_sources = self._collect_remap_sources(
+                reader, mapping, skip_documents=skip_documents, skip_files=skip_files,
             )
-            for rs in remap_sources:
-                rs.template_definitions = definitions
+
+            definitions = self._share_template_definitions(remap_sources)
 
             # Several sources folding into one target may collide on a Registry
             # key. That is refused here, for every type at once, before any
@@ -1885,63 +1840,14 @@ class DirectRestoreEngine:
             # (archive order); allowed_external_refs naming other archive
             # sources are rewritten through the mapping, names outside the
             # archive are kept.
-            for target in targets:
-                first_src = next(s for s, t in mapping.items() if t == target)
-                entry = entries.get(first_src)
-                ns_config = (
-                    entry.namespace_config if entry
-                    else manifest.namespace_config
-                )
-                ns_config = self._rewrite_ns_config_refs(ns_config, mapping)
-                # Fresh means fresh: a remap re-mints every id, so the target
-                # must not inherit the source's id_config. A prefixed source
-                # scheme would otherwise re-mint the source's exact ids and
-                # collide with the live original on the global entry_id index
-                # (CASE-784). preserve_id_config=False defaults the target to
-                # UUID7 (or keeps a pre-created target's own config).
-                await self._upsert_namespace(
-                    target, ns_config, preserve_id_config=False, dry_run=dry_run,
-                )
+            await self._create_remap_targets(targets, mapping, entries, manifest, dry_run=dry_run)
 
-            # The remapper gets the namespace mapping so reference snapshots
-            # (resolved.namespace) follow their entities — after a fresh
-            # restore no data may point at the original namespaces.
-            remapper = IDRemapper(namespace_map=dict(mapping))
-            referents = await self._map_external_referents(
-                reader, manifest, remapper, ", ".join(targets)
+            remapper, referents, plans = await self._plan_remap(
+                reader, manifest, mapping, remap_sources, definitions,
+                dry_run=dry_run, drop_unresolved_edges=drop_unresolved_edges,
             )
-            definitions.external = await self._external_template_definitions(
-                reader, manifest, remapper, definitions.template_ids(),
-            )
-            dropped = await self._report_unresolved_references(
-                reader, list(mapping), remapper, referents, ", ".join(targets),
-                drop_edges=drop_unresolved_edges,
-            )
-            if dropped:
-                for rs in remap_sources:
-                    _drop_from_remap_source(rs, dropped)
-            provision_for = (
-                self._dry_run_provisioner() if dry_run
-                else self._registry_provisioner
-            )
-            plans = await plan_multi(remap_sources, remapper, provision_for)
 
-            phase = "phase_dry_run" if dry_run else "phase_remap"
-            for src, target in mapping.items():
-                for entity_type, count in plans[src].summary().items():
-                    if count:
-                        self._emit(phase, f"[{src} → {target}] {entity_type}: {count}")
-                if unrehashable := plans[src].unrehashable_documents:
-                    self._emit(
-                        "warning",
-                        f"[{src} → {target}] {unrehashable} document(s) keep their "
-                        "archived identity hash: their template is neither in the "
-                        "archive nor readable here. If an identity field names a "
-                        "term or document this restore re-minted, the next write of "
-                        "that identity creates a second document — rehash the "
-                        "namespace (POST /api/document-store/maintenance/"
-                        "rehash-identities) once their template exists.",
-                    )
+            self._report_remap_plans(mapping, plans, dry_run=dry_run)
             self.result = {
                 "mode": "fresh",
                 "dry_run": dry_run,
@@ -1973,50 +1879,11 @@ class DirectRestoreEngine:
             # fresh namespace (the leak-sweep contract).
             await self._repair_endpoint_declarations(mapping, plans, remapper)
 
-            # Bytes before the records that need them, under their new ids:
-            # a write that fails afterwards leaves at most unreferenced bytes,
-            # never a file record whose bytes are missing.
-            if not skip_files and self._storage:
-                merged_file_map: dict[str, str] = {}
-                for plan in plans.values():
-                    merged_file_map.update(plan.id_map["files"])
-                await self._remap_blobs(reader, merged_file_map)
-
-            for src, target in mapping.items():
-                await self._write_remapped(target, plans[src], batch_size)
-
-            # The archived synonyms, rewritten for their re-minted owners. A
-            # document's travel with its activation item, so its entry is
-            # written once with its key and its synonyms; the rest are added
-            # once every entity is active.
-            rewritten = {
-                src: self._rewritten_synonyms(reader, src, target, plans[src])
-                for src, target in mapping.items()
-            }
-            for target in targets:
-                # Documents were reserved with a deferred claim; their FINAL
-                # composite key (built from the rewritten + rehashed row) is
-                # claimed now, at activation (CASE-787), together with their
-                # synonyms. An identity-less doc has an empty key — it stays
-                # keyless (opts out of dedup). Other entity types were already
-                # claimed at provision, so they activate keyless (a bare status
-                # flip) and get their synonyms afterwards.
-                items: list[dict[str, Any]] = []
-                for src, t in mapping.items():
-                    if t != target:
-                        continue
-                    plan = plans[src]
-                    doc_keys = plan.final_document_keys(target)
-                    for m in plan.id_map.values():
-                        for new_id in m.values():
-                            item: dict[str, Any] = {"entry_id": new_id}
-                            if new_id in doc_keys:
-                                item["composite_key"] = doc_keys[new_id]
-                                carried = rewritten[src].pop(new_id, None)
-                                if carried:
-                                    item["synonyms"] = carried
-                            items.append(item)
-                await self._activate_entries(target, items)
+            if not skip_files:
+                await self._upload_remapped_blobs(reader, plans)
+            rewritten = await self._write_and_activate_remapped(
+                reader, mapping, targets, plans, batch_size,
+            )
             # CASE-792: provision/activate set only the primary composite key
             # for everything but documents. The value-form lookup synonyms the
             # create services auto-register (and any custom synonyms) live in
@@ -2025,15 +1892,9 @@ class DirectRestoreEngine:
             await self._restore_synonyms(mapping, rewritten)
             # A fresh restore registers synonyms as active; release the ones a
             # retired document must not keep.
-            for target in mapping.values():
-                await self._release_retired_synonyms(target)
-            for src, target in mapping.items():
-                await self._record_provenance(target, src, manifest)
-                await self._write_restore_provenance(
-                    archive_path, manifest, raw_manifest,
-                    source=src, target=target, mode="remap",
-                    referents=_referents_for(referents, src),
-                )
+            await self._record_remap_provenance(
+                archive_path, manifest, raw_manifest, mapping, referents,
+            )
 
         # A fresh restore does not wait on the reporting layer: its sync is
         # triggered when the job completes. Say so rather than imply a check.
@@ -2044,6 +1905,258 @@ class DirectRestoreEngine:
         )
         self._emit("complete", "Remap restore complete", percent=100,
                    details=self.result)
+
+    @staticmethod
+    def _share_template_definitions(remap_sources: list[RemapSource]) -> TemplateDefinitions:
+        """The rehash reads the template each document is pinned to, from
+        EVERY archived namespace: a document may sit on another namespace's
+        template. These are the definitions the documents were written
+        against (the target has none yet); every source gets the same set."""
+        definitions = TemplateDefinitions.of_templates(
+            template
+            for rs in remap_sources
+            for template in rs.entities_by_type.get("templates") or []
+        )
+        for rs in remap_sources:
+            rs.template_definitions = definitions
+        return definitions
+
+    async def _plan_remap(
+        self,
+        reader: ArchiveReader,
+        manifest: Any,
+        mapping: dict[str, str],
+        remap_sources: list[RemapSource],
+        definitions: TemplateDefinitions,
+        *,
+        dry_run: bool,
+        drop_unresolved_edges: bool,
+    ) -> tuple[IDRemapper, Any, dict[str, Any]]:
+        """Map the external referents, drop what cannot resolve, and plan
+        every source (provisioning reserved ids, or a dry run's stand-ins).
+
+        The remapper gets the namespace mapping so reference snapshots
+        (resolved.namespace) follow their entities — after a fresh restore
+        no data may point at the original namespaces.
+        """
+        targets = ", ".join(dict.fromkeys(mapping.values()))
+        remapper = IDRemapper(namespace_map=dict(mapping))
+        referents = await self._map_external_referents(reader, manifest, remapper, targets)
+        definitions.external = await self._external_template_definitions(
+            reader, manifest, remapper, definitions.template_ids(),
+        )
+        dropped = await self._report_unresolved_references(
+            reader, list(mapping), remapper, referents, targets,
+            drop_edges=drop_unresolved_edges,
+        )
+        if dropped:
+            for rs in remap_sources:
+                _drop_from_remap_source(rs, dropped)
+        provision_for = (
+            self._dry_run_provisioner() if dry_run
+            else self._registry_provisioner
+        )
+        plans = await plan_multi(remap_sources, remapper, provision_for)
+        return remapper, referents, plans
+
+    async def _upload_remapped_blobs(self, reader: ArchiveReader, plans: dict[str, Any]) -> None:
+        """Bytes before the records that need them, under their new ids: a
+        write that fails afterwards leaves at most unreferenced bytes, never
+        a file record whose bytes are missing."""
+        if not self._storage:
+            return
+        merged_file_map: dict[str, str] = {}
+        for plan in plans.values():
+            merged_file_map.update(plan.id_map["files"])
+        await self._remap_blobs(reader, merged_file_map)
+
+    async def _write_and_activate_remapped(
+        self,
+        reader: ArchiveReader,
+        mapping: dict[str, str],
+        targets: list[str],
+        plans: dict[str, Any],
+        batch_size: int,
+    ) -> dict[str, Any]:
+        """Write every source's rows, then activate each target's entries.
+        Returns the archived synonyms rewritten for their re-minted owners,
+        less those that travelled with a document's activation item."""
+        for src, target in mapping.items():
+            await self._write_remapped(target, plans[src], batch_size)
+
+        # The archived synonyms, rewritten for their re-minted owners. A
+        # document's travel with its activation item, so its entry is
+        # written once with its key and its synonyms; the rest are added
+        # once every entity is active.
+        rewritten = {
+            src: self._rewritten_synonyms(reader, src, target, plans[src])
+            for src, target in mapping.items()
+        }
+        for target in targets:
+            # Documents were reserved with a deferred claim; their FINAL
+            # composite key (built from the rewritten + rehashed row) is
+            # claimed now, at activation (CASE-787), together with their
+            # synonyms. An identity-less doc has an empty key — it stays
+            # keyless (opts out of dedup). Other entity types were already
+            # claimed at provision, so they activate keyless (a bare status
+            # flip) and get their synonyms afterwards.
+            items = self._remap_activation_items(target, mapping, plans, rewritten)
+            await self._activate_entries(target, items)
+        return rewritten
+
+    def _collect_remap_sources(
+        self,
+        reader: ArchiveReader,
+        mapping: dict[str, str],
+        *,
+        skip_documents: bool,
+        skip_files: bool,
+    ) -> list[RemapSource]:
+        """Each archived namespace's rows, by type, for the remap plan."""
+        skipped = {"documents"} if skip_documents else set()
+        if skip_files:
+            skipped.add("files")
+        remap_sources: list[RemapSource] = []
+        for src, target in mapping.items():
+            entities_by_type: dict[str, list[dict[str, Any]]] = {}
+            document_chains = None
+            for entity_type in (*REMAP_ENTITY_ORDER, "term_relations"):
+                if entity_type in skipped:
+                    continue
+                rows, chains = self._remap_type_rows(reader, src, entity_type)
+                entities_by_type[entity_type] = rows
+                document_chains = chains or document_chains
+            remap_sources.append(RemapSource(
+                source=src, target=target,
+                entities_by_type=entities_by_type,
+                document_chains=document_chains,
+            ))
+        return remap_sources
+
+    def _remap_type_rows(
+        self, reader: ArchiveReader, src: str, entity_type: str,
+    ) -> tuple[list[dict[str, Any]], Any]:
+        """One type's rows of one archived namespace, and for documents the
+        stream of their version chains (None when the rows are held whole)."""
+        if entity_type == "documents":
+            # Documents dominate the archive: plan from one key row
+            # per document and stream the chains where they are
+            # rewritten and written (CASE-959). An unsorted
+            # (pre-sort) archive falls back to holding them.
+            try:
+                keys = [
+                    {k: chain[0][k] for k in _DOCUMENT_KEY_FIELDS if k in chain[0]}
+                    for chain in iter_chains(reader, src)
+                ]
+                return keys, functools.partial(iter_chains, reader, src)
+            except UnsortedArchive as e:
+                self._emit(
+                    "warning",
+                    f"[{src}] {e} — the restore holds every document "
+                    "in memory; a backup taken with this release streams.",
+                )
+        rows = []
+        for row in reader.read_entities(entity_type, namespace=src):
+            row.pop("_id", None)
+            rows.append(row)
+        return rows, None
+
+    async def _create_remap_targets(
+        self,
+        targets: list[str],
+        mapping: dict[str, str],
+        entries: dict[str, Any],
+        manifest: Any,
+        *,
+        dry_run: bool,
+    ) -> None:
+        """Create (or, in a dry run, ask the Registry about) each target."""
+        for target in targets:
+            first_src = next(s for s, t in mapping.items() if t == target)
+            entry = entries.get(first_src)
+            ns_config = (
+                entry.namespace_config if entry
+                else manifest.namespace_config
+            )
+            ns_config = self._rewrite_ns_config_refs(ns_config, mapping)
+            # Fresh means fresh: a remap re-mints every id, so the target
+            # must not inherit the source's id_config. A prefixed source
+            # scheme would otherwise re-mint the source's exact ids and
+            # collide with the live original on the global entry_id index
+            # (CASE-784). preserve_id_config=False defaults the target to
+            # UUID7 (or keeps a pre-created target's own config).
+            await self._upsert_namespace(
+                target, ns_config, preserve_id_config=False, dry_run=dry_run,
+            )
+
+    def _report_remap_plans(
+        self, mapping: dict[str, str], plans: dict[str, Any], *, dry_run: bool,
+    ) -> None:
+        """What each source's plan will write, and the documents whose
+        identity hash it cannot recompute."""
+        phase = "phase_dry_run" if dry_run else "phase_remap"
+        for src, target in mapping.items():
+            for entity_type, count in plans[src].summary().items():
+                if count:
+                    self._emit(phase, f"[{src} → {target}] {entity_type}: {count}")
+            if unrehashable := plans[src].unrehashable_documents:
+                self._emit(
+                    "warning",
+                    f"[{src} → {target}] {unrehashable} document(s) keep their "
+                    "archived identity hash: their template is neither in the "
+                    "archive nor readable here. If an identity field names a "
+                    "term or document this restore re-minted, the next write of "
+                    "that identity creates a second document — rehash the "
+                    "namespace (POST /api/document-store/maintenance/"
+                    "rehash-identities) once their template exists.",
+                )
+
+    @staticmethod
+    def _remap_activation_items(
+        target: str,
+        mapping: dict[str, str],
+        plans: dict[str, Any],
+        rewritten: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """The activation items of one target: every entry its sources'
+        plans minted, a document's with its final key and carried synonyms
+        (taken out of ``rewritten``)."""
+        items: list[dict[str, Any]] = []
+        for src, t in mapping.items():
+            if t != target:
+                continue
+            plan = plans[src]
+            doc_keys = plan.final_document_keys(target)
+            for m in plan.id_map.values():
+                for new_id in m.values():
+                    item: dict[str, Any] = {"entry_id": new_id}
+                    if new_id in doc_keys:
+                        item["composite_key"] = doc_keys[new_id]
+                        carried = rewritten[src].pop(new_id, None)
+                        if carried:
+                            item["synonyms"] = carried
+                    items.append(item)
+        return items
+
+    async def _record_remap_provenance(
+        self,
+        archive_path: Path,
+        manifest: Any,
+        raw_manifest: Any,
+        mapping: dict[str, str],
+        referents: Any,
+    ) -> None:
+        """Release what retired documents must not keep, and record where
+        each target came from."""
+        for target in mapping.values():
+            await self._release_retired_synonyms(target)
+        for src, target in mapping.items():
+            await self._record_provenance(target, src, manifest)
+            await self._write_restore_provenance(
+                archive_path, manifest, raw_manifest,
+                source=src, target=target, mode="remap",
+                referents=_referents_for(referents, src),
+            )
 
     def _resolve_remap_mapping(
         self,
