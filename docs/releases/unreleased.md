@@ -7,6 +7,19 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `PATCH /files` and `DELETE /files` report a namespace refusal per item
+
+If one file in a batch was in a namespace the caller could not write, the
+whole request answered 403 (or 404), although the files before it had already
+been updated or deleted, and none of them was reported. Now the request
+answers 200, and each refused item reports `status: "error"`:
+- `error_code: "forbidden"` when the caller can read that namespace;
+- `error_code: "not_found"`, worded exactly like a missing file, when the
+  caller cannot see the namespace.
+
+Every other item in the batch proceeds. Permissions are checked before any
+item is written, so an authorization outage (503) now refuses the request
+with nothing changed.
 ### Archive names cannot escape their paths; a restore always checks the namespaces it writes (wip-archive 0.36.0, WIP-Toolkit 0.26.2)
 
 An archive's namespace prefixes, file ids and template values become

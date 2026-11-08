@@ -336,6 +336,32 @@ async def download_file_content(
     )
 
 
+async def _write_refusals(
+    identity: UserIdentity, namespaces: set[str]
+) -> dict[str, tuple[str, str]]:
+    """Per namespace, why ``identity`` may not write there, as (error,
+    error_code); a namespace absent from the result may be written.
+
+    Asked once per namespace and before any item of a batch is written, so a
+    refusal is reported on its items while the rest of the batch proceeds,
+    and an authorization outage (503) refuses the whole request before any
+    item has changed. A namespace the caller cannot see answers exactly like
+    a missing file, so the response does not confirm that it exists.
+    """
+    refusals: dict[str, tuple[str, str]] = {}
+    for ns in sorted(namespaces):
+        try:
+            await check_namespace_permission(identity, ns, "write")
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                refusals[ns] = (str(exc.detail), "forbidden")
+            elif exc.status_code == 404:
+                refusals[ns] = ("File not found", "not_found")
+            else:
+                raise
+    return refusals
+
+
 @router.patch(
     "",
     response_model=BulkResponse,
@@ -355,14 +381,20 @@ async def update_files_metadata(
 
     from ..models.file import File as FileModel
     service = get_file_service()
+    file_docs = [await FileModel.find_one({"file_id": item.file_id}) for item in items]
+    refusals = await _write_refusals(
+        identity, {doc.namespace for doc in file_docs if doc}
+    )
     results = []
-    for i, item in enumerate(items):
+    for i, (item, file_doc) in enumerate(zip(items, file_docs, strict=True)):
         try:
-            file_doc = await FileModel.find_one({"file_id": item.file_id})
             if not file_doc:
                 results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found", error_code="not_found"))
                 continue
-            await check_namespace_permission(identity, file_doc.namespace, "write")
+            if file_doc.namespace in refusals:
+                error, code = refusals[file_doc.namespace]
+                results.append(BulkResultItem(index=i, status="error", id=item.file_id, error=error, error_code=code))
+                continue
             response = await service.update_metadata(item.file_id, item)
             if not response:
                 results.append(BulkResultItem(index=i, status="error", id=item.file_id, error="File not found", error_code="not_found"))
@@ -398,14 +430,20 @@ async def delete_files(
 
     from ..models.file import File as FileModel
     service = get_file_service()
+    file_docs = [await FileModel.find_one({"file_id": item.id}) for item in items]
+    refusals = await _write_refusals(
+        identity, {doc.namespace for doc in file_docs if doc}
+    )
     results = []
-    for i, item in enumerate(items):
+    for i, (item, file_doc) in enumerate(zip(items, file_docs, strict=True)):
         try:
-            file_doc = await FileModel.find_one({"file_id": item.id})
             if not file_doc:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found", error_code="not_found"))
                 continue
-            await check_namespace_permission(identity, file_doc.namespace, "write")
+            if file_doc.namespace in refusals:
+                error, code = refusals[file_doc.namespace]
+                results.append(BulkResultItem(index=i, status="error", id=item.id, error=error, error_code=code))
+                continue
             success = await service.delete_file(item.id, force=item.force)
             if not success:
                 results.append(BulkResultItem(index=i, status="error", id=item.id, error="File not found", error_code="not_found"))
