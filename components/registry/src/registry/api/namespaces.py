@@ -78,6 +78,26 @@ def _id_prefix_errors(namespace: str) -> Iterator[None]:
         raise HTTPException(status_code=err.status_code, detail=err.detail) from e
 
 
+async def _create_or_lost_race(ns: Namespace) -> Namespace | None:
+    """Insert ``ns``; when a concurrent create of the same prefix won, the
+    namespace it stored, else None (the insert succeeded).
+
+    A losing insert reports a duplicate key on whichever unique index MongoDB
+    checks first — the prefix, or the namespace_id two creates of a reserved
+    name share — so the race is told by re-reading the prefix, not by the
+    index name. Any other duplicate key propagates (an id prefix held by
+    another namespace is mapped by _id_prefix_errors).
+    """
+    try:
+        await ns.create()
+    except DuplicateKeyError:
+        winner = await Namespace.find_one({"prefix": ns.prefix})
+        if winner is None:
+            raise
+        return winner
+    return None
+
+
 def namespace_to_response(ns: Namespace) -> NamespaceResponse:
     """Convert a Namespace document to a response model."""
     id_config = id_config_view(ns)
@@ -365,7 +385,12 @@ async def create_namespace(
             deletion_mode=request.deletion_mode,
             created_by=request.created_by,
         )
-        await ns.create()
+        if await _create_or_lost_race(ns) is not None:
+            # The same refusal the existence check above gives.
+            raise HTTPException(
+                status_code=409,
+                detail=f"Namespace already exists: {request.prefix}",
+            )
 
     await adopt_on_reservation(ns.prefix, namespace_id)
     response = namespace_to_response(ns)
@@ -522,7 +547,12 @@ async def upsert_namespace(
                 response.warnings.append(identity_warning)
             if dry_run:
                 return response
-            await ns.create()
+            if await _create_or_lost_race(ns) is not None:
+                # A concurrent upsert created it first. This request is now an
+                # update of that namespace, and runs as one from the top —
+                # its settings are applied under the update path's guards,
+                # never dropped and never written past them.
+                return await upsert_namespace(prefix, request, identity, dry_run)
         if identity_warning:
             logger.warning("Namespace '%s': %s", prefix, identity_warning)
         await adopt_on_reservation(prefix, namespace_id)
@@ -647,6 +677,6 @@ async def initialize_wip_namespace(
         isolation_mode="open",
         id_config={},  # Empty = defaults to UUID7 for everything
     )
-    await ns.create()
+    winner = await _create_or_lost_race(ns)
 
-    return namespace_to_response(ns)
+    return namespace_to_response(winner or ns)

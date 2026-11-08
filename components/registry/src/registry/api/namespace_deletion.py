@@ -13,7 +13,11 @@ from wip_auth import UserIdentity
 
 from ..models.namespace import LOCKED_DETAIL, Namespace, set_unless_locked
 from ..services.auth import require_admin_key, require_api_key
-from ..services.namespace_deletion import DeletionAlreadyRunning, NamespaceDeletionService
+from ..services.namespace_deletion import (
+    DeletionAlreadyRunning,
+    NamespaceDeletionService,
+    deletion_refusals,
+)
 
 router = APIRouter()
 
@@ -52,19 +56,10 @@ async def delete_namespace(
         report = await _deletion_service.dry_run(prefix)
         return report
 
-    # Validation
-    if prefix == "wip":
-        raise HTTPException(400, "Cannot delete the default 'wip' namespace")
-
-    if ns.deletion_mode != "full":
-        raise HTTPException(
-            400,
-            f"Namespace '{prefix}' has deletion_mode='retain'. "
-            "Set deletion_mode='full' first via PATCH."
-        )
-
-    if ns.status == "locked":
-        raise HTTPException(409, f"Namespace '{prefix}' is already locked (deletion in progress)")
+    # The refusals the dry run reports, in the same order.
+    if refusals := deletion_refusals(ns):
+        _rule, message, status = refusals[0]
+        raise HTTPException(status, message)
 
     try:
         journal = await _deletion_service.start_deletion(

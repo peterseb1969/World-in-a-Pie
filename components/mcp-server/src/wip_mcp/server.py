@@ -1321,7 +1321,8 @@ async def create_namespace(
     """Create a new namespace. Namespaces scope all entities (terminologies, templates, documents).
 
     Args:
-        prefix: Unique namespace prefix (e.g., 'finance', 'clintrial', 'dnd'). Lowercase, no spaces.
+        prefix: Unique namespace prefix (e.g., 'finance', 'clintrial', 'dnd'): lowercase
+            letters, digits, '-' and '_', starting with a letter or digit, at most 63 characters.
         description: Human-readable description of the namespace's purpose.
         isolation_mode: Outbound references. 'open' (default) may reference any namespace;
             'strict' only itself and allowed_external_refs.
@@ -1420,7 +1421,10 @@ async def delete_namespace(
     """Delete a namespace and ALL its data (terminologies, terms, templates, documents, files).
 
     DESTRUCTIVE — requires deletion_mode='full' on the namespace.
-    Always run with dry_run=true first to see the impact report.
+    Always run with dry_run=true first to see the impact report: safe_to_delete
+    is true only when the delete would go ahead; refusals names each reason it
+    would not (the 'wip' namespace, deletion_mode 'retain', a deletion already
+    running), and requires_force says inbound references need force=true.
 
     Args:
         prefix: Namespace prefix to delete

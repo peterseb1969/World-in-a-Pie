@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -77,6 +78,45 @@ _HIGH_SEVERITY_INBOUND = frozenset({
 
 # Ids per $in when matching other namespaces' rows against this one's terms.
 _INBOUND_TERM_BATCH = 1000
+
+
+def deletion_refusals(ns: Namespace) -> list[tuple[str, str, int]]:
+    """Why the delete refuses ``ns`` outright: (rule, message, HTTP status).
+
+    One list, read by the delete and by its dry run, so a dry run never calls
+    a namespace safe to delete that the delete refuses. Inbound references
+    are not here: ``force`` overrides them, and the report has its own field.
+    """
+    refusals: list[tuple[str, str, int]] = []
+    if ns.prefix == "wip":
+        refusals.append(
+            ("default_namespace", "Cannot delete the default 'wip' namespace", 400)
+        )
+    if ns.deletion_mode != "full":
+        refusals.append((
+            "deletion_mode",
+            f"Namespace '{ns.prefix}' has deletion_mode='retain'. "
+            "Set deletion_mode='full' first via PATCH.",
+            400,
+        ))
+    if ns.status == "locked":
+        refusals.append((
+            "locked",
+            f"Namespace '{ns.prefix}' is already locked (deletion in progress)",
+            409,
+        ))
+    return refusals
+
+
+def id_counter_filter(prefix: str) -> dict[str, Any]:
+    """The namespace's own id counters, keyed "{namespace}:{entity_type}:{prefix}".
+
+    The name is escaped: a namespace named before the prefix rule may hold a
+    regex metacharacter, and "a.b" unescaped would also match "axb:"'s
+    counters — deleting another namespace's sequence. The install-wide
+    "@prefix:" counters never match: no namespace name starts with "@".
+    """
+    return {"counter_key": {"$regex": f"^{re.escape(prefix)}:"}}
 
 # Template field slots, by what they point at.
 _FIELD_TERMINOLOGY_SLOTS = ("terminology_ref", "array_terminology_ref")
@@ -302,10 +342,18 @@ class NamespaceDeletionService:
         self._recovery_task: asyncio.Task | None = None
 
     async def dry_run(self, prefix: str) -> dict[str, Any]:
-        """Return an impact report without making any changes."""
+        """Return an impact report without making any changes.
+
+        ``safe_to_delete`` answers what the delete would answer: false when
+        the delete refuses the namespace outright (``refusals`` names each
+        rule and its reason, worded as the delete words it) and when inbound
+        references require ``force`` (``requires_force``). The report itself
+        is always given — it is what a dry run is for.
+        """
         ns = await Namespace.find_one({"prefix": prefix})
         if not ns:
             return {"error": "Namespace not found"}
+        refusals = deletion_refusals(ns)
 
         entity_counts = await self._count_entities(prefix)
         storage_keys = await self._get_storage_keys(prefix)
@@ -322,7 +370,8 @@ class NamespaceDeletionService:
             # objects in whichever object store the install runs.
             "minio_objects": len(storage_keys),
             "inbound_references": [r.model_dump() for r in inbound_refs],
-            "safe_to_delete": not has_high_severity,
+            "refusals": [{"rule": rule, "message": message} for rule, message, _ in refusals],
+            "safe_to_delete": not refusals and not has_high_severity,
             "requires_force": has_high_severity,
         }
 
@@ -337,19 +386,8 @@ class NamespaceDeletionService:
         if not ns:
             raise ValueError(f"Namespace not found: {prefix}")
 
-        if ns.prefix == "wip":
-            raise ValueError("Cannot delete the default 'wip' namespace")
-
-        if ns.deletion_mode != "full":
-            raise ValueError(
-                f"Namespace '{prefix}' has deletion_mode='retain'. "
-                "Change to 'full' before deleting."
-            )
-
-        if ns.status == "locked":
-            raise ValueError(
-                f"Namespace '{prefix}' is already locked (deletion in progress)"
-            )
+        if refusals := deletion_refusals(ns):
+            raise ValueError(refusals[0][1])
 
         # Check inbound references
         inbound_refs = await self._check_inbound_references(prefix)
@@ -519,7 +557,7 @@ class NamespaceDeletionService:
         # regex filter. The install-wide "@prefix:" counters are not a
         # namespace's and stay: a restore of its IDs must not restart them.
         counts["id_counters"] = await reg_db["id_counters"].count_documents(
-            {"counter_key": {"$regex": f"^{prefix}:"}}
+            id_counter_filter(prefix)
         )
 
         # Count across external service databases
@@ -675,15 +713,15 @@ class NamespaceDeletionService:
 
         # id_counters: uses counter_key prefix, not a namespace field
         registry_db = motor_client[reg_db_name]
-        id_counter_filter = {"counter_key": {"$regex": f"^{prefix}:"}}
-        id_counter_count = await registry_db["id_counters"].count_documents(id_counter_filter)
+        counters = id_counter_filter(prefix)
+        id_counter_count = await registry_db["id_counters"].count_documents(counters)
         if id_counter_count > 0:
             steps.append(DeletionStep(
                 order=order,
                 store="mongodb",
                 collection="id_counters",
                 database=reg_db_name,
-                filter=id_counter_filter,
+                filter=counters,
                 detail=f"Delete {id_counter_count} ID counters for {prefix}",
             ))
             order += 1

@@ -26,15 +26,26 @@ WIP_NAMESPACE = "wip"
 # a namespace is created; namespaces created before the rule keep their name.
 PREFIX_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]*")
 
+# The prefix is the namespace's PostgreSQL schema name, whole, and PostgreSQL
+# identifiers hold at most 63 bytes; reporting refuses a longer one rather than
+# truncate it into a collision. The pattern is ASCII, so bytes are characters.
+MAX_PREFIX_LENGTH = 63
+
 
 def prefix_error(prefix: str) -> str | None:
     """Why ``prefix`` cannot name a new namespace, or None when it can."""
-    if PREFIX_PATTERN.fullmatch(prefix):
-        return None
-    return (
-        f"Invalid namespace prefix {prefix!r}: use lowercase letters, digits, "
-        "'-' and '_', starting with a letter or digit"
-    )
+    if not PREFIX_PATTERN.fullmatch(prefix):
+        return (
+            f"Invalid namespace prefix {prefix!r}: use lowercase letters, digits, "
+            "'-' and '_', starting with a letter or digit"
+        )
+    if len(prefix) > MAX_PREFIX_LENGTH:
+        return (
+            f"Invalid namespace prefix {prefix!r}: at most {MAX_PREFIX_LENGTH} "
+            f"characters (it is {len(prefix)}), the longest PostgreSQL schema "
+            "name the reporting layer can hold"
+        )
+    return None
 
 
 # The unique index that makes a `prefixed` prefix name one ID sequence
