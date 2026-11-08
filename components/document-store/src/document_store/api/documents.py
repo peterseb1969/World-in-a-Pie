@@ -33,7 +33,7 @@ from ..models.api_models import (
     TraverseResponse,
 )
 from ..models.document import DocumentStatus
-from ..services.document_service import get_document_service
+from ..services.document_service import DocumentService, get_document_service
 from ..services.errors import DocumentStoreError, error_fields
 from ..services.nats_client import get_throttle_delay
 from ..services.registry_client import get_registry_client
@@ -64,6 +64,8 @@ async def create_documents(
     Template IDs accept both canonical UUIDs and human-readable values
     (e.g., "PATIENT" instead of "019..."). Values are resolved via Registry synonyms.
     """
+    if not items:
+        return BulkResponse(results=[], total=0, succeeded=0, failed=0)
     namespaces = {item.namespace for item in items}
     for ns in namespaces:
         await check_namespace_permission(identity, ns, "write")
@@ -112,11 +114,65 @@ async def create_documents(
         result = BulkResponse(results=results, total=1, succeeded=succeeded, failed=failed)
     else:
         # Bulk path — uses cache warmup and batch Registry calls
-        namespace = items[0].namespace
-        result = await service.bulk_create(items, namespace=namespace, continue_on_error=continue_on_error)
+        result = await _bulk_create_per_namespace(service, items, continue_on_error)
 
     await asyncio.sleep(get_throttle_delay())
     return result
+
+
+async def _bulk_create_per_namespace(
+    service: DocumentService, items: list[DocumentCreateRequest], continue_on_error: bool,
+) -> BulkResponse:
+    """The bulk path, with every document written into the namespace its
+    item names.
+
+    The service writes one batch into one namespace (validation context,
+    identity registration and the existing-document lookup are all scoped to
+    it), so the request is taken in runs of consecutive items that share a
+    namespace — one run in the common case of a single-namespace request.
+    Runs go in submission order, and each run's rows are renumbered to the
+    items' positions in the request. With ``continue_on_error`` false the
+    request stops at its first failing item, as a single batch does: every
+    later item is skipped, whichever namespace it names.
+    """
+    runs: list[list[int]] = []
+    for i, item in enumerate(items):
+        if runs and items[runs[-1][0]].namespace == item.namespace:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    if len(runs) == 1:
+        return await service.bulk_create(
+            items, namespace=items[0].namespace, continue_on_error=continue_on_error,
+        )
+
+    results: list[BulkResultItem] = []
+    timing: dict[str, float] = {}
+    stopped = False
+    for run in runs:
+        if stopped:
+            results.extend(
+                BulkResultItem(index=i, status="skipped", error="Stopped due to previous error")
+                for i in run
+            )
+            continue
+        part = await service.bulk_create(
+            [items[i] for i in run], namespace=items[run[0]].namespace,
+            continue_on_error=continue_on_error,
+        )
+        results.extend(row.model_copy(update={"index": run[row.index]}) for row in part.results)
+        for phase, ms in (part.timing or {}).items():
+            timing[phase] = round(timing.get(phase, 0.0) + ms, 1)
+        if not continue_on_error and part.failed:
+            stopped = True
+    results.sort(key=lambda r: r.index)
+    return BulkResponse(
+        results=results,
+        total=len(items),
+        succeeded=sum(1 for r in results if r.status not in ("error", "skipped")),
+        failed=sum(1 for r in results if r.status == "error"),
+        timing=timing,
+    )
 
 
 @router.patch(

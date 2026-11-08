@@ -7,6 +7,27 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `POST /documents`: a batch writes each document into its item's namespace
+
+Each item of `POST /api/document-store/documents` names its namespace, but a
+batch of two or more items wrote **every** document into the first item's
+namespace: identity registered there, validated there, and reported
+`created`. A one-item request with the same content went to the right
+namespace, so the outcome depended on batch size and the response could not
+show it.
+
+- **Each document is now written into the namespace its item names.** The
+  batch is processed in runs of consecutive items that share a namespace, in
+  submission order. A single-namespace batch is one run, as before.
+- **`continue_on_error=false`** stops the request at its first failing item,
+  and every later item is `skipped`, whichever namespace it names.
+- **An empty body (`[]`)** answers an empty `BulkResponse`. It used to be a
+  500.
+- **Documents a mixed batch misplaced before this fix stay where they were
+  written.** They carry the first item's namespace and a document_id
+  registered there; a later write of the same content to the intended
+  namespace creates a separate document.
+
 ### A restore acts as its requester at the Registry, logins included
 
 A restore creates and configures namespaces at the Registry with the
