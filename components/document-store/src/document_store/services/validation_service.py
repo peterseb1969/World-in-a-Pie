@@ -2,6 +2,7 @@
 
 import contextlib
 import logging
+import math
 import re
 import time
 from datetime import date, datetime
@@ -363,7 +364,37 @@ class ValidationService:
             )
             return False
 
-        return True
+        # JSON parsing accepts NaN and ±Infinity, but no JSON response can
+        # carry them: a stored NaN reads back as null, so the write would be
+        # accepted and its value silently changed. NaN also passes every
+        # minimum/maximum check, because every comparison with it is false.
+        # Refused anywhere in the data, typed fields, untyped objects and
+        # arrays alike.
+        bad_paths = self._non_finite_paths(data, "")
+        for path in bad_paths:
+            result.add_error(
+                code="non_finite_number",
+                message=f"Field '{path}' is not a finite number (NaN and Infinity are refused)",
+                field=path,
+            )
+        return not bad_paths
+
+    @classmethod
+    def _non_finite_paths(cls, value: Any, path: str) -> list[str]:
+        """The paths of every non-finite float inside value."""
+        if isinstance(value, float):
+            return [] if math.isfinite(value) else [path]
+        if isinstance(value, dict):
+            return [
+                p for k, v in value.items()
+                for p in cls._non_finite_paths(v, f"{path}.{k}" if path else str(k))
+            ]
+        if isinstance(value, list):
+            return [
+                p for i, v in enumerate(value)
+                for p in cls._non_finite_paths(v, f"{path}[{i}]")
+            ]
+        return []
 
     async def _resolve_template(
         self,
@@ -1679,7 +1710,7 @@ class ValidationService:
                 elif reference_type == "terminology":
                     # Resolve terminology reference
                     resolved = await self._resolve_terminology_reference(
-                        value, result, field_path
+                        value, result, field_path, namespace
                     )
                     if resolved:
                         result.references.append({
@@ -1935,10 +1966,6 @@ class ValidationService:
                 if not doc:
                     # Try inactive too for pinned references
                     doc = await Document.find_one({"document_id": value})
-            elif value.startswith("hash:"):
-                # Identity hash lookup — route through Registry to avoid
-                # cross-template ambiguity (CASE-36).
-                doc = await self._resolve_via_registry(value, namespace, "documents")
             else:
                 # Registry lookup — resolve any identifier (synonym, composite key value, etc.)
                 # Qualified form: explicit NS:VALUE resolves in the named
@@ -1947,7 +1974,18 @@ class ValidationService:
                 # still passes the namespace-isolation check downstream, so a
                 # qualified ref into an undeclared namespace surfaces as
                 # reference_violation, not not_found.
-                ref_ns, ref_value = split_qualified_value(value)
+                #
+                # hash:<identity_hash> names a document by its identity hash,
+                # in the caller's namespace. The Registry holds the bare digest
+                # among a document's key values, so the prefix is removed
+                # before the lookup; it is never read as a namespace. The same
+                # digest under two templates (one identity under two schemas)
+                # is narrowed by target_templates like any bare value, and is
+                # refused as ambiguous when that leaves several.
+                if value.startswith("hash:"):
+                    ref_ns, ref_value = None, value[len("hash:"):]
+                else:
+                    ref_ns, ref_value = split_qualified_value(value)
                 doc, candidates = await self._resolve_bare_document_reference(
                     ref_value, ref_ns or namespace, target_templates,
                 )
@@ -2291,42 +2329,6 @@ class ValidationService:
             for d in (survivors or docs)
         ]
 
-    async def _resolve_via_registry(
-        self,
-        value: str,
-        namespace: str,
-        entity_type: str
-    ) -> Any | None:
-        """
-        Resolve a reference value via the Registry's extended lookup.
-
-        The Registry names the document; this answers its latest active
-        version, or its latest version when none is active. By document_id,
-        never identity_hash, which can match across templates (CASE-36).
-        """
-        from beanie.odm.enums import SortDirection
-
-        from ..models.document import Document, DocumentStatus
-        from .registry_client import RegistryError, get_registry_client
-
-        try:
-            registry = get_registry_client()
-            resolved_id = await registry.resolve_identifier(namespace, entity_type, value)
-            if not resolved_id:
-                return None
-
-            newest_first = [("version", SortDirection.DESCENDING)]
-            for query in (
-                {"document_id": resolved_id, "status": DocumentStatus.ACTIVE},
-                {"document_id": resolved_id},
-            ):
-                rows = await Document.find(query).sort(newest_first).limit(1).to_list()
-                if rows:
-                    return rows[0]
-            return None
-        except RegistryError:
-            return None
-
     async def _resolve_term_reference(
         self,
         value: str,
@@ -2381,26 +2383,32 @@ class ValidationService:
         self,
         value: str,
         result: ValidationResult,
-        field_path: str
+        field_path: str,
+        namespace: str | None = None,
     ) -> dict[str, Any] | None:
-        """Resolve a terminology reference."""
+        """Resolve a terminology reference: a canonical id, a bare value in
+        the document's own namespace, or 'ns:VALUE' in the named one. Asked
+        of def-store on every write, so a terminology retired a moment ago
+        is refused now."""
         client = get_def_store_client()
 
         try:
-            exists = await client.terminology_exists(value)
-            if exists:
-                terminology = await client.get_terminology(value)
-                if terminology and not await gate_refuses(
+            terminology = await client.get_terminology(value, namespace)
+            if (
+                terminology
+                and terminology.get("status") == "active"
+                and not await gate_refuses(
                     terminology.get("namespace"), terminology.get("terminology_id"),
-                ):
-                    if terminology.get("namespace") and terminology.get("terminology_id"):
-                        result.referent_namespaces[str(terminology["terminology_id"])] = (
-                            str(terminology["namespace"])
-                        )
-                    return {
-                        "terminology_id": terminology.get("terminology_id"),
-                        "terminology_value": terminology.get("value"),
-                    }
+                )
+            ):
+                if terminology.get("namespace") and terminology.get("terminology_id"):
+                    result.referent_namespaces[str(terminology["terminology_id"])] = (
+                        str(terminology["namespace"])
+                    )
+                return {
+                    "terminology_id": terminology.get("terminology_id"),
+                    "terminology_value": terminology.get("value"),
+                }
         except DefStoreError:
             pass
 
@@ -2508,18 +2516,103 @@ class ValidationService:
         Evaluates cross-field validation rules.
         """
         rules = template.get("rules") or []
+        evaluators = {
+            "conditional_required": self._evaluate_conditional_required,
+            "conditional_value": self._evaluate_conditional_value,
+            "mutual_exclusion": self._evaluate_mutual_exclusion,
+            "dependency": self._evaluate_dependency,
+            "pattern": self._evaluate_pattern,
+            "range": self._evaluate_range,
+        }
 
-        for rule in rules:
+        # A rule that cannot be evaluated is refused, never skipped: a
+        # constraint the template declares and the platform quietly ignores
+        # is a guardrail that holds only sometimes. Template-store refuses
+        # these shapes at write time; a template stored before that check
+        # can still carry one, and its writes fail here, per document,
+        # instead of crashing the request.
+        for index, rule in enumerate(rules):
             rule_type = rule.get("type")
+            evaluator = evaluators.get(rule_type)
+            if evaluator is None:
+                self._refuse_rule(result, index, rule, f"unknown rule type {rule_type!r}")
+                continue
+            try:
+                evaluator(data, rule, result)
+            except (TypeError, AttributeError, KeyError, re.error) as e:
+                self._refuse_rule(result, index, rule, f"cannot be evaluated: {e}")
 
-            if rule_type == "conditional_required":
-                self._evaluate_conditional_required(data, rule, result)
-            elif rule_type == "conditional_value":
-                self._evaluate_conditional_value(data, rule, result)
-            elif rule_type == "mutual_exclusion":
-                self._evaluate_mutual_exclusion(data, rule, result)
-            elif rule_type == "dependency":
-                self._evaluate_dependency(data, rule, result)
+    @staticmethod
+    def _refuse_rule(
+        result: ValidationResult, index: int, rule: dict[str, Any], reason: str
+    ) -> None:
+        result.add_error(
+            code="invalid_rule",
+            message=(
+                f"Template rule {index} ({rule.get('type')}) {reason}; "
+                "fix the template's rules"
+            ),
+            details={"rule_index": index, "rule_type": rule.get("type")},
+        )
+
+    def _evaluate_pattern(
+        self,
+        data: dict[str, Any],
+        rule: dict[str, Any],
+        result: ValidationResult
+    ):
+        """Evaluate a pattern rule: when its conditions hold (none = always),
+        a present target value must be a string the pattern matches whole,
+        the same reading as a field's validation.pattern."""
+        if not self._check_conditions(data, rule.get("conditions") or []):
+            return
+        target_field = rule["target_field"]
+        target_value = IdentityService._get_nested_value(data, target_field)
+        if target_value is None:
+            return
+        pattern = rule["pattern"]
+        if not isinstance(target_value, str) or not re.fullmatch(pattern, target_value):
+            result.add_error(
+                code="pattern",
+                message=rule.get("error_message") or f"Field '{target_field}' does not match required pattern",
+                field=target_field,
+                details={"pattern": pattern},
+            )
+
+    @staticmethod
+    def _within(value: Any, minimum: float | None, maximum: float | None) -> bool:
+        """A number (not a bool) inside the inclusive bounds; None = unbounded."""
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return False
+        return (minimum is None or value >= minimum) and (maximum is None or value <= maximum)
+
+    def _evaluate_range(
+        self,
+        data: dict[str, Any],
+        rule: dict[str, Any],
+        result: ValidationResult
+    ):
+        """Evaluate a range rule: when its conditions hold (none = always),
+        a present target value must be a number within minimum..maximum,
+        either bound optional, both inclusive."""
+        if not self._check_conditions(data, rule.get("conditions") or []):
+            return
+        target_field = rule["target_field"]
+        target_value = IdentityService._get_nested_value(data, target_field)
+        if target_value is None:
+            return
+        minimum, maximum = rule.get("minimum"), rule.get("maximum")
+        if not self._within(target_value, minimum, maximum):
+            result.add_error(
+                code="range",
+                message=rule.get("error_message") or (
+                    f"Field '{target_field}' must be a number between "
+                    f"{minimum if minimum is not None else '-∞'} and "
+                    f"{maximum if maximum is not None else '∞'}"
+                ),
+                field=target_field,
+                details={"minimum": minimum, "maximum": maximum},
+            )
 
     @staticmethod
     def _coerce_for_comparison(actual: Any, expected: Any) -> tuple[Any, Any]:
@@ -2557,16 +2650,22 @@ class ValidationService:
         elif operator == "not_equals":
             a, e = self._coerce_for_comparison(actual_value, expected_value)
             return cast(bool, a != e)
-        elif operator == "in":
-            return actual_value in expected_value if expected_value else False
-        elif operator == "not_in":
-            return actual_value not in expected_value if expected_value else True
+        elif operator in ("in", "not_in"):
+            # A list of values; anything else cannot be evaluated (a string
+            # would be read as a substring test). The rule is refused.
+            if not isinstance(expected_value, list):
+                raise TypeError(
+                    f"operator {operator!r} needs a list value, got "
+                    f"{type(expected_value).__name__}"
+                )
+            found = actual_value in expected_value
+            return found if operator == "in" else not found
         elif operator == "exists":
             return actual_value is not None
         elif operator == "not_exists":
             return actual_value is None
 
-        return False
+        raise TypeError(f"unknown condition operator {operator!r}")
 
     def _check_conditions(
         self,

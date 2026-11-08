@@ -123,9 +123,8 @@ async def test_template_and_terminology_resolution_record_their_namespace():
     templates.get_template.return_value = {"template_id": "T-1", "value": "T", "version": 2,
                                            "namespace": "shared", "status": "inactive"}
     terminologies = AsyncMock()
-    terminologies.terminology_exists.return_value = True
     terminologies.get_terminology.return_value = {"terminology_id": "TL-1", "value": "TL",
-                                                  "namespace": "vocab"}
+                                                  "namespace": "vocab", "status": "active"}
     with patch("document_store.services.validation_service.get_template_store_client",
                return_value=templates), \
          patch("document_store.services.validation_service.get_def_store_client",

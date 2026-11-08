@@ -123,7 +123,14 @@ class IntegrityCheckResult(BaseModel):
 
 
 # Cache for checked references to avoid repeated lookups
-_template_check_cache: dict[str, tuple[bool, str]] = {}  # template_id -> (exists, status)
+# (template_id, version) -> (exists, status). A document is pinned to one
+# template version, and versions differ in status (an old version may be
+# deactivated while the latest stays active), so the check reads, and caches,
+# the version each document is pinned to. exists is False only when the
+# template is missing whole; a missing version of an existing template has
+# status "version_missing" and is reported by the identity check
+# (template_version_not_found).
+_template_check_cache: dict[tuple[str, int], tuple[bool, str]] = {}
 _term_check_cache: dict[str, bool] = {}  # term_id -> exists
 # (template_id, version) -> its identity shape, or _MISSING when the template
 # store has no such version. Identity verification needs the field list, and
@@ -154,19 +161,22 @@ async def check_template_reference(
     """
     global _template_check_cache
 
-    # Check cache first
-    if template_id in _template_check_cache:
-        exists, status = _template_check_cache[template_id]
+    key = (template_id, document.template_version)
+    if key in _template_check_cache:
+        exists, status = _template_check_cache[key]
     else:
-        # Fetch from Template Store
         template_store = get_template_store_client()
         try:
-            template = await template_store.get_template(template_id=template_id)
-            if template is None:
+            template = await template_store.get_template(
+                template_id=template_id, version=document.template_version,
+            )
+            if template is not None:
+                exists, status = True, template.get("status", "unknown")
+            elif await template_store.get_template(template_id=template_id) is None:
                 exists, status = False, "not_found"
             else:
-                exists, status = True, template.get("status", "unknown")
-            _template_check_cache[template_id] = (exists, status)
+                exists, status = True, "version_missing"
+            _template_check_cache[key] = (exists, status)
         except TemplateStoreError:
             # Can't reach Template Store, skip check
             return
@@ -182,7 +192,7 @@ async def check_template_reference(
             reference=template_id,
             message=f"Template '{template_id}' not found"
         ))
-    elif status != "active":
+    elif status not in ("active", "version_missing"):
         issues.append(IntegrityIssue(
             type="inactive_template_ref",
             severity="warning",
@@ -191,7 +201,7 @@ async def check_template_reference(
             version=document.version,
             field_path=None,
             reference=template_id,
-            message=f"Template '{template_id}' is {status}"
+            message=f"Template '{template_id}' version {document.template_version} is {status}"
         ))
 
 
@@ -476,7 +486,9 @@ async def check_identity_hash(
         # The template store has no such version. A template missing whole is
         # the orphaned-template check's to report; a missing VERSION of an
         # existing template is reported by nothing else.
-        known = _template_check_cache.get(document.template_id)
+        known = _template_check_cache.get(
+            (document.template_id, document.template_version)
+        )
         if known is None or known[0]:
             issues.append(IntegrityIssue(
                 type="template_version_not_found",

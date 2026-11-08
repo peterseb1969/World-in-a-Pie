@@ -570,36 +570,51 @@ class ReportingConfig(BaseModel):
 
 ### ValidationRule
 
-Cross-field validation rules:
+Cross-field validation rules. Every rule may carry `conditions` (all must
+hold, AND); with none, the rule applies to every document.
 
 ```python
 class RuleType(str, Enum):
-    CONDITIONAL_REQUIRED = "conditional_required"  # Field required if condition met
-    CONDITIONAL_VALUE = "conditional_value"        # Field value constrained by condition
-    MUTUAL_EXCLUSION = "mutual_exclusion"          # Only one of listed fields can have a value
-    DEPENDENCY = "dependency"                       # Field requires another field to be present
-    PATTERN = "pattern"                             # Regex validation against a field value
-    RANGE = "range"                                 # Numeric range validation (min/max bounds)
+    CONDITIONAL_REQUIRED = "conditional_required"  # target_field required when the conditions hold
+    CONDITIONAL_VALUE = "conditional_value"        # target_field in allowed_values when the conditions hold
+    MUTUAL_EXCLUSION = "mutual_exclusion"          # at most one of target_fields has a value
+    DEPENDENCY = "dependency"                       # target_field set → its conditions must hold
+    PATTERN = "pattern"                             # target_field matches pattern (whole value)
+    RANGE = "range"                                 # target_field is a number in minimum..maximum
 
 
 class ValidationRule(BaseModel):
-    """A cross-field or field-level validation rule."""
-
     type: RuleType
     description: str | None = None
-    condition: RuleCondition | None = None
-    target_field: str | None = None
-    target_fields: list[str] | None = None  # For mutual_exclusion
+    conditions: list[Condition] = []
+    target_field: str | None = None          # all types but mutual_exclusion
+    target_fields: list[str] | None = None   # mutual_exclusion: two or more
+    required: bool | None = None             # conditional_required; only false turns it off
+    allowed_values: list[Any] | None = None  # conditional_value
+    pattern: str | None = None               # pattern
+    minimum: float | None = None             # range (inclusive; either bound optional)
+    maximum: float | None = None
     error_message: str | None = None
 
 
-class RuleCondition(BaseModel):
-    """A condition for conditional rules."""
-
+class Condition(BaseModel):
     field: str
     operator: Literal["equals", "not_equals", "in", "not_in", "exists", "not_exists"]
-    value: Any = None
+    value: Any = None  # a list for in / not_in; unused by exists / not_exists
 ```
+
+A pattern or range rule checks a target that is present; an absent or null
+target passes (make the field mandatory, or add a `conditional_required`
+rule, to require it).
+
+Template-store refuses, per item (`validation_failed`, `details.rule:
+"invalid_rule"`), a rule document-store could not evaluate: a missing
+`target_field`, `allowed_values` or (for `dependency`) `conditions`; fewer
+than two `target_fields`; a pattern that does not compile; a range with no
+finite bound or with minimum above maximum; an `in` / `not_in` condition
+whose value is not a list. An unknown key in a rule or a condition is a 422.
+A template stored before these checks can still hold such a rule; its
+document writes fail with `invalid_rule` until the template is fixed.
 
 **Template Example (as stored — all references are canonical IDs):**
 ```json
@@ -673,11 +688,9 @@ class RuleCondition(BaseModel):
     {
       "type": "conditional_required",
       "description": "Tax ID required for German residents",
-      "condition": {
-        "field": "country",
-        "operator": "equals",
-        "value": "Germany"
-      },
+      "conditions": [
+        {"field": "country", "operator": "equals", "value": "Germany"}
+      ],
       "target_field": "tax_id",
       "error_message": "Tax ID is required for German residents"
     }
@@ -1296,6 +1309,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 | Code | Description |
 |------|-------------|
 | `invalid_structure` | Document data is not an object ("must be a dictionary") |
+| `non_finite_number` | A number anywhere in the data is NaN or ±Infinity |
 | `template_not_found` | The document's template does not exist |
 | `template_inactive` | The template version is deactivated |
 | `template_error` | The template could not be fetched/resolved |
@@ -1373,3 +1387,6 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 | `conditional_value` | A `CONDITIONAL_VALUE` rule was violated |
 | `dependency` | A `DEPENDENCY` rule was violated |
 | `mutual_exclusion` | A `MUTUAL_EXCLUSION` rule was violated |
+| `pattern` | A `PATTERN` rule was violated (same code as the field-level `pattern`) |
+| `range` | A `RANGE` rule was violated: the target is not a number within its bounds |
+| `invalid_rule` | A template rule cannot be evaluated (stored before template-store refused its shape); the details name `rule_index` and `rule_type` |

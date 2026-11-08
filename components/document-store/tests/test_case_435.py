@@ -33,7 +33,7 @@ class TestStringRefNoMongoFallback:
     ):
         vs = get_document_service().validation_service
         # Registry misses; the business-key lookup is a spy that must NOT be called.
-        monkeypatch.setattr(vs, "_resolve_via_registry", AsyncMock(return_value=None))
+        monkeypatch.setattr(vs, "_resolve_bare_document_reference", AsyncMock(return_value=(None, [])))
         spy = AsyncMock(return_value=("SHOULD_NOT_BE_CALLED", None))
         monkeypatch.setattr(vs, "_resolve_business_key_reference", spy)
 

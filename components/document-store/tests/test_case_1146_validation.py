@@ -82,10 +82,13 @@ async def test_a_registry_resolved_reference_answers_the_latest_version(client, 
             data={}, status=DocumentStatus.ACTIVE,
         ).insert()
     fake = AsyncMock()
-    fake.resolve_identifier = AsyncMock(return_value=document_id)
+    fake.resolve_candidates = AsyncMock(return_value=([{"entry_id": document_id}], 1))
     monkeypatch.setattr(registry_client, "get_registry_client", lambda: fake)
 
-    doc = await ValidationService()._resolve_via_registry("some-synonym", "wip", "documents")
+    doc, candidates = await ValidationService()._resolve_bare_document_reference(
+        "some-synonym", "wip", [],
+    )
+    assert candidates == []
     assert doc.version == 3
 
 

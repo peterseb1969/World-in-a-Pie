@@ -764,17 +764,12 @@ def create_mock_def_store_client():
         "COUNTRY": ["USA", "UK", "CA"],
     }
 
-    async def mock_terminology_exists(terminology_ref):
-        # Accept any UUID-shaped ID (from real Registry) or known test names
+    async def mock_get_terminology(terminology_ref, namespace=None):
+        # Any UUID-shaped ID (from the real Registry) or a known test name
         if len(terminology_ref) > 8 and "-" in terminology_ref:
-            return True
-        return terminology_ref in VALID_TERMS
-
-    async def mock_get_terminology(terminology_id=None, terminology_value=None):
-        if terminology_id and (terminology_id in VALID_TERMS or (len(terminology_id) > 8 and "-" in terminology_id)):
-            return {"terminology_id": terminology_id, "status": "active"}
-        if terminology_value in VALID_TERMS:
-            return {"terminology_id": f"TERM-{terminology_value}", "status": "active"}
+            return {"terminology_id": terminology_ref, "status": "active"}
+        if terminology_ref in VALID_TERMS:
+            return {"terminology_id": f"TERM-{terminology_ref}", "status": "active"}
         return None
 
     def _mock_term_id(value: str) -> str:
@@ -816,7 +811,6 @@ def create_mock_def_store_client():
     async def mock_health_check():
         return True
 
-    mock_client.terminology_exists = mock_terminology_exists
     mock_client.get_terminology = mock_get_terminology
     mock_client.validate_value = mock_validate_value
     mock_client.validate_values_bulk = mock_validate_values_bulk

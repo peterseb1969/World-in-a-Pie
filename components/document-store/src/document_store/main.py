@@ -579,11 +579,12 @@ async def reset_timing_stats():
 @app.get("/debug/cache", tags=["Debug"], dependencies=[Depends(require_api_key)])
 async def get_cache_stats():
     """
-    Get cache statistics for Template Store and Def-Store clients.
+    Get cache statistics for the Template Store client, and Def-Store's
+    term-resolution counters.
 
-    Shows cache size, hit rate, and configuration.
-    - Template cache: Permanent (template_id is immutable)
-    - Terminology cache: Caches complete terminologies for local term validation
+    - Template cache: pinned versions kept, "latest" for a few seconds
+    - Def-Store: nothing is cached; terms and terminologies are asked of
+      Def-Store on every write
     """
     template_client = get_template_store_client()
     def_store_client = get_def_store_client()
@@ -595,19 +596,12 @@ async def get_cache_stats():
     template_total = template_stats["template_cache_hits"] + template_stats["template_cache_misses"]
     template_hit_rate = (template_stats["template_cache_hits"] / template_total * 100) if template_total > 0 else 0
 
-    # Calculate terminology hit rate
-    terminology_total = def_store_stats["terminology_cache_hits"] + def_store_stats["terminology_cache_misses"]
-    terminology_hit_rate = (def_store_stats["terminology_cache_hits"] / terminology_total * 100) if terminology_total > 0 else 0
-
     return {
         "template_cache": {
             **template_stats,
             "hit_rate_percent": round(template_hit_rate, 1),
         },
-        "terminology_cache": {
-            **def_store_stats,
-            "hit_rate_percent": round(terminology_hit_rate, 1),
-        },
+        "def_store": def_store_stats,
     }
 
 

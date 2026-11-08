@@ -331,6 +331,10 @@ A constraint that spans multiple fields. Types:
 - `conditional_value`: Value constrained by another field
 - `mutual_exclusion`: Only one of listed fields can have value
 - `dependency`: Field requires another field to be present
+- `pattern`: Field must match a regular expression (whole value), when the conditions hold
+- `range`: Field must be a number within minimum..maximum, when the conditions hold
+
+A rule document-store could not evaluate (no target field, an `in` condition on a single value, a pattern that does not compile, an unknown key) is refused when the template is written.
 
 ### Version
 A snapshot of a document at a point in time. When updated via [upsert](#upsert), the `document_id` stays the same and the `version` number increments. The previous version is set to inactive. Versions share the same [identity hash](#identity-hash).

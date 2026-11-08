@@ -7,7 +7,6 @@ terminology-metadata lookups on top.
 """
 
 import os
-import time
 from typing import Any, cast
 
 import httpx
@@ -22,52 +21,6 @@ from wip_auth.term_resolution import (
 )
 
 
-class TerminologyCache:
-    """
-    TTL cache for terminology METADATA (status, value, case rules) — never
-    terms. Used by terminology-reference fields and template warm-up; term
-    values always resolve through def-store.
-    """
-
-    def __init__(self, ttl: int = 300):
-        self.ttl = ttl
-        # terminology_ref -> (terminology_data, timestamp)
-        self._cache: dict[str, tuple[dict[str, Any], float]] = {}
-        self._hits = 0
-        self._misses = 0
-
-    def get(self, terminology_ref: str) -> dict[str, Any] | None:
-        """Get a cached terminology if not expired."""
-        if terminology_ref in self._cache:
-            data, timestamp = self._cache[terminology_ref]
-            if time.time() - timestamp < self.ttl:
-                self._hits += 1
-                return data
-            else:
-                del self._cache[terminology_ref]
-        self._misses += 1
-        return None
-
-    def set(self, terminology_ref: str, data: dict[str, Any]):
-        """Cache a terminology."""
-        self._cache[terminology_ref] = (data, time.time())
-
-    def get_stats(self) -> dict[str, Any]:
-        """Get cache statistics."""
-        return {
-            "size": len(self._cache),
-            "hits": self._hits,
-            "misses": self._misses,
-            "ttl_seconds": self.ttl,
-        }
-
-    def clear(self):
-        """Clear the cache."""
-        self._cache.clear()
-        self._hits = 0
-        self._misses = 0
-
-
 class DefStoreClient:
     """
     Client for the WIP Def-Store service.
@@ -75,17 +28,16 @@ class DefStoreClient:
     Term values resolve through wip_auth.term_resolution (one def-store
     request per document covers all its term fields; inside a
     term_resolution_batch identical values resolve once). Terminology
-    metadata is fetched here and cached.
+    metadata is fetched here, never cached: its one reader is the document
+    write path, whose resolved terminology_id is persisted, and a write
+    must not answer from state def-store may already have retired.
     """
-
-    DEFAULT_CACHE_TTL = 300  # 5 minutes
 
     def __init__(
         self,
         base_url: str | None = None,
         api_key: str | None = None,
         timeout: float = 10.0,
-        cache_ttl: int = DEFAULT_CACHE_TTL,
     ):
         """
         Initialize the Def-Store client.
@@ -94,7 +46,6 @@ class DefStoreClient:
             base_url: Def-Store API base URL (default from env)
             api_key: API key for authentication (default from env)
             timeout: Request timeout in seconds
-            cache_ttl: Terminology metadata cache TTL in seconds (default 5 minutes)
         """
         self.base_url = base_url or os.getenv(
             "DEF_STORE_URL",
@@ -106,9 +57,6 @@ class DefStoreClient:
         ))
         self.timeout = timeout
 
-        # Terminology metadata (no terms), refreshed every TTL seconds
-        self._terminology_cache = TerminologyCache(ttl=cache_ttl)
-
     def _get_headers(self) -> dict[str, str]:
         """Get request headers with authentication."""
         return {
@@ -117,27 +65,29 @@ class DefStoreClient:
         }
 
     def get_cache_stats(self) -> dict[str, Any]:
-        """Get cache statistics."""
-        cache_stats = self._terminology_cache.get_stats()
-        return {
-            "terminology_cache_size": cache_stats["size"],
-            "terminology_cache_hits": cache_stats["hits"],
-            "terminology_cache_misses": cache_stats["misses"],
-            "cache_ttl_seconds": cache_stats["ttl_seconds"],
-            **{f"term_resolution_{k}": v for k, v in resolution_stats().items()},
-        }
+        """Term-resolution statistics (this client caches nothing)."""
+        return {f"term_resolution_{k}": v for k, v in resolution_stats().items()}
 
     def clear_cache(self):
-        """Clear the terminology metadata cache and the resolution counters."""
-        self._terminology_cache.clear()
+        """Reset the term-resolution counters."""
         reset_resolution_stats()
 
-    async def _fetch_terminology(self, terminology_id: str) -> dict[str, Any] | None:
-        """Fetch a terminology's metadata (no terms) from def-store."""
-        url = f"{self.base_url}/api/def-store/terminologies/{terminology_id}"
+    async def get_terminology(
+        self, terminology_ref: str, namespace: str | None = None
+    ) -> dict[str, Any] | None:
+        """A terminology's metadata (no terms), or None when def-store has none.
+
+        terminology_ref is a canonical id, a bare value (read in namespace,
+        the caller's own) or 'ns:VALUE' (the named namespace); def-store
+        resolves all three through the Registry. Every call asks def-store:
+        a bare value names a different terminology in each namespace, so no
+        answer for it may be reused across callers.
+        """
+        url = f"{self.base_url}/api/def-store/terminologies/{terminology_ref}"
+        params = {"namespace": namespace} if namespace else None
         try:
             async with httpx.AsyncClient(timeout=self.timeout, transport=get_def_store_transport()) as client:
-                response = await client.get(url, headers=self._get_headers())
+                response = await client.get(url, headers=self._get_headers(), params=params)
         except httpx.RequestError as e:
             raise DefStoreError(f"Request failed: {e!s}") from e
         if response.status_code == 404:
@@ -147,63 +97,6 @@ class DefStoreClient:
                 f"Failed to get terminology: {response.status_code} - {response.text}"
             )
         return cast(dict[str, Any], response.json())
-
-    async def _get_terminology_cached(
-        self, terminology_id: str, force_refresh: bool = False
-    ) -> dict[str, Any] | None:
-        """Get terminology metadata by canonical UUID, using the cache.
-
-        Cache keys are canonical terminology UUIDs only. Value-form keys
-        would let a cache hit cross namespaces: two namespaces sharing a
-        terminology value must never serve each other's entries.
-        """
-        if not force_refresh:
-            cached = self._terminology_cache.get(terminology_id)
-            if cached is not None:
-                return cached
-        terminology = await self._fetch_terminology(terminology_id)
-        if terminology:
-            self._terminology_cache.set(terminology_id, terminology)
-        return terminology
-
-    async def get_terminology(
-        self,
-        terminology_id: str | None = None,
-        terminology_value: str | None = None
-    ) -> dict[str, Any] | None:
-        """
-        Get a terminology by ID or value.
-
-        Args:
-            terminology_id: Terminology ID
-            terminology_value: Terminology value (e.g., 'DOC_STATUS')
-
-        Returns:
-            Terminology data if found, None otherwise
-        """
-        if terminology_id:
-            return await self._get_terminology_cached(terminology_id)
-        elif terminology_value:
-            return await self._get_terminology_cached(terminology_value)
-        return None
-
-    async def terminology_exists(
-        self,
-        terminology_ref: str
-    ) -> bool:
-        """
-        Check if a terminology exists by ID or code.
-
-        Args:
-            terminology_ref: Terminology ID or code
-
-        Returns:
-            True if terminology exists and is active
-        """
-        terminology = await self._get_terminology_cached(terminology_ref)
-        if terminology is None:
-            return False
-        return terminology.get("status") == "active"
 
     async def validate_value(
         self,
@@ -323,13 +216,8 @@ def get_def_store_client() -> DefStoreClient:
 def configure_def_store_client(
     base_url: str | None = None,
     api_key: str | None = None,
-    cache_ttl: int | None = None,
 ) -> DefStoreClient:
     """Configure and return the Def-Store client."""
     global _client
-    _client = DefStoreClient(
-        base_url=base_url,
-        api_key=api_key,
-        cache_ttl=cache_ttl or DefStoreClient.DEFAULT_CACHE_TTL,
-    )
+    _client = DefStoreClient(base_url=base_url, api_key=api_key)
     return _client

@@ -29,13 +29,6 @@ def _service_with_registry_spy():
     return svc, spy
 
 
-def _service_with_hash_spy():
-    svc = ValidationService()
-    spy = AsyncMock(return_value=None)
-    svc._resolve_via_registry = spy
-    return svc, spy
-
-
 async def _resolve(svc, value, caller_ns="appns"):
     result = ValidationResult()
     await svc._resolve_document_reference(
@@ -74,11 +67,12 @@ async def test_empty_prefix_falls_back_to_caller_namespace():
 
 @pytest.mark.asyncio
 async def test_hash_form_takes_precedence_over_qualified_parse():
-    """hash:<identity_hash> is an existing colon form — it must keep routing
-    through the hash branch untouched (raw value, caller namespace)."""
-    svc, spy = _service_with_hash_spy()
+    """hash:<identity_hash> is not NS:VALUE: "hash" is never read as a
+    namespace. The Registry holds the bare digest, so the prefix is removed
+    and the digest is looked up in the caller's namespace."""
+    svc, spy = _service_with_registry_spy()
     await _resolve(svc, "hash:abc123")
-    spy.assert_awaited_once_with("hash:abc123", "appns", "documents")
+    spy.assert_awaited_once_with("abc123", "appns", [])
 
 
 @pytest.mark.asyncio

@@ -2768,30 +2768,23 @@ class DocumentService:
                 )
                 continue
 
-            if operator == "eq":
-                query[field] = value
-            elif operator == "ne":
-                query[field] = {"$ne": value}
-            elif operator == "gt":
-                query[field] = {"$gt": value}
-            elif operator == "gte":
-                query[field] = {"$gte": value}
-            elif operator == "lt":
-                query[field] = {"$lt": value}
-            elif operator == "lte":
-                query[field] = {"$lte": value}
-            elif (problem := _filter_value_problem(operator, value)) is not None:
-                # Refused here, as a 422: handed to MongoDB, an ill-formed
-                # operand fails the query as a server error.
-                raise ValueError(f"Filter on {field!r}: {problem}")
-            elif operator == "in":
-                query[field] = {"$in": value}
-            elif operator == "nin":
-                query[field] = {"$nin": value}
-            elif operator == "exists":
-                query[field] = {"$exists": value}
-            elif operator == "regex":
-                query[field] = {"$regex": value}
+            mongo_ops = {
+                "ne": "$ne", "gt": "$gt", "gte": "$gte", "lt": "$lt", "lte": "$lte",
+                "in": "$in", "nin": "$nin", "exists": "$exists", "regex": "$regex",
+            }
+            if operator == "eq" or operator in mongo_ops:
+                if (problem := _filter_value_problem(operator, value)) is not None:
+                    # Refused here, as a 422: handed to MongoDB, an ill-formed
+                    # operand fails the query as a server error.
+                    raise ValueError(f"Filter on {field!r}: {problem}")
+                condition = value if operator == "eq" else {mongo_ops[operator]: value}
+                # Filters are ANDed: a second filter on a field the query
+                # already constrains (another filter, or the request's own
+                # template_id / status) joins $and instead of replacing it.
+                if field in query:
+                    query.setdefault("$and", []).append({field: condition})
+                else:
+                    query[field] = condition
             else:
                 # `operator` is a free str on QueryFilter (not an enum), so an
                 # unrecognized value reaches here. Before CASE-466 it fell

@@ -74,6 +74,48 @@ to `REPORT` could be attached to any template's document. Now:
 - reporting-sync refusing a batch sync or schema drop is logged.
 - **`@wip/client` 0.95.0**: `NamespaceIntegritySummary.identity_unverified`.
 
+### Declared constraints that did not hold now hold
+
+- **NaN and ±Infinity are refused anywhere in a document's data**
+  (`non_finite_number`, per field path). JSON parsing accepted them, NaN
+  passed every minimum/maximum check, and a stored NaN read back as `null`.
+- **`pattern` and `range` rules are evaluated.** Template-store accepted
+  them and document-store skipped them. A pattern rule matches the whole
+  value, like a field's `validation.pattern`; a range rule's bounds are
+  inclusive. Both apply when their `conditions` hold (none: always) and pass
+  an absent target. Documents that violated such a rule are refused on
+  their next write.
+- **Template-store refuses a rule document-store could not evaluate**, per
+  item (`validation_failed`, `details.rule: "invalid_rule"`): no
+  `target_field` (or `allowed_values`, or a `dependency`'s `conditions`),
+  fewer than two `target_fields`, a pattern that does not compile, a range
+  without a finite bound or with minimum above maximum, an `in` / `not_in`
+  condition whose value is not a list. **An unknown key in a rule or a
+  condition is a 422**: `condition` (singular) used to be dropped, which
+  made the rule apply to every document. A template stored before this can
+  still carry such a rule; its document writes now fail with `invalid_rule`
+  (they crashed with a 500, or the rule was skipped). Fix the template's
+  rules.
+- **`hash:<identity_hash>` document references resolve.** The prefix was
+  sent to the Registry, which holds only the digest, so every one failed
+  as `reference_not_found`. A digest two templates share is narrowed by the
+  field's `target_templates`, and refused as `ambiguous_reference` when
+  that leaves several.
+- **Two query filters on one field both apply.** `POST /documents/query`
+  kept only the last filter on a field (`gte 2` then `lte 3` returned
+  everything up to 3); a filter on `template_id` or `status` replaced the
+  request's own. Every filter is ANDed now.
+- **A terminology reference resolves in the document's namespace and is
+  asked of def-store on every write.** A bare value used to be looked up in
+  every namespace and cached for five minutes under that bare value, so one
+  namespace could receive another's terminology, and a retired terminology
+  still validated. The terminology cache is gone, and with it the
+  `terminology_cache` block of `GET /debug/cache` (now `def_store`, the
+  term-resolution counters).
+- **The integrity check reads the template version each document is pinned
+  to**, not the latest, so a retired old version is reported for the
+  documents that use it.
+
 ### Backups leave out inactive template versions nothing needs; a merge does not refuse over a template's status; `@wip/client` 0.94.0
 
 **Backup** (`POST /api/document-store/backup/namespaces/{namespace}/backup`,
