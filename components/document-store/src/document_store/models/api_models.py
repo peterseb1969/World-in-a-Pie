@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Canonical bulk-response models live in wip_auth.bulk_models (CASE-395).
 # Re-exported here under the document-store-facing names so existing
@@ -335,12 +335,53 @@ class DocumentVersionResponse(BaseModel):
 # Document Query
 # ============================================================================
 
+def operator_path_segment(path: str) -> str | None:
+    """The first segment of a dotted field path that MongoDB would read as an
+    operator (it starts with ``$``), or None when the path is a plain path."""
+    for segment in path.split("."):
+        if segment.startswith("$"):
+            return segment
+    return None
+
+
+def operator_key_in(value: Any) -> str | None:
+    """The first ``$``-prefixed key in a filter value, at any depth (inside
+    nested objects and list elements), or None when the value is plain data."""
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and key.startswith("$"):
+                return key
+            found = operator_key_in(item)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = operator_key_in(item)
+            if found is not None:
+                return found
+    return None
+
+
 class QueryFilter(StrictModel):
-    """A filter condition for document queries."""
+    """A filter condition for document queries.
+
+    The field path is free: any ``data.<path>`` or document attribute, declared
+    on a template or not. What it cannot be is a MongoDB operator. A segment
+    starting with ``$`` (``$where``, ``$expr``, ``data.$x``) would put an
+    operator, and with ``$expr`` and ``$function`` server-side JavaScript,
+    where a field path goes. A value cannot carry operators either: ``operator`` names the only
+    comparison applied, so a ``$``-prefixed key anywhere in the value is
+    refused. A plain object value (``{"city": "Berlin"}``) still matches a
+    sub-document exactly.
+    """
 
     field: str = Field(
         ...,
-        description="Field path to filter on (e.g., 'data.status', 'template_id')"
+        min_length=1,
+        description=(
+            "Field path to filter on (e.g., 'data.status', 'template_id'). "
+            "No segment may start with '$'."
+        ),
     )
     operator: str = Field(
         default="eq",
@@ -348,8 +389,33 @@ class QueryFilter(StrictModel):
     )
     value: Any = Field(
         ...,
-        description="Value to compare against"
+        description=(
+            "Value to compare against. An object or list may not contain a key "
+            "starting with '$'."
+        ),
     )
+
+    @field_validator("field")
+    @classmethod
+    def _field_is_a_path(cls, field: str) -> str:
+        segment = operator_path_segment(field)
+        if segment is not None:
+            raise ValueError(
+                f"filter field {field!r} contains {segment!r}: a field path "
+                "segment may not start with '$'"
+            )
+        return field
+
+    @field_validator("value")
+    @classmethod
+    def _value_is_data(cls, value: Any) -> Any:
+        key = operator_key_in(value)
+        if key is not None:
+            raise ValueError(
+                f"filter value contains the key {key!r}: a value may not carry "
+                "MongoDB operators; use the filter's operator instead"
+            )
+        return value
 
 
 class DocumentQueryRequest(StrictModel):

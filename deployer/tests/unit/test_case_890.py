@@ -167,7 +167,16 @@ class TestScript:
         script = render_mongodb_entrypoint(_deployment(), discovery.components, discovery.apps)
         assert script is not None
         assert "mongod --bind_ip 127.0.0.1 --port 27018" in script
-        assert "exec mongod --auth --bind_ip_all" in script
+        assert "exec mongod --auth --noscripting --bind_ip_all" in script
+
+    def test_serves_without_server_side_javascript(self, discovery: Discovery) -> None:
+        # Only the serving mongod drops scripting; the converge step runs
+        # client-side mongosh, which the flag does not govern.
+        script = render_mongodb_entrypoint(_deployment(), discovery.components, discovery.apps)
+        assert script is not None
+        serving = [line for line in script.splitlines() if line.startswith("exec mongod")]
+        assert serving, "no serving mongod line"
+        assert all("--noscripting" in line for line in serving)
         assert 'exec gosu mongodb bash "$BASH_SOURCE" "$@"' in script
 
     def test_holds_no_secret_value(self, tmp_path: Path, discovery: Discovery) -> None:

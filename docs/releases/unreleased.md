@@ -7,6 +7,28 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Query filters can't carry MongoDB operators; MongoDB runs without server-side JavaScript
+
+`POST /api/document-store/documents/query` (and the MCP `query_documents` /
+`query_by_template` tools, which use it) put a filter's `field` into the
+MongoDB query as a key and its `value` in as the operand. A field of `$expr`
+ran per-document computation, `$function` inside it JavaScript, on the
+MongoDB all of WIP shares, for any key with read on one namespace; a value
+like `{"$regex": …}` on an `eq` filter applied an operator around the
+operator allowlist, and a bare `$where` reached MongoDB and came back as an
+unhandled error. Now:
+
+- **A field path segment may not start with `$`** (`$where`, `$expr`,
+  `data.$x`): 422. Field paths stay free otherwise, so every name a template
+  can declare (`data.first-name`, `data.größe`) still filters.
+- **A filter value may not contain a `$`-prefixed key** at any depth, inside
+  objects or list elements, for every operator: 422. A plain object value
+  (`{"city": "Berlin"}`) still matches a sub-document exactly.
+- **MongoDB serves with `--noscripting`.** No WIP query uses `$where`,
+  `$function` or `$accumulator`. An existing install picks it up on its next
+  `wip-deploy redeploy` (the MongoDB start script changes, so MongoDB
+  restarts once).
+
 ### A namespace locked for deletion stays locked
 
 A deletion locks its namespace before it removes anything, and its recovery

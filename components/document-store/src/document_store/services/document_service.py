@@ -37,6 +37,8 @@ from ..models.api_models import (
     TraverseResponse,
     ValidationError,
     ValidationResponse,
+    operator_key_in,
+    operator_path_segment,
 )
 from ..models.document import Document, DocumentMetadata, DocumentStatus
 from .errors import DocumentStoreError, error_fields
@@ -2522,6 +2524,19 @@ class DocumentService:
             operator = filter_item.operator
             value = filter_item.value
 
+            # QueryFilter refuses these at parse time; a filter built without
+            # validation (model_construct, a direct caller) must not put an
+            # operator, or server-side JavaScript, into the query either.
+            if (
+                operator_path_segment(field) is not None
+                or operator_key_in(value) is not None
+            ):
+                raise ValueError(
+                    f"Filter on {field!r} carries a MongoDB operator in its "
+                    "field or value; field segments and value keys may not "
+                    "start with '$'."
+                )
+
             if (
                 field in self._TIMESTAMP_QUERY_FIELDS
                 and operator in self._TIMESTAMP_QUERY_OPS
@@ -2561,9 +2576,9 @@ class DocumentService:
                 # over-returned (no filtering on that field) with no error —
                 # the same silent-empty/silent-wrong class the case names, on
                 # the operator axis. Fail loud; the route maps ValueError->422.
-                # NOTE: this validates the OPERATOR only. Unknown filter FIELDS
-                # stay free by design (CLAUDE.md §5: query filters are ad-hoc
-                # reads, not declarative commitments) — out of scope here.
+                # Unknown filter FIELDS stay free by design (query filters are
+                # ad-hoc reads, not declarative commitments); only a field or
+                # value that carries a MongoDB operator is refused, above.
                 raise ValueError(
                     f"Unsupported filter operator '{operator}' on field "
                     f"'{field}'. Supported: eq, ne, gt, gte, lt, lte, in, "

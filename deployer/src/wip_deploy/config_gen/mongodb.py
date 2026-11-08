@@ -187,7 +187,9 @@ def render_mongodb_entrypoint(
 #
 # Every start: converge root, the declared users and roles through a temporary
 # mongod WITHOUT --auth on 127.0.0.1:{CONVERGE_PORT} (unreachable from other
-# containers; the healthcheck on 27017 stays red), then serve with --auth.
+# containers; the healthcheck on 27017 stays red), then serve with --auth and
+# --noscripting: no WIP query needs server-side JavaScript ($where, $function,
+# $accumulator), so the serving mongod has none to run.
 set -euo pipefail
 
 if [ "$(id -u)" = "0" ]; then
@@ -209,7 +211,7 @@ mongosh --quiet --port {CONVERGE_PORT} admin --file /tmp/wip-mongo-converge.js
 rm -f /tmp/wip-mongo-converge.js
 
 mongod --shutdown --dbpath {data_dir} >/dev/null
-exec mongod --auth --bind_ip_all --dbpath {data_dir} "$@"
+exec mongod --auth --noscripting --bind_ip_all --dbpath {data_dir} "$@"
 """
 
 
