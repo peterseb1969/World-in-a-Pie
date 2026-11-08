@@ -94,6 +94,50 @@ class _ItemOutcome(NamedTuple):
     counter: str
 
 
+def _registry_error_outcome(i: int, registry_result: dict) -> _ItemOutcome:
+    """The failed outcome of an item the Registry answered with an error."""
+    return _ItemOutcome(
+        BulkResultItem(
+            index=i, status="error",
+            error=registry_result.get("error", "Failed to generate ID"),
+            error_code=registry_result.get("error_code") or "registry_error",
+            details=registry_result.get("details"),
+        ),
+        None,
+        "failed",
+    )
+
+
+async def _retire_version(
+    existing: "Document", actor: str, now: datetime,
+) -> dict[Any, tuple[datetime | None, str | None]]:
+    """Mark the version a new one replaces inactive; returns what it held
+    before (its updated_at / updated_by), for a rollback that restores it."""
+    prior: dict[Any, tuple[datetime | None, str | None]] = {
+        existing.id: (existing.updated_at, existing.updated_by),
+    }
+    existing.status = DocumentStatus.INACTIVE
+    existing.updated_at = now
+    existing.updated_by = actor
+    await existing.save()
+    return prior
+
+
+def _custom_metadata(item: "DocumentCreateRequest", existing: "Document | None") -> dict:
+    """The custom metadata a written version carries.
+
+    metadata=None on an update of an existing document carries the existing
+    custom metadata forward (the caller did not address it); a supplied dict
+    — including {} — replaces wholesale. Brand-new documents and restores
+    start from {} when nothing is supplied.
+    """
+    if item.metadata is not None:
+        return item.metadata
+    if existing is not None and existing.metadata:
+        return dict(existing.metadata.custom)
+    return {}
+
+
 _UNKNOWN_PREVIOUS: Any = object()
 
 
@@ -3607,19 +3651,9 @@ class DocumentService:
         continue_on_error=False) — matching the previous inline behaviour.
         """
         if registry_result.get("status") == "error":
-            return _ItemOutcome(
-                BulkResultItem(
-                    index=i, status="error",
-                    error=registry_result.get("error", "Failed to generate ID"),
-                    error_code=registry_result.get("error_code") or "registry_error",
-                    details=registry_result.get("details"),
-                ),
-                None,
-                "failed",
-            )
+            return _registry_error_outcome(i, registry_result)
 
         document_id = cast(str, registry_result["registry_id"])
-        identity_hash = validation_result.identity_hash
         is_new_from_registry = registry_result.get("status") == "created"
 
         # For existing identity (Registry returned already_exists), look up by
@@ -3632,120 +3666,174 @@ class DocumentService:
             item.version if item.document_id and item.version is not None else None
         )
 
-        # CASE-434/436: register inline synonyms per item (bulk previously
-        # ignored them entirely). Strict by default — a refused synonym fails
-        # THIS item (and rolls back its entry/synonyms) without affecting the
-        # rest of the batch; "warn" surfaces it in the item's warnings.
-        synonym_warnings: list[str] = []
-        if item.synonyms:
-            synonym_warnings, err_code, err_msg = await self._register_inline_synonyms(
-                document_id=document_id, namespace=namespace, synonyms=item.synonyms,
-                on_synonym_conflict=item.on_synonym_conflict,
-                is_new_entry=is_new_from_registry,
-            )
-            if err_code:
-                return _ItemOutcome(
-                    BulkResultItem(
-                        index=i, status="error", error_code=err_code, error=err_msg,
-                    ),
-                    None,
-                    "failed",
-                )
+        synonym_warnings, refused = await self._apply_item_synonyms(
+            i, item, document_id, namespace, is_new_from_registry,
+        )
+        if refused is not None:
+            return refused
 
         revival = existing is not None and self._is_revival(existing)
         prior: dict[Any, tuple[datetime | None, str | None]] | None = None
         if existing and version_override is None:
-            if not revival and not self._document_has_changed(
-                existing,
-                item.data,
-                validation_result.term_references,
-                validation_result.references,
-                validation_result.file_references,
-                new_metadata_custom=item.metadata,
-            ):
-                # No change — report existing without creating a new version.
-                return _ItemOutcome(
-                    BulkResultItem(
-                        index=i,
-                        status="unchanged",
-                        document_id=existing.document_id,
-                        identity_hash=identity_hash,
-                        version=existing.version,
-                        template_version=existing.template_version,
-                        revision=current_revision(existing),
-                        is_new=False,
-                        warnings=validation_result.warnings + synonym_warnings,
-                    ),
-                    None,
-                    "unchanged",
-                )
+            settled = await self._settle_without_new_version(
+                i, item, validation_result, existing, revival, synonym_warnings,
+                namespace, actor,
+            )
+            if settled is not None:
+                return settled
+            prior = await _retire_version(existing, actor, now)
 
-            # Templates with versioned=false overwrite in place — the same
-            # branch the single-item and PATCH paths take. Without it, the
-            # deactivate-and-insert flow below would mint version 2 and
-            # retain the old row as inactive, creating exactly the version
-            # history the flag forbids.
-            if not await self._is_template_versioned(item.template_id):
-                response, _ = await self._overwrite_in_place(
-                    item, existing, validation_result, namespace,
-                    extra_warnings=synonym_warnings,
-                )
-                if revival:
-                    response.warnings += await self._sync_registry_lifecycle(
-                        document_id, retired=False, actor=actor,
-                    )
-                # existing_by_doc_id already holds this Document object,
-                # mutated in place — later same-identity items in the batch
-                # see the fresh data. No pending event: _overwrite_in_place
-                # publishes DOCUMENT_UPDATED itself, which is equivalent to
-                # the deferred batch publish (deferred events carry no
-                # ordering guarantee either).
-                return _ItemOutcome(
-                    BulkResultItem(
-                        index=i,
-                        status="updated",
-                        document_id=response.document_id,
-                        identity_hash=identity_hash,
-                        version=response.version,
-                        template_version=response.template_version,
-                        revision=response.revision,
-                        is_new=False,
-                        warnings=response.warnings,
-                    ),
-                    None,
-                    "updated",
-                )
+        return await self._write_item_version(
+            i, item, validation_result, document_id, existing, revival, prior,
+            version_override, synonym_warnings, existing_by_doc_id,
+            namespace, actor, now,
+        )
 
-            # Deactivate old version
-            prior = {existing.id: (existing.updated_at, existing.updated_by)}
-            existing.status = DocumentStatus.INACTIVE
-            existing.updated_at = now
-            existing.updated_by = actor
-            await existing.save()
+    async def _apply_item_synonyms(
+        self,
+        i: int,
+        item: DocumentCreateRequest,
+        document_id: str,
+        namespace: str,
+        is_new_entry: bool,
+    ) -> tuple[list[str], "_ItemOutcome | None"]:
+        """Register the item's inline synonyms: (their warnings, None), or
+        (_, the error outcome) when one is refused.
+
+        CASE-434/436: strict by default — a refused synonym fails THIS item
+        (and rolls back its entry/synonyms) without affecting the rest of the
+        batch; "warn" surfaces it in the item's warnings.
+        """
+        if not item.synonyms:
+            return [], None
+        warnings, err_code, err_msg = await self._register_inline_synonyms(
+            document_id=document_id, namespace=namespace, synonyms=item.synonyms,
+            on_synonym_conflict=item.on_synonym_conflict,
+            is_new_entry=is_new_entry,
+        )
+        if err_code:
+            return warnings, _ItemOutcome(
+                BulkResultItem(index=i, status="error", error_code=err_code, error=err_msg),
+                None,
+                "failed",
+            )
+        return warnings, None
+
+    async def _settle_without_new_version(
+        self,
+        i: int,
+        item: DocumentCreateRequest,
+        validation_result,
+        existing: Document,
+        revival: bool,
+        synonym_warnings: list[str],
+        namespace: str,
+        actor: str,
+    ) -> "_ItemOutcome | None":
+        """An update of an existing document that writes no new version row:
+        unchanged when nothing changed (and it is no revival), or overwritten
+        in place when its template is not versioned. None when a new version
+        must be written.
+        """
+        identity_hash = validation_result.identity_hash
+        if not revival and not self._document_has_changed(
+            existing,
+            item.data,
+            validation_result.term_references,
+            validation_result.references,
+            validation_result.file_references,
+            new_metadata_custom=item.metadata,
+        ):
+            # No change — report existing without creating a new version.
+            return _ItemOutcome(
+                BulkResultItem(
+                    index=i,
+                    status="unchanged",
+                    document_id=existing.document_id,
+                    identity_hash=identity_hash,
+                    version=existing.version,
+                    template_version=existing.template_version,
+                    revision=current_revision(existing),
+                    is_new=False,
+                    warnings=validation_result.warnings + synonym_warnings,
+                ),
+                None,
+                "unchanged",
+            )
+
+        # Templates with versioned=false overwrite in place — the same
+        # branch the single-item and PATCH paths take. Without it, the
+        # deactivate-and-insert flow would mint version 2 and retain the old
+        # row as inactive, creating exactly the version history the flag
+        # forbids.
+        if await self._is_template_versioned(item.template_id):
+            return None
+        response, _ = await self._overwrite_in_place(
+            item, existing, validation_result, namespace,
+            extra_warnings=synonym_warnings,
+        )
+        if revival:
+            response.warnings += await self._sync_registry_lifecycle(
+                existing.document_id, retired=False, actor=actor,
+            )
+        # existing_by_doc_id already holds this Document object, mutated in
+        # place — later same-identity items in the batch see the fresh data.
+        # No pending event: _overwrite_in_place publishes DOCUMENT_UPDATED
+        # itself, which is equivalent to the deferred batch publish (deferred
+        # events carry no ordering guarantee either).
+        return _ItemOutcome(
+            BulkResultItem(
+                index=i,
+                status="updated",
+                document_id=response.document_id,
+                identity_hash=identity_hash,
+                version=response.version,
+                template_version=response.template_version,
+                revision=response.revision,
+                is_new=False,
+                warnings=response.warnings,
+            ),
+            None,
+            "updated",
+        )
+
+    async def _write_item_version(
+        self,
+        i: int,
+        item: DocumentCreateRequest,
+        validation_result,
+        document_id: str,
+        existing: Document | None,
+        revival: bool,
+        prior: dict[Any, tuple[datetime | None, str | None]] | None,
+        version_override: int | None,
+        synonym_warnings: list[str],
+        existing_by_doc_id: dict,
+        namespace: str,
+        actor: str,
+        now: datetime,
+    ) -> "_ItemOutcome":
+        """Write the item as a new document or a new version of ``existing``
+        (whose row ``prior`` retired), then do what follows a write: the
+        deferred event, the file reference counts and, on a revival, the
+        Registry lifecycle.
+
+        The version is the one after ``existing``'s, the pinned one of a
+        restore or migration, or 1; the insert's own answer is final (a lost
+        race lands on the next free version).
+        """
+        if prior is not None and existing is not None:
             new_version = existing.version + 1
-            is_new = False
         elif version_override is not None:
             new_version = version_override
-            is_new = version_override == 1
         else:
             new_version = 1
-            is_new = True
 
         # Create document with retry on duplicate key (handles concurrent
         # requests racing on the same identity hash).
-        # metadata=None on an update of an existing document carries the
-        # existing custom metadata forward (the caller did not address it);
-        # a supplied dict — including {} — replaces wholesale. Brand-new
-        # documents and restores start from {} when nothing is supplied.
-        if item.metadata is not None:
-            custom_metadata = item.metadata
-        elif existing is not None and existing.metadata:
-            custom_metadata = dict(existing.metadata.custom)
-        else:
-            custom_metadata = {}
         metadata = DocumentMetadata(
             warnings=validation_result.warnings + synonym_warnings,
-            custom=custom_metadata,
+            custom=_custom_metadata(item, existing),
         )
         document = await self._insert_or_restore(
             prior,
@@ -3754,7 +3842,7 @@ class DocumentService:
             template_id=item.template_id,
             template_version=validation_result.template_version,
             template_value=validation_result.template_value,
-            identity_hash=identity_hash,
+            identity_hash=validation_result.identity_hash,
             version=new_version,
             data=item.data,
             term_references=validation_result.term_references,
@@ -3768,35 +3856,23 @@ class DocumentService:
             entity_created_at=existing.created_at if existing is not None else None,
             pinned=version_override is not None,
         )
-        new_version = document.version
-        is_new = new_version == 1
+        is_new = document.version == 1
 
         # Update existing_by_doc_id so subsequent items in this batch with the
         # same document_id see the correct latest version.
         if document_id:
             existing_by_doc_id[document_id] = document
 
-        # Defer NATS event — published concurrently after the loop.
-        event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
-        pending_event = (event_type, await self._document_to_event_payload(document))
-
-        # Update file reference counts. A deleted predecessor's references
-        # were already released by the delete.
-        if not is_new and existing and not revival:
-            await self._update_file_reference_counts(existing.file_references, delta=-1)
-        await self._update_file_reference_counts(validation_result.file_references, delta=1)
-
-        lifecycle_warnings = (
-            await self._sync_registry_lifecycle(document_id, retired=False, actor=actor)
-            if revival else []
+        pending_event, lifecycle_warnings = await self._after_item_write(
+            document, existing, revival, validation_result, actor,
         )
         return _ItemOutcome(
             BulkResultItem(
                 index=i,
                 status="created" if is_new else "updated",
                 document_id=document_id,
-                identity_hash=identity_hash,
-                version=new_version,
+                identity_hash=validation_result.identity_hash,
+                version=document.version,
                 template_version=document.template_version,
                 is_new=is_new,
                 warnings=validation_result.warnings + synonym_warnings + lifecycle_warnings,
@@ -3804,6 +3880,35 @@ class DocumentService:
             pending_event,
             "created" if is_new else "updated",
         )
+
+    async def _after_item_write(
+        self,
+        document: Document,
+        existing: Document | None,
+        revival: bool,
+        validation_result,
+        actor: str,
+    ) -> tuple[tuple, list[str]]:
+        """(the deferred event, the lifecycle warnings) of a written item.
+
+        The event is published concurrently after the loop. The written
+        version's file references are counted, and the replaced version's
+        released — unless it was deleted, whose references the delete already
+        released. A revival restores the Registry entry's lifecycle.
+        """
+        is_new = document.version == 1
+        event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
+        pending_event = (event_type, await self._document_to_event_payload(document))
+
+        if not is_new and existing and not revival:
+            await self._update_file_reference_counts(existing.file_references, delta=-1)
+        await self._update_file_reference_counts(validation_result.file_references, delta=1)
+
+        lifecycle_warnings = (
+            await self._sync_registry_lifecycle(document.document_id, retired=False, actor=actor)
+            if revival else []
+        )
+        return pending_event, lifecycle_warnings
 
     async def _refuse_document_id_mismatches(
         self,
