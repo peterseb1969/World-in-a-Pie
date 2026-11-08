@@ -5,6 +5,7 @@ import logging
 import math
 import re
 import time
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
@@ -465,51 +466,140 @@ async def register_keys(
     if not items:
         return RegisterBulkResponse(results=[], total=0, created=0, already_exists=0, errors=0)
 
-    timing: dict[str, float] = {}
-    started = time.perf_counter()
-    mark = started
-
-    def lap(phase: str) -> None:
-        nonlocal mark
-        now = time.perf_counter()
-        timing[phase] = round((now - mark) * 1000, 1)
-        mark = now
-
+    laps = _Laps()
     results: list[RegisterKeyResponse | None] = [None] * len(items)
-    created_count = 0
-    exists_count = 0
-    error_count = 0
 
-    # Phase 0a: Reject mixed namespaces — all items in a batch must share the same namespace
+    # Phase 0: one namespace per batch, and it must exist.
+    namespace_docs, invalid_namespaces = await _register_namespaces(items)
+    laps.lap("0_namespace")
+
+    # Phase 1: the key hashes (identity_values feed an identity_hash first).
+    hashes, identity_hashes = _register_hashes(items)
+    laps.lap("1_hashes")
+
+    # Phase 2: what already exists, by key hash and by provided entry_id.
+    existing_by_hash, existing_by_entry_id = await _existing_for_register(items, hashes)
+    laps.lap("2_find_existing")
+
+    # Phase 2.5: IDs the caller sets (a restore re-registering its IDs) raise
+    # their prefix's counter first, so nothing minted below — in this batch or
+    # later — repeats one of them.
+    await IdGeneratorService.advance_for_ids(
+        [item.entry_id for item in items if item.entry_id]
+    )
+
+    # Phase 3: build the entries to insert; refusals and keys that exist are
+    # answered at once, a key repeated in the batch is answered later from
+    # its first item.
+    plan = _RegisterPlan(
+        namespace_docs=namespace_docs,
+        invalid_namespaces=invalid_namespaces,
+        existing_by_hash=existing_by_hash,
+        existing_by_entry_id=existing_by_entry_id,
+    )
+    for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
+        try:
+            results[i] = _plan_register_item(i, item, key_hash, id_hash, plan)
+        except Exception as e:
+            results[i] = RegisterKeyResponse(index=i, status="error", **error_fields(e))
+
+    # New ids are minted for the whole batch: one counter round trip per
+    # prefix, and an item refused above takes no number.
+    minted = await IdGeneratorService.generate_many([config for _, config in plan.to_mint])
+    for (pos, _), new_id in zip(plan.to_mint, minted, strict=True):
+        plan.entries[pos].entry_id = new_id
+
+    # Phase 3.5: claim-first gate. Every key pair is claimed pending BEFORE
+    # the insert (fail-fast on conflict; the item drops out of the batch).
+    # An entry without a claim is thereby unrepresentable by ordering. An
+    # item whose own key another request registered meanwhile is answered
+    # with that request's entry.
+    laps.lap("3_build_entries")
+    token = new_claim_token()
+    gated_entries, gated_indices, _, _ = await _gate_on_claims(
+        plan.entries, plan.indices, identity_hashes, results, token,
+    )
+    laps.lap("3b_claim_keys")
+
+    # Phase 4: batch insert, then confirm the pending claims.
+    if gated_entries:
+        await _insert_and_answer(gated_entries, gated_indices, identity_hashes, results, token)
+        laps.lap("4_insert_entries")
+
+    _answer_duplicates(results, plan.duplicates)
+    return _register_response(results, laps)
+
+
+class _Laps:
+    """Per-phase wall time of a register call, in milliseconds."""
+
+    def __init__(self) -> None:
+        self.timing: dict[str, float] = {}
+        self.started = self._mark = time.perf_counter()
+
+    def lap(self, phase: str) -> None:
+        now = time.perf_counter()
+        self.timing[phase] = round((now - self._mark) * 1000, 1)
+        self._mark = now
+
+    def total(self) -> dict[str, float]:
+        self.timing["total"] = round((time.perf_counter() - self.started) * 1000, 1)
+        return self.timing
+
+
+@dataclass
+class _RegisterPlan:
+    """What a register batch knows before it plans its items, and the plan
+    they build: the entries to insert (with their item indices), the items
+    that repeat an earlier item's key, and the entries whose ids are minted."""
+
+    namespace_docs: dict[str, Namespace]
+    invalid_namespaces: set[str]
+    existing_by_hash: dict[tuple[str, str, str], RegistryEntry]
+    existing_by_entry_id: dict[str, RegistryEntry]
+    entries: list[RegistryEntry] = field(default_factory=list)
+    indices: list[int] = field(default_factory=list)
+    # CASE-567: keyed by (namespace, entity_type, key_hash) — the same key
+    # under two entity types is two entities (namespace_entity_keyhash_
+    # unique_idx). The namespace element is defense-in-depth: Phase 0
+    # already rejects mixed-namespace batches. The value is the index of the
+    # first item with the key; a later one is answered from what became of
+    # it once the batch is written (duplicates).
+    seen: dict[tuple[str, str, str], int] = field(default_factory=dict)
+    duplicates: list[tuple[int, int, str | None]] = field(default_factory=list)
+    to_mint: list[tuple[int, IdAlgorithmConfig]] = field(default_factory=list)
+
+
+async def _register_namespaces(
+    items: list[RegisterKeyItem],
+) -> tuple[dict[str, Namespace], set[str]]:
+    """The batch's namespace documents and the namespaces that do not exist
+    or are not active. A batch naming several namespaces is a whole-call 422."""
     unique_namespaces = {item.namespace for item in items}
     if len(unique_namespaces) > 1:
         raise HTTPException(
             status_code=422,
             detail=f"All items in a register batch must share the same namespace. Got: {sorted(unique_namespaces)}"
         )
-
-    # Phase 0b: Batch-validate that all referenced namespaces exist
     existing_ns_docs = await Namespace.find(
         {"prefix": {"$in": list(unique_namespaces)}, "status": "active"}
     ).to_list()
-    valid_namespaces = {ns.prefix for ns in existing_ns_docs}
-    invalid_namespaces = unique_namespaces - valid_namespaces
     # New ids are generated from this config: reading the namespace again
     # per item cost one database round trip per new entry.
     namespace_docs = {ns.prefix: ns for ns in existing_ns_docs}
-    lap("0_namespace")
+    return namespace_docs, unique_namespaces - set(namespace_docs)
 
-    # Phase 1: Compute hashes for items with composite keys.
-    # When identity_values is provided, compute identity_hash and inject it
-    # into composite_key before hashing the full key for dedup.
-    hashes = []
+
+def _register_hashes(items: list[RegisterKeyItem]) -> tuple[list[str], list[str | None]]:
+    """Each item's key hash ("" for no composite key: no dedup) and identity
+    hash. When identity_values is provided its hash is computed and injected
+    into the composite key before the full key is hashed for dedup."""
+    hashes: list[str] = []
     identity_hashes: list[str | None] = []
     for item in items:
         if item.identity_values:
-            # Compute identity_hash from raw values
             computed_hash = HashService.compute_composite_key_hash(item.identity_values)
             identity_hashes.append(computed_hash)
-            # Inject identity_hash into composite_key for dedup
             item.composite_key["identity_hash"] = computed_hash
             hashes.append(HashService.compute_composite_key_hash(item.composite_key))
         elif item.composite_key:
@@ -517,15 +607,22 @@ async def register_keys(
             hashes.append(HashService.compute_composite_key_hash(item.composite_key))
         else:
             identity_hashes.append(None)
-            hashes.append("")  # Empty composite key = no dedup
+            hashes.append("")
+    return hashes, identity_hashes
 
-    # Phase 2: Batch check for existing entries (by hash and by entry_id).
-    # CASE-567: the map is keyed by (namespace, entity_type, key_hash) — a
-    # synonym owns its key under the synonym's OWN namespace/entity_type
-    # (which may differ from its parent entry's), exactly as lookup_by_keys'
-    # $elemMatch treats it. Flattening by hash alone let a cross-namespace
-    # synonym slip past dedup and mint a second live owner for its key.
-    lap("1_hashes")
+
+async def _existing_for_register(
+    items: list[RegisterKeyItem], hashes: list[str],
+) -> tuple[dict[tuple[str, str, str], RegistryEntry], dict[str, RegistryEntry]]:
+    """The entries the batch's keys already name, and the entries holding the
+    entry_ids the batch provides (restore/migration).
+
+    CASE-567: the key map is keyed by (namespace, entity_type, key_hash) — a
+    synonym owns its key under the synonym's OWN namespace/entity_type
+    (which may differ from its parent entry's), exactly as lookup_by_keys'
+    $elemMatch treats it. Flattening by hash alone let a cross-namespace
+    synonym slip past dedup and mint a second live owner for its key.
+    """
     dedup_hashes = [h for h in hashes if h]
     existing_by_hash: dict[tuple[str, str, str], RegistryEntry] = {}
     if dedup_hashes:
@@ -535,7 +632,6 @@ async def register_keys(
                 {"synonyms.composite_key_hash": {"$in": dedup_hashes}}
             ]
         }).to_list()
-
         for entry in existing_entries:
             existing_by_hash[
                 (entry.namespace, entry.entity_type, entry.primary_composite_key_hash)
@@ -545,235 +641,189 @@ async def register_keys(
                     (syn.namespace, syn.entity_type, syn.composite_key_hash)
                 ] = entry
 
-    # Also check for existing entries by entry_id (for restore/migration)
     provided_ids = [item.entry_id for item in items if item.entry_id]
     existing_by_entry_id: dict[str, RegistryEntry] = {}
     if provided_ids:
-        id_entries = await RegistryEntry.find({
-            "entry_id": {"$in": provided_ids}
-        }).to_list()
-        for entry in id_entries:
+        for entry in await RegistryEntry.find({"entry_id": {"$in": provided_ids}}).to_list():
             existing_by_entry_id[entry.entry_id] = entry
+    return existing_by_hash, existing_by_entry_id
 
-    lap("2_find_existing")
 
-    # Phase 2.5: IDs the caller sets (a restore re-registering its IDs) raise
-    # their prefix's counter first, so nothing minted below — in this batch or
-    # later — repeats one of them.
-    await IdGeneratorService.advance_for_ids(
-        [item.entry_id for item in items if item.entry_id]
+def _register_refusal(
+    i: int, item: RegisterKeyItem, plan: _RegisterPlan,
+) -> RegisterKeyResponse | None:
+    """The error an item is refused with before its key is looked at: an
+    unknown entity type, a namespace that does not exist, a key (or its
+    synonym values) scoped to another namespace, or a provided entry_id that
+    already exists."""
+    if item.entity_type not in VALID_ENTITY_TYPES:
+        return RegisterKeyResponse(
+            index=i,
+            status="error",
+            error=f"Invalid entity_type: {item.entity_type}",
+            error_code="invalid_request", details={"rule": "invalid_entity_type"},
+        )
+    if item.namespace in plan.invalid_namespaces:
+        return RegisterKeyResponse(
+            index=i,
+            status="error",
+            error=f"Namespace '{item.namespace}' does not exist or is not active",
+            error_code="not_found", details={"rule": "namespace"},
+        )
+    refusal = key_scope_refusal(item.composite_key, item.namespace) or (
+        key_scope_refusal(
+            item.synonym_values, item.namespace, rule="synonym_scope_mismatch",
+        )
+        if item.synonym_values and not item.skip_identity_value_synonym
+        else None
     )
+    if refusal:
+        return RegisterKeyResponse(index=i, status="error", **refusal)
+    # A provided entry_id that already exists (collision detection).
+    existing = plan.existing_by_entry_id.get(item.entry_id) if item.entry_id else None
+    if existing is not None:
+        return RegisterKeyResponse(
+            index=i,
+            status="error",
+            error=(
+                f"entry_id '{item.entry_id}' already exists "
+                f"(namespace='{existing.namespace}', entity_type='{existing.entity_type}'). "
+                f"Restore mode requires a clean target — delete existing data first."
+            ),
+            error_code="already_exists",
+        )
+    return None
 
-    # Phase 3: Build entries to insert
-    entries_to_insert: list[RegistryEntry] = []
-    insert_indices: list[int] = []
-    # CASE-567: keyed by (namespace, entity_type, key_hash) — the same key
-    # under two entity types is two entities (namespace_entity_keyhash_
-    # unique_idx). The namespace element is defense-in-depth: Phase 0a
-    # already rejects mixed-namespace batches. The value is the index of the
-    # first item with the key; a later one is answered from what became of
-    # it once the batch is written (duplicates).
-    seen_in_batch: dict[tuple[str, str, str], int] = {}
-    duplicates: list[tuple[int, int, str | None]] = []
-    # New ids are minted for the whole batch after the loop: one counter
-    # round trip per prefix, and an item refused here takes no number.
-    to_mint: list[tuple[int, IdAlgorithmConfig]] = []
 
-    for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
-        try:
-            # Validate entity_type
-            if item.entity_type not in VALID_ENTITY_TYPES:
-                results[i] = RegisterKeyResponse(
-                    index=i,
-                    status="error",
-                    error=f"Invalid entity_type: {item.entity_type}",
-                    error_code="invalid_request", details={"rule": "invalid_entity_type"},
-                )
-                error_count += 1
-                continue
+def _plan_register_item(
+    i: int, item: RegisterKeyItem, key_hash: str, id_hash: str | None, plan: _RegisterPlan,
+) -> RegisterKeyResponse | None:
+    """Answer an item at once (refused, or its key exists), or add it to the
+    plan: as a duplicate of an earlier item with its key, or as an entry to
+    insert. None when it is answered later."""
+    refusal = _register_refusal(i, item, plan)
+    if refusal is not None:
+        return refusal
 
-            # Validate namespace exists
-            if item.namespace in invalid_namespaces:
-                results[i] = RegisterKeyResponse(
-                    index=i,
-                    status="error",
-                    error=f"Namespace '{item.namespace}' does not exist or is not active",
-                    error_code="not_found", details={"rule": "namespace"},
-                )
-                error_count += 1
-                continue
-
-            refusal = key_scope_refusal(item.composite_key, item.namespace) or (
-                key_scope_refusal(
-                    item.synonym_values, item.namespace, rule="synonym_scope_mismatch",
-                )
-                if item.synonym_values and not item.skip_identity_value_synonym
-                else None
-            )
-            if refusal:
-                results[i] = RegisterKeyResponse(index=i, status="error", **refusal)
-                error_count += 1
-                continue
-
-            # Check if provided entry_id already exists (collision detection)
-            existing: RegistryEntry | None
-            if item.entry_id and item.entry_id in existing_by_entry_id:
-                existing = existing_by_entry_id[item.entry_id]
-                results[i] = RegisterKeyResponse(
-                    index=i,
-                    status="error",
-                    error=(
-                        f"entry_id '{item.entry_id}' already exists "
-                        f"(namespace='{existing.namespace}', entity_type='{existing.entity_type}'). "
-                        f"Restore mode requires a clean target — delete existing data first."
-                    ),
-                    error_code="already_exists",
-                )
-                error_count += 1
-                continue
-
-            # Check if exists by composite key hash (dedup) — scoped to
-            # namespace+entity_type via the map key (CASE-567): a synonym
-            # match hits under the synonym's own namespace, not its parent
-            # entry's.
-            if key_hash:
-                existing = existing_by_hash.get(
-                    (item.namespace, item.entity_type, key_hash)
-                )
-                if existing:
-                    results[i] = RegisterKeyResponse(
-                        index=i,
-                        status="already_exists",
-                        registry_id=existing.entry_id,
-                        namespace=existing.namespace,
-                        entity_type=existing.entity_type,
-                        identity_hash=id_hash,
-                    )
-                    exists_count += 1
-                    continue
-
-                # Intra-batch dedup: a later item with the same key in the
-                # same namespace+entity_type is answered from the first one.
-                batch_key = (item.namespace, item.entity_type, key_hash)
-                if batch_key in seen_in_batch:
-                    duplicates.append((i, seen_in_batch[batch_key], id_hash))
-                    continue
-
-            # Use the provided ID, or mint one with the batch below.
-            mint_config = None
-            entry_id = item.entry_id or ""
-            if not item.entry_id:
-                mint_config = namespace_docs[item.namespace].get_id_algorithm(item.entity_type)
-                IdGeneratorService.check_config(mint_config, item.namespace, item.entity_type)
-
-            # Build synonyms list — add identity_values as a synonym if provided.
-            # CASE-430: relationship/edge types set skip_identity_value_synonym
-            # so the bare {source_ref, target_ref} synonym (which omits the
-            # template and collides across edge types between the same pair) is
-            # not created. identity_hash is still computed + injected above, so
-            # the primary key and edge dedup/versioning are unaffected.
-            synonyms = []
-            if (
-                item.identity_values and id_hash and item.synonym_values
-                and not item.skip_identity_value_synonym
-            ):
-                # The synonym carries the human-readable spellings: under
-                # resolved-referent identity the hash feed (identity_values)
-                # holds resolved referent IDs, while synonym_values keeps the
-                # submitted business-key values lookups resolve by. The caller
-                # qualifies them (document-store adds the template under
-                # "@template"). There is deliberately no fallback to
-                # identity_values: an unqualified synonym claims the bare
-                # values for every template in the namespace.
-                synonym_key = item.synonym_values
-                synonyms.append(Synonym(
-                    namespace=item.namespace,
-                    entity_type=item.entity_type,
-                    composite_key=synonym_key,
-                    composite_key_hash=HashService.compute_composite_key_hash(synonym_key),
-                    created_by=item.created_by,
-                ))
-
-            entry = RegistryEntry(
-                entry_id=entry_id,
-                namespace=item.namespace,
-                entity_type=item.entity_type,
-                primary_composite_key=item.composite_key,
-                primary_composite_key_hash=key_hash,
-                synonyms=synonyms,
-                source_info=item.source_info,
-                status="active",
-                created_by=item.created_by,
-                metadata=item.metadata,
-            )
-            entry.rebuild_search_values()
-            if mint_config is not None:
-                to_mint.append((len(entries_to_insert), mint_config))
-            entries_to_insert.append(entry)
-            insert_indices.append(i)
-            if key_hash:
-                seen_in_batch[(item.namespace, item.entity_type, key_hash)] = i
-
-        except Exception as e:
-            results[i] = RegisterKeyResponse(
+    if key_hash:
+        # Exists by composite key hash (dedup) — scoped to namespace+
+        # entity_type via the map key (CASE-567): a synonym match hits under
+        # the synonym's own namespace, not its parent entry's.
+        batch_key = (item.namespace, item.entity_type, key_hash)
+        existing = plan.existing_by_hash.get(batch_key)
+        if existing:
+            return RegisterKeyResponse(
                 index=i,
-                status="error",
-                **error_fields(e)
+                status="already_exists",
+                registry_id=existing.entry_id,
+                namespace=existing.namespace,
+                entity_type=existing.entity_type,
+                identity_hash=id_hash,
             )
-            error_count += 1
+        # Intra-batch dedup: a later item with the same key in the same
+        # namespace+entity_type is answered from the first one.
+        if batch_key in plan.seen:
+            plan.duplicates.append((i, plan.seen[batch_key], id_hash))
+            return None
 
-    minted = await IdGeneratorService.generate_many([config for _, config in to_mint])
-    for (pos, _), new_id in zip(to_mint, minted, strict=True):
-        entries_to_insert[pos].entry_id = new_id
+    # Use the provided ID, or mint one with the batch.
+    mint_config = None
+    if not item.entry_id:
+        mint_config = plan.namespace_docs[item.namespace].get_id_algorithm(item.entity_type)
+        IdGeneratorService.check_config(mint_config, item.namespace, item.entity_type)
 
-    # Phase 3.5: claim-first gate. Every key pair is claimed pending BEFORE
-    # the insert (fail-fast on conflict; the item drops out of the batch).
-    # An entry without a claim is thereby unrepresentable by ordering. An
-    # item whose own key another request registered meanwhile is answered
-    # with that request's entry.
-    lap("3_build_entries")
-    token = new_claim_token()
-    gated_entries, gated_indices, exists, errors = await _gate_on_claims(
-        entries_to_insert, insert_indices, identity_hashes, results, token,
+    entry = RegistryEntry(
+        entry_id=item.entry_id or "",
+        namespace=item.namespace,
+        entity_type=item.entity_type,
+        primary_composite_key=item.composite_key,
+        primary_composite_key_hash=key_hash,
+        synonyms=_identity_value_synonyms(item, id_hash),
+        source_info=item.source_info,
+        status="active",
+        created_by=item.created_by,
+        metadata=item.metadata,
     )
-    exists_count += exists
-    error_count += errors
+    entry.rebuild_search_values()
+    if mint_config is not None:
+        plan.to_mint.append((len(plan.entries), mint_config))
+    plan.entries.append(entry)
+    plan.indices.append(i)
+    if key_hash:
+        plan.seen[(item.namespace, item.entity_type, key_hash)] = i
+    return None
 
-    lap("3b_claim_keys")
 
-    # Phase 4: Batch insert, then confirm the pending claims.
-    if gated_entries:
-        written, insert_error = await _insert_claimed_entries(gated_entries, token)
-        lap("4_insert_entries")
-        failure = _insert_failure(insert_error) if insert_error is not None else {}
-        for pos, idx in enumerate(gated_indices):
-            entry = gated_entries[pos]
-            if written is not None and pos < written:
-                results[idx] = RegisterKeyResponse(
-                    index=idx,
-                    status="created",
-                    registry_id=entry.entry_id,
-                    namespace=entry.namespace,
-                    entity_type=entry.entity_type,
-                    identity_hash=identity_hashes[idx],
-                )
-                created_count += 1
-            else:
-                results[idx] = RegisterKeyResponse(index=idx, status="error", **failure)
-                error_count += 1
+def _identity_value_synonyms(item: RegisterKeyItem, id_hash: str | None) -> list[Synonym]:
+    """The synonym a new entry gets from its identity values, if any.
 
-    exists, errors = _answer_duplicates(results, duplicates)
-    exists_count += exists
-    error_count += errors
+    CASE-430: relationship/edge types set skip_identity_value_synonym so the
+    bare {source_ref, target_ref} synonym (which omits the template and
+    collides across edge types between the same pair) is not created.
+    identity_hash is still computed and injected, so the primary key and edge
+    dedup/versioning are unaffected.
 
-    timing["total"] = round((time.perf_counter() - started) * 1000, 1)
+    The synonym carries the human-readable spellings: under resolved-referent
+    identity the hash feed (identity_values) holds resolved referent IDs,
+    while synonym_values keeps the submitted business-key values lookups
+    resolve by. The caller qualifies them (document-store adds the template
+    under "@template"). There is deliberately no fallback to identity_values:
+    an unqualified synonym claims the bare values for every template in the
+    namespace.
+    """
+    if not (
+        item.identity_values and id_hash and item.synonym_values
+        and not item.skip_identity_value_synonym
+    ):
+        return []
+    return [Synonym(
+        namespace=item.namespace,
+        entity_type=item.entity_type,
+        composite_key=item.synonym_values,
+        composite_key_hash=HashService.compute_composite_key_hash(item.synonym_values),
+        created_by=item.created_by,
+    )]
+
+
+async def _insert_and_answer(
+    gated_entries: list[RegistryEntry],
+    gated_indices: list[int],
+    identity_hashes: list[str | None],
+    results: list[RegisterKeyResponse | None],
+    token: str,
+) -> None:
+    """Insert the claimed entries and answer each of their items: created
+    for each entry written, the insert's failure for the rest."""
+    written, insert_error = await _insert_claimed_entries(gated_entries, token)
+    failure = _insert_failure(insert_error) if insert_error is not None else {}
+    for pos, idx in enumerate(gated_indices):
+        entry = gated_entries[pos]
+        if written is not None and pos < written:
+            results[idx] = RegisterKeyResponse(
+                index=idx,
+                status="created",
+                registry_id=entry.entry_id,
+                namespace=entry.namespace,
+                entity_type=entry.entity_type,
+                identity_hash=identity_hashes[idx],
+            )
+        else:
+            results[idx] = RegisterKeyResponse(index=idx, status="error", **failure)
+
+
+def _register_response(
+    results: list[RegisterKeyResponse | None], laps: _Laps,
+) -> RegisterBulkResponse:
+    """The batch's response, its counts taken from the per-item statuses."""
+    answered = cast(list[RegisterKeyResponse], results)
+    statuses = [r.status for r in answered]
     return RegisterBulkResponse(
-        results=cast(list[RegisterKeyResponse], results),
-        total=len(items),
-        created=created_count,
-        already_exists=exists_count,
-        errors=error_count,
-        timing=timing,
+        results=answered,
+        total=len(answered),
+        created=statuses.count("created"),
+        already_exists=statuses.count("already_exists"),
+        errors=statuses.count("error"),
+        timing=laps.total(),
     )
 
 
