@@ -200,7 +200,13 @@ export class DocumentStoreService extends BaseService {
 
   async exportTableCsv(
     templateId: string,
-    params?: { status?: string; include_metadata?: boolean; max_cross_product?: number },
+    params?: {
+      status?: string
+      /** Only documents in this namespace; without it, every readable one. */
+      namespace?: string
+      include_metadata?: boolean
+      max_cross_product?: number
+    },
   ): Promise<Blob> {
     return this.getBlob(`/table/${templateId}/csv`, params)
   }

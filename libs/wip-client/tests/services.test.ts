@@ -786,6 +786,21 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('status=active')
     })
 
+    it('getTableView and exportTableCsv send namespace when given', async () => {
+      mockJsonResponse({
+        template_id: 'T-1', columns: [], rows: [], total_documents: 0,
+        total_rows: 0, page: 1, page_size: 100, pages: 0,
+      })
+      await client.documents.getTableView('T-1', { namespace: 'clinic-a' })
+      expect(new URL(fetchMock.mock.calls[0][0]).searchParams.get('namespace')).toBe('clinic-a')
+
+      fetchMock.mockResolvedValue(new Response('a\r\n', { status: 200, headers: { 'Content-Type': 'text/csv' } }))
+      await client.documents.exportTableCsv('T-1', { namespace: 'clinic-a' })
+      const csvUrl = new URL(fetchMock.mock.calls[1][0])
+      expect(csvUrl.pathname).toBe('/api/document-store/table/T-1/csv')
+      expect(csvUrl.searchParams.get('namespace')).toBe('clinic-a')
+    })
+
     it('queryDocuments sends POST with query body', async () => {
       mockJsonResponse({ items: [{ document_id: 'D-001' }], total: 1, page: 1, page_size: 50, pages: 1 })
 

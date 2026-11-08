@@ -1451,6 +1451,9 @@ interface TableViewResponse {
 }
 interface TableViewParams {
     status?: DocumentStatus;
+    /** Only documents in this namespace. Without it, the documents of every
+     * namespace the caller can read. */
+    namespace?: string;
     page?: number;
     page_size?: number;
     max_cross_product?: number;
@@ -2187,6 +2190,8 @@ declare class DocumentStoreService extends BaseService {
     getTableView(templateId: string, params?: TableViewParams): Promise<TableViewResponse>;
     exportTableCsv(templateId: string, params?: {
         status?: string;
+        /** Only documents in this namespace; without it, every readable one. */
+        namespace?: string;
         include_metadata?: boolean;
         max_cross_product?: number;
     }): Promise<Blob>;

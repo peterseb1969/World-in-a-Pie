@@ -24,6 +24,8 @@ and document counts. Now:
 - **The MCP `get_table_view` and `export_table_csv` tools** forward their
   `namespace` to it. Before, it only chose where the template value was
   resolved.
+- **`@wip/client` 0.90.0:** `documents.getTableView`'s `TableViewParams` and
+  `documents.exportTableCsv`'s params take `namespace`.
 
 ### A stuck namespace deletion can always be finished
 

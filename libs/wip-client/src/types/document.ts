@@ -250,6 +250,9 @@ export interface TableViewResponse {
 
 export interface TableViewParams {
   status?: DocumentStatus
+  /** Only documents in this namespace. Without it, the documents of every
+   * namespace the caller can read. */
+  namespace?: string
   page?: number
   page_size?: number
   max_cross_product?: number
