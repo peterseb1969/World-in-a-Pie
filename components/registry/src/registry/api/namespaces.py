@@ -459,27 +459,9 @@ async def upsert_namespace(
     the call would store it, and every refusal is the real call's.
     """
     ns = await Namespace.find_one({"prefix": prefix})
-    update_data = request.model_dump(exclude_unset=True)
-    if update_data.get("id_config") is not None:
-        try:
-            update_data["id_config"] = validate_id_config_write(
-                update_data["id_config"], ns.id_config if ns is not None else None
-            )
-        except ValidationError as e:
-            raise RequestValidationError(
-                [{**err, "loc": ("body", "id_config", *err["loc"])} for err in e.errors()]
-            ) from e
-
+    update_data = _validated_upsert_data(request, ns)
     is_admin = identity.has_any_group(get_auth_config().admin_groups)
-    archived_id = update_data.pop("namespace_id", None)
-    if archived_id is not None and not is_admin:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "Only a platform admin may send namespace_id: it decides which "
-                "namespace's orphaned grants a create activates"
-            ),
-        )
+    archived_id = _archived_namespace_id(update_data, is_admin)
     owner: str | None = None
     reserved: dict[str, Any] | None = None
     if not is_admin:
@@ -493,8 +475,50 @@ async def upsert_namespace(
         # reads them, so a broken reservations file does not fail it.
         reserved = await _reserved_settings(prefix)
 
-    actor = request.updated_by
+    _guard_upsert_settings(prefix, ns, update_data)
+    if ns is None:
+        return await _create_namespace(
+            prefix, request, identity, dry_run, update_data,
+            reserved=reserved, archived_id=archived_id, owner=owner,
+        )
+    return await _update_namespace(prefix, ns, update_data, request.updated_by, dry_run)
 
+
+def _validated_upsert_data(request: NamespaceUpdate, ns: Namespace | None) -> dict[str, Any]:
+    """The fields the body sets, with a sent id_config validated against the
+    stored one (a 422 locating the error in the body otherwise)."""
+    update_data = request.model_dump(exclude_unset=True)
+    if update_data.get("id_config") is not None:
+        try:
+            update_data["id_config"] = validate_id_config_write(
+                update_data["id_config"], ns.id_config if ns is not None else None
+            )
+        except ValidationError as e:
+            raise RequestValidationError(
+                [{**err, "loc": ("body", "id_config", *err["loc"])} for err in e.errors()]
+            ) from e
+    return update_data
+
+
+def _archived_namespace_id(update_data: dict[str, Any], is_admin: bool) -> str | None:
+    """Take the namespace_id a body sends out of the update; only a platform
+    admin may send one."""
+    archived_id: str | None = update_data.pop("namespace_id", None)
+    if archived_id is not None and not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only a platform admin may send namespace_id: it decides which "
+                "namespace's orphaned grants a create activates"
+            ),
+        )
+    return archived_id
+
+
+def _guard_upsert_settings(prefix: str, ns: Namespace | None, update_data: dict[str, Any]) -> None:
+    """The settings guards: the 'wip' namespace stays open to inbound
+    references and never enables deletion, and flipping an existing
+    namespace from retain to full needs confirm_enable_deletion."""
     if prefix == WIP_NAMESPACE and update_data.get("inbound_references") == "closed":
         raise HTTPException(
             status_code=400,
@@ -503,75 +527,111 @@ async def upsert_namespace(
                 "namespace references; it cannot be closed to inbound references"
             ),
         )
+    if update_data.get("deletion_mode") != "full":
+        return
+    if prefix == "wip":
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot enable deletion on the default 'wip' namespace",
+        )
+    if (
+        ns is not None
+        and ns.deletion_mode == "retain"
+        and not update_data.get("confirm_enable_deletion")
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Set confirm_enable_deletion=true in the body to flip "
+                "deletion_mode from 'retain' to 'full'"
+            ),
+        )
 
-    new_deletion_mode = update_data.get("deletion_mode")
-    if new_deletion_mode == "full":
-        if prefix == "wip":
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot enable deletion on the default 'wip' namespace",
-            )
-        if (
-            ns is not None
-            and ns.deletion_mode == "retain"
-            and not update_data.get("confirm_enable_deletion")
-        ):
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "Set confirm_enable_deletion=true in the body to flip "
-                    "deletion_mode from 'retain' to 'full'"
-                ),
-            )
 
-    if ns is None:
-        if error := prefix_error(prefix):
-            raise HTTPException(status_code=400, detail=error)
-        # Create path — provided fields, then the reservation's, then defaults.
-        settings = {
-            **(reserved or SETTING_DEFAULTS),
-            **{k: update_data[k] for k in SETTING_FIELDS if update_data.get(k) is not None},
-        }
-        id_config = settings["id_config"]
-        try:
-            namespace_id, identity_warning = await id_for_create(prefix, archived_id)
-        except NamespaceIdentityConflict as e:
-            raise HTTPException(status_code=e.status_code, detail=e.detail) from e
-        with _id_prefix_errors(prefix):
-            id_prefixes = await claim_for_write(prefix, id_config)
-            ns = Namespace(
-                prefix=prefix,
-                namespace_id=namespace_id,
-                description=settings["description"],
-                isolation_mode=settings["isolation_mode"],
-                allowed_external_refs=settings["allowed_external_refs"],
-                inbound_references=settings["inbound_references"],
-                id_config=id_config,
-                id_prefixes=id_prefixes or [],
-                deletion_mode=settings["deletion_mode"],
-                created_by=actor,
-            )
-            response = namespace_to_response(ns)
-            if identity_warning:
-                response.warnings.append(identity_warning)
-            if dry_run:
-                return response
-            if await _create_or_lost_race(ns) is not None:
-                # A concurrent upsert created it first. This request is now an
-                # update of that namespace, and runs as one from the top —
-                # its settings are applied under the update path's guards,
-                # never dropped and never written past them.
-                return await upsert_namespace(prefix, request, identity, dry_run)
+async def _create_namespace(
+    prefix: str,
+    request: NamespaceUpdate,
+    identity: UserIdentity,
+    dry_run: bool,
+    update_data: dict[str, Any],
+    *,
+    reserved: dict[str, Any] | None,
+    archived_id: str | None,
+    owner: str | None,
+) -> NamespaceResponse:
+    """Create the namespace from the provided fields, then the reservation's,
+    then the defaults."""
+    if error := prefix_error(prefix):
+        raise HTTPException(status_code=400, detail=error)
+    settings = _create_settings(update_data, reserved)
+    id_config = settings["id_config"]
+    try:
+        namespace_id, identity_warning = await id_for_create(prefix, archived_id)
+    except NamespaceIdentityConflict as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+    with _id_prefix_errors(prefix):
+        id_prefixes = await claim_for_write(prefix, id_config)
+        ns = Namespace(
+            prefix=prefix,
+            namespace_id=namespace_id,
+            description=settings["description"],
+            isolation_mode=settings["isolation_mode"],
+            allowed_external_refs=settings["allowed_external_refs"],
+            inbound_references=settings["inbound_references"],
+            id_config=id_config,
+            id_prefixes=id_prefixes or [],
+            deletion_mode=settings["deletion_mode"],
+            created_by=request.updated_by,
+        )
+        response = namespace_to_response(ns)
         if identity_warning:
-            logger.warning("Namespace '%s': %s", prefix, identity_warning)
-        await adopt_on_reservation(prefix, namespace_id)
-        # Orphans made for this namespace (its id) are activated whoever
-        # creates it: the id, not the creator, says they are its own.
-        response.activated_orphan_grants = await activate_orphans(ns, identity.identity_string)
-        if owner is not None:
-            await _restore_owner_grant(prefix, owner)
-        return response
+            response.warnings.append(identity_warning)
+        if dry_run:
+            return response
+        if await _create_or_lost_race(ns) is not None:
+            # A concurrent upsert created it first. This request is now an
+            # update of that namespace, and runs as one from the top —
+            # its settings are applied under the update path's guards,
+            # never dropped and never written past them.
+            return await upsert_namespace(prefix, request, identity, dry_run)
+    if identity_warning:
+        logger.warning("Namespace '%s': %s", prefix, identity_warning)
+    await _after_create(ns, namespace_id, response, identity, owner)
+    return response
 
+
+def _create_settings(update_data: dict[str, Any], reserved: dict[str, Any] | None) -> dict[str, Any]:
+    """A created namespace's settings: the provided fields, then the
+    reservation's, then the defaults."""
+    provided = {k: update_data[k] for k in SETTING_FIELDS if update_data.get(k) is not None}
+    return {**(reserved or SETTING_DEFAULTS), **provided}
+
+
+async def _after_create(
+    ns: Namespace,
+    namespace_id: str,
+    response: NamespaceResponse,
+    identity: UserIdentity,
+    owner: str | None,
+) -> None:
+    """What follows a create: the reservation adopts the namespace's id, the
+    orphaned grants made for that id are activated (whoever creates it: the
+    id, not the creator, says they are its own), and a reservation owner's
+    admin grant is restored."""
+    await adopt_on_reservation(ns.prefix, namespace_id)
+    response.activated_orphan_grants = await activate_orphans(ns, identity.identity_string)
+    if owner is not None:
+        await _restore_owner_grant(ns.prefix, owner)
+
+
+async def _update_namespace(
+    prefix: str,
+    ns: Namespace,
+    update_data: dict[str, Any],
+    actor: str | None,
+    dry_run: bool,
+) -> NamespaceResponse:
+    """Update only the fields the body provides."""
     # A namespace mid-deletion keeps the settings it was locked with.
     if ns.status == "locked":
         raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
@@ -585,9 +645,8 @@ async def upsert_namespace(
                 prefix, update_data["id_config"], ns.id_config
             )
 
-    # Update path — only touch explicitly provided fields.
     # confirm_enable_deletion is a safety toggle, not a stored field —
-    # consumed by the guard above and dropped here.
+    # consumed by the guard and dropped here.
     changes: dict[str, Any] = {
         field: value for field, value in update_data.items()
         if field not in ("updated_by", "confirm_enable_deletion") and value is not None
@@ -601,12 +660,11 @@ async def upsert_namespace(
             setattr(ns, field, value)
         return namespace_to_response(ns)
     # Written only while unlocked: a deletion that locked the namespace after
-    # the read above is not undone by this write.
+    # the read is not undone by this write.
     with _id_prefix_errors(prefix):
         written = await set_unless_locked(ns, changes)
     if not written:
         raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
-
     return namespace_to_response(ns)
 
 
