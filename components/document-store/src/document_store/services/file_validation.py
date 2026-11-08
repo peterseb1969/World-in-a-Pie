@@ -1,10 +1,16 @@
-"""File upload validation — content type and filename sanitisation.
+"""File upload validation — content type, filename sanitisation, and the
+filename a download is offered under.
 
 Security findings H5 (content-type validation) and L2 (filename sanitisation).
+What this checks is the client-declared content type against an allowlist and
+the stored filename's extension against a blocklist. It does not inspect the
+bytes: ``application/octet-stream`` is allowed, so the extension check is the
+only thing between an upload and a name the OS would run.
 """
 
 import os
 import re
+from urllib.parse import quote
 
 from fastapi import HTTPException
 
@@ -32,7 +38,10 @@ _DEFAULT_ALLOWED = (
     "application/octet-stream"
 )
 
-# Dangerous file extensions that should always be rejected
+# Dangerous file extensions that should always be rejected — checked on the
+# name the file is stored and served under, and on its LAST extension only:
+# that is what decides whether a received file runs. "invoice.exe.pdf" or
+# "deploy.sh.zip" are accepted deliberately (they do not run by name).
 BLOCKED_EXTENSIONS = {
     ".exe", ".bat", ".cmd", ".com", ".msi", ".scr", ".pif",
     ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".ps1",
@@ -69,15 +78,25 @@ def content_type_matches(content_type: str, patterns: list[str]) -> bool:
     return False
 
 
+def blocked_extension(filename: str) -> str | None:
+    """The blocked extension the stored form of ``filename`` ends in, or None.
+
+    Sanitises first: the sanitiser strips trailing dots, spaces and control
+    characters, so "setup.exe." or "setup.exe\t" is stored as "setup.exe" and
+    must be judged as that.
+    """
+    _, ext = os.path.splitext(sanitize_filename(filename).lower())
+    return ext if ext in BLOCKED_EXTENSIONS else None
+
+
 def validate_upload_content_type(content_type: str, filename: str) -> None:
     """Validate that the upload's content type and extension are allowed.
 
     Raises HTTPException 415 if the type is not in the allowlist or the
-    file extension is in the blocklist.
+    name the file would be stored under ends in a blocked extension.
     """
-    # Check blocked extensions
-    _, ext = os.path.splitext(filename.lower())
-    if ext in BLOCKED_EXTENSIONS:
+    ext = blocked_extension(filename)
+    if ext:
         raise HTTPException(
             status_code=415,
             detail=f"File extension '{ext}' is not allowed for security reasons",
@@ -124,3 +143,17 @@ def sanitize_filename(filename: str) -> str:
         return "unnamed"
 
     return filename
+
+
+def content_disposition(filename: str, disposition: str = "attachment") -> str:
+    """A Content-Disposition header value that carries any filename.
+
+    ``filename*`` (RFC 6266 / RFC 5987) holds the name UTF-8 percent-encoded,
+    for every client that reads it; ``filename`` holds an ASCII fallback for
+    the few that do not. A raw non-ASCII name would be sent as latin-1 bytes
+    (read back as mojibake) or fail to encode at all.
+    """
+    fallback = filename.encode("ascii", "replace").decode("ascii").replace("?", "_")
+    fallback = re.sub(r'["\\\x00-\x1f\x7f]', "_", fallback) or "download"
+    encoded = quote(filename, safe="!#$&+-.^_`|~")
+    return f"{disposition}; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"

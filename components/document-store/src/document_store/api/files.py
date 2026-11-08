@@ -40,6 +40,7 @@ from ..services.file_storage_client import (
     get_file_storage_client,
     is_file_storage_enabled,
 )
+from ..services.file_validation import content_disposition
 from ..services.nats_client import get_throttle_delay
 from ..services.registry_client import get_registry_client
 from .auth import check_readable, require_api_key, require_groups, write_refusals
@@ -140,7 +141,9 @@ async def upload_file(
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
-    # Validate content type against allowlist (H5 — prevent malware uploads)
+    # The declared content type against the allowlist, and the name the file
+    # will be stored under against the extension blocklist (H5). The bytes are
+    # not inspected: this is name and type hygiene, not malware scanning.
     from ..services.file_validation import validate_upload_content_type
     validate_upload_content_type(file.content_type or "application/octet-stream", file.filename or "unnamed")
 
@@ -331,7 +334,7 @@ async def download_file_content(
         _body(),
         media_type=file_doc.content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{file_doc.filename}"',
+            "Content-Disposition": content_disposition(file_doc.filename),
             "Content-Length": str(file_doc.size_bytes),
         }
     )

@@ -102,6 +102,7 @@ from ..services.archive_store import (
     get_archive_store,
     scratch_path_for,
 )
+from ..services.file_validation import content_disposition
 
 # NOTE — GUARDRAIL 1: do not add `import wip_archive` or `from wip_archive ...`
 # anywhere in this file. Use the factory helpers in backup_service instead.
@@ -1157,7 +1158,7 @@ async def download_archive(
             size = Path(job.archive_path).stat().st_size
 
     headers = {
-        "Content-Disposition": f'attachment; filename="{job.namespace}-{job.job_id}.zip"',
+        "Content-Disposition": content_disposition(f"{job.namespace}-{job.job_id}.zip"),
     }
     if size is not None:
         headers["Content-Length"] = str(size)

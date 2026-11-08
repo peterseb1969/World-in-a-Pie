@@ -120,8 +120,16 @@ class FileService:
             raise FileServiceError("File storage is not enabled", "invalid_state", rule="storage_disabled")
 
         # Sanitise filename (L2 — prevent header injection, path traversal)
-        from .file_validation import sanitize_filename
+        from .file_validation import blocked_extension, sanitize_filename
         filename = sanitize_filename(filename)
+        # The route refuses this with a 415 already; this keeps the invariant
+        # for every caller: no file is stored under a blocked extension.
+        ext = blocked_extension(filename)
+        if ext:
+            raise FileServiceError(
+                f"File extension '{ext}' is not allowed for security reasons",
+                "validation_failed", rule="blocked_extension",
+            )
 
         # Get authenticated identity
         actor = get_identity_string()

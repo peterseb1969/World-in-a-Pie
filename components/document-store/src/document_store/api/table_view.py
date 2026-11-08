@@ -24,6 +24,7 @@ from wip_auth.csv_cells import escape_cell
 
 from ..models.document import Document, DocumentStatus
 from ..services.document_service import DocumentService
+from ..services.file_validation import content_disposition
 from ..services.template_store_client import get_template_store_client
 from .auth import require_api_key
 
@@ -523,7 +524,7 @@ async def export_table_csv(
     data_cols = [col.name for col in columns]
     csv_columns = metadata_cols + data_cols if include_metadata else data_cols
     disposition = {
-        "Content-Disposition": f'attachment; filename="{template.get("value", template_id)}.csv"'
+        "Content-Disposition": content_disposition(f'{template.get("value", template_id)}.csv')
     }
 
     # No documents: an empty body, as before (no header line either).

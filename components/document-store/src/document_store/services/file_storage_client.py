@@ -4,12 +4,15 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Any, cast
+from urllib.parse import quote
 
 import aiohttp
 from aiobotocore.session import get_session
 from botocore.config import Config
 from botocore.exceptions import ClientError, HTTPClientError
 from botocore.exceptions import ConnectionError as BotocoreConnectionError
+
+from .file_validation import content_disposition
 
 # Storage was the only outbound dependency in this service with no timeout of
 # its own: botocore defaults to 60s connect AND 60s read, with retry_mode
@@ -189,7 +192,12 @@ class FileStorageClient:
                     "ContentType": content_type,
                 }
                 if metadata:
-                    extra_args["Metadata"] = metadata
+                    # S3 user metadata travels as HTTP headers, which carry
+                    # latin-1 at best: percent-encode each value, so a name
+                    # in any script uploads (nothing reads these back).
+                    extra_args["Metadata"] = {
+                        k: quote(str(v), safe=" ") for k, v in metadata.items()
+                    }
 
                 await client.put_object(
                     Bucket=self.bucket,
@@ -432,7 +440,7 @@ class FileStorageClient:
                     "Key": storage_key,
                 }
                 if filename:
-                    params["ResponseContentDisposition"] = f'attachment; filename="{filename}"'
+                    params["ResponseContentDisposition"] = content_disposition(filename)
 
                 url = await client.generate_presigned_url(
                     "get_object",

@@ -7,6 +7,25 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Upload filenames: the blocklist judges the stored name; any name uploads and downloads
+
+- **A file is refused when the name it would be stored under ends in a
+  blocked extension.** The check judged the raw name, but the stored name is
+  sanitised (trailing dots, spaces and control characters stripped), so
+  `setup.exe.`, `setup.exe `, `setup.exe<TAB>` or `x.EXE..` passed and were
+  stored as `.exe` files. Only the last extension counts: `invoice.exe.pdf`
+  and `deploy.sh.zip` are accepted, deliberately — they do not run by name.
+  The check inspects names and declared types only, never the bytes
+  (`application/octet-stream` stays allowed).
+- **A filename in any script uploads.** The name went raw into the object
+  store's metadata headers, which cannot carry characters outside latin-1, so
+  such an upload failed with a 500. Metadata values are now percent-encoded.
+- **Downloads carry the name in RFC 5987 form**: `Content-Disposition` is
+  `attachment; filename="<ASCII fallback>"; filename*=UTF-8''<encoded>` on
+  `GET /files/{id}/content`, presigned download URLs, the table-view CSV
+  export and backup downloads. A non-latin-1 name made the content download
+  fail with a 500; a latin-1 one (`café.pdf`) was shown as mojibake.
+
 ### Template reactivate and endpoint widening need write on the template's own namespace
 
 `POST /api/template-store/templates/{id}/reactivate` and `…/{id}/endpoints`
