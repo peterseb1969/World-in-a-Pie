@@ -172,7 +172,9 @@ async def update_deletion_mode(
         False,
         description="Required when changing from 'retain' to 'full'"
     ),
-    updated_by: str = Query(None, description="User making the change"),
+    updated_by: str = Query(
+        None, description="A free-text note on who made the change, kept as actor_note; updated_by is the authenticated caller",
+    ),
     api_key: str = Depends(require_admin_key),
 ):
     """Update a namespace's deletion_mode.
@@ -199,7 +201,8 @@ async def update_deletion_mode(
     # A namespace mid-deletion keeps the mode it is being deleted under.
     if not await set_unless_locked(ns, {
         "deletion_mode": cast(Literal["retain", "full"], deletion_mode),
-        "updated_at": datetime.now(UTC), "updated_by": updated_by,
+        "updated_at": datetime.now(UTC), "updated_by": get_identity_string(),
+        "actor_note": updated_by,
     }):
         raise HTTPException(409, LOCKED_DETAIL.format(prefix=prefix))
 

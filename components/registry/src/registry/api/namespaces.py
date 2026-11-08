@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from pymongo.errors import DuplicateKeyError
 
-from wip_auth import UserIdentity, get_auth_config
+from wip_auth import UserIdentity, get_auth_config, get_identity_string
 
 from ..models.api_models import (
     NamespaceCreate,
@@ -116,6 +116,7 @@ def namespace_to_response(ns: Namespace) -> NamespaceResponse:
         created_by=ns.created_by,
         updated_at=ns.updated_at,
         updated_by=ns.updated_by,
+        actor_note=ns.actor_note,
     )
 
 
@@ -388,7 +389,8 @@ async def create_namespace(
             id_config=id_config,
             id_prefixes=id_prefixes or [],
             deletion_mode=request.deletion_mode,
-            created_by=request.created_by,
+            created_by=get_identity_string(),
+            actor_note=request.created_by,
         )
         if await _create_or_lost_race(ns) is not None:
             # The same refusal the existence check above gives.
@@ -399,9 +401,7 @@ async def create_namespace(
 
     await adopt_on_reservation(ns.prefix, namespace_id)
     response = namespace_to_response(ns)
-    response.activated_orphan_grants = await activate_orphans(
-        ns, request.created_by or "a platform admin"
-    )
+    response.activated_orphan_grants = await activate_orphans(ns, get_identity_string())
     return response
 
 
@@ -481,7 +481,10 @@ async def upsert_namespace(
             prefix, request, identity, dry_run, update_data,
             reserved=reserved, archived_id=archived_id, owner=owner,
         )
-    return await _update_namespace(prefix, ns, update_data, request.updated_by, dry_run)
+    # The authenticated caller acted; what it says about who acted is a note.
+    return await _update_namespace(
+        prefix, ns, update_data, identity.identity_string, request.updated_by, dry_run,
+    )
 
 
 def _validated_upsert_data(request: NamespaceUpdate, ns: Namespace | None) -> dict[str, Any]:
@@ -581,7 +584,8 @@ async def _create_namespace(
             id_config=id_config,
             id_prefixes=id_prefixes or [],
             deletion_mode=settings["deletion_mode"],
-            created_by=request.updated_by,
+            created_by=identity.identity_string,
+            actor_note=request.updated_by,
         )
         response = namespace_to_response(ns)
         if identity_warning:
@@ -628,10 +632,12 @@ async def _update_namespace(
     prefix: str,
     ns: Namespace,
     update_data: dict[str, Any],
-    actor: str | None,
+    actor: str,
+    actor_note: str | None,
     dry_run: bool,
 ) -> NamespaceResponse:
-    """Update only the fields the body provides."""
+    """Update only the fields the body provides. ``actor`` is the
+    authenticated caller; ``actor_note`` its own words on who acted."""
     # A namespace mid-deletion keeps the settings it was locked with.
     if ns.status == "locked":
         raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
@@ -655,6 +661,7 @@ async def _update_namespace(
         changes["id_prefixes"] = new_id_prefixes
     changes["updated_at"] = datetime.now(UTC)
     changes["updated_by"] = actor
+    changes["actor_note"] = actor_note
     if dry_run:
         for field, value in changes.items():
             setattr(ns, field, value)
@@ -675,7 +682,9 @@ async def _update_namespace(
 )
 async def archive_namespace(
     prefix: str,
-    archived_by: str = Query(None, description="User archiving the namespace"),
+    archived_by: str = Query(
+        None, description="A free-text note on who archived it, kept as actor_note; updated_by is the authenticated caller",
+    ),
     api_key: str = Depends(require_admin_key)
 ) -> NamespaceResponse:
     """Archive a namespace. No new entries can be created."""
@@ -689,7 +698,8 @@ async def archive_namespace(
     # Archiving a namespace mid-deletion would remove the lock its deletion
     # relies on: the clean-up would take it for a namespace created again.
     if not await set_unless_locked(ns, {
-        "status": "archived", "updated_at": datetime.now(UTC), "updated_by": archived_by,
+        "status": "archived", "updated_at": datetime.now(UTC),
+        "updated_by": get_identity_string(), "actor_note": archived_by,
     }):
         raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
 
@@ -703,7 +713,9 @@ async def archive_namespace(
 )
 async def restore_namespace(
     prefix: str,
-    restored_by: str = Query(None, description="User restoring the namespace"),
+    restored_by: str = Query(
+        None, description="A free-text note on who restored it, kept as actor_note; updated_by is the authenticated caller",
+    ),
     api_key: str = Depends(require_admin_key)
 ) -> NamespaceResponse:
     """Restore an archived namespace."""
@@ -717,7 +729,8 @@ async def restore_namespace(
     # An archived namespace can be deleted: a deletion that locked it after
     # the read above keeps its lock.
     if not await set_unless_locked(ns, {
-        "status": "active", "updated_at": datetime.now(UTC), "updated_by": restored_by,
+        "status": "active", "updated_at": datetime.now(UTC),
+        "updated_by": get_identity_string(), "actor_note": restored_by,
     }):
         raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
 

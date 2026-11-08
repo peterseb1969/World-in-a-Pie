@@ -64,7 +64,10 @@ class NamespaceCreate(StrictModel):
         default="retain",
         description="'retain' = soft-delete only; 'full' = allows hard-delete and namespace deletion"
     )
-    created_by: str | None = Field(default=None, description="User creating the namespace")
+    created_by: str | None = Field(
+        default=None,
+        description="A free-text note on who created it, kept as actor_note; created_by is the authenticated caller",
+    )
 
 
 class NamespaceUpdate(StrictModel):
@@ -99,7 +102,13 @@ class NamespaceUpdate(StrictModel):
             "existing namespace it is not applied: a namespace keeps its id."
         ),
     )
-    updated_by: str | None = None
+    updated_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who made the change, kept as actor_note; "
+            "created_by / updated_by are the authenticated caller"
+        ),
+    )
 
 
 class NamespaceResponse(BaseModel):
@@ -122,9 +131,16 @@ class NamespaceResponse(BaseModel):
     deletion_mode: str = "retain"
     status: str
     created_at: datetime
-    created_by: str | None
+    created_by: str | None = Field(description="The authenticated caller who created the namespace")
     updated_at: datetime
-    updated_by: str | None
+    updated_by: str | None = Field(description="The authenticated caller who last changed the namespace")
+    actor_note: str | None = Field(
+        default=None,
+        description=(
+            "Free text the caller sent with the write that last set created_by "
+            "or updated_by (created_by, updated_by, archived_by, restored_by)"
+        ),
+    )
     activated_orphan_grants: list[str] = Field(
         default_factory=list,
         description=(

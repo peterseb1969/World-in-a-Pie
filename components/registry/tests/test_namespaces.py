@@ -22,7 +22,7 @@ class TestCreateNamespace:
         assert data["isolation_mode"] == "open"
         assert data["allowed_external_refs"] == []
         assert data["status"] == "active"
-        assert data["created_by"] is None
+        assert data["created_by"] == "apikey:legacy"  # the authenticated caller
         # id_config should contain defaults for all entity types
         assert "terms" in data["id_config"]
         assert "documents" in data["id_config"]
@@ -46,7 +46,9 @@ class TestCreateNamespace:
         data = response.json()
         assert data["prefix"] == "test-described"
         assert data["description"] == "A test namespace for validation"
-        assert data["created_by"] == "test-user"
+        # What the caller says about who acted is a note; the actor is the caller.
+        assert data["created_by"] == "apikey:legacy"
+        assert data["actor_note"] == "test-user"
 
     @pytest.mark.asyncio
     async def test_create_namespace_strict_isolation(self, client: AsyncClient, auth_headers: dict):
@@ -445,7 +447,9 @@ class TestUpdateNamespace:
         assert response.status_code == 200
         data = response.json()
         assert data["description"] == "Updated description for default namespace"
-        assert data["updated_by"] == "admin-user"
+        # What the caller says about who acted is a note; the actor is the caller.
+        assert data["updated_by"] == "apikey:legacy"
+        assert data["actor_note"] == "admin-user"
 
     @pytest.mark.asyncio
     async def test_update_isolation_mode(self, client: AsyncClient, auth_headers: dict):
@@ -488,7 +492,9 @@ class TestUpdateNamespace:
         assert data["isolation_mode"] == "strict"
         assert data["deletion_mode"] == "retain"  # default
         assert data["allowed_external_refs"] == []  # default
-        assert data["created_by"] == "bootstrap-script"
+        # What the caller says about who acted is a note; the actor is the caller.
+        assert data["created_by"] == "apikey:legacy"
+        assert data["actor_note"] == "bootstrap-script"
 
     @pytest.mark.asyncio
     async def test_upsert_uses_defaults_for_missing_fields(self, client: AsyncClient, auth_headers: dict):
@@ -675,7 +681,9 @@ class TestArchiveNamespace:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "archived"
-        assert data["updated_by"] == "admin-user"
+        # What the caller says about who acted is a note; the actor is the caller.
+        assert data["updated_by"] == "apikey:legacy"
+        assert data["actor_note"] == "admin-user"
 
     @pytest.mark.asyncio
     async def test_archive_wip_namespace_forbidden(self, client: AsyncClient, auth_headers: dict):
@@ -729,7 +737,9 @@ class TestRestoreNamespace:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "active"
-        assert data["updated_by"] == "admin-user"
+        # What the caller says about who acted is a note; the actor is the caller.
+        assert data["updated_by"] == "apikey:legacy"
+        assert data["actor_note"] == "admin-user"
 
     @pytest.mark.asyncio
     async def test_restore_active_namespace_fails(self, client: AsyncClient, auth_headers: dict):

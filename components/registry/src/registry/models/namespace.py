@@ -150,6 +150,16 @@ class Namespace(Document):
         default=None,
         description="User who last updated this namespace"
     )
+    # created_by / updated_by are the authenticated caller. A caller may send
+    # its own words on who acted (created_by, updated_by, archived_by,
+    # restored_by); they are kept here, for the write that last set an actor.
+    actor_note: str | None = Field(
+        default=None,
+        description=(
+            "Free text the caller sent with the write that last set "
+            "created_by or updated_by (which are the authenticated caller)"
+        ),
+    )
 
     @model_validator(mode="after")
     def _wip_is_open_inbound(self) -> "Namespace":

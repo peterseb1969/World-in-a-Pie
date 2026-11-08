@@ -7,6 +7,22 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A namespace's `created_by` / `updated_by` name the authenticated caller
+
+- Namespace create, upsert, archive, restore and the deletion-mode PATCH
+  stored the caller's own words on who acted (`created_by` / `updated_by`
+  in the body, `archived_by` / `restored_by` / `updated_by` as query
+  parameters) as the namespace's `created_by` / `updated_by`, so the audit
+  fields named whoever the caller chose. They now hold the authenticated
+  identity, as the deletion journal's `requested_by` already does.
+- The free text is still accepted and kept as the new `actor_note` (served
+  on every namespace response): the note sent with the write that last set
+  an actor; a write without one clears it.
+- **Action:** a script that read its own name back from `created_by` /
+  `updated_by` now finds its key's identity there (e.g. `apikey:<name>`);
+  its text is in `actor_note`.
+
+
 ### `validate_references` is gone from template create
 
 - The create request accepted `validate_references` (default true), and
