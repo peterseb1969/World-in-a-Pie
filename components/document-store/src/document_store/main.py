@@ -276,6 +276,22 @@ async def lifespan(app: FastAPI):
 
     integrity_task = asyncio.create_task(_startup_integrity_check())
 
+    # Files stored before allowed_templates held canonical template ids still
+    # hold values; resolve them through the Registry, in the background (the
+    # Registry may still be starting). A failure is logged and retried at the
+    # next start: an unconverted file matches no template, so it stays
+    # restricted rather than opening up.
+    async def _convert_allowed_templates() -> None:
+        from .services.allowed_templates_ids import convert_allowed_templates_to_ids
+        try:
+            summary = await convert_allowed_templates_to_ids()
+            if summary["converted"] or summary["unresolved"]:
+                logger.info(f"allowed_templates stored as template ids: {summary}")
+        except Exception as e:
+            logger.warning(f"Converting files' allowed_templates to template ids failed: {e}")
+
+    allowed_templates_task = asyncio.create_task(_convert_allowed_templates())
+
     # Start key sync (picks up runtime API keys from Registry)
     key_sync = await setup_key_sync(
         _providers,
@@ -289,10 +305,11 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     print("Shutting down WIP Document Store Service...")
-    if not integrity_task.done():
-        integrity_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await integrity_task
+    for task in (integrity_task, allowed_templates_task):
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     if key_sync:
         await key_sync.stop()
 

@@ -104,10 +104,10 @@ class File(BeanieDocument):
         description="Number of active documents referencing this file"
     )
 
-    # Optional: restrict which templates can use this file
+    # Optional: restrict which templates' documents can use this file
     allowed_templates: list[str] | None = Field(
         default=None,
-        description="Template values that can reference this file (None = all)"
+        description="Canonical ids of the templates whose documents may use this file (None = any)"
     )
 
     # Lifecycle

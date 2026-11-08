@@ -318,7 +318,9 @@ class ValidationService:
 
         # Stage 5b: File validation - validate file references
         start = time.perf_counter()
-        await self._validate_files(data, template, result)
+        await self._validate_files(
+            data, template, result, template_id=template.get("template_id") or template_id,
+        )
         result.timing["5b_file_validation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
             result.timing["total"] = (time.perf_counter() - total_start) * 1000
@@ -1713,7 +1715,9 @@ class ValidationService:
         self,
         data: dict[str, Any],
         template: dict[str, Any],
-        result: ValidationResult
+        result: ValidationResult,
+        *,
+        template_id: str | None,
     ):
         """
         Stage 5b: File validation.
@@ -1721,6 +1725,7 @@ class ValidationService:
         Validates all file fields by checking:
         - File exists
         - File meets field constraints (allowed_types, max_size_mb)
+        - The file's allowed_templates, if set, names the document's template
         - Builds file_references array for storage
         """
         from .file_service import FileServiceError, get_file_service
@@ -1753,6 +1758,7 @@ class ValidationService:
                     file_id=file_id,
                     allowed_types=allowed_types,
                     max_size_mb=max_size_mb,
+                    template_id=template_id,
                     is_refused=gate_refuses if current_gate() is not None else None,
                 )
 

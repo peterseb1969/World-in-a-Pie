@@ -64,6 +64,7 @@ from .remap_restore import (
     check_collisions_before_writing,
     plan_multi,
     rehash_document_row,
+    remap_file,
     template_definition,
 )
 from .reporting_client import ReportingSyncClient
@@ -3787,9 +3788,10 @@ class DirectRestoreEngine:
             "term_relations": remapper.remap_term_relation,
             "templates": remapper.remap_template,
             "documents": remapper.remap_document,
+            "files": lambda e: remap_file(e, remapper),
             "registry_entries": lambda e: self._rewrite_registry_entry(e, remapper),
         }.get(entity_type)
-        # Terminologies and files have no outward references of their own.
+        # Terminologies have no outward references of their own.
         if rewriter is None:
             return entities, 0
 

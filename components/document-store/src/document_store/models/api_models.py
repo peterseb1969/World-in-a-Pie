@@ -900,7 +900,11 @@ class FileUploadMetadata(StrictModel):
     )
     allowed_templates: list[str] | None = Field(
         default=None,
-        description="Template values that can reference this file (None = all)"
+        description=(
+            "Templates whose documents may use this file: each entry names a template "
+            "(its value, NS:VALUE, id or a synonym) and is stored as the template's "
+            "canonical id; an entry that names no template is refused. None = any template."
+        ),
     )
 
 
@@ -925,7 +929,11 @@ class UpdateFileMetadataRequest(StrictModel):
     )
     allowed_templates: list[str] | None = Field(
         default=None,
-        description="Template values that can reference this file"
+        description=(
+            "Templates whose documents may use this file, named as on upload and "
+            "stored as canonical template ids. An empty list removes the restriction; "
+            "omit the field to leave it unchanged."
+        ),
     )
 
 

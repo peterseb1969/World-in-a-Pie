@@ -7,6 +7,34 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A file's `allowed_templates` is enforced, and stored as template ids
+
+`allowed_templates` on `POST /api/document-store/files` and `PATCH /files`
+was stored and returned, but validation never applied it: a file restricted
+to `REPORT` could be attached to any template's document. Now:
+
+- **Validation refuses a file whose list does not name the document's
+  template** (`invalid_file`, naming both). It compares template ids, which
+  are stable across template versions. A template inherits no permission
+  from its parent.
+- **Entries are resolved and stored as canonical template ids.** On upload
+  and PATCH, each entry may be a template's value, `NS:VALUE`, id or a
+  synonym, resolved in the file's namespace. An entry that names no template
+  is refused (upload: 400; PATCH: per-item `validation_failed`, rule
+  `unresolved_template`), and nothing is stored. File responses return the
+  ids, not the spellings sent.
+- **`PATCH` with `allowed_templates: []` removes the restriction.** It used
+  to store an empty list that no template could match.
+- **Files stored before this release hold values.** Document-store converts
+  them to ids in the background at startup, through the Registry. An entry
+  that names no template is kept and logged; it matches nothing, so the file
+  stays restricted. If the Registry is unreachable, the conversion is retried
+  at the next start, and until then such a file is refused everywhere. A
+  restore from an older archive brings values back, which the next start
+  converts.
+- **Fresh and merge restores rewrite a file's `allowed_templates`** onto the
+  ids its templates get on the target. A plain restore keeps ids.
+
 ### Document-store: import bounds, hidden reads, filter operands, empty pages, cursor start, integrity counts; `@wip/client` 0.95.0
 
 - **`POST /import` and `/import/preview` refuse an upload over

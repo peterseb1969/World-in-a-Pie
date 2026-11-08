@@ -111,7 +111,9 @@ Metadata can be provided as form fields:
 - description: Human-readable description
 - tags: Comma-separated tags (e.g., "invoice,2024,important")
 - category: Classification category
-- allowed_templates: Comma-separated template values that can use this file
+- allowed_templates: Comma-separated templates whose documents may use this file. Each names a
+  template (value, NS:VALUE, id or synonym) and is stored as its canonical id; one that names no
+  template is refused (400).
     """,
     dependencies=[Depends(require_file_storage)]
 )
@@ -122,7 +124,9 @@ async def upload_file(
     description: str | None = Form(None, description="File description"),
     tags: str | None = Form(None, description="Comma-separated tags"),
     category: str | None = Form(None, description="Classification category"),
-    allowed_templates: str | None = Form(None, description="Comma-separated template values"),
+    allowed_templates: str | None = Form(
+        None, description="Comma-separated templates (value, NS:VALUE, id or synonym), stored as ids",
+    ),
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Upload a file to storage."""

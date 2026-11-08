@@ -54,6 +54,18 @@ ID_FIELDS: dict[str, str] = {
     "files": "file_id",
 }
 
+
+
+def remap_file(entity: dict[str, Any], remapper: Any) -> dict[str, Any]:
+    """A file row with its ``allowed_templates`` — canonical template ids —
+    pointed at the ids those templates have on the target. An id the archive
+    does not map (a template outside it) is kept as it is."""
+    allowed = entity.get("allowed_templates")
+    if not allowed:
+        return entity
+    return {**entity, "allowed_templates": [remapper.template_map.get(t, t) for t in allowed]}
+
+
 # Provisions IDs: (entity_type, composite_keys) -> new ids, in order.
 Provisioner = Callable[[str, list[dict[str, Any]]], Awaitable[list[str]]]
 
@@ -508,6 +520,8 @@ class RemapRestore:
             row = self._remapper.remap_document(entity)
         elif entity_type == "terms":
             row = self._remapper.remap_term(entity)
+        elif entity_type == "files":
+            row = remap_file(entity, self._remapper)
         else:
             row = dict(entity)
 

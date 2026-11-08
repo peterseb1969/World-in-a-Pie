@@ -10,6 +10,8 @@ from typing import Any, ClassVar
 import httpx
 from beanie.odm.enums import SortDirection
 
+from wip_auth.resolve import resolve_entity_ids
+
 # Import identity helper from wip-auth
 from ..api.auth import get_identity_string
 from ..models.api_models import (
@@ -29,6 +31,31 @@ from .file_storage_client import (
 )
 from .nats_client import EventType, publish_file_event
 from .registry_client import RegistryError, get_registry_client
+
+
+async def resolve_allowed_templates(
+    entries: list[str] | None, namespace: str,
+) -> list[str] | None:
+    """The canonical template ids a file's ``allowed_templates`` names.
+
+    Each entry may be anything that names a template — its value, ``NS:VALUE``,
+    its id or a synonym — and is resolved through the Registry in the file's
+    namespace, bypassing the cache (the result is stored). An entry that names
+    no template is refused. None or an empty list means no restriction.
+    """
+    wanted = [e.strip() for e in entries or [] if e and e.strip()]
+    if not wanted:
+        return None
+    resolved = await resolve_entity_ids(
+        wanted, "template", namespace, bypass_cache=True, strict=False,
+    )
+    missing = [e for e in wanted if e not in resolved]
+    if missing:
+        raise FileServiceError(
+            f"allowed_templates: {missing} name no template in namespace '{namespace}'",
+            "validation_failed", rule="unresolved_template",
+        )
+    return list(dict.fromkeys(resolved[e] for e in wanted))
 
 
 class FileServiceError(Exception):
@@ -98,6 +125,11 @@ class FileService:
         # Get authenticated identity
         actor = get_identity_string()
 
+        # Resolve the template restriction before anything is minted or stored.
+        allowed_templates = await resolve_allowed_templates(
+            metadata.allowed_templates if metadata else None, namespace,
+        )
+
         # Compute checksum
         checksum = hashlib.sha256(content).hexdigest()
 
@@ -165,7 +197,7 @@ class FileService:
             metadata=file_metadata,
             status=FileStatus.ORPHAN,  # Orphan until referenced
             reference_count=0,
-            allowed_templates=metadata.allowed_templates if metadata else None,
+            allowed_templates=allowed_templates,
             uploaded_at=now,
             uploaded_by=actor,
         )
@@ -427,7 +459,10 @@ class FileService:
         if request.custom is not None:
             file_doc.metadata.custom.update(request.custom)
         if request.allowed_templates is not None:
-            file_doc.allowed_templates = request.allowed_templates
+            # An empty list clears the restriction, as an omitted upload field does.
+            file_doc.allowed_templates = await resolve_allowed_templates(
+                request.allowed_templates, file_doc.namespace,
+            )
 
         file_doc.updated_at = datetime.now(UTC)
         file_doc.updated_by = actor
@@ -593,7 +628,8 @@ class FileService:
         file_id: str,
         allowed_types: list[str],
         max_size_mb: float,
-        allowed_templates: list[str] | None = None,
+        *,
+        template_id: str | None,
         is_refused: Callable[[str | None, str | None], Awaitable[bool]] | None = None,
     ) -> tuple[bool, str | None, FileReference | None]:
         """
@@ -603,7 +639,10 @@ class FileService:
             file_id: File ID to validate
             allowed_types: Allowed MIME type patterns (e.g., ["image/*", "application/pdf"])
             max_size_mb: Maximum file size in MB
-            allowed_templates: Template codes that can use this file (from field config)
+            template_id: Canonical id of the template of the document that uses
+                the file. Required, so no caller can skip the file's template
+                restriction by leaving it out; a restricted file is refused when
+                it is None.
 
         Returns:
             Tuple of (is_valid, error_message, file_reference)
@@ -629,11 +668,13 @@ class FileService:
         if not self._matches_type_pattern(file_doc.content_type, allowed_types):
             return False, f"File type '{file_doc.content_type}' not allowed. Allowed: {allowed_types}", None
 
-        # Check template restriction (from file's allowed_templates)
-        if file_doc.allowed_templates is not None and allowed_templates and not any(
-            t in file_doc.allowed_templates for t in allowed_templates
-        ):
-            return False, f"File not allowed for templates: {allowed_templates}", None
+        # The file's own restriction: the canonical ids of the templates whose
+        # documents may use it (None = any).
+        if file_doc.allowed_templates is not None and template_id not in file_doc.allowed_templates:
+            return False, (
+                f"File {file_id} may only be used by templates {file_doc.allowed_templates}; "
+                f"this document's template is {template_id}"
+            ), None
 
         # Create file reference
         file_ref = FileReference(
