@@ -3810,7 +3810,9 @@ async def get_table_view(
         status: Filter by status (default: active).
         page: Page number (default: 1).
         page_size: Rows per page (default: 100, max: 1000).
-        namespace: Namespace filter.
+        namespace: Namespace the template value is resolved in and the
+            documents are limited to. Without it, the documents of every
+            namespace the caller can read.
     """
     try:
         tmpl = await get_client().get_template_by_value(
@@ -3820,7 +3822,8 @@ async def get_table_view(
         if not template_id:
             raise ValueError(f"template '{template_value}' has no template_id")
         data = await get_client().get_table_view(
-            template_id=template_id, status=status, page=page, page_size=page_size
+            template_id=template_id, status=status, page=page, page_size=page_size,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3843,7 +3846,9 @@ async def export_table_csv(
         template_value: Template value code (e.g., 'PATIENT').
         status: Filter by status (default: active).
         include_metadata: Include document_id, version, timestamps (default: true).
-        namespace: Namespace filter.
+        namespace: Namespace the template value is resolved in and the
+            documents are limited to. Without it, the documents of every
+            namespace the caller can read.
     """
     try:
         tmpl = await get_client().get_template_by_value(
@@ -3853,7 +3858,8 @@ async def export_table_csv(
         if not template_id:
             raise ValueError(f"template '{template_value}' has no template_id")
         csv_content = await get_client().export_table_csv(
-            template_id=template_id, status=status, include_metadata=include_metadata
+            template_id=template_id, status=status, include_metadata=include_metadata,
+            namespace=namespace,
         )
         # Truncate if very large to avoid overwhelming the AI
         lines = csv_content.split("\n")

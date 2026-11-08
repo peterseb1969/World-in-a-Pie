@@ -16,7 +16,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, Field
 
-from wip_auth import UserIdentity, check_namespace_permission
+from wip_auth import UserIdentity, check_namespace_permission, resolve_namespace_filter
 
 from ..models.document import Document, DocumentStatus
 from ..services.template_store_client import get_template_store_client
@@ -266,6 +266,13 @@ async def get_table_view(
         DocumentStatus.ACTIVE,
         description="Filter by document status"
     ),
+    namespace: str | None = Query(
+        None,
+        description=(
+            "Only documents in this namespace. Without it, the documents of "
+            "every namespace the caller can read."
+        ),
+    ),
     page: int = Query(1, ge=1, description="Page number"),
     # Default 100 (not the platform-wide 50) is deliberate: table view serves a
     # spreadsheet-like surface of cheap flat row projections, and the MCP
@@ -301,10 +308,14 @@ async def get_table_view(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    # Build query filter using canonical ID
-    query_filter = {"template_id": canonical_template_id}
+    # Build query filter using canonical ID. A document's namespace is
+    # independent of its template's, so read on the template's namespace says
+    # nothing about the documents on it: scope them by the caller's own
+    # readable namespaces, as every other document read does.
+    query_filter: dict[str, Any] = {"template_id": canonical_template_id}
     if status:
         query_filter["status"] = status.value
+    query_filter.update((await resolve_namespace_filter(identity, namespace)).query)
 
     # Count total documents
     total_documents = await Document.find(query_filter).count()
@@ -378,6 +389,13 @@ async def export_table_csv(
         DocumentStatus.ACTIVE,
         description="Filter by document status"
     ),
+    namespace: str | None = Query(
+        None,
+        description=(
+            "Only documents in this namespace. Without it, the documents of "
+            "every namespace the caller can read."
+        ),
+    ),
     max_cross_product: int = Query(
         1000,
         ge=1,
@@ -413,10 +431,14 @@ async def export_table_csv(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    # Build query filter using canonical ID
-    query_filter = {"template_id": canonical_template_id}
+    # Build query filter using canonical ID. A document's namespace is
+    # independent of its template's, so read on the template's namespace says
+    # nothing about the documents on it: scope them by the caller's own
+    # readable namespaces, as every other document read does.
+    query_filter: dict[str, Any] = {"template_id": canonical_template_id}
     if status:
         query_filter["status"] = status.value
+    query_filter.update((await resolve_namespace_filter(identity, namespace)).query)
 
     # Fetch all documents (no pagination for CSV export)
     documents = await Document.find(query_filter).to_list()

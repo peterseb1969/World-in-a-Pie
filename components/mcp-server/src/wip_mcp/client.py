@@ -1403,6 +1403,7 @@ class WipClient:
         status: str | None = None,
         page: int = 1,
         page_size: int = 100,
+        namespace: str | None = None,
     ) -> dict:
         return await self._get(
             self.document_store_url,
@@ -1410,6 +1411,7 @@ class WipClient:
             status=status,
             page=page,
             page_size=page_size,
+            namespace=namespace,
         )
 
     async def export_table_csv(
@@ -1417,12 +1419,15 @@ class WipClient:
         template_id: str,
         status: str | None = None,
         include_metadata: bool = True,
+        namespace: str | None = None,
     ) -> str:
         """Returns raw CSV content as a string."""
         client = await self._get_client()
         params: dict[str, Any] = {"include_metadata": include_metadata}
         if status:
             params["status"] = status
+        if namespace:
+            params["namespace"] = namespace
         resp = await client.get(
             f"{self.document_store_url}/api/document-store/table/{template_id}/csv",
             params=params,

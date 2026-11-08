@@ -19,7 +19,9 @@ from wip_mcp.client import WipClient  # noqa: E402
 from wip_mcp.server import (  # noqa: E402
     cancel_replay,
     export_report_csv,
+    export_table_csv,
     get_replay_status,
+    get_table_view,
     get_template_fields,
     import_documents_csv,
     list_report_tables,
@@ -700,3 +702,20 @@ async def test_export_report_csv_passes_namespace_through():
         result = await export_report_csv(sql="SELECT 1 AS n", namespace="clinic-a")
     assert result == "n\r\n1\r\n"
     assert mock.export_report_csv.await_args.kwargs["namespace"] == "clinic-a"
+
+
+@pytest.mark.asyncio
+async def test_table_tools_limit_documents_to_the_namespace_given():
+    """The table tools' namespace narrows the documents, not only the
+    template lookup: it reaches the REST call as its namespace parameter."""
+    mock = _mock_client()
+    mock.get_template_by_value.return_value = {"template_id": "T-1"}
+    mock.get_table_view.return_value = {"rows": []}
+    mock.export_table_csv.return_value = "a\n"
+
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        await get_table_view(template_value="PATIENT", namespace="clinic-a")
+        await export_table_csv(template_value="PATIENT", namespace="clinic-a")
+
+    assert mock.get_table_view.call_args.kwargs["namespace"] == "clinic-a"
+    assert mock.export_table_csv.call_args.kwargs["namespace"] == "clinic-a"

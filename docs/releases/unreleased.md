@@ -7,6 +7,24 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### The table view and its CSV export show only documents the caller can read
+
+`GET /api/document-store/table/{template_id}` and `…/csv` checked read on the
+template's namespace and then returned every document on the template. A
+document's namespace is independent of its template's, so a key that could
+read a shared template's namespace got other namespaces' rows, identity hashes
+and document counts. Now:
+
+- **Both routes apply the caller's namespace filter** to the rows and to
+  `total_documents`: the documents of every namespace the caller can read, as
+  `GET /documents` already does. Read on the template's namespace is still
+  required.
+- **New `namespace` parameter** limits the documents to one namespace; naming
+  one the caller cannot read is refused (403/404).
+- **The MCP `get_table_view` and `export_table_csv` tools** forward their
+  `namespace` to it. Before, it only chose where the template value was
+  resolved.
+
 ### A stuck namespace deletion can always be finished
 
 - **`POST /api/registry/namespaces/{prefix}/resume-delete`** now resumes a
