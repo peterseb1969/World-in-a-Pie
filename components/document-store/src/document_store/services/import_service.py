@@ -8,7 +8,16 @@ from datetime import date, datetime, time
 from itertools import islice
 from typing import Any
 
+from wip_auth.csv_cells import unescape_cell
+
 logger = logging.getLogger(__name__)
+
+
+def _unescaped(row: dict[str, Any]) -> dict[str, Any]:
+    """A CSV row with WIP's formula-escape undone (wip_auth.csv_cells), so a
+    file WIP exported imports back as the values it held."""
+    return {unescape_cell(k): unescape_cell(v) for k, v in row.items()}
+
 
 SAMPLE_ROWS = 5
 
@@ -165,11 +174,11 @@ class ImportService:
         else:  # csv
             text = file_content.decode('utf-8-sig')  # Handle BOM
             reader = csv.DictReader(io.StringIO(text))
-            headers = list(reader.fieldnames or [])
+            headers = [unescape_cell(h) for h in reader.fieldnames or []]
             if not headers:
                 raise ValueError("CSV file has no headers")
 
-            sample = [dict(row) for row in islice(reader, SAMPLE_ROWS)]
+            sample = [_unescaped(row) for row in islice(reader, SAMPLE_ROWS)]
             total = len(sample) + sum(1 for _ in reader)
 
             return {
@@ -208,8 +217,8 @@ class ImportService:
         else:  # csv
             text = file_content.decode('utf-8-sig')
             reader = csv.DictReader(io.StringIO(text))
-            headers = list(reader.fieldnames or [])
-            data_rows = [dict(row) for row in reader]
+            headers = [unescape_cell(h) for h in reader.fieldnames or []]
+            data_rows = [_unescaped(row) for row in reader]
             return headers, data_rows
 
     @staticmethod

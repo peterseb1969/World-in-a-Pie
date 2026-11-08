@@ -10,6 +10,8 @@ from collections import Counter
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
+from wip_auth.csv_cells import escape_cell, unescape_cell
+
 from ..models.api_models import (
     BulkResultItem,
     CreateTerminologyRequest,
@@ -225,7 +227,9 @@ class ImportExportService:
             if include_metadata:
                 row["metadata"] = json.dumps(t.metadata) if t.metadata else ""
 
-            writer.writerow(row)
+            # A term value like "=HYPERLINK(...)" must not run as a formula
+            # in a spreadsheet; the CSV import below reverses the escape.
+            writer.writerow({k: escape_cell(v) for k, v in row.items()})
 
         return {
             "terminology": {
@@ -474,7 +478,8 @@ class ImportExportService:
         reader = csv.DictReader(io.StringIO(csv_content))
         terms_data = []
 
-        for row in reader:
+        for raw in reader:
+            row = {unescape_cell(k): unescape_cell(v) for k, v in raw.items()}
             term = {
                 "value": row.get("value", "").strip(),
                 "label": row.get("label", "").strip() or None,

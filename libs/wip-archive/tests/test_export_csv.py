@@ -109,3 +109,20 @@ def test_a_column_taken_twice_refuses_the_export(tmp_path):
     with pytest.raises(ExportCollisionError, match="data:status"):
         _export(path, tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_formula_cells_and_headers_are_escaped(tmp_path):
+    """A value or field name a spreadsheet would run as a formula is written
+    with a leading apostrophe; numbers are written as they are."""
+    rows = _rows()
+    odd = _doc(ODD, MONSTER, {"name": "=HYPERLINK(\"x\")", "=cmd": "-1", "count": -3})
+    rows["documents"].append(odd)
+    rows["registry_entries"].append(_registry(ODD, "documents"))
+    path = _write(tmp_path / "in.zip", {NS: rows})
+    _export(path, tmp_path / "out")
+    header, out = _read(tmp_path / "out" / NS / "MONSTER.csv")
+    assert "'=cmd" in header and "=cmd" not in header
+    row = next(r for r in out if r["document_id"] == ODD)
+    assert row["name"] == "'=HYPERLINK(\"x\")"
+    assert row["'=cmd"] == "'-1"
+    assert row["count"] == "-3"

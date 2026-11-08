@@ -201,3 +201,50 @@ async def test_import_invalid_format(client: AsyncClient, auth_headers: dict):
     )
 
     assert response.status_code == 400
+
+
+def test_csv_export_escapes_formula_cells():
+    """A term value a spreadsheet would run as a formula is escaped in the
+    CSV export (the import round trip is tested through the API)."""
+    import csv
+    import io
+    from types import SimpleNamespace
+
+    from def_store.services.import_export import ImportExportService
+
+    terms = [SimpleNamespace(value="=HYPERLINK(\"x\")", label="-x", description="'90s",
+                             sort_order=1, status="active", metadata=None)]
+    terminology = SimpleNamespace(value="T", label="T", description=None, terminology_id="T1",
+                                  namespace="wip", case_sensitive=False, mutable=False,
+                                  allow_multiple=False, extensible=False, metadata=None)
+    out = ImportExportService._export_csv(terminology, terms, include_metadata=False)
+    content = out["csv_content"]
+    row = next(csv.DictReader(io.StringIO(content)))
+    assert row["value"] == "'=HYPERLINK(\"x\")" and row["label"] == "'-x"
+    assert row["description"] == "'90s"
+
+
+@pytest.mark.asyncio
+async def test_csv_import_restores_escaped_cells(client: AsyncClient, auth_headers: dict):
+    """A CSV the export escaped imports back as the original values: the
+    import removes the apostrophe the export added, and only that."""
+    resp = await client.post(
+        "/api/def-store/import-export/import?format=csv&namespace=wip",
+        headers=auth_headers,
+        json={
+            "terminology_value": "CSV_FORMULA_RT",
+            "terminology_label": "Formula round trip",
+            "csv_content": "value,label,description,sort_order\n"
+                           "'=SUM(1),'-x,'90s,1\n",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    terms = await client.get(
+        "/api/def-store/terminologies/by-value/CSV_FORMULA_RT", headers=auth_headers,
+    )
+    terminology_id = terms.json()["terminology_id"]
+    listed = await client.get(
+        f"/api/def-store/terminologies/{terminology_id}/terms", headers=auth_headers,
+    )
+    (term,) = listed.json()["items"]
+    assert (term["value"], term["label"], term["description"]) == ("=SUM(1)", "-x", "'90s")

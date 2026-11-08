@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from .archive import ArchiveReader
+from .csv_cells import escape_cell
 from .definitions import UnresolvableTemplate
 from .model import ArchiveModel
 
@@ -83,7 +84,8 @@ def _cell(value: Any) -> Any:
         return "true" if value else "false"
     if isinstance(value, (list, dict)):
         return json.dumps(value, ensure_ascii=False, sort_keys=True)
-    return value
+    # A string a spreadsheet would run as a formula is escaped (csv_cells).
+    return escape_cell(value)
 
 
 def _term_columns(row: dict[str, Any]) -> dict[str, Any]:
@@ -218,7 +220,8 @@ def export_csv(
             csv_file.path.parent.mkdir(parents=True, exist_ok=True)
             handles[key] = csv_file.path.open("w", newline="", encoding="utf-8")
             writers[key] = csv.DictWriter(handles[key], fieldnames=csv_file.columns)
-            writers[key].writeheader()
+            # Column names come from template field names: escaped like cells.
+            writers[key].writerow({c: escape_cell(c) for c in csv_file.columns})
         for ns in model.namespaces:
             for row in reader.read_entities("documents", namespace=ns):
                 if not keep(row):

@@ -9,16 +9,20 @@ Use cases:
 - Reporting and data analysis
 """
 
+from collections.abc import AsyncIterator
 from enum import StrEnum
 from itertools import product
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from wip_auth import UserIdentity, check_namespace_permission, resolve_namespace_filter
+from wip_auth.csv_cells import escape_cell
 
 from ..models.document import Document, DocumentStatus
+from ..services.document_service import DocumentService
 from ..services.template_store_client import get_template_store_client
 from .auth import require_api_key
 
@@ -59,11 +63,14 @@ class TableViewResponse(BaseModel):
     )
     total_documents: int = Field(
         ...,
-        description="Total number of source documents (before flattening)"
+        description=(
+            "Number of documents (their latest versions) matching the filter, "
+            "across all pages, before flattening"
+        )
     )
     total_rows: int = Field(
         ...,
-        description="Total rows after flattening"
+        description="Rows on this page after flattening"
     )
     page: int
     page_size: int
@@ -77,6 +84,36 @@ class TableViewResponse(BaseModel):
 # ============================================================================
 # Helper Functions
 # ============================================================================
+
+# The most flattened rows one table-view response carries. Arrays are
+# expanded per document up to max_cross_product, so a page could otherwise
+# hold page_size x max_cross_product rows (10 million at the limits).
+MAX_TABLE_ROWS = 10_000
+
+# The CSV export sends the rows in chunks of about this many characters.
+CSV_CHUNK_CHARS = 64 * 1024
+
+
+async def _documents_query(
+    template_id: str,
+    status: DocumentStatus | None,
+    identity: UserIdentity,
+    namespace: str | None,
+) -> dict[str, Any]:
+    """The documents a table shows: each document's latest version on this
+    template, with ``status`` judged on that version, in the namespaces the
+    caller can read (or the one named).
+
+    A document's namespace is independent of its template's, so read on the
+    template's namespace says nothing about the documents on it. And a
+    document can hold several version rows at once (a merge restore with
+    older_versions: keep leaves several active), so a status filter alone
+    would list one document several times.
+    """
+    base: dict[str, Any] = {"template_id": template_id}
+    base.update((await resolve_namespace_filter(identity, namespace)).query)
+    return await DocumentService._latest_versions_query(base, status)
+
 
 def _get_field_value(data: dict[str, Any], field_path: str) -> Any:
     """Get a nested field value from document data."""
@@ -318,14 +355,7 @@ async def get_table_view(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    # Build query filter using canonical ID. A document's namespace is
-    # independent of its template's, so read on the template's namespace says
-    # nothing about the documents on it: scope them by the caller's own
-    # readable namespaces, as every other document read does.
-    query_filter: dict[str, Any] = {"template_id": canonical_template_id}
-    if status:
-        query_filter["status"] = status.value
-    query_filter.update((await resolve_namespace_filter(identity, namespace)).query)
+    query_filter = await _documents_query(canonical_template_id, status, identity, namespace)
 
     # Count total documents
     total_documents = await Document.find(query_filter).count()
@@ -357,6 +387,15 @@ async def get_table_view(
     for doc in documents:
         rows, handling = _flatten_document(doc, columns, array_fields, max_cross_product)
         all_rows.extend(rows)
+        if len(all_rows) > MAX_TABLE_ROWS:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"This page flattens to more than {MAX_TABLE_ROWS} rows. Lower "
+                    "page_size, or lower max_cross_product so wide arrays stay JSON "
+                    "cells; the CSV export streams any size."
+                ),
+            )
         if handling != "none":
             array_handling = handling
 
@@ -451,56 +490,36 @@ async def export_table_csv(
     columns = _extract_columns_from_template(template)
     array_fields = [col.name for col in columns if col.is_array]
 
-    # Build query filter using canonical ID. A document's namespace is
-    # independent of its template's, so read on the template's namespace says
-    # nothing about the documents on it: scope them by the caller's own
-    # readable namespaces, as every other document read does.
-    query_filter: dict[str, Any] = {"template_id": canonical_template_id}
-    if status:
-        query_filter["status"] = status.value
-    query_filter.update((await resolve_namespace_filter(identity, namespace)).query)
+    query_filter = await _documents_query(canonical_template_id, status, identity, namespace)
 
-    # Fetch all documents (no pagination for CSV export)
-    documents = await Document.find(query_filter).to_list()
-
-    if not documents:
-        return Response(
-            content="",
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f'attachment; filename="{template.get("value", template_id)}.csv"'
-            }
-        )
-
-    # Flatten all documents
-    all_rows = []
-    for doc in documents:
-        rows, _ = _flatten_document(doc, columns, array_fields, max_cross_product)
-        all_rows.extend(rows)
-
-    # Build CSV
-    output = io.StringIO()
-
-    # Determine column order
     metadata_cols = ["_document_id", "_version", "_identity_hash", "_status", "_created_at", "_updated_at"]
     data_cols = [col.name for col in columns]
-
     csv_columns = metadata_cols + data_cols if include_metadata else data_cols
+    disposition = {
+        "Content-Disposition": f'attachment; filename="{template.get("value", template_id)}.csv"'
+    }
 
-    writer = csv.DictWriter(output, fieldnames=csv_columns, extrasaction='ignore')
-    writer.writeheader()
+    # No documents: an empty body, as before (no header line either).
+    if await Document.find(query_filter).first_or_none() is None:
+        return Response(content="", media_type="text/csv", headers=disposition)
 
-    for row in all_rows:
-        # Filter to only include requested columns
-        filtered_row = {k: v for k, v in row.items() if k in csv_columns}
-        writer.writerow(filtered_row)
+    async def rows() -> AsyncIterator[str]:
+        """The CSV, one document at a time from a cursor, so an export of
+        any size holds one document's rows in memory, not the whole table.
+        Header and cells are formula-escaped (wip_auth.csv_cells): document
+        values and field names would otherwise run as spreadsheet formulas."""
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=csv_columns, extrasaction='ignore')
+        writer.writerow({c: escape_cell(c) for c in csv_columns})
+        async for doc in Document.find(query_filter):
+            flat, _ = _flatten_document(doc, columns, array_fields, max_cross_product)
+            for row in flat:
+                writer.writerow({k: escape_cell(v) for k, v in row.items() if k in csv_columns})
+            if buf.tell() >= CSV_CHUNK_CHARS:
+                yield buf.getvalue()
+                buf.seek(0)
+                buf.truncate()
+        if buf.tell():
+            yield buf.getvalue()
 
-    csv_content = output.getvalue()
-
-    return Response(
-        content=csv_content,
-        media_type="text/csv",
-        headers={
-            "Content-Disposition": f'attachment; filename="{template.get("value", template_id)}.csv"'
-        }
-    )
+    return StreamingResponse(rows(), media_type="text/csv", headers=disposition)

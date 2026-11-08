@@ -36,6 +36,7 @@ from wip_auth import (
     setup_auth,
     setup_key_sync,
 )
+from wip_auth.csv_cells import escape_cell
 from wip_auth.events import WIP_EVENTS_STREAM, EventBus, StreamSpec
 from wip_auth.ratelimit import setup_rate_limiting
 from wip_auth.registry_client import RegistryError
@@ -2423,17 +2424,18 @@ async def _stream_csv(
         stmt = await conn.prepare(sql)
         columns = [attr.name for attr in stmt.get_attributes()]
 
-        # Header row
+        # Header row. Header and cells are formula-escaped: query results are
+        # document data, which a spreadsheet would otherwise run as formulas.
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow(columns)
+        writer.writerow([escape_cell(col) for col in columns])
         yield buf.getvalue()
 
         # Data rows — fetch in batches to limit memory
         async for record in stmt.cursor(*params):
             buf = io.StringIO()
             writer = csv.writer(buf)
-            writer.writerow([record[col] for col in columns])
+            writer.writerow([escape_cell(record[col]) for col in columns])
             yield buf.getvalue()
 
 

@@ -111,3 +111,14 @@ async def test_table_export_missing_table_is_404(http_client, real_state):
         resp = await http_client.get(EXPORT, params={"namespace": "csvns", "table": "doc_absent"})
     assert resp.status_code == 404, resp.text
     assert "doc_absent" in resp.json()["detail"]
+
+
+async def test_table_export_escapes_formula_cells(http_client, real_state):
+    async with real_state.acquire() as conn:
+        await conn.execute(
+            'INSERT INTO "csvns"."doc_item" VALUES ($1, $2)', "d3", "=HYPERLINK(\"x\")",
+        )
+    async with http_client:
+        resp = await http_client.get(EXPORT, params={"namespace": "csvns", "table": "doc_item"})
+    assert resp.status_code == 200, resp.text
+    assert "d3,\"'=HYPERLINK(\"\"x\"\")\"" in resp.text
