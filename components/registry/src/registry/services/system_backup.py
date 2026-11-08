@@ -565,71 +565,119 @@ async def build_archive(
             namespaces=sorted(set(namespaces or [])),
             attachments=sorted(set(attachments_in_scope or [])),
         )
-        in_ns = set(scope.namespaces)
-        grants = [g for g in grants if g.namespace in in_ns]
-        reservations = [r for r in reservations if r.prefix in in_ns]
-        attachments = [a for a in attachments if a.name in set(scope.attachments)]
-        carried = [k for k in keys if scope.holds_key(k.namespaces, k.groups)]
-        carried_names = {k.name for k in carried}
-        # Keys this scope touches but cannot carry: a grant to them or a
-        # reservation they own in scope, or namespaces of their own that reach
-        # into it (overlapping, or none at all). Named so the operator sees what
-        # stays behind, and so a scoped mirror never removes them: only the
-        # source knows how far a key reached, and a copy elsewhere may since
-        # have been narrowed into the scope.
-        touched = {g.subject.removeprefix("apikey:") for g in grants if g.subject_type == "api_key"}
-        touched |= {r.app for r in reservations if r.managed_by is None}
-        touched |= {
-            k.name for k in keys
-            if not k.namespaces or set(k.namespaces) & in_ns or stack_wide(k.groups)
-        }
-        stored = {k.name for k in keys}
-        scope.keys_left_out = sorted((touched & stored) - carried_names)
-        keys = carried
-    held: dict[str, str | None] = {}
-    for g in grants:
-        if not g.orphaned and g.namespace not in held:
-            held[g.namespace] = await id_held_for(g.namespace)
+        keys, grants, reservations, attachments = _narrow_to_scope(
+            scope, keys, grants, reservations, attachments,
+        )
+    held = await _held_namespace_ids(grants)
     return SystemArchive(
         created_at=datetime.now(UTC),
         source=ArchiveSource(
             oidc_issuer=current_issuer(), salt_fingerprint=salt_fingerprint(),
             salt=current_salt(), scope=scope,
         ),
-        api_keys=[
-            ArchiveKey(
-                name=k.name, key_hash=k.key_hash, owner=k.owner, groups=list(k.groups),
-                description=k.description, created_at=k.created_at, expires_at=k.expires_at,
-                enabled=k.enabled, namespaces=k.namespaces, created_by=k.created_by,
-                managed_by=k.managed_by, origin=k.origin,
-            )
-            for k in sorted(keys, key=lambda k: k.name)
-        ],
+        api_keys=[_archive_key(k) for k in sorted(keys, key=lambda k: k.name)],
         grants=[
-            ArchiveGrant(
-                namespace=g.namespace, subject=g.subject, subject_type=g.subject_type,
-                permission=g.permission, granted_by=g.granted_by, granted_at=g.granted_at,
-                expires_at=g.expires_at, managed_by=g.managed_by, origin=g.origin,
-                orphaned=g.orphaned, orphaned_at=g.orphaned_at,
-                namespace_id=g.namespace_id if g.orphaned else held[g.namespace],
-            )
+            _archive_grant(g, held)
             for g in sorted(grants, key=lambda g: (g.namespace, g.subject_type, g.subject))
         ],
-        reservations=[
-            ArchiveReservation(
-                prefix=r.prefix, namespace_id=_require_id(r), app=r.app,
-                settings=dict(r.settings), created_at=r.created_at,
-                created_by=r.created_by, managed_by=r.managed_by, origin=r.origin,
-            )
-            for r in sorted(reservations, key=lambda r: r.prefix)
-        ],
-        attachments=[
-            ArchiveAttachment(
-                name=a.name, **_attachment_fields(a), status=a.status,
-                managed_by=a.managed_by, created_at=a.created_at, created_by=a.created_by,
-            )
-            for a in sorted(attachments, key=lambda a: a.name)
-        ],
+        reservations=[_archive_reservation(r) for r in sorted(reservations, key=lambda r: r.prefix)],
+        attachments=[_archive_attachment(a) for a in sorted(attachments, key=lambda a: a.name)],
+    )
+
+
+def _narrow_to_scope(
+    scope: ArchiveScope,
+    keys: list[StoredAPIKey],
+    grants: list[NamespaceGrant],
+    reservations: list[RuntimeReservation],
+    attachments: list[AppAttachment],
+) -> tuple[list[StoredAPIKey], list[NamespaceGrant], list[RuntimeReservation], list[AppAttachment]]:
+    """The records a scoped archive carries: grants and reservations in its
+    namespaces, the attachments it names, and the keys it holds; the keys it
+    touches but cannot carry are recorded on the scope (keys_left_out)."""
+    in_ns = set(scope.namespaces)
+    grants = [g for g in grants if g.namespace in in_ns]
+    reservations = [r for r in reservations if r.prefix in in_ns]
+    attachments = [a for a in attachments if a.name in set(scope.attachments)]
+    carried = [k for k in keys if scope.holds_key(k.namespaces, k.groups)]
+    scope.keys_left_out = _keys_left_out(keys, carried, grants, reservations, in_ns)
+    return carried, grants, reservations, attachments
+
+
+def _keys_left_out(
+    keys: list[StoredAPIKey],
+    carried: list[StoredAPIKey],
+    grants: list[NamespaceGrant],
+    reservations: list[RuntimeReservation],
+    in_ns: set[str],
+) -> list[str]:
+    """Keys a scoped archive touches but cannot carry: a grant to them or a
+    reservation they own in scope, or namespaces of their own that reach
+    into it (overlapping, or none at all). Named so the operator sees what
+    stays behind, and so a scoped mirror never removes them: only the
+    source knows how far a key reached, and a copy elsewhere may since have
+    been narrowed into the scope."""
+    touched = _touched_keys(grants, reservations) | _keys_reaching_into(keys, in_ns)
+    stored = {k.name for k in keys}
+    return sorted((touched & stored) - {k.name for k in carried})
+
+
+def _touched_keys(grants: list[NamespaceGrant], reservations: list[RuntimeReservation]) -> set[str]:
+    """Keys granted on, or owning a reservation in, the scope."""
+    touched = {g.subject.removeprefix("apikey:") for g in grants if g.subject_type == "api_key"}
+    return touched | {r.app for r in reservations if r.managed_by is None}
+
+
+def _keys_reaching_into(keys: list[StoredAPIKey], in_ns: set[str]) -> set[str]:
+    """Keys whose own namespaces reach into the scope: overlapping, none at
+    all, or stack-wide groups."""
+    return {
+        k.name for k in keys
+        if not k.namespaces or set(k.namespaces) & in_ns or stack_wide(k.groups)
+    }
+
+
+async def _held_namespace_ids(grants: list[NamespaceGrant]) -> dict[str, str | None]:
+    """The id each granted namespace holds, for the grants that are not
+    orphaned (an orphaned grant carries its own)."""
+    held: dict[str, str | None] = {}
+    for g in grants:
+        if not g.orphaned and g.namespace not in held:
+            held[g.namespace] = await id_held_for(g.namespace)
+    return held
+
+
+def _archive_key(k: StoredAPIKey) -> ArchiveKey:
+    return ArchiveKey(
+        name=k.name, key_hash=k.key_hash, owner=k.owner, groups=list(k.groups),
+        description=k.description, created_at=k.created_at, expires_at=k.expires_at,
+        enabled=k.enabled, namespaces=k.namespaces, created_by=k.created_by,
+        managed_by=k.managed_by, origin=k.origin,
+    )
+
+
+def _archive_grant(g: NamespaceGrant, held: dict[str, str | None]) -> ArchiveGrant:
+    return ArchiveGrant(
+        namespace=g.namespace, subject=g.subject, subject_type=g.subject_type,
+        permission=g.permission, granted_by=g.granted_by, granted_at=g.granted_at,
+        expires_at=g.expires_at, managed_by=g.managed_by, origin=g.origin,
+        orphaned=g.orphaned, orphaned_at=g.orphaned_at,
+        namespace_id=g.namespace_id if g.orphaned else held[g.namespace],
+    )
+
+
+def _archive_reservation(r: RuntimeReservation) -> ArchiveReservation:
+    return ArchiveReservation(
+        prefix=r.prefix, namespace_id=_require_id(r), app=r.app,
+        settings=dict(r.settings), created_at=r.created_at,
+        created_by=r.created_by, managed_by=r.managed_by, origin=r.origin,
+    )
+
+
+def _archive_attachment(a: AppAttachment) -> ArchiveAttachment:
+    return ArchiveAttachment(
+        name=a.name, **_attachment_fields(a), status=a.status,
+        managed_by=a.managed_by, created_at=a.created_at, created_by=a.created_by,
     )
 
 
