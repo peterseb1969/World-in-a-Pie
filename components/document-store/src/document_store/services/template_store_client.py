@@ -172,90 +172,96 @@ class TemplateStoreClient:
             Template data if found, None otherwise
         """
         # Check cache for the common case: by template_id with inheritance
-        use_cache = template_id and resolve_inheritance
+        use_cache = bool(template_id and resolve_inheritance)
         if use_cache:
-            now = time.monotonic()
-            if version is not None:
-                cache_key = f"{template_id}:v{version}"
-                entry = self._template_cache.get(cache_key)
-                if entry is not None:
-                    await self._namespace_is_fresh(entry.get("namespace"))
-                    entry = self._template_cache.get(cache_key)
-                    if entry is not None:
-                        self._cache_hits = getattr(self, '_cache_hits', 0) + 1
-                        return entry
-            else:
-                cached = self._latest_cache.get(cast(str, template_id))
-                if cached is not None and (now - cached[1]) < LATEST_TTL_SECONDS:
-                    if cached[0] is not None:
-                        await self._namespace_is_fresh(cached[0].get("namespace"))
-                        cached = self._latest_cache.get(cast(str, template_id))
-                    if cached is not None and (time.monotonic() - cached[1]) < LATEST_TTL_SECONDS:
-                        self._cache_hits = getattr(self, '_cache_hits', 0) + 1
-                        return cached[0]
+            hit, entry = (
+                await self._cached_version(cast(str, template_id), version)
+                if version is not None
+                else await self._cached_latest(cast(str, template_id))
+            )
+            if hit:
+                self._cache_hits = getattr(self, '_cache_hits', 0) + 1
+                return entry
 
-        if template_id:
-            url = f"{self.base_url}/api/template-store/templates/{template_id}"
-        elif template_value:
-            url = f"{self.base_url}/api/template-store/templates/by-value/{template_value}"
-        else:
+        url = self._template_url(template_id, template_value, resolve_inheritance)
+        if url is None:
             return None
-
-        # The /{id} endpoint always resolves inheritance; /{id}/raw does not.
-        if not resolve_inheritance and template_id:
-            url = f"{self.base_url}/api/template-store/templates/{template_id}/raw"
-
-        params = {}
-        if version is not None:
-            params["version"] = version
-
         if use_cache:
             self._cache_misses = getattr(self, '_cache_misses', 0) + 1
 
+        result = await self._fetch_template(url, version)
+        if use_cache and result is not None:
+            self._cache_template(cast(str, template_id), version, result)
+        return result
+
+    async def _cached_version(
+        self, template_id: str, version: int,
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """A pinned version from the cache, after the namespace freshness
+        check (which may evict it)."""
+        cache_key = f"{template_id}:v{version}"
+        entry = self._template_cache.get(cache_key)
+        if entry is None:
+            return False, None
+        await self._namespace_is_fresh(entry.get("namespace"))
+        entry = self._template_cache.get(cache_key)
+        return entry is not None, entry
+
+    async def _cached_latest(self, template_id: str) -> tuple[bool, dict[str, Any] | None]:
+        """The latest version from the cache while it is younger than
+        LATEST_TTL_SECONDS, after the namespace freshness check (which may
+        evict it)."""
+        cached = self._latest_cache.get(template_id)
+        if cached is None or (time.monotonic() - cached[1]) >= LATEST_TTL_SECONDS:
+            return False, None
+        if cached[0] is not None:
+            await self._namespace_is_fresh(cached[0].get("namespace"))
+            cached = self._latest_cache.get(template_id)
+        if cached is not None and (time.monotonic() - cached[1]) < LATEST_TTL_SECONDS:
+            return True, cached[0]
+        return False, None
+
+    def _template_url(
+        self, template_id: str | None, template_value: str | None, resolve_inheritance: bool,
+    ) -> str | None:
+        """By id or by value; the /{id} endpoint always resolves inheritance,
+        /{id}/raw does not. None when neither is given."""
+        base = f"{self.base_url}/api/template-store/templates"
+        if template_id:
+            return f"{base}/{template_id}" if resolve_inheritance else f"{base}/{template_id}/raw"
+        if template_value:
+            return f"{base}/by-value/{template_value}"
+        return None
+
+    async def _fetch_template(self, url: str, version: int | None) -> dict[str, Any] | None:
+        """GET one template: None for a 404, TemplateStoreError for anything
+        else that is not a 200 (a 409 with the store's own reason)."""
+        params = {"version": version} if version is not None else None
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                response = await client.get(
-                    url,
-                    headers=self._get_headers(),
-                    params=params if params else None,
-                )
-
-                if response.status_code == 404:
-                    return None
-
-                if response.status_code == 409:
-                    try:
-                        body = response.json()
-                    except ValueError:
-                        body = {}
-                    if not isinstance(body, dict):
-                        body = {}
-                    raise TemplateStoreError(
-                        str(body.get("detail") or response.text),
-                        code=body.get("error_code"),
-                    )
-
-                if response.status_code != 200:
-                    raise TemplateStoreError(
-                        f"Failed to get template: {response.status_code} - {response.text}"
-                    )
-
-                result = response.json()
-
-                # Populate cache
-                if use_cache and result is not None:
-                    assert template_id is not None  # use_cache is True only when template_id is set
-                    if version is not None:
-                        self._template_cache[f"{template_id}:v{version}"] = result
-                    else:
-                        self._latest_cache[template_id] = (result, time.monotonic())
-                        actual_version = result.get("version")
-                        if actual_version is not None:
-                            self._template_cache[f"{template_id}:v{actual_version}"] = result
-
-                return cast(dict[str, Any] | None, result)
+                response = await client.get(url, headers=self._get_headers(), params=params)
         except httpx.RequestError as e:
             raise TemplateStoreError(f"Request failed: {e!s}") from e
+        if response.status_code == 404:
+            return None
+        if response.status_code == 409:
+            raise _conflict_error(response)
+        if response.status_code != 200:
+            raise TemplateStoreError(
+                f"Failed to get template: {response.status_code} - {response.text}"
+            )
+        return cast(dict[str, Any] | None, response.json())
+
+    def _cache_template(self, template_id: str, version: int | None, result: dict[str, Any]) -> None:
+        """A pinned fetch fills its version's entry; a latest fetch fills the
+        latest entry and the entry of the version it returned."""
+        if version is not None:
+            self._template_cache[f"{template_id}:v{version}"] = result
+            return
+        self._latest_cache[template_id] = (result, time.monotonic())
+        actual_version = result.get("version")
+        if actual_version is not None:
+            self._template_cache[f"{template_id}:v{actual_version}"] = result
 
     async def get_template_resolved(
         self,
@@ -446,3 +452,18 @@ def configure_template_store_client(
     global _client
     _client = TemplateStoreClient(base_url=base_url, api_key=api_key)
     return _client
+
+
+def _conflict_error(response: httpx.Response) -> TemplateStoreError:
+    """A 409's TemplateStoreError, carrying the store's detail and
+    error_code when its body is a JSON object, its text otherwise."""
+    try:
+        body = response.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return TemplateStoreError(
+        str(body.get("detail") or response.text),
+        code=body.get("error_code"),
+    )
