@@ -1,7 +1,7 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
 wip://data-model sha256:fe9df0a23aa33572 reviewed:85d8b349
-wip://conventions sha256:0740dcf8ff9cd3a8 reviewed:ae9d14b4
-docs/WIP_PoNIFs.md sha256:3d8ca0d430f1d065 reviewed:e752beeb
+wip://conventions sha256:f8bd80b0ec138ccd reviewed:f7b38b1c
+docs/WIP_PoNIFs.md sha256:054fae345dd32d3f reviewed:f7b38b1c
 docs/design/ontology-support.md sha256:06666e3c8f3a3cc1 reviewed:ea985986
 docs/slash-commands/app-builder/wip-implement.md sha256:1afef1d1999621a1 reviewed:809f9059
 docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca reviewed:809f9059
@@ -66,7 +66,7 @@ docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca revi
 - Do not set `target_templates` on `source_ref`/`target_ref` — it is derived from the template-level lists and discarded.
 - Properties of the interaction itself (role, quantity) are further fields.
 - An edge lives in its source's namespace (`cross_namespace_relationship` otherwise); its target may be in another namespace the reference gates allow. Archived endpoints are rejected.
-- `versioned: false` (any template with identity fields; edges are the typical use) = updates overwrite in place, documents stay at version 1, no history. It requires non-empty `identity_fields`; declare them explicitly, e.g. `[source_ref, target_ref]` (`create_edge_type` fills that in when omitted; `create_template` does not). Add a third field (e.g. `role`) to allow several edges between one pair.
+- `versioned: false` (any template with identity fields; typically edges) = updates overwrite in place, documents stay at version 1, no history. It requires non-empty `identity_fields`; declare them explicitly, e.g. `[source_ref, target_ref]` (`create_edge_type` fills it in; `create_template` does not). A third field (e.g. `role`) allows several edges per pair. PATCH: `if_match` = `revision`, not `version`.
 - `usage` and `versioned` are immutable after creation — choose deliberately.
 - To let new templates take part, widen with `add_edge_type_endpoints` — never delete and recreate (strands existing edges). Endpoints cannot be removed.
 - Query with `get_document_relationships` and `traverse_documents`; these work only on `usage: "relationship"` templates.

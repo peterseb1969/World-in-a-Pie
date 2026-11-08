@@ -41,6 +41,12 @@ export interface Document {
   template_version: number
   identity_hash: string
   version: number
+  /**
+   * The token to send as `if_match` (PATCH `ifMatch`). Equal to `version`,
+   * except on a `versioned: false` template, where each in-place write moves
+   * it on while the version stays 1. Absent from servers that predate it.
+   */
+  revision?: number
   data: Record<string, unknown>
   term_references: TermReference[]
   references: Reference[]
@@ -173,8 +179,9 @@ export interface PatchDocumentRequest {
    */
   metadata_patch?: Record<string, unknown>
   /**
-   * Optional optimistic concurrency control. If supplied, the patch fails with
-   * `concurrency_conflict` unless the current document version matches.
+   * Optional optimistic concurrency control: the document's `revision` as last
+   * read. If supplied, the patch fails with `concurrency_conflict` unless the
+   * document still holds it.
    */
   if_match?: number
 }

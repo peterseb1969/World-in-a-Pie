@@ -104,6 +104,7 @@ async def create_documents(
                 id=response.document_id, document_id=response.document_id,
                 identity_hash=response.identity_hash, version=response.version,
                 template_version=response.template_version,
+                revision=response.revision,
                 is_new=response.is_new, warnings=response.warnings,
             )]
         succeeded = sum(1 for r in results if r.status != "error")
@@ -138,7 +139,9 @@ Constraints:
 - Identity fields cannot be changed (use POST to create a new document)
 - Namespace cannot be changed (PATCH modifies `data`, and `metadata.custom` via `metadata_patch`)
 - A soft-deleted document is `not_found`; re-post its full data to bring it back
-- Optional per-item `if_match` provides optimistic concurrency control
+- Optional per-item `if_match` provides optimistic concurrency control: pass the
+  document's `revision` (equal to `version`, except on a `versioned: false`
+  template, where each in-place write moves it on)
 
 After merge the full document is re-validated against the same template
 version recorded on the existing document, term and file references are

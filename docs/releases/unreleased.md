@@ -7,6 +7,33 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `if_match` guards versioned:false documents: send `revision`; `@wip/client` 0.92.0
+
+A `versioned: false` document stays at version 1, and `if_match` compared
+against the version, so it guarded nothing: two PATCHes holding
+`if_match: 1` both answered `updated`, and the second silently replaced the
+first. Now:
+
+- **Every document and every document write result carries `revision`**, the
+  token to send as `if_match`. On versioned templates it equals `version`, so
+  nothing changes there. On a `versioned: false` template each in-place write
+  moves it on (PATCH, a POST that overwrites, a restore merge that replaces the
+  row) while the version stays 1.
+- **`if_match` compares against `revision`**, and the in-place write is
+  conditional on the revision read. A write that lands between the check and
+  the write is caught too. Of two writers holding one token, one wins and the
+  other gets `concurrency_conflict`. A PATCH without `if_match` that loses the
+  race re-reads and merges onto the winner; a POST overwrite re-reads and
+  replaces it.
+- **Action for callers of versioned:false documents:** set `if_match` from
+  `revision`, not `version`. A caller still sending `if_match: 1` gets
+  `concurrency_conflict` once the document has been written in place, where it
+  used to succeed and overwrite blindly.
+- **Stored rows need no migration.** `revision` is stored from a row's first
+  in-place write on; until then it is served as the version.
+- **`@wip/client` 0.92.0:** `Document.revision` and `BulkResultItem.revision`.
+  `updateDocument(…, { ifMatch })` is unchanged; pass the revision.
+
 ### Registry: a composite key stays claimed by the entry that holds it
 
 The claims collection is what keeps a composite key to one entry. Several

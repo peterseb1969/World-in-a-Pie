@@ -4424,6 +4424,13 @@ class DirectRestoreEngine:
 
             if versioned.get(clash.entity.get("template_id") or "", True) is False:
                 row["version"] = target_head.get("version", 1)
+                # Replacing the row in place is a write like any other: its
+                # if_match token moves on, so a writer still holding the old
+                # one cannot overwrite what the merge brought in.
+                head_revision = (full_head or target_head).get("revision")
+                row["revision"] = (
+                    head_revision if head_revision is not None else row["version"]
+                ) + 1
                 # Archive rows carry ISO strings; the services store dates.
                 # _insert_batch re-hydrates for every other write path.
                 _rehydrate_timestamps(row)

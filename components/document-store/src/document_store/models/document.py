@@ -81,6 +81,17 @@ class Document(BeanieDocument):
         default=1,
         description="Document version (per identity)"
     )
+    # The write token if_match compares against. Absent until the row is
+    # overwritten in place (a versioned:false template), and then counting
+    # those writes; while absent the token is `version`. A versioned row is
+    # never overwritten, so its token is its version. See current_revision().
+    revision: int | None = Field(
+        default=None,
+        description=(
+            "Write counter of a row overwritten in place (versioned:false); "
+            "absent until the first such write"
+        ),
+    )
 
     # Document content
     data: dict[str, Any] = Field(
@@ -218,3 +229,9 @@ class Document(BeanieDocument):
                 sparse=True
             ),
         ]
+
+
+def current_revision(doc: "Document") -> int:
+    """The token a caller passes as if_match to write over this row: its
+    in-place write counter once it has one, else its version."""
+    return doc.revision if doc.revision is not None else doc.version

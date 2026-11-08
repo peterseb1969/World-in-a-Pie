@@ -11,6 +11,12 @@ export interface BulkResultItem {
   version?: number
   /** Document writes: the template version the document is pinned to. */
   template_version?: number
+  /**
+   * Document writes: the token to send as `if_match` on the next PATCH. Equal
+   * to `version`, except on a `versioned: false` template, where the version
+   * stays 1 and each in-place write moves the revision on.
+   */
+  revision?: number
   is_new_version?: boolean
   document_id?: string
   identity_hash?: string

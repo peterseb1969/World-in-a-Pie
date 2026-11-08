@@ -110,8 +110,11 @@ Semantics:
   document_id, not a logical identity; PATCH operates on logical entities. The
   error carries remediation: create a new document, or declare identity_fields
   on the template.
-- `if_match=N` is optional per-item optimistic concurrency control: if the
-  current version != N, you get error_code `concurrency_conflict`.
+- `if_match=N` is optional per-item optimistic concurrency control: pass the
+  document's `revision` (every document and write result carries it); if the
+  document's revision is no longer N you get error_code `concurrency_conflict`.
+  `revision` equals `version`, except on a `versioned: false` template, where
+  the version stays 1 and each in-place write moves the revision on.
 - template_version and identity_hash are preserved — the new version validates
   against the template version recorded on the document, not the latest.
 
@@ -1042,6 +1045,11 @@ Rule: Check `template.versioned` (defaults to true) before assuming version
       history exists. If you need history on a relationship, build the edge
       type with `versioned: true`. The flag is not limited to edge types:
       check it on every template.
+
+Concurrency: the version cannot serve as a write token here, since it never
+moves. Every document carries `revision`, which each in-place write moves
+on; pass it as `if_match` on PATCH. (On versioned templates `revision`
+equals `version`, so passing `revision` is always right.)
 
 ## 9. Closed by Default — Referencing Another Namespace Needs Read
 A namespace accepts references from OTHER namespaces only from writers whose
@@ -3570,9 +3578,10 @@ async def update_document(
             - Arrays are REPLACED entirely (not merged element-wise)
             - `null` values DELETE the corresponding key
             Pass {} for a metadata-only update.
-        if_match: Optional optimistic concurrency control. If supplied, the
-            patch fails with `concurrency_conflict` unless the current
-            version matches.
+        if_match: Optional optimistic concurrency control: the document's
+            `revision` as last read (equal to its version, except on a
+            versioned:false template). If supplied, the patch fails with
+            `concurrency_conflict` unless the document still holds it.
         metadata_patch: Optional JSON Merge Patch applied to the document's
             `metadata.custom` (same RFC 7396 semantics as `patch`).
             Platform-owned metadata (warnings, source_system) cannot be

@@ -1035,7 +1035,7 @@ def backfill_synonyms_cmd(
                    "`metadata.custom`. Metadata versions like data; a "
                    "metadata-only change mints a new version.")
 @click.option("--if-match", type=int, default=None,
-              help="Optimistic concurrency: only apply if current version matches.")
+              help="Optimistic concurrency: only apply if the document's revision (its version, except on versioned:false templates) still matches.")
 @click.pass_context
 def update_document_cmd(
     ctx: click.Context,

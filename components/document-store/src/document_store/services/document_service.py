@@ -44,7 +44,7 @@ from ..models.api_models import (
     operator_key_in,
     operator_path_segment,
 )
-from ..models.document import Document, DocumentMetadata, DocumentStatus
+from ..models.document import Document, DocumentMetadata, DocumentStatus, current_revision
 from .errors import DocumentStoreError, error_fields
 from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
@@ -1249,6 +1249,7 @@ class DocumentService:
                 identity_hash=existing.identity_hash,
                 version=existing.version,
                 template_version=existing.template_version,
+                revision=current_revision(existing),
                 is_new=False,
                 previous_version=None,  # No previous version because nothing changed
                 warnings=validation_result.warnings + synonym_warnings
@@ -1340,6 +1341,28 @@ class DocumentService:
             warnings=validation_result.warnings + synonym_warnings + lifecycle_warnings
         ), None
 
+    async def _write_in_place(self, doc: Document, read_revision: int | None) -> bool:
+        """Write ``doc`` over its row only if the row still holds the revision
+        that was read (None: the row has never been overwritten), moving the
+        revision on in the same operation. True if written; False if another
+        write landed first, in which case ``doc`` keeps its old revision.
+
+        One conditional replace, so it is atomic on a standalone mongod: the
+        token a caller holds can only pass for the write it was read for.
+        """
+        from beanie.exceptions import DocumentNotFound
+
+        new_revision = (read_revision if read_revision is not None else doc.version) + 1
+        doc.revision = new_revision
+        try:
+            await Document.find_one(
+                {"_id": doc.id, "revision": read_revision}
+            ).replace_one(doc)
+        except DocumentNotFound:
+            doc.revision = read_revision
+            return False
+        return True
+
     async def _overwrite_in_place(
         self,
         request: DocumentCreateRequest,
@@ -1347,46 +1370,65 @@ class DocumentService:
         validation_result: Any,
         namespace: str,
         extra_warnings: list[str] | None = None,
+        max_retries: int = 3,
     ) -> tuple[DocumentCreateResponse, dict[str, Any] | None]:
         """Phase-3 overwrite: update the existing document's data and
         references without creating a new version. Used when the
         template has versioned=False (e.g., latest-only relationship
         edges). Same document_id, same version number, fresh
-        updated_at / updated_by. File reference counts are adjusted
-        for the delta the same way _create_new_version does.
+        updated_at / updated_by, and the row's revision moves on. File
+        reference counts are adjusted for the delta the same way
+        _create_new_version does.
 
-        Race note: there is no per-item if_match on the POST upsert
-        path, so concurrent overwrites of the same versioned=False
-        document race. Use the PATCH endpoint (which honours if_match)
-        for serialised updates. Documented in design doc and
-        docs/api-conventions.md.
+        A POST carries no if_match: its payload replaces the row whatever
+        it held. The write is still conditional on the revision read, so a
+        concurrent write is never lost by accident: the row is re-read and
+        the file-reference delta and preserved metadata are taken from what
+        it holds now. A PATCH holding the older revision then conflicts.
         """
         actor = get_identity_string()
-        now = datetime.now(UTC)
         all_warnings = validation_result.warnings + (extra_warnings or [])
 
-        # A deleted document overwritten in place comes back; its old
-        # references were already released by the delete.
-        revival = self._is_revival(existing)
-        previous_file_refs = [] if revival else list(existing.file_references)
+        for attempt in range(max_retries):
+            if attempt:
+                fresh = await Document.get(existing.id)
+                if fresh is None:
+                    raise DocumentStoreError(
+                        "Document disappeared during an in-place overwrite",
+                        "concurrency_conflict",
+                    )
+                existing = fresh
+            read_revision = existing.revision
+            now = datetime.now(UTC)
 
-        # metadata=None carries the existing custom forward (caller did not
-        # address it); a supplied dict — including {} — replaces wholesale.
-        preserved_custom = dict(existing.metadata.custom if existing.metadata else {})
-        existing.data = request.data
-        existing.term_references = validation_result.term_references
-        existing.references = validation_result.references
-        existing.file_references = validation_result.file_references
-        existing.template_version = validation_result.template_version or existing.template_version
-        existing.template_value = validation_result.template_value or existing.template_value
-        existing.metadata = DocumentMetadata(
-            warnings=all_warnings,
-            custom=request.metadata if request.metadata is not None else preserved_custom,
-        )
-        existing.status = DocumentStatus.ACTIVE
-        existing.updated_at = now
-        existing.updated_by = actor
-        await existing.save()
+            # A deleted document overwritten in place comes back; its old
+            # references were already released by the delete.
+            revival = self._is_revival(existing)
+            previous_file_refs = [] if revival else list(existing.file_references)
+
+            # metadata=None carries the existing custom forward (caller did not
+            # address it); a supplied dict — including {} — replaces wholesale.
+            preserved_custom = dict(existing.metadata.custom if existing.metadata else {})
+            existing.data = request.data
+            existing.term_references = validation_result.term_references
+            existing.references = validation_result.references
+            existing.file_references = validation_result.file_references
+            existing.template_version = validation_result.template_version or existing.template_version
+            existing.template_value = validation_result.template_value or existing.template_value
+            existing.metadata = DocumentMetadata(
+                warnings=all_warnings,
+                custom=request.metadata if request.metadata is not None else preserved_custom,
+            )
+            existing.status = DocumentStatus.ACTIVE
+            existing.updated_at = now
+            existing.updated_by = actor
+            if await self._write_in_place(existing, read_revision):
+                break
+        else:
+            raise DocumentStoreError(
+                f"Failed after {max_retries} retries due to concurrent writers",
+                "concurrency_conflict",
+            )
 
         # Publish an updated event so downstream (reporting-sync, NATS
         # subscribers) sees the change. Same event type / payload as
@@ -1410,6 +1452,7 @@ class DocumentService:
             identity_hash=existing.identity_hash,
             version=existing.version,
             template_version=existing.template_version,
+            revision=current_revision(existing),
             is_new=False,
             # No new version was minted — the replaced payload was at this
             # same version, so previous_version == version is the in-place
@@ -2951,6 +2994,7 @@ class DocumentService:
                         identity_hash=identity_hash,
                         version=existing.version,
                         template_version=existing.template_version,
+                        revision=current_revision(existing),
                         is_new=False,
                         warnings=validation_result.warnings,
                     ),
@@ -3185,6 +3229,7 @@ class DocumentService:
                         identity_hash=identity_hash,
                         version=existing.version,
                         template_version=existing.template_version,
+                        revision=current_revision(existing),
                         is_new=False,
                         warnings=validation_result.warnings + synonym_warnings,
                     ),
@@ -3220,6 +3265,7 @@ class DocumentService:
                         identity_hash=identity_hash,
                         version=response.version,
                         template_version=response.template_version,
+                        revision=response.revision,
                         is_new=False,
                         warnings=response.warnings,
                     ),
@@ -4063,6 +4109,7 @@ class DocumentService:
                 template_value=doc.template_value,
                 identity_hash=doc.identity_hash,
                 version=doc.version,
+                revision=current_revision(doc),
                 data=doc.data,
                 term_references=doc.term_references,
                 references=doc.references,
@@ -4100,6 +4147,7 @@ class DocumentService:
             template_value=document.template_value,
             identity_hash=document.identity_hash,
             version=document.version,
+            revision=current_revision(document),
             data=document.data,
             term_references=document.term_references,
             references=document.references,
@@ -4572,11 +4620,16 @@ class DocumentService:
                     f"Requires write access to namespace '{current.namespace}'",
                 )
 
-            # 3. Optimistic concurrency control (per-item if_match).
-            if item.if_match is not None and current.version != item.if_match:
+            # 3. Optimistic concurrency control (per-item if_match), against
+            #    the row's write token: its version, or on a row overwritten
+            #    in place (versioned:false) the in-place write counter. The
+            #    in-place write below re-checks it atomically.
+            read_revision = current.revision
+            if item.if_match is not None and current_revision(current) != item.if_match:
                 raise PatchError(
                     "concurrency_conflict",
-                    f"Expected version {item.if_match}, current is {current.version}",
+                    f"Expected revision {item.if_match}, current is "
+                    f"{current_revision(current)}",
                 )
 
             # 4. Apply RFC 7396 merge to current data, and (when supplied) to
@@ -4688,6 +4741,7 @@ class DocumentService:
                     document_id=current.document_id,
                     identity_hash=current.identity_hash,
                     version=current.version,
+                    revision=current_revision(current),
                     is_new=False,
                     warnings=validation_result.warnings,
                 )
@@ -4730,9 +4784,10 @@ class DocumentService:
 
             # 9. Write. Phase-3 branch: templates with versioned=False
             #    overwrite the existing document in place. Same
-            #    document_id, same version, fresh data + updated_at.
-            #    if_match (step 3) gives serialised concurrency for
-            #    this path — recommended.
+            #    document_id, same version, fresh data + updated_at, and the
+            #    row's revision moves on. The write is conditional on the
+            #    revision read in step 1, so a concurrent writer is detected
+            #    at the write itself, not only at step 3.
             actor = get_identity_string()
             now = datetime.now(UTC)
 
@@ -4749,7 +4804,17 @@ class DocumentService:
                 )
                 current.updated_at = now
                 current.updated_by = actor
-                await current.save()
+                if not await self._write_in_place(current, read_revision):
+                    if item.if_match is not None:
+                        # The caller's token was current at step 3 and is not
+                        # now: another write landed in between.
+                        raise PatchError(
+                            "concurrency_conflict",
+                            f"Expected revision {item.if_match}; the document "
+                            "was written concurrently",
+                        )
+                    # No token held: re-read and re-merge onto the winner.
+                    continue
 
                 await publish_document_event(
                     EventType.DOCUMENT_UPDATED,
@@ -4766,6 +4831,7 @@ class DocumentService:
                     document_id=current.document_id,
                     identity_hash=current.identity_hash,
                     version=current.version,
+                    revision=current_revision(current),
                     is_new=False,
                     warnings=validation_result.warnings,
                 )

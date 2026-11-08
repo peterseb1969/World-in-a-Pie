@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 # Canonical bulk-response models live in wip_auth.bulk_models (CASE-395).
 # Re-exported here under the document-store-facing names so existing
@@ -90,6 +90,12 @@ class DocumentCreateRequest(StrictModel):
 class DocumentResponse(BaseModel):
     """Response containing a document."""
 
+    @model_validator(mode="after")
+    def _revision_defaults_to_version(self) -> "DocumentResponse":
+        if self.revision is None:
+            self.revision = self.version
+        return self
+
     document_id: str
     namespace: str
     template_id: str
@@ -100,6 +106,14 @@ class DocumentResponse(BaseModel):
     )
     identity_hash: str = ""
     version: int
+    revision: int | None = Field(
+        default=None,
+        description=(
+            "Token to send as if_match on a PATCH of this document; equal to "
+            "version except on a row overwritten in place (versioned:false), "
+            "where it counts the writes"
+        ),
+    )
     data: dict[str, Any]
     term_references: list[dict[str, Any]] = Field(
         default_factory=list,
@@ -136,6 +150,12 @@ class DocumentResponse(BaseModel):
 class DocumentCreateResponse(BaseModel):
     """Response after creating/updating a document."""
 
+    @model_validator(mode="after")
+    def _revision_defaults_to_version(self) -> "DocumentCreateResponse":
+        if self.revision is None:
+            self.revision = self.version
+        return self
+
     document_id: str
     namespace: str
     template_id: str
@@ -148,6 +168,13 @@ class DocumentCreateResponse(BaseModel):
     template_version: int | None = Field(
         default=None,
         description="Template version the document is pinned to",
+    )
+    revision: int | None = Field(
+        default=None,
+        description=(
+            "Token to send as if_match on the next PATCH; equal to version "
+            "except on a row overwritten in place (versioned:false)"
+        ),
     )
     is_new: bool = Field(
         ...,
@@ -521,8 +548,11 @@ class PatchDocumentItem(StrictModel):
     )
     if_match: int | None = Field(
         default=None,
-        description="Expected current version. If provided and the current version "
-                    "differs, the item fails with concurrency_conflict."
+        description="Expected current revision (the document's `revision`, which "
+                    "equals its version except on a versioned:false template, "
+                    "where every in-place write moves it on). If provided and "
+                    "the document's revision differs, the item fails with "
+                    "concurrency_conflict."
     )
 
 

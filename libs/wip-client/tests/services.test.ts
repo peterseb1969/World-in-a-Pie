@@ -786,6 +786,17 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('status=active')
     })
 
+    it('updateDocument sends the revision as if_match', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'updated', document_id: 'D-1', version: 1, revision: 3 }],
+        total: 1, succeeded: 1, failed: 0,
+      })
+      const result = await client.documents.updateDocument('D-1', { body: 'x' }, { ifMatch: 2 })
+      const [, options] = fetchMock.mock.calls[0]
+      expect(JSON.parse(options.body)[0].if_match).toBe(2)
+      expect(result.revision).toBe(3)
+    })
+
     it('getTableView and exportTableCsv send namespace when given', async () => {
       mockJsonResponse({
         template_id: 'T-1', columns: [], rows: [], total_documents: 0,

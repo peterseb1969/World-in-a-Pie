@@ -178,6 +178,10 @@ class TestOlderVersions:
         await _run_merge(mongo, archive, on_clash="overwrite")
 
         assert await _versions(mongo) == [(1, "active", {"n": 2})]
+        # A replacement in place is a write: the if_match token moves on, so
+        # a writer still holding the target's old token cannot overwrite it.
+        (row,) = await _rows(mongo, "documents")
+        assert row["revision"] == 2
 
     @pytest.mark.asyncio
     async def test_an_unknown_value_is_refused(self, mongo):

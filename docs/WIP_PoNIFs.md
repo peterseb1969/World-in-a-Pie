@@ -201,7 +201,7 @@ This is a deliberate exception to PoNIF #2 ("Template Versioning — Update Does
 - Code that loads `version=N-1` to compute a diff against `version=N` returns nothing on a `versioned: false` edge type — there is no previous version.
 - `get_document_versions(id)` returns a list of length 1 forever. Code that paginates or filters this list silently does the wrong thing.
 - Audit-trail assumptions (compliance flows, change history UIs) treat `versioned: false` data the same as everything else and produce gaps.
-- Concurrency on the in-place path needs `if_match` (existing OCC token); naive overwrite logic loses concurrent updates.
+- Concurrency on the in-place path needs `if_match`, and the token is the document's `revision`, not its version (which never moves here). Each in-place write moves `revision` on; naive overwrite logic, or `if_match` set from `version`, loses concurrent updates.
 
 **Sensible default:** `template.versioned` defaults to `true` — the conservative default that preserves history. Code reading documents should check `template.versioned` (or equivalently, that `get_document_versions` returns more than one row) before assuming history exists. If you need history on a relationship, build the edge type with `versioned: true`. The flag is immutable after creation, so the choice is permanent — pick deliberately.
 

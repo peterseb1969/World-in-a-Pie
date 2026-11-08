@@ -23,7 +23,7 @@ documented codes from wip://conventions are:
 
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class BulkResultItemBase(BaseModel):
@@ -90,8 +90,18 @@ class DocumentBulkResultItem(BulkResultItemBase):
             "to; on a migrate dry run, the version it would be pinned to."
         ),
     )
+    # The token to send as if_match on the next PATCH. Equal to version
+    # except on a row overwritten in place (versioned:false), where it
+    # counts the writes; filled from version when a writer leaves it out.
+    revision: int | None = None
     is_new: bool | None = None
     warnings: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _revision_defaults_to_version(self) -> "DocumentBulkResultItem":
+        if self.revision is None and self.version is not None:
+            self.revision = self.version
+        return self
 
 
 class TemplateBulkResultItem(BulkResultItemBase):

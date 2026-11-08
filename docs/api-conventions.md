@@ -117,7 +117,7 @@ A JSON array of patch items:
 | `document_id` | yes | Canonical UUID or registered synonym — resolved before processing |
 | `patch` | yes | RFC 7396 JSON Merge Patch applied to the entity's `data`. Pass `{}` for a metadata-only patch |
 | `metadata_patch` | no | RFC 7396 JSON Merge Patch applied to the entity's `metadata.custom`. Platform-owned metadata (`warnings`, `source_system`) cannot be addressed. Omitted = metadata carries forward unchanged |
-| `if_match` | no | Per-item optimistic concurrency control: if current version != `if_match`, the item fails with `concurrency_conflict` |
+| `if_match` | no | Per-item optimistic concurrency control: pass the document's `revision`; if the document's revision != `if_match`, the item fails with `concurrency_conflict`. `revision` equals `version`, except on a `versioned: false` template, where each in-place write moves it on |
 
 ### RFC 7396 JSON Merge Patch Semantics
 
@@ -257,7 +257,7 @@ Standard validation (template constraints, type checks, term resolution, referen
 
 Set `versioned: false` on an edge type to make updates **overwrite in place** instead of creating new versions. Documents under such an edge type stay at `version: 1` forever; the document_id is stable, but no history is preserved.
 
-This is the right shape for relationships where the edge identity matters but its history doesn't (e.g., "monster has spell" in a bestiary). Concurrency on the in-place path is governed by the existing `if_match` token — strongly recommended for high-write workloads.
+This is the right shape for relationships where the edge identity matters but its history doesn't (e.g., "monster has spell" in a bestiary). The version stays 1, so it cannot be the write token: every document carries `revision`, which each in-place write (PATCH, POST overwrite, a restore merge) moves on. Pass it as `if_match` on PATCH; the write is conditional on it, so of two writers holding the same revision one wins and the other gets `concurrency_conflict`. Strongly recommended for high-write workloads.
 
 `versioned` defaults to `true` (standard versioning) and is immutable after edge-type creation.
 

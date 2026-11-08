@@ -1,6 +1,6 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
 docs/Vision.md sha256:495ad324988ae160 reviewed:4eefa609
-wip://ponifs sha256:99d480622b5d13d1 reviewed:e752beeb
+wip://ponifs sha256:4ad419558aea26e8 reviewed:f7b38b1c
 wip://development-guide sha256:d44cd305a3b84d3e reviewed:a66e110f
 scaffold/templates/claude-md/app.md sha256:d1d9161ab26b0295 reviewed:e106cfec
 docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca reviewed:809f9059
@@ -45,7 +45,8 @@ calls run with an admin key that spans namespaces: always pass `namespace=` expl
 5. Several IDs for one entity (synonyms) is normal, not corruption.
 6. "Latest active" template lookups are cached ~5 s — pass template_version explicitly.
 7. Edge types are templates with usage: relationship — different rules; check `usage`.
-8. A template with versioned: false (typically an edge type) overwrites in place — no history.
+8. A template with versioned: false (typically an edge type) overwrites in place — no history;
+   its version stays 1, so send the document's `revision` as `if_match`, never its version.
 9. Another namespace is closed by default: referencing it needs read on it, and a refusal
    reads as "not found". References a document already holds carry over.
 
