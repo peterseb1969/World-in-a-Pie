@@ -200,6 +200,35 @@ def _reference_item_shape_error(item: Any, reference_type: str | None) -> str | 
     return None
 
 
+def _business_key_error(
+    value: dict[str, Any],
+    identities: dict[str, list[str]],
+    matches: list[tuple[str, str]],
+) -> dict[str, Any] | None:
+    """The error of a business key, given each target template's identity
+    fields and the documents it matched: it names no target template's
+    identity, or it matches documents under several. None otherwise."""
+    if not any(set(value) == set(fields) for fields in identities.values() if fields):
+        return {
+            "code": "invalid_reference_value",
+            "message": (
+                f"Business key {sorted(value)} does not name the identity fields "
+                "of any target template"
+            ),
+            "details": {"value": value, "identity_fields": identities},
+        }
+    if len(matches) > 1:
+        return {
+            "code": "ambiguous_reference",
+            "message": "Business key matches documents under several target templates",
+            "details": {
+                "value": value,
+                "candidates": [{"document_id": d, "template_value": t} for d, t in matches],
+            },
+        }
+    return None
+
+
 class ValidationService:
     """
     Service for validating documents against templates.
@@ -2174,10 +2203,7 @@ class ValidationService:
         matches, or (None, error) for a key that names no target template's
         identity or that matches documents under several templates.
         """
-        from wip_auth.composite_key import compute_composite_key_hash
-
         from ..models.document import Document, DocumentStatus
-        from .registry_client import RegistryError, get_registry_client
 
         if not target_templates:
             return None, {
@@ -2188,6 +2214,36 @@ class ValidationService:
                 ),
                 "details": {"value": value},
             }
+
+        identities, matches = await self._match_business_key(
+            value, target_templates, namespace, doc_ref_cache,
+        )
+        error = _business_key_error(value, identities, matches)
+        if error is not None or not matches:
+            return None, error
+
+        document_id = matches[0][0]
+        doc = await Document.find_one(
+            {"document_id": document_id, "status": DocumentStatus.ACTIVE}
+        )
+        return doc or await Document.find_one({"document_id": document_id}), None
+
+    async def _match_business_key(
+        self,
+        value: dict[str, Any],
+        target_templates: list[str],
+        namespace: str,
+        doc_ref_cache: dict | None,
+    ) -> tuple[dict[str, list[str]], list[tuple[str, str]]]:
+        """Try the key against each target template the namespace may use:
+        (each template's identity fields by template value, the
+        (document_id, template value) of every document it names).
+
+        A template the template store cannot answer or does not find is
+        skipped; one whose identity fields the key does not name exactly is
+        recorded but not searched.
+        """
+        from .registry_client import get_registry_client
 
         client = get_template_store_client()
         registry = get_registry_client()
@@ -2200,68 +2256,64 @@ class ValidationService:
                 continue
             if not template:
                 continue
+            template_value = template.get("value") or template_id
             identity_fields = list(template.get("identity_fields") or [])
-            identities[template.get("value") or template_id] = identity_fields
+            identities[template_value] = identity_fields
             if not identity_fields or set(value) != set(identity_fields):
                 continue
-
-            identity_template = {
-                **template,
-                "fields": [
-                    f for f in template.get("fields", []) if f.get("name") in identity_fields
-                ],
-            }
-            scratch = ValidationResult()
-            await self._validate_terms(value, identity_template, scratch, namespace=namespace)
-            if scratch.valid:
-                await self._validate_references(
-                    value, identity_template, scratch, namespace=namespace,
-                    doc_ref_cache=doc_ref_cache,
-                )
-            if scratch.valid:
-                self._compute_identity(value, identity_template, scratch)
-            if not scratch.valid or not scratch.identity_values:
-                # A value that does not resolve names no document here.
-                continue
-
-            try:
-                document_id = await registry.lookup_document_by_primary_key(
-                    namespace, template_id,
-                    compute_composite_key_hash(scratch.identity_values),
-                )
-            except RegistryError:
-                document_id = None
+            document_id = await self._business_key_document_id(
+                value, template_id, template, identity_fields, namespace,
+                doc_ref_cache, registry,
+            )
             if document_id:
-                matches.append((document_id, template.get("value") or template_id))
+                matches.append((document_id, template_value))
+        return identities, matches
 
-        if not any(set(value) == set(fields) for fields in identities.values() if fields):
-            return None, {
-                "code": "invalid_reference_value",
-                "message": (
-                    f"Business key {sorted(value)} does not name the identity fields "
-                    "of any target template"
-                ),
-                "details": {"value": value, "identity_fields": identities},
-            }
-        if len(matches) > 1:
-            return None, {
-                "code": "ambiguous_reference",
-                "message": "Business key matches documents under several target templates",
-                "details": {
-                    "value": value,
-                    "candidates": [
-                        {"document_id": d, "template_value": t} for d, t in matches
-                    ],
-                },
-            }
-        if not matches:
-            return None, None
+    async def _business_key_document_id(
+        self,
+        value: dict[str, Any],
+        template_id: str,
+        template: dict[str, Any],
+        identity_fields: list[str],
+        namespace: str,
+        doc_ref_cache: dict | None,
+        registry: Any,
+    ) -> str | None:
+        """The document under ``template_id`` whose identity the key is, or None.
 
-        document_id = matches[0][0]
-        doc = await Document.find_one(
-            {"document_id": document_id, "status": DocumentStatus.ACTIVE}
-        )
-        return doc or await Document.find_one({"document_id": document_id}), None
+        The key's values are resolved and hashed by the stages a document
+        write runs, over the template's identity fields only (term and
+        reference identity fields feed their referent's canonical ID); a
+        value that does not resolve names no document here. The document is
+        looked up by its Registry primary key (namespace, template_id,
+        identity_hash); a Registry error counts as no match.
+        """
+        from wip_auth.composite_key import compute_composite_key_hash
+
+        from .registry_client import RegistryError
+
+        identity_template = {
+            **template,
+            "fields": [f for f in template.get("fields", []) if f.get("name") in identity_fields],
+        }
+        scratch = ValidationResult()
+        await self._validate_terms(value, identity_template, scratch, namespace=namespace)
+        if scratch.valid:
+            await self._validate_references(
+                value, identity_template, scratch, namespace=namespace,
+                doc_ref_cache=doc_ref_cache,
+            )
+        if scratch.valid:
+            self._compute_identity(value, identity_template, scratch)
+        if not scratch.valid or not scratch.identity_values:
+            return None
+        try:
+            document_id = await registry.lookup_document_by_primary_key(
+                namespace, template_id, compute_composite_key_hash(scratch.identity_values),
+            )
+        except RegistryError:
+            return None
+        return cast(str | None, document_id)
 
     async def _allowed_template_ids(
         self, target_templates: list[str], namespace: str | None,
