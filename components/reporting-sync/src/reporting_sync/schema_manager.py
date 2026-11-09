@@ -98,6 +98,65 @@ SEMANTIC_TYPE_MAPPING: dict[SemanticType, str] = {
 }
 
 
+def _selected_versions(cv: Any, ordered_versions: list[int]) -> list[int]:
+    """The versions a cross_version_view selects: all, or those listed."""
+    if cv.versions == "all":
+        return ordered_versions
+    return [v for v in ordered_versions if v in (cv.versions or [])]
+
+
+def _column_mappings(cv: Any, shared: set[str]) -> dict[str, str]:
+    """{target: source} for each declared column the shared columns do not
+    already carry; a mapping without "from" reads its own name."""
+    return {
+        target: (spec or {}).get("from") or target
+        for target, spec in (cv.columns or {}).items()
+        if target not in shared
+    }
+
+
+def _mapped_column_types(
+    mapped: dict[str, str], tables: list[str], col_types: dict[str, dict[str, str]],
+) -> dict[str, str]:
+    """The type of each mapped target column: taken from the newest table
+    that has the source (or target) column. A mapping found in no table has
+    no type and is left out of the view."""
+    mapped_types: dict[str, str] = {}
+    for target, source in mapped.items():
+        for t in reversed(tables):
+            dtype = col_types[t].get(target) or col_types[t].get(source)
+            if dtype:
+                mapped_types[target] = dtype
+                break
+    return mapped_types
+
+
+def _cross_version_select(
+    schema: str,
+    table: str,
+    shared_cols_sql: str,
+    mapped: dict[str, str],
+    mapped_types: dict[str, str],
+    table_types: dict[str, str],
+) -> str:
+    """One version table's SELECT in the cross-version view: the shared
+    columns, then each typed mapping as the table's own target column, its
+    source column renamed, or a typed NULL."""
+    extra = []
+    for target, source in mapped.items():
+        dtype = mapped_types.get(target)
+        if dtype is None:
+            continue
+        if target in table_types:
+            extra.append(f'"{target}"')
+        elif source in table_types:
+            extra.append(f'"{source}" AS "{target}"')
+        else:
+            extra.append(f'NULL::{dtype} AS "{target}"')
+    cols = shared_cols_sql + (", " + ", ".join(extra) if extra else "")
+    return f'SELECT {cols} FROM "{schema}"."{table}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+
+
 class SchemaManager:
     """Manages PostgreSQL schema for reporting tables.
 
@@ -1691,86 +1750,95 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         selects = [
             f'SELECT {col_list} FROM "{schema}"."{t}"' for t in tables  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
         ]
-        entities_view = f"{base}__entities"
         union_sql = "\nUNION ALL\n".join(selects)
 
         cv = getattr(config, "cross_version_view", None) if config else None
-        bare_sql = union_sql
-        if cv:
-            selected = ordered_versions if cv.versions == "all" else [
-                v for v in ordered_versions if v in (cv.versions or [])
-            ]
-            if selected:
-                sel_tables = [version_tables[v] for v in selected]
-                shared_sel = await self._shared_columns(schema, sel_tables)
-                col_names = {c for c, _t in shared_sel}
-                mapped = {
-                    target: (spec or {}).get("from") or target
-                    for target, spec in (cv.columns or {}).items()
-                    if target not in col_names
-                }
-                # Type of each mapped target: taken from the newest selected
-                # table that has the source (or target) column.
-                async with self.pool.acquire() as conn:
-                    type_rows = await conn.fetch(
-                        """
-                        SELECT table_name, column_name, data_type
-                        FROM information_schema.columns
-                        WHERE table_schema = $1 AND table_name = ANY($2::text[])
-                        """,
-                        schema,
-                        sel_tables,
-                    )
-                col_types: dict[str, dict[str, str]] = {t: {} for t in sel_tables}
-                for row in type_rows:
-                    col_types[row["table_name"]][row["column_name"]] = row["data_type"]
+        bare_sql = (
+            await self._cross_version_sql(schema, version_tables, ordered_versions, cv)
+            if cv else None
+        ) or union_sql
 
-                mapped_types: dict[str, str] = {}
-                for target, source in mapped.items():
-                    for t in reversed(sel_tables):
-                        dtype = col_types[t].get(target) or col_types[t].get(source)
-                        if dtype:
-                            mapped_types[target] = dtype
-                            break
-
-                shared_cols_sql = ", ".join(f'"{c}"' for c, _t in shared_sel)
-                sel_selects = []
-                for t in sel_tables:
-                    extra = []
-                    for target, source in mapped.items():
-                        dtype = mapped_types.get(target)
-                        if dtype is None:
-                            continue
-                        if target in col_types[t]:
-                            extra.append(f'"{target}"')
-                        elif source in col_types[t]:
-                            extra.append(f'"{source}" AS "{target}"')
-                        else:
-                            extra.append(f'NULL::{dtype} AS "{target}"')
-                    cols = shared_cols_sql + (", " + ", ".join(extra) if extra else "")
-                    sel_selects.append(f'SELECT {cols} FROM "{schema}"."{t}"')  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
-                bare_sql = "\nUNION ALL\n".join(sel_selects)
-
-        async with self.pool.acquire() as conn, conn.transaction():
-            # Registered views typically SELECT from the entity views being
-            # rebuilt here; as known dependents they are dropped first and
-            # recreated after the rebuild commits (best-effort, below).
-            await self.drop_registered_views(namespace, conn)
-            await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{entities_view}"')
-            await conn.execute(
-                f'CREATE VIEW "{schema}"."{entities_view}" AS\n{union_sql}'
-            )
-            if legacy_kind in (None, "view"):
-                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{base}"')
-                await conn.execute(
-                    f'CREATE VIEW "{schema}"."{base}" AS\n{bare_sql}'
-                )
-        await self.recreate_registered_views(namespace)
+        await self._rebuild_entity_views(
+            namespace, schema, base, union_sql, bare_sql,
+            replace_bare=legacy_kind in (None, "view"),
+        )
         logger.info(
             f'Rebuilt entity views for "{schema}"."{base}" over versions '
             f"{ordered_versions}"
         )
         return None
+
+    async def _rebuild_entity_views(
+        self,
+        namespace: str,
+        schema: str,
+        base: str,
+        union_sql: str,
+        bare_sql: str,
+        *,
+        replace_bare: bool,
+    ) -> None:
+        """Replace the __entities view and, unless another kind of relation
+        holds the bare name, the bare view, in one transaction.
+
+        Registered views typically SELECT from the entity views being rebuilt
+        here; as known dependents they are dropped first and recreated after
+        the rebuild commits (best-effort).
+        """
+        entities_view = f"{base}__entities"
+        async with self.pool.acquire() as conn, conn.transaction():
+            await self.drop_registered_views(namespace, conn)
+            await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{entities_view}"')
+            await conn.execute(
+                f'CREATE VIEW "{schema}"."{entities_view}" AS\n{union_sql}'
+            )
+            if replace_bare:
+                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{base}"')
+                await conn.execute(
+                    f'CREATE VIEW "{schema}"."{base}" AS\n{bare_sql}'
+                )
+        await self.recreate_registered_views(namespace)
+
+    async def _cross_version_sql(
+        self,
+        schema: str,
+        version_tables: dict[int, str],
+        ordered_versions: list[int],
+        cv: Any,
+    ) -> str | None:
+        """The bare view's SQL under a cross_version_view opt-in: the shared
+        columns of the selected versions plus each declared column mapping
+        not already shared. None when no version is selected."""
+        selected = _selected_versions(cv, ordered_versions)
+        if not selected:
+            return None
+        sel_tables = [version_tables[v] for v in selected]
+        shared_sel = await self._shared_columns(schema, sel_tables)
+        mapped = _column_mappings(cv, {c for c, _t in shared_sel})
+        col_types = await self._table_column_types(schema, sel_tables)
+        mapped_types = _mapped_column_types(mapped, sel_tables, col_types)
+        shared_cols_sql = ", ".join(f'"{c}"' for c, _t in shared_sel)
+        return "\nUNION ALL\n".join(
+            _cross_version_select(schema, t, shared_cols_sql, mapped, mapped_types, col_types[t])
+            for t in sel_tables
+        )
+
+    async def _table_column_types(self, schema: str, tables: list[str]) -> dict[str, dict[str, str]]:
+        """{table: {column: data_type}} for the given tables."""
+        async with self.pool.acquire() as conn:
+            type_rows = await conn.fetch(
+                """
+                SELECT table_name, column_name, data_type
+                FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = ANY($2::text[])
+                """,
+                schema,
+                tables,
+            )
+        col_types: dict[str, dict[str, str]] = {t: {} for t in tables}
+        for row in type_rows:
+            col_types[row["table_name"]][row["column_name"]] = row["data_type"]
+        return col_types
 
     async def delete_from_sibling_version_tables(
         self,
