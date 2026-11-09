@@ -30,7 +30,7 @@ import re
 from typing import Any, TypeVar, cast
 
 from ..models.template import Template
-from .def_store_client import DefStoreError, get_def_store_client
+from .def_store_client import get_def_store_client
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +70,11 @@ async def _terminology_value_map(ids: set[str]) -> dict[str, tuple[str, str]]:
         return out
     client = get_def_store_client()
     for tid in ids:
-        try:
-            data = await client.get_terminology(terminology_id=tid)
-        except DefStoreError as e:
-            logger.warning(f"Portable projection: terminology {tid} lookup failed: {e}")
-            continue
+        # A Def-Store that does not answer fails the read (503): serving
+        # this terminology's instance id in a response asked to be portable
+        # would mix forms behind a 200. A terminology Def-Store says does not
+        # exist (None) stays as its id, a dangling reference left visible.
+        data = await client.get_terminology(terminology_id=tid)
         if data and data.get("namespace") and data.get("value"):
             out[tid] = (data["namespace"], data["value"])
     return out

@@ -32,7 +32,7 @@ from wip_auth.mongo import mongo_credentials, mongo_identity
 from . import __version__
 from .api import api_router
 from .models.template import Template
-from .services.def_store_client import configure_def_store_client, get_def_store_client
+from .services.def_store_client import DefStoreError, configure_def_store_client, get_def_store_client
 from .services.errors import TemplateUnresolvable
 from .services.integrity_service import IntegrityCheckResult, check_all_templates
 from .services.nats_client import close_nats_client, configure_nats_client, nats_stats
@@ -121,8 +121,16 @@ async def lifespan(app: FastAPI):
     try:
         logger.info("Running startup integrity check...")
         result = await check_all_templates(status_filter="active", limit=500)
+        checked = f"{result.summary.total_templates} templates checked" + (
+            ", more not checked (limit 500)" if result.summary.truncated else ""
+        )
         if result.status == "healthy":
-            logger.info(f"Integrity check: OK ({result.summary.total_templates} templates checked)")
+            logger.info(f"Integrity check: OK ({checked})")
+        elif result.status == "unknown":
+            logger.warning(
+                f"Integrity check: UNKNOWN ({checked}; {result.summary.checks_skipped} "
+                "reference(s) could not be checked, Def-Store did not answer)"
+            )
         else:
             logger.warning(f"Integrity check found {len(result.issues)} issues:")
             # Group issues by type
@@ -234,6 +242,15 @@ app.add_middleware(
 
 # Include API router
 app.include_router(api_router)
+
+
+async def _def_store_unavailable(_request: Request, exc: DefStoreError) -> JSONResponse:
+    """Def-Store did not answer and nothing could answer for it: the request
+    fails visibly (503) rather than as a 500 or with a guessed answer."""
+    return JSONResponse(status_code=503, content={"detail": f"Def-Store did not answer: {exc}"})
+
+
+app.add_exception_handler(DefStoreError, _def_store_unavailable)  # type: ignore[arg-type]
 
 
 @app.exception_handler(TemplateUnresolvable)
@@ -397,6 +414,12 @@ async def integrity_check(
         limit: Maximum number of templates to check (default 1000)
 
     Returns:
-        IntegrityCheckResult with status, summary, and list of issues
+        IntegrityCheckResult with status, summary, and list of issues. When a
+        reference could not be checked (Def-Store did not answer) the answer
+        is 503 with the same body, its checks_skipped listing them: a scan
+        that could not look is not a healthy one.
     """
-    return await check_all_templates(status_filter=status, limit=limit)
+    result = await check_all_templates(status_filter=status, limit=limit)
+    if result.checks_skipped:
+        return JSONResponse(status_code=503, content=result.model_dump(mode="json"))
+    return result

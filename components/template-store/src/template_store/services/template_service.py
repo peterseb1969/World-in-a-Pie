@@ -3314,10 +3314,10 @@ class TemplateService:
                 if not await _terminology_exists(ref, gate):
                     _error(field, "invalid_reference", f"Terminology '{ref}' not found or inactive")
             except DefStoreError as e:
-                warnings.append(ValidationWarning(
-                    field=field, code="validation_failed",
-                    message=f"Could not validate terminology: {e!s}",
-                ))
+                # Def-Store did not answer: the reference is unchecked, so the
+                # template is not valid and does not activate (a warning let
+                # activation through on an answer nobody gave).
+                _error(field, "unverifiable", f"Could not check terminology '{ref}': {e!s}")
 
         async def _check_pinned(
             field: str, ref: str, version: int | None, gate: InboundGate, what: str,

@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### template-store does not read a Def-Store outage as an answer
+
+- **Integrity scan:** a terminology check Def-Store could not answer was
+  skipped and the scan said `healthy`. It is listed in `checks_skipped`, the
+  status is `unknown`, and `GET /health/integrity` answers **503** with the
+  same body (reporting-sync then counts template-store as unavailable). The
+  summary says `truncated` when more templates matched than `limit`. The scan
+  also reads a template reference by its active version (a parent whose v1
+  is retired no longer reads as inactive), reads a draft's value and
+  `ns:VALUE` forms, checks pinned versions, and scans a reference field's
+  `target_templates` / `target_terminologies`.
+- **Validation and activation:** an unanswered terminology lookup was a
+  warning, so the template was `valid` and activated. It is an error, code
+  `unverifiable`.
+- **`?refs=portable`:** a terminology Def-Store could not look up was served
+  as its instance id inside a 200; the read now answers 503. An uncaught
+  Def-Store failure anywhere answers 503, not 500.
+- **Action:** monitoring that read `status: healthy` from a 200 sees 503 /
+  `unknown` while Def-Store is down.
+
 ### No template is deleted while Document Store cannot answer
 
 - A template delete asks Document Store how many documents use the version.
