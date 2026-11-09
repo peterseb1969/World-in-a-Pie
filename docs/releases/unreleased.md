@@ -16,6 +16,35 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   the test suite, so a new tool fails the tests until someone decides which
   it is.
 
+### MCP server: the default namespace applies everywhere; tools send what you give them and return what the service says
+
+- **`WIP_MCP_DEFAULT_NAMESPACE` now applies to every call that takes a
+  namespace, reads included.** An omitted `namespace` on `list_documents`,
+  `list_terms`, `get_template_by_value`, `describe_data_model`, `search`,
+  `run_report_query`, the CSV exports and the rest used to mean "every
+  namespace the key can read" even with the default set; it now means the
+  default. With no default set, reads keep covering every readable namespace.
+  The ontology tools (`get_term_hierarchy`, `create_term_relations`,
+  `delete_term_relations`) and `activate_template` used to get a 422 without
+  a namespace; they now use the default, or refuse with a clear message.
+- `create_terms` sends the terminology to def-store as given, which resolves
+  it through the Registry (value, `ns:VALUE`, any synonym), and takes a
+  `namespace`. It used to look the value up itself, which failed for
+  synonyms and for a value shared across namespaces.
+- `lookup_entry` passes `namespace` / `entity_type` along with an
+  `entry_id`, as the Registry's ambiguity error asks.
+- `import_documents_csv` resolves the template in the namespace it writes
+  to. It could pick a same-named template from another namespace.
+- `list_api_keys` takes `page` / `page_size` and returns the envelope
+  (`total`, `pages`); it used to return the first 50 keys as if they were all.
+- `export_terminology(format="csv")` returns the CSV; it always failed.
+- A single-item tool error carries the item's `details` (e.g.
+  `details.referrers` on a refused hard delete), after the
+  `WIP error [code]:` line.
+- `export_table_csv` returns up to 100 rows cut at a record boundary and says
+  how many rows the export has; it counted lines, so it called a complete
+  export truncated and could cut through a quoted multi-line cell.
+
 ### MCP server: what it teaches matches the platform, in every way it is started
 
 - **`describe_data_model`** (and the `wip://query-assistant-prompt` built

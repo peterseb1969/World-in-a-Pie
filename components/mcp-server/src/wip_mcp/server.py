@@ -57,9 +57,11 @@ def get_client() -> WipClient:
 def _error(e: Exception) -> str:
     """Format an exception for MCP tool output."""
     if isinstance(e, BulkError):
-        if e.error_code:
-            return f"WIP error [{e.error_code}]: {e.error}"
-        return f"WIP error: {e.error}"
+        head = f"WIP error [{e.error_code}]: " if e.error_code else "WIP error: "
+        text = f"{head}{e.error}"
+        if e.details:
+            text += f"\ndetails: {json.dumps(e.details, default=str)}"
+        return text
     return f"Error: {e}"
 
 
@@ -1418,7 +1420,7 @@ async def describe_data_model(namespace: str | None = None) -> str:
     fields, types, and constraints), terminologies, and query conventions.
 
     Args:
-        namespace: Filter to a specific namespace. None = all namespaces.
+        namespace: Filter to a specific namespace. Omit for WIP_MCP_DEFAULT_NAMESPACE when set, else every namespace the key can read.
     """
     try:
         return await _build_data_model_markdown(namespace)
@@ -1704,10 +1706,19 @@ async def create_api_key(
 
 
 @mcp.tool()
-async def list_api_keys() -> str:
-    """List all API keys (config-file + runtime). No hashes or plaintext exposed."""
+async def list_api_keys(page: int = 1, page_size: int = 50) -> str:
+    """List API keys (config-file + runtime), sorted by name, one page at a time.
+    No hashes or plaintext exposed.
+
+    The response carries total, page, page_size and pages: when pages > page,
+    there are more keys — ask for the next page.
+
+    Args:
+        page: Page number (default 1).
+        page_size: Keys per page (default 50, max 1000).
+    """
     try:
-        data = await get_client().list_api_keys()
+        data = await get_client().list_api_keys(page=page, page_size=page_size)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -1764,14 +1775,18 @@ async def lookup_entry(
 
     Args:
         entry_id: Look up by entry ID or value code.
-        namespace: Namespace for key lookup (e.g., 'wip').
-        entity_type: Entity type for key lookup (e.g., 'terms').
+        namespace: Namespace for key lookup (e.g., 'wip'); with entry_id, narrows
+            the lookup to that namespace (what an ambiguous value asks for).
+        entity_type: Entity type for key lookup (e.g., 'terms'); with entry_id,
+            narrows the lookup to that type.
         composite_key: Composite key dict for key lookup.
     """
     try:
         client = get_client()
         if entry_id:
-            data = await client.lookup_by_id(entry_id)
+            data = await client.lookup_by_id(
+                entry_id, namespace=namespace, entity_type=entity_type,
+            )
         elif namespace and entity_type and composite_key:
             data = await client.lookup_by_key(namespace, entity_type, composite_key)
         else:
@@ -1918,7 +1933,7 @@ async def get_terminology_by_value(value: str, namespace: str | None = None) -> 
 
     Args:
         value: The terminology value code.
-        namespace: Namespace to search in. Omit to search all namespaces.
+        namespace: Namespace to search in. Omit for WIP_MCP_DEFAULT_NAMESPACE when set, else every namespace the key can read.
     """
     try:
         data = await get_client().get_terminology_by_value(value, namespace=namespace)
@@ -2155,11 +2170,13 @@ async def create_terms(
     terminology_id: str,
     terms: list[dict],
     on_conflict: str = "error",
+    namespace: str | None = None,
 ) -> str:
     """Create terms in a terminology.
 
     Args:
-        terminology_id: Terminology ID (UUID) or value (e.g., 'COUNTRY').
+        terminology_id: Terminology ID (UUID), value (e.g., 'COUNTRY'),
+            'ns:VALUE', or any Registry synonym.
         terms: List of term objects. Each must have 'value' and 'label'.
             Optional: 'description', 'names' (typed names: each with
             'value', optional 'type' from _NAME_TYPES, 'language',
@@ -2173,6 +2190,8 @@ async def create_terms(
             status='unchanged', config drift returns
             error_code='incompatible_config'. Multi-term calls
             skip duplicates regardless (status='skipped').
+        namespace: Namespace a terminology value is resolved in. Omit to use
+            WIP_MCP_DEFAULT_NAMESPACE.
 
     Example:
         create_terms("T-xxx", [
@@ -2185,7 +2204,8 @@ async def create_terms(
     """
     try:
         data = await get_client().create_terms(
-            terminology_id=terminology_id, terms=terms, on_conflict=on_conflict
+            terminology_id=terminology_id, terms=terms, on_conflict=on_conflict,
+            namespace=namespace,
         )
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3251,7 +3271,7 @@ async def get_template_versions(
     Args:
         template_value: Template value code (e.g., 'PATIENT').
         template_id: Template ID, value code (e.g., 'PERSON'), or synonym.
-        namespace: Namespace to search in (only used with template_value). Omit for all namespaces.
+        namespace: Namespace to search in (only used with template_value). Omit for WIP_MCP_DEFAULT_NAMESPACE when set, else every namespace the key can read.
     """
     try:
         client = get_client()
@@ -3659,7 +3679,8 @@ async def traverse_documents(
         types: Comma-separated edge type values to constrain the
             traversal (default: all edge types).
         direction: 'outgoing', 'incoming', or 'both' (default 'outgoing').
-        namespace: Walk only this namespace. Default: every namespace you can
+        namespace: Walk only this namespace. Default: WIP_MCP_DEFAULT_NAMESPACE
+            when set, else every namespace you can
             read; the walk stops at (and does not return) a document in a
             namespace you cannot read.
 
@@ -3910,6 +3931,8 @@ async def export_terminology(
             include_relations=include_relations,
             namespace=namespace,
         )
+        if isinstance(data, str):
+            return data
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -3972,8 +3995,8 @@ async def get_table_view(
         page: Page number (default: 1).
         page_size: Rows per page (default: 100, max: 1000).
         namespace: Namespace the template value is resolved in and the
-            documents are limited to. Without it, the documents of every
-            namespace the caller can read.
+            documents are limited to. Omit for WIP_MCP_DEFAULT_NAMESPACE when
+            set, else the documents of every namespace the caller can read.
 
     Needs read on the namespace the template lives in: the template's
     layout is shown only to its namespace's readers, so a template the caller
@@ -3997,6 +4020,28 @@ async def get_table_view(
         return _error(e)
 
 
+CSV_PREVIEW_ROWS = 100
+
+
+def _truncate_csv(csv_content: str, max_rows: int) -> str:
+    """The header and at most max_rows records, cut at a record boundary.
+
+    Counts records, not lines: a quoted cell may hold line breaks, so a
+    line count both mislabels a complete export as truncated and can cut
+    through a record.
+    """
+    import csv
+    import io
+
+    rows = list(csv.reader(io.StringIO(csv_content, newline="")))
+    records = len(rows) - 1 if rows else 0
+    if records <= max_rows:
+        return csv_content
+    out = io.StringIO()
+    csv.writer(out, lineterminator="\r\n").writerows(rows[: max_rows + 1])
+    return out.getvalue() + f"\n... truncated: first {max_rows} of {records} rows"
+
+
 @mcp.tool()
 async def export_table_csv(
     template_value: str,
@@ -4014,8 +4059,11 @@ async def export_table_csv(
         status: Filter by status (default: active).
         include_metadata: Include document_id, version, timestamps (default: true).
         namespace: Namespace the template value is resolved in and the
-            documents are limited to. Without it, the documents of every
-            namespace the caller can read.
+            documents are limited to. Omit for WIP_MCP_DEFAULT_NAMESPACE when
+            set, else the documents of every namespace the caller can read.
+
+    At most 100 rows are returned; a longer export ends with a line saying
+    how many rows it has.
 
     Needs read on the namespace the template lives in: the template's
     layout is shown only to its namespace's readers, so a template the caller
@@ -4034,11 +4082,7 @@ async def export_table_csv(
             template_id=template_id, status=status, include_metadata=include_metadata,
             namespace=namespace,
         )
-        # Truncate if very large to avoid overwhelming the AI
-        lines = csv_content.split("\n")
-        if len(lines) > 102:
-            return "\n".join(lines[:102]) + f"\n\n... truncated ({len(lines)} total lines)"
-        return csv_content
+        return _truncate_csv(csv_content, CSV_PREVIEW_ROWS)
     except Exception as e:
         return _error(e)
 
@@ -4080,7 +4124,7 @@ async def search(
             substring mode, it's an ILIKE pattern (no wildcards needed).
         types: Filter by entity type: 'terminology', 'term', 'template',
             'document', 'file'. Omit to search all types.
-        namespace: Filter by namespace. Omit to search all namespaces.
+        namespace: Filter by namespace. Omit for WIP_MCP_DEFAULT_NAMESPACE when set, else every namespace the key can read.
         page: Page number (1-indexed). Default 1.
         page_size: Items per type. Default 20, cap 100.
         template: Restrict document search to a single template (by
@@ -4720,6 +4764,14 @@ async def import_documents_csv(
 
         content = p.read_bytes()
 
+        # The template is resolved in the namespace the documents are written
+        # to, once: resolved anywhere else, a same-named template in another
+        # namespace would be picked and the rows written against its layout.
+        tmpl = await client.get_template_by_value(value=template_value, namespace=ns)
+        template_id = tmpl.get("template_id")
+        if not template_id:
+            raise ValueError(f"template '{template_value}' has no template_id")
+
         # If no mapping provided, auto-map by getting template fields
         if column_mapping is None:
             # Preview to get headers
@@ -4729,8 +4781,6 @@ async def import_documents_csv(
 
             headers = preview.get("headers", [])
 
-            # Get template fields
-            tmpl = await client.get_template_by_value(value=template_value)
             fields = tmpl.get("fields", [])
             field_names = {f["name"].lower(): f["name"] for f in fields}
 
@@ -4748,12 +4798,6 @@ async def import_documents_csv(
                     f"Template fields: {[f['name'] for f in fields]}\n"
                     f"Provide an explicit column_mapping."
                 )
-
-        # Resolve template_id
-        tmpl = await client.get_template_by_value(value=template_value)
-        template_id = tmpl.get("template_id")
-        if not template_id:
-            raise ValueError(f"template '{template_value}' has no template_id")
 
         result = await client.import_documents(
             file_content=content,

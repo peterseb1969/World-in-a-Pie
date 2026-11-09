@@ -15,10 +15,17 @@ import httpx
 class BulkError(Exception):
     """Raised when a single-item bulk operation fails."""
 
-    def __init__(self, error: str, index: int = 0, error_code: str | None = None):
+    def __init__(
+        self, error: str, index: int = 0, error_code: str | None = None,
+        details: dict | None = None,
+    ):
         self.error = error
         self.index = index
         self.error_code = error_code
+        # The item's structured details (e.g. details.rule and
+        # details.referrers on a refused hard delete), part of the platform's
+        # per-item contract.
+        self.details = details
         msg = f"[{error_code}] {error}" if error_code else error
         super().__init__(msg)
 
@@ -272,6 +279,19 @@ class WipClient:
             )
         return resolved
 
+    def _ns_or_default(self, namespace: str | None) -> str | None:
+        """Explicit > WIP_MCP_DEFAULT_NAMESPACE > None (the route's own default)."""
+        return namespace or self.default_namespace
+
+    def _query(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Query parameters as sent: an omitted `namespace` takes
+        WIP_MCP_DEFAULT_NAMESPACE, and every None is dropped. Done here so
+        every namespace-taking call applies the default, not only those that
+        remember to."""
+        if "namespace" in params and params["namespace"] is None:
+            params = {**params, "namespace": self.default_namespace}
+        return {k: v for k, v in params.items() if v is not None}
+
     @property
     def api_key(self) -> str:
         """The key a backend call acts with: the calling MCP request's own
@@ -313,8 +333,7 @@ class WipClient:
     async def _get(self, base_url: str, path: str, **params) -> dict[str, Any]:
         """GET request, return parsed JSON."""
         client = await self._get_client()
-        # Strip None params
-        params = {k: v for k, v in params.items() if v is not None}
+        params = self._query(params)
         resp = await client.get(f"{base_url}{path}", params=params)
         _raise_for_status_with_body(resp)
         data: dict[str, Any] = resp.json()
@@ -325,7 +344,7 @@ class WipClient:
     ) -> dict[str, Any]:
         """POST request, return parsed JSON."""
         client = await self._get_client()
-        params = {k: v for k, v in params.items() if v is not None}
+        params = self._query(params)
         resp = await client.post(f"{base_url}{path}", json=json, params=params)
         _raise_for_status_with_body(resp)
         data: dict[str, Any] = resp.json()
@@ -336,7 +355,7 @@ class WipClient:
     ) -> dict[str, Any]:
         """PUT request, return parsed JSON."""
         client = await self._get_client()
-        params = {k: v for k, v in params.items() if v is not None}
+        params = self._query(params)
         resp = await client.put(f"{base_url}{path}", json=json, params=params)
         _raise_for_status_with_body(resp)
         data: dict[str, Any] = resp.json()
@@ -347,7 +366,7 @@ class WipClient:
     ) -> dict[str, Any]:
         """PATCH request, return parsed JSON."""
         client = await self._get_client()
-        params = {k: v for k, v in params.items() if v is not None}
+        params = self._query(params)
         resp = await client.patch(f"{base_url}{path}", json=json, params=params)
         _raise_for_status_with_body(resp)
         data: dict[str, Any] = resp.json()
@@ -358,7 +377,7 @@ class WipClient:
     ) -> dict[str, Any]:
         """DELETE request with body, return parsed JSON."""
         client = await self._get_client()
-        params = {k: v for k, v in params.items() if v is not None}
+        params = self._query(params)
         resp = await client.request(
             "DELETE", f"{base_url}{path}", json=json, params=params,
         )
@@ -378,6 +397,7 @@ class WipClient:
                 # for unwrapping against a pre-rename registry.
                 index=result.get("index", result.get("input_index", 0)),
                 error_code=result.get("error_code"),
+                details=result.get("details"),
             )
         return result
 
@@ -550,11 +570,23 @@ class WipClient:
         )
         return resp["results"][0] if resp.get("results") else resp
 
-    async def lookup_by_id(self, entry_id: str) -> dict:
+    async def lookup_by_id(
+        self, entry_id: str, namespace: str | None = None,
+        entity_type: str | None = None,
+    ) -> dict:
+        # namespace / entity_type narrow the lookup, which is what the
+        # Registry's ambiguity error asks for. Only an explicit namespace is
+        # sent: a canonical id resolves across namespaces, and the default
+        # namespace would hide one that lives elsewhere.
+        item: dict[str, str] = {"entry_id": entry_id}
+        if namespace:
+            item["namespace"] = namespace
+        if entity_type:
+            item["entity_type"] = entity_type
         resp = await self._post(
             self.registry_url,
             "/api/registry/entries/lookup/by-id",
-            json=[{"entry_id": entry_id}],
+            json=[item],
         )
         return resp["results"][0] if resp.get("results") else resp
 
@@ -748,27 +780,18 @@ class WipClient:
 
     async def create_terms(
         self, terminology_id: str, terms: list[dict], batch_size: int | None = None,
-        on_conflict: str | None = None,
+        on_conflict: str | None = None, namespace: str | None = None,
     ) -> dict:
-        # Accept UUID or value/synonym — the docstring promises both.
-        # The path-segment endpoint at the def-store side only matches
-        # UUIDs, so resolve a non-UUID input via lookup-by-value first.
-        # Aligns this tool with the universal synonym resolution
-        # principle (Vision.md "References Must Resolve").
-        import re
-        is_uuid = bool(re.match(
-            r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
-            terminology_id, re.IGNORECASE
-        ))
-        if not is_uuid:
-            term = await self.get_terminology_by_value(terminology_id)
-            terminology_id = term["terminology_id"]
+        # The route resolves terminology_id through the Registry (UUID,
+        # value, ns:VALUE or any synonym), scoped by `namespace`; resolving
+        # it here first would bypass that.
         resp = await self._post(
             self.def_store_url,
-            f"/api/def-store/terminologies/{terminology_id}/terms",
+            f"/api/def-store/terminologies/{quote(terminology_id, safe='')}/terms",
             json=terms,
             batch_size=batch_size,
             on_conflict=on_conflict,
+            namespace=namespace,
         )
         return self._unwrap_bulk(resp)
 
@@ -902,7 +925,7 @@ class WipClient:
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/children",
             relation_type=relation_type,
-            namespace=namespace,
+            namespace=self._ns(namespace),
             terminology=terminology,
         ))
 
@@ -914,7 +937,7 @@ class WipClient:
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/parents",
             relation_type=relation_type,
-            namespace=namespace,
+            namespace=self._ns(namespace),
             terminology=terminology,
         ))
 
@@ -928,7 +951,7 @@ class WipClient:
             f"/api/def-store/ontology/terms/{term_id}/ancestors",
             relation_type=relation_type,
             max_depth=max_depth,
-            namespace=namespace,
+            namespace=self._ns(namespace),
             terminology=terminology,
         ))
 
@@ -942,7 +965,7 @@ class WipClient:
             f"/api/def-store/ontology/terms/{term_id}/descendants",
             relation_type=relation_type,
             max_depth=max_depth,
-            namespace=namespace,
+            namespace=self._ns(namespace),
             terminology=terminology,
         ))
 
@@ -953,7 +976,7 @@ class WipClient:
             self.def_store_url,
             "/api/def-store/ontology/term-relations",
             json=term_relations,
-            namespace=namespace,
+            namespace=self._ns(namespace),
         )
         return self._unwrap_bulk(resp)
 
@@ -968,7 +991,7 @@ class WipClient:
             self.def_store_url,
             "/api/def-store/ontology/term-relations",
             json=items,
-            namespace=namespace,
+            namespace=self._ns(namespace),
         )
         return self._unwrap_bulk(resp)
 
@@ -1004,14 +1027,24 @@ class WipClient:
         format: str = "json",
         include_relations: bool = True,
         namespace: str | None = None,
-    ) -> dict:
-        return await self._get(
-            self.def_store_url,
-            f"/api/def-store/import-export/export/{terminology_id}",
-            format=format,
-            include_relations=include_relations,
-            namespace=namespace,
+    ) -> dict | str:
+        """The export as parsed JSON, or the CSV text when format='csv'."""
+        path = f"/api/def-store/import-export/export/{quote(terminology_id, safe='')}"
+        if format != "csv":
+            return await self._get(
+                self.def_store_url, path, format=format,
+                include_relations=include_relations, namespace=namespace,
+            )
+        client = await self._get_client()
+        resp = await client.get(
+            f"{self.def_store_url}{path}",
+            params=self._query({
+                "format": format, "include_relations": include_relations,
+                "namespace": namespace,
+            }),
         )
+        _raise_for_status_with_body(resp)
+        return resp.text
 
     async def import_terminology(
         self,
@@ -1117,7 +1150,7 @@ class WipClient:
         return await self._post(
             self.template_store_url,
             f"/api/template-store/templates/{template_id}/activate",
-            namespace=namespace,
+            namespace=self._ns(namespace),
             dry_run=dry_run,
         )
 
@@ -1446,6 +1479,7 @@ class WipClient:
         params: dict[str, Any] = {"include_metadata": include_metadata}
         if status:
             params["status"] = status
+        namespace = self._ns_or_default(namespace)
         if namespace:
             params["namespace"] = namespace
         resp = await client.get(
@@ -1943,6 +1977,7 @@ class WipClient:
             "timeout_seconds": timeout_seconds,
             "max_rows": max_rows,
         }
+        namespace = self._ns_or_default(namespace)
         if namespace is not None:
             body["namespace"] = namespace
         return await self._post(
@@ -1963,6 +1998,7 @@ class WipClient:
         schema); in SQL mode it sets the search_path for unqualified names.
         """
         client = await self._get_client()
+        namespace = self._ns_or_default(namespace)
         if table:
             if not namespace:
                 raise ValueError("namespace is required to export a table")
@@ -2059,6 +2095,7 @@ class WipClient:
         }
         if types:
             body["types"] = types
+        namespace = self._ns_or_default(namespace)
         if namespace:
             body["namespace"] = namespace
         if template:
@@ -2105,11 +2142,11 @@ class WipClient:
             self.registry_url, "/api/registry/api-keys", json=payload
         )
 
-    async def list_api_keys(self) -> list[dict]:
-        data = await self._get(self.registry_url, "/api/registry/api-keys")
-        return cast(
-            "list[dict[str, Any]]",
-            data if isinstance(data, list) else data.get("items", data),
+    async def list_api_keys(self, page: int = 1, page_size: int = 50) -> dict:
+        """One page of keys with the envelope (total, page, page_size, pages)."""
+        return await self._get(
+            self.registry_url, "/api/registry/api-keys",
+            page=page, page_size=page_size,
         )
 
     async def get_api_key(self, name: str) -> dict:

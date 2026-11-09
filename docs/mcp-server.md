@@ -136,7 +136,7 @@ configured key.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `WIP_MCP_DEFAULT_NAMESPACE` | *(none)* | Default namespace for tools that accept a namespace parameter |
+| `WIP_MCP_DEFAULT_NAMESPACE` | *(none)* | Namespace every tool uses when its `namespace` is omitted, reads included. Unset: reads cover every namespace the key can read, and tools whose route needs a namespace refuse without one |
 
 ---
 

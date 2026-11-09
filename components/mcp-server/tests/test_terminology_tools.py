@@ -409,7 +409,7 @@ async def test_create_terms_with_terminology_id_and_terms():
     assert data["succeeded"] == 2
     mock.create_terms.assert_awaited_once_with(
         terminology_id="0190b000-0000-7000-0000-000000000001", terms=terms,
-        on_conflict="error",
+        on_conflict="error", namespace=None,
     )
 
 
