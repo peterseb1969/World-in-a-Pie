@@ -1,7 +1,10 @@
 """The YAC status line: hooks record case activity, the line shows it.
 
 The activity must come from hooks, not from slash-command prose, and it must
-never outlive its session or the operator's move to other work. Tests run the
+never outlive its session. An operator message that is not a /wip-* command
+keeps it, marked "last:" (the command may still be running; the operator
+answers questions mid-command), and a turn the harness injects leaves it
+untouched. Tests run the
 script as a subprocess against a tmp project root (CLAUDE_PROJECT_DIR) with
 hook and status-line payloads on stdin, as Claude Code sends them.
 """
@@ -96,11 +99,11 @@ def test_wip_command_shows_a_short_first_argument_only(tmp_path):
     assert " wip-lesson · " in line(root)
 
 
-def test_non_wip_slash_command_clears_activity(tmp_path):
+def test_non_wip_slash_command_marks_activity_last(tmp_path):
     root = make_project(tmp_path)
     prompt(root, "/wip-status")
     prompt(root, "/compact")
-    assert line(root) == "ctx 42% (84k/200k)"
+    assert line(root).startswith("BE-YAC · last: wip-status · ")
 
 
 def test_model_invoked_wip_skill_sets_activity(tmp_path):
@@ -126,12 +129,46 @@ def test_record_from_the_previous_script_still_renders(tmp_path):
     assert "implemented CASE-721" in line(root)
 
 
-def test_non_wip_prompt_clears_activity(tmp_path):
+def test_a_reply_mid_command_marks_it_last_and_keeps_its_age(tmp_path):
+    """The operator answers "yes" while a case is being implemented: the line
+    keeps the case, says it is the last command, and its age runs on."""
     root = make_project(tmp_path)
     prompt(root, "/wip-case implement 345")
-    prompt(root, "now look at something else")
+    activity = root / ".claude" / ".yac-activity"
+    record = json.loads(activity.read_text())
+    record["since"] -= 15 * 60
+    activity.write_text(json.dumps(record))
+    prompt(root, "yes")
+    prompt(root, "and another reply")
+    assert line(root).startswith("BE-YAC · last: implementing CASE-345 · 15m")
+    assert "last: last:" not in line(root)
+
+
+def test_a_new_wip_command_replaces_a_last_one(tmp_path):
+    root = make_project(tmp_path)
+    prompt(root, "/wip-case implement 345")
+    prompt(root, "yes")
+    prompt(root, "/wip-case read 346")
+    assert " reading CASE-346 · " in line(root)
+    assert "last:" not in line(root)
+
+
+def test_an_injected_turn_leaves_the_activity_untouched(tmp_path):
+    root = make_project(tmp_path)
+    prompt(root, "/wip-case implement 345")
+    before = (root / ".claude" / ".yac-activity").read_text()
+    prompt(root, "<task-notification>\n<task-id>b1</task-id>\n</task-notification>")
+    prompt(root, "  <system-reminder>Background task finished</system-reminder>")
+    assert (root / ".claude" / ".yac-activity").read_text() == before
+    assert "last:" not in line(root)
+
+
+def test_a_last_activity_from_an_earlier_session_is_hidden(tmp_path):
+    root = make_project(tmp_path)
+    prompt(root, "/wip-case implement 345")
+    prompt(root, "yes")
+    (root / ".claude" / ".session-id").write_text("BE-YAC-20261026-000000\n")
     assert line(root) == "ctx 42% (84k/200k)"
-    assert not (root / ".claude" / ".yac-activity").exists()
 
 
 def test_skill_invocation_sets_activity(tmp_path):
@@ -347,10 +384,13 @@ def test_qwen_empty_prompt_keeps_the_activity(tmp_path):
 
 
 def test_prose_ending_in_a_wip_word_is_not_a_command(tmp_path):
+    """The prose is an ordinary reply, not a /wip-cooking command: the line
+    keeps the case, marked last, and shows no wip-cooking activity."""
     root = make_project(tmp_path)
     prompt(root, "/wip-case read 973")
     prompt(root, "the list page of\nwip-cooking is slow")
-    assert "CASE-973" not in line(root)
+    assert "last: reading CASE-973" in line(root)
+    assert "cooking" not in line(root)
 
 
 def test_qwen_shell_tool_records_a_closed_case(tmp_path):

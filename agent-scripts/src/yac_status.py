@@ -7,11 +7,16 @@ Two modes, both fed JSON on stdin by Claude Code:
                           .claude/.yac-activity so the status line can show it.
                           The activity is written by hooks, not by the slash
                           command's prose, so it cannot be skipped by the model.
-      UserPromptSubmit   every prompt either sets the activity or clears it:
-                         a /wip-* command sets it ("/wip-case implement 345"
-                         -> "implementing CASE-345", "/wip-report session-end"
-                         -> "wip-report session-end"); anything else clears
-                         it, so the line never outlives the command it names
+      UserPromptSubmit   a /wip-* command sets the activity
+                         ("/wip-case implement 345" -> "implementing CASE-345",
+                         "/wip-report session-end" -> "wip-report session-end");
+                         any other prompt keeps it but marks it as the last
+                         command rather than the current one, shown as
+                         "last: implementing CASE-345" with its age running on
+                         (the operator answers questions mid-command all the
+                         time). A turn the harness injects (a task
+                         notification, a system reminder) is no operator
+                         message and leaves the record untouched
       PreToolUse(Skill)  the model invoking a wip-* skill itself sets it too
       PostToolUse(Bash)  "kb-write.py CASE_RECORD --patch status=X
                           --match case_number=N" -- the case changed state
@@ -151,6 +156,30 @@ def write_activity(cdir: Path, text: str) -> None:
     tmp.replace(cdir / ACTIVITY_FILE)
 
 
+def mark_last(cdir: Path) -> None:
+    """Mark the recorded activity as the last command, not the current one.
+
+    The text, its start time and its session stay as they were, so the line
+    reads "last: <text>" with the age still counting from the command. A
+    missing, unreadable or already-marked record is left alone."""
+    path = cdir / ACTIVITY_FILE
+    try:
+        record = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if not isinstance(record, dict) or record.get("last"):
+        return
+    record["last"] = True
+    tmp = cdir / (ACTIVITY_FILE + ".tmp")
+    tmp.write_text(json.dumps(record) + "\n")
+    tmp.replace(path)
+
+
+# Turns the harness injects rather than the operator types: they start with
+# one of these tags.
+INJECTED_PREFIXES = ("<task-notification", "<system-reminder")
+
+
 def read_text(path: Path) -> str:
     try:
         return path.read_text().strip()
@@ -167,6 +196,10 @@ def handle_hook(payload: dict) -> None:
             # Qwen Code also fires this hook with an empty prompt on its own
             # turns; that says nothing about what the YAC is working on.
             return
+        if prompt.lstrip().startswith(INJECTED_PREFIXES):
+            # A background-task notice or system reminder: the operator said
+            # nothing, so the line stays exactly as it was.
+            return
         activity = wip_activity(prompt)
         if not activity:
             # Qwen Code sends a slash command expanded into the command's
@@ -177,9 +210,10 @@ def handle_hook(payload: dict) -> None:
         if activity:
             write_activity(cdir, activity)
         else:
-            # Not a /wip-* command: whatever the line showed is no longer
-            # what this YAC is doing.
-            (cdir / ACTIVITY_FILE).unlink(missing_ok=True)
+            # Not a /wip-* command — usually the operator answering a
+            # question mid-command. The command may well still be running,
+            # so it stays on the line, marked as the last one.
+            mark_last(cdir)
     elif event == "PreToolUse" and payload.get("tool_name") in SKILL_TOOLS:
         tool_input = payload.get("tool_input") or {}
         skill = (tool_input.get("skill") or "").lstrip("/")
@@ -282,7 +316,8 @@ def status_line(payload: dict) -> str:
     if record and record.get("session_id") == read_text(cdir / ".session-id"):
         parts.append(read_text(cdir / ".session-role") or "YAC")
         # Records written before "text" existed carry label + case.
-        parts.append(record.get("text") or f"{record['label']} {record['case']}")
+        text = record.get("text") or f"{record['label']} {record['case']}"
+        parts.append(f"last: {text}" if record.get("last") else text)
         parts.append(age(int(time.time()) - int(record.get("since", 0))))
     ctx = context_part(payload, cdir)
     if ctx:
