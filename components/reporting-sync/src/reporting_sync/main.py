@@ -2095,10 +2095,6 @@ async def list_tables(
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
-    allowed_prefixes = ("doc_",)
-    allowed_exact = {"terminologies", "terms", "term_names", "term_relations", "term_closure", "templates"}
-    version_re = re.compile(r"^(doc_.+)__v(\d+)$")
-
     async with state.postgres_pool.acquire() as conn:
         # Tables AND views across every non-system schema (each schema is a
         # namespace) — the entity views are first-class discovery citizens.
@@ -2111,106 +2107,117 @@ async def list_tables(
             ORDER BY table_schema, table_name
             """  # nosec B608  # SQL fragments are code constants, values bound
         )
-
-        tables = []
+        tables: list[dict] = []
         # (schema, entity_base) → grouped entry
         entities: dict[tuple[str, str], dict] = {}
-
-        def _entity(schema: str, base: str) -> dict:
-            key = (schema, base)
-            if key not in entities:
-                entities[key] = {
-                    "namespace": schema,
-                    "entity": base[len("doc_"):],
-                    "default_view": base,
-                    "default_view_present": False,
-                    "entities_view": f"{base}__entities",
-                    "legacy_table": False,
-                    "versions": [],
-                    "row_count": 0,
-                }
-            return entities[key]
-
         for row in raw_tables:
             schema = row["table_schema"]
             tname = row["table_name"]
+            if not _listed_relation(schema, tname, namespace, table_name):
+                continue
             is_view = row["table_type"] == "VIEW"
-            if not (tname.startswith(allowed_prefixes) or tname in allowed_exact):
-                continue
-            if namespace and schema != namespace:
-                continue
-            if table_name and tname != table_name:
-                continue
-
-            columns = await conn.fetch(
-                """
-                SELECT column_name, data_type, is_nullable
-                FROM information_schema.columns
-                WHERE table_schema = $1
-                  AND table_name = $2
-                ORDER BY ordinal_position
-                """,
-                schema,
-                tname,
-            )
-
-            count = await conn.fetchval(f'SELECT COUNT(*) FROM "{schema}"."{tname}"')  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
-
-            entry: dict = {
-                "namespace": schema,
-                "name": tname,
-                "kind": "view" if is_view else "table",
-                "template_value": tname[len("doc_"):] if tname.startswith("doc_") else None,
-                "qualified_name": f'"{schema}"."{tname}"',
-                "row_count": count,
-            }
-
-            if table_name:
-                entry["columns"] = [
-                    {
-                        "name": c["column_name"],
-                        "type": c["data_type"],
-                        "nullable": c["is_nullable"] == "YES",
-                    }
-                    for c in columns
-                ]
-            else:
-                entry["column_count"] = len(columns)
-
+            entry, count = await _relation_entry(conn, schema, tname, is_view, detail=bool(table_name))
             tables.append(entry)
-
-            # Entity grouping (skip in single-relation detail mode).
-            if table_name or not tname.startswith("doc_"):
-                continue
-            m = version_re.match(tname)
-            if m and not is_view:
-                ent = _entity(schema, m.group(1))
-                ent["versions"].append(
-                    {"version": int(m.group(2)), "table": tname, "row_count": count}
-                )
-                ent["row_count"] += count or 0
-            elif tname.endswith("__entities") and is_view:
-                _entity(schema, tname[: -len("__entities")])
-            elif is_view:
-                _entity(schema, tname)["default_view_present"] = True
-            else:
-                # A bare-name BASE TABLE: the legacy pre-split layout.
-                ent = _entity(schema, tname)
-                ent["legacy_table"] = True
-                ent["row_count"] += count or 0
+            # Entity grouping (skipped in single-relation detail mode).
+            if not table_name and tname.startswith("doc_"):
+                _group_relation(entities, schema, tname, is_view, count)
 
         if table_name and not tables:
             raise HTTPException(status_code=404, detail=f"Table '{table_name}' not found")
 
-    for ent in entities.values():
-        ent["versions"].sort(key=lambda v: v["version"])
-
     result: dict = {"tables": tables}
     if not table_name:
+        for ent in entities.values():
+            ent["versions"].sort(key=lambda v: v["version"])
         result["entities"] = sorted(
             entities.values(), key=lambda e: (e["namespace"], e["entity"])
         )
     return result
+
+
+_LISTED_EXACT = {"terminologies", "terms", "term_names", "term_relations", "term_closure", "templates"}
+_VERSION_TABLE_RE = re.compile(r"^(doc_.+)__v(\d+)$")
+
+
+def _listed_relation(schema: str, tname: str, namespace: str | None, table_name: str | None) -> bool:
+    """Whether the listing shows a relation: a doc_* relation or a
+    definitions table, in the requested namespace, matching the requested
+    name."""
+    if not (tname.startswith("doc_") or tname in _LISTED_EXACT):
+        return False
+    if namespace and schema != namespace:
+        return False
+    return not (table_name and tname != table_name)
+
+
+async def _relation_entry(
+    conn: Any, schema: str, tname: str, is_view: bool, *, detail: bool,
+) -> tuple[dict, int]:
+    """One relation's listing entry — its columns in detail mode, else
+    their count — and its row count."""
+    columns = await conn.fetch(
+        """
+        SELECT column_name, data_type, is_nullable
+        FROM information_schema.columns
+        WHERE table_schema = $1
+          AND table_name = $2
+        ORDER BY ordinal_position
+        """,
+        schema,
+        tname,
+    )
+    count = await conn.fetchval(f'SELECT COUNT(*) FROM "{schema}"."{tname}"')  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
+    entry: dict = {
+        "namespace": schema,
+        "name": tname,
+        "kind": "view" if is_view else "table",
+        "template_value": tname[len("doc_"):] if tname.startswith("doc_") else None,
+        "qualified_name": f'"{schema}"."{tname}"',
+        "row_count": count,
+    }
+    if detail:
+        entry["columns"] = [
+            {"name": c["column_name"], "type": c["data_type"], "nullable": c["is_nullable"] == "YES"}
+            for c in columns
+        ]
+    else:
+        entry["column_count"] = len(columns)
+    return entry, count
+
+
+def _entity_entry(entities: dict[tuple[str, str], dict], schema: str, base: str) -> dict:
+    """The entity a doc_* relation belongs to, started on first sight."""
+    return entities.setdefault((schema, base), {
+        "namespace": schema,
+        "entity": base[len("doc_"):],
+        "default_view": base,
+        "default_view_present": False,
+        "entities_view": f"{base}__entities",
+        "legacy_table": False,
+        "versions": [],
+        "row_count": 0,
+    })
+
+
+def _group_relation(
+    entities: dict[tuple[str, str], dict], schema: str, tname: str, is_view: bool, count: int,
+) -> None:
+    """Place a doc_* relation under its entity: a version table adds a
+    version and its rows, the __entities view and the bare view mark the
+    entity, a bare-name base table is the legacy pre-split layout."""
+    m = _VERSION_TABLE_RE.match(tname)
+    if m and not is_view:
+        ent = _entity_entry(entities, schema, m.group(1))
+        ent["versions"].append({"version": int(m.group(2)), "table": tname, "row_count": count})
+        ent["row_count"] += count or 0
+    elif tname.endswith("__entities") and is_view:
+        _entity_entry(entities, schema, tname[: -len("__entities")])
+    elif is_view:
+        _entity_entry(entities, schema, tname)["default_view_present"] = True
+    else:
+        ent = _entity_entry(entities, schema, tname)
+        ent["legacy_table"] = True
+        ent["row_count"] += count or 0
 
 
 class ReportQuery(StrictModel):
