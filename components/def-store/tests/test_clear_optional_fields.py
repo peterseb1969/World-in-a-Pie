@@ -3,8 +3,8 @@
 RFC 7396 alignment for term and terminology updates: an explicitly
 submitted null clears description/label/parent_term_id (and resets
 sort_order to 0), detected via Pydantic's model_fields_set so an omitted
-field keeps its value — full backward compatibility. value and names
-reject explicit null loudly. The snapshot reconcile speaks the same
+field keeps its value. names rejects explicit null loudly; value is not
+updatable at all. The snapshot reconcile speaks the same
 vocabulary: an explicit null in a snapshot item clears, idempotently,
 and also normalizes the historical "" workaround.
 """
@@ -98,17 +98,32 @@ async def test_empty_string_workaround_normalizes(client: AsyncClient, auth_head
 
 
 @pytest.mark.asyncio
-async def test_value_and_names_reject_explicit_null(client: AsyncClient, auth_headers: dict, clear_fixture):
+async def test_names_reject_explicit_null(client: AsyncClient, auth_headers: dict, clear_fixture):
     child = clear_fixture["ids"]["child"]
-    for payload in ({"value": None}, {"names": None}):
+    resp = await client.put(
+        "/api/def-store/terms",
+        headers=auth_headers,
+        json=[{"term_id": child, "names": None}],
+    )
+    item = resp.json()["results"][0]
+    assert item["status"] == "error"
+    assert "cannot be" in item["error"]
+
+
+@pytest.mark.asyncio
+async def test_value_is_not_updatable(client: AsyncClient, auth_headers: dict, clear_fixture):
+    """A term's value is its identity: an update naming it — a new value or
+    a null — is refused as an unknown field, and the term keeps its value."""
+    child = clear_fixture["ids"]["child"]
+    for value in ("renamed", None):
         resp = await client.put(
             "/api/def-store/terms",
             headers=auth_headers,
-            json=[{"term_id": child, **payload}],
+            json=[{"term_id": child, "value": value}],
         )
-        item = resp.json()["results"][0]
-        assert item["status"] == "error", payload
-        assert "cannot be" in item["error"]
+        assert resp.status_code == 422, resp.text
+    term = await _get_term(client, auth_headers, child)
+    assert term["value"] == "child"
 
 
 @pytest.mark.asyncio

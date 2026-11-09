@@ -1,7 +1,7 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
 wip://data-model sha256:bc380cc86f48730a reviewed:655f3ee8
 wip://conventions sha256:454ba1a2ba1f460b reviewed:2b8644ae
-docs/WIP_PoNIFs.md sha256:edf8595cb915a0e9 reviewed:3a7fe4a4
+docs/WIP_PoNIFs.md sha256:c4907d7958e8d04a reviewed:98ba61e8
 docs/design/ontology-support.md sha256:06666e3c8f3a3cc1 reviewed:ea985986
 docs/slash-commands/app-builder/wip-implement.md sha256:1afef1d1999621a1 reviewed:809f9059
 docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca reviewed:809f9059

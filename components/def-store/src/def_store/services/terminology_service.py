@@ -1060,10 +1060,7 @@ class TerminologyService:
             namespace=namespace
         )
 
-        # Update terminology term count
-        terminology.term_count += 1
-        terminology.updated_at = datetime.now(UTC)
-        await terminology.save()
+        await TerminologyService._add_to_term_count(terminology_id, 1, datetime.now(UTC))
 
         # Publish NATS event
         await publish_term_event(
@@ -1317,15 +1314,19 @@ class TerminologyService:
     ) -> int:
         """Insert this batch's queued Terms and fire all per-create side effects.
 
-        Phase E (insert_many + BulkWriteError partial-fail handling), Phase F
-        (audit logs), Phase F2 (NATS events), Phase F3 (auto-synonyms). All
-        side-effect phases filter on `results[idx].status == "created"` so
-        partial failures on insert flow through to audit/events/synonyms
-        correctly.
+        Phase E inserts (a failed insert is that item's error). Phase F
+        claims each inserted term's value synonym in the Registry — the key
+        `ns:terminology:value` resolves by — and takes back every term the
+        Registry refused, so a term is only reported created once it is
+        addressable by its value, the same as the single-term door. Only
+        then do Phase G (audit) and Phase H (NATS events) run, for exactly
+        the terms that stayed. All phases filter on
+        `results[idx].status == "created"`.
 
-        Mutates `results` in place. Returns the number of terms successfully
-        created in this batch (caller uses it to maintain a running total
-        across batches).
+        Mutates `results` in place. Returns the number of terms created in
+        this batch. Raises RegistryError when the Registry did not answer
+        the synonym claim; the batch's inserts are taken back first, so
+        nothing of the batch remains.
         """
         batch_created = 0
         if terms_to_insert:
@@ -1375,7 +1376,11 @@ class TerminologyService:
                         )
                         batch_created += 1
 
-        # Phase F: Batch insert audit logs for this batch
+        batch_created -= await TerminologyService._claim_value_synonyms(
+            terms_to_insert, insert_indices, results, namespace, terminology_value, actor, client,
+        )
+
+        # Phase G: Batch insert audit logs for this batch
         audit_entries = [
             TermAuditLog(
                 namespace=namespace,
@@ -1396,7 +1401,7 @@ class TerminologyService:
         if audit_entries:
             await TermAuditLog.insert_many(audit_entries)
 
-        # Phase F2: Publish NATS events for created terms
+        # Phase H: Publish NATS events for created terms
         created_term_dicts = [
             TerminologyService._term_to_event_dict(terms_to_insert[pos])
             for pos, idx in enumerate(insert_indices)
@@ -1409,27 +1414,50 @@ class TerminologyService:
                 changed_by=actor,
             )
 
-        # Phase F3: Register auto-synonyms for created terms
-        synonym_items = [
-            {
-                "target_id": terms_to_insert[pos].term_id,
-                "namespace": namespace,
-                "entity_type": "terms",
-                "composite_key": {
-                    "ns": namespace,
-                    "type": "term",
-                    "terminology": terminology_value,
-                    "value": terms_to_insert[pos].value,
-                },
-                "created_by": actor,
-            }
-            for pos, idx in enumerate(insert_indices)
+        return batch_created
+
+    @staticmethod
+    async def _claim_value_synonyms(
+        terms_to_insert: list[Term],
+        insert_indices: list[int],
+        results: list[BulkResultItem | None],
+        namespace: str,
+        terminology_value: str,
+        actor: str,
+        client: Any,
+    ) -> int:
+        """Claim the value synonym of every term this batch inserted, and
+        take back each term whose claim the Registry refused — its row
+        becomes the refusal. Returns how many terms were taken back.
+
+        When the Registry gives no per-item answer, every inserted term of
+        the batch is taken back and RegistryError is raised: a term whose
+        value does not resolve to it must not stay behind as created.
+        """
+        claimed = [
+            (pos, idx) for pos, idx in enumerate(insert_indices)
             if (r := results[idx]) is not None and r.status == "created"
         ]
-        if synonym_items:
-            await client.register_auto_synonyms_bulk(synonym_items)
-
-        return batch_created
+        if not claimed:
+            return 0
+        items = [
+            TerminologyService._value_synonym_item(terms_to_insert[pos], namespace, terminology_value, actor)
+            for pos, _ in claimed
+        ]
+        try:
+            refusals = await client.register_auto_synonyms_per_item(items)
+        except RegistryError:
+            await Term.find(
+                {"term_id": {"$in": [terms_to_insert[pos].term_id for pos, _ in claimed]}}
+            ).delete()
+            raise
+        taken_back = [
+            (terms_to_insert[pos], idx, refusal)
+            for (pos, idx), refusal in zip(claimed, refusals, strict=True)
+            if refusal is not None
+        ]
+        await TerminologyService._take_back(taken_back, results)
+        return len(taken_back)
 
     @staticmethod
     async def _process_term_batch(
@@ -1520,7 +1548,7 @@ class TerminologyService:
             unique_names=terminology.unique_names,
         )
 
-        # Phases E-F3: Insert + per-create side effects
+        # Phases E-H: insert, claim value synonyms, audit, events
         created = await TerminologyService._write_term_batch(
             terms_to_insert=terms_to_insert,
             insert_indices=insert_indices,
@@ -1541,6 +1569,66 @@ class TerminologyService:
                 row.details = {**(row.details or {}), "name_collisions": cols}
 
         return created
+
+    @staticmethod
+    def _value_synonym_item(term: Term, namespace: str, terminology_value: str, actor: str) -> dict[str, Any]:
+        """The Registry item claiming `term`'s value synonym."""
+        return {
+            "target_id": term.term_id,
+            "namespace": namespace,
+            "entity_type": "terms",
+            "composite_key": {
+                "ns": namespace,
+                "type": "term",
+                "terminology": terminology_value,
+                "value": term.value,
+            },
+            "created_by": actor,
+        }
+
+    @staticmethod
+    async def _take_back(
+        refused: list[tuple[Term, int, str]],
+        results: list[BulkResultItem | None],
+    ) -> None:
+        """Delete each refused term and make its row the Registry's refusal."""
+        if not refused:
+            return
+        await Term.find({"term_id": {"$in": [t.term_id for t, _, _ in refused]}}).delete()
+        for term, idx, refusal in refused:
+            results[idx] = BulkResultItem(
+                index=idx,
+                status="error",
+                value=term.value,
+                error=f"The Registry refused the term's value synonym ({refusal}); the term was not created",
+                error_code="registry_error",
+            )
+
+    @staticmethod
+    def _fail_unanswered(
+        results: list[BulkResultItem | None],
+        terms: list[CreateTermRequest],
+        from_index: int,
+        error: str,
+    ) -> None:
+        """Every result slot from `from_index` on that holds no answer yet
+        becomes a registry_error row naming `error`."""
+        for idx in range(from_index, len(terms)):
+            row = results[idx]
+            if row is None or row.status == "created":
+                results[idx] = BulkResultItem(
+                    index=idx, status="error", value=terms[idx].value,
+                    error=error, error_code="registry_error",
+                )
+
+    @staticmethod
+    async def _add_to_term_count(terminology_id: str, delta: int, now: datetime) -> None:
+        """Move the terminology's term_count by `delta` in one atomic update,
+        touching no other field."""
+        await Terminology.get_motor_collection().update_one(
+            {"terminology_id": terminology_id},
+            {"$inc": {"term_count": delta}, "$set": {"updated_at": now}},
+        )
 
     @staticmethod
     async def create_terms_bulk(
@@ -1610,20 +1698,32 @@ class TerminologyService:
                 f"terms {batch_start+1}-{batch_end} of {total_terms}"
             )
 
-            batch_created = await TerminologyService._process_term_batch(
-                batch_terms=batch_terms,
-                batch_start=batch_start,
-                results=results,
-                terminology=terminology,
-                namespace=namespace,
-                actor=actor,
-                now=now,
-                client=client,
-                registry_batch_size=registry_batch_size,
-                skip_duplicates=skip_duplicates,
-                update_existing=update_existing,
-                batch_num=batch_num,
-            )
+            try:
+                batch_created = await TerminologyService._process_term_batch(
+                    batch_terms=batch_terms,
+                    batch_start=batch_start,
+                    results=results,
+                    terminology=terminology,
+                    namespace=namespace,
+                    actor=actor,
+                    now=now,
+                    client=client,
+                    registry_batch_size=registry_batch_size,
+                    skip_duplicates=skip_duplicates,
+                    update_existing=update_existing,
+                    batch_num=batch_num,
+                )
+            except RegistryError as e:
+                # The Registry did not answer: nothing of this batch is
+                # kept, and the batches after it are not attempted. Every
+                # item without an answer says so; what earlier batches
+                # created stays created and is counted below.
+                logger.warning("Bulk term create stopped at batch %d: %s", batch_num, e)
+                TerminologyService._fail_unanswered(
+                    results, terms, batch_start,
+                    f"Not created — the Registry did not answer: {e}",
+                )
+                break
             total_created += batch_created
             logger.info(
                 f"Batch {batch_num}/{num_batches} complete: "
@@ -1635,11 +1735,11 @@ class TerminologyService:
             if batch_end < len(terms):
                 await asyncio.sleep(0.1)  # 100ms pause between MongoDB batches
 
-        # Phase G: Update terminology term count (1 save at the end)
+        # Count what landed, atomically: never a save of the terminology
+        # read at the start, which would undo a concurrent count change or
+        # a config edit made while the import ran
         if total_created > 0:
-            terminology.term_count += total_created
-            terminology.updated_at = now
-            await terminology.save()
+            await TerminologyService._add_to_term_count(terminology_id, total_created, now)
 
         if total_created > 0:
             TerminologyService._drop_derived_caches(terminology.value)
@@ -1775,23 +1875,6 @@ class TerminologyService:
         previous_values: dict[str, Any] = {}
         new_values: dict[str, Any] = {}
 
-        # Check value uniqueness if value is changing
-        if request.value is not None and request.value != term.value:
-            existing = await Term.find_one({
-                "namespace": term.namespace,
-                "terminology_id": term.terminology_id,
-                "value": request.value
-            })
-            if existing:
-                raise DefStoreError(f"Term with value '{request.value}' already exists", "already_exists")
-
-        # Apply updates and track changes
-        if request.value is not None and request.value != term.value:
-            changed_fields.append("value")
-            previous_values["value"] = term.value
-            new_values["value"] = request.value
-            term.value = request.value
-
         # Names: either the full structured list, or the legacy fields each
         # replacing their own partition (aliases -> untyped names,
         # translations -> language names; typed names survive legacy writes).
@@ -1815,7 +1898,7 @@ class TerminologyService:
                 )
 
         if new_names is not None:
-            effective_value = request.value if request.value is not None else term.value
+            effective_value = term.value
             validate_names(
                 new_names,
                 effective_value,
@@ -1842,14 +1925,9 @@ class TerminologyService:
         # RFC 7396 alignment: an EXPLICITLY submitted null clears the
         # field (detected via model_fields_set — an omitted field is not
         # in the set and keeps meaning "unchanged"). Document PATCH
-        # already speaks this vocabulary; terms now match. `value` and
-        # `names` are excluded: value is the identity, and the names list
-        # has an explicit clear idiom already ([]).
+        # already speaks this vocabulary; terms now match. `names` is
+        # excluded: the names list has an explicit clear idiom already ([]).
         fields_set = request.model_fields_set
-        if "value" in fields_set and request.value is None:
-            raise ValueError(
-                "value cannot be cleared — it is the term's identity"
-            )
         if "names" in fields_set and request.names is None:
             raise ValueError(
                 "names cannot be null — pass [] to remove all names"

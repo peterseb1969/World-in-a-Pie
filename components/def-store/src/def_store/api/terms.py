@@ -176,8 +176,6 @@ async def create_terms(
             else:
                 status_code = 404 if fields["error_code"] == "not_found" else 400
                 raise HTTPException(status_code=status_code, detail=fields["error"]) from None
-        except RegistryError as e:
-            raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")

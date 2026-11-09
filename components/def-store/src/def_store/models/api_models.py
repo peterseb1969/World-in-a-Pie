@@ -216,12 +216,15 @@ class CreateTermRequest(StrictModel):
 
 
 class UpdateTermRequest(StrictModel):
-    """Request to update an existing term."""
+    """Request to update an existing term.
 
-    value: str | None = Field(
-        default=None,
-        description="New value (unique within terminology)"
-    )
+    A term's value is not updatable: it is the term's identity, the key the
+    Registry registered it under, and the Registry cannot re-key a term
+    entry. A changed value is a different term — create it, then deprecate
+    the old one with replaced_by_term_id, or merge the old one into it.
+    Sending `value` is refused like any other unknown field.
+    """
+
     names: list[TermName] | None = Field(
         default=None,
         description="Replace the full names list. Mutually exclusive with "

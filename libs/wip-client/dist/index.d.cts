@@ -266,8 +266,9 @@ interface CreateTermRequest {
     metadata?: Record<string, unknown>;
     created_by?: string;
 }
+/** A term's value is its identity and cannot be updated: create the new
+ * term, then deprecate the old one with replaced_by_term_id (or merge it). */
 interface UpdateTermRequest {
-    value?: string;
     /** Full replacement of the names list; mutually exclusive with the
      * legacy aliases/translations fields. Pass [] to remove all names
      * (null is rejected). */

@@ -215,24 +215,57 @@ class RegistryClient(RegistryClientBase):
             created_by=created_by,
         )
 
-    async def register_auto_synonyms_bulk(
+    async def register_auto_synonyms_per_item(
         self,
         items: list[dict[str, Any]],
         batch_size: int = 100,
-    ) -> None:
-        """Register auto-synonyms in batches; raise on any HTTP failure."""
-        if not items:
-            return
-        try:
+    ) -> list[str | None]:
+        """Register auto-synonyms in batches and answer per item: None when
+        the item's synonym is held by its target (added or already there),
+        else the Registry's refusal. Raises RegistryError only when the
+        Registry gave no per-item answer (transport failure, non-200), so
+        the caller can tell "refused this item" from "did not answer"."""
+        answers: list[str | None] = []
+        async with self._make_client(timeout=120.0) as client:
             for batch_start in range(0, len(items), batch_size):
                 batch = items[batch_start:batch_start + batch_size]
-                await self._register_auto_synonyms_bulk(batch)
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/api/registry/synonyms/add",
+                        headers=self._get_headers(),
+                        json=[{
+                            "target_id": it["target_id"],
+                            "synonym_namespace": it["namespace"],
+                            "synonym_entity_type": it["entity_type"],
+                            "synonym_composite_key": it["composite_key"],
+                            "created_by": it.get("created_by"),
+                        } for it in batch],
+                    )
+                except Exception as e:
+                    raise RegistryError(f"Failed to register auto-synonyms: {e}") from e
+                answers.extend(_per_item_refusals(response, len(batch)))
                 if batch_start + batch_size < len(items):
                     await asyncio.sleep(0.05)
-        except RegistryError:
-            raise
-        except Exception as e:
-            raise RegistryError(f"Failed to register auto-synonyms bulk: {e}") from e
+        return answers
+
+
+def _per_item_refusals(response: Any, expected: int) -> list[str | None]:
+    """One answer per item of a /synonyms/add response: None when the
+    target holds the synonym, else the refusal. Raises RegistryError when
+    the response carries no per-item answer."""
+    if response.status_code != 200:
+        raise RegistryError(
+            f"Failed to register auto-synonyms: {response.status_code} - {response.text}"
+        )
+    data = response.json()
+    results = data.get("results", data) if isinstance(data, dict) else data
+    if not isinstance(results, list) or len(results) != expected:
+        raise RegistryError("Registry answered auto-synonym registration without one result per item")
+    return [
+        None if r.get("status") in ("added", "already_exists")
+        else f"status={r.get('status')}" + (f": {r['error']}" if r.get("error") else "")
+        for r in results
+    ]
 
 
 # ── Singleton ───────────────────────────────────────────────────────────────

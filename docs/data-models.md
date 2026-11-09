@@ -1249,7 +1249,7 @@ The algorithm above is only half the contract — the other half is **what feeds
 | a dotted path into an object field (`address.country`) | by the leaf field's type in the nested template, same rules |
 | everything else (string, number, date, …) | the submitted value, as before |
 
-Every alias, case variant or synonym of one referent therefore yields **one identity** — two writers naming the same term by different aliases update one document instead of forking two — and a term rename does not fork documents either. Case sensitivity is decided by the vocabulary, not the hasher: if a terminology treats `Foo` and `foo` as two terms, they resolve to two IDs and stay distinct.
+Every alias, case variant or synonym of one referent therefore yields **one identity** — two writers naming the same term by different aliases update one document instead of forking two. Case sensitivity is decided by the vocabulary, not the hasher: if a terminology treats `Foo` and `foo` as two terms, they resolve to two IDs and stay distinct.
 
 The rule is **fail-closed**: a write whose referent identity field cannot be resolved (Def-Store or Registry unreachable) is rejected rather than hashed from the spelling — an unresolvable identity is no identity, and hashing the spelling would fork the document on a later, resolvable write. Non-identity term fields keep their degrade-to-warning behavior on resolution outages.
 

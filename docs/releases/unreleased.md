@@ -7,6 +7,31 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A term's value cannot be changed; a bulk term create keeps only what the Registry holds (@wip/client 0.101.0)
+
+- **Value:** `PUT /api/def-store/terms` changed `value` without telling the
+  Registry. The term's Registry entry kept the old value as its key, the new
+  value resolved to nothing, and the old value could never be taken by a new
+  term. A term's value is its identity and is no longer updatable: sending
+  `value` in a term update is a **422** (`UpdateTermRequest` has no `value`;
+  `@wip/client`'s type drops it). A different value is a different term —
+  create it, then deprecate the old one with `replaced_by_term_id`, or merge
+  the old one into it.
+- **Bulk create (2+ terms):** terms were inserted, audited and announced on
+  NATS before their value synonym was registered; a Registry refusal or
+  outage there answered **502** with no per-item results while the terms
+  stayed. Now each created term's value synonym is claimed before anything
+  is audited or published. A term whose synonym the Registry refuses is
+  taken back and is that item's `registry_error`. A Registry that does not
+  answer fails that batch's items and every later item with
+  `registry_error`, in a 200; terms of earlier batches stay created and are
+  counted. The 502 is gone. Import and reconcile use the same path.
+- **`term_count`:** moved by an atomic `$inc` on both create doors. A bulk
+  import no longer saves back the terminology it read at its start, which
+  dropped concurrent count changes and undid config edits made meanwhile.
+- **Action:** a client that renames terms by `PUT value` must create and
+  deprecate instead. A bulk-create caller reads per-item results for a
+  Registry failure, not a 502.
 ### `@wip/proxy` 0.8.0: requests stay inside the WIP API, the key stays with WIP, and a key can arrive or rotate without a restart
 
 - **The upstream path is checked after normalisation.** The allowlist was
