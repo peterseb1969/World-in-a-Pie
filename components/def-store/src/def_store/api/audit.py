@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 
 from wip_auth import (
     UserIdentity,
-    check_namespace_permission,
+    can_read,
     resolve_accessible_namespaces,
     resolve_or_404,
     resolve_term_by_fields_or_404,
@@ -39,7 +39,7 @@ async def _audited_namespace(
     identity: UserIdentity, entity_namespace: str | None, id_field: str, entity_id: str,
 ) -> str | None:
     """The namespace whose audit rows an id-scoped door reads, after checking
-    read on it — None when there is no history to read.
+    read on it — None when there is no history the caller may read.
 
     Audit rows expose previous and new values, so the read gate applies even
     when the entity itself is gone (hard-deleted): the namespace then comes
@@ -54,7 +54,11 @@ async def _audited_namespace(
         if latest is None:
             return None
         namespace = latest.namespace
-    await check_namespace_permission(identity, namespace, "read")
+    # A namespace the caller cannot see has, for it, no history: the door
+    # answers the empty page an unknown id gets, not a 404 that would
+    # confirm the entity exists.
+    if not await can_read(identity, namespace):
+        return None
     return namespace
 
 

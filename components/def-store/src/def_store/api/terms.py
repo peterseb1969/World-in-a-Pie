@@ -7,7 +7,11 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
     UserIdentity,
+    can_read,
+    check_entity_permission,
     check_namespace_permission,
+    check_readable,
+    entity_write_refusals,
     resolve_accessible_namespaces,
     resolve_namespace_filter,
     resolve_or_404,
@@ -121,7 +125,9 @@ async def create_terms(
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
     if term_parent:
-        await check_namespace_permission(identity, term_parent.namespace, "write")
+        await check_entity_permission(
+            identity, term_parent.namespace, "write", f"Terminology '{terminology_id}' not found",
+        )
         # A parent is a term of this terminology: resolve it there (a value
         # is that terminology's value, never colon-parsed; a UUID passes).
         # Write door — the id is persisted, so the cache is bypassed. What
@@ -224,7 +230,7 @@ async def reconcile_terminology(
     if not terminology:
         raise HTTPException(status_code=404, detail="Terminology not found")
 
-    await check_namespace_permission(identity, terminology.namespace, "write")
+    await check_entity_permission(identity, terminology.namespace, "write", "Terminology not found")
 
     return await TermReconcileService.reconcile(terminology, request)
 
@@ -415,8 +421,9 @@ async def get_term(
     if not result:
         raise HTTPException(status_code=404, detail="Term not found")
 
-    # CASE-384 — gate read by the term's namespace.
-    await check_namespace_permission(identity, result.namespace, "read")
+    # Read on the term's namespace; one the caller cannot see answers as an
+    # id that names nothing.
+    await check_readable(identity, result.namespace, "Term not found")
     return result
 
 
@@ -457,16 +464,23 @@ async def update_terms(
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
     ids = [item.term_id for item in items if item.term_id]
+    refused: dict[str, tuple[str, str]] = {}
     if ids:
         existing_docs = await _Term.find({"term_id": {"$in": ids}}).to_list()
         id_to_namespace = {d.term_id: d.namespace for d in existing_docs}
-        for item in items:
-            ns = id_to_namespace.get(item.term_id)
-            if ns:
-                await check_namespace_permission(identity, ns, "write")
+        # An item in a namespace the caller cannot see answers as an id
+        # that names nothing; one it may only read is forbidden. Both
+        # per item, the rest of the batch proceeds.
+        refused = await entity_write_refusals(identity, id_to_namespace, "Term not found")
 
     results = []
     for i, item in enumerate(items):
+        if (refusal := refused.get(item.term_id)) is not None:
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.term_id,
+                error=refusal[0], error_code=refusal[1],
+            ))
+            continue
         try:
             collision_warnings: list[dict] = []
             result = await TerminologyService.update_term(
@@ -545,16 +559,23 @@ async def deprecate_terms(
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
     ids = [item.term_id for item in items if item.term_id]
+    refused: dict[str, tuple[str, str]] = {}
     if ids:
         existing_docs = await _Term.find({"term_id": {"$in": ids}}).to_list()
         id_to_namespace = {d.term_id: d.namespace for d in existing_docs}
-        for item in items:
-            ns = id_to_namespace.get(item.term_id)
-            if ns:
-                await check_namespace_permission(identity, ns, "write")
+        # An item in a namespace the caller cannot see answers as an id
+        # that names nothing; one it may only read is forbidden. Both
+        # per item, the rest of the batch proceeds.
+        refused = await entity_write_refusals(identity, id_to_namespace, "Term not found")
 
     results = []
     for i, item in enumerate(items):
+        if (refusal := refused.get(item.term_id)) is not None:
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.term_id,
+                error=refusal[0], error_code=refusal[1],
+            ))
+            continue
         try:
             result = await TerminologyService.deprecate_term(item.term_id, item)
             if not result:
@@ -611,16 +632,23 @@ async def delete_terms(
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
     ids = [item.id for item in items if item.id]
+    refused: dict[str, tuple[str, str]] = {}
     if ids:
         existing_docs = await _Term.find({"term_id": {"$in": ids}}).to_list()
         id_to_namespace = {d.term_id: d.namespace for d in existing_docs}
-        for item in items:
-            ns = id_to_namespace.get(item.id)
-            if ns:
-                await check_namespace_permission(identity, ns, "write")
+        # An item in a namespace the caller cannot see answers as an id
+        # that names nothing; one it may only read is forbidden. Both
+        # per item, the rest of the batch proceeds.
+        refused = await entity_write_refusals(identity, id_to_namespace, "Term not found")
 
     results = []
     for i, item in enumerate(items):
+        if (refusal := refused.get(item.id)) is not None:
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.id,
+                error=refusal[0], error_code=refusal[1],
+            ))
+            continue
         try:
             success = await TerminologyService.delete_term(
                 term_id=item.id, updated_by=item.updated_by,
@@ -682,12 +710,21 @@ async def merge_terms(
         )
 
     ids = [i for item in items for i in (item.survivor_term_id, item.absorbed_term_id) if i]
+    refused: dict[str, tuple[str, str]] = {}
     if ids:
-        for ns in {d.namespace for d in await Term.find({"term_id": {"$in": ids}}).to_list()}:
-            await check_namespace_permission(identity, ns, "write")
+        id_to_namespace = {
+            d.term_id: d.namespace for d in await Term.find({"term_id": {"$in": ids}}).to_list()
+        }
+        refused = await entity_write_refusals(identity, id_to_namespace, "")
 
     results = []
     for i, item in enumerate(items):
+        if (refusal := _merge_refusal(item, refused)) is not None:
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.survivor_term_id,
+                error=refusal[0], error_code=refusal[1],
+            ))
+            continue
         collisions: list[dict[str, Any]] = []
         try:
             _survivor, added = await TerminologyService.merge_terms(
@@ -714,6 +751,18 @@ async def merge_terms(
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
     )
+
+
+def _merge_refusal(item: Any, refused: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
+    """Why a merge item may not be written: a term in a namespace the caller
+    cannot see answers as the merge does for a term that does not exist
+    (survivor first), one it may only read is forbidden."""
+    for term_id in (item.survivor_term_id, item.absorbed_term_id):
+        refusal = refused.get(term_id)
+        if refusal is not None:
+            error, code = refusal
+            return (f"Term not found: {term_id}", code) if code == "not_found" else (error, code)
+    return None
 
 
 @router.post(
@@ -820,7 +869,9 @@ async def validate_value(
                 error_code="ambiguous_terminology",
             )
 
-    if not terminology:
+    # A terminology in a namespace the caller cannot see answers exactly as
+    # one that does not exist.
+    if not terminology or not await can_read(identity, terminology.namespace):
         return ValidateValueResponse(
             valid=False,
             terminology_id=request.terminology_id or "",
@@ -830,10 +881,6 @@ async def validate_value(
             error_code="not_found",
         )
 
-    # CASE-384 — validation reads from the terminology (returns matched
-    # terms, suggestions). Gate by read permission on the terminology's
-    # namespace.
-    await check_namespace_permission(identity, terminology.namespace, "read")
 
     res = await TerminologyService.validate_value(
         terminology_id=terminology.terminology_id,
@@ -902,12 +949,12 @@ async def validate_values_bulk(
             _invalid(item, "Must provide terminology_id or terminology_value", "invalid_request")
             continue
 
-        if not terminology:
+        if not terminology or not await can_read(identity, terminology.namespace):
+            # One the caller cannot see answers exactly as one that does not exist.
             _invalid(item, "Terminology not found", "not_found", item.terminology_id or "", item.terminology_value or "")
             continue
 
         if terminology.terminology_id not in groups:
-            await check_namespace_permission(identity, terminology.namespace, "read")
             groups[terminology.terminology_id] = (terminology, [])
         groups[terminology.terminology_id][1].append((index, item.value))
         results.append(None)  # filled in below, once the group resolves

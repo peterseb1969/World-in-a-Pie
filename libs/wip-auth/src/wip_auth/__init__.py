@@ -69,12 +69,17 @@ from .models import APIKeyRecord, AuthResult, UserIdentity
 from .openapi import declare_api_key_security
 from .permissions import (
     NamespaceFilter,
+    can_read,
+    check_entity_permission,
     check_namespace_permission,
+    check_readable,
     clear_permission_cache,
+    entity_write_refusals,
     permission_sufficient,
     resolve_accessible_namespaces,
     resolve_namespace_filter,
     resolve_permission,
+    write_refusals,
 )
 from .providers import (
     APIKeyProvider,
@@ -139,15 +144,19 @@ __all__ = [
     "WriteRequestMiddleware",
     "build_metadata",
     # Permissions
+    "can_read",
+    "check_entity_permission",
     "check_namespace_permission",
     # Security
     "check_production_security",
+    "check_readable",
     "clear_current_identity",
     "clear_permission_cache",
     "clear_resolution_cache",
     "create_auth_middleware",
     "create_providers_from_config",
     "declare_api_key_security",
+    "entity_write_refusals",
     "get_actor_info",
     "get_auth_config",
     # Identity context
@@ -195,6 +204,7 @@ __all__ = [
     "split_qualified_value",
     "term_resolution_batch",
     "terminology_coordinates_by_id",
+    "write_refusals",
 ]
 
 

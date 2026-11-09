@@ -20,6 +20,7 @@ Usage:
 
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Literal, cast
 
@@ -215,6 +216,94 @@ async def check_namespace_permission(
             403,
             f"Requires {required} access to namespace '{namespace}'",
         )
+
+
+async def can_read(identity: UserIdentity, namespace: str) -> bool:
+    """Whether ``identity`` may read ``namespace``.
+
+    For doors addressed by an entity's id: False means the namespace is
+    invisible to the caller, and the door must then answer exactly as it
+    does for an id that names nothing — same status, same text, same body
+    shape (a 404, an empty page, a not_found item). Any difference would
+    confirm that the entity exists, and where, which the namespace 404
+    exists to hide. Raises HTTP 503 when the Registry could not be asked.
+    """
+    permission = await resolve_permission(identity, namespace)
+    if permission == PERMISSION_UNAVAILABLE:
+        raise HTTPException(503, _UNAVAILABLE_DETAIL)
+    return permission_sufficient(permission, "read")
+
+
+async def check_readable(identity: UserIdentity, namespace: str, not_found: str) -> None:
+    """Read on the namespace of an entity the caller asked for by id, for a
+    door whose miss is a 404.
+
+    An entity in a namespace the caller cannot see answers exactly as an id
+    that names nothing (``not_found``), not "Namespace not found": the
+    different text would confirm that the id exists, and where. A door whose
+    miss is not a 404 (an empty page, a not_found item) uses ``can_read`` and
+    answers its own miss. A namespace the caller names itself is checked
+    with check_namespace_permission.
+    """
+    await check_entity_permission(identity, namespace, "read", not_found)
+
+
+async def check_entity_permission(
+    identity: UserIdentity,
+    namespace: str,
+    required: Literal["read", "write", "admin"],
+    not_found: str,
+) -> None:
+    """``required`` on the namespace of an entity the caller asked for by
+    id, for a door whose miss is a 404 with the text ``not_found``.
+
+    A caller who cannot read the namespace gets that 404, exactly as for an
+    id that names nothing; one who can read but lacks ``required`` gets the
+    403 (the entity is visible to it, so nothing is revealed).
+    """
+    if not await can_read(identity, namespace):
+        raise HTTPException(status_code=404, detail=not_found)
+    await check_namespace_permission(identity, namespace, required)
+
+
+async def entity_write_refusals(
+    identity: UserIdentity, id_to_namespace: Mapping[str, str], not_found: str,
+) -> dict[str, tuple[str, str]]:
+    """``write_refusals`` keyed by entity id: why ``identity`` may not write
+    each entity of a bulk request, as (error, error_code). An id absent from
+    the result may be written (or names nothing, which the door reports)."""
+    by_namespace = await write_refusals(identity, set(id_to_namespace.values()), not_found)
+    return {
+        entity_id: by_namespace[ns]
+        for entity_id, ns in id_to_namespace.items() if ns in by_namespace
+    }
+
+
+async def write_refusals(
+    identity: UserIdentity, namespaces: set[str], not_found: str
+) -> dict[str, tuple[str, str]]:
+    """Per namespace, why ``identity`` may not write there, as (error,
+    error_code); a namespace absent from the result may be written.
+
+    For bulk writes: asked once per namespace and before any item of the batch
+    is written, so a refusal is reported on its items while the rest proceed,
+    and an authorization outage (503) refuses the whole request before any
+    item has changed. A namespace the caller cannot see answers ``not_found``
+    with the text of an id that names nothing, as check_readable does, so the
+    response does not confirm that the entity exists, or where.
+    """
+    refusals: dict[str, tuple[str, str]] = {}
+    for ns in sorted(namespaces):
+        try:
+            await check_namespace_permission(identity, ns, "write")
+        except HTTPException as exc:
+            if exc.status_code == 403:
+                refusals[ns] = (str(exc.detail), "forbidden")
+            elif exc.status_code == 404:
+                refusals[ns] = (not_found, "not_found")
+            else:
+                raise
+    return refusals
 
 
 @dataclass

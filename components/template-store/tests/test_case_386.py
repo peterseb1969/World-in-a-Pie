@@ -8,8 +8,8 @@ document-store work). These tests verify two things per endpoint:
    so the new gates must be transparent to admin callers (regression
    protection: we didn't break the happy path).
 2. Gate-wiring — the endpoint actually calls into the auth layer. We patch
-   `check_namespace_permission` to raise 404 unconditionally; if the gate is
-   wired the response is 404, if it's missing the endpoint still returns 200.
+   `wip_auth.permissions.resolve_permission` to answer "none" everywhere; a
+   wired door asks about the template's namespace and reveals nothing of it.
 
 The denial *logic* is covered by CASE-351's Registry-side tests; here we only
 assert the API endpoints call into the auth layer at the right point.
@@ -20,7 +20,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 from httpx import AsyncClient
 
 BASE = "/api/template-store/templates"
@@ -114,18 +113,27 @@ async def test_admin_passthrough(label, call, client: AsyncClient, auth_headers:
 @pytest.mark.parametrize("label,call", SPECS, ids=_IDS)
 @pytest.mark.asyncio
 async def test_gate_is_wired(label, call, client: AsyncClient, auth_headers: dict):
-    """The endpoint calls into check_namespace_permission. Patched to deny
-    (404) unconditionally; a wired gate surfaces that 404, a missing gate
-    would return 200."""
+    """The endpoint asks the auth layer about the template's namespace, and
+    for a caller who cannot see it reveals nothing of the template.
+
+    `wip_auth.permissions.resolve_permission` — the one place every gate
+    asks — is patched to answer "none" for every namespace (so the admin
+    short-circuit does not hide a missing gate). A wired door then answers
+    as for an id that names nothing: a 404, an empty list, a not_found
+    validation or a per-item error, never the template itself.
+    """
     value = f"CASE386_WIRED_{label.upper()}"
     tid = await _seed(client, auth_headers, value)
+    asked: list[str] = []
 
-    async def deny(identity, namespace, level):
-        raise HTTPException(status_code=404, detail="Namespace not found")
+    async def invisible(identity, namespace):
+        asked.append(namespace)
+        return "none"
 
-    with patch(
-        "template_store.api.templates.check_namespace_permission",
-        side_effect=deny,
-    ):
+    with patch("wip_auth.permissions.resolve_permission", side_effect=invisible):
         resp = await call(client, auth_headers, tid, value)
-    assert resp.status_code == 404, f"{label} not gated: {resp.status_code} {resp.text}"
+    assert "wip" in asked, f"{label} never asked about the template's namespace"
+    assert f"{value} label" not in resp.text, f"{label} revealed the template: {resp.text}"
+    body = resp.json()
+    if resp.status_code == 200 and isinstance(body, dict) and "results" in body:
+        assert all(r["status"] == "error" for r in body["results"]), f"{label} wrote: {body}"

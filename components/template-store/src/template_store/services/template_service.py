@@ -2948,6 +2948,20 @@ class TemplateService:
         return results
 
     @staticmethod
+    def template_not_found_validation(template_id: str) -> "ValidateTemplateResponse":
+        """The /validate answer for an id that names no template — also the
+        answer for one the caller cannot see, so it confirms nothing."""
+        return ValidateTemplateResponse(
+            valid=False,
+            template_id=template_id,
+            errors=[ValidationError(
+                field="template_id",
+                code="not_found",
+                message=f"Template '{template_id}' not found"
+            )]
+        )
+
+    @staticmethod
     async def validate_template(
         template_id: str,
         check_terminologies: bool = True,
@@ -2971,15 +2985,7 @@ class TemplateService:
         results = await Template.find({"template_id": template_id}).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
         template = results[0] if results else None
         if not template:
-            return ValidateTemplateResponse(
-                valid=False,
-                template_id=template_id,
-                errors=[ValidationError(
-                    field="template_id",
-                    code="not_found",
-                    message=f"Template '{template_id}' not found"
-                )]
-            )
+            return TemplateService.template_not_found_validation(template_id)
 
         # One set of checks: what activation demands of a draft is what an
         # active (or retired) version is held to, so /validate previews the

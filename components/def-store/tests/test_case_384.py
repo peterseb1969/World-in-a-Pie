@@ -226,11 +226,16 @@ class TestPatchedEndpointsAdmin:
 # returns 404 even for in-scope namespaces.
 
 
+async def _invisible(identity, namespace):
+    """Every namespace is invisible to the caller, admin or not."""
+    return "none"
+
+
 class TestNewGatesAreWired:
-    """Verifies the new gates actually fire. Uses module-level patching
-    of `check_namespace_permission` so we don't depend on bypassing the
-    admin short-circuit — the patched function raises 404 regardless of
-    caller identity.
+    """Verifies the new gates actually fire. Patches the one place every
+    gate asks (`wip_auth.permissions.resolve_permission`) so we don't depend
+    on bypassing the admin short-circuit: every namespace reads as invisible
+    and a wired door answers 404, as for an id that names nothing.
 
     This is a wiring test, not a logic test. The denial logic itself is
     covered by CASE-351's Registry-side tests; here we just confirm the
@@ -261,10 +266,7 @@ class TestNewGatesAreWired:
         async def deny(identity, namespace, level):
             raise HTTPException(404, "Namespace not found")
 
-        with patch(
-            "def_store.api.terminologies.check_namespace_permission",
-            side_effect=deny,
-        ):
+        with patch("wip_auth.permissions.resolve_permission", side_effect=_invisible):
             resp = await client.get(
                 f"/api/def-store/terminologies/{tid}",
                 headers=auth_headers,
@@ -297,10 +299,7 @@ class TestNewGatesAreWired:
         async def deny(identity, namespace, level):
             raise HTTPException(404, "Namespace not found")
 
-        with patch(
-            "def_store.api.terminologies.check_namespace_permission",
-            side_effect=deny,
-        ):
+        with patch("wip_auth.permissions.resolve_permission", side_effect=_invisible):
             resp = await client.post(
                 f"/api/def-store/terminologies/{tid}/restore",
                 headers=auth_headers,
@@ -327,10 +326,7 @@ class TestNewGatesAreWired:
         async def deny(identity, namespace, level):
             raise HTTPException(404, "Namespace not found")
 
-        with patch(
-            "def_store.api.import_export.check_namespace_permission",
-            side_effect=deny,
-        ):
+        with patch("wip_auth.permissions.resolve_permission", side_effect=_invisible):
             resp = await client.get(
                 f"/api/def-store/import-export/export/{tid}",
                 headers=auth_headers,

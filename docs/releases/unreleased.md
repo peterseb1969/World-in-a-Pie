@@ -66,6 +66,34 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `forwardIdentity` from the `wipProxy({...})` call (WIP-Cooking sets it).
   Per-user identity for a privileged app needs an identity the edge proves;
   that is not built.
+
+### A probe answers inside its budget; a hidden id answers as a missing one; the service root is public
+
+- **Bounded probes.** Every service's MongoDB client selects a server and
+  connects within 2 s (it waited 30 s), and `/health` / `/ready` ping it
+  within 2.5 s: a MongoDB that is unreachable, or connected but not
+  answering, fails the probe inside the 5 s probe budget. Reporting-sync's
+  PostgreSQL checks (`/health`, `/metrics`, `/alerts/test`, the alert loop)
+  share one probe bounded at 1 s, connection acquisition included.
+- **Hidden reads as missing.** A def-store or template-store door addressed
+  by id answers a terminology, term or template in a namespace the caller
+  cannot read exactly as an id that names nothing — the door's own 404
+  text instead of "Namespace not found", and on doors whose miss is not a
+  404 the same body (an empty audit page or children list, a `not_found`
+  validation). Bulk writes (update/delete terminologies and terms,
+  deprecate, merge, update/delete templates) refuse such an item per item
+  (`not_found`, or `forbidden` for one the caller may only read) instead of
+  failing the whole request with a 404 or 403. A caller who can see an
+  entity but lacks write still gets 403.
+- **`GET /api/<svc>/` is public** in every service, like its `/health`: a
+  client sending a stale key is no longer refused 401 on the
+  build-provenance probe. Nothing else under `/api/<svc>/` changes.
+- **wip-auth:** `can_read`, `check_readable`, `check_entity_permission`,
+  `write_refusals` and `entity_write_refusals` (document-store's
+  `check_readable` / `write_refusals` moved here), `mongo_client_options`,
+  `mongo_ping`; the anonymous-refusal walker also sends a stale key to every
+  public route and requires every always-public route to be allowlisted.
+
 ### A template or document is retired or revived only once the Registry has recorded it
 
 def-store has followed this rule since the term/terminology fix; template-store

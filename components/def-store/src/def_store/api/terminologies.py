@@ -7,7 +7,10 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
     UserIdentity,
+    check_entity_permission,
     check_namespace_permission,
+    check_readable,
+    entity_write_refusals,
     resolve_accessible_namespaces,
     resolve_bulk_ids,
     resolve_namespace_filter,
@@ -177,10 +180,10 @@ async def get_terminology(
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")
 
-    # CASE-384 — enforce read permission on the entity's actual namespace.
-    # Returns 404 ("Namespace not found") on permission failure, which
-    # also prevents leaking which IDs exist in which namespaces.
-    await check_namespace_permission(identity, result.namespace, "read")
+    # Read on the entity's own namespace; one the caller cannot see answers
+    # exactly as an id that names nothing, so the 404 does not confirm that
+    # the terminology exists, or where.
+    await check_readable(identity, result.namespace, "Terminology not found")
 
     return result
 
@@ -202,20 +205,26 @@ async def update_terminologies(
     # CASE-384 — enforce write permission on each item's actual namespace.
     # Batched lookup: one Mongo query over all terminology_ids, then
     # per-id permission check. Saves N-1 round-trips on cross-namespace
-    # bulks vs. the original per-item find_one. Aborts on first failure
-    # to match the bulk-create convention.
+    # bulks vs. the original per-item find_one.
     from ..models.terminology import Terminology as _T
     ids = [item.terminology_id for item in items if item.terminology_id]
+    refused: dict[str, tuple[str, str]] = {}
     if ids:
         existing_docs = await _T.find({"terminology_id": {"$in": ids}}).to_list()
         id_to_namespace = {d.terminology_id: d.namespace for d in existing_docs}
-        for item in items:
-            ns = id_to_namespace.get(item.terminology_id)
-            if ns:
-                await check_namespace_permission(identity, ns, "write")
+        # An item in a namespace the caller cannot see answers as an id
+        # that names nothing; one it may only read is forbidden. Both
+        # per item, the rest of the batch proceeds.
+        refused = await entity_write_refusals(identity, id_to_namespace, "Terminology not found")
 
     results = []
     for i, item in enumerate(items):
+        if (refusal := refused.get(item.terminology_id)) is not None:
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.terminology_id,
+                error=refusal[0], error_code=refusal[1],
+            ))
+            continue
         try:
             result = await TerminologyService.update_terminology(item.terminology_id, item)
             if not result:
@@ -263,7 +272,7 @@ async def get_terminology_dependencies(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        await check_namespace_permission(identity, existing.namespace, "read")
+        await check_readable(identity, existing.namespace, f"Terminology {terminology_id} not found")
 
     try:
         return await DependencyService.check_terminology_dependencies(terminology_id)
@@ -294,7 +303,7 @@ async def restore_terminology(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        await check_namespace_permission(identity, existing.namespace, "write")
+        await check_entity_permission(identity, existing.namespace, "write", "Terminology not found")
 
     try:
         result = await TerminologyService.restore_terminology(
@@ -391,17 +400,25 @@ async def delete_terminologies(
     from ..models.terminology import Terminology as _T
     ids = [item.id for item in items if item.id]
     mutable: dict[str, bool] = {}
+    refused: dict[str, tuple[str, str]] = {}
     if ids:
         existing_docs = await _T.find({"terminology_id": {"$in": ids}}).to_list()
         id_to_namespace = {d.terminology_id: d.namespace for d in existing_docs}
         mutable = {d.terminology_id: d.mutable for d in existing_docs}
-        for item in items:
-            ns = id_to_namespace.get(item.id)
-            if ns:
-                await check_namespace_permission(identity, ns, "write")
+        # An item in a namespace the caller cannot see answers as an id
+        # that names nothing; one it may only read is forbidden. Both
+        # per item, the rest of the batch proceeds.
+        refused = await entity_write_refusals(identity, id_to_namespace, "")
 
     results = []
     for i, item in enumerate(items):
+        if (refusal := refused.get(item.id)) is not None:
+            # A delete's miss is the dependency check's not-found.
+            error = f"Terminology {item.id} not found" if refusal[1] == "not_found" else refusal[0]
+            results.append(BulkResultItem(
+                index=i, status="error", id=item.id, error=error, error_code=refusal[1],
+            ))
+            continue
         try:
             # The guard follows what the delete will do, not only what the
             # request asked: a mutable terminology is removed by any delete.
@@ -411,9 +428,9 @@ async def delete_terminologies(
             deps = await DependencyService.check_terminology_dependencies(
                 item.id, all_statuses=removes
             )
-            refusal = _dependency_refusal(i, item, deps, removes=removes)
-            if refusal is not None:
-                results.append(refusal)
+            blocked = _dependency_refusal(i, item, deps, removes=removes)
+            if blocked is not None:
+                results.append(blocked)
                 continue
 
             success = await TerminologyService.delete_terminology(

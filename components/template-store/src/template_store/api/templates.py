@@ -8,7 +8,11 @@ from typing import Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
+    can_read,
+    check_entity_permission,
     check_namespace_permission,
+    check_readable,
+    entity_write_refusals,
     require_current_identity,
     resolve_bulk_ids,
     resolve_namespace_filter,
@@ -60,7 +64,7 @@ async def _gate_unresolvable(
     """
     if raw is None:
         raise HTTPException(status_code=404, detail="Template not found") from exc
-    await check_namespace_permission(require_current_identity(), raw.namespace, "read")
+    await check_readable(require_current_identity(), raw.namespace, "Template not found")
     raise exc
 
 
@@ -241,7 +245,7 @@ async def get_template(
     # cross-namespace schema leakage; the 404 on denial also hides which
     # template IDs exist in which namespace).
     identity = require_current_identity()
-    await check_namespace_permission(identity, template.namespace, "read")
+    await check_readable(identity, template.namespace, "Template not found")
     if refs == "portable":
         template = await template_with_portable_refs(template)
     return template
@@ -274,7 +278,7 @@ async def get_template_raw(
         raise HTTPException(status_code=404, detail="Template not found")
     # CASE-386 — gate read on the template's actual namespace.
     identity = require_current_identity()
-    await check_namespace_permission(identity, template.namespace, "read")
+    await check_readable(identity, template.namespace, "Template not found")
     if refs == "portable":
         template = await template_with_portable_refs(template)
     return template
@@ -398,7 +402,7 @@ async def get_template_by_value_and_version(
         raise HTTPException(status_code=404, detail="Template version not found")
     # CASE-386 — gate read on the template's actual namespace.
     identity = require_current_identity()
-    await check_namespace_permission(identity, template.namespace, "read")
+    await check_readable(identity, template.namespace, "Template version not found")
     if refs == "portable":
         template = await template_with_portable_refs(template)
     return template
@@ -418,7 +422,7 @@ async def get_template_versions_by_id(template_id: str):
         raise HTTPException(status_code=404, detail="Template not found")
     # CASE-386 — gate read on the template's namespace (all versions share it).
     identity = require_current_identity()
-    await check_namespace_permission(identity, versions[0].namespace, "read")
+    await check_readable(identity, versions[0].namespace, "Template not found")
     return TemplateListResponse(
         items=versions,
         total=len(versions),
@@ -465,19 +469,24 @@ async def update_templates(
     await resolve_bulk_ids(items, "template_id", "template", namespace=namespace)
 
     # CASE-386 — gate write on each template's actual namespace. One batched
-    # lookup over all template_ids, then a per-id check (aborts on first
-    # denial, matching the bulk convention; admin keys bypass via superadmin).
+    # lookup over all template_ids, then a per-item refusal (admin keys bypass
+    # via superadmin).
     identity = require_current_identity()
     ids = [item.template_id for item in items if item.template_id]
+    refused: dict[str, tuple[str, str]] = {}
     if ids:
         existing_docs = await Template.find({"template_id": {"$in": ids}}).to_list()
         id_to_namespace = {d.template_id: d.namespace for d in existing_docs}
-        for item in items:
-            ns = id_to_namespace.get(item.template_id)
-            if ns:
-                await check_namespace_permission(identity, ns, "write")
+        refused = await entity_write_refusals(identity, id_to_namespace, "Template not found")
 
     async def update_one(i: int, item: UpdateTemplateItem) -> BulkResultItem:
+        # One the caller cannot see answers as an id that names nothing; one
+        # it may only read is forbidden — per item, the rest proceed.
+        if (refusal := refused.get(item.template_id)) is not None:
+            return BulkResultItem(
+                index=i, status="error", id=item.template_id,
+                error=refusal[0], error_code=refusal[1],
+            )
         result = await TemplateService.update_template(item.template_id, item)
         if not result:
             return BulkResultItem(index=i, status="error", id=item.template_id, error="Template not found", error_code="not_found")
@@ -532,7 +541,7 @@ async def get_template_dependencies(template_id: str, namespace: str | None = Qu
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
     if existing:
-        await check_namespace_permission(identity, existing.namespace, "read")
+        await check_readable(identity, existing.namespace, f"Template {template_id} not found")
 
     try:
         return await DependencyService.check_template_dependencies(template_id)
@@ -562,15 +571,22 @@ async def delete_templates(
     # lookup + per-id check; admin keys bypass via superadmin).
     identity = require_current_identity()
     ids = [item.id for item in items if item.id]
+    refused: dict[str, tuple[str, str]] = {}
     if ids:
         existing_docs = await Template.find({"template_id": {"$in": ids}}).to_list()
         id_to_namespace = {d.template_id: d.namespace for d in existing_docs}
-        for item in items:
-            ns = id_to_namespace.get(item.id)
-            if ns:
-                await check_namespace_permission(identity, ns, "write")
+        refused = await entity_write_refusals(identity, id_to_namespace, "")
 
     async def delete_one(i: int, item: DeleteItem) -> BulkResultItem:
+        # One the caller cannot see fails exactly as an unknown id does (the
+        # dependency check's not-found); one it may only read is forbidden.
+        if (refusal := refused.get(item.id)) is not None:
+            if refusal[1] == "not_found":
+                raise ValueError(f"Template {item.id} not found")
+            return BulkResultItem(
+                index=i, status="error", id=item.id,
+                error=refusal[0], error_code=refusal[1],
+            )
         # A soft-delete REQUIRES an explicit version. The old default
         # (version-less = deactivate the LATEST) was a foot-gun: right
         # after a version event the overwhelmingly common intent is
@@ -720,8 +736,9 @@ async def validate_template(
     # gate read on the template's actual namespace.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
-    if existing:
-        await check_namespace_permission(identity, existing.namespace, "read")
+    if existing and not await can_read(identity, existing.namespace):
+        # Answered as for an id that names nothing.
+        return TemplateService.template_not_found_validation(template_id)
 
     return await TemplateService.validate_template(
         template_id=template_id,
@@ -838,7 +855,9 @@ async def cascade_template(template_id: str, namespace: str | None = Query(None,
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
     if existing:
-        await check_namespace_permission(identity, existing.namespace, "write")
+        await check_entity_permission(
+            identity, existing.namespace, "write", f"Template '{template_id}' not found",
+        )
 
     try:
         return await TemplateService.cascade_to_children(template_id)
@@ -890,9 +909,9 @@ async def get_template_children(template_id: str, namespace: str | None = Query(
     # CASE-386 — child listing confirms existence cross-namespace; gate read.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
-    if existing:
-        await check_namespace_permission(identity, existing.namespace, "read")
-    children = await InheritanceService.get_children(template_id)
+    # One the caller cannot see lists nothing, as an id that names nothing does.
+    hidden = existing is not None and not await can_read(identity, existing.namespace)
+    children = [] if hidden else await InheritanceService.get_children(template_id)
     templates = [TemplateService._to_template_response(t) for t in children]
     return TemplateListResponse(
         items=templates,
@@ -911,9 +930,9 @@ async def get_template_descendants(template_id: str, namespace: str | None = Que
     # CASE-386 — descendant listing confirms existence cross-namespace; gate read.
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
-    if existing:
-        await check_namespace_permission(identity, existing.namespace, "read")
-    descendants = await InheritanceService.get_descendants(template_id)
+    # One the caller cannot see lists nothing, as an id that names nothing does.
+    hidden = existing is not None and not await can_read(identity, existing.namespace)
+    descendants = [] if hidden else await InheritanceService.get_descendants(template_id)
     templates = [TemplateService._to_template_response(t) for t in descendants]
     return TemplateListResponse(
         items=templates,

@@ -10,7 +10,6 @@ entity's own namespace, and check read on it even after the entity is gone
 from unittest.mock import patch
 
 import pytest
-from fastapi import HTTPException
 from httpx import AsyncClient
 
 from def_store.models.audit_log import TermAuditLog
@@ -171,10 +170,13 @@ async def test_hard_deleted_term_history_stays_behind_read_gate(
     )
     assert response.json()["succeeded"] == 1
 
-    async def deny(identity, namespace, level):
-        raise HTTPException(404, "Namespace not found")
+    async def invisible(identity, namespace):
+        return "none"
 
-    with patch("def_store.api.audit.check_namespace_permission", side_effect=deny):
+    with patch("wip_auth.permissions.resolve_permission", side_effect=invisible):
         response = await client.get(f"{API}/audit/terms/{term_id}", headers=auth_headers)
 
-    assert response.status_code == 404, response.text
+    # The history of a term in a namespace the caller cannot see is the
+    # empty page an unknown id gets, not a 404 that would confirm it existed.
+    assert response.status_code == 200, response.text
+    assert response.json()["items"] == []

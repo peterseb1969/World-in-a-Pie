@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from wip_auth import (
     UserIdentity,
     check_namespace_permission,
+    check_readable,
     resolve_accessible_namespaces,
     resolve_or_404,
 )
@@ -47,7 +48,7 @@ async def export_terminology(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        await check_namespace_permission(identity, existing.namespace, "read")
+        await check_readable(identity, existing.namespace, "Terminology not found")
 
     try:
         language_list = languages.split(",") if languages else None
