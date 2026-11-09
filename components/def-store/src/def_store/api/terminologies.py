@@ -23,7 +23,7 @@ from ..models.api_models import (
     UpdateTerminologyItem,
 )
 from ..services.dependency_service import DependencyService, TerminologyDependencies
-from ..services.errors import error_fields
+from ..services.errors import DefStoreError, error_fields
 from ..services.registry_client import RegistryError
 from ..services.terminology_service import (
     AmbiguousTerminologyValueError,
@@ -284,10 +284,16 @@ async def restore_terminology(
     if existing:
         await check_namespace_permission(identity, existing.namespace, "write")
 
-    result = await TerminologyService.restore_terminology(
-        terminology_id=terminology_id,
-        restore_terms=restore_terms
-    )
+    try:
+        result = await TerminologyService.restore_terminology(
+            terminology_id=terminology_id,
+            restore_terms=restore_terms
+        )
+    except DefStoreError as e:
+        if e.code != "registry_error":
+            raise
+        # The Registry could not record the revival: nothing was restored
+        raise HTTPException(status_code=503, detail=str(e)) from e
     if not result:
         raise HTTPException(status_code=404, detail="Terminology not found")
     return result

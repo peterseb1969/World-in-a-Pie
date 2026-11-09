@@ -72,13 +72,13 @@ async def _validate(client, auth_headers, terminology_id, value):
 def registry_calls(monkeypatch):
     """Every retire/revive the def-store tells the Registry, in order."""
     calls: list[tuple[bool, list[str]]] = []
-    real = TerminologyService._sync_registry_lifecycle
+    real = TerminologyService._record_lifecycle
 
     async def spy(entry_ids, *, retired, actor):
         calls.append((retired, list(entry_ids)))
         await real(entry_ids, retired=retired, actor=actor)
 
-    monkeypatch.setattr(TerminologyService, "_sync_registry_lifecycle", staticmethod(spy))
+    monkeypatch.setattr(TerminologyService, "_record_lifecycle", staticmethod(spy))
     return calls
 
 

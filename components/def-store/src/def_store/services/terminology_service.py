@@ -214,6 +214,17 @@ def _pointer_refusal(
     return None
 
 
+def _lifecycle_refusal(results: list[dict], expected: int) -> tuple[list[str], str] | None:
+    """None when the Registry recorded every entry; else the entries it did
+    record (to undo) and what it refused."""
+    refused = [r for r in results if r.get("status") in ("error", "not_found")]
+    if not refused and len(results) == expected:
+        return None
+    recorded = [r["registry_id"] for r in results if r not in refused]
+    detail = "; ".join(f"{r.get('registry_id')}: {r.get('status')} {r.get('error') or ''}".strip() for r in refused[:5])
+    return recorded, detail or "the Registry did not answer every entry"
+
+
 class TerminologyService:
     """Service for managing terminologies and terms."""
 
@@ -826,18 +837,19 @@ class TerminologyService:
                 {"terminology_id": terminology_id, "status": "active"}, {"term_id": 1},
             )
         ]
-        await Term.find({"terminology_id": terminology_id, "status": "active"}).update_many({
-            "$set": {"status": "inactive", "updated_at": now, "updated_by": actor}
-        })
 
-        terminology.status = "inactive"
-        terminology.term_count = 0  # active terms; none are left
-        terminology.updated_at = now
-        terminology.updated_by = actor
-        await terminology.save()
+        async def write() -> None:
+            await Term.find({"terminology_id": terminology_id, "status": "active"}).update_many({
+                "$set": {"status": "inactive", "updated_at": now, "updated_by": actor}
+            })
+            terminology.status = "inactive"
+            terminology.term_count = 0  # active terms; none are left
+            terminology.updated_at = now
+            terminology.updated_by = actor
+            await terminology.save()
 
-        await TerminologyService._sync_registry_lifecycle(
-            [terminology_id, *retired_ids], retired=True, actor=actor,
+        await TerminologyService._lifecycle_write(
+            [terminology_id, *retired_ids], retired=True, actor=actor, write=write,
         )
         return TerminologyService._terminology_to_event_dict(terminology), len(retired_ids)
 
@@ -890,40 +902,28 @@ class TerminologyService:
         actor = get_identity_string()
         now = datetime.now(UTC)
 
-        # Reactivate terminology
-        terminology.status = "active"
-        terminology.updated_at = now
-        terminology.updated_by = actor
-        await terminology.save()
+        restored_term_ids: list[str] = [
+            t["term_id"] async for t in Term.get_motor_collection().find(
+                {"terminology_id": terminology_id, "status": "inactive"}, {"term_id": 1},
+            )
+        ] if restore_terms else []
 
-        # Reactivate terms
-        restored_term_ids: list[str] = []
-        if restore_terms:
-            restored_term_ids = [
-                t["term_id"] async for t in Term.get_motor_collection().find(
-                    {"terminology_id": terminology_id, "status": "inactive"}, {"term_id": 1},
-                )
-            ]
-            await Term.find({
-                "terminology_id": terminology_id,
-                "status": "inactive"
-            }).update_many({
-                "$set": {
-                    "status": "active",
-                    "updated_at": now,
-                    "updated_by": actor
-                }
-            })
-
-            # Recalculate term count
-            terminology.term_count = await Term.find({
-                "terminology_id": terminology_id,
-                "status": "active"
-            }).count()
+        async def write() -> None:
+            # Reactivate the terminology, then its inactive terms
+            terminology.status = "active"
+            terminology.updated_at = now
+            terminology.updated_by = actor
+            if restored_term_ids:
+                await Term.find({"terminology_id": terminology_id, "status": "inactive"}).update_many({
+                    "$set": {"status": "active", "updated_at": now, "updated_by": actor}
+                })
+                terminology.term_count = await Term.find({
+                    "terminology_id": terminology_id, "status": "active",
+                }).count()
             await terminology.save()
 
-        await TerminologyService._sync_registry_lifecycle(
-            [terminology_id, *restored_term_ids], retired=False, actor=actor,
+        await TerminologyService._lifecycle_write(
+            [terminology_id, *restored_term_ids], retired=False, actor=actor, write=write,
         )
         TerminologyService._drop_derived_caches(terminology.value)
         await TerminologyService._create_audit_log(
@@ -2155,41 +2155,84 @@ class TerminologyService:
         return TerminologyService._to_term_response(term)
 
     @staticmethod
-    async def _sync_registry_lifecycle(entry_ids: list[str], *, retired: bool, actor: str | None) -> None:
-        """Tell the Registry these terms or terminologies were retired
-        (deprecated, soft-deleted) or revived (restored).
+    async def _record_lifecycle(entry_ids: list[str], *, retired: bool, actor: str | None) -> None:
+        """Have the Registry record these terms or terminologies as retired
+        (deprecated, soft-deleted) or revived (restored) — BEFORE def-store
+        writes the change.
 
         Retiring releases their caller-added synonyms — they stay recorded as
         inactive and neither block another entity from claiming the key nor
         resolve; reviving claims them again where free. The {ns, type, …}
         auto-synonym and the primary key are never released, so a retired
-        term or terminology stays addressable by value. The def-store write
-        has already committed, so a failed call is logged;
-        /maintenance/reconcile-synonym-lifecycle repairs it.
+        term or terminology stays addressable by value.
+
+        The Registry is the identity authority: a retirement it has not
+        recorded leaves the entity's synonyms resolving as though it were
+        alive. So when the Registry does not answer, or refuses any entry,
+        what it did record is undone and DefStoreError (registry_error) is
+        raised; the caller then writes nothing.
         """
         if not entry_ids:
             return
-        verb = "retired" if retired else "revived"
+        verb = "retire" if retired else "revive"
         try:
-            client = get_registry_client()
-            if retired:
-                results = await client.deactivate_entries(entry_ids, updated_by=actor)
-            else:
-                results = await client.reactivate_entries(entry_ids, updated_by=actor)
+            results = await TerminologyService._lifecycle_call(entry_ids, retired=retired, actor=actor)
         except Exception as e:
-            logger.warning(
-                "Registry not told %d entr%s %s: %s",
-                len(entry_ids), "y was" if len(entry_ids) == 1 else "ies were", verb, e,
-            )
-            return
+            await TerminologyService._undo_lifecycle(entry_ids, retired=retired, actor=actor)
+            raise DefStoreError(
+                f"Not changed — the Registry did not answer the request to {verb} it: {e}",
+                "registry_error",
+            ) from e
+        refusal = _lifecycle_refusal(results, len(entry_ids))
+        if refusal is not None:
+            recorded, detail = refusal
+            await TerminologyService._undo_lifecycle(recorded, retired=retired, actor=actor)
+            raise DefStoreError(f"Not changed — the Registry could not {verb} it ({detail})", "registry_error")
+
+    @staticmethod
+    async def _lifecycle_call(entry_ids: list[str], *, retired: bool, actor: str | None) -> list[dict]:
+        """Ask the Registry to retire or revive the entries; log its warnings
+        (a revived synonym another entity took meanwhile)."""
+        client = get_registry_client()
+        if retired:
+            results = await client.deactivate_entries(entry_ids, updated_by=actor)
+        else:
+            results = await client.reactivate_entries(entry_ids, updated_by=actor)
         for r in results:
             for warning in r.get("warnings") or []:
                 logger.warning("Entry %s: %s", r.get("registry_id"), warning)
-            if r.get("status") in ("error", "not_found"):
-                logger.warning(
-                    "Registry could not record entry %s as %s: %s",
-                    r.get("registry_id"), verb, r.get("error") or r.get("status"),
-                )
+        return results
+
+    @staticmethod
+    async def _undo_lifecycle(entry_ids: list[str], *, retired: bool, actor: str | None) -> None:
+        """Best effort: reverse a lifecycle change the Registry recorded for
+        a write that is not going ahead. A failure here is logged — the
+        write it served is refused either way, and
+        /maintenance/reconcile-synonym-lifecycle settles what is left."""
+        if not entry_ids:
+            return
+        try:
+            client = get_registry_client()
+            if retired:
+                await client.reactivate_entries(entry_ids, updated_by=actor)
+            else:
+                await client.deactivate_entries(entry_ids, updated_by=actor)
+        except Exception as e:
+            logger.error("Registry lifecycle change for %d entries not undone: %s", len(entry_ids), e)
+
+    @staticmethod
+    async def _lifecycle_write(
+        entry_ids: list[str], *, retired: bool, actor: str | None, write: Any,
+    ) -> None:
+        """Record the lifecycle change in the Registry, then run `write` (the
+        def-store change). Nothing is written when the Registry cannot record
+        it; when `write` fails, the Registry change is undone."""
+        await TerminologyService._record_lifecycle(entry_ids, retired=retired, actor=actor)
+        try:
+            await write()
+        except Exception:
+            await TerminologyService._undo_lifecycle(entry_ids, retired=retired, actor=actor)
+            raise
 
     @staticmethod
     async def deprecate_term(
@@ -2221,10 +2264,10 @@ class TerminologyService:
         term.replaced_by_term_id = request.replaced_by_term_id
         term.updated_at = datetime.now(UTC)
         term.updated_by = actor
-        await term.save()
+        await TerminologyService._lifecycle_write(
+            [term_id] if release_synonyms else [], retired=True, actor=actor, write=term.save,
+        )
         await TerminologyService._audit_lifecycle(term, "deprecated", before, actor)
-        if release_synonyms:
-            await TerminologyService._sync_registry_lifecycle([term_id], retired=True, actor=actor)
 
         # Update terminology term count
         terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
@@ -2337,9 +2380,8 @@ class TerminologyService:
             term.status = "inactive"
             term.updated_at = datetime.now(UTC)
             term.updated_by = actor
-            await term.save()
+            await TerminologyService._lifecycle_write([term_id], retired=True, actor=actor, write=term.save)
             event_dict = TerminologyService._term_to_event_dict(term)
-            await TerminologyService._sync_registry_lifecycle([term_id], retired=True, actor=actor)
 
         # Update terminology term count
         if terminology:

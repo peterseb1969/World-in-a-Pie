@@ -7,6 +7,23 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### def-store retires or revives nothing the Registry has not recorded
+
+- Deprecating a term, soft-deleting a term or a terminology, and restoring
+  a terminology wrote to def-store first and then told the Registry; a
+  Registry that did not answer, or refused an entry, was only logged — the
+  entity's synonyms then kept resolving (or stayed released) as though
+  nothing had changed, until someone ran
+  `/maintenance/reconcile-synonym-lifecycle`.
+- Now the Registry is asked **first**. When it does not answer, or refuses
+  any entry, nothing is written: the item is `registry_error` (bulk
+  deprecate / delete), and `POST /terminologies/{id}/restore` answers
+  **503**. What the Registry did record for the request is undone; a
+  def-store write that fails after the Registry recorded the change undoes
+  that change too. A merge's deprecation, whose synonyms move to the
+  survivor, is unchanged.
+- **Action:** a retire or restore during a Registry outage now fails; retry
+  when the Registry is back.
 ### Registry lookups no longer fetch an entry's `endpoint_url` (@wip/client 0.103.0)
 
 - `POST /api/registry/entries/lookup/by-id` and `/lookup/by-key` accepted
