@@ -16,6 +16,42 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   the test suite, so a new tool fails the tests until someone decides which
   it is.
 
+### MCP server: schema generation fails loudly; smaller corrections (and def-store reconcile applies `sort_order: 0`)
+
+- **`scripts/generate_schemas.py`** reads only the committed specs in
+  `schemas/` (refresh them with `scripts/update-schemas.sh`) and records
+  each spec's version and hash in `_generated_schemas.py`. `--fetch` is gone:
+  it reached for fixed ports wip-deploy v2 does not publish, fell back to the
+  cached specs on every failure and exited 0. A missing spec, an
+  unresolvable `$ref` or model, or output that does not compile now exits
+  non-zero and writes nothing; an unresolved `$ref` used to become `{}`,
+  which accepts anything. `allOf` `required` keeps spec order. A test fails
+  when the committed module is not what the generator makes from
+  `schemas/` now.
+- **def-store `reconcile`:** a snapshot item that sets `sort_order: 0` now
+  moves the term to 0. The value was ignored because 0 is the default.
+  An omitted `sort_order` still keeps the stored one.
+- An explicit `namespace` argument that disagrees with the payload's own
+  `namespace` (`create_template(s)`, `create_edge_type`,
+  `create_document(s)`, `create_terminologies_bulk`) is refused. It used to
+  lose silently to the payload's.
+- `get_document_relationships` takes `include` (`peers`).
+- `lookup_entry`, `add_synonym`, `remove_synonym`, `merge_entries` and
+  `create_grant` report a per-item Registry error as `WIP error [code]:`,
+  not as an ordinary result.
+- `run_report_query` and `export_report_csv` wait past their server-side
+  `timeout_seconds` instead of the client's fixed 30 s, so a long export
+  gets the server's answer.
+- Text: the development guide names the real slash commands
+  (`/wip-explore`, …); the bootstrap paths carry their service prefix; a
+  draft onto an existing template value fails with `already_exists` (not
+  "a same-name create never errors"); `search_terms` exact mode returns
+  every candidate up to `limit`; `update_term` clears a label with
+  `clear=['label']`; `update_terminology`'s `mutable` is refused while the
+  terminology holds any term; `get_table_view`'s limits are 1000 rows per
+  document's array expansion and 10,000 rows per response; the api-key
+  docstrings describe the network transports' caller keys.
+
 ### MCP server: the default namespace applies everywhere; tools send what you give them and return what the service says
 
 - **`WIP_MCP_DEFAULT_NAMESPACE` now applies to every call that takes a

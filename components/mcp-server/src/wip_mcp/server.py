@@ -54,6 +54,25 @@ def get_client() -> WipClient:
     return _client
 
 
+def _place_in_namespace(
+    items: list[dict], namespace: str | None, default: str | None,
+) -> None:
+    """Give each payload its namespace: its own, else the argument, else the
+    default. An explicit argument that disagrees with a payload's own
+    namespace is refused — the payload's is the one the service would act
+    on, so either silent choice would surprise one of them."""
+    for item in items:
+        own = item.get("namespace")
+        if namespace and own and own != namespace:
+            raise ValueError(
+                f"namespace argument '{namespace}' disagrees with the payload's "
+                f"namespace '{own}' — pass one, or make them equal"
+            )
+        ns = own or namespace or default
+        if ns:
+            item["namespace"] = ns
+
+
 def _error(e: Exception) -> str:
     """Format an exception for MCP tool output."""
     if isinstance(e, BulkError):
@@ -166,7 +185,7 @@ Safety guards on `deletion_mode`:
 - Creating a new namespace with `deletion_mode='full'` is allowed
   directly (no transition to confirm).
 
-### Template create is an upsert: POST /templates
+### Template create is an upsert: POST /api/template-store/templates
 The template's identity is its name — creating an existing (namespace, value)
 is a version event, exactly like a document upsert (same identity → new
 version). Per item:
@@ -182,6 +201,8 @@ version). Per item:
     'identity_fields_immutable' (changing identity is a fork — declare a new
     template value); usage / versioned / edge endpoint lists differ →
     error_code='immutable_property'
+  * a DRAFT (status='draft') is not upserted: a draft onto an existing
+    (namespace, value) fails with error_code='already_exists'
 
 The on_conflict query parameter is deprecated: it is still accepted
 ('error' | 'validate') but no longer selects behavior — every create upserts.
@@ -200,7 +221,8 @@ comparison site — the diff checker will not flag a value↔UUID mismatch as
 everywhere the platform compares references.
 
 ### Terminology / term create with conflict validation
-POST /terminologies and single-item POST /terminologies/{id}/terms accept the
+POST /api/def-store/terminologies and single-item
+POST /api/def-store/terminologies/{id}/terms accept the
 same on_conflict parameter (also exposed on the create_terminology,
 create_terminologies_bulk, and create_terms MCP tools):
 - on_conflict='error' (default): duplicates return per-item status='error'
@@ -525,7 +547,8 @@ A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
   typeahead over value, label and every name, with match modes
   (exact/prefix/word-start/substring), ranked hits carrying the matched
   name and its type, and optional rollup to the root is_a ancestor.
-  Always case-insensitive and literal; exact mode returns ALL candidates.
+  Always case-insensitive and literal; exact mode returns every candidate
+  up to the limit.
 - Snapshot reconcile: POST /api/def-store/terminologies/{id}/reconcile
   (the reconcile_terminology tool) — submit the complete desired term set
   for a terminology and get the diff (dry_run=true is the default), then
@@ -651,7 +674,8 @@ Templates can define rules across fields:
 ### Template Draft Mode
 Create templates with status: "draft" to skip reference validation.
 This enables circular dependencies and order-independent creation.
-POST /templates/{id}/activate validates and activates cascadingly.
+POST /api/template-store/templates/{id}/activate validates and activates
+cascadingly.
 All-or-nothing: if any template in the chain fails validation, none activate.
 
 ### Reporting Configuration
@@ -858,7 +882,7 @@ MCP tools remain useful for debugging and data queries:
 - SQL aggregation: use run_report_query for GROUP BY, COUNT, JOINs across templates
 
 Detailed step-by-step procedures for each phase are in the slash commands:
-/explore, /design-model, /implement, /build-app.
+/wip-explore, /wip-design-model, /wip-implement, /wip-build-app.
 """
 
 
@@ -1620,10 +1644,8 @@ async def create_grant(
         }
         if expires_at is not None:
             item["expires_at"] = expires_at
-        data = await get_client().create_grants(namespace, [item])
-        result = data.get("results", [{}])[0]
-        if result.get("status") == "error":
-            return f"Error: {result.get('error', 'unknown error')}"
+        client = get_client()
+        result = client._unwrap_single(await client.create_grants(namespace, [item]))
         return json.dumps(result, indent=2, default=str)
     except Exception as e:
         return _error(e)
@@ -2005,10 +2027,7 @@ async def create_terminologies_bulk(
     """
     try:
         client = get_client()
-        ns = namespace or client.default_namespace
-        if ns:
-            for item in items:
-                item.setdefault("namespace", ns)
+        _place_in_namespace(items, namespace, client.default_namespace)
         data = await client.create_terminologies(items, on_conflict=on_conflict)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2029,7 +2048,9 @@ async def update_terminology(
         terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
         label: New label (optional).
         description: New description (optional).
-        mutable: Set mutability (optional). Only allowed when term_count is 0.
+        mutable: Set mutability (optional). Refused while the terminology holds
+            any term, active, deprecated or inactive (error_code
+            invalid_state, details.rule has_terms).
         namespace: Namespace for value/synonym resolution (required with
             multi-namespace or privileged keys; single-namespace keys derive it).
     """
@@ -2234,7 +2255,7 @@ async def reconcile_terminology(
     authoritative for label and names. description and parent_term_id
     change only when the snapshot item names them: omitted keeps the stored
     value, an explicit null clears it (RFC 7396, like update_term).
-    sort_order applies only when it is non-zero. Re-runs of the same
+    sort_order applies when the item names it (0 included). Re-runs of the same
     snapshot are idempotent; metadata is honored on create, never
     rewritten. Active
     terms absent from the snapshot are DEPRECATED (never deleted) and only
@@ -2284,7 +2305,7 @@ async def search_terms(
     type and language for alias hits), and a rank: exact > prefix >
     word-start > substring, then value > label > preferred name > name.
     Matching is always case-insensitive and LITERAL (no regex). Exact mode
-    returns ALL candidates — two terms sharing a name both appear, which
+    returns every candidate up to `limit` — two terms sharing a name both appear, which
     makes it the ambiguity-inspection surface; strict one-answer
     resolution stays with validate_term_value.
 
@@ -2347,8 +2368,9 @@ async def update_term(
             colon-parsed). The ambiguous 2-part 'TERMINOLOGY:VALUE'
             shorthand is rejected (422) on write doors: it could silently
             select the wrong term when the value contains ':'.
-        label: New label (optional). Explicit null clears it (display
-            falls back to the term's value).
+        label: New label (optional). Omitted or null leaves it unchanged; to
+            clear it (display falls back to the term's value) pass
+            clear=['label'].
         names: Full replacement names list (optional). Each entry: 'value',
             optional 'type' (from _NAME_TYPES), 'language', 'source',
             'preferred'. Mutually exclusive with aliases. Pass [] to
@@ -2534,6 +2556,7 @@ async def get_term_hierarchy(
     """
     try:
         client = get_client()
+        data: list[dict] | dict
         if direction == "children":
             data = await client.get_term_children(
                 term_id, relation_type=relation_type, namespace=namespace,
@@ -2793,7 +2816,8 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
     template's name: if (namespace, value) already exists, an identical
     definition returns status='unchanged', and any difference creates the
     NEXT VERSION with a structured diff in the result — check the returned
-    status; a same-name create never errors, it versions. Changing
+    status; a same-name create versions instead of erroring, except a
+    draft (status='draft'), which fails with 'already_exists'. Changing
     identity_fields (or usage/versioned) is rejected — declare a new value
     instead. The old version stays active alongside the new one. See
     wip://conventions for versioning behaviour and deactivation.
@@ -2864,9 +2888,7 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
     """
     try:
         client = get_client()
-        ns = namespace or client.default_namespace
-        if ns:
-            template.setdefault("namespace", ns)
+        _place_in_namespace([template], namespace, client.default_namespace)
         data = await client.create_template(template)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -2889,10 +2911,7 @@ async def create_templates_bulk(templates: list[dict], namespace: str | None = N
     """
     try:
         client = get_client()
-        ns = namespace or client.default_namespace
-        if ns:
-            for tpl in templates:
-                tpl.setdefault("namespace", ns)
+        _place_in_namespace(templates, namespace, client.default_namespace)
         data = await client.create_templates(templates)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3048,9 +3067,7 @@ async def create_edge_type(
 
     try:
         client = get_client()
-        ns = namespace or client.default_namespace
-        if ns:
-            template.setdefault("namespace", ns)
+        _place_in_namespace([template], namespace, client.default_namespace)
         data = await client.create_template(template)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3549,9 +3566,7 @@ async def create_document(document: dict, namespace: str | None = None) -> str:
     """
     try:
         client = get_client()
-        ns = namespace or client.default_namespace
-        if ns:
-            document.setdefault("namespace", ns)
+        _place_in_namespace([document], namespace, client.default_namespace)
         data = await client.create_document(document)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3570,10 +3585,7 @@ async def create_documents_bulk(documents: list[dict], namespace: str | None = N
     """
     try:
         client = get_client()
-        ns = namespace or client.default_namespace
-        if ns:
-            for doc in documents:
-                doc.setdefault("namespace", ns)
+        _place_in_namespace(documents, namespace, client.default_namespace)
         data = await client.create_documents(documents)
         return json.dumps(data, indent=2, default=str)
     except Exception as e:
@@ -3611,8 +3623,9 @@ async def get_document_relationships(
     active_only: bool = True,
     page: int = 1,
     page_size: int = 50,
+    include: str | None = None,
 ) -> str:
-    """List relationship documents touching a document (Phase-4 query API).
+    """List relationship documents touching a document.
 
     Returns relationship documents (templates declared with usage='relationship')
     that point at (incoming) or from (outgoing) the given document. The
@@ -3624,13 +3637,15 @@ async def get_document_relationships(
         direction: 'incoming', 'outgoing', or 'both' (default 'both').
         template: Comma-separated edge type values to include
             (default: all edge types).
-        namespace: List only edges stored in this namespace. Default: every
-            namespace you can read — an edge lives in its source's namespace,
-            so a document's incoming edges may sit in other namespaces.
-            With include=peers, a peer in a namespace you cannot read
-            reports peer_error_code 'not_found'.
+        namespace: List only edges stored in this namespace. Default:
+            WIP_MCP_DEFAULT_NAMESPACE when set, else every namespace you can
+            read — an edge lives in its source's namespace, so a document's
+            incoming edges may sit in other namespaces.
         active_only: Exclude inactive rel docs (default True).
-        page, page_size: Pagination (default 1 / 50).
+        page, page_size: Pagination (default 1 / 50, page_size max 500).
+        include: 'peers' embeds a compact projection of the document at the
+            other end of each edge (saves a get_document per row). A peer in
+            a namespace you cannot read reports peer_error_code 'not_found'.
 
     Example:
         # All experiments referencing a molecule:
@@ -3644,6 +3659,7 @@ async def get_document_relationships(
             template=template,
             namespace=namespace,
             active_only=active_only,
+            include=include,
             page=page,
             page_size=page_size,
         )
@@ -3985,7 +4001,10 @@ async def get_table_view(
 ) -> str:
     """Get a flattened, spreadsheet-like view of documents for a template.
 
-    Arrays are cross-product expanded into rows (up to 1000 row limit).
+    Arrays are cross-product expanded into rows; a document whose arrays
+    would expand past 1000 rows keeps them as JSON cells instead. One
+    response carries at most 10,000 flattened rows — a larger page is
+    refused (422); lower page_size.
     Returns columns with type info and denormalized rows — ideal for
     data analysis and review.
 

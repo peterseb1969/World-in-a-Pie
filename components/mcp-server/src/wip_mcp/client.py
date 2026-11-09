@@ -50,6 +50,13 @@ def _dependencies_down(body: Any) -> list[str]:
     return sorted(down)
 
 
+def _beyond(server_budget_seconds: float) -> float:
+    """A client timeout for a call whose server enforces its own budget: long
+    enough to receive the server's answer (or its timeout error) rather than
+    giving up first."""
+    return float(server_budget_seconds) + 10.0
+
+
 def _raise_for_status_with_body(resp: httpx.Response) -> None:
     """Like httpx.Response.raise_for_status(), but the raised exception's
     message includes the response body — so consumers see the server's
@@ -86,9 +93,10 @@ def configured_api_key() -> str | None:
 
     WIP_API_KEY_FILE allows key rotation without updating each app's .mcp.json.
 
-    There is deliberately no default here: the network transports require
-    inbound requests to present exactly this key, and a well-known default
-    must never become an accepted credential.
+    There is deliberately no default here: a well-known default must never
+    stand in for a configured key. (The network transports do not use this
+    key for callers: they accept any key the Registry accepts, and each
+    backend call acts with the key its MCP request presented.)
     """
     # Each os.getenv read is unrolled (rather than looped) so the
     # docstring-env-var-drift static check finds every name as a string
@@ -208,10 +216,12 @@ class WipClient:
         SERVICE BASE (e.g., http://wip-registry:8001 for direct service
         access). The client owns the `/api/<service>/...` path prefix
         and appends it at call sites.
-      - `api_key` → `_resolve_api_key()`, which reads WIP_API_KEY, then
-        WIP_API_KEY_FILE (re-read whenever the file changes, so a rotation
-        needs neither an .mcp.json edit nor a reconnect),
-        then falls back to the dev default.
+      - `api_key` → used only when a call has no caller key (stdio, local
+        tooling); under a network transport every backend call acts with the
+        key its MCP request presented. Otherwise `_resolve_api_key()`:
+        WIP_API_KEY, MASTER_API_KEY, API_KEY, then WIP_API_KEY_FILE (re-read
+        whenever the file changes, so a rotation needs neither an .mcp.json
+        edit nor a reconnect), then the dev default.
       - `verify_tls` → `WIP_VERIFY_TLS`. `false` / `0` / `no` disables
         verification — intended for local dev against a self-signed
         Caddy, never production.
@@ -340,12 +350,19 @@ class WipClient:
         return data
 
     async def _post(
-        self, base_url: str, path: str, json: Any = None, **params
+        self, base_url: str, path: str, json: Any = None, *,
+        timeout: float | None = None, **params,
     ) -> dict[str, Any]:
-        """POST request, return parsed JSON."""
+        """POST request, return parsed JSON. `timeout` overrides the client's
+        default for a call that carries its own server-side budget."""
         client = await self._get_client()
         params = self._query(params)
-        resp = await client.post(f"{base_url}{path}", json=json, params=params)
+        if timeout is None:
+            resp = await client.post(f"{base_url}{path}", json=json, params=params)
+        else:
+            resp = await client.post(
+                f"{base_url}{path}", json=json, params=params, timeout=timeout,
+            )
         _raise_for_status_with_body(resp)
         data: dict[str, Any] = resp.json()
         return data
@@ -568,7 +585,7 @@ class WipClient:
         resp = await self._post(
             self.registry_url, "/api/registry/entries/register", json=[item]
         )
-        return resp["results"][0] if resp.get("results") else resp
+        return self._unwrap_single(resp)
 
     async def lookup_by_id(
         self, entry_id: str, namespace: str | None = None,
@@ -588,7 +605,7 @@ class WipClient:
             "/api/registry/entries/lookup/by-id",
             json=[item],
         )
-        return resp["results"][0] if resp.get("results") else resp
+        return self._unwrap_single(resp)
 
     async def lookup_by_key(
         self,
@@ -607,7 +624,7 @@ class WipClient:
                 "search_synonyms": search_synonyms,
             }],
         )
-        return resp["results"][0] if resp.get("results") else resp
+        return self._unwrap_single(resp)
 
     async def add_synonym(
         self,
@@ -626,7 +643,7 @@ class WipClient:
                 "synonym_composite_key": synonym_composite_key,
             }],
         )
-        return resp["results"][0] if resp.get("results") else resp
+        return self._unwrap_single(resp)
 
     async def remove_synonym(
         self,
@@ -645,7 +662,7 @@ class WipClient:
                 "synonym_composite_key": synonym_composite_key,
             }],
         )
-        return resp["results"][0] if resp.get("results") else resp
+        return self._unwrap_single(resp)
 
     async def merge_entries(
         self, preferred_id: str, deprecated_id: str
@@ -658,7 +675,7 @@ class WipClient:
                 "deprecated_id": deprecated_id,
             }],
         )
-        return resp["results"][0] if resp.get("results") else resp
+        return self._unwrap_single(resp)
 
     # ========================================================
     # Def-Store: Terminologies
@@ -945,29 +962,33 @@ class WipClient:
         self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
         terminology: str | None = None,
-    ) -> list[dict]:
-        return cast("list[dict[str, Any]]", await self._get(
+    ) -> dict:
+        """The route's TraversalResponse: the nodes found, and whether the
+        walk stopped at its node limit (`truncated`)."""
+        return await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/ancestors",
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=self._ns(namespace),
             terminology=terminology,
-        ))
+        )
 
     async def get_term_descendants(
         self, term_id: str, relation_type: str | None = None,
         max_depth: int = 10, namespace: str | None = None,
         terminology: str | None = None,
-    ) -> list[dict]:
-        return cast("list[dict[str, Any]]", await self._get(
+    ) -> dict:
+        """The route's TraversalResponse: the nodes found, and whether the
+        walk stopped at its node limit (`truncated`)."""
+        return await self._get(
             self.def_store_url,
             f"/api/def-store/ontology/terms/{term_id}/descendants",
             relation_type=relation_type,
             max_depth=max_depth,
             namespace=self._ns(namespace),
             terminology=terminology,
-        ))
+        )
 
     async def create_term_relations(
         self, term_relations: list[dict], namespace: str | None = None,
@@ -1282,6 +1303,7 @@ class WipClient:
         active_only: bool = True,
         page: int = 1,
         page_size: int = 50,
+        include: str | None = None,
     ) -> dict:
         return await self._get(
             self.document_store_url,
@@ -1292,6 +1314,7 @@ class WipClient:
             active_only=active_only,
             page=page,
             page_size=page_size,
+            include=include,
         )
 
     async def traverse_documents(
@@ -1981,7 +2004,8 @@ class WipClient:
         if namespace is not None:
             body["namespace"] = namespace
         return await self._post(
-            self.reporting_sync_url, "/api/reporting-sync/query", json=body
+            self.reporting_sync_url, "/api/reporting-sync/query", json=body,
+            timeout=_beyond(timeout_seconds),
         )
 
     async def export_report_csv(
@@ -2005,6 +2029,7 @@ class WipClient:
             resp = await client.get(
                 f"{self.reporting_sync_url}/api/reporting-sync/export/csv",
                 params={"table": table, "namespace": namespace, "timeout_seconds": timeout_seconds},
+                timeout=_beyond(timeout_seconds),
             )
         elif sql:
             body: dict = {
@@ -2017,6 +2042,7 @@ class WipClient:
             resp = await client.post(
                 f"{self.reporting_sync_url}/api/reporting-sync/export/csv",
                 json=body,
+                timeout=_beyond(timeout_seconds),
             )
         else:
             raise ValueError("Either table or sql must be provided")

@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
 """Generate MCP tool schemas from WIP OpenAPI specifications.
 
-Fetches OpenAPI specs from running WIP services (or reads cached copies),
-resolves $ref pointers, and produces src/wip_mcp/_generated_schemas.py
-with resolved JSON schemas, per-tool field lists and the parameter mapping.
+Reads the committed specs in schemas/ (refresh them from a running install
+with scripts/update-schemas.sh), resolves $ref pointers, and produces
+src/wip_mcp/_generated_schemas.py with resolved JSON schemas, per-tool field
+lists, the parameter mapping, and which spec versions it was built from.
+A missing spec, an unresolved $ref or model, or output that does not compile
+exits non-zero and writes nothing.
 
 Usage:
-    python -m scripts.generate_schemas --fetch    # Fetch fresh specs + generate
-    python -m scripts.generate_schemas            # Generate from cached specs
+    python -m scripts.generate_schemas
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
 
-import httpx
 import yaml
 
 # ---------------------------------------------------------------------------
@@ -25,72 +27,42 @@ import yaml
 PROJECT_ROOT = Path(__file__).parent.parent
 REPO_ROOT = PROJECT_ROOT.parent.parent
 SHARED_SCHEMA_DIR = REPO_ROOT / "schemas"  # Shared with @wip/client
-LOCAL_CACHE_DIR = PROJECT_ROOT / "openapi_cache"  # Fallback
 TOOLS_YAML = PROJECT_ROOT / "tools.yaml"
 OUTPUT_FILE = PROJECT_ROOT / "src" / "wip_mcp" / "_generated_schemas.py"
 
-SERVICES = {
-    "registry": {"port": 8001, "path": "/openapi.json"},
-    "def-store": {"port": 8002, "path": "/openapi.json"},
-    "template-store": {"port": 8003, "path": "/openapi.json"},
-    "document-store": {"port": 8004, "path": "/openapi.json"},
-    "reporting-sync": {"port": 8005, "path": "/openapi.json"},
-}
+SERVICES = ("registry", "def-store", "template-store", "document-store", "reporting-sync")
+
+
+class GenerationError(Exception):
+    """Input the generator cannot turn into a correct module; it exits non-zero."""
 
 
 # ---------------------------------------------------------------------------
-# Fetch OpenAPI specs
+# Load OpenAPI specs
 # ---------------------------------------------------------------------------
 
 
-def fetch_specs(base_url: str = "http://localhost") -> dict[str, dict]:
-    """Fetch OpenAPI specs from running services into the shared schemas/ dir.
+def load_specs() -> tuple[dict[str, dict], dict[str, str]]:
+    """The committed specs in schemas/, and a provenance line for each.
 
-    Use scripts/update-schemas.sh for the canonical way to refresh specs.
-    This --fetch flag is a convenience for MCP-server-only workflows.
+    Refresh them from a running install with scripts/update-schemas.sh; the
+    generator never fetches, so it cannot mix fresh and stale specs.
     """
-    specs = {}
-    SHARED_SCHEMA_DIR.mkdir(exist_ok=True)
-
-    for name, cfg in SERVICES.items():
-        url = f"{base_url}:{cfg['port']}{cfg['path']}"
-        print(f"  Fetching {name} from {url}...", end=" ")
-        try:
-            resp = httpx.get(url, timeout=10.0)
-            resp.raise_for_status()
-            spec = resp.json()
-            specs[name] = spec
-            # Write to shared schemas/ directory
-            cache_file = SHARED_SCHEMA_DIR / f"{name}.json"
-            cache_file.write_text(json.dumps(spec, indent=2))
-            print(f"OK ({len(spec.get('paths', {}))} paths)")
-        except Exception as e:
-            print(f"FAILED: {e}")
-            # Fall back to existing cached version
-            for d in [SHARED_SCHEMA_DIR, LOCAL_CACHE_DIR]:
-                cache_file = d / f"{name}.json"
-                if cache_file.exists():
-                    print(f"    Using cached version from {d.name}/")
-                    specs[name] = json.loads(cache_file.read_text())
-                    break
-            else:
-                print("    No cache available, skipping")
-
-    return specs
-
-
-def load_cached_specs() -> dict[str, dict]:
-    """Load OpenAPI specs from shared schemas/ dir (or local fallback)."""
-    specs = {}
+    specs: dict[str, dict] = {}
+    provenance: dict[str, str] = {}
+    missing = []
     for name in SERVICES:
-        for d in [SHARED_SCHEMA_DIR, LOCAL_CACHE_DIR]:
-            cache_file = d / f"{name}.json"
-            if cache_file.exists():
-                specs[name] = json.loads(cache_file.read_text())
-                break
-        else:
-            print(f"  Warning: no cached spec for {name}")
-    return specs
+        spec_file = SHARED_SCHEMA_DIR / f"{name}.json"
+        if not spec_file.exists():
+            missing.append(str(spec_file))
+            continue
+        raw = spec_file.read_bytes()
+        specs[name] = json.loads(raw)
+        version = specs[name].get("info", {}).get("version", "?")
+        provenance[name] = f"schemas/{name}.json  version {version}  sha256 {hashlib.sha256(raw).hexdigest()[:16]}"
+    if missing:
+        raise GenerationError(f"missing specs: {', '.join(missing)} — run scripts/update-schemas.sh")
+    return specs, provenance
 
 
 # ---------------------------------------------------------------------------
@@ -99,13 +71,21 @@ def load_cached_specs() -> dict[str, dict]:
 
 
 def resolve_ref(ref: str, spec: dict) -> dict:
-    """Resolve a $ref pointer like '#/components/schemas/Foo'."""
+    """Resolve a $ref pointer like '#/components/schemas/Foo'.
+
+    A pointer that leaves the document or does not land on a schema object
+    is an error: resolving it to {} would accept anything and silently drop
+    the constraint it stood for.
+    """
     if not ref.startswith("#/"):
-        return {"type": "object", "description": f"Unresolved ref: {ref}"}
-    parts = ref.lstrip("#/").split("/")
-    node = spec
-    for part in parts:
-        node = node.get(part, {})
+        raise GenerationError(f"external $ref not supported: {ref}")
+    node: object = spec
+    for part in ref[2:].split("/"):
+        if not isinstance(node, dict) or part not in node:
+            raise GenerationError(f"unresolved $ref: {ref}")
+        node = node[part]
+    if not isinstance(node, dict):
+        raise GenerationError(f"$ref does not point at a schema object: {ref}")
     return node
 
 
@@ -141,8 +121,10 @@ def resolve_schema(schema: dict, spec: dict, seen: set | None = None) -> dict:
                     if sk == "properties" and "properties" in merged:
                         merged["properties"].update(sv)
                     elif sk == "required" and "required" in merged:
+                        # Keep spec order, without duplicates, so the
+                        # output is the same on every run.
                         merged["required"] = list(
-                            set(merged["required"]) | set(sv)
+                            dict.fromkeys(merged["required"] + list(sv))
                         )
                     else:
                         merged[sk] = sv
@@ -166,27 +148,15 @@ def resolve_schema(schema: dict, spec: dict, seen: set | None = None) -> dict:
     return result
 
 
-def extract_schema(service_name: str, model_name: str, specs: dict) -> dict | None:
+def extract_schema(service_name: str, model_name: str, specs: dict) -> dict:
     """Extract and resolve a schema by service name and model name."""
     spec = specs.get(service_name)
     if not spec:
-        print(f"  Warning: no spec for service '{service_name}'")
-        return None
-
+        raise GenerationError(f"no spec for service '{service_name}'")
     schemas = spec.get("components", {}).get("schemas", {})
     if model_name not in schemas:
-        print(f"  Warning: schema '{model_name}' not found in {service_name}")
-        # Try case-insensitive match
-        for name in schemas:
-            if name.lower() == model_name.lower():
-                print(f"    Found case-insensitive match: {name}")
-                model_name = name
-                break
-        else:
-            return None
-
-    raw = schemas[model_name]
-    return resolve_schema(raw, spec)
+        raise GenerationError(f"schema '{model_name}' not found in {service_name}")
+    return resolve_schema(schemas[model_name], spec)
 
 
 # ---------------------------------------------------------------------------
@@ -304,6 +274,7 @@ def generate_output(
     resolved_schemas: dict[str, dict],
     field_docs: dict[str, str],
     params: dict[str, dict],
+    provenance: dict[str, str],
 ) -> str:
     """Generate the _generated_schemas.py file content."""
     lines = [
@@ -313,6 +284,9 @@ def generate_output(
         "",
         "The server appends TOOL_FIELD_DOCS[tool] to that tool's docstring and",
         "replaces the parameter TOOL_PARAMS[tool] names with TOOL_SCHEMAS[ref].",
+        "",
+        "Generated from:",
+        *(f"  {line}" for line in provenance.values()),
         '"""',
         "",
         "",
@@ -347,84 +321,60 @@ def _format_dict(d: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
+def resolve_tool_schemas(tools: dict, specs: dict) -> dict[str, dict]:
+    """Every model tools.yaml names, resolved; any miss is an error."""
+    refs: set[str] = set()
+    for tool_name, tc in tools.items():
+        for ref in [tc.get("openapi_schema"), *tc.get("nested_schemas", [])]:
+            if ref is None:
+                continue
+            if "#" not in ref:
+                raise GenerationError(f"{tool_name}: '{ref}' is not 'service#Model'")
+            refs.add(ref)
+    resolved = {}
+    for ref in sorted(refs):
+        service, model = ref.split("#", 1)
+        resolved[ref] = extract_schema(service, model, specs)
+        print(f"  {ref}: {len(resolved[ref].get('properties', {}))} properties")
+    return resolved
+
+
 def main():
-    parser = argparse.ArgumentParser(description="Generate MCP tool schemas from OpenAPI")
-    parser.add_argument(
-        "--fetch", action="store_true", help="Fetch fresh specs from running services"
+    parser = argparse.ArgumentParser(
+        description="Generate MCP tool schemas from the committed OpenAPI specs in schemas/ "
+        "(refresh them with scripts/update-schemas.sh)",
     )
-    parser.add_argument(
-        "--base-url", default="http://localhost", help="Base URL for services"
-    )
-    args = parser.parse_args()
+    parser.parse_args()
 
     print("WIP MCP Schema Generator")
     print("=" * 40)
+    try:
+        specs, provenance = load_specs()
+        for line in provenance.values():
+            print(f"  {line}")
 
-    # Load or fetch specs
-    if args.fetch:
-        print("\nFetching OpenAPI specs...")
-        specs = fetch_specs(args.base_url)
-    else:
-        print("\nLoading cached OpenAPI specs...")
-        specs = load_cached_specs()
-
-    if not specs:
-        print("ERROR: No OpenAPI specs available. Run with --fetch first.")
+        tools = yaml.safe_load(TOOLS_YAML.read_text()).get("tools", {})
+        print(f"\n{len(tools)} tools in {TOOLS_YAML.name}; resolving schemas...")
+        resolved_schemas = resolve_tool_schemas(tools, specs)
+    except GenerationError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\nLoaded specs for: {', '.join(specs.keys())}")
-
-    # Load tools config
-    print(f"\nLoading tools config from {TOOLS_YAML}...")
-    config = yaml.safe_load(TOOLS_YAML.read_text())
-    tools = config.get("tools", {})
-    print(f"  Found {len(tools)} tool definitions")
-
-    # Extract and resolve all referenced schemas
-    print("\nResolving schemas...")
-    resolved_schemas: dict[str, dict] = {}
-    schema_refs: set[str] = set()
-
-    for tc in tools.values():
-        ref = tc.get("openapi_schema")
-        if ref:
-            schema_refs.add(ref)
-        for nested in tc.get("nested_schemas", []):
-            schema_refs.add(nested)
-
-    for ref in sorted(schema_refs):
-        if "#" not in ref:
-            continue
-        service, model = ref.split("#", 1)
-        schema = extract_schema(service, model, specs)
-        if schema:
-            resolved_schemas[ref] = schema
-            prop_count = len(schema.get("properties", {}))
-            print(f"  {ref}: {prop_count} properties")
-        else:
-            print(f"  {ref}: NOT FOUND")
-
-    # Compose the field lists and parameter mapping
-    print("\nComposing field lists...")
     field_docs: dict[str, str] = {}
     for tool_name, tc in tools.items():
         doc = compose_field_docs(tc, resolved_schemas)
         if doc:
             field_docs[tool_name] = doc
-            print(f"  {tool_name}: {len(doc)} chars")
     params = tool_params(tools)
 
-    # Generate output; refuse to write a module that does not compile
-    print(f"\nWriting {OUTPUT_FILE}...")
-    output = generate_output(resolved_schemas, field_docs, params)
+    # Refuse to write a module that does not compile
+    output = generate_output(resolved_schemas, field_docs, params, provenance)
     compile(output, str(OUTPUT_FILE), "exec")
-    OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(output)
-    print(f"  Written {len(output)} bytes")
-
-    # Summary
-    print(f"\nDone. {len(resolved_schemas)} schemas resolved, {len(field_docs)} field lists composed.")
-    print(f"Output: {OUTPUT_FILE}")
+    print(
+        f"\nWrote {OUTPUT_FILE}: {len(resolved_schemas)} schemas, "
+        f"{len(field_docs)} field lists, {len(params)} parameter mappings."
+    )
 
 
 if __name__ == "__main__":

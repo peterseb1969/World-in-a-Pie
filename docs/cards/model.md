@@ -1,6 +1,6 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-wip://data-model sha256:8bfdf6c6ad34f1fb reviewed:c50094bb
-wip://conventions sha256:454ba1a2ba1f460b reviewed:2b8644ae
+wip://data-model sha256:23669d87039df22f reviewed:1e60af64
+wip://conventions sha256:bd4259ff22991af9 reviewed:1e60af64
 docs/WIP_PoNIFs.md sha256:5834cbc38977bdad reviewed:57e75bd9
 docs/design/ontology-support.md sha256:06666e3c8f3a3cc1 reviewed:ea985986
 docs/slash-commands/app-builder/wip-implement.md sha256:1afef1d1999621a1 reviewed:809f9059
@@ -52,7 +52,7 @@ docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca revi
 - `activate_template` validates and activates, cascading to referenced drafts. All-or-nothing: if any template in the chain fails, none activate. `dry_run=true` validates only.
 
 ## Template versions
-- `create_template` is an upsert on (namespace, value): identical → `unchanged`; any difference → `updated`, new version N+1 with a diff in `details`. It never errors on a same-name create — read the status.
+- `create_template` upserts on (namespace, value): identical → `unchanged`; any difference → `updated`, version N+1, diff in `details`. Read the status; only a draft onto an existing value errors.
 - `usage`, `versioned` and edge endpoint lists cannot change on a re-post (`immutable_property`).
 - The old version STAYS ACTIVE. Retire it with `deactivate_template(template_id, version=N)` — `version` is required.
 - Always pass `template_version` in `create_document`; without it WIP picks "latest active", which may be the wrong one.

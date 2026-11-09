@@ -166,8 +166,10 @@ def _reconcile_diff(
             and desired.description is None
             and existing.description is not None
         ),
+        # Set means submitted, not non-zero: a snapshot may move a term
+        # to sort_order 0, the model's default.
         "sort_order": (
-            desired.sort_order != 0
+            "sort_order" in desired.model_fields_set
             and existing.sort_order != desired.sort_order
         ),
         "parent_term_id": (
@@ -341,7 +343,7 @@ class TermReconcileService:
                 and existing.description is not None
             ):
                 update_kwargs["description"] = item.description
-            if item.sort_order != 0:
+            if "sort_order" in item.model_fields_set:
                 update_kwargs["sort_order"] = item.sort_order
             if item.parent_term_id is not None or (
                 "parent_term_id" in item.model_fields_set

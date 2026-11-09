@@ -187,3 +187,37 @@ async def test_duplicate_and_bad_successor_and_invalid_names(client: AsyncClient
     assert "unknown_successor" in by_code
     assert by_code["unknown_successor"]["value"] == "CHANGE"
     assert data["counts"]["errors"] == 3
+
+
+# =============================================================================
+# sort_order: a submitted value applies, 0 included; an omitted one is kept
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_a_submitted_sort_order_of_zero_applies(client: AsyncClient, auth_headers: dict, reconcile_fixture):
+    tid = reconcile_fixture["terminology_id"]
+    keep_id = reconcile_fixture["ids"]["KEEP"]
+    moved = await client.put(
+        "/api/def-store/terms", headers=auth_headers,
+        json=[{"term_id": keep_id, "sort_order": 5}],
+    )
+    assert moved.json()["failed"] == 0
+
+    async def keep_sort_order() -> int:
+        resp = await client.get(f"/api/def-store/terms/{keep_id}", headers=auth_headers)
+        return resp.json()["sort_order"]
+
+    # Omitted: kept.
+    await _reconcile(client, auth_headers, tid, dry_run=False)
+    assert await keep_sort_order() == 5
+
+    # Submitted as 0: applied, and reported as a change.
+    snapshot = [{"value": "KEEP", "label": "Keep", "sort_order": 0}, *SNAPSHOT[1:]]
+    data = await _reconcile(client, auth_headers, tid, terms=snapshot, dry_run=False)
+    rows = {r["value"]: r for r in data["results"]}
+    assert rows["KEEP"]["details"]["changed"] == ["sort_order"]
+    assert await keep_sort_order() == 0
+
+    # Re-run of the same snapshot: unchanged.
+    data = await _reconcile(client, auth_headers, tid, terms=snapshot, dry_run=False)
+    assert "KEEP" not in {r["value"] for r in data["results"]}
