@@ -55,6 +55,8 @@ from typing import Any, get_args
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
+from .middleware import is_public_path
+
 
 def _body_models(annotation: Any):
     """Yield BaseModel classes reachable from a body annotation.
@@ -472,9 +474,16 @@ def _addressable_operations(app: Any) -> list[tuple[str, str, str]]:
     return operations
 
 
-def collect_anonymous_responses(app: Any) -> list[AnonymousProbe]:
+# A key no deployment issues: what a client with a stale or mistyped key sends.
+STALE_KEY_HEADERS = {"X-API-Key": "wip-walker-stale-key-0000000000000000"}
+
+
+def collect_anonymous_responses(
+    app: Any, headers: Mapping[str, str] | None = None,
+) -> list[AnonymousProbe]:
     """Send one credential-less request per route operation on ``app`` and
-    return what each answered.
+    return what each answered. ``headers``, when given, go with every
+    request (the stale-key pass sends a key nobody issued).
 
     The request carries no headers, no query string and no body, and the
     app's lifespan is NOT run (no databases, no background workers). An
@@ -496,7 +505,7 @@ def collect_anonymous_responses(app: Any) -> list[AnonymousProbe]:
             transport=transport, base_url="http://walker"
         ) as client:
             for method, template, path in operations:
-                response = await client.request(method, path)
+                response = await client.request(method, path, headers=dict(headers or {}))
                 probes.append(AnonymousProbe(
                     method=method,
                     template=template,
@@ -547,6 +556,13 @@ def assert_anonymous_refused(
     Every other route must answer 401 or 403. Anything else fails with an
     explanation of what the status means.
 
+    A public route must also serve a request carrying a stale key (one
+    nobody issued): a monitor or pre-configured client with an old key must
+    not be refused on a probe meant for it. And every route the middleware
+    serves without trying credentials whatever the service passes (the
+    prefixed root ``/api/<svc>/``) must be allowlisted: a protected route
+    there would refuse every caller, valid key or not.
+
     ``expect_routes`` is the canary (same doctrine as the other gates): a
     walk that visited zero routes fails.
     """
@@ -564,33 +580,39 @@ def assert_anonymous_refused(
             "examines nothing must not pass."
         )
 
-    seen = {p.key for p in probes}
-    stale = sorted(set(public) - seen)
-    open_routes = [
-        f"  {p.key} -> {_explain(p.status)}"
-        for p in probes
-        if p.key not in public and p.status not in _REFUSED
+    sections = [
+        ("Routes that did not refuse a request without credentials", [
+            f"  {p.key} -> {_explain(p.status)}"
+            for p in probes if p.key not in public and p.status not in _REFUSED
+        ]),
+        ("Allowlisted public routes that refused or did not route", [
+            f"  {p.key} -> {p.status} (allowlisted as public: {public[p.key]})"
+            for p in probes if p.key in public and (p.status in _REFUSED or p.status == 404)
+        ]),
+        ("Public allowlist entries that match no route (stale)",
+         [f"  {k}" for k in sorted(set(public) - {p.key for p in probes})]),
+        *_public_route_sections(app, probes, public),
     ]
-    gated_public = [
-        f"  {p.key} -> {p.status} (allowlisted as public: {public[p.key]})"
-        for p in probes
-        if p.key in public and (p.status in _REFUSED or p.status == 404)
-    ]
-
-    problems: list[str] = []
-    if open_routes:
-        problems.append(
-            "Routes that did not refuse a request without credentials:\n"
-            + "\n".join(open_routes)
-        )
-    if gated_public:
-        problems.append(
-            "Allowlisted public routes that refused or did not route:\n"
-            + "\n".join(gated_public)
-        )
-    if stale:
-        problems.append(
-            "Public allowlist entries that match no route (stale):\n"
-            + "\n".join(f"  {k}" for k in stale)
-        )
+    problems = [f"{title}:\n" + "\n".join(lines) for title, lines in sections if lines]
     assert not problems, "\n\n".join(problems)
+
+
+def _public_route_sections(
+    app: Any, probes: list[AnonymousProbe], public: Mapping[str, str],
+) -> list[tuple[str, list[str]]]:
+    """The public-route findings: allowlisted routes that refuse a stale
+    key, and always-public routes missing from the allowlist."""
+    stale_key_refused = [
+        f"  {p.key} -> {p.status} (allowlisted as public: {public[p.key]})"
+        for p in collect_anonymous_responses(app, headers=STALE_KEY_HEADERS)
+        if p.key in public and p.status in _REFUSED
+    ]
+    implicitly_public = sorted(
+        f"  {p.key}" for p in probes
+        if p.key not in public and is_public_path(p.path, frozenset())
+    )
+    return [
+        ("Allowlisted public routes that refused a request carrying a stale key", stale_key_refused),
+        ("Routes the auth middleware always serves without credentials, "
+         "missing from the public allowlist", implicitly_public),
+    ]

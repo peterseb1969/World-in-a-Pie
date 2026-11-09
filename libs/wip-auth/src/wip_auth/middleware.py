@@ -5,6 +5,7 @@ the configured providers. The authenticated identity is stored in a
 context variable for access by route handlers.
 """
 
+import re
 from collections.abc import Sequence
 
 from fastapi import HTTPException, Request
@@ -24,6 +25,16 @@ _DEFAULT_PUBLIC_PATHS = frozenset({
     "/", "/health", "/ready", "/livez", "/docs", "/redoc", "/openapi.json",
 })
 
+# Every service's prefixed root, `/api/<svc>/` — its build-provenance probe,
+# which answers only the service's name, version and build. Exactly one
+# segment under /api/: everything below the root stays credential-checked.
+_SERVICE_ROOT = re.compile(r"/api/[^/]+/")
+
+
+def is_public_path(path: str, public_paths: frozenset[str]) -> bool:
+    """True for a path the middleware serves without trying credentials."""
+    return path in public_paths or _SERVICE_ROOT.fullmatch(path) is not None
+
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """Middleware that authenticates requests using configured providers.
@@ -40,7 +51,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     For paths in `public_paths`, the middleware skips provider iteration
     entirely — useful for health probes that must be reachable even when
     a caller sends a stale or wrong API key (CASE-60). Universal endpoints
-    (`/health`, `/ready`, `/livez`, `/docs`, ...) are always public; pass
+    (`/health`, `/ready`, `/livez`, `/docs`, ..., and the service's prefixed
+    root `/api/<svc>/`) are always public; pass
     `public_paths` to add service-specific routes (e.g., the api-prefixed
     `/api/<svc>/health`).
     """
@@ -82,7 +94,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # /health (or any other public route) should not 401 — those
         # routes are meant for external monitors and stale-key clients
         # (CASE-60).
-        if request.url.path in self.public_paths:
+        if is_public_path(request.url.path, self.public_paths):
             token = set_current_identity(None)
             try:
                 return await call_next(request)
