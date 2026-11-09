@@ -69,8 +69,9 @@ def _build_synthetic_identity(
 
     CASE-351: when the calling service forwards an api-key's namespace
     scope via X-Key-Namespaces, that list must land on the synthetic
-    identity's `raw_claims["namespaces"]` so `_resolve_permission`'s
-    api_key branch can use it (lines 79-82 + 121-124).
+    identity's `raw_claims["namespaces"]`, where `_resolve_permission`
+    reads a key's scope (in `_grant_subjects`) and a reservation's owner
+    (in `reservation_owner`).
 
     Header absent → raw_claims=None, matching today's behaviour for
     unscoped admin/services keys and for non-api_key identities.
@@ -170,16 +171,19 @@ async def reservation_owner(identity: UserIdentity, prefix: str) -> str | None:
 async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     """Resolve the effective permission for an identity on a namespace.
 
-    Resolution order:
-    0. Locked namespace → always "none" (deletion in progress)
-    1. Superadmin bypass (wip-admins group)
-    2. API key namespace check:
-       - Scoped key: namespace must be in key's list, otherwise "none"
-       - Unscoped key (namespaces=None): only allowed for privileged groups
-         (wip-admins, wip-services); non-privileged unscoped keys get "none"
-    3. Direct user grant (by email or API key name)
-    4. Group grants (any matching group)
-    5. Default: none
+    Resolution order (the first step that answers decides):
+    0. Locked namespace → "none" for everyone (deletion in progress)
+    1. Superadmin (wip-admins group) → "admin"
+    2. The owner of a runtime reservation of the prefix, while the namespace
+       does not exist → "admin"
+    3. A config-file key that declares grants → its own declaration
+       (`_config_key_permission`)
+    4. API key scope (`_grant_subjects`): a scoped key outside its list, or
+       an unscoped key outside the privileged groups (wip-admins,
+       wip-services) → "none"
+    5. The highest unexpired, non-orphaned grant to the caller (a key by
+       name, a user by email and id) or to one of its groups
+    6. Otherwise "none"
 
     A runtime key's namespace list is a scope, never a permission: it caps
     what the key's grants reach and gives nothing itself. Key creation
@@ -187,7 +191,7 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     permission on, so the access ends with the grant — when the namespace is
     deleted (its grants are purged), when a restore writes it orphaned, or
     when it is revoked. A config-file key that declares grants resolves from
-    its own declaration (above).
+    its own declaration (step 3).
     """
     # Locked namespaces are inaccessible to everyone
     ns = await Namespace.find_one({"prefix": namespace})
@@ -517,9 +521,10 @@ async def activate_grants(
     identity: UserIdentity = Depends(require_api_key),
 ):
     """Make orphaned grants effective. An orphaned grant is one a system
-    restore wrote for a namespace not on this install (no namespace or
-    reservation holds its namespace_id); it counts as no grant until activated
-    here, re-granted, or a namespace with its namespace_id is created. Activated
+    restore wrote orphaned: held orphaned in the archive, or made for a
+    namespace not on this install (no namespace or reservation holds its
+    namespace_id). It counts as no grant until activated here, re-granted, or
+    a namespace with its namespace_id is created. Activated
     here, it belongs to this namespace, whatever it was made for. Needs admin on the namespace, which must
     exist. Revoking an orphan works like revoking any grant.
 

@@ -24,6 +24,11 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   is read, is a bad read: the managed reservations stand (the deployer never
   renders an empty file; `{"reservations": []}` still means none). The key
   shadow check runs one pass at a time, whoever starts it.
+- **Grants (docs).** One definition of an orphaned grant (held orphaned in
+  the archive, or made for a namespace not on this install) and of what makes
+  it effective again (its namespace created, activation, re-granting); bulk
+  revoke and activate document their `error` (`managed_by_deployer`) status;
+  the permission resolution order lists every step.
 
 ### `@wip/proxy` 0.9.0 no longer forwards a client's identity: `forwardIdentity` is removed
 

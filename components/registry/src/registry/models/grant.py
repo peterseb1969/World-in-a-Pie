@@ -49,13 +49,16 @@ class NamespaceGrant(Document):
     orphaned: bool = Field(
         default=False,
         description=(
-            "Written by a system restore for a namespace that is not here: no "
-            "namespace or reservation on this install has the identity "
-            "(namespace_id) the grant was made for. An orphaned grant counts as "
-            "no grant until it is activated: when a namespace with its "
-            "namespace_id is created, by whoever creates it, or when a namespace "
-            "admin activates it. A key's namespaces list does not stand in for "
-            "it: the list is a scope and gives no access by itself."
+            "Written by a system restore in one of two cases: the archive held "
+            "the grant orphaned already, or the namespace it was made for is "
+            "not here (no namespace or reservation on this install has its "
+            "identity, namespace_id). An orphaned grant counts as no grant "
+            "until it becomes effective: when a namespace with its namespace_id "
+            "is created, by whoever creates it, when a namespace admin "
+            "activates it, or when the same grant is given again (the grant "
+            "API, a key's grants, the key-file import). A key's namespaces list "
+            "does not stand in for it: the list is a scope and gives no access "
+            "by itself."
         ),
     )
     orphaned_at: datetime | None = Field(
@@ -144,7 +147,9 @@ class GrantBulkResponse(BulkResponseBase[GrantBulkResultItem]):
 
 
 class GrantRevokeBulkResultItem(BulkResultItemBase):
-    """Per-item result of a bulk grant revoke. Status: revoked, not_found."""
+    """Per-item result of a bulk grant revoke. Status: revoked, not_found, or
+    error (error_code managed_by_deployer: a grant the install's key file
+    owns)."""
 
     subject: str
 
@@ -155,7 +160,8 @@ class GrantRevokeBulkResponse(BulkResponseBase[GrantRevokeBulkResultItem]):
 
 class GrantActivateBulkResultItem(BulkResultItemBase):
     """Per-item result of a bulk orphan activation. Status: activated,
-    unchanged (the grant is not orphaned), not_found."""
+    unchanged (the grant is not orphaned), not_found, or error (error_code
+    managed_by_deployer: a grant the install's key file owns)."""
 
     subject: str
 
@@ -181,8 +187,9 @@ class GrantResponse(BaseModel):
     )
     orphaned: bool = Field(
         default=False,
-        description="True for a grant a system restore wrote before its namespace "
-        "existed; it counts as no grant until activated",
+        description="True for a grant a system restore wrote orphaned (held orphaned "
+        "in the archive, or made for a namespace not on this install); it counts "
+        "as no grant until it becomes effective",
     )
     orphaned_at: datetime | None = None
 
