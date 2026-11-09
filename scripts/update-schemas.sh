@@ -7,16 +7,21 @@
 # Usage: ./scripts/update-schemas.sh
 #
 # wip-deploy v2 does not publish service ports to the host, so this
-# script runs `curl` inside each container via `podman exec`. If you
-# rename containers away from the `wip-` prefix, override CONTAINER_PREFIX:
+# script runs `curl` inside each container via `podman exec`. Containers
+# are named per install (`<install>_wip-<svc>`); the install is this
+# clone's (.claude/wip-install, written by setup-backend-agent.sh), else
+# `default`. That install must mount THIS clone's source, or the specs
+# describe another checkout's code. Override with CONTAINER_PREFIX:
 #
-#     CONTAINER_PREFIX=myprefix- ./scripts/update-schemas.sh
+#     CONTAINER_PREFIX=tc01_wip- ./scripts/update-schemas.sh
 #
 
 set -euo pipefail
 
-CONTAINER_PREFIX="${CONTAINER_PREFIX:-wip-}"
-SCHEMA_DIR="$(cd "$(dirname "$0")/.." && pwd)/schemas"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+INSTALL="$(head -1 "$REPO_ROOT/.claude/wip-install" 2>/dev/null | tr -d '[:space:]' || true)"
+CONTAINER_PREFIX="${CONTAINER_PREFIX:-${INSTALL:-default}_wip-}"
+SCHEMA_DIR="$REPO_ROOT/schemas"
 mkdir -p "$SCHEMA_DIR"
 
 # service-name:internal-port — port is the one the service listens on
