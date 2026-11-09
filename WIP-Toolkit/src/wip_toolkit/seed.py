@@ -192,7 +192,6 @@ def _create_terminology_from_seed(
         "namespace": namespace,
         "case_sensitive": data.get("case_sensitive", False),
         "allow_multiple": data.get("allow_multiple", False),
-        "extensible": data.get("extensible", False),
         "mutable": data.get("mutable", False),
         "metadata": data.get("metadata"),
         "created_by": "wip-toolkit-seed",

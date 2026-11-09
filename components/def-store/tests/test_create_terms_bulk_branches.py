@@ -120,7 +120,8 @@ async def test_existing_by_value_skipped(
     by_index = {r["index"]: r for r in data["results"]}
 
     assert by_index[0]["status"] == "skipped"
-    assert by_index[0]["error"] == "Already exists"
+    assert by_index[0]["error"] is None  # a skip is not a failure
+    assert by_index[0]["error_code"] == "already_exists"
     assert by_index[1]["status"] == "created"
     assert data["failed"] == 0
 

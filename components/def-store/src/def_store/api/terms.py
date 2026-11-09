@@ -73,11 +73,11 @@ async def create_terms(
         description="Namespace for synonym resolution (inferred from terminology if omitted)"
     ),
     batch_size: int = Query(
-        1000,
+        1000, ge=1, le=10_000,
         description="Number of terms per MongoDB batch (default 1000)"
     ),
     registry_batch_size: int = Query(
-        100,
+        100, ge=1, le=1_000,
         description="Number of terms per registry HTTP call (default 100). "
         "Reduce if experiencing timeouts on large imports."
     ),
@@ -206,8 +206,9 @@ async def reconcile_terminology(
 
     Terms are keyed by exact value. The snapshot is authoritative for
     label and names; description, sort_order and parent_term_id apply only
-    when set (reconcile never clears a field, so re-runs are idempotent);
-    metadata is honored on create and never rewritten. Active terms absent
+    when the snapshot sets them — an omitted field is kept, an explicit null
+    clears it (re-runs stay idempotent either way); metadata is honored on
+    create and never rewritten. Active terms absent
     from the snapshot are deprecated — never deleted — and only under
     on_missing='deprecate', optionally with successors. dry_run (the
     default) returns the full plan and writes nothing; unchanged terms are
@@ -322,8 +323,9 @@ async def search_terms(
     matched, where it matched, and — for name matches — the name with its
     type and language. Matching is always case-insensitive: this is the
     discovery surface; strict, case-respecting resolution stays with
-    /validate. Exact mode returns ALL candidates — two terms sharing a
-    name both appear, making this the ambiguity-inspection surface.
+    /validate. Exact mode returns every candidate up to `limit` — two terms
+    sharing a name both appear, making this the ambiguity-inspection
+    surface; `total_matched` says how many there are in all.
     """
     # A terminology named by id or as NS:VALUE names its own namespace, and
     # the terms it scopes live there, so it needs no ?namespace=. Read
@@ -757,6 +759,7 @@ def _resolution_to_response(
             for t, n in res.candidates
         ] if matches > 1 else [],
         suggestion=to_resp(res.suggestion) if res.suggestion else None,
+        error_code=None if res.valid else "term_not_found",
     )
 
 
@@ -807,6 +810,7 @@ async def validate_value(
                 terminology_value=request.terminology_value or "",
                 value=request.value,
                 error=str(e),
+                error_code="ambiguous_terminology",
             )
 
     if not terminology:
@@ -815,7 +819,8 @@ async def validate_value(
             terminology_id=request.terminology_id or "",
             terminology_value=request.terminology_value or "",
             value=request.value,
-            error="Terminology not found"
+            error="Terminology not found",
+            error_code="not_found",
         )
 
     # CASE-384 — validation reads from the terminology (returns matched
@@ -852,10 +857,10 @@ async def validate_values_bulk(
 
     terminologies: dict[str, Any] = {}
 
-    def _invalid(item, error: str, terminology_id: str = "", terminology_value: str = ""):
+    def _invalid(item, error: str, code: str, terminology_id: str = "", terminology_value: str = ""):
         results.append(ValidateValueResponse(
             valid=False, terminology_id=terminology_id, terminology_value=terminology_value,
-            value=item.value, error=error,
+            value=item.value, error=error, error_code=code,
         ))
 
     for index, item in enumerate(request.items):
@@ -877,14 +882,14 @@ async def validate_values_bulk(
             try:
                 terminology = await TerminologyService.find_by_value(item.terminology_value, None)
             except AmbiguousTerminologyValueError as e:
-                _invalid(item, str(e), terminology_value=item.terminology_value)
+                _invalid(item, str(e), "ambiguous_terminology", terminology_value=item.terminology_value)
                 continue
         else:
-            _invalid(item, "Must provide terminology_id or terminology_value")
+            _invalid(item, "Must provide terminology_id or terminology_value", "invalid_request")
             continue
 
         if not terminology:
-            _invalid(item, "Terminology not found", item.terminology_id or "", item.terminology_value or "")
+            _invalid(item, "Terminology not found", "not_found", item.terminology_id or "", item.terminology_value or "")
             continue
 
         if terminology.terminology_id not in groups:

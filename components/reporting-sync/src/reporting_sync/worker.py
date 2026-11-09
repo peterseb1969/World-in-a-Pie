@@ -479,9 +479,9 @@ class SyncWorker:
                         INSERT INTO {table_name} (
                             "terminology_id", "namespace", "value", "label",
                             "description", "case_sensitive", "allow_multiple",
-                            "extensible", "mutable", "status", "term_count",
+                            "mutable", "status", "term_count",
                             "created_at", "created_by", "updated_at", "updated_by"
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                         ON CONFLICT ("namespace", "terminology_id")
                         DO UPDATE SET
                             "value" = EXCLUDED."value",
@@ -489,7 +489,6 @@ class SyncWorker:
                             "description" = EXCLUDED."description",
                             "case_sensitive" = EXCLUDED."case_sensitive",
                             "allow_multiple" = EXCLUDED."allow_multiple",
-                            "extensible" = EXCLUDED."extensible",
                             "mutable" = EXCLUDED."mutable",
                             "status" = EXCLUDED."status",
                             "term_count" = EXCLUDED."term_count",
@@ -503,7 +502,6 @@ class SyncWorker:
                         term_data.get("description"),
                         term_data.get("case_sensitive", False),
                         term_data.get("allow_multiple", False),
-                        term_data.get("extensible", True),
                         term_data.get("mutable", False),
                         term_data.get("status", "active"),
                         term_data.get("term_count", 0),

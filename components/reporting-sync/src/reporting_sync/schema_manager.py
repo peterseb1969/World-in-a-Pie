@@ -124,6 +124,8 @@ class SchemaManager:
         # on an existing template, so one check per table per process is
         # enough — update_table_schema runs on every synced document event.
         self._legacy_identity_index_checked: set[tuple[str, str]] = set()
+        # terminologies tables already rid of the retired `extensible` column
+        self._retired_columns_checked: set[str] = set()
 
     @staticmethod
     def _safe_ident(name: str) -> str:
@@ -990,6 +992,23 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
 
         return migrations
 
+    async def _drop_retired_terminology_columns(self, qualified: str) -> None:
+        """Drop the `extensible` column from a terminologies table created
+        before def-store removed the field, once per table per process.
+
+        A registered reporting view that selects it blocks the drop (no
+        CASCADE: a view is never dropped behind its owner's back); the column
+        then stays, unwritten, and a warning says why.
+        """
+        if qualified in self._retired_columns_checked:
+            return
+        self._retired_columns_checked.add(qualified)
+        try:
+            async with self.pool.acquire() as conn:
+                await conn.execute(f'ALTER TABLE {qualified} DROP COLUMN IF EXISTS "extensible"')  # nosec B608  # identifier from ensure_schema
+        except Exception as e:
+            logger.warning(f"Could not drop {qualified}.extensible (kept, no longer written): {e}")
+
     async def ensure_terminologies_table(self, namespace: str) -> str:
         """
         Ensure the terminologies table exists in the namespace's schema.
@@ -1004,6 +1023,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         qualified = f'"{schema}"."{table_name}"'
 
         if await self.table_exists(schema, table_name):
+            await self._drop_retired_terminology_columns(qualified)
             return qualified
 
         ddl = f"""
@@ -1015,7 +1035,6 @@ CREATE TABLE IF NOT EXISTS {qualified} (
     "description" TEXT,
     "case_sensitive" BOOLEAN DEFAULT FALSE,
     "allow_multiple" BOOLEAN DEFAULT FALSE,
-    "extensible" BOOLEAN DEFAULT TRUE,
     "mutable" BOOLEAN NOT NULL DEFAULT FALSE,
     "status" VARCHAR(20) NOT NULL DEFAULT 'active',
     "term_count" INTEGER DEFAULT 0,

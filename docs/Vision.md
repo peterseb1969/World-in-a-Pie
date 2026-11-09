@@ -260,7 +260,7 @@ WIP has two distinct mechanisms for mapping alternative names to canonical entit
 | **Scope** | Within a terminology | Across all entity types |
 | **Purpose** | Accept variant user input for a term | Map external/legacy IDs to canonical IDs |
 | **Example** | "Mr.", "MR", "MALE" all resolve to term "Male" | `legacy_system:OLD-TPL-42` resolves to `TPL-000001` |
-| **Stored in** | Term record (`aliases` array) | Registry synonym table |
+| **Stored in** | Term record (`names`, each with an optional type and language) | Registry synonym table |
 | **Used during** | Document validation (matching user input) | Cross-system integration and migration |
 
 ### Term Aliases
@@ -270,9 +270,11 @@ Term aliases handle the problem of **user input variation**. A term for "Male" m
 ```json
 {
   "term_id": "019abc12-def3-7abc-8def-123456789abc",
-  "code": "M",
   "value": "Male",
-  "aliases": ["MR", "Mr", "Mr.", "MALE", "mr"]
+  "names": [
+    {"value": "M", "type": "ABBREVIATION"},
+    {"value": "MR"}, {"value": "Mr"}, {"value": "Mr."}, {"value": "MALE"}, {"value": "mr"}
+  ]
 }
 ```
 

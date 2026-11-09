@@ -188,7 +188,6 @@ def _terminology_payload(tid, status="active", **overrides):
         "description": "Test vocabulary",
         "case_sensitive": False,
         "allow_multiple": False,
-        "extensible": True,
         "mutable": False,
         "status": status,
         "term_count": 0,

@@ -37,7 +37,7 @@ class TermRelation(Document):
         description="The object term ID"
     )
 
-    # Relation type (term ID or value from _ONTOLOGY_RELATIONSHIP_TYPES)
+    # Relation type: a term VALUE of _ONTOLOGY_RELATIONSHIP_TYPES (never its id)
     relation_type: str = Field(
         ...,
         description="Relation type value (e.g., 'is_a', 'part_of')"
@@ -46,7 +46,7 @@ class TermRelation(Document):
     # Denormalized fields for query efficiency
     relation_value: str | None = Field(
         default=None,
-        description="Denormalized relation type display value"
+        description="The relation type value (e.g. 'is_a'), not its label; parents/children report a parent_term_id link as 'is_a (parent_term_id)'"
     )
     source_terminology_id: str | None = Field(
         default=None,

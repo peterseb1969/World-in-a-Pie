@@ -70,7 +70,6 @@ def transform_to_terminology(countries: list[dict]) -> dict:
             "description": "ISO 3166-1 country codes including alpha-2, alpha-3, and numeric codes with regional classifications.",
             "case_sensitive": False,
             "allow_multiple": False,
-            "extensible": False,
             "metadata": {
                 "source": "ISO 3166",
                 "source_url": "https://www.iso.org/iso-3166-country-codes.html",

@@ -43,11 +43,12 @@
  *
  * SEED FILE CONVENTION (read before adapting):
  *   server/seed/terminologies/<VALUE>.json
- *     { value, label, description, mutable?, extensible?, case_sensitive?,
+ *     { value, label, description, mutable?, case_sensitive?,
  *       allow_multiple?, terms[], ontology?: { relationships[] } }
- *     All four behavioural flags are forwarded to the platform verbatim
+ *     All three behavioural flags are forwarded to the platform verbatim
  *     (including explicit false) — a seed flag the builder does not forward
- *     is a lie to the seed author.
+ *     is a lie to the seed author. `extensible` no longer exists in WIP: a
+ *     seed that still declares it is refused, naming the file's value.
  *   server/seed/templates/<NN>_<VALUE>.json    (numeric prefix orders dependencies)
  *     { value, label, description, identity_fields[], fields[], reporting? }
  *   server/seed/views/<NN>_<name>.json         (optional)
@@ -681,16 +682,23 @@ async function createTerminologies(
     // Forward EVERY behavioural flag the seed declares, preserving explicit
     // false. A builder that whitelists a subset makes the seed file look
     // authoritative while the platform silently never sees the rest — that
-    // shipped once (extensible dropped from every seed, masked for
-    // mutable:true seeds because def-store derives extensible from mutable).
-    // Truthy spreads are the same disease: they eat a declared false.
+    // shipped once, with a flag dropped from every seed. Truthy spreads are
+    // the same disease: they eat a declared false.
+    // `extensible` was removed from WIP. Dropping it silently would be that
+    // lie; forwarding it gets a 422. Refuse it here, by name.
+    const stale = terminologies.filter((t) => (t as { extensible?: unknown }).extensible !== undefined)
+    if (stale.length) {
+      throw new Error(
+        `Seed terminologies declare 'extensible', which WIP no longer has: ` +
+        `${stale.map((t) => t.value).join(', ')}. Remove the field from those seed files.`,
+      )
+    }
     const termBulk = terminologies.map((t) => ({
       value: t.value,
       label: t.label,
       description: t.description || '',
       namespace: ns,
       ...(t.mutable !== undefined ? { mutable: t.mutable } : {}),
-      ...(t.extensible !== undefined ? { extensible: t.extensible } : {}),
       ...(t.case_sensitive !== undefined ? { case_sensitive: t.case_sensitive } : {}),
       ...(t.allow_multiple !== undefined ? { allow_multiple: t.allow_multiple } : {}),
     }))

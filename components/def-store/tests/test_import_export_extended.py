@@ -98,7 +98,6 @@ class TestMutableFlagRoundTrip:
         data = await export_terminology(client, auth_headers, tid)
 
         assert data["terminology"]["value"] == "MUTABLE_EXPORT"
-        # The export currently includes extensible but may or may not include mutable.
         # Verify the terminology was actually created as mutable via direct GET.
         get_resp = await client.get(
             f"{API}/terminologies/{tid}",
@@ -107,8 +106,7 @@ class TestMutableFlagRoundTrip:
         assert get_resp.status_code == 200
         term_data = get_resp.json()
         assert term_data["mutable"] is True
-        # mutable implies extensible
-        assert term_data["extensible"] is True
+        assert "extensible" not in term_data  # the field was removed
 
     @pytest.mark.asyncio
     async def test_import_mutable_terminology(self, client: AsyncClient, auth_headers: dict):

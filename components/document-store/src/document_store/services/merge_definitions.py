@@ -81,6 +81,13 @@ _DERIVED_FIELDS = frozenset({
     "term_count",
 })
 
+# Fields the services no longer have. An archive written before a field was
+# retired still carries it, and a target row stored before the retirement
+# may too; neither side's copy means anything now.
+_RETIRED_FIELDS = frozenset({
+    "extensible",
+})
+
 # A term's lifecycle. A difference is not a disagreement about what the term
 # means, so it never refuses the merge. Retirement travels one way: a term
 # the archive retired (deprecated or inactive) while the target still has it
@@ -260,7 +267,8 @@ def compare_definitions(
     cosmetic: list[str] = []
     substantive: list[str] = []
     for key in sorted(set(archive) | set(target)):
-        if key in _AUDIT_FIELDS or key in _ID_FIELDS or key in _DERIVED_FIELDS or key in skip:
+        if (key in _AUDIT_FIELDS or key in _ID_FIELDS or key in _DERIVED_FIELDS
+                or key in _RETIRED_FIELDS or key in skip):
             continue
         if archive.get(key) == target.get(key):
             continue

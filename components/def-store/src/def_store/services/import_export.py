@@ -28,6 +28,15 @@ from .terminology_service import TerminologyService
 logger = logging.getLogger(__name__)
 
 
+def _relation_batch_size(options: dict[str, Any]) -> int:
+    """The import's relation batch size, bounded like the query doors'
+    (an options dict passes no query validation; 0 would never advance)."""
+    size = options.get("relation_batch_size", 500)
+    if not isinstance(size, int) or not 1 <= size <= 10_000:
+        raise DefStoreError("relation_batch_size must be 1 to 10000", "invalid_request", rule="batch_size")
+    return size
+
+
 class ImportExportService:
     """Service for importing and exporting terminologies."""
 
@@ -162,7 +171,6 @@ class ImportExportService:
                 "namespace": terminology.namespace,
                 "case_sensitive": terminology.case_sensitive,
                 "allow_multiple": terminology.allow_multiple,
-                "extensible": terminology.extensible,
             },
             "terms": term_data,
             "export_date": datetime.now(UTC).isoformat(),
@@ -362,7 +370,6 @@ class ImportExportService:
                 namespace=target_namespace,
                 case_sensitive=terminology_data.get("case_sensitive", False),
                 allow_multiple=terminology_data.get("allow_multiple", False),
-                extensible=terminology_data.get("extensible", False),
                 metadata=TerminologyMetadata(**metadata) if metadata else None,
                 created_by=created_by
             )
@@ -891,7 +898,7 @@ class ImportExportService:
         created_by = options.get("created_by")
         batch_size = options.get("batch_size", 1000)
         registry_batch_size = options.get("registry_batch_size", 50)
-        relation_batch_size = options.get("relation_batch_size", 500)
+        relation_batch_size = _relation_batch_size(options)
         skip_duplicates = options.get("skip_duplicates", True)
         update_existing = options.get("update_existing", False)
 

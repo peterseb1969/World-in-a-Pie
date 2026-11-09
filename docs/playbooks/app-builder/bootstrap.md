@@ -91,7 +91,7 @@ Terminologies with ontology relations include an `ontology` block:
 
 Note: seed files use `mandatory` (not `required`), `terminology_ref` (not `terminology_id`), and `value` (not `code`) — the correct WIP field names.
 
-For fields with `"mutable": true` or `"extensible": true`, pass those flags to `create_terminology`.
+For fields with `"mutable": true`, pass the flag to `create_terminology`. (`extensible` no longer exists; a create that sends it is refused.)
 
 ## Steps
 

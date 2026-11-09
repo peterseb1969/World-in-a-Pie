@@ -7,6 +7,46 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A terminology's `extensible` is removed; def-store's contracts say what the code does (@wip/client 0.104.0, WIP-Toolkit 0.26.3)
+
+- **`extensible` is gone.** It was documented as "whether users can add new
+  terms" and nothing ever read it: every terminology accepts terms. It is
+  removed from the create/update requests (sending it is a **422** — the
+  request models forbid unknown fields), from responses, exports, the MCP
+  `create_terminology` tool, `@wip/client` types and the reporting
+  `terminologies` table (an existing table's column is dropped on first use;
+  a registered view selecting it keeps it, with a warning). Stored
+  terminologies lose the field once at def-store startup. Imports of old
+  export files ignore it; a backup merge does not count it as a difference.
+  The app bootstrap template refuses a seed that still declares it, by name.
+- A term re-created with the same `names` in another order is `unchanged`,
+  not `incompatible_config` (create and reconcile).
+- A `skipped` row carries `error_code: "already_exists"` and no `error` — a
+  skip is a success (bulk term create, term relations).
+- `batch_size` / `registry_batch_size` / `relation_batch_size` are bounded
+  (1–10 000, registry 1–1 000) on every door; `0` used to be a 500.
+- `/validate` and `/validate/bulk` carry `error_code`: `term_not_found`,
+  `not_found`, `ambiguous_terminology`, `invalid_request`.
+- Reconcile counts a create found already done as `skipped` (new count, was
+  an error), reports a failed update with its real `error_code`, and reports
+  a term that vanished mid-run as `not_found` instead of updated/deprecated.
+- `GET /ontology/term-relations?direction=` accepts only `outgoing`,
+  `incoming`, `both` (422 otherwise; it used to read anything as `both`).
+- A typed name on a write while `_NAME_TYPES` is missing is refused as
+  `internal_error` / `name_types_unavailable`, not as an unknown type.
+- The startup term-name migration runs once (a completion marker), instead
+  of scanning the terms collection on every boot.
+- Docs and descriptions corrected: reconcile clears an explicitly-null field;
+  `DELETE /term-relations` can hard-delete; relation `relation_type` holds a
+  value, `relation_value` the type value (not its label); exact-mode search
+  returns up to `limit`; `created_by` / `updated_by` on terminology requests
+  are ignored; the dead `ExportFormat` model is removed; Vision's term
+  aliases section shows the `names` shape; the term-names module header says
+  how the legacy projections relate.
+- **Action:** remove `extensible` from any terminology create/update payload
+  and from app seed files; re-vendor `@wip/client` 0.104.0 (also carries
+  CASE-1180's `truncated` on traversal responses).
+
 ### System vocabularies are read from `wip` only, and `_` terminology names are reserved to it; ontology traversal is bounded and honest
 
 - def-store read `_ONTOLOGY_RELATIONSHIP_TYPES` and `_NAME_TYPES` (and the

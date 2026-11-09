@@ -1,5 +1,5 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-docs/Vision.md sha256:495ad324988ae160 reviewed:4eefa609
+docs/Vision.md sha256:a726d1f62faddcf3 reviewed:06668a40
 wip://ponifs sha256:90c972554f715f25 reviewed:98ba61e8
 wip://development-guide sha256:d44cd305a3b84d3e reviewed:a66e110f
 scaffold/templates/claude-md/app.md sha256:d1d9161ab26b0295 reviewed:e106cfec

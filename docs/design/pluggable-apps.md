@@ -63,7 +63,6 @@ data_model:
     - value: CT_CONDITION
       label: Medical Conditions
       source: data-model/terminologies/condition.yaml
-      extensible: true
 
   templates:
     - value: CT_TRIAL

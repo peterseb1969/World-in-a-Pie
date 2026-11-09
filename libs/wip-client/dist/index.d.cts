@@ -166,7 +166,6 @@ interface Terminology {
     description?: string;
     case_sensitive: boolean;
     allow_multiple: boolean;
-    extensible: boolean;
     mutable: boolean;
     /** Reject (not just warn about) term writes whose names collide with
      * another term's value or name. */
@@ -186,7 +185,6 @@ interface CreateTerminologyRequest {
     namespace: string;
     case_sensitive?: boolean;
     allow_multiple?: boolean;
-    extensible?: boolean;
     mutable?: boolean;
     unique_names?: boolean;
     metadata?: Partial<TerminologyMetadata>;
@@ -199,7 +197,6 @@ interface UpdateTerminologyRequest {
     description?: string | null;
     case_sensitive?: boolean;
     allow_multiple?: boolean;
-    extensible?: boolean;
     mutable?: boolean;
     unique_names?: boolean;
     metadata?: Partial<TerminologyMetadata>;
@@ -350,6 +347,10 @@ interface ValidateValueResponse {
     candidates?: TermMatchCandidate[];
     suggestion?: Term;
     error?: string;
+    /** Why the value is not valid: term_not_found (no active term bears it),
+     * not_found (no such terminology), ambiguous_terminology (the terminology
+     * value names several), invalid_request (no terminology given). */
+    error_code?: 'term_not_found' | 'not_found' | 'ambiguous_terminology' | 'invalid_request' | null;
 }
 /** One bearer of an ambiguous value or name. */
 interface TermMatchCandidate {
@@ -395,6 +396,8 @@ interface ReconcileCounts {
     unchanged: number;
     deprecated: number;
     missing_ignored: number;
+    /** Creates found already done (e.g. by a concurrent writer) — not errors. */
+    skipped: number;
     errors: number;
 }
 interface ReconcileTerminologyResponse {
@@ -497,7 +500,10 @@ interface TraversalResponse {
     direction: string;
     nodes: TraversalNode[];
     total: number;
+    /** The depth limit cut the traversal short: a further level would have added nodes. */
     max_depth_reached: boolean;
+    /** The traversal stopped at its node limit (10 000) before reaching every node. */
+    truncated: boolean;
 }
 
 declare class DefStoreService extends BaseService {

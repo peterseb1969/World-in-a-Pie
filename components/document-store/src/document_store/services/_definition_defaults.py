@@ -111,7 +111,6 @@ DEFINITION_DEFAULTS: dict[str, Any] = {'models': {'Condition': {'defaults': {'va
                                          'case_sensitive': False,
                                          'created_by': None,
                                          'description': None,
-                                         'extensible': False,
                                          'metadata': {'custom': {},
                                                       'language': 'en',
                                                       'source': None,

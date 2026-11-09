@@ -330,7 +330,6 @@ class TestTerminologyEventPipeline:
             "label": "Gender",
             "case_sensitive": False,
             "allow_multiple": False,
-            "extensible": True,
             "status": "active",
             "term_count": 3,
             "created_at": "2026-01-15T10:00:00Z",

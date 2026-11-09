@@ -55,7 +55,6 @@ SALUTATION = {
     "description": "Common salutations and titles for addressing people",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -125,7 +124,6 @@ GENDER = {
     "description": "Gender identity options",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -177,7 +175,6 @@ COUNTRY = {
     "description": "ISO 3166-1 country codes",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "ISO 3166-1",
         "version": "2024",
@@ -258,7 +255,6 @@ CURRENCY = {
     "description": "ISO 4217 currency codes",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "ISO 4217",
         "version": "2024",
@@ -308,7 +304,6 @@ LANGUAGE = {
     "description": "ISO 639-1 language codes",
     "case_sensitive": False,
     "allow_multiple": True,
-    "extensible": False,
     "metadata": {
         "source": "ISO 639-1",
         "version": "2024",
@@ -348,7 +343,6 @@ DOC_STATUS = {
     "description": "Document lifecycle status values",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -373,7 +367,6 @@ PRIORITY = {
     "description": "Task and issue priority levels",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -398,7 +391,6 @@ DEPARTMENT = {
     "description": "Company organizational departments with hierarchy",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": True,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -436,7 +428,6 @@ PRODUCT_CATEGORY = {
     "description": "E-commerce product categories",
     "case_sensitive": False,
     "allow_multiple": True,
-    "extensible": True,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -476,7 +467,6 @@ PAYMENT_METHOD = {
     "description": "Supported payment methods",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -504,7 +494,6 @@ EMPLOYMENT_TYPE = {
     "description": "Types of employment relationships",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -530,7 +519,6 @@ MARITAL_STATUS = {
     "description": "Marital status options",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -555,7 +543,6 @@ BLOOD_TYPE = {
     "description": "ABO blood group types with Rh factor",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "medical",
         "version": "1.0",
@@ -583,7 +570,6 @@ UNIT_OF_MEASURE = {
     "description": "Standard units of measurement",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": True,
     "metadata": {
         "source": "SI/Imperial",
         "version": "1.0",
@@ -634,7 +620,6 @@ SEVERITY = {
     "description": "Issue and bug severity levels",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "internal",
         "version": "1.0",
@@ -659,7 +644,6 @@ REPORTING_TYPE = {
     "description": "Type of management/reporting line on an EMPLOYEE_MANAGES edge",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": False,
     "metadata": {
         "source": "internal",
         "version": "1.0",

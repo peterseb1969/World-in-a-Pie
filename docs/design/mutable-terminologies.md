@@ -8,7 +8,7 @@ WIP terminologies are designed as stable, curated reference vocabularies — ter
 
 The ClinTrial app exposed the gap: users need to extend a curated therapeutic area hierarchy with custom classifications. The current options are:
 
-1. **Extend the terminology** — but `extensible: false` blocks it, terms can't be deleted, and user changes pollute shared reference data
+1. **Extend the terminology** — but terms can't be deleted, and user changes pollute shared reference data
 2. **Use documents as a terminology overlay** — works, but reinvents terminology semantics (identity, hierarchy, merge logic) in every app
 
 This will recur. Any app that needs user-editable controlled vocabularies will face the same choice between abusing terminologies or rebuilding them from documents.
@@ -32,10 +32,9 @@ Add `mutable: bool = False` to the Terminology model in Def-Store.
 class Terminology(Document):
     # ... existing fields ...
     mutable: bool = False        # NEW: allows term hard-delete
-    extensible: bool = False     # existing: allows adding new terms
 ```
 
-`mutable: true` implies `extensible: true` — you can't delete terms from a vocabulary you can't add to. Def-Store enforces this: if `mutable=True` and `extensible=False`, auto-set `extensible=True`.
+(`extensible`, which `mutable` once implied, has been removed: it was never enforced — every terminology accepts new terms.)
 
 The `mutable` flag is set at creation and **cannot be changed** after terms exist. Changing a mutable terminology to immutable would leave deleted-term references dangling. Changing immutable to mutable would retroactively alter the contract for existing consumers.
 
@@ -116,7 +115,7 @@ No changes. The `delete_term` tool calls the same API endpoint. The `create_term
 
 1. Add `mutable` field to Terminology model
 2. Modify term delete endpoint: check `terminology.mutable`, hard delete + relation cascade if true
-3. Add validation: `mutable=True` implies `extensible=True`
+3. ~~Add validation: `mutable=True` implies `extensible=True`~~ (obsolete: `extensible` was removed)
 4. Add validation: reject `mutable` changes on terminologies with existing terms
 5. Tests: mutable term CRUD, cascade, immutable behavior unchanged
 

@@ -1,6 +1,7 @@
 """API endpoints for ontology term-relation management and traversal."""
 
 import math
+from typing import Literal
 
 from fastapi import APIRouter, Body, Depends, Query
 
@@ -84,7 +85,7 @@ async def create_term_relations(
 )
 async def list_term_relations(
     term_id: str = Query(..., description="Term ID to query relations for"),
-    direction: str = Query("outgoing", description="Direction: outgoing, incoming, or both"),
+    direction: Literal["outgoing", "incoming", "both"] = Query("outgoing", description="Direction: outgoing, incoming, or both"),
     relation_type: str | None = Query(None, description="Filter by relation type"),
     namespace: str | None = Query(default=None, description="Namespace (omit for all accessible)"),
     page: int = Query(1, ge=1, description="Page number"),
@@ -141,7 +142,8 @@ async def delete_term_relations(
     identity: UserIdentity = Depends(require_api_key),
 ) -> BulkResponse:
     """
-    Soft-delete one or more relations (set status to inactive).
+    Delete one or more relations: soft (status inactive), or permanently
+    with hard_delete=true in a namespace whose deletion_mode is 'full'.
     """
     await check_namespace_permission(identity, namespace, "write")
 

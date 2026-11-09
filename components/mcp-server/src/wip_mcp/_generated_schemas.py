@@ -373,21 +373,11 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                                          'can be '
                                                                                          'selected',
                                                                           'default': False},
-                                                       'extensible': {'type': 'boolean',
-                                                                      'description': 'Whether '
-                                                                                     'users can '
-                                                                                     'add new '
-                                                                                     'terms at '
-                                                                                     'runtime',
-                                                                      'default': False},
                                                        'mutable': {'type': 'boolean',
                                                                    'description': 'Whether terms '
                                                                                   'can be '
                                                                                   'hard-deleted '
-                                                                                  '(vs '
-                                                                                  'deprecated). '
-                                                                                  'Implies '
-                                                                                  'extensible=True.',
+                                                                                  '(vs deprecated)',
                                                                    'default': False},
                                                        'unique_names': {'type': 'boolean',
                                                                         'description': 'Reject '
@@ -443,11 +433,13 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                     'description': 'Additional '
                                                                                    'metadata'},
                                                        'created_by': {'type': 'string',
-                                                                      'description': 'User or '
-                                                                                     'system '
-                                                                                     'creating '
-                                                                                     'this '
-                                                                                     'terminology'}},
+                                                                      'description': 'Ignored: '
+                                                                                     'created_by '
+                                                                                     'is the '
+                                                                                     'authenticated '
+                                                                                     'caller. '
+                                                                                     'Accepted for '
+                                                                                     'compatibility'}},
                                         'additionalProperties': False,
                                         'type': 'object',
                                         'required': ['value', 'label', 'namespace'],
@@ -2648,8 +2640,7 @@ terminology_id (string): Pre-assigned terminology ID (for restore/migration — 
 namespace (string, REQUIRED): Namespace for the terminology
 case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
-extensible (boolean, default: false): Whether users can add new terms at runtime
-mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated). Implies extensible=True.
+mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated)
 unique_names (boolean, default: false): Reject (not just warn about) term writes whose names collide with another term's value or name
 metadata (object): Additional metadata
   source (string): Source of the terminology (e.g., 'ISO 3166', 'internal')
@@ -2657,7 +2648,7 @@ metadata (object): Additional metadata
   version (string): Version of the terminology (e.g., '2024.1')
   language (string, default: "en"): Primary language code (ISO 639-1)
   custom (object): Custom metadata fields
-created_by (string): User or system creating this terminology""",
+created_by (string): Ignored: created_by is the authenticated caller. Accepted for compatibility""",
     'create_terminology': """Create a terminology (controlled vocabulary).
 
 Convention: use UPPER_SNAKE_CASE for the value field.
@@ -2671,8 +2662,7 @@ terminology_id (string): Pre-assigned terminology ID (for restore/migration — 
 namespace (string, REQUIRED): Namespace for the terminology
 case_sensitive (boolean, default: false): Whether term values are case-sensitive
 allow_multiple (boolean, default: false): Whether multiple terms can be selected
-extensible (boolean, default: false): Whether users can add new terms at runtime
-mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated). Implies extensible=True.
+mutable (boolean, default: false): Whether terms can be hard-deleted (vs deprecated)
 unique_names (boolean, default: false): Reject (not just warn about) term writes whose names collide with another term's value or name
 metadata (object): Additional metadata
   source (string): Source of the terminology (e.g., 'ISO 3166', 'internal')
@@ -2680,7 +2670,7 @@ metadata (object): Additional metadata
   version (string): Version of the terminology (e.g., '2024.1')
   language (string, default: "en"): Primary language code (ISO 639-1)
   custom (object): Custom metadata fields
-created_by (string): User or system creating this terminology""",
+created_by (string): Ignored: created_by is the authenticated caller. Accepted for compatibility""",
     'create_terms': """Create terms in a terminology.
 
 Terms are entries in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).

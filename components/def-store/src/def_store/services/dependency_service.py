@@ -126,7 +126,7 @@ class DependencyService:
         template_store_api_key = os.getenv("TEMPLATE_STORE_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
 
         try:
-            # Fetch all templates with pagination (max page_size is 100)
+            # Fetch all templates, 100 per page (the endpoint allows up to 1000)
             all_templates = []
             page = 1
             page_size = 100

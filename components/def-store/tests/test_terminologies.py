@@ -16,8 +16,7 @@ async def test_create_terminology(client: AsyncClient, auth_headers: dict):
             "namespace": "wip",
             "description": "Status codes for documents",
             "case_sensitive": False,
-            "allow_multiple": False,
-            "extensible": True
+            "allow_multiple": False
         }]
     )
 

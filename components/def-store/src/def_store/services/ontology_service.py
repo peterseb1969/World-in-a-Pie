@@ -248,7 +248,7 @@ class OntologyService:
                     results.append(BulkResultItem(
                         index=i,
                         status="skipped",
-                        error=f"Relation already exists: {item.source_term_id} --{item.relation_type}--> {item.target_term_id}",
+                        # a skip is a success: the reason is a code, never an `error`
                         error_code="already_exists",
                     ))
             except Exception as e:

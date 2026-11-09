@@ -60,7 +60,7 @@ def _only_if_changed(columns: tuple[str, ...]) -> str:
 
 _TERMINOLOGY_UPDATE_COLUMNS = (
     "value", "label", "description", "case_sensitive", "allow_multiple",
-    "extensible", "mutable", "status", "term_count", "updated_at", "updated_by",
+    "mutable", "status", "term_count", "updated_at", "updated_by",
 )
 _TERM_UPDATE_COLUMNS = (
     "terminology_value", "value", "aliases", "label", "description",
@@ -937,9 +937,9 @@ class BatchSyncService:
                                     INSERT INTO {table_name} AS cur (
                                         "terminology_id", "namespace", "value", "label",
                                         "description", "case_sensitive", "allow_multiple",
-                                        "extensible", "mutable", "status", "term_count",
+                                        "mutable", "status", "term_count",
                                         "created_at", "created_by", "updated_at", "updated_by"
-                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+                                    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                                     ON CONFLICT ("namespace", "terminology_id")
                                     DO UPDATE SET
                                         "value" = EXCLUDED."value",
@@ -947,7 +947,6 @@ class BatchSyncService:
                                         "description" = EXCLUDED."description",
                                         "case_sensitive" = EXCLUDED."case_sensitive",
                                         "allow_multiple" = EXCLUDED."allow_multiple",
-                                        "extensible" = EXCLUDED."extensible",
                                         "mutable" = EXCLUDED."mutable",
                                         "status" = EXCLUDED."status",
                                         "term_count" = EXCLUDED."term_count",
@@ -962,7 +961,6 @@ class BatchSyncService:
                                     t.get("description"),
                                     t.get("case_sensitive", False),
                                     t.get("allow_multiple", False),
-                                    t.get("extensible", True),
                                     t.get("mutable", False),
                                     t.get("status", "active"),
                                     t.get("term_count", 0),

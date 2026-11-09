@@ -485,7 +485,6 @@ class WIPSeeder:
                     "namespace": self.namespace,
                     "case_sensitive": term_def.get("case_sensitive", False),
                     "allow_multiple": term_def.get("allow_multiple", False),
-                    "extensible": term_def.get("extensible", False),
                     "metadata": term_def.get("metadata", {}),
                     "created_by": "seed_script"
                 }

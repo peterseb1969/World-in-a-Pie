@@ -120,11 +120,11 @@ async def import_terminology(
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: str | None = Query(None, description="User performing import"),
     batch_size: int = Query(
-        1000,
+        1000, ge=1, le=10_000,
         description="Number of terms per MongoDB batch (default 1000)"
     ),
     registry_batch_size: int = Query(
-        100,
+        100, ge=1, le=1_000,
         description="Number of terms per registry HTTP call (default 100). "
         "Reduce if experiencing timeouts on large imports."
     ),
@@ -243,9 +243,9 @@ async def import_ontology(
     prefix_filter: str | None = Query(None, description="Only import nodes with this OBO prefix"),
     include_deprecated: bool = Query(False, description="Import deprecated/obsolete nodes"),
     max_synonyms: int = Query(10, description="Max aliases per term"),
-    batch_size: int = Query(1000, description="Terms per MongoDB batch"),
-    registry_batch_size: int = Query(50, description="Terms per registry HTTP call"),
-    relation_batch_size: int = Query(500, description="Relations per batch"),
+    batch_size: int = Query(1000, ge=1, le=10_000, description="Terms per MongoDB batch"),
+    registry_batch_size: int = Query(50, ge=1, le=1_000, description="Terms per registry HTTP call"),
+    relation_batch_size: int = Query(500, ge=1, le=10_000, description="Relations per batch"),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: str | None = Query(None, description="User performing import"),
@@ -303,11 +303,11 @@ async def import_from_url(
     update_existing: bool = Query(False, description="Update existing terms"),
     created_by: str | None = Query(None, description="User performing import"),
     batch_size: int = Query(
-        1000,
+        1000, ge=1, le=10_000,
         description="Number of terms per MongoDB batch (default 1000)"
     ),
     registry_batch_size: int = Query(
-        100,
+        100, ge=1, le=1_000,
         description="Number of terms per registry HTTP call (default 100). "
         "Reduce if experiencing timeouts on large imports."
     ),

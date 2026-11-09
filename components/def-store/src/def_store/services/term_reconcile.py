@@ -37,6 +37,7 @@ Semantics, deliberately scoped:
   12,000 rows.
 """
 
+import json
 import logging
 from typing import Any, Literal
 
@@ -51,7 +52,7 @@ from ..models.api_models import (
 )
 from ..models.term import Term, TermName
 from ..models.terminology import Terminology
-from .errors import error_fields
+from .errors import DefStoreError, error_fields
 from .term_names import NameTypeService, normalize_names, validate_names
 
 logger = logging.getLogger(__name__)
@@ -93,7 +94,29 @@ class ReconcileCounts(BaseModel):
     unchanged: int = 0
     deprecated: int = 0
     missing_ignored: int = 0
+    skipped: int = Field(
+        default=0,
+        description="Creates found already done (e.g. a concurrent writer created the term) — not errors",
+    )
     errors: int = 0
+
+
+def _count_create(counts: ReconcileCounts, row: BulkResultItem) -> None:
+    """A create already done (e.g. by a concurrent writer) is skipped, not
+    an error."""
+    if row.status == "created":
+        counts.created += 1
+    elif row.status == "skipped":
+        counts.skipped += 1
+    else:
+        counts.errors += 1
+
+
+def _still_there(result: object, term_id: str) -> None:
+    """A write door answers None for a term that vanished since the snapshot
+    was read; that is an error, never "updated" or "deprecated"."""
+    if result is None:
+        raise DefStoreError(f"Term not found: {term_id}", "not_found")
 
 
 class ReconcileResponse(BaseModel):
@@ -122,13 +145,15 @@ def _reconcile_diff(
     """Substance fields where the snapshot differs from the live term.
 
     label and names are always authoritative; description, sort_order and
-    parent_term_id only when the snapshot sets them (None / 0 means "keep").
-    metadata is caller context — never diffed.
+    parent_term_id only when the snapshot sets them — an omitted field is
+    kept, an explicitly submitted null clears it. metadata is caller
+    context — never diffed. Names compare as a set: the same names in
+    another order are no change.
     """
     checks = {
         "label": existing.label != _effective_label(desired),
-        "names": [n.model_dump() for n in existing.names]
-                 != [n.model_dump() for n in desired_names],
+        "names": sorted(json.dumps(n.model_dump(), sort_keys=True) for n in existing.names)
+                 != sorted(json.dumps(n.model_dump(), sort_keys=True) for n in desired_names),
         "description": (
             desired.description is not None
             and (existing.description or None) != desired.description
@@ -166,7 +191,7 @@ class TermReconcileService:
         request: ReconcileRequest,
         actor: str | None = None,
     ) -> ReconcileResponse:
-        from .terminology_service import NameCollisionError, TerminologyService
+        from .terminology_service import TerminologyService
 
         counts = ReconcileCounts()
         results: list[BulkResultItem] = []
@@ -301,10 +326,7 @@ class TermReconcileService:
             for (i, _item), row in zip(to_create, create_results, strict=True):
                 row.index = i
                 results.append(row)
-                if row.status == "created":
-                    counts.created += 1
-                else:
-                    counts.errors += 1
+                _count_create(counts, row)
 
         for i, item, existing, changed, desired_names in to_update:
             update_kwargs: dict[str, Any] = {
@@ -329,9 +351,10 @@ class TermReconcileService:
             update_req = UpdateTermRequest(**update_kwargs)
             try:
                 collision_warnings: list[dict[str, Any]] = []
-                await TerminologyService.update_term(
+                updated = await TerminologyService.update_term(
                     existing.term_id, update_req, collision_out=collision_warnings
                 )
+                _still_there(updated, existing.term_id)
                 details: dict[str, Any] = {"changed": changed}
                 if collision_warnings:
                     details["name_collisions"] = collision_warnings
@@ -341,12 +364,9 @@ class TermReconcileService:
                 ))
                 counts.updated += 1
             except ValueError as e:
-                error_code = (
-                    "name_collision" if isinstance(e, NameCollisionError) else None
-                )
                 results.append(BulkResultItem(
                     index=i, status="error", value=item.value,
-                    id=existing.term_id, error=str(e), error_code=error_code,
+                    id=existing.term_id, **error_fields(e),
                 ))
                 counts.errors += 1
 
@@ -372,13 +392,14 @@ class TermReconcileService:
                     continue
                 successor_id = successor_term.term_id
             try:
-                await TerminologyService.deprecate_term(
+                deprecated = await TerminologyService.deprecate_term(
                     by_value[value].term_id,
                     DeprecateTermRequest(
                         reason=request.deprecation_reason,
                         replaced_by_term_id=successor_id,
                     ),
                 )
+                _still_there(deprecated, by_value[value].term_id)
                 results.append(BulkResultItem(
                     index=idx, status="deprecated", value=value,
                     id=by_value[value].term_id,

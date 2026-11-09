@@ -1,6 +1,7 @@
 """Terminology service for business logic."""
 
 import asyncio
+import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -226,6 +227,17 @@ def _lifecycle_refusal(results: list[dict], expected: int) -> tuple[list[str], s
     return recorded, detail or "the Registry did not answer every entry"
 
 
+def _check_batch_sizes(batch_size: int, registry_batch_size: int) -> None:
+    """Bounds that hold on every path, not only the query doors: an import
+    passes them from its JSON options, which no query validation sees (0
+    would divide by zero, a negative would silently create nothing)."""
+    if not 1 <= batch_size <= 10_000 or not 1 <= registry_batch_size <= 1_000:
+        raise DefStoreError(
+            "batch_size must be 1 to 10000 and registry_batch_size 1 to 1000",
+            "invalid_request", rule="batch_size",
+        )
+
+
 class TerminologyService:
     """Service for managing terminologies and terms."""
 
@@ -240,15 +252,11 @@ class TerminologyService:
         """Field names where the existing terminology differs from a
         creation request — empty list means an identical re-create
         (CASE-465 on_conflict=validate)."""
-        # mutable implies extensible at create time — compare the
-        # effective value, mirroring create_terminology.
-        effective_extensible = request.extensible or request.mutable
         checks = {
             "label": existing.label != request.label,
             "description": (existing.description or None) != (request.description or None),
             "case_sensitive": existing.case_sensitive != request.case_sensitive,
             "allow_multiple": existing.allow_multiple != request.allow_multiple,
-            "extensible": existing.extensible != effective_extensible,
             "mutable": existing.mutable != request.mutable,
             "unique_names": existing.unique_names != request.unique_names,
             "metadata": existing.metadata != (request.metadata or TerminologyMetadata()),
@@ -264,10 +272,14 @@ class TerminologyService:
         # Legacy aliases/translations fold into names before comparing, so a
         # re-create submitted in either shape compares against one stored shape.
         request_names = normalize_names(request.names, request.aliases, request.translations)
+        # A term's names are a set: the same names in another order are no
+        # change, so an identical re-create stays "unchanged".
+        def name_set(names: list[TermName]) -> list[str]:
+            return sorted(json.dumps(n.model_dump(), sort_keys=True) for n in names)
+
         checks = {
             "label": existing.label != effective_label,
-            "names": [n.model_dump() for n in existing.names]
-                     != [n.model_dump() for n in request_names],
+            "names": name_set(existing.names) != name_set(request_names),
             "description": (existing.description or None) != (request.description or None),
             "sort_order": existing.sort_order != request.sort_order,
             "parent_term_id": existing.parent_term_id != request.parent_term_id,
@@ -388,9 +400,6 @@ class TerminologyService:
             entry_id=request.terminology_id,
         )
 
-        # mutable implies extensible
-        extensible = request.extensible or request.mutable
-
         # Create terminology document
         terminology = Terminology(
             namespace=namespace,
@@ -400,7 +409,6 @@ class TerminologyService:
             description=request.description,
             case_sensitive=request.case_sensitive,
             allow_multiple=request.allow_multiple,
-            extensible=extensible,
             mutable=request.mutable,
             unique_names=request.unique_names,
             metadata=request.metadata or TerminologyMetadata(),
@@ -634,7 +642,6 @@ class TerminologyService:
             new_values["description"] = None
         _track("case_sensitive", terminology.case_sensitive, request.case_sensitive)
         _track("allow_multiple", terminology.allow_multiple, request.allow_multiple)
-        _track("extensible", terminology.extensible, request.extensible)
         _track("mutable", terminology.mutable, request.mutable)
         _track("unique_names", terminology.unique_names, request.unique_names)
 
@@ -668,13 +675,8 @@ class TerminologyService:
             terminology.case_sensitive = request.case_sensitive
         if request.allow_multiple is not None:
             terminology.allow_multiple = request.allow_multiple
-        if request.extensible is not None:
-            terminology.extensible = request.extensible
         if request.mutable is not None:
             terminology.mutable = request.mutable
-            # mutable implies extensible
-            if request.mutable:
-                terminology.extensible = True
         if request.unique_names is not None:
             terminology.unique_names = request.unique_names
         if request.metadata is not None:
@@ -1277,7 +1279,9 @@ class TerminologyService:
                         status="skipped",
                         id=existing.term_id,
                         value=term_req.value,
-                        error="Already exists",
+                        # a skip is a success: why it was skipped is a code,
+                        # never an `error`, which marks a failed item
+                        error_code="already_exists",
                     )
                 else:
                     results[global_idx] = BulkResultItem(
@@ -1815,7 +1819,9 @@ class TerminologyService:
         Args:
             terminology_id: Parent terminology ID
             terms: Terms to create
-            created_by: Deprecated - uses authenticated identity
+            created_by: The actor recorded, for internal callers only (the startup
+                bootstrap); no HTTP route passes one, so a client cannot set it.
+                Defaults to the authenticated identity
             skip_duplicates: If True, skip terms whose value already exists
             update_existing: Extend-only — existing terms are left unchanged and
                 reported as "skipped" (in-place update is a future --force
@@ -1828,6 +1834,7 @@ class TerminologyService:
         """
         if not terms:
             return []
+        _check_batch_sizes(batch_size, registry_batch_size)
 
         total_terms = len(terms)
         logger.info(f"Starting bulk import of {total_terms} terms to {terminology_id}")
@@ -2737,7 +2744,6 @@ class TerminologyService:
             description=t.description,
             case_sensitive=t.case_sensitive,
             allow_multiple=t.allow_multiple,
-            extensible=t.extensible,
             mutable=t.mutable,
             unique_names=t.unique_names,
             metadata=t.metadata,
@@ -2786,7 +2792,6 @@ class TerminologyService:
             "description": t.description,
             "case_sensitive": t.case_sensitive,
             "allow_multiple": t.allow_multiple,
-            "extensible": t.extensible,
             "mutable": t.mutable,
             "unique_names": t.unique_names,
             "status": t.status,

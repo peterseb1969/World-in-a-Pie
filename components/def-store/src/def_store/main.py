@@ -42,7 +42,7 @@ from .models.terminology import Terminology
 from .services.nats_client import close_nats_client, configure_nats_client, nats_stats
 from .services.registry_client import configure_registry_client, get_registry_client
 from .services.system_terminologies import ensure_system_terminologies
-from .services.term_names import migrate_legacy_term_names
+from .services.term_names import drop_retired_terminology_fields, migrate_legacy_term_names
 
 
 # Application configuration
@@ -171,8 +171,9 @@ async def lifespan(app: FastAPI):
 
     # Convert legacy term aliases/translations to the unified names shape
     # BEFORE serving traffic — a term whose aliases live only in the legacy
-    # field would be unresolvable by alias until converted. Idempotent and
-    # cheap once converted (matches nothing).
+    # field would be unresolvable by alias until converted. Runs once: a
+    # completion marker skips it on every later boot.
+    await drop_retired_terminology_fields()
     migration = await migrate_legacy_term_names()
     if migration["converted"] or migration["initialized"]:
         print(
@@ -325,10 +326,11 @@ async def root():
     }
 
 
-# Dependency probes are cached for the container-lifecycle probe path, which
-# is hit every 10s (readiness) and 30s (liveness) but only ever has its HTTP
-# status code read. The api-prefixed route below asks for a fresh value, so a
-# human reading the body never sees a stale dependency.
+# /health's dependency probes are cached, so a client polling it (the
+# console, `wip status`, the MCP server) does not ping MongoDB and the
+# Registry on every call. Orchestrators probe /ready and /livez, not this. The
+# api-prefixed route below asks for a fresh value, so a human reading the
+# body never sees a stale dependency.
 _health_cache: HealthCache[dict[str, str]] = HealthCache()
 
 

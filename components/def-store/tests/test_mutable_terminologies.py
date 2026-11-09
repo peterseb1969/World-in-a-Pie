@@ -1,4 +1,4 @@
-"""Tests for mutable terminology feature: hard-delete behaviour, mutable flag rules, and extensible auto-set."""
+"""Tests for mutable terminology feature: hard-delete behaviour and mutable flag rules."""
 
 import pytest
 from httpx import AsyncClient
@@ -16,7 +16,6 @@ async def create_terminology(
     value: str = "MUTABLE_TEST",
     label: str = "Mutable Test",
     mutable: bool = False,
-    extensible: bool = False,
 ) -> dict:
     """Create a terminology and return the full GET response."""
     resp = await client.post(
@@ -27,7 +26,6 @@ async def create_terminology(
             "label": label,
             "namespace": "wip",
             "mutable": mutable,
-            "extensible": extensible,
         }],
     )
     assert resp.status_code == 200
@@ -117,51 +115,36 @@ async def delete_terminology(
 
 
 # =============================================================================
-# TERMINOLOGY CREATION — MUTABLE FLAG AND EXTENSIBLE AUTO-SET
+# TERMINOLOGY CREATION — MUTABLE FLAG
 # =============================================================================
 
 class TestMutableTerminologyCreation:
     """Tests for mutable flag behaviour during terminology creation."""
 
     @pytest.mark.asyncio
-    async def test_create_mutable_true_sets_extensible_true(
-        self, client: AsyncClient, auth_headers: dict
-    ):
-        """Creating a terminology with mutable=true should auto-set extensible=true."""
+    async def test_create_mutable_true(self, client: AsyncClient, auth_headers: dict):
         terminology = await create_terminology(
-            client, auth_headers, value="MUT_EXT", label="Mutable Extensible",
-            mutable=True, extensible=False,
+            client, auth_headers, value="MUT_EXT", label="Mutable", mutable=True,
         )
 
         assert terminology["mutable"] is True
-        assert terminology["extensible"] is True
+        assert "extensible" not in terminology  # the field was removed
 
     @pytest.mark.asyncio
-    async def test_create_mutable_true_extensible_false_overridden(
-        self, client: AsyncClient, auth_headers: dict
-    ):
-        """Explicitly setting extensible=false with mutable=true should still result in extensible=true."""
-        resp = await client.post(
-            f"{API}/terminologies",
-            headers=auth_headers,
-            json=[{
-                "value": "MUT_EXT_OVERRIDE",
-                "label": "Override Test",
-                "namespace": "wip",
-                "mutable": True,
-                "extensible": False,
-            }],
-        )
-        assert resp.status_code == 200
-        terminology_id = resp.json()["results"][0]["id"]
-
-        get_resp = await client.get(
-            f"{API}/terminologies/{terminology_id}",
-            headers=auth_headers,
-        )
-        detail = get_resp.json()
-        assert detail["mutable"] is True
-        assert detail["extensible"] is True
+    @pytest.mark.parametrize("method", ["post", "put"])
+    async def test_extensible_is_refused(self, client: AsyncClient, auth_headers: dict, method):
+        """`extensible` no longer exists: a create or update that sends it is
+        refused (the request models forbid unknown fields)."""
+        if method == "post":
+            resp = await client.post(f"{API}/terminologies", headers=auth_headers, json=[{
+                "value": "EXT_REFUSED", "label": "x", "namespace": "wip", "extensible": True,
+            }])
+        else:
+            terminology = await create_terminology(client, auth_headers, value="EXT_REFUSED_U", label="x")
+            resp = await client.put(f"{API}/terminologies", headers=auth_headers, json=[{
+                "terminology_id": terminology["terminology_id"], "extensible": False,
+            }])
+        assert resp.status_code == 422, resp.text
 
     @pytest.mark.asyncio
     async def test_create_mutable_false_default(
@@ -226,7 +209,6 @@ class TestMutableFlagUpdateRules:
         )
         detail = get_resp.json()
         assert detail["mutable"] is True
-        assert detail["extensible"] is True  # auto-set
 
     @pytest.mark.asyncio
     async def test_update_mutable_false_to_true_with_terms_rejected(
@@ -235,7 +217,7 @@ class TestMutableFlagUpdateRules:
         """Updating mutable from false to true should be REJECTED when terms exist."""
         terminology = await create_terminology(
             client, auth_headers, value="LOCKED_MUT", label="Locked Mutable",
-            mutable=False, extensible=True,
+            mutable=False,
         )
         terminology_id = terminology["terminology_id"]
 
@@ -394,7 +376,7 @@ class TestSoftDeleteTerms:
         """Deleting a term from an immutable terminology should soft-delete (status=inactive)."""
         terminology = await create_terminology(
             client, auth_headers, value="SOFT_DEL", label="Soft Delete",
-            mutable=False, extensible=True,
+            mutable=False,
         )
         terminology_id = terminology["terminology_id"]
 

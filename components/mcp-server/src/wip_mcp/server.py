@@ -1849,7 +1849,7 @@ async def create_terminology(
         label: Human-readable name (e.g., 'Country', 'Gender').
         namespace: Namespace to create in. Uses WIP_MCP_DEFAULT_NAMESPACE if omitted.
         description: Optional description of what this terminology contains.
-        mutable: If true, terms can be hard-deleted (not just deprecated). Implies extensible=true.
+        mutable: If true, terms can be hard-deleted (not just deprecated).
         unique_names: If true, a term write whose name collides with another
             term's value or name is REJECTED (error_code='name_collision').
             Default: collisions are reported as per-item warnings in

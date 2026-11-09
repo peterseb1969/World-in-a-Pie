@@ -91,7 +91,6 @@ def transform_iso4217(path: Path, namespace: str) -> dict:
             "label": "ISO 4217 Currency Codes",
             "description": "Active ISO 4217 currency codes with associated countries/entities.",
             "case_sensitive": False,
-            "extensible": False,
             "namespace": namespace,
             "metadata": {
                 "source": "ISO 4217",
@@ -151,7 +150,6 @@ def transform_iso639(path: Path, namespace: str) -> dict:
             "label": "ISO 639-1 Language Codes",
             "description": "ISO 639-1 two-letter language codes with native names and language families.",
             "case_sensitive": False,
-            "extensible": False,
             "namespace": namespace,
             "metadata": {
                 "source": "ISO 639-1",
@@ -196,7 +194,6 @@ def transform_iso3166_de(path: Path, namespace: str) -> dict:
             "label": "ISO 3166 Ländercodes (Deutsch)",
             "description": "ISO 3166-1 Alpha-2 Ländercodes mit deutschen Bezeichnungen.",
             "case_sensitive": False,
-            "extensible": False,
             "namespace": namespace,
             "metadata": {
                 "source": "ISO 3166",
@@ -287,7 +284,6 @@ def transform_naics(path: Path, namespace: str) -> dict:
             "label": "NAICS 2022 Industry Codes",
             "description": "North American Industry Classification System (NAICS) 2022 codes with ISIC Rev. 4 cross-references.",
             "case_sensitive": False,
-            "extensible": False,
             "namespace": namespace,
             "metadata": {
                 "source": "Statistics Canada / US Census Bureau",
@@ -333,7 +329,6 @@ def transform_fda_product(path: Path, namespace: str) -> dict:
             "label": "FDA Product Database",
             "description": "US FDA registered pharmaceutical products with NDC codes and pharmacological classifications.",
             "case_sensitive": False,
-            "extensible": False,
             "namespace": namespace,
             "metadata": {
                 "source": "US FDA National Drug Code Directory",
@@ -404,7 +399,6 @@ def transform_icd10(path: Path, namespace: str) -> dict:
             "label": "ICD-10-GM 2025",
             "description": "Internationale statistische Klassifikation der Krankheiten und verwandter Gesundheitsprobleme, 10. Revision, German Modification, Version 2025.",
             "case_sensitive": False,
-            "extensible": False,
             "namespace": namespace,
             "metadata": {
                 "source": "BfArM (Bundesinstitut für Arzneimittel und Medizinprodukte)",

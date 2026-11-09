@@ -59,13 +59,9 @@ class CreateTerminologyRequest(StrictModel):
         default=False,
         description="Whether multiple terms can be selected"
     )
-    extensible: bool = Field(
-        default=False,
-        description="Whether users can add new terms at runtime"
-    )
     mutable: bool = Field(
         default=False,
-        description="Whether terms can be hard-deleted (vs deprecated). Implies extensible=True."
+        description="Whether terms can be hard-deleted (vs deprecated)"
     )
     unique_names: bool = Field(
         default=False,
@@ -78,7 +74,7 @@ class CreateTerminologyRequest(StrictModel):
     )
     created_by: str | None = Field(
         default=None,
-        description="User or system creating this terminology"
+        description="Ignored: created_by is the authenticated caller. Accepted for compatibility"
     )
 
 
@@ -105,10 +101,6 @@ class UpdateTerminologyRequest(StrictModel):
         default=None,
         description="Update multi-select setting"
     )
-    extensible: bool | None = Field(
-        default=None,
-        description="Update extensibility"
-    )
     mutable: bool | None = Field(
         default=None,
         description="Update mutability (only allowed when term_count is 0)"
@@ -123,7 +115,7 @@ class UpdateTerminologyRequest(StrictModel):
     )
     updated_by: str | None = Field(
         default=None,
-        description="User or system updating this terminology"
+        description="Ignored: updated_by is the authenticated caller. Accepted for compatibility"
     )
 
 
@@ -137,7 +129,6 @@ class TerminologyResponse(BaseModel):
     description: str | None = None
     case_sensitive: bool = False
     allow_multiple: bool = False
-    extensible: bool = False
     mutable: bool = False
     unique_names: bool = False
     metadata: TerminologyMetadata
@@ -386,27 +377,6 @@ class ImportTerminologyRequest(StrictModel):
     )
 
 
-class ExportFormat(BaseModel):
-    """Supported export formats."""
-
-    format: str = Field(
-        default="json",
-        description="Export format: json, csv, xml"
-    )
-    include_metadata: bool = Field(
-        default=True,
-        description="Include metadata in export"
-    )
-    include_inactive: bool = Field(
-        default=False,
-        description="Include inactive/deprecated terms"
-    )
-    languages: list[str] = Field(
-        default_factory=list,
-        description="Languages to include (empty = all)"
-    )
-
-
 class ExportTerminologyResponse(BaseModel):
     """Exported terminology with terms."""
 
@@ -483,6 +453,13 @@ class ValidateValueResponse(BaseModel):
         description="Suggested term if value is close but not exact"
     )
     error: str | None = None
+    error_code: str | None = Field(
+        default=None,
+        description="Why the value is not valid, for callers to branch on: term_not_found "
+                    "(no active term bears it), not_found (no such terminology), "
+                    "ambiguous_terminology (the terminology value names several), "
+                    "invalid_request (no terminology given)",
+    )
 
 
 class BulkValidateRequest(StrictModel):

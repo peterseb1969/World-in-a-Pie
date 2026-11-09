@@ -312,7 +312,6 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                         description=term_def.get("description"),
                         case_sensitive=term_def.get("case_sensitive", False),
                         allow_multiple=term_def.get("allow_multiple", False),
-                        extensible=True,  # System terminologies can be extended
                         metadata=TerminologyMetadata(**term_def.get("metadata", {})),
                     ),
                     namespace="wip",

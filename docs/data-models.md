@@ -87,13 +87,9 @@ class Terminology(BaseModel):
         default=False,
         description="Whether multiple terms can be selected"
     )
-    extensible: bool = Field(
-        default=False,
-        description="Whether new terms can be added by users"
-    )
     mutable: bool = Field(
         default=False,
-        description="When True, terms can be hard-deleted (not just deprecated). Implies extensible=True. Immutable after creation if terms exist."
+        description="When True, terms can be hard-deleted (not just deprecated). Cannot change while the terminology holds a term of any status."
     )
     status: Literal["active", "inactive"] = Field(
         default="active",
@@ -126,7 +122,6 @@ class Terminology(BaseModel):
   "description": "Controlled vocabulary for document lifecycle states",
   "case_sensitive": false,
   "allow_multiple": false,
-  "extensible": false,
   "status": "active",
   "term_count": 4,
   "metadata": {

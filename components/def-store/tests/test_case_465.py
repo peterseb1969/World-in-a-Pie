@@ -25,7 +25,7 @@ TERMINOLOGY = {
     "label": "Case 465 Status",
     "namespace": "wip",
     "description": "Idempotent bootstrap test vocabulary",
-    "extensible": True,
+    "case_sensitive": True,
 }
 
 
@@ -74,7 +74,7 @@ async def test_divergent_terminology_revalidate_is_incompatible_config(
 ):
     await _create_terminology(client, auth_headers)
 
-    changed = dict(TERMINOLOGY, label="Renamed Label", extensible=False)
+    changed = dict(TERMINOLOGY, label="Renamed Label", case_sensitive=False)
     rerun = await client.post(
         "/api/def-store/terminologies",
         headers=auth_headers,
@@ -84,7 +84,7 @@ async def test_divergent_terminology_revalidate_is_incompatible_config(
     item = rerun.json()["results"][0]
     assert item["status"] == "error"
     assert item["error_code"] == "incompatible_config"
-    assert sorted(item["details"]["changed"]) == ["extensible", "label"]
+    assert sorted(item["details"]["changed"]) == ["case_sensitive", "label"]
 
 
 @pytest.mark.asyncio

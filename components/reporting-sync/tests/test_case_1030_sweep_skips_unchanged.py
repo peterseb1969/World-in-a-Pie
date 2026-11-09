@@ -27,8 +27,7 @@ NS = "sweepns"
 
 TERMINOLOGY = {
     "terminology_id": "TL-1", "namespace": NS, "value": "COLOURS", "label": "Colours",
-    "description": None, "case_sensitive": False, "allow_multiple": False,
-    "extensible": True, "mutable": False, "status": "active", "term_count": 2,
+    "description": None, "case_sensitive": False, "allow_multiple": False, "mutable": False, "status": "active", "term_count": 2,
     "created_at": "2026-01-01T00:00:00Z", "created_by": "t",
     "updated_at": "2026-01-01T00:00:00Z", "updated_by": "t",
 }

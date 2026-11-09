@@ -68,7 +68,6 @@ SAMPLE_TERMINOLOGY = {
     "description": "Country list",
     "case_sensitive": False,
     "allow_multiple": False,
-    "extensible": True,
     "status": "active",
     "term_count": 42,
     "created_at": "2024-01-30T10:00:00Z",
@@ -193,16 +192,16 @@ class TestBatchSyncTerminologies:
             await service.batch_sync_terminologies()
 
         args = conn.execute.call_args[0]
-        # args[0] is SQL, args[1..15] are positional values
-        # $12 = created_at (index 12), $14 = updated_at (index 14)
-        created_at = args[12]
-        updated_at = args[14]
+        # args[0] is SQL, args[1..14] are positional values
+        # $11 = created_at (index 11), $13 = updated_at (index 13)
+        created_at = args[11]
+        updated_at = args[13]
         assert isinstance(created_at, datetime), f"created_at should be datetime, got {type(created_at)}"
         assert isinstance(updated_at, datetime), f"updated_at should be datetime, got {type(updated_at)}"
 
     @pytest.mark.asyncio
     async def test_boolean_fields_are_correct_type(self, service, mock_pool):
-        """case_sensitive, allow_multiple, extensible are booleans."""
+        """case_sensitive, allow_multiple, mutable are booleans."""
         _pool, conn = mock_pool
 
         with patch("reporting_sync.batch_sync.httpx.AsyncClient") as mock_client_cls:
@@ -215,10 +214,10 @@ class TestBatchSyncTerminologies:
             await service.batch_sync_terminologies()
 
         args = conn.execute.call_args[0]
-        # $6 = case_sensitive (index 6), $7 = allow_multiple (7), $8 = extensible (8)
+        # $6 = case_sensitive (index 6), $7 = allow_multiple (7), $8 = mutable (8)
         assert isinstance(args[6], bool), f"case_sensitive should be bool, got {type(args[6])}"
         assert isinstance(args[7], bool), f"allow_multiple should be bool, got {type(args[7])}"
-        assert isinstance(args[8], bool), f"extensible should be bool, got {type(args[8])}"
+        assert isinstance(args[8], bool), f"mutable should be bool, got {type(args[8])}"
 
     @pytest.mark.asyncio
     async def test_term_count_is_int(self, service, mock_pool):
@@ -236,7 +235,7 @@ class TestBatchSyncTerminologies:
 
         args = conn.execute.call_args[0]
         # $11 = term_count (index 11)
-        assert isinstance(args[11], int), f"term_count should be int, got {type(args[11])}"
+        assert isinstance(args[10], int), f"term_count should be int, got {type(args[10])}"
 
     @pytest.mark.asyncio
     async def test_none_datetime_handled(self, service, mock_pool):
@@ -256,8 +255,8 @@ class TestBatchSyncTerminologies:
 
         assert result["synced"] == 1
         args = conn.execute.call_args[0]
-        assert args[12] is None  # created_at
-        assert args[14] is None  # updated_at
+        assert args[11] is None  # created_at
+        assert args[13] is None  # updated_at
 
 
 # =========================================================================

@@ -106,7 +106,8 @@ class TestCreateRelations:
         # Duplicate — should be skipped, not error
         data2 = await create_relation(client, auth_headers, b, a, "is_a")
         assert data2["results"][0]["status"] == "skipped"
-        assert "already exists" in data2["results"][0]["error"]
+        assert data2["results"][0]["error"] is None  # a skip is not a failure
+        assert data2["results"][0]["error_code"] == "already_exists"
 
     @pytest.mark.asyncio
     async def test_reactivate_deleted_relation(self, client, auth_headers):

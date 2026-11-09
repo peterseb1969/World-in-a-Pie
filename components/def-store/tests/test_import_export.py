@@ -216,7 +216,7 @@ def test_csv_export_escapes_formula_cells():
                              sort_order=1, status="active", metadata=None)]
     terminology = SimpleNamespace(value="T", label="T", description=None, terminology_id="T1",
                                   namespace="wip", case_sensitive=False, mutable=False,
-                                  allow_multiple=False, extensible=False, metadata=None)
+                                  allow_multiple=False, metadata=None)
     out = ImportExportService._export_csv(terminology, terms, include_metadata=False)
     content = out["csv_content"]
     row = next(csv.DictReader(io.StringIO(content)))

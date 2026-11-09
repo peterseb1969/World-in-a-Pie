@@ -71,7 +71,7 @@ async def test_dry_run_plans_and_writes_nothing(client: AsyncClient, auth_header
     assert data["dry_run"] is True
     assert data["counts"] == {
         "created": 1, "updated": 1, "unchanged": 1,
-        "deprecated": 1, "missing_ignored": 0, "errors": 0,
+        "deprecated": 1, "missing_ignored": 0, "skipped": 0, "errors": 0,
     }
     rows = {r["value"]: r for r in data["results"]}
     # Unchanged terms are counted, not listed
@@ -129,7 +129,7 @@ async def test_apply_and_idempotent_rerun(client: AsyncClient, auth_headers: dic
     )
     assert rerun["counts"] == {
         "created": 0, "updated": 0, "unchanged": 3,
-        "deprecated": 0, "missing_ignored": 0, "errors": 0,
+        "deprecated": 0, "missing_ignored": 0, "skipped": 0, "errors": 0,
     }
     assert rerun["results"] == []
 

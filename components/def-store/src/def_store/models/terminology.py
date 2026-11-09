@@ -83,13 +83,9 @@ class Terminology(Document):
         default=False,
         description="Whether multiple terms can be selected (for UI hints)"
     )
-    extensible: bool = Field(
-        default=False,
-        description="Whether users can add new terms at runtime"
-    )
     mutable: bool = Field(
         default=False,
-        description="Whether terms can be hard-deleted (vs deprecated). Implies extensible=True."
+        description="Whether terms can be hard-deleted (vs deprecated)"
     )
     unique_names: bool = Field(
         default=False,

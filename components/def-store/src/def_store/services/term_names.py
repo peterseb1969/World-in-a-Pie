@@ -6,13 +6,19 @@ still accepts the legacy `aliases` (plain strings) and `translations`
 and derives them back on the way out. Each legacy field maps to a disjoint
 partition of the names list:
 
-- legacy aliases      <-> names with type=None and language=None
-- legacy translations <-> names with language set and type=None
-- typed names are invisible to legacy callers and untouched by legacy writes
+- in: legacy aliases become names with type=None and language=None;
+  legacy translations become names with a language and type=None
+- out: `aliases` lists EVERY name's value (typed and language names
+  included, so a legacy reader sees everything a term resolves by);
+  `translations` lists the language-bearing, untyped names
+- the two directions are not inverses: a legacy client that reads `aliases`
+  and writes them back submits typed names' values again as untyped names,
+  which validation refuses as duplicates — write `names` instead
 """
 
 import contextlib
 import logging
+from datetime import UTC, datetime
 
 from ..models.term import TermName, TermTranslation
 
@@ -88,6 +94,7 @@ def validate_names(
                 f"Name '{name.value}' duplicates the term's own value"
             )
 
+        _refuse_without_name_types(name, valid_types)
         if name.type is not None and name.type not in valid_types:
             raise TermNameError(
                 f"Unknown name type '{name.type}'. Valid types (from "
@@ -147,6 +154,24 @@ def replace_translations(
     ]
 
 
+def _refuse_without_name_types(name: TermName, valid_types: dict[str, str]) -> None:
+    """No types loaded is a missing vocabulary, not an empty one: say so
+    instead of calling every type unknown."""
+    if name.type is None or valid_types:
+        return
+    from .errors import DefStoreError
+    raise DefStoreError(
+        f"Cannot validate name type '{name.type}': the {NAME_TYPES_TERMINOLOGY_VALUE} "
+        "terminology is missing from namespace 'wip'. Restart def-store to bootstrap "
+        "it, or check that it has not been retired.",
+        "internal_error", rule="name_types_unavailable",
+    )
+
+
+_MIGRATIONS_COLLECTION = "def_store_migrations"
+_TERM_NAMES_MARKER = "term_names_v1"
+
+
 async def migrate_legacy_term_names() -> dict[str, int]:
     """One-shot conversion of stored legacy aliases/translations to names.
 
@@ -154,6 +179,12 @@ async def migrate_legacy_term_names() -> dict[str, int]:
     aliases live only in the legacy field would otherwise be unresolvable
     by alias until converted. Idempotent — a term with a `names` field is
     already migrated and never touched again.
+
+    Once a pass completes, a marker in `def_store_migrations` skips every
+    later boot: both passes scan the whole terms collection (`names` is not
+    indexed), which is the cost of every restart otherwise. Nothing writes
+    the legacy shape any more — the API folds it into names, and a restore
+    converts a pre-names archive's terms itself.
 
     Legacy data may carry exact duplicates or aliases exactly equal to the
     term's own value; those are deduplicated here (first occurrence wins)
@@ -167,6 +198,9 @@ async def migrate_legacy_term_names() -> dict[str, int]:
     from ..models.term import Term
 
     coll = Term.get_motor_collection()
+    markers = coll.database[_MIGRATIONS_COLLECTION]
+    if await markers.find_one({"_id": _TERM_NAMES_MARKER}):
+        return {"converted": 0, "initialized": 0}
 
     converted = 0
     cleaned = 0
@@ -237,7 +271,37 @@ async def migrate_legacy_term_names() -> dict[str, int]:
             "%d initialized empty",
             converted, cleaned,
         )
+    await markers.update_one(
+        {"_id": _TERM_NAMES_MARKER},
+        {"$setOnInsert": {"completed_at": datetime.now(UTC)}},
+        upsert=True,
+    )
     return {"converted": converted, "initialized": cleaned}
+
+
+_RETIRED_FIELDS_MARKER = "terminology_extensible_removed_v1"
+
+
+async def drop_retired_terminology_fields() -> int:
+    """Remove the retired `extensible` field from stored terminologies, once.
+
+    The API no longer accepts or serves it; a row stored before keeps it
+    until this pass. A marker in `def_store_migrations` skips it on every
+    later boot. Returns how many rows were changed.
+    """
+    from ..models.terminology import Terminology
+
+    coll = Terminology.get_motor_collection()
+    markers = coll.database[_MIGRATIONS_COLLECTION]
+    if await markers.find_one({"_id": _RETIRED_FIELDS_MARKER}):
+        return 0
+    result = await coll.update_many({"extensible": {"$exists": True}}, {"$unset": {"extensible": ""}})
+    await markers.update_one(
+        {"_id": _RETIRED_FIELDS_MARKER},
+        {"$setOnInsert": {"completed_at": datetime.now(UTC)}},
+        upsert=True,
+    )
+    return result.modified_count
 
 
 class NameTypeService:

@@ -63,5 +63,8 @@ export interface TraversalResponse {
   direction: string
   nodes: TraversalNode[]
   total: number
+  /** The depth limit cut the traversal short: a further level would have added nodes. */
   max_depth_reached: boolean
+  /** The traversal stopped at its node limit (10 000) before reaching every node. */
+  truncated: boolean
 }
