@@ -7,7 +7,7 @@ The archive is sensitive: keep it like the install's own secrets.
 """
 
 import logging
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -164,10 +164,7 @@ async def system_restore(
     plan_digest as `expect` to refuse an apply whose plan has changed. After
     a mirror the stack holds no keys of its own beyond the archive's, so a
     mirror adopts the archive's salt where an upsert would refuse it."""
-    if mode is None:
-        mode = "overwrite" if overwrite else "upsert"
-    elif overwrite and mode == "upsert":
-        raise HTTPException(status_code=422, detail="overwrite=true contradicts mode=upsert")
+    mode = _restore_mode(mode, overwrite)
     identity = get_current_identity()
     caller_key = (
         identity.username if identity is not None and identity.auth_method == "api_key" else None
@@ -186,45 +183,85 @@ async def system_restore(
             expect=expect,
         )
     except (SaltMismatch, RestoreRefused, PlanChanged) as e:
-        code = (
-            SALT_MISMATCH if isinstance(e, SaltMismatch)
-            else RESTORE_REFUSED if isinstance(e, RestoreRefused) else PLAN_CHANGED
-        )
-        return JSONResponse(status_code=409, content={"detail": str(e), "error_code": code})
+        return _restore_conflict(e)
 
-    if removed and provider is not None:
+    if provider is not None:
+        await _bring_provider_in_step(provider, report, written, removed, dry_run=dry_run)
+    if not dry_run:
+        _log_restore(report)
+    return report
+
+
+def _restore_mode(
+    mode: Literal["upsert", "overwrite", "mirror"] | None, overwrite: bool,
+) -> Literal["upsert", "overwrite", "mirror"]:
+    """The restore mode: as asked, or from the overwrite alias; a contradiction
+    is a 422."""
+    if mode is None:
+        return "overwrite" if overwrite else "upsert"
+    if overwrite and mode == "upsert":
+        raise HTTPException(status_code=422, detail="overwrite=true contradicts mode=upsert")
+    return mode
+
+
+def _restore_conflict(e: Exception) -> JSONResponse:
+    """The 409 a refused restore answers, with its error code."""
+    code = (
+        SALT_MISMATCH if isinstance(e, SaltMismatch)
+        else RESTORE_REFUSED if isinstance(e, RestoreRefused) else PLAN_CHANGED
+    )
+    return JSONResponse(status_code=409, content={"detail": str(e), "error_code": code})
+
+
+async def _bring_provider_in_step(
+    provider: Any,
+    report: Any,
+    written: list[tuple[str | None, Any]],
+    removed: list[str],
+    *,
+    dry_run: bool,
+) -> None:
+    """Make the Registry's own key provider match what the restore did: drop
+    the keys a mirror removed, adopt an adopted salt, and load the keys it
+    wrote."""
+    if removed:
         # The services drop them on their next key sync (up to ~30 s).
         async with key_shadowing.provider_lock:
             for key_hash in removed:
                 provider.remove_key(key_hash)
 
-    if report.salt_adopted and not dry_run and provider is not None:
+    if report.salt_adopted and not dry_run:
         # Runtime keys verify under the adopted salt from now on, and the
         # managed keys, hashed under the old one, are re-hashed from the key
         # file's plaintexts before anything else reads them.
         provider.set_runtime_salt(key_salt.current_salt())
         await key_import.run_pass(provider)
 
-    if written and provider is not None:
-        # A restored key with a config key's plaintext must be withheld
-        # before the Registry's provider learns the record.
-        await key_shadowing.reconcile(provider)
-        async with key_shadowing.provider_lock:
-            for old_hash, doc in written:
-                if old_hash:
-                    provider.remove_key(old_hash)
-                provider.remove_key(doc.key_hash)
-                if doc.enabled and not key_shadowing.is_shadowed(doc.name):
-                    provider.add_key(key_shadowing.runtime_record(doc))
+    if written:
+        await _load_written_keys(provider, written)
 
-    if not dry_run:
-        logger.warning(
-            "System restore by %s: keys +%d ~%d, grants +%d ~%d, reservations +%d ~%d, "
-            "attachments +%d ~%d",
-            get_identity_string(),
-            len(report.api_keys.created), len(report.api_keys.replaced),
-            len(report.grants.created), len(report.grants.replaced),
-            len(report.reservations.created), len(report.reservations.replaced),
-            len(report.attachments.created), len(report.attachments.replaced),
-        )
-    return report
+
+async def _load_written_keys(provider: Any, written: list[tuple[str | None, Any]]) -> None:
+    """Replace each written key's record in the provider. A restored key with
+    a config key's plaintext must be withheld before the Registry's provider
+    learns the record."""
+    await key_shadowing.reconcile(provider)
+    async with key_shadowing.provider_lock:
+        for old_hash, doc in written:
+            if old_hash:
+                provider.remove_key(old_hash)
+            provider.remove_key(doc.key_hash)
+            if doc.enabled and not key_shadowing.is_shadowed(doc.name):
+                provider.add_key(key_shadowing.runtime_record(doc))
+
+
+def _log_restore(report: Any) -> None:
+    logger.warning(
+        "System restore by %s: keys +%d ~%d, grants +%d ~%d, reservations +%d ~%d, "
+        "attachments +%d ~%d",
+        get_identity_string(),
+        len(report.api_keys.created), len(report.api_keys.replaced),
+        len(report.grants.created), len(report.grants.replaced),
+        len(report.reservations.created), len(report.reservations.replaced),
+        len(report.attachments.created), len(report.attachments.replaced),
+    )
