@@ -10,7 +10,9 @@ namespace reservations (WIP_ATTACH_POLICY_FILE):
   reachable on the install's network: compose's service key and container
   name (`<name>`, `wip-<name>`), k8s's short and fully qualified service
   names, the public Caddy (wip-caddy, on every target), the install's own public hostname (an upstream
-  pointing back at it would loop), and on k8s the API server's names.
+  pointing back at it would loop), on k8s the API server's names, and on
+  compose and dev the host's container aliases (host.containers.internal,
+  host.docker.internal).
 - `reserved_names`: every enabled app's label (`kb`): its origin,
   `<label>.<hostname>`, is taken.
 - `app_edge: false`, only when the app-edge module does not run: nothing
@@ -36,6 +38,8 @@ ATTACH_POLICY_FILENAME = "attach-policy.json"
 ATTACH_POLICY_CONTAINER_PATH = f"/etc/wip/{ATTACH_POLICY_FILENAME}"
 ATTACH_POLICY_RENDER_PATH = f"config/auth/{ATTACH_POLICY_FILENAME}"
 ATTACH_POLICY_FILE_ENV = "WIP_ATTACH_POLICY_FILE"
+# The names podman and docker give the host inside a container.
+HOST_ALIASES = frozenset({"host.containers.internal", "host.docker.internal"})
 
 
 def _hosts(name: str, deployment: Deployment) -> set[str]:
@@ -82,6 +86,13 @@ def attach_policy_json(
     # The public hostname resolves to the host, not to a container, so it
     # needs its own entry: /apps/x -> https://<host>/ would be a proxy loop.
     hosts.add(deployment.spec.network.hostname.lower())
+    # compose / dev: the names a container reaches the host by. The host
+    # publishes the front door's port, so an upstream there loops back
+    # through it (the edge also blocks its default gateway, the host's
+    # address on the container network). An app running on the host itself
+    # must join the install's network to be attached.
+    if deployment.spec.target != "k8s":
+        hosts |= HOST_ALIASES
     policy: dict[str, object] = {
         "blocked_hosts": sorted(hosts),
         "reserved_names": app_route_names(deployment, apps),

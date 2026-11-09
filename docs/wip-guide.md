@@ -1166,7 +1166,9 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
 - **Refused upstreams** (`forbidden`, `details.rule: upstream_blocked`):
   anything resolving to one of the install's own hosts (the deployer
   renders them into `WIP_ATTACH_POLICY_FILE`: its containers and services,
-  its public hostname, and on k8s the API server's names), or to a
+  its public hostname, on k8s the API server's names, and on compose and
+  dev the host's container aliases `host.containers.internal` and
+  `host.docker.internal`), or to a
   loopback, link-local (cloud metadata), unspecified or multicast address,
   or to the cloud metadata addresses outside link-local (`fd00:ec2::254`,
   `100.100.100.200`). IPv4-mapped IPv6 addresses count as the IPv4 address
@@ -1177,6 +1179,14 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   umbrella on another). The authoritative check is the router edge's, when
   it resolves the upstream. A host that doesn't resolve from the Registry
   is accepted with a warning.
+- **On compose and dev, the host is refused too.** The host publishes the
+  front door's port, so an upstream on it loops back through the front
+  door. The edge refuses the host's addresses as well as its aliases: its
+  default gateway on the install's network, read at start. An app running
+  directly on the compose host cannot be attached; run it in a container on
+  the install's network (`wip-network`) instead. An install host that stops
+  resolving for a moment (a container being recreated) keeps blocking the
+  addresses it last resolved to.
 - **On k8s,** a blocked name resolves to its Service's ClusterIP, so an
   upstream given as a WIP *pod* IP isn't caught by the name check. The
   rendered NetworkPolicy `app-edge-egress` takes the edge out of the

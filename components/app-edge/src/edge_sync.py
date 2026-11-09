@@ -210,6 +210,27 @@ def blocked_class(ip: Address) -> str | None:
     return None
 
 
+def host_addresses(route_file: str = "/proc/net/route") -> set[Address]:
+    """The host's address on the container network: the default gateway of
+    the container's IPv4 routes (on compose, the bridge gateway, which is
+    the host). Empty when the routing table cannot be read (not Linux)."""
+    out: set[Address] = set()
+    try:
+        with open(route_file) as f:
+            rows = f.read().splitlines()[1:]
+    except OSError:
+        return out
+    for row in rows:
+        cols = row.split()
+        # Iface Destination Gateway Flags …; a default route has destination 0.
+        if len(cols) > 2 and cols[1] == "00000000" and cols[2] != "00000000":
+            try:
+                out.add(ipaddress.IPv4Address(int(cols[2], 16).to_bytes(4, "little")))
+            except ValueError:
+                continue
+    return out
+
+
 def resolve(host: str) -> set[Address]:
     try:
         return {ipaddress.ip_address(host)}
@@ -314,15 +335,66 @@ def _record_ok(record: dict[str, Any]) -> str | None:
     return None
 
 
+def _install_addresses(
+    blocked_names: set[str], resolved: dict[str, set[Address]], known: dict[str, set[Address]] | None,
+) -> dict[Address, str]:
+    """Each address of the install's own hosts, mapped to its name. A name
+    that resolves now replaces what `known` held for it; one that does not
+    keeps its last addresses, so the check only ever gets stricter while
+    DNS is unavailable (a container being recreated drops out of DNS for a
+    moment, and its address does not stop being the install's)."""
+    install: dict[Address, str] = {}
+    for name in sorted(blocked_names):
+        addresses = resolved.get(name, set())
+        if known is not None:
+            if addresses:
+                known[name] = set(addresses)
+            else:
+                addresses = known.get(name, set())
+                if addresses:
+                    logger.warning("Install host %s does not resolve; still blocking %s",
+                                   name, ", ".join(sorted(map(str, addresses))))
+        for ip in addresses:
+            install.setdefault(unmapped(ip), name)
+    return install
+
+
+def _address_refusal(
+    host: str, ip: Address, install: dict[Address, str], blocked_cidrs: list[Network],
+    host_addresses: set[Address],
+) -> str | None:
+    """Why an upstream address may not be dialled, or None."""
+    cls = blocked_class(ip)
+    if cls:
+        return f"{host} resolves to {ip}, a {cls} address"
+    if unmapped(ip) in install:
+        return f"{host} resolves to {ip}, the install's own host {install[unmapped(ip)]}"
+    if unmapped(ip) in host_addresses:
+        return f"{host} resolves to {ip}, the host the install runs on"
+    inside = next((n for n in blocked_cidrs if unmapped(ip) in n), None)
+    if inside is not None:
+        return f"{host} resolves to {ip}, inside the cluster's node range {inside}"
+    return None
+
+
 def plan(
     records: list[dict[str, Any]],
     blocked_hosts: list[str],
     families: set[int] | None = None,
     blocked_cidrs: list[Network] | None = None,
+    host_addresses: set[Address] | None = None,
+    known: dict[str, set[Address]] | None = None,
 ) -> Plan:
     """Resolve and check every record's upstream; keep the servable ones.
     Every resolved address is checked; only those of a family the container
-    can reach (`families`, default: probed) are dialled."""
+    can reach (`families`, default: probed) are dialled.
+
+    `host_addresses` are the host's own (the container's default gateway on
+    compose): the host publishes the front door's port, so an upstream there
+    loops back through it. `known` holds the addresses each blocked name
+    last resolved to and is updated here: a name that does not resolve in
+    this poll keeps blocking those, so a DNS hiccup never lets an upstream
+    reach the install by its address (see `_install_addresses`)."""
     if families is None:
         families = reachable_families()
     out = Plan()
@@ -341,10 +413,7 @@ def plan(
 
     blocked_names = set(blocked_hosts)
     resolved = resolve_many(sorted({h for _, _, h, _ in parsed} | blocked_names))
-    install: dict[Address, str] = {}
-    for name in sorted(blocked_names):
-        for ip in resolved.get(name, set()):
-            install.setdefault(unmapped(ip), name)
+    install = _install_addresses(blocked_names, resolved, known)
 
     for r, scheme, host, port in parsed:
         name = r["name"]
@@ -355,19 +424,11 @@ def plan(
         if not addresses:
             out.skipped[name] = f"{host} does not resolve"
             continue
-        reason = None
-        for ip in addresses:
-            cls = blocked_class(ip)
-            if cls:
-                reason = f"{host} resolves to {ip}, a {cls} address"
-                break
-            if unmapped(ip) in install:
-                reason = f"{host} resolves to {ip}, the install's own host {install[unmapped(ip)]}"
-                break
-            inside = next((n for n in blocked_cidrs or [] if unmapped(ip) in n), None)
-            if inside is not None:
-                reason = f"{host} resolves to {ip}, inside the cluster's node range {inside}"
-                break
+        reason = next(
+            (why for ip in addresses
+             if (why := _address_refusal(host, ip, install, blocked_cidrs or [], host_addresses or set()))),
+            None,
+        )
         if reason:
             out.skipped[name] = reason
             continue
@@ -393,6 +454,13 @@ def _pem_to_der_b64(pem: str) -> list[str]:
         der = base64.b64decode("".join(body.split()), validate=True)
         out.append(base64.b64encode(der).decode())
     return out
+
+
+def _host_header(t: Target, default_port: int) -> str:
+    """The upstream's host[:port] for a Host header. An IPv6 literal goes in
+    brackets, as in a URL (urlsplit's hostname drops them)."""
+    host = f"[{t.host}]" if ":" in t.host else t.host
+    return host if t.port == default_port else f"{host}:{t.port}"
 
 
 def _route_block(t: Target, s: Settings, matcher: str) -> list[str]:
@@ -451,8 +519,7 @@ def _route_block(t: Target, s: Settings, matcher: str) -> list[str]:
     ]
     default_port = 443 if t.scheme == "https" else 80
     if r.get("upstream_host_header"):
-        hostport = t.host if t.port == default_port else f"{t.host}:{t.port}"
-        lines.append(f"\t\t\t\theader_up Host {hostport}")
+        lines.append(f"\t\t\t\theader_up Host {_host_header(t, default_port)}")
     if r.get("streaming"):
         lines.append("\t\t\t\tflush_interval -1")
     if r.get("health"):
@@ -484,9 +551,11 @@ def caddyfile(p: Plan | None, s: Settings, *, unavailable: str | None = None) ->
         f"\tadmin {ADMIN_ADDRESS}",
         "\tauto_https off",
         # Keep the front door's X-Forwarded-For, so an attached app sees the
-        # client and not wip-caddy's address. Only wip-caddy reaches the edge
-        # (k8s: the edge's ingress rule; compose: no published port), always
-        # from a private address.
+        # client and not wip-caddy's address. On k8s only wip-caddy reaches
+        # the edge (its ingress rule). On compose the edge publishes no port,
+        # but every container on the install's network can reach it and set
+        # this header: a spoofed client address there misleads rate limits
+        # and logs, never authentication (forward_auth runs in this edge).
         "\tservers {",
         "\t\ttrusted_proxies static private_ranges",
         "\t}",
@@ -586,6 +655,10 @@ class State:
     loaded: str | None = None
     plan: Plan | None = None
     reported: dict[str, str] = field(default_factory=dict)
+    # The addresses each of the install's own hosts last resolved to.
+    known_install: dict[str, set[Address]] = field(default_factory=dict)
+    # The host's own addresses (compose: the container's default gateway).
+    host: set[Address] = field(default_factory=host_addresses)
 
 
 def without_custom_cas(p: Plan) -> Plan:
@@ -619,7 +692,8 @@ def tick(s: Settings, state: State, now: float) -> tuple[str, Plan | None]:
             return state.loaded, state.plan
         return caddyfile(None, s), None
     state.last_ok = now
-    p = plan(records, blocked, blocked_cidrs=blocked_cidrs)
+    p = plan(records, blocked, blocked_cidrs=blocked_cidrs,
+             host_addresses=state.host, known=state.known_install)
     state.plan = p
     # Reported when it changes, not on every poll.
     if p.skipped != state.reported:

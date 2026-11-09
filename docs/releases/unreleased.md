@@ -112,6 +112,34 @@ flow writes its journal before any step runs, so it is unaffected.
   still degrades to a warning (PoNIF #3); identity term fields still fail
   closed.
 
+### The bare host answers a page when no app is enabled; the root redirect is a 302; an attachment cannot reach the compose host
+
+- **`/` with no app enabled** answers a page saying no app is enabled yet.
+  With the gateway on it redirected to `/auth/login`, and a login lands
+  back on `/`: a redirect loop on every fresh install until an app was
+  added. With an app, `/` still goes to the first app's origin, now with a
+  **302 and `Cache-Control: no-store`** instead of a 301, so a browser
+  never stays pinned to an app that has since moved or gone. Per-route
+  bare-path redirects stay 301.
+- **Attachments cannot reach the compose host.** On compose and dev the
+  attach policy blocks `host.containers.internal` / `host.docker.internal`,
+  and the app edge blocks its default gateway (the host): the host
+  publishes the front door's port, so an upstream there looped back
+  through it. An app running directly on the host must run on the
+  install's network to be attached. An install host that stops resolving
+  for a moment keeps blocking the addresses it last resolved to (it was
+  dropped from the check). An IPv6-literal upstream's `Host` header is
+  bracketed.
+- **An app named after a component or `caddy` is refused** at validation:
+  its service would silently replace that one on every target.
+- **k8s:** the `wip-config` ConfigMap is no longer rendered; nothing read
+  it (every variable is set inline on its container). An existing one is
+  left behind and can be deleted.
+- **The auth and key files** (`config/auth/*`, `config/keys/api-keys.json`)
+  are replaced atomically on every render, so a running service never
+  reads one empty or half written. A protected route that strips its
+  prefix keeps the prefix in the login's `return_to`.
+
 ### Registry auth: reservations, key import, grants, attachments and the system restore say and do one thing
 
 - **Runtime keys.** A reservation is written only by the key that holds it:
