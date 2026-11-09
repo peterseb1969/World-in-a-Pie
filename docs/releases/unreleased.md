@@ -35,6 +35,16 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   attaching is platform-admin only, and a request with an item the request
   schema refuses is rejected whole with 422; `policy_unavailable` is the
   Registry's reading of the policy file, not what the edge serves.
+- **System restore.** A legacy `apikey:<name>` grant subject in an archive
+  is read as the bare key name, and two spellings of one grant collapse into
+  the higher permission. A replacing restore refuses to swap the caller's
+  key only when it would actually write that key. Adopting an archive's salt
+  decides freshness again under the lock key creation holds, so a key
+  created meanwhile is not killed by the adoption (the restore is refused,
+  nothing written). A record another request creates during the restore is
+  skipped and listed (`concurrent_write`) instead of failing the run with a
+  500. Docs: when a fingerprint-only archive is adopted, what `refused`
+  covers, and that a scoped archive's mirror stays within its scope.
 
 ### `@wip/proxy` 0.9.0 no longer forwards a client's identity: `forwardIdentity` is removed
 

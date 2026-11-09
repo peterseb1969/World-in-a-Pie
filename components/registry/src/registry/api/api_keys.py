@@ -323,20 +323,22 @@ async def create_api_key(
     # reserved.
     new_reservations = await _save_reservations(request.name, reserve)
 
-    # Generate and hash
+    # Generate, hash and store under one salt: a restore cannot adopt
+    # another salt between the hash and the write (key_salt.write_lock).
     plaintext = generate_plaintext_key()
-    doc = StoredAPIKey(
-        name=request.name,
-        key_hash=hash_api_key(plaintext, key_salt.current_salt()),
-        owner=request.owner,
-        groups=request.groups,
-        description=request.description,
-        expires_at=request.expires_at,
-        namespaces=request.namespaces,
-        created_by=get_identity_string(),
-    )
     try:
-        await doc.insert()
+        async with key_salt.write_lock:
+            doc = StoredAPIKey(
+                name=request.name,
+                key_hash=hash_api_key(plaintext, key_salt.current_salt()),
+                owner=request.owner,
+                groups=request.groups,
+                description=request.description,
+                expires_at=request.expires_at,
+                namespaces=request.namespaces,
+                created_by=get_identity_string(),
+            )
+            await doc.insert()
     except DuplicateKeyError as e:
         await _drop_new_reservations(request.name, new_reservations)
         raise HTTPException(

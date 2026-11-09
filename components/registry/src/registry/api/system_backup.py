@@ -150,8 +150,9 @@ async def system_restore(
     holds no API keys of its own (only keys its key file manages) adopts the
     archive's salt and re-hashes its managed keys; services verify under it
     from their next key sync. A stack with keys of its own refuses it (409),
-    as does an archive that carries only the salt's fingerprint. Runs as a
-    dry run unless dry_run=false.
+    as does an archive that carries only the salt's fingerprint, unless that
+    fingerprint is the configured salt's (an archive made before archives
+    carried the salt). Runs as a dry run unless dry_run=false.
 
     mode=mirror also removes every record the archive does not hold (keys as a
     revoke takes them, grants, reservations; attachments are deactivated),

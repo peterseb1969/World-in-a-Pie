@@ -45,19 +45,17 @@ Restore rules:
   restored; from another one they are skipped and listed unless
   `include_user_grants` is set, since the same email may name someone else.
   Group and key grants are always restored.
-- **A grant without its namespace is kept, orphaned.** A grant on a namespace
-  that exists (active or archived), or on a prefix reserved here by the same
-  owner as in the archive, is written effective: a key that reserves a
-  prefix holds admin on it before the namespace exists (reservations are
-  restored first for that reason). Any other grant is written `orphaned` and
-  listed, including one on a prefix another owner reserves here: an orphan
-  is no grant until it is activated, which happens when a platform admin
-  creates the namespace (a data restore an admin runs does), or when a
-  namespace admin activates it. A key that reserves the prefix later and
-  creates the namespace does not inherit it. A namespace is known only by its name, so activation cannot tell
-  an orphan made because another owner reserves the name from one made
-  for a namespace that was simply absent: a platform admin's create
-  activates both. So the system and data
+- **A grant without its namespace is kept, orphaned.** A grant is written
+  effective when a namespace (active or archived) or a reservation here, as
+  this restore leaves it, holds the namespace id the grant was archived
+  with: a key that reserves a prefix holds admin on it before the namespace
+  exists (reservations are restored first for that reason). A namespace or
+  reservation of the same name with another id is another namespace: the
+  grant is written `orphaned`, with its id, and listed. An orphan is no
+  grant until it becomes effective: when a namespace with its id is created
+  (a data restore of that namespace does), when a namespace admin activates
+  it, or when the same grant is given again. A namespace of the same name
+  created under another id does not inherit it. So the system and data
   restores work in either order. A grant the archive holds orphaned is
   written orphaned, and never replaces a grant that is effective here.
 - **Attachments come last,** after keys and grants, so an attached app's key
@@ -80,7 +78,8 @@ Restore rules:
 - **Three modes.** `upsert` (the default) creates what is missing and leaves
   a record that differs; `overwrite` also replaces it; `mirror` also removes
   every record the archive does not hold, so the archive becomes the exact
-  auth state. The mirror is stack-wide (every archive is). It adds no new kind
+  auth state. A whole-stack archive's mirror is stack-wide; a scoped
+  archive's removes only within its scope (ArchiveScope). It adds no new kind
   of delete; it sequences the existing ones: a key goes as a revoke takes it
   (with its grants), a grant as a grant revoke, a reservation as a release,
   and an attachment is deactivated, never deleted. It never removes:
@@ -99,8 +98,10 @@ Restore rules:
   A grant the archive holds for a key the mirror removes is not written.
   The dry run returns a `plan_digest` of what the mirror would remove; an
   apply that passes it as `expect` is refused (409) when the plan has
-  changed since. Writes are not one transaction: a run that fails part-way
-  has done the records its report lists, and re-running converges. After a
+  changed since. Writes are not one transaction. A record another request
+  creates while the restore runs is skipped and listed (`concurrent_write`),
+  and the restore goes on; any other failure (the database is unreachable)
+  stops the run with an error and no report, and re-running converges. After a
   mirror the stack holds no keys of its own beyond the archive's, so a
   mirror adopts an archive's other salt where an upsert would refuse it.
 - **Dry run by default.** The report lists what would be created, replaced,
@@ -129,6 +130,7 @@ from ..models.namespace import Namespace
 from ..models.reservation import RuntimeReservation
 from .key_salt import adopt as adopt_salt
 from .key_salt import current_salt
+from .key_salt import write_lock as key_salt_write_lock
 from .namespace_identity import id_held_for
 
 logger = logging.getLogger("registry.system_backup")
@@ -275,6 +277,34 @@ class ArchiveGrant(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _canonical_key_subject(self) -> "ArchiveGrant":
+        # A key's grant subject is its bare name: the grant API normalises
+        # the "apikey:<name>" spelling on every write, and permission checks
+        # match the bare name. An archive from a stack that still stored the
+        # old spelling is read the same way, so it matches what is here.
+        if self.subject_type == "api_key":
+            self.subject = self.subject.removeprefix("apikey:")
+        return self
+
+
+_PERMISSION_RANK: Final = {"read": 1, "write": 2, "admin": 3}
+
+
+def _one_grant_per_identity(grants: list[ArchiveGrant]) -> list[ArchiveGrant]:
+    """One grant per (namespace, subject_type, subject), in archive order.
+    Two archived spellings of one key's grant collapse into one: the higher
+    permission, and between equals the effective (non-orphaned) one."""
+    kept: dict[tuple[str, str, str], ArchiveGrant] = {}
+    for g in grants:
+        identity = (g.namespace, g.subject_type, g.subject)
+        held = kept.get(identity)
+        if held is None or (_PERMISSION_RANK[g.permission], not g.orphaned) > (
+            _PERMISSION_RANK[held.permission], not held.orphaned
+        ):
+            kept[identity] = g
+    return list(kept.values())
+
 
 class ArchiveReservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -315,7 +345,8 @@ class ArchiveAttachment(BaseModel):
 
 
 class SystemArchive(BaseModel):
-    """The system backup: the Registry's API keys, grants and reservations."""
+    """The system backup: the Registry's API keys, grants, reservations and
+    attachments."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -327,6 +358,11 @@ class SystemArchive(BaseModel):
     grants: list[ArchiveGrant] = Field(default_factory=list)
     reservations: list[ArchiveReservation] = Field(default_factory=list)
     attachments: list[ArchiveAttachment] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _one_grant_each(self) -> "SystemArchive":
+        self.grants = _one_grant_per_identity(self.grants)
+        return self
 
     @model_validator(mode="after")
     def _no_prefixed_attachments(self) -> "SystemArchive":
@@ -456,8 +492,10 @@ class SystemRestoreReport(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     refused: list[SkippedRecord] = Field(
         default_factory=list,
-        description="Mirror only: records the plan would remove that it must not (the "
-        "key this request authenticates with). A plan with refusals is not applied.",
+        description="Overwrite and mirror: records the restore must not write or "
+        "remove: the key this request authenticates with, which a mirror would remove "
+        "or a replacing restore would replace by the archive's different record. A "
+        "plan with refusals is not applied.",
     )
     plan_digest: str | None = Field(
         default=None,
@@ -738,7 +776,7 @@ async def restore_archive(
     if adopt:
         report.warnings.append(_salt_adopted_warning(dry_run))
         if not dry_run:
-            await adopt_salt(adopt)
+            await _adopt_while_fresh(adopt, archive, plan, config_key_names)
     if await _holds_own_state():
         report.warnings.append(
             "This instance already holds API keys, grants or reservations of its own. "
@@ -774,6 +812,24 @@ async def _plan_and_refusals(
     if mode != "upsert":
         refused += await _caller_replacement(archive, caller_key, config_key_names)
     return plan, refused
+
+
+async def _adopt_while_fresh(
+    salt: str, archive: SystemArchive, plan: "MirrorPlan | None", config_key_names: frozenset[str],
+) -> None:
+    """Adopt the archive's salt, deciding freshness again under the lock key
+    creation holds (key_salt.write_lock): a key created since the first
+    decision was stored under this stack's salt, and adopting would kill it.
+    Nothing is written yet when this refuses."""
+    async with key_salt_write_lock:
+        fresh = await is_fresh() if plan is None else await _fresh_after(plan, archive, config_key_names)
+        if not fresh:
+            raise SaltMismatch(
+                "An API key of this stack's own was created while the restore was "
+                "being prepared; adopting the archive's salt would invalidate it. "
+                "Nothing was written."
+            )
+        await adopt_salt(salt)
 
 
 def _salt_adopted_warning(dry_run: bool) -> str:
@@ -1126,14 +1182,17 @@ async def _caller_replacement(
 ) -> list[SkippedRecord]:
     """A replacing restore (overwrite, mirror) must not swap the key of the
     request for the archive's different record of that name: a re-created
-    admin key restored from an older archive would lock the operator out."""
-    if caller_key is None or caller_key in config_key_names:
+    admin key restored from an older archive would lock the operator out.
+    Only a replacement the restore would make is refused: a key it skips
+    (_key_skip: a config key's name, a managed record, outside the archive's
+    scope, reaching outside it here) stays as it is."""
+    if caller_key is None:
         return []
     archived = next((k for k in archive.api_keys if k.name == caller_key), None)
     if archived is None:
         return []
     current = await StoredAPIKey.find_one(StoredAPIKey.name == caller_key)
-    if current is None or current.managed_by is not None:
+    if current is None or _key_skip(archive, archived, current, config_key_names) is not None:
         return []
     if _key_content(current) == _key_content(archived):
         return []
@@ -1487,8 +1546,14 @@ async def _restore_reservations(
         }
         if existing is not None:
             await existing.set(fields)
-        else:
+            continue
+        try:
             await RuntimeReservation(prefix=r.prefix, **fields).insert()
+        except DuplicateKeyError:
+            del planned[r.prefix]
+            _concurrent_write(out, r.prefix, _skip_reservation(
+                r.prefix, "concurrent_write", "reserved by another request during the restore",
+            ))
     return planned
 
 
@@ -1527,11 +1592,26 @@ async def _restore_keys(
             old_hash = existing.key_hash
             await existing.set(fields)
             written.append((old_hash, existing))
-        else:
-            doc = StoredAPIKey(name=k.name, **fields)
+            continue
+        doc = StoredAPIKey(name=k.name, **fields)
+        try:
             await doc.insert()
-            written.append((None, doc))
+        except DuplicateKeyError:
+            _concurrent_write(out, k.name, _skip_named(
+                k.name, "concurrent_write", "created by another request during the restore",
+            ))
+            continue
+        written.append((None, doc))
     return written
+
+
+def _concurrent_write(out: RecordReport, record_id: str, skip: SkippedRecord) -> None:
+    """A record another request created between the restore's read and its
+    insert: listed as skipped instead of created; the restore goes on."""
+    out.created.remove(record_id)
+    if record_id in out.orphaned:
+        out.orphaned.remove(record_id)
+    out.skipped.append(skip)
 
 
 async def _grantable(g: ArchiveGrant, planned: dict[str, str]) -> bool:
@@ -1629,8 +1709,10 @@ async def _restore_grant(
         out.created.append(gid)
     if orphaned:
         out.orphaned.append(gid)
-    if not dry_run:
-        await _write_grant(g, existing, orphaned)
+    if not dry_run and not await _write_grant(g, existing, orphaned):
+        _concurrent_write(out, gid, _skip_grant(
+            g, "concurrent_write", "granted by another request during the restore",
+        ))
 
 
 def _existing_grant_outcome(
@@ -1658,8 +1740,9 @@ def _existing_grant_outcome(
     return _skip_grant(g, "differs", _DIFFERS)
 
 
-async def _write_grant(g: ArchiveGrant, existing: NamespaceGrant | None, orphaned: bool) -> None:
-    """Write the archived grant over the one held here, or insert it."""
+async def _write_grant(g: ArchiveGrant, existing: NamespaceGrant | None, orphaned: bool) -> bool:
+    """Write the archived grant over the one held here, or insert it. False
+    when another request created the grant since it was read."""
     fields = {
         "permission": g.permission, "granted_by": g.granted_by,
         "granted_at": g.granted_at or datetime.now(UTC), "expires_at": g.expires_at,
@@ -1670,7 +1753,11 @@ async def _write_grant(g: ArchiveGrant, existing: NamespaceGrant | None, orphane
     }
     if existing is not None:
         await existing.set(fields)
-    else:
+        return True
+    try:
         await NamespaceGrant(
             namespace=g.namespace, subject=g.subject, subject_type=g.subject_type, **fields,
         ).insert()
+    except DuplicateKeyError:
+        return False
+    return True

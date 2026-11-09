@@ -23,6 +23,7 @@ Config keys are not affected: each process hashes and verifies its own
 config keys under its configured salt.
 """
 
+import asyncio
 import logging
 import secrets
 from datetime import UTC, datetime
@@ -42,6 +43,12 @@ _DOC_ID = "runtime"
 
 # The stored value, once read; None until ensure() or refresh() ran.
 _current: str | None = None
+
+# Held while a key is hashed under the current salt and stored, and while a
+# restore re-checks that the stack is fresh and adopts another salt: a key
+# created in between would be stored under a salt that is then replaced, and
+# never authenticate.
+write_lock = asyncio.Lock()
 
 
 def _collection() -> Any:
