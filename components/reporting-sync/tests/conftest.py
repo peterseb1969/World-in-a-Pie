@@ -236,6 +236,26 @@ async def _clean_database(pool: asyncpg.Pool) -> None:
             await conn.execute(f'DROP TABLE IF EXISTS "{row["table_name"]}" CASCADE')
 
 
+async def _drop_test_roles(conn) -> None:
+    """Drop every role these fixtures create — the per-test managers,
+    owners and readers (rs_*) and the scope and namespace roles (wip_scope_*,
+    wip_nsread_*). A manager's grants go first: it granted the scope roles
+    CONNECT, and a scope role cannot be dropped while a grant made by a
+    still-existing manager remains."""
+    managers = [r["rolname"] for r in await conn.fetch(
+        "SELECT rolname FROM pg_roles WHERE rolname LIKE 'rs\\_roles\\_%'"
+    )]
+    for manager in managers:
+        await conn.execute(f'DROP OWNED BY "{manager}" CASCADE')
+    for row in await conn.fetch(
+        "SELECT rolname FROM pg_roles "
+        "WHERE rolname LIKE 'wip\\_scope\\_%' OR rolname LIKE 'wip\\_nsread\\_%' "
+        "OR rolname LIKE 'rs\\_%'"
+    ):
+        await conn.execute(f'DROP OWNED BY "{row["rolname"]}"')
+        await conn.execute(f'DROP ROLE "{row["rolname"]}"')
+
+
 @pytest_asyncio.fixture
 async def scoped_reads(pg_pool):
     """The app's scoped reads on the test database, with a role manager.
@@ -243,6 +263,11 @@ async def scoped_reads(pg_pool):
     The test login is a superuser, so the test pool plays the sync owner.
     Roles are cluster-wide: the role manager, owner and reader are unique
     to the test, and every scope and namespace role is dropped afterwards.
+    Leftovers are dropped first too: a run stopped mid-test (Ctrl-C, a
+    timeout, or wip-test.sh stopping a superseded run) never reached the
+    teardown, and its manager's grants kept every later run from dropping
+    the scope roles. One run per clone holds the test database (the clone
+    lock), so every such role found here is a leftover.
     """
     import uuid
     from urllib.parse import urlsplit
@@ -251,6 +276,8 @@ async def scoped_reads(pg_pool):
     from reporting_sync.pg_roles import RoleSpec, provision_roles
     from reporting_sync.scoped_reads import ScopedReads
 
+    async with pg_pool.acquire() as conn:
+        await _drop_test_roles(conn)
     suffix = uuid.uuid4().hex[:8]
     spec = RoleSpec(
         owner=f"rs_owner_{suffix}", owner_password=f"o-{suffix}",
@@ -275,18 +302,7 @@ async def scoped_reads(pg_pool):
     yield reads
     state.scoped_reads = saved
     async with pg_pool.acquire() as conn:
-        # The manager granted the scope roles CONNECT; dropping its grant
-        # option with CASCADE takes those grants with it.
-        await conn.execute(f'DROP OWNED BY "{spec.manager}" CASCADE')
-        for row in await conn.fetch(
-            "SELECT rolname FROM pg_roles "
-            "WHERE rolname LIKE 'wip\\_scope\\_%' OR rolname LIKE 'wip\\_nsread\\_%'"
-        ):
-            await conn.execute(f'DROP OWNED BY "{row["rolname"]}"')
-            await conn.execute(f'DROP ROLE "{row["rolname"]}"')
-        for role in (spec.manager, spec.reader, spec.owner):
-            await conn.execute(f'DROP OWNED BY "{role}"')
-            await conn.execute(f'DROP ROLE "{role}"')
+        await _drop_test_roles(conn)
 
 
 @pytest_asyncio.fixture

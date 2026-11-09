@@ -14,6 +14,7 @@
 #   ./scripts/wip-test.sh template-store tests/test_x.py::test_a     # one test
 #   ./scripts/wip-test.sh all                    # run everything
 #   ./scripts/wip-test.sh --down                 # remove this clone's test containers
+#   ./scripts/wip-test.sh --overlap-check def-store mcp-server   # before a push
 #
 # Test-container provisioning (CASE-320, per clone since CASE-912):
 #   The component conftests connect to dedicated test-only services
@@ -38,7 +39,28 @@
 # 900). Different clones never wait on each other. Components with no
 # container deps are never serialized.
 #
-# Exits with pytest's exit code (or combined exit code for "all").
+# Upstream watch (CASE-1198): parallel clones push to the same branch, and a
+# run that finishes against code another clone already changed must run
+# again. So while pytest runs, the wrapper fetches every remote carrying the
+# current branch every WIP_TEST_SUPERSEDE_INTERVAL seconds (default 60); a
+# fetch never touches the working tree. When commits that arrived since the
+# run started touch what it depends on — the component, the libs its
+# requirements.txt installs editable, pyproject.toml, this script — or what
+# this clone changed itself, the run is stopped (pytest and every xdist
+# worker, before the clone lock is released) and the wrapper exits 75 with a
+# one-line "superseded: …" reason. The same check runs once when pytest ends
+# on its own. On 75: rebase onto upstream and run again. Every suite's
+# fixtures reset what a stopped run leaves (checked live per suite, NATS and
+# PostgreSQL ones included). A failed fetch is reported and never read as
+# "nothing came in". WIP_TEST_SUPERSEDE=0 turns the watch off.
+#
+# --overlap-check <component>...: fetch, and exit 75 if upstream commits HEAD
+# does not have touch those components' watch paths (0 = nothing overlaps,
+# 76 = could not fetch). Run it before pushing: overlap means rebase and
+# rerun what overlaps.
+#
+# Exits with pytest's exit code (or combined exit code for "all"), 75 when
+# superseded.
 #
 # Path override: if any positional pytest target is supplied (a file
 # path, a tests/... reference, or a nodeid like tests/x.py::test_y),
@@ -312,6 +334,14 @@ fi
 TARGET="$1"
 shift
 
+if [[ "$TARGET" == "--overlap-check" ]]; then
+    if [[ $# -lt 1 ]]; then
+        echo "Usage: $0 --overlap-check <component>..." >&2
+        exit 1
+    fi
+    exec python3 "$REPO_ROOT/scripts/upstream_overlap.py" check "$REPO_ROOT" "$@"
+fi
+
 # --- Resolve component to directory ---
 
 PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server auth-gateway app-edge)
@@ -479,10 +509,110 @@ run_python_tests() {
     # The ${arr[@]+...} guard keeps an EMPTY xdist_args from tripping
     # `set -u` on bash < 4.4 (macOS system bash is 3.2).
     if (( has_target )); then
-        (cd "$dir" && PYTHONPATH=src pytest ${xdist_args[@]+"${xdist_args[@]}"} "$@")
+        _run_watched "$name" "$dir" ${xdist_args[@]+"${xdist_args[@]}"} "$@"
     else
-        (cd "$dir" && PYTHONPATH=src pytest tests/ ${xdist_args[@]+"${xdist_args[@]}"} "$@")
+        _run_watched "$name" "$dir" tests/ ${xdist_args[@]+"${xdist_args[@]}"} "$@"
     fi
+}
+
+# --- Upstream watch (CASE-1198) ---
+
+SUPERSEDED=75
+WIP_TEST_CHILD_PID=""
+
+# Every descendant of $1, deepest first: pytest's xdist workers are its
+# children (execnet popen), and macOS has no setsid(1) to kill a group.
+_descendants() {
+    local child
+    for child in $(pgrep -P "$1" 2>/dev/null); do
+        _descendants "$child"
+        echo "$child"
+    done
+}
+
+# Stop the running pytest and everything it started, and return only when
+# none of them is left: the clone lock is released after this, and a rerun
+# must not start beside a surviving worker writing to the same databases.
+_stop_child() {
+    local pid="$WIP_TEST_CHILD_PID" victims p waited=0
+    [[ -n "$pid" ]] || return 0
+    WIP_TEST_CHILD_PID=""
+    victims="$(_descendants "$pid") $pid"
+    # shellcheck disable=SC2086  # word-split pid list
+    kill -TERM $victims 2>/dev/null || true
+    while (( waited < 10 )); do
+        local alive=0
+        for p in $victims; do kill -0 "$p" 2>/dev/null && alive=1; done
+        (( alive )) || break
+        sleep 1
+        waited=$(( waited + 1 ))
+    done
+    # shellcheck disable=SC2086
+    kill -KILL $victims 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+}
+
+# Whether pid $1 still runs. Not `kill -0`: our own finished child stays a
+# zombie until `wait` reaps it, and kill -0 succeeds on a zombie.
+_child_running() {
+    local stat
+    stat="$(ps -o stat= -p "$1" 2>/dev/null)" || return 1
+    [[ -n "$stat" && "$stat" != Z* ]]
+}
+
+_upstream() {
+    python3 "$REPO_ROOT/scripts/upstream_overlap.py" "$@"
+}
+
+# Run pytest for component $1 in directory $2 (remaining args to pytest),
+# watching upstream unless WIP_TEST_SUPERSEDE=0. Returns pytest's exit code,
+# or SUPERSEDED when commits that arrived during the run overlap it.
+#
+# pytest always runs in the background under this loop, watched or not: a
+# foreground child holds off the wrapper's INT/TERM traps until it finishes,
+# so a stopped wrapper would let the suite run to the end. Here the trap
+# runs within a second and stops the whole tree.
+_run_watched() {
+    local name="$1" dir="$2" rc=0 state="" reason watch=1
+    shift 2
+    if [[ "${WIP_TEST_SUPERSEDE:-1}" == "0" ]] || ! git -C "$REPO_ROOT" rev-parse HEAD >/dev/null 2>&1; then
+        watch=0
+    else
+        state="$(mktemp "${TMPDIR:-/tmp}/wip-test-upstream.XXXXXX")"
+        _upstream snapshot "$REPO_ROOT" "$state" || true
+    fi
+    (cd "$dir" && PYTHONPATH=src exec pytest "$@") &
+    WIP_TEST_CHILD_PID=$!
+    local interval="${WIP_TEST_SUPERSEDE_INTERVAL:-60}" elapsed=0 warned=0 check_rc
+    while _child_running "$WIP_TEST_CHILD_PID"; do
+        sleep 1
+        elapsed=$(( elapsed + 1 ))
+        (( watch && elapsed >= interval )) || continue
+        elapsed=0
+        check_rc=0
+        reason="$(_upstream check "$REPO_ROOT" "$name" --since "$state")" || check_rc=$?
+        if (( check_rc == SUPERSEDED )); then
+            echo "$reason — stopping the run"
+            _stop_child
+            rm -f "$state"
+            return "$SUPERSEDED"
+        elif (( check_rc != 0 && ! warned )); then
+            echo "$reason"
+            warned=1
+        fi
+    done
+    wait "$WIP_TEST_CHILD_PID" || rc=$?
+    WIP_TEST_CHILD_PID=""
+    (( watch )) || return "$rc"
+    check_rc=0
+    reason="$(_upstream check "$REPO_ROOT" "$name" --since "$state")" || check_rc=$?
+    rm -f "$state"
+    if (( check_rc == SUPERSEDED )); then
+        echo "$reason — this run's result is stale"
+        return "$SUPERSEDED"
+    fi
+    (( check_rc == 0 )) || echo "$reason"
+    return "$rc"
 }
 
 # --- Cross-run test-infrastructure lock (CASE-742) ---
@@ -517,6 +647,20 @@ run_python_tests() {
 # as the corruption this lock prevents.
 
 WIP_TEST_LOCK_DIR="${WIP_TEST_LOCK_DIR:-/tmp/wip-test-infra-$CLONE_KEY.lock}"
+WIP_TEST_LOCK_OWNED=0
+
+# Whatever ends the wrapper — the suite finishing, a superseded run, an
+# interrupt, a kill — a still-running pytest and its workers are stopped
+# before the lock is released.
+_on_exit() {
+    _stop_child
+    if (( WIP_TEST_LOCK_OWNED )); then
+        rm -rf "$WIP_TEST_LOCK_DIR"
+    fi
+}
+trap _on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 _lock_owner_summary() {
     if [[ -f "$WIP_TEST_LOCK_DIR/owner" ]]; then
@@ -537,8 +681,7 @@ _try_acquire() {
         printf 'pid=%s\nclone=%s\ncomponent=%s\nsince=%s\n' \
             "$$" "$REPO_ROOT" "$TARGET" "$(date '+%Y-%m-%d %H:%M:%S')" \
             > "$WIP_TEST_LOCK_DIR/owner"
-        # shellcheck disable=SC2064
-        trap "rm -rf '$WIP_TEST_LOCK_DIR'" EXIT
+        WIP_TEST_LOCK_OWNED=1
         return 0
     fi
     return 1
@@ -615,7 +758,12 @@ if [[ "$TARGET" == "all" ]]; then
     PASSED=()
 
     for comp in "${PYTHON_COMPONENTS[@]}" "${PYTHON_LIBS[@]}" "${PYTHON_TOOLS[@]}"; do
-        if run_python_tests "$comp" "$@"; then
+        comp_rc=0
+        run_python_tests "$comp" "$@" || comp_rc=$?
+        if (( comp_rc == SUPERSEDED )); then
+            echo "=== Superseded during $comp — rebase and run again ==="
+            exit "$SUPERSEDED"
+        elif (( comp_rc == 0 )); then
             PASSED+=("$comp")
         else
             FAILED+=("$comp")

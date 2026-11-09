@@ -25,6 +25,8 @@ The wrapper accepts:
 - The literal `all` to run every component sequentially
 - The literal `deployer` to run the deployer's 400+ tests
 
+Exit **75** means the run was superseded: commits that arrived upstream while it ran touch what it depends on, so it stopped itself (`superseded: …` names them). Rebase and run it again. `--overlap-check <component>...` asks the same question before a push (0 clean, 75 overlap, 76 could not fetch).
+
 #### 2. For TypeScript libraries and the Vue console (which the wrapper doesn't yet cover)
 
 ```bash

@@ -138,6 +138,7 @@ Rules describe what to do. These describe why applying them is harder than it so
 
 - **Never set Bash `timeout > 60000` ms.** Use `run_in_background: true` for any command that may exceed 60 s. Use `Monitor` for streaming output, or wait for the auto-completion notification when the background task finishes. A PreToolUse hook (`~/.claude/hooks/block-long-bash-timeout.sh`) now mechanically rejects calls with `timeout > 60000` — the discipline rule still applies even if the hook is disabled or absent in a future setup. *Origin: this rule once lived only in a feedback-memory file and still failed to prevent recurrence twice in 90 minutes within one session — hence the mechanical hook.*
 - **Verify-before-wait.** Before scheduling any wait on a long-running command, verify the prerequisites that command depends on can succeed. For test runs via `wip-test.sh`: the wrapper provisions this clone's own test containers on runtime-picked ports and prints the address it uses (`MONGO_URI=…`), so there is no fixed port to probe — check that the container runtime itself answers (`podman ps` returns promptly) before kicking off a long run. For anything against the dev install: check its host-bound port (e.g., `nc -z localhost 8443`). The class of failure is *waiting on an action that depends on unverified state* — the wait then can't complete and burns wall time on a hang. *Origin: an agent once waited 10 minutes for tests that couldn't finish because the deployer no longer exposed mongo's port to the host; nc -z would have caught it in 50 ms.*
+- **A test run another clone superseded stops itself.** While pytest runs, `wip-test.sh` fetches every remote carrying the branch (every 60 s); when commits that arrived touch what the run depends on (the component, the libs it installs editable, `pyproject.toml`, the wrapper) or what this clone changed, it stops the run and every worker and exits **75** with a `superseded: …` line. On 75: rebase onto upstream and rerun — do not read the stopped run's partial output as a result. A line saying the fetch failed means the watch was blind for that run, not that nothing came in. `WIP_TEST_SUPERSEDE=0` turns the watch off.
 - **Bash hygiene — don't prefix commands with `cd`.** Your commands already run from the project root, so a `cd` prefix is unnecessary *and* trips approval prompts: `cd "${CLAUDE_PROJECT_DIR:-$PWD}" && …` forces an *expansion* prompt (shell expansion can't be statically verified against the allowlist), and `cd dir && … > file` forces a *path-bypass* prompt (the redirect could land outside an allowlisted path). Both are avoidable — use explicit / relative-to-root paths for reading **and** writing. Keeps inspection and file writes prompt-free *and* safer.
 
 ---
@@ -395,6 +396,8 @@ git push gitea develop && git push origin develop
 - **origin** → `https://github.com/peterseb1969/World-in-a-Pie` (GitHub, mirror)
 
 Verify with `git remote -v` if in doubt.
+
+**Before every push, check what came in:** `./scripts/wip-test.sh --overlap-check <component>...` naming every component you tested. Exit 0 — nothing that arrived upstream touches them: rebase and push without a rerun. Exit 75 — rebase and rerun those suites first. Exit 76 — it could not fetch, so it knows nothing; find out why before pushing.
 
 Full rule at `feedback_push_to_gitea.md`.
 
