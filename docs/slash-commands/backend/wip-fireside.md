@@ -12,7 +12,7 @@ Firesides are **written** by `/wip-report` (bare, Mode 1), which writes them to 
 2. **Cache-ensure** — `test -f ~/.cache/wip-kb-client/kb-client.sh`. If missing, install the served client using the two facts in `.claude/kb.json`:
    ```bash
    curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \
-     "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh
+     "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/server-api/kb-client/install" | sh
    ```
 
 **`list` short-circuit:**

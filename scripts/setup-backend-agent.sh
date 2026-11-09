@@ -229,7 +229,7 @@ PYEOF
         _kb_install="$(mktemp)"
         _kb_code="$(curl -sSk -o "$_kb_install" -w '%{http_code}' \
             -H "X-API-Key: $(cat "$KB_KEY_FILE")" \
-            "$KB_URL/apps/kb/server-api/kb-client/install" 2>/dev/null || echo 000)"
+            "${KB_URL%/}/server-api/kb-client/install" 2>/dev/null || echo 000)"
         case "$_kb_code" in
             2??)
                 if [ -s "$_kb_install" ] && sh "$_kb_install"; then

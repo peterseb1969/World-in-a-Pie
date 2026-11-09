@@ -16,7 +16,7 @@ backend by construction — do not reproduce its content here.
 2. **Cache-ensure** — `test -f ~/.cache/wip-kb-client/kb-client.sh && command -v kbc >/dev/null`. Both halves matter: every verb below invokes the on-PATH `kbc` shim, which is a separate file from the cached runner and is not self-healed by a flow that never reaches the runner. If either is missing, install the served client using the two facts in `.claude/kb.json`:
    ```bash
    curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \
-     "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh
+     "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/server-api/kb-client/install" | sh
    ```
    If `kbc` still does not resolve after the install (`~/.local/bin` absent from PATH), invoke the runner directly — `bash ~/.cache/wip-kb-client/kb-client.sh <script> …` is the equivalent form; do not loop the install.
 

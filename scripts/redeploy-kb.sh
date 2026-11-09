@@ -2,9 +2,13 @@
 # redeploy-kb.sh — build the KB app image from WIP-KB, push to GHCR, and roll it on
 # the kb.internal k8s cluster, with the bits agents kept forgetting BAKED IN and
 # every failure made LOUD. Born from two compounding mistakes on 2026-06-27:
-#   1. a manual build omitted --build-arg VITE_BASE_PATH=/apps/kb/  → assets at "/"
-#      → blank page (MIME error). This script always passes it AND verifies the
-#      built image's index.html actually references /apps/kb/assets/ BEFORE deploy.
+#   1. an image built for the wrong base path → index.html pointed its assets at a
+#      path nothing served → blank page (MIME error). The KB is served at the root
+#      of its own origin (https://kb.<WIP hostname>/), so the image is built with
+#      Vite's default base, and BEFORE deploy this script checks that the built
+#      index.html references root assets (="/assets/…") AND contains no /apps/ —
+#      an image built for /apps/kb/ references /apps/kb/assets/, which also
+#      contains /assets/, so checking presence alone would pass it.
 #   2. a build silently no-op'd (script file didn't exist, exit 127) so the tag was
 #      never pushed, then `kubectl set image` pointed at a missing tag →
 #      ImagePullBackOff. This script REFUSES to set the image until skopeo confirms
@@ -30,8 +34,8 @@ CONTAINER="wip-kb"            # container within the deployment
 KB_NAMESPACE="${KB_NAMESPACE:-kb}"
 KUBE_CONTEXT="${KUBE_CONTEXT:-microk8s}"
 PLATFORM="linux/arm64"        # Pi nodes are arm64; native on Apple Silicon
-BASE_PATH="/apps/kb/"          # the forgotten build-arg — the app is ALWAYS mounted here
-ASSET_MARKER="/apps/kb/assets/"   # what a correct index.html must reference
+ASSET_MARKER='="/assets/'      # what a correct index.html must reference (root base)
+FORBIDDEN_MARKER="/apps/"      # what it must never contain (an image built for path mode)
 
 TAG=""; DO_BUILD=true; ROLLBACK=""; DRY_RUN=false
 while [ $# -gt 0 ]; do
@@ -40,7 +44,7 @@ while [ $# -gt 0 ]; do
         --no-build) DO_BUILD=false; shift ;;
         --rollback) ROLLBACK="$2"; DO_BUILD=false; shift 2 ;;
         --dry-run) DRY_RUN=true; shift ;;
-        -h|--help) sed -n '2,32p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,26p' "$0"; exit 0 ;;
         *) echo "Unknown arg: $1" >&2; exit 2 ;;
     esac
 done
@@ -86,26 +90,29 @@ if [ -z "$TAG" ]; then
     echo "Auto-tag: $TAG"
 fi
 
-# ── Build (with the build-arg that must never be forgotten) ─────────────────────
+# ── Build (Vite's default base: the app is served at its origin's root) ─────────
 if $DO_BUILD; then
     [ -f "$WIP_KB_DIR/Dockerfile" ] || die "no Dockerfile at $WIP_KB_DIR (set WIP_KB_DIR)"
     SHA="$(git -C "$WIP_KB_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-    step "Build $IMAGE:$TAG from $WIP_KB_DIR @ $SHA (VITE_BASE_PATH=$BASE_PATH, $PLATFORM)"
+    step "Build $IMAGE:$TAG from $WIP_KB_DIR @ $SHA ($PLATFORM)"
     run "echo \"\$(gh auth token)\" | podman login ghcr.io -u peterseb1969 --password-stdin >/dev/null"
     run "podman build --platform $PLATFORM \
-        --build-arg VITE_BASE_PATH=$BASE_PATH \
         --build-arg VITE_BUILD_SHA=$SHA \
         -t $IMAGE:$TAG -f $WIP_KB_DIR/Dockerfile $WIP_KB_DIR"
 
-    # GATE 1 — the built artifact must reference the correct asset base. This is
-    # the exact check that would have caught the blank-page bug at its source.
-    step "Verify built image references $ASSET_MARKER (the asset-base gate)"
+    # GATE 1 — the built artifact must reference root assets and nothing under
+    # /apps/. This is the check that would have caught the blank-page bug at its
+    # source; both halves are needed (see the header).
+    step "Verify built index.html references root assets and no /apps/ (the asset-base gate)"
     if ! $DRY_RUN; then
         html="$(podman run --rm --entrypoint sh "$IMAGE:$TAG" -c \
             'cat "$(find / -name index.html -path "*dist*" 2>/dev/null | head -1)"' 2>/dev/null || true)"
-        echo "$html" | grep -q "$ASSET_MARKER" \
-            || die "built index.html does NOT reference $ASSET_MARKER — base path is wrong, NOT deploying"
-        echo "  ok: index.html references $ASSET_MARKER"
+        echo "$html" | grep -qF "$ASSET_MARKER" \
+            || die "built index.html does NOT reference root assets ($ASSET_MARKER) — base path is wrong, NOT deploying"
+        if echo "$html" | grep -qF "$FORBIDDEN_MARKER"; then
+            die "built index.html contains $FORBIDDEN_MARKER — image built for path mode, NOT deploying"
+        fi
+        echo "  ok: index.html references root assets and nothing under $FORBIDDEN_MARKER"
     fi
 
     step "Push $IMAGE:$TAG"
@@ -134,5 +141,5 @@ fi
 
 echo
 echo "✅ Deployed $IMAGE:$TAG"
-echo "   served-page check is OIDC-gated (302) — hard-refresh https://kb.kb.internal/apps/kb/ to confirm in-browser."
+echo "   served-page check is OIDC-gated (302) — hard-refresh https://kb.kb.internal/ to confirm in-browser."
 echo "   rollback:  $0 --rollback ${ROLLBACK_REF##*:}"

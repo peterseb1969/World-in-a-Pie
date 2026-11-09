@@ -13,7 +13,7 @@ Capture a lesson learned as a first-class `LESSON` record in the KB, so future a
 2. **Cache-ensure** — `test -f ~/.cache/wip-kb-client/kb-client.sh`. If missing, install the served client:
    ```bash
    curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \
-     "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh
+     "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/server-api/kb-client/install" | sh
    ```
 3. **Session ID** — read `.claude/.session-id` (`cat "$CLAUDE_PROJECT_DIR/.claude/.session-id"`, fall back to `$PWD/.claude/.session-id`); it is the `authored_by` attribution. **Never type it by hand.** If missing, run `/wip-setup` (fresh) or `/wip-wake` (continuation) first.
 

@@ -177,7 +177,7 @@ for typing and subclassing; in normal use you reach them through the
 client properties above rather than constructing them directly. The
 sections below document each service's methods through those properties.
 
-All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps behind the `@wip/proxy` mount, use ``baseUrl: `${import.meta.env.BASE_URL}wip` `` — a deployed app lives under `/apps/<name>/`, so a bare `'/wip'` works only for an app served at `/`. Use `baseUrl: ''` for direct Caddy access. In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
+All services route through the `baseUrl`. The Caddy reverse proxy routes `/api/def-store/*`, `/api/template-store/*`, etc. to the correct service port. The client always sends requests to `baseUrl + /api/<service>/...` — Caddy is required to route them correctly. In browser apps behind the `@wip/proxy` mount, use ``baseUrl: `${import.meta.env.BASE_URL}wip` `` — a deployed app is served at the root of its own origin (`https://<label>.<host>/`), so with Vite's default base that is `/wip`. Use `baseUrl: ''` for direct Caddy access. In Node.js scripts, use `baseUrl: 'https://your-host:8443'`.
 
 ---
 

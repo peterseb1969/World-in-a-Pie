@@ -305,7 +305,6 @@ build_python_plain() {
 }
 
 ### Vue Console removed — replaced by React Console app chunk.
-### Root URL redirects to /apps/rc/ via Caddyfile.
 
 # ── Main ─────────────────────────────────────────────────────────
 

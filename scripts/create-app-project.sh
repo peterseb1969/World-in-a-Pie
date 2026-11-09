@@ -126,6 +126,8 @@ while [[ $# -gt 0 ]]; do
             echo "              KB client, drops the /wip-case stub, registers the role. Scheme is"
             echo "              optional (https:// assumed). Without --kb (and no existing kb.json)"
             echo "              the repo stays tier 2 (WIP-only); an existing kb.json keeps its other keys."
+            echo "              Give the KB app's own origin (kb.kb.internal → https://kb.kb.internal),"
+            echo "              not WIP's: a URL that redirects breaks the client."
             echo "  --kb-key    Path to the KB API key file issued with this installation. Required"
             echo "              with --kb unless .claude/kb.json already records one; no default."
             echo "  --name      Display name for the app (default: derived from directory name)"
@@ -297,7 +299,7 @@ PYEOF
         _kb_install="$(mktemp)"
         _kb_code="$(curl -sSk -o "$_kb_install" -w '%{http_code}' \
             -H "X-API-Key: $(cat "$KB_KEY_FILE")" \
-            "$KB_URL/apps/kb/server-api/kb-client/install" 2>/dev/null || echo 000)"
+            "${KB_URL%/}/server-api/kb-client/install" 2>/dev/null || echo 000)"
         case "$_kb_code" in
             2??)
                 if [ -s "$_kb_install" ] && sh "$_kb_install"; then
@@ -325,11 +327,19 @@ PYEOF
     # still gates the mirror and owns the durable seed; KB_TARGET_YAC is NOT a
     # sync gap (free strings, hand-curated) so it is deliberately skipped.
     # Direct def-store POST is correct: terminology provisioning, not a
-    # kb-document write (no CASE-464 gateway conflict). Base/key from kb.json;
+    # kb-document write (no CASE-464 gateway conflict). Key from kb.json;
     # bulk-first means HTTP is always 200 — parse the per-item body, not the code.
+    # def-store lives on WIP's origin, not the KB's: the KB is an app, served at
+    # the root of its own origin https://kb.<WIP hostname>[:port] (the deployer
+    # serves every app at <label>.<hostname>, and wip-kb's label is kb), and an
+    # app's origin answers /api/def-store with a 302 to the login page. So WIP's
+    # origin is kb_app_url without its leading "kb." label. kb_app_url must be the
+    # KB's own origin (see --kb); a clone that recorded WIP's origin instead is
+    # already broken, because the client install above 404s there.
     ROLE_PREFIX="${APP_PREFIX:-$(cat "$APP_DIR/.claude/.session-role" 2>/dev/null || true)}"
     if [ -n "$ROLE_PREFIX" ] && [ -f "$KB_KEY_FILE" ]; then
-        DS="${KB_URL%/}/api/def-store"
+        WIP_ORIGIN="$(printf '%s' "${KB_URL%/}" | sed -E 's#^(https?://)kb\.#\1#')"
+        DS="$WIP_ORIGIN/api/def-store"
         KB_KEY="$(cat "$KB_KEY_FILE")"
         SR_TID="$(curl -sk "$DS/terminologies/by-value/SESSION_ROLE" -H "X-API-Key: $KB_KEY" 2>/dev/null \
                   | sed -n 's/.*"terminology_id"[": ]*"\([^"]*\)".*/\1/p' | head -1 || true)"

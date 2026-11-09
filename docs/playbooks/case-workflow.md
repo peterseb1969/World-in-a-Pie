@@ -30,7 +30,7 @@ are the instance URL + your API key (both from `.claude/kb.json`):
 
 ```bash
 curl -fsSk -H "X-API-Key: $(cat "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_api_key_file"])')")" \
-  "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/apps/kb/server-api/kb-client/install" | sh
+  "$(python3 -c 'import json;print(json.load(open(".claude/kb.json"))["kb_app_url"])')/server-api/kb-client/install" | sh
 ```
 
 That materializes the bundle into `~/.cache/wip-kb-client/` and writes the stable
