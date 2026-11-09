@@ -66,7 +66,8 @@ def _apply(tmp_path: Path, *, deployment, tree, services_scope):
         patch("wip_deploy.apply._detect_compose_cmd", return_value=["podman-compose"]),
         patch("wip_deploy.apply._run_build"),
         patch("wip_deploy.apply._run_up") as run_up,
-        patch("wip_deploy.apply._remove_stale_wip_containers") as wipe,
+        patch("wip_deploy.apply._remove_install_containers") as wipe,
+        patch("wip_deploy.apply._check_containers_created"),
         patch("wip_deploy.apply._reload_proxy") as reload_proxy,
         patch("wip_deploy.apply._run_post_install"),
     ):
@@ -158,7 +159,7 @@ class TestProxyReload:
             tree=_tree({self.CADDY: "edge-v1", self.ROUTER: "router-v2"}),
             services_scope=["wip-aa"],
         )
-        assert reload_proxy.call_args_list == [(("wip-router",),)]
+        assert reload_proxy.call_args_list == [(("test-install_wip-router",),)]
 
     def test_unchanged_configs_reload_nothing(self, tmp_path: Path) -> None:
         (tmp_path / self.CADDY).parent.mkdir(parents=True)

@@ -82,6 +82,7 @@ from wip_deploy.config_gen.nats import (
 )
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.config_gen.spec_context import federated_groups_policy
+from wip_deploy.naming import container_name, network_block, service_networks
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import (
@@ -271,7 +272,7 @@ def _render_compose_yaml(
 
     top: dict[str, Any] = {
         "services": services,
-        "networks": {"wip-network": {"name": "wip-network", "driver": "bridge"}},
+        "networks": network_block(deployment.metadata.name),
     }
     if volumes:
         top["volumes"] = volumes
@@ -314,7 +315,7 @@ def _service_block(
     workload_hash: str | None = None,
 ) -> dict[str, Any]:
     block: dict[str, Any] = {
-        "container_name": _container_name(owner.metadata.name),
+        "container_name": container_name(deployment.metadata.name, owner.metadata.name),
         "image": _image_ref(owner, deployment),
     }
     # `compose up -d` recreates only services whose definition changed; the
@@ -376,7 +377,7 @@ def _service_block(
     if volumes:
         block["volumes"] = volumes
 
-    block["networks"] = ["wip-network"]
+    block["networks"] = service_networks(owner.metadata.name)
     block["restart"] = "unless-stopped"
 
     hc = _healthcheck_block(owner)
@@ -400,7 +401,7 @@ def _caddy_service_block(deployment: Deployment) -> dict[str, Any]:
     single host-exposed ingress."""
     net = deployment.spec.network
     return {
-        "container_name": "wip-caddy",
+        "container_name": container_name(deployment.metadata.name, "caddy"),
         "image": PUBLIC_CADDY_IMAGE,
         "ports": [f"{net.https_port}:{net.https_port}"],
         "volumes": [
@@ -408,7 +409,7 @@ def _caddy_service_block(deployment: Deployment) -> dict[str, Any]:
             "wip-caddy-data:/data",
             "wip-caddy-config:/config",
         ],
-        "networks": ["wip-network"],
+        "networks": service_networks("caddy"),
         "restart": "unless-stopped",
     }
 
@@ -416,10 +417,6 @@ def _caddy_service_block(deployment: Deployment) -> dict[str, Any]:
 # ────────────────────────────────────────────────────────────────────
 # Per-field builders
 # ────────────────────────────────────────────────────────────────────
-
-
-def _container_name(component_name: str) -> str:
-    return f"wip-{component_name}"
 
 
 def _build_block(

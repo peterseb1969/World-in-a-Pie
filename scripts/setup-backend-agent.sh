@@ -424,74 +424,97 @@ API_KEY=""
 API_KEY_FILE=""
 API_KEY_SOURCE=""
 if [[ "$TARGET" == "local" ]]; then
-    # 0. WIP_API_KEY_FILE_OVERRIDE — explicit escape hatch, same name and
-    #    semantics as create-app-project.sh: pick the install on a multi-install
-    #    box, or pin a canonical path (the golden harness does, so its output
-    #    does not depend on the host's install name). Local mode needs only the
-    #    PATH (.mcp.json references the file), so a file that does not exist
-    #    yet is accepted with a warning rather than refused.
-    if [ -n "${WIP_API_KEY_FILE_OVERRIDE:-}" ]; then
+    # Which install this clone works against (CASE-1225). Several installs
+    # can share a host (one per clone, each on its own port), so the clone
+    # records its install in .claude/wip-install, and .mcp.json is built
+    # from that install's key file and HTTPS port. Resolution, first hit:
+    #   0. WIP_INSTALL=<name>               — explicit choice (also re-binds)
+    #   1. WIP_API_KEY_FILE_OVERRIDE=<path> — escape hatch, same name and
+    #      semantics as create-app-project.sh; the golden harness pins a
+    #      canonical path through it, so its output does not depend on the
+    #      host's installs. A file that does not exist yet is accepted with
+    #      a warning (local mode needs only the PATH).
+    #   2. .claude/wip-install              — the clone's existing binding
+    #   3. the one running install          — from its registry container's
+    #      compose working_dir label (CASE-521), parsed out of the printed
+    #      .Labels: podman 6 prints `key=value,…` (CASE-539), podman 5
+    #      `map[key:value …]`, and `{{index}}` fails on podman 6's string
+    #   4. the only install on the host
+    # Anything else (several installs, none bound) is an error naming them:
+    # guessing bakes another clone's install into .mcp.json.
+    INSTALL_NAME=""
+    INSTALL_SOURCE=""
+    BINDING_FILE="$WIP_ROOT/.claude/wip-install"
+    if [ -n "${WIP_INSTALL:-}" ]; then
+        INSTALL_NAME="$WIP_INSTALL"; INSTALL_SOURCE="WIP_INSTALL"
+    elif [ -n "${WIP_API_KEY_FILE_OVERRIDE:-}" ]; then
         API_KEY_FILE="$WIP_API_KEY_FILE_OVERRIDE"
         API_KEY_SOURCE="$API_KEY_FILE (WIP_API_KEY_FILE_OVERRIDE)"
+        case "$API_KEY_FILE" in
+            "$HOME/.wip-deploy/"*/secrets/api-key)
+                INSTALL_NAME="${API_KEY_FILE#"$HOME/.wip-deploy/"}"; INSTALL_NAME="${INSTALL_NAME%%/*}" ;;
+        esac
         if [ -f "$API_KEY_FILE" ]; then
             API_KEY=$(tr -d '[:space:]' < "$API_KEY_FILE" 2>/dev/null)
         else
             echo "   Warning: $API_KEY_FILE does not exist yet (override accepted as-is)."
         fi
-    fi
-    # 1. Prefer the RUNNING wip-deploy install (CASE-521): detect it from a live
-    #    WIP container's compose working_dir label — the install path itself.
-    #    Container names are service-named, not install-named, so a name guess is
-    #    unreliable; the working_dir label is. Without this, the alphabetical glob
-    #    below picks the wrong install on a multi-install box and bakes a
-    #    401-causing key into .mcp.json.
-    # CASE-539: parse working_dir out of the `{{.Labels}}` STRING. podman 6.0.0
-    #    exposes `podman ps` `.Labels` as a comma-joined string, not a map, so the
-    #    old `{{index .Labels "…"}}` returned empty for every container — silently
-    #    defeating this detection (and `|| true` is required: under `set -euo
-    #    pipefail` the empty-grep exit 1 would otherwise abort the whole script).
-    if [ -z "$API_KEY_FILE" ] && command -v podman >/dev/null 2>&1; then
-        _wip_dirs="$(podman ps --format '{{.Labels}}' 2>/dev/null | grep -o 'com\.docker\.compose\.project\.working_dir=[^,]*' | cut -d= -f2- | grep '/\.wip-deploy/' | sort -u || true)"
-        if [ "$(printf '%s\n' "$_wip_dirs" | grep -c .)" -eq 1 ] && [ -f "$_wip_dirs/secrets/api-key" ]; then
-            API_KEY=$(tr -d '[:space:]' < "$_wip_dirs/secrets/api-key" 2>/dev/null)
-            if [ -n "$API_KEY" ]; then
-                # Keep the FILE PATH separate from the display string: the
-                # " (running install)" suffix on the old single variable
-                # defeated the key-file glob check, silently baking a
-                # LITERAL key into .mcp.json for exactly the rung where
-                # rotation-safety matters most.
-                API_KEY_FILE="$_wip_dirs/secrets/api-key"
-                API_KEY_SOURCE="$API_KEY_FILE (running install)"
-            fi
+    elif [ -s "$BINDING_FILE" ]; then
+        INSTALL_NAME="$(head -1 "$BINDING_FILE" | tr -d '[:space:]')"; INSTALL_SOURCE="$BINDING_FILE"
+    else
+        _running=""
+        if command -v podman >/dev/null 2>&1; then
+            _running="$(podman ps --filter label=com.docker.compose.service=registry --format '{{.Labels}}' 2>/dev/null \
+                | grep -oE 'com\.docker\.compose\.project\.working_dir[=:][^, ]*' | sed -E 's/^[^=:]*[=:]//; s/\]$//' \
+                | grep '/\.wip-deploy/' | xargs -n1 basename 2>/dev/null | sort -u || true)"
+        fi
+        _all="$(ls -d "$HOME"/.wip-deploy/*/deployment.deployer-state 2>/dev/null | xargs -n1 dirname 2>/dev/null | xargs -n1 basename 2>/dev/null | sort -u || true)"
+        if [ "$(printf '%s\n' "$_running" | grep -c .)" -eq 1 ]; then
+            INSTALL_NAME="$_running"; INSTALL_SOURCE="the one running install"
+        elif [ -z "$_running" ] && [ "$(printf '%s\n' "$_all" | grep -c .)" -eq 1 ]; then
+            INSTALL_NAME="$_all"; INSTALL_SOURCE="the only install on this host"
+        elif [ -n "$_all" ]; then
+            echo "Error: this host has several WIP installs and this clone is bound to none." >&2
+            echo "  Installs: $(printf '%s ' $_all)" >&2
+            echo "  Running:  $(printf '%s ' $_running)" >&2
+            echo "  Choose the one this clone works against, e.g.:" >&2
+            echo "    WIP_INSTALL=<name> $0" >&2
+            exit 1
         fi
     fi
-    # 2. Else any wip-deploy v2 secrets/api-key — first match (alphabetical).
-    #    Last resort among installs when none is detectably running.
-    if [ -z "$API_KEY_FILE" ]; then
-        for secrets_file in "$HOME/.wip-deploy"/*/secrets/api-key; do
-            if [ -f "$secrets_file" ]; then
-                API_KEY=$(tr -d '[:space:]' < "$secrets_file" 2>/dev/null)
-                if [ -n "$API_KEY" ]; then
-                    API_KEY_FILE="$secrets_file"
-                    API_KEY_SOURCE="$secrets_file"
-                fi
-                break
-            fi
-        done
+    if [ -n "$INSTALL_NAME" ] && [ -z "$API_KEY_FILE" ]; then
+        API_KEY_FILE="$HOME/.wip-deploy/$INSTALL_NAME/secrets/api-key"
+        API_KEY_SOURCE="$API_KEY_FILE ($INSTALL_SOURCE)"
+        if [ ! -f "$API_KEY_FILE" ]; then
+            echo "Error: install '$INSTALL_NAME' ($INSTALL_SOURCE) has no key file at $API_KEY_FILE." >&2
+            echo "  Is it installed? \`ls ~/.wip-deploy/\` lists the installs; WIP_INSTALL=<name> picks one." >&2
+            exit 1
+        fi
+        API_KEY=$(tr -d '[:space:]' < "$API_KEY_FILE" 2>/dev/null)
     fi
-    # 3. Nothing resolved → HARD ERROR. The retired silent fallback
-    #    ('dev_master_key_for_testing') could not authenticate against any
-    #    real install — it passed generation only to 401 at connect time,
-    #    the exact stale-config failure the app scaffold already fails
-    #    loud on. A key baked here must be one that can work.
+    # Nothing resolved → HARD ERROR. A silent fallback key could not
+    # authenticate against any real install — it passed generation only to
+    # 401 at connect time.
     if [ -z "$API_KEY_FILE" ]; then
-        echo "Error: could not resolve a WIP API key — no running install detected and no ~/.wip-deploy/*/secrets/api-key found." >&2
+        echo "Error: could not resolve a WIP API key — no WIP install on this host." >&2
         echo "  A generated .mcp.json would look fine and 401 at connect time." >&2
         echo "  Fix (either):" >&2
         echo "    deploy a WIP install first (wip-deploy install ... ), then re-run" >&2
-        echo "    or place a valid key at ~/.wip-deploy/<name>/secrets/api-key" >&2
+        echo "    or WIP_INSTALL=<name> $0 ... for an install under ~/.wip-deploy/<name>/" >&2
         echo "    or WIP_API_KEY_FILE_OVERRIDE=\$HOME/.wip-deploy/<name>/secrets/api-key $0 ..." >&2
         exit 1
+    fi
+    # The install's HTTPS port, from its saved spec; 8443 (the default) when
+    # the spec cannot be read (an install not created yet).
+    HTTPS_PORT=8443
+    if [ -n "$INSTALL_NAME" ] && [ -f "$HOME/.wip-deploy/$INSTALL_NAME/deployment.deployer-state" ]; then
+        HTTPS_PORT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["deployment"]["spec"]["network"]["https_port"])' \
+            "$HOME/.wip-deploy/$INSTALL_NAME/deployment.deployer-state" 2>/dev/null || echo 8443)"
+    fi
+    if [ -n "$INSTALL_NAME" ]; then
+        mkdir -p "$WIP_ROOT/.claude"
+        printf '%s\n' "$INSTALL_NAME" > "$BINDING_FILE"
+        echo "   Install: $INSTALL_NAME (from $INSTALL_SOURCE; recorded in .claude/wip-install), https port $HTTPS_PORT"
     fi
     echo "   API key: sourced from $API_KEY_SOURCE (${#API_KEY} chars)"
 else
@@ -510,11 +533,11 @@ case "$TARGET" in
         # Always a key FILE: both resolution rungs above yield a wip-deploy
         # secrets file, so rotation applies without re-running this script.
         # (The literal-key variant retired with the silent dev fallback.)
-        # Base URL assumes WIP via Caddy on https://localhost:8443 (the
-        # wip-deploy install shape); edit after generation for
-        # direct-to-service setups.
-        MCP_FLAGS="--mcp-python $VENV_PYTHON --mcp-base-url https://localhost:8443 --mcp-key-file $API_KEY_FILE"
-        echo "   .mcp.json: engine surface (stdio, local — $VENV_PYTHON, Caddy-routed on :8443)"
+        # Base URL: the bound install's front door on https://localhost:<its
+        # https port> (every install's Caddy also answers localhost:<port>);
+        # edit after generation for direct-to-service setups.
+        MCP_FLAGS="--mcp-python $VENV_PYTHON --mcp-base-url https://localhost:$HTTPS_PORT --mcp-key-file $API_KEY_FILE"
+        echo "   .mcp.json: engine surface (stdio, local — $VENV_PYTHON, Caddy-routed on :$HTTPS_PORT)"
         ;;
 
     ssh)

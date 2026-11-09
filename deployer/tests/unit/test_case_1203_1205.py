@@ -183,7 +183,7 @@ def test_the_repo_root_comes_from_wip_repo_root(tmp_path: Path, monkeypatch) -> 
 
 
 def _ps() -> MagicMock:
-    return MagicMock(returncode=0, stdout="wip-caddy\n", stderr="")
+    return MagicMock(returncode=0, stdout="t_wip-caddy\n", stderr="")
 
 
 def test_export_ca_refuses_another_installs_caddy(tmp_path: Path) -> None:
@@ -191,7 +191,7 @@ def test_export_ca_refuses_another_installs_caddy(tmp_path: Path) -> None:
          patch("wip_deploy.export_ca.subprocess.run") as run:
         run.side_effect = [_ps(), MagicMock(returncode=0, stdout="/elsewhere/config/caddy/Caddyfile\n", stderr="")]
         with pytest.raises(ExportCAError, match="does not serve this install"):
-            export_caddy_internal_ca(install_dir=tmp_path)
+            export_caddy_internal_ca("t_wip-caddy", install_dir=tmp_path)
 
 
 def test_export_ca_bounds_each_podman_call(tmp_path: Path) -> None:
@@ -201,5 +201,5 @@ def test_export_ca_bounds_each_podman_call(tmp_path: Path) -> None:
               side_effect=subprocess.TimeoutExpired("podman", 30)) as run,
         pytest.raises(ExportCAError, match="did not answer"),
     ):
-        export_caddy_internal_ca(install_dir=tmp_path)
+        export_caddy_internal_ca("t_wip-caddy", install_dir=tmp_path)
     assert run.call_args.kwargs["timeout"] == 30

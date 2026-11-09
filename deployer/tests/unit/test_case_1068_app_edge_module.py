@@ -149,7 +149,7 @@ def test_module_on_renders_todays_edge(tmp_path: Path, discovery: Discovery) -> 
     d = _minimal_compose(modules=EDGE_MODULES, apps=["wip-kb"])
     tree = render_compose(d, discovery.components, discovery.apps, _compose_secrets(tmp_path, d, discovery))
     compose = yaml.safe_load(tree.files[Path("docker-compose.yaml")].content)
-    assert compose["services"][APP_EDGE_MODULE]["container_name"] == "wip-app-edge"
+    assert compose["services"][APP_EDGE_MODULE]["container_name"] == "t_wip-app-edge"
     assert "reverse_proxy wip-app-edge:8080" in tree.files[Path("config/caddy/Caddyfile")].content
     policy = json.loads(tree.files[Path("config/auth/attach-policy.json")].content)
     assert "app_edge" not in policy
@@ -287,6 +287,7 @@ def test_remove_module_app_edge_warns_about_attached_apps(tmp_path: Path) -> Non
     assert result.exit_code == 0, result.output
     assert "attached through the Registry's API go offline" in result.output
     assert "add-module app-edge" in result.output
-    stop.assert_called_once_with(APP_EDGE_MODULE)
+    stop.assert_called_once()
+    assert stop.call_args.args[1] == APP_EDGE_MODULE  # (install, module)
     applied = apply.call_args.args[0]
     assert APP_EDGE_MODULE not in applied.spec.modules.optional

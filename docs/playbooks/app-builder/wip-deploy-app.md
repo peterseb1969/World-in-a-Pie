@@ -123,8 +123,8 @@ evidence your route works; check the body.
 
 ```bash
 podman ps --format "{{.Names}}  {{.Status}}"   # is it (healthy)?
-podman logs --tail 50 wip-<name>               # your dev server's output
-podman exec wip-<name> env | grep WIP          # what you actually received
+podman logs --tail 50 <install>_wip-<name>               # your dev server's output
+podman exec <install>_wip-<name> env | grep WIP          # what you actually received
 ```
 
 The healthcheck hits `http://localhost:<PORT>/api/health`
@@ -135,7 +135,7 @@ works independently of your code, probe it from inside your own container
 with your own env (the CASE-451 pattern):
 
 ```bash
-podman exec wip-<name> sh -c \
+podman exec <install>_wip-<name> sh -c \
   'wget -qO- --header="X-API-Key: $WIP_API_KEY" $WIP_BASE_URL/api/registry/health'
 ```
 

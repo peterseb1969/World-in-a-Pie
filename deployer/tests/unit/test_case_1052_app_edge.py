@@ -70,7 +70,9 @@ def compose_tree(tmp_path_factory: pytest.TempPathFactory, discovery: Discovery)
 def test_compose_service_and_env(compose_tree) -> None:
     compose = yaml.safe_load(compose_tree.files[Path("docker-compose.yaml")].content)
     svc = compose["services"]["app-edge"]
-    assert svc["container_name"] == "wip-app-edge"
+    assert svc["container_name"] == "t_wip-app-edge"
+    # Peers still reach it as wip-app-edge, its alias on the install's network.
+    assert svc["networks"] == {"wip-network": {"aliases": ["wip-app-edge"]}}
     env = svc["environment"]
     assert env["GATEWAY_IDENTITY_HEADERS"] == "X-WIP-User,X-WIP-Groups"
     assert env["CLIENT_IDENTITY_HEADERS"] == "X-WIP-User,X-WIP-Groups,X-WIP-Auth-Method"

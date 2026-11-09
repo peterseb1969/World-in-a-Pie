@@ -61,7 +61,7 @@ install command once green to heal it.
 | `up --name <n>` | Bring an existing install back to running, **no spec change** | The verb after a podman-machine restart. |
 | `nuke --name <n>` | Tear down | **Default preserves data volumes AND secrets** — reinstall reuses both. `--remove-data` kills databases; `--purge-all` removes every `wip-*` container host-wide; `--remove-secrets` clears secrets of *every* install. `--dry-run` first when in doubt. |
 | `rebuild <svc> …` | Dockerfile / requirements.txt changed | Compose `up -d --build --force-recreate` for just those services. `--no-wait` to skip health polling. |
-| `restart <svc>` | — | For backend source-only edits in dev mode, `podman restart wip-<svc>` does the same (CLAUDE.md §7). |
+| `restart <svc>` | — | For backend source-only edits in dev mode, `podman restart <install>_wip-<svc>` does the same (CLAUDE.md §7). |
 | `add-app NAME --app-source <path>` | Add one app to a running install without touching the rest | Dev-target only for `--app-source`. Reads the persisted state — see CASE-455 note above. |
 | `remove-app`, `add-module`, `remove-module` | Single-element spec mutations | Same persisted-state mechanics as add-app. |
 | `app-deploy <name> --tag <t>` | Roll ONE enabled app to a new image tag (the APP-YAC self-deploy last mile, CASE-410) | No build/push — the app repo's CI owns that. Persists in `spec.images.tag_overrides` (CASE-438 precedence); scoped apply recreates only that container (CASE-443). |
@@ -85,7 +85,7 @@ not your spec.
 
 - **Backend services**: each service's `src/` and `libs/wip-auth/src` are
   bind-mounted read-only; uvicorn runs `--reload`. Source edits land on
-  save or at worst `podman restart wip-<svc>` (~3 s). Model/route changes
+  save or at worst `podman restart <install>_wip-<svc>` (~3 s). Model/route changes
   sometimes need the restart even with `--reload`.
 - **Apps**: built locally from `--app-source NAME=PATH` checkouts
   (Dockerfile.dev), source bind-mounted rw, deps in a named volume. Details

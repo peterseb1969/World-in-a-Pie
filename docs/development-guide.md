@@ -24,7 +24,7 @@ If you need to run pytest directly (debugging a single test, attaching a debugge
 For tests against a running container:
 
 ```bash
-podman exec -it wip-registry pytest /app/tests -v
+podman exec -it default_wip-registry pytest /app/tests -v
 ```
 
 CI runs all component tests via `.gitea/workflows/test.yaml`.

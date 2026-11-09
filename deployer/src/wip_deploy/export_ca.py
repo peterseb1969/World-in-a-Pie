@@ -56,8 +56,9 @@ def _podman(args: list[str], *, text: bool) -> subprocess.CompletedProcess[Any]:
 
 def _check_belongs_to(container_name: str, install_dir: Path) -> None:
     """The container serves this install: it mounts the install's own
-    Caddyfile. Every install's front door is named wip-caddy, so the name
-    alone cannot tell two installs on one host apart."""
+    Caddyfile. The name is the install's (`<install>_wip-caddy`), but a
+    container left over from an earlier install of the same name, or created
+    by hand, can carry it too."""
     expected = (install_dir / "config" / "caddy" / "Caddyfile").resolve()
     inspect = _podman(
         ["inspect", "--format", "{{range .Mounts}}{{.Source}}\n{{end}}", container_name], text=True,
@@ -71,7 +72,7 @@ def _check_belongs_to(container_name: str, install_dir: Path) -> None:
 
 
 def export_caddy_internal_ca(
-    container_name: str = "wip-caddy", install_dir: Path | None = None,
+    container_name: str, install_dir: Path | None = None,
 ) -> bytes:
     """Read the Caddy internal-CA root cert from a running container.
 

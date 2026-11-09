@@ -48,6 +48,51 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `avg_duration_ms` are real (they were `{}` and `0`). A retried message is
   counted once, when it finishes. The service root carries the `build` block.
 
+### wip-deploy: several installs on one host — containers and network are named per install and isolated
+
+- **Containers are `<install>_wip-<component>`** (`default_wip-registry`,
+  `default_wip-caddy`) on the compose and dev targets, every install
+  included. Anything that addresses a container by its old fixed name
+  (`podman restart wip-registry`, `podman exec wip-mongodb …`, scripts,
+  monitoring) must use the new name. Inside an install, services still reach
+  each other as `wip-<component>`: that name is now a network alias, so
+  peer URLs (`http://wip-registry:8001`, `http://wip-caddy:8080`) are
+  unchanged.
+- **Each install has its own network, `<install>_wip-network`, created with
+  `isolate: strict`.** Before, every install joined `wip-network`, and on
+  hosts whose netavark routes between bridge networks (1.x, as on Debian),
+  a container on any other podman network reached the install's databases
+  by IP. Now no other network on the host reaches it. A container that must
+  talk to an install (an app run by hand, a probe) joins that install's
+  network.
+- **The first redeploy of an existing install is the cutover.** Before a
+  full up, the apply removes this install's containers that the new render
+  does not name (found by the install's compose project label): the old
+  fixed-name containers go, the new ones come up, and the volumes, already
+  named per install, are kept. Containers of other installs and projects are
+  never touched; before, a dev apply removed every `wip-*` container on the
+  host. Pair the redeploy with the matching `--tag` as usual. The old
+  `wip-network` is left in place while anything else still uses it.
+- **A second install needs its own ports** (`--https-port`, `--http-port`);
+  preflight refuses a port in use.
+- **An apply fails when `compose up` leaves a service without a container.**
+  podman-compose exits 0 when podman refuses to create one (a name already
+  taken); the apply now checks every rendered container exists.
+- `export-ca`, `status`, `remove-app` / `remove-module`, the stale-container
+  preflight and `nuke --purge-all` address the install's own names; the
+  attach policy also blocks an install's container names as upstreams.
+- **Dev images are tagged per install** (`<image>:dev-<install>`): installs
+  built from different checkouts no longer share `<image>:dev`, which a
+  rebuild in one clone changed for all. The old `:dev` images are no longer
+  used; `podman image prune` (or `nuke --remove-images`) reclaims them.
+- **A backend clone is bound to one install.** `setup-backend-agent.sh`
+  records it in `.claude/wip-install` and builds `.mcp.json` from that
+  install's key file and HTTPS port (it was always `localhost:8443`, with the
+  key of whichever install it found first). On a host with several installs
+  and no binding it refuses and lists them; `WIP_INSTALL=<name>` chooses.
+  `/wip-setup`, `/wip-status` and `/wip-deploy` read the binding.
+  Guide: `docs/deploy/multi-install.md`.
+
 ### `verify --security` and `check-app-deployability` report only what they established
 
 - **`verify --security`:** "not applicable" is the install's call (its

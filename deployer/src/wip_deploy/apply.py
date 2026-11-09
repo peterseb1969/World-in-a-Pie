@@ -50,6 +50,7 @@ from wip_deploy.config_gen.garage import (
     garage_component,
 )
 from wip_deploy.kube import kubectl
+from wip_deploy.naming import container_name
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.k8s import PUBLIC_CADDY_NAME
 from wip_deploy.spec import Deployment
@@ -103,8 +104,8 @@ class ApplyResult:
 # scoped `up -d <svc>` never recreates them — config changes need an
 # explicit graceful reload.
 _PROXY_CONFIG_FILES: dict[str, str] = {
-    "wip-caddy": "config/caddy/Caddyfile",
-    "wip-router": "config/router/Caddyfile",
+    "caddy": "config/caddy/Caddyfile",
+    "router": "config/router/Caddyfile",
 }
 
 
@@ -156,16 +157,19 @@ def apply_compose(
     if force_build and services_scope != []:
         _run_build(install_dir, compose_cmd, services=services_scope)
 
-    # CASE-282: dev installs must guarantee every service ends up on
-    # the freshly-built image. `--force-recreate` alone isn't enough —
-    # cross-project container name conflicts (e.g. wip-* containers
-    # left over from an earlier install with a different project name)
-    # silently survive `compose up`, leaving the operator with a mix
-    # of fresh and stale containers. Wipe them up front.
-    # CASE-443: never on a scoped mutation — the wipe would take down
-    # the exact containers the scope promises to leave untouched.
-    if deployment.spec.target == "dev" and services_scope is None:
-        _remove_stale_wip_containers()
+    # Before a full up, this install's containers that the render does not
+    # name are removed: containers of a removed service, and those still
+    # carrying the fixed names every install used before per-install
+    # naming (they hold the old network and the edge port). A dev install
+    # removes all of its containers, so every service ends up on the
+    # freshly built image: `--force-recreate` alone left a mix of fresh and
+    # stale containers (CASE-282). Only this install's containers, found
+    # by their compose project label, are touched; another install on the
+    # host never is. Never on a scoped mutation (CASE-443): it would take
+    # down the containers the scope promises to leave untouched.
+    compose_file = install_dir / "docker-compose.yaml"
+    if services_scope is None:
+        _clear_for_full_up(deployment, compose_file)
 
     # CASE-455: everything from `compose up` onward changes the running
     # deployment — any ApplyError beyond this point is stamped mutated=True
@@ -185,6 +189,9 @@ def apply_compose(
         # container was already removed); nothing to bring up. NB: an empty
         # list must NOT reach _run_up — `up -d` with no service args is the
         # full-stack up this scoping exists to prevent.
+        _check_containers_created(
+            deployment.metadata.name, compose_file, services=services_scope
+        )
 
         # CASE-443: a scoped up never recreates the proxies (their service
         # definitions are unchanged — only mounted files moved). Reload the
@@ -194,7 +201,7 @@ def apply_compose(
                 path = install_dir / rel
                 new_content = path.read_text() if path.is_file() else None
                 if new_content is not None and new_content != old_proxy_content.get(ctr):
-                    _reload_proxy(ctr)
+                    _reload_proxy(container_name(deployment.metadata.name, ctr))
 
         # Count the services in our rendered file to report a summary.
         up_count = (
@@ -211,7 +218,7 @@ def apply_compose(
                 apps=apps,
                 deployment=deployment,
                 only=(
-                    {f"wip-{s}" for s in services_scope}
+                    {container_name(deployment.metadata.name, s) for s in services_scope}
                     if services_scope is not None
                     else None
                 ),
@@ -283,45 +290,95 @@ def _detect_compose_cmd() -> list[str]:
 # ────────────────────────────────────────────────────────────────────
 
 
-def _remove_stale_wip_containers() -> None:
-    """Stop+remove any `wip-*` containers, regardless of compose project.
+def _container_cli() -> str | None:
+    """The container runtime CLI on PATH: podman, else docker, else None."""
+    if shutil.which("podman"):
+        return "podman"
+    return "docker" if shutil.which("docker") else None
 
-    Forces a clean state before `compose up` for `--target dev`. Required
-    because `--force-recreate` doesn't reliably handle cross-project
-    name conflicts: containers left over from an earlier install with
-    a different project name silently survive the up, producing a mix
-    of fresh and stale containers.
 
-    Best-effort: if neither `podman` nor `docker` is on PATH, the wipe
-    is skipped silently — `compose up` will fail naturally and the
-    operator can take it from there.
-
-    CASE-282.
-    """
-    cli = "podman" if shutil.which("podman") else (
-        "docker" if shutil.which("docker") else None
-    )
-    if cli is None:
-        return
-
-    list_result = subprocess.run(
-        [cli, "ps", "-a", "--filter", "name=^wip-", "--format", "{{.Names}}"],
+def _project_containers(cli: str, install: str) -> list[str] | None:
+    """The containers of ``install``'s compose project, by the project label
+    podman-compose and docker compose both set; None when the runtime could
+    not list them."""
+    listing = subprocess.run(
+        [cli, "ps", "-a", "--filter", f"label=com.docker.compose.project={install}",
+         "--format", "{{.Names}}"],
         capture_output=True, text=True,
     )
-    if list_result.returncode != 0:
-        # Best-effort: if list fails (e.g. daemon not running), let
-        # `compose up` surface the real error.
-        return
+    if listing.returncode != 0:
+        return None
+    return [n.strip() for n in listing.stdout.splitlines() if n.strip()]
 
-    names = [n.strip() for n in list_result.stdout.splitlines() if n.strip()]
-    if not names:
-        return
 
-    # `rm -f` stops + removes in one call. Best-effort: a failure here
-    # (e.g. permission, container locked) shouldn't block the install —
-    # `compose up` will hit its own error if the leftover blocks it,
-    # and the operator gets a clear signal.
-    subprocess.run([cli, "rm", "-f", *names], capture_output=True)
+def _clear_for_full_up(deployment: Deployment, compose_file: Path) -> None:
+    """Remove this install's containers before a full up: all of them on
+    the dev target, so every service ends up on the freshly built image
+    (`--force-recreate` alone left a mix of fresh and stale containers,
+    CASE-282); on compose, those the render does not name (a removed
+    service, or the fixed names every install used before per-install
+    naming, which still hold the old network and the edge port). Only this
+    install's containers are touched; another install's never are."""
+    if deployment.spec.target == "dev":
+        _remove_install_containers(deployment.metadata.name, keep=None)
+    elif compose_file.is_file():
+        keep = set(_container_names_by_service(compose_file).values())
+        _remove_install_containers(deployment.metadata.name, keep=keep)
+
+
+def _check_containers_created(
+    install: str, compose_file: Path, *, services: list[str] | None
+) -> None:
+    """Raise ApplyError when `compose up` left a rendered service without a
+    container.
+
+    podman-compose exits 0 when podman refuses to create one of the
+    containers (a name already taken, for instance), leaving the stack half
+    created behind a successful-looking up. The rendered file says what must
+    exist; this install's containers (its compose project label) say what
+    does. Skipped for an empty scope (nothing was brought up), when the file
+    is absent, or when no runtime can be asked.
+    """
+    if services == [] or not compose_file.is_file():
+        return
+    cli = _container_cli()
+    present = _project_containers(cli, install) if cli else None
+    if present is None:
+        return
+    expected = _container_names_by_service(compose_file)
+    missing = sorted(
+        name for svc, name in expected.items()
+        if (services is None or svc in services) and name not in present
+    )
+    if missing:
+        raise ApplyError(
+            "compose up left these services without a container: "
+            + ", ".join(missing)
+            + f". `{cli} ps -a` and the compose output say why (often a name "
+            "another container already holds)."
+        )
+
+
+def _remove_install_containers(install: str, *, keep: set[str] | None) -> None:
+    """Stop and remove the containers of ``install``'s compose project,
+    except those named in ``keep`` (None removes them all).
+
+    The project label is the install's name, so containers of another
+    install on the host are never matched, whatever their names.
+
+    Best-effort: without ``podman`` or ``docker`` on PATH, or when the
+    listing fails, nothing is removed and ``compose up`` surfaces the
+    real error.
+    """
+    cli = _container_cli()
+    if cli is None:
+        return
+    names = [n for n in _project_containers(cli, install) or [] if keep is None or n not in keep]
+    if names:
+        # `rm -f` stops + removes in one call. Best-effort: a failure here
+        # shouldn't block the install; `compose up` hits its own error if
+        # the leftover blocks it.
+        subprocess.run([cli, "rm", "-f", *names], capture_output=True)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -436,7 +493,8 @@ def rebuild_compose_services(
     if not wait:
         return
 
-    expected = {f"wip-{s}" for s in services if _service_has_healthcheck(compose_file, s)}
+    names = _container_names_by_service(compose_file)
+    expected = {names[s] for s in services if _service_has_healthcheck(compose_file, s)}
     if not expected:
         return
 
@@ -670,7 +728,7 @@ def _reload_proxy(container: str) -> None:
         subprocess.run([cli, "restart", container], capture_output=True)
 
 
-def stop_and_remove_container(name: str) -> None:
+def stop_and_remove_container(install: str, name: str) -> None:
     """Force-stop and remove a single `wip-<name>` container.
 
     Used by `wip-deploy remove-app` / `remove-module` (CASE-313) so a
@@ -682,7 +740,7 @@ def stop_and_remove_container(name: str) -> None:
     no longer contains the service, compose can't address it. We go
     directly to `podman rm -f <container>` (or `docker rm`).
     """
-    container = f"wip-{name}"
+    container = container_name(install, name)
     runtime = "podman" if shutil.which("podman") else "docker"
     if not shutil.which(runtime):
         return  # No container runtime — caller likely not running locally.
@@ -739,16 +797,39 @@ def up_compose_install(
 
 
 def _healthcheck_container_names_from_compose(compose_file: Path) -> set[str]:
-    """Container names (`wip-<svc>`) for compose services that declare a healthcheck.
+    """Container names for compose services that declare a healthcheck.
 
     Used by `up_compose_install` to derive the wait set without
     re-loading the spec/components/apps (CASE-331 Fix A — the on-disk
     docker-compose.yaml is the source of truth for this path).
     """
-    services = _services_in_compose(compose_file)
+    names = _container_names_by_service(compose_file)
     return {
-        f"wip-{svc}" for svc in services
+        names[svc] for svc in names
         if _service_has_healthcheck(compose_file, svc)
+    }
+
+
+def _container_names_by_service(compose_file: Path) -> dict[str, str]:
+    """Each service's container name, as the rendered compose file sets it.
+
+    The file is the source of truth on the paths that do not re-render the
+    spec; a service without ``container_name`` falls back to the install's
+    naming (the install's name is its directory's).
+    """
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(compose_file.read_text())
+    except (OSError, _yaml.YAMLError) as e:
+        raise ApplyError(f"could not parse {compose_file}: {e}") from e
+    services = data.get("services") if isinstance(data, dict) else None
+    if not isinstance(services, dict):
+        return {}
+    install = compose_file.parent.name
+    return {
+        str(svc): str((block or {}).get("container_name") or container_name(install, str(svc)))
+        for svc, block in services.items()
     }
 
 
@@ -833,7 +914,7 @@ def _wait_healthy(
 def _services_with_healthchecks(
     components: list[Component], apps: list[App], deployment: Deployment
 ) -> set[str]:
-    """Set of container names (`wip-<name>`) we expect to turn healthy."""
+    """Set of container names we expect to turn healthy."""
     names: set[str] = set()
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
 
@@ -841,13 +922,13 @@ def _services_with_healthchecks(
         if not is_component_active(c, deployment):
             continue
         if c.spec.healthcheck is not None:
-            names.add(f"wip-{c.metadata.name}")
+            names.add(container_name(deployment.metadata.name, c.metadata.name))
 
     for a in apps:
         if a.metadata.name not in enabled_app_names:
             continue
         if a.spec.healthcheck is not None:
-            names.add(f"wip-{a.metadata.name}")
+            names.add(container_name(deployment.metadata.name, a.metadata.name))
 
     return names
 

@@ -222,38 +222,38 @@ class TestDiffSpecForDrops:
 class TestSplitServicesAndApps:
     def test_empty_apps_set_returns_everything_as_services(self) -> None:
         rows = [
-            ServiceStatus(name="wip-registry", state="running", health="healthy"),
-            ServiceStatus(name="wip-def-store", state="running", health="healthy"),
+            ServiceStatus(name="pi_wip-registry", state="running", health="healthy"),
+            ServiceStatus(name="pi_wip-def-store", state="running", health="healthy"),
         ]
-        services, apps = split_services_and_apps(rows, set())
+        services, apps = split_services_and_apps(rows, set(), "pi")
         assert services == rows
         assert apps == []
 
     def test_app_container_goes_to_apps_bucket(self) -> None:
         rows = [
-            ServiceStatus(name="wip-registry", state="running", health="healthy"),
-            ServiceStatus(name="wip-react-console", state="running", health="healthy"),
-            ServiceStatus(name="wip-def-store", state="running", health="healthy"),
+            ServiceStatus(name="pi_wip-registry", state="running", health="healthy"),
+            ServiceStatus(name="pi_wip-react-console", state="running", health="healthy"),
+            ServiceStatus(name="pi_wip-def-store", state="running", health="healthy"),
         ]
-        services, apps = split_services_and_apps(rows, {"react-console"})
-        assert [r.name for r in services] == ["wip-registry", "wip-def-store"]
-        assert [r.name for r in apps] == ["wip-react-console"]
+        services, apps = split_services_and_apps(rows, {"react-console"}, "pi")
+        assert [r.name for r in services] == ["pi_wip-registry", "pi_wip-def-store"]
+        assert [r.name for r in apps] == ["pi_wip-react-console"]
 
     def test_declared_but_missing_app_returns_empty_apps_bucket(self) -> None:
         """Caller can detect the gap by seeing app_names non-empty but apps[]."""
         rows = [
-            ServiceStatus(name="wip-registry", state="running", health="healthy"),
+            ServiceStatus(name="pi_wip-registry", state="running", health="healthy"),
         ]
-        services, apps = split_services_and_apps(rows, {"react-console"})
+        services, apps = split_services_and_apps(rows, {"react-console"}, "pi")
         assert apps == []
         assert services == rows
 
     def test_multiple_apps_partitioned_correctly(self) -> None:
         rows = [
-            ServiceStatus(name="wip-app-a", state="running", health="healthy"),
-            ServiceStatus(name="wip-app-b", state="exited", health=""),
-            ServiceStatus(name="wip-registry", state="running", health="healthy"),
+            ServiceStatus(name="pi_wip-app-a", state="running", health="healthy"),
+            ServiceStatus(name="pi_wip-app-b", state="exited", health=""),
+            ServiceStatus(name="pi_wip-registry", state="running", health="healthy"),
         ]
-        services, apps = split_services_and_apps(rows, {"app-a", "app-b"})
-        assert {r.name for r in apps} == {"wip-app-a", "wip-app-b"}
-        assert [r.name for r in services] == ["wip-registry"]
+        services, apps = split_services_and_apps(rows, {"app-a", "app-b"}, "pi")
+        assert {r.name for r in apps} == {"pi_wip-app-a", "pi_wip-app-b"}
+        assert [r.name for r in services] == ["pi_wip-registry"]

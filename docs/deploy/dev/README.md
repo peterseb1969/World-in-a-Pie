@@ -9,6 +9,8 @@ Run WIP in **hot-reload development mode** on one machine: the **backend runs fr
 > **Just want to *run* WIP (not develop it)?** Use the **[single-host quickstart (podman + GHCR images)](../podman/README.md)** instead — that's the production-style path.
 >
 > **Kubernetes:** [k8s guide](../k8s/README.md).
+>
+> **Several stacks on one host** (one per clone): [multi-install guide](../multi-install.md).
 
 > **Status:** the clone → install → both-apps-up flow below is **validated** end-to-end (macOS, fresh checkouts). The hot-reload loop, `rebuild`, and the in-container env values (§6–§8) are from the deployer docs and not yet re-confirmed on this exact stack — treat those as the parts to verify.
 
@@ -127,7 +129,7 @@ podman exec wip-<app> sh -c 'wget -qO- --header="X-API-Key: $WIP_API_KEY" $WIP_B
 ## 8. Day-2 operations
 
 ```bash
-podman restart wip-<svc>          # backend source-only edit that --reload missed (~3 s)
+podman restart <install>_wip-<svc>   # backend source-only edit that --reload missed (~3 s)
 wip-deploy rebuild <name> --name wip   # dependency / Dockerfile.dev change
 wip-deploy status  --name wip
 wip-deploy images  --name wip     # which image each service runs: source-built ones show <name>:dev
@@ -147,7 +149,7 @@ Dex logins (`admin`, `editor`, `viewer` by default) and their passwords are cove
 |---|---|
 | `Dockerfile not found in <path>` | The `--app-source` path is the wrong level — point at the *app directory* (may be a subdir). Run `check-app-deployability <path>` first. |
 | An app fails to render / "must come from `--app-source`" | On dev, an enabled app must have a `--app-source` (or `--app-from-registry`). |
-| Backend edit not reflected | `--reload` missed it (model/route change, or a stale process) — `podman restart wip-<svc>`. |
+| Backend edit not reflected | `--reload` missed it (model/route change, or a stale process) — `podman restart <install>_wip-<svc>`. |
 | Install fails immediately / podman socket errors | podman isn't running — `podman info` (macOS: `podman machine start`), then re-run. |
 | Health `200` with empty body | Unrouted path — Caddy returns `200 + ""` on unmatched paths. Use the exact `/api/registry/health`. |
 

@@ -151,7 +151,7 @@ class TestBuildContext:
         # into the dev image (mirrors production build-release.sh).
         assert reg["build"]["context"] == "./build-contexts/registry"
         # Still tags the image for tidy `podman images`
-        assert reg["image"] == "registry:dev"
+        assert reg["image"] == "registry:dev-dev-test"  # per install (CASE-1225)
 
     def test_infrastructure_components_use_image_not_build(
         self, tmp_path: Path, real_discovery: Discovery

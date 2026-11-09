@@ -163,8 +163,8 @@ Full test suite should run nightly or on release branches.
 If services don't start within 180s:
 ```bash
 # Check container logs
-podman logs wip-registry
-podman logs wip-def-store
+podman logs default_wip-registry
+podman logs default_wip-def-store
 ```
 
 ### Seeding Fails

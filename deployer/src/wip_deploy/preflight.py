@@ -17,6 +17,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from wip_deploy.naming import container_prefix
+
 # ────────────────────────────────────────────────────────────────────
 
 
@@ -95,12 +97,13 @@ def check_ports_free(
 
 
 def check_no_stale_containers(install_dir: Path) -> list[PreflightWarning]:
-    """Warn if `wip-*` containers exist on the host but `install_dir` has
-    no compose file yet.
+    """Warn if containers named for this install exist on the host but
+    `install_dir` has no compose file yet.
 
-    Interpretation: the user is starting fresh, but a previous install
-    left containers that will fight with this one for names like
-    `wip-caddy`. `podman-compose up` would fail opaquely.
+    Interpretation: the user is starting fresh, but a previous install of
+    the same name left containers that will fight with this one for names
+    like `<install>_wip-caddy`. `podman-compose up` would fail opaquely.
+    Containers of other installs carry other names and are no concern.
 
     Not fatal — some users deliberately import leftover state. Emit a
     warning so they see it; let them decide.
@@ -113,10 +116,11 @@ def check_no_stale_containers(install_dir: Path) -> list[PreflightWarning]:
     runtime = _container_runtime()
     if runtime is None:
         return warnings  # can't check without a runtime
+    prefix = container_prefix(install_dir.name)
 
     try:
         result = subprocess.run(
-            [runtime, "ps", "-a", "--filter", "name=wip-", "--format", "{{.Names}}"],
+            [runtime, "ps", "-a", "--filter", f"name=^{prefix}", "--format", "{{.Names}}"],
             check=True,
             capture_output=True,
             text=True,
@@ -125,13 +129,16 @@ def check_no_stale_containers(install_dir: Path) -> list[PreflightWarning]:
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return warnings  # runtime error — fall through to apply which will surface it
 
-    names = [ln.strip() for ln in result.stdout.splitlines() if ln.strip()]
+    names = [
+        ln.strip() for ln in result.stdout.splitlines()
+        if ln.strip().startswith(prefix)
+    ]
     if names:
         n = len(names)
         sample = ", ".join(sorted(names)[:5])
         more = f" (and {n - 5} more)" if n > 5 else ""
         warnings.append(PreflightWarning(
-            f"found {n} stray wip-* container(s) from a prior install: "
+            f"found {n} stray {prefix}* container(s) from a prior install: "
             f"{sample}{more}. Run `wip-deploy nuke --purge-all` to clean "
             f"up, or `wip-deploy install --install-dir <existing-dir>` to "
             f"reuse the prior state."

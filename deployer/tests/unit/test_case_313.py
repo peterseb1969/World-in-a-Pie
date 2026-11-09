@@ -11,7 +11,7 @@ The render+apply path is exercised by `test_apply_compose.py` and
 the install integration suite, so we don't re-exercise it here.
 What we DO test:
 
-  - `stop_and_remove_container` calls `podman rm -f wip-<name>`
+  - `stop_and_remove_container` calls `podman rm -f <install>_wip-<name>`
     and is silent when the runtime isn't installed.
   - The CLI verbs reject unknown names with actionable errors.
   - The CLI verbs are idempotent (already-enabled, already-removed).
@@ -80,11 +80,11 @@ class TestStopAndRemoveContainer:
             patch("wip_deploy.apply.subprocess.run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
-            stop_and_remove_container("react-console")
+            stop_and_remove_container("pi-a", "react-console")
 
         cmd = mock_run.call_args_list[0].args[0]
         assert cmd[:3] == ["podman", "rm", "-f"]
-        assert cmd[-1] == "wip-react-console"
+        assert cmd[-1] == "pi-a_wip-react-console"
 
     def test_falls_back_to_docker_when_no_podman(self) -> None:
         def which_stub(name: str) -> str | None:
@@ -95,7 +95,7 @@ class TestStopAndRemoveContainer:
             patch("wip_deploy.apply.subprocess.run") as mock_run,
         ):
             mock_run.return_value = MagicMock(returncode=0)
-            stop_and_remove_container("kb")
+            stop_and_remove_container("pi-a", "kb")
 
         cmd = mock_run.call_args_list[0].args[0]
         assert cmd[0] == "docker"
@@ -106,7 +106,7 @@ class TestStopAndRemoveContainer:
             patch("wip_deploy.apply.shutil.which", return_value=None),
             patch("wip_deploy.apply.subprocess.run") as mock_run,
         ):
-            stop_and_remove_container("anything")
+            stop_and_remove_container("pi-a", "anything")
         mock_run.assert_not_called()
 
     def test_silent_when_container_missing(self) -> None:
@@ -121,7 +121,7 @@ class TestStopAndRemoveContainer:
                 args=[], returncode=1, stdout="", stderr="no such container"
             )
             # Should not raise.
-            stop_and_remove_container("nonexistent-app")
+            stop_and_remove_container("pi-a", "nonexistent-app")
 
 
 # ────────────────────────────────────────────────────────────────────

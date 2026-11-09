@@ -122,23 +122,36 @@ class TestStaleContainerChecks:
         assert warnings == []
 
     def test_warns_on_stray_containers(self, tmp_path: Path) -> None:
-        """When install_dir has no compose.yaml but wip-* containers
-        exist on the host, warn."""
+        """When install_dir has no compose.yaml but containers named for
+        this install exist on the host, warn."""
+        own = f"{tmp_path.name}_wip-"
         with patch("wip_deploy.preflight._container_runtime", return_value="podman"), \
              patch("wip_deploy.preflight.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
-                stdout="wip-caddy\nwip-registry\nwip-mongodb\n"
+                stdout=f"{own}caddy\n{own}registry\n{own}mongodb\n"
             )
             warnings = check_no_stale_containers(tmp_path)
 
         assert len(warnings) == 1
         msg = warnings[0].message
         assert "3 stray" in msg
-        assert "wip-caddy" in msg
+        assert f"{own}caddy" in msg
         assert "nuke" in msg
+        assert f"name=^{own}" in mock_run.call_args.args[0]
+
+    def test_another_installs_containers_are_no_concern(self, tmp_path: Path) -> None:
+        """Another install's containers carry other names (CASE-1225): a
+        fresh install next to a running one is not warned about them."""
+        with patch("wip_deploy.preflight._container_runtime", return_value="podman"), \
+             patch("wip_deploy.preflight.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout="default_wip-caddy\nother_wip-registry\nwip-mongodb\n"
+            )
+            warnings = check_no_stale_containers(tmp_path)
+        assert warnings == []
 
     def test_truncates_long_container_list(self, tmp_path: Path) -> None:
-        names = [f"wip-thing-{i}" for i in range(10)]
+        names = [f"{tmp_path.name}_wip-thing-{i}" for i in range(10)]
         with patch("wip_deploy.preflight._container_runtime", return_value="podman"), \
              patch("wip_deploy.preflight.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(stdout="\n".join(names))

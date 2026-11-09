@@ -157,7 +157,7 @@ case "$TARGET" in
   compose)
     podman ps --format "{{.Names}}  {{.Status}}" | grep -E "^wip-"
     # Expected: all "Up X (healthy)" where a healthcheck is declared.
-    # Containers without a healthcheck (e.g. wip-dex, wip-caddy) just
+    # Containers without a healthcheck (e.g. <install>_wip-dex, <install>_wip-caddy) just
     # show "Up X" — that's fine.
     ;;
   k8s)

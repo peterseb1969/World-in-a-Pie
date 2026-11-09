@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 
 from wip_deploy.config_gen.api_keys import app_edge_active
+from wip_deploy.naming import container_name, internal_host
 from wip_deploy.spec import App, Component, Deployment
 from wip_deploy.spec.activation import is_component_active
 
@@ -46,7 +47,9 @@ def _hosts(name: str, deployment: Deployment) -> set[str]:
     if deployment.spec.target == "k8s" and deployment.spec.platform.k8s is not None:
         ns = deployment.spec.platform.k8s.namespace
         return {f"wip-{name}", f"wip-{name}.{ns}", f"wip-{name}.{ns}.svc", f"wip-{name}.{ns}.svc.cluster.local"}
-    return {name, f"wip-{name}"}
+    # On its network a service answers to its compose service name, its
+    # wip-<name> alias and its container name.
+    return {name, internal_host(name), container_name(deployment.metadata.name, name)}
 
 
 def app_route_names(deployment: Deployment, apps: list[App]) -> list[str]:

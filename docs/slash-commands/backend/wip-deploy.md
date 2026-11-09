@@ -61,7 +61,12 @@ case "$TARGET" in
     ;;
 esac
 
-# 2. Current install state — what's running, on what image, in what namespace
+# 2. Current install state — what's running, on what image, in what namespace.
+# <current-name> is THIS clone's install: `cat .claude/wip-install` (written
+# by setup-backend-agent.sh). Several installs can share a host, one per
+# clone; a verb run against another clone's install re-stamps it to this
+# checkout and mounts this clone's source into it. Act on another install
+# only when Peter names it.
 wip-deploy status --name <current-name>
 # Capture: namespace, current image SHAs per service. Persist for diff in smoke.
 
@@ -176,7 +181,7 @@ case "$TARGET" in
   compose)
     podman ps --format "{{.Names}}  {{.Status}}" | grep -E "^wip-"
     # Expected: all "Up X (healthy)" where a healthcheck is declared.
-    # Containers without a healthcheck (e.g. wip-dex, wip-caddy) just
+    # Containers without a healthcheck (e.g. <install>_wip-dex, <install>_wip-caddy) just
     # show "Up X" — that's fine.
     ;;
   k8s)
@@ -189,11 +194,13 @@ esac
 # chain is wired end-to-end. If this works, the whole routing stack
 # works for anything else under /api/. We use registry as the bellwether
 # because every other service depends on it for identity resolution.
-# Hostname differs by target: compose dev defaults to localhost:8443,
+# Host differs by target: compose and dev answer on localhost at the
+# install's own HTTPS port (several installs share a host, one port each);
 # k8s uses the cluster's public hostname (e.g. wip-kb.local).
 case "$TARGET" in
-  compose) HOST=https://localhost:8443 ;;
-  k8s)     HOST=https://<hostname> ;;
+  compose|dev) PORT=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["deployment"]["spec"]["network"]["https_port"])' ~/.wip-deploy/<current-name>/deployment.deployer-state)
+               HOST=https://localhost:$PORT ;;
+  k8s)         HOST=https://<hostname> ;;
 esac
 curl -sk --max-time 5 "$HOST/api/registry/health" \
   | python3 -c "import sys,json;print(json.loads(sys.stdin.read()).get('status','unknown'))" \

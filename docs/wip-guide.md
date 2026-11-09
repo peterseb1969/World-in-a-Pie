@@ -632,7 +632,7 @@ Dex runs as UID 1001 inside the container. With rootless podman, the host UID is
 
 ```bash
 podman unshare chown 1001:1001 <WIP_DATA_DIR>/dex
-podman restart wip-dex
+podman restart default_wip-dex
 ```
 
 Do **not** use `chmod 777` to "fix" permission errors on auth data.
@@ -651,11 +651,11 @@ Hot backups for the heavyweights:
 
 ```bash
 # MongoDB
-podman exec wip-mongodb mongodump --out /data/db/backup
+podman exec default_wip-mongodb mongodump --out /data/db/backup
 cp -r "$WIP_DATA_DIR/mongodb/backup" "./mongodb-backup-$(date +%Y%m%d)"
 
 # PostgreSQL
-podman exec wip-postgres pg_dump -U wip wip_reporting \
+podman exec default_wip-postgres pg_dump -U wip wip_reporting \
   > "wip-reporting-$(date +%Y%m%d).sql"
 ```
 
@@ -1184,7 +1184,7 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   door. The edge refuses the host's addresses as well as its aliases: its
   default gateway on the install's network, read at start. An app running
   directly on the compose host cannot be attached; run it in a container on
-  the install's network (`wip-network`) instead. An install host that stops
+  the install's network (`<install>_wip-network`) instead. An install host that stops
   resolving for a moment (a container being recreated) keeps blocking the
   addresses it last resolved to.
 - **On k8s,** a blocked name resolves to its Service's ClusterIP, so an

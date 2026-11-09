@@ -43,6 +43,7 @@ from wip_deploy.export_ca import (
 )
 from wip_deploy.kube import kubectl
 from wip_deploy.module_help import modules_line, with_modules
+from wip_deploy.naming import container_name
 from wip_deploy.nuke import NukeError, nuke_install_dir, nuke_purge_all
 from wip_deploy.presets import PRESETS
 from wip_deploy.renderers import (
@@ -1552,7 +1553,9 @@ def status(
         return
 
     enabled_app_names = {a.name for a in previous.spec.apps if a.enabled}
-    services_rows, apps_rows = split_services_and_apps(rows, enabled_app_names)
+    services_rows, apps_rows = split_services_and_apps(
+        rows, enabled_app_names, previous.metadata.name
+    )
 
     typer.echo("")
     typer.echo("Services:")
@@ -2815,7 +2818,7 @@ def remove_app(
     # Stop the orphan container BEFORE re-applying so the operator
     # doesn't see a "running" app that's no longer in the spec.
     from wip_deploy.apply import stop_and_remove_container
-    stop_and_remove_container(app_name)
+    stop_and_remove_container(deployment.metadata.name, app_name)
 
     _apply_and_persist_mutation(
         deployment,
@@ -5105,7 +5108,7 @@ def remove_module(
     # rendered compose no longer has the service, so the apply left its
     # container alone; removing it here keeps it from lingering as an orphan.
     from wip_deploy.apply import stop_and_remove_container
-    stop_and_remove_container(module_name)
+    stop_and_remove_container(resolved_name, module_name)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -5704,7 +5707,9 @@ def export_ca(
         raise typer.Exit(2)
 
     try:
-        pem = export_caddy_internal_ca(install_dir=install_dir)
+        pem = export_caddy_internal_ca(
+            container_name(deployment.metadata.name, "caddy"), install_dir=install_dir
+        )
     except ExportCAError as e:
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
         raise typer.Exit(1) from e

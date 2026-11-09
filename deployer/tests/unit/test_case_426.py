@@ -202,7 +202,7 @@ class TestApplyComposePostInstallGating:
     @patch("wip_deploy.apply._run_post_install")
     @patch("wip_deploy.apply._count_services", return_value=1)
     @patch("wip_deploy.apply._run_up")
-    @patch("wip_deploy.apply._remove_stale_wip_containers")
+    @patch("wip_deploy.apply._remove_install_containers")
     @patch("wip_deploy.apply._detect_compose_cmd", return_value=["podman-compose"])
     def test_no_wait_skips_and_records(
         self, *_mocks: MagicMock
@@ -224,7 +224,7 @@ class TestApplyComposePostInstallGating:
     @patch("wip_deploy.apply._wait_healthy", return_value=True)
     @patch("wip_deploy.apply._count_services", return_value=1)
     @patch("wip_deploy.apply._run_up")
-    @patch("wip_deploy.apply._remove_stale_wip_containers")
+    @patch("wip_deploy.apply._remove_install_containers")
     @patch("wip_deploy.apply._detect_compose_cmd", return_value=["podman-compose"])
     def test_waited_healthy_runs(
         self, *_mocks: MagicMock

@@ -66,7 +66,7 @@ class TestApplyComposeMutationStamping:
     @patch("wip_deploy.apply._wait_healthy", return_value=False)
     @patch("wip_deploy.apply._count_services", return_value=3)
     @patch("wip_deploy.apply._run_up")
-    @patch("wip_deploy.apply._remove_stale_wip_containers")
+    @patch("wip_deploy.apply._remove_install_containers")
     @patch("wip_deploy.apply._detect_compose_cmd", return_value=["podman-compose"])
     def test_health_timeout_is_post_mutation(
         self, *_mocks: MagicMock, tmp_path: Path = Path("/tmp")
@@ -88,7 +88,7 @@ class TestApplyComposeMutationStamping:
         "wip_deploy.apply._run_up",
         side_effect=ApplyError("compose up failed (exit 1)"),
     )
-    @patch("wip_deploy.apply._remove_stale_wip_containers")
+    @patch("wip_deploy.apply._remove_install_containers")
     @patch("wip_deploy.apply._detect_compose_cmd", return_value=["podman-compose"])
     def test_mid_up_failure_is_post_mutation(self, *_mocks: MagicMock) -> None:
         """A failure DURING compose up may have partially recreated
@@ -124,7 +124,7 @@ class TestApplyComposeMutationStamping:
     @patch("wip_deploy.apply._wait_healthy", return_value=False)
     @patch("wip_deploy.apply._count_services", return_value=3)
     @patch("wip_deploy.apply._run_up")
-    @patch("wip_deploy.apply._remove_stale_wip_containers")
+    @patch("wip_deploy.apply._remove_install_containers")
     @patch("wip_deploy.apply._detect_compose_cmd", return_value=["podman-compose"])
     def test_on_timeout_warn_still_returns_result(
         self, *_mocks: MagicMock

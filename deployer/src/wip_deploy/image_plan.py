@@ -19,6 +19,7 @@ import json
 from dataclasses import asdict, dataclass
 
 from wip_deploy.config_gen.images import TagSource, image_ref, resolve_tag
+from wip_deploy.naming import dev_image_tag
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
@@ -65,7 +66,7 @@ def _built_from_source(owner: Component | App, deployment: Deployment) -> bool:
 
 def _resolve(owner: Component | App, deployment: Deployment) -> tuple[str, str]:
     if _built_from_source(owner, deployment):
-        return f"{owner.spec.image.name}:dev", "source"
+        return f"{owner.spec.image.name}:{dev_image_tag(deployment.metadata.name)}", "source"
     _, source = resolve_tag(owner, deployment)
     return image_ref(owner, deployment), source
 

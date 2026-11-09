@@ -1,7 +1,7 @@
 """A dev apply builds before it tears anything down.
 
 The dev target rebuilds every image on each full apply and, before `compose
-up`, removes every `wip-*` container. With the build inside `up --build`, a
+up`, removes every container of the install. With the build inside `up --build`, a
 failed build ran after that removal and left no containers at all. The apply
 now builds first, so a failed build leaves the running stack as it was;
 `up` only recreates onto the fresh images.
@@ -65,8 +65,9 @@ def _apply(tmp_path: Path, target: str, *, scope: list[str] | None = None,
     with (
         patch("wip_deploy.apply._detect_compose_cmd", return_value=PODMAN),
         patch("wip_deploy.apply._run_build", side_effect=build_error) as build,
-        patch("wip_deploy.apply._remove_stale_wip_containers") as wipe,
+        patch("wip_deploy.apply._remove_install_containers") as wipe,
         patch("wip_deploy.apply._run_up") as up,
+        patch("wip_deploy.apply._check_containers_created"),
         patch("wip_deploy.apply._reload_proxy"),
         patch("wip_deploy.apply._run_post_install"),
     ):
@@ -88,6 +89,7 @@ class TestOrder:
         calls, raised = _apply(tmp_path, "dev")
         assert raised is None
         assert [c[0] for c in calls.mock_calls] == ["build", "wipe", "up"]
+        assert calls.wipe.call_args.kwargs == {"keep": None}  # a dev apply recreates all
         assert calls.up.call_args.kwargs == {"force_recreate": True}
 
     def test_failed_build_leaves_the_stack_alone(self, tmp_path: Path) -> None:
@@ -112,7 +114,9 @@ class TestOrder:
     def test_compose_target_does_not_build(self, tmp_path: Path) -> None:
         calls, _ = _apply(tmp_path, "compose")
         calls.build.assert_not_called()
-        calls.wipe.assert_not_called()
+        # Only containers the render does not name go (CASE-1225): here none
+        # is rendered, so the keep set is empty.
+        assert calls.wipe.call_args.kwargs == {"keep": set()}
         assert calls.up.call_args.kwargs == {"force_recreate": False}
 
 

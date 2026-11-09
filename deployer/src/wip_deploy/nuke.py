@@ -33,6 +33,7 @@ from pathlib import Path
 
 from wip_deploy.apply import PODMAN_COMPOSE_PARALLEL
 from wip_deploy.kube import kubectl
+from wip_deploy.naming import NETWORK_KEY
 
 # The persisted install spec, plus its pre-rename name.
 STATE_FILENAMES = ("deployment.deployer-state", "deployment.json")
@@ -386,7 +387,10 @@ def nuke_purge_all(
     # Networks: any `wip-*` network. Removing in-use networks fails
     # silently — handled inside _remove_networks.
     network_names = _podman_ls_names(["network", "ls", "--format", "{{.Name}}"])
-    wip_networks = [n for n in network_names if n.startswith("wip-") or n == "wip-network"]
+    wip_networks = [
+        n for n in network_names
+        if n.startswith("wip-") or n.endswith(f"_{NETWORK_KEY}")
+    ]
     if wip_networks:
         if not dry_run:
             report.networks_removed = _remove_networks(wip_networks)

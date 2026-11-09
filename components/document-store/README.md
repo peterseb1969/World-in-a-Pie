@@ -180,7 +180,7 @@ version=1  - Deactivate old
 
 ```bash
 # Inside the container
-podman exec -it wip-document-store bash -c \
+podman exec -it default_wip-document-store bash -c \
   "pip install pytest pytest-asyncio httpx && pytest /app/tests -v"
 
 # Or locally with virtual environment

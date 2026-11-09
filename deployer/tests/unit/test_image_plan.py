@@ -182,8 +182,8 @@ class TestPlan:
             r.name: r
             for r in plan_images(d, components, apps, after=_with_base_tag(d, "NEW"))
         }
-        assert (rows["registry"].image, rows["registry"].source) == ("registry:dev", "source")
-        assert (rows["rc"].image, rows["rc"].source) == ("rc:dev", "source")
+        assert (rows["registry"].image, rows["registry"].source) == ("registry:dev-t", "source")
+        assert (rows["rc"].image, rows["rc"].source) == ("rc:dev-t", "source")
         assert not rows["registry"].moves and not rows["rc"].moves
         # An app without a local source pulls its image, so the tag reaches it.
         assert rows["kb"].moves

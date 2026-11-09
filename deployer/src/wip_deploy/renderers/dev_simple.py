@@ -77,13 +77,18 @@ from wip_deploy.config_gen.nats import (
 )
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.config_gen.spec_context import federated_groups_policy
+from wip_deploy.naming import (
+    container_name,
+    dev_image_tag,
+    network_block,
+    service_networks,
+)
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose import (
     _EXTERNAL_CA_CONTAINER_PATH,
     _caddy_service_block,
     _collect_volumes,
     _command_for,
-    _container_name,
     _depends_on_block,
     _environment_block,
     _healthcheck_block,
@@ -490,7 +495,7 @@ def _render_dev_compose_yaml(
 
     top: dict[str, Any] = {
         "services": services,
-        "networks": {"wip-network": {"name": "wip-network", "driver": "bridge"}},
+        "networks": network_block(deployment.metadata.name),
     }
     if volumes:
         top["volumes"] = volumes
@@ -516,7 +521,9 @@ def _dev_service_block(
     app_sources: dict[str, Path],
 ) -> dict[str, Any]:
     """Same as compose's _service_block but with dev-mode overrides."""
-    block: dict[str, Any] = {"container_name": _container_name(owner.metadata.name)}
+    block: dict[str, Any] = {
+        "container_name": container_name(deployment.metadata.name, owner.metadata.name)
+    }
 
     # Dev: prefer build: over image: when a build_context is declared.
     # For Python components we use the materialized per-component build
@@ -533,7 +540,7 @@ def _dev_service_block(
         block["build"] = {"context": build_context_paths[name]}
         if owner.spec.image.build_args:
             block["build"]["args"] = dict(owner.spec.image.build_args)
-        block["image"] = f"{owner.spec.image.name}:dev"
+        block["image"] = f"{owner.spec.image.name}:{dev_image_tag(deployment.metadata.name)}"
     elif isinstance(owner, App) and name in app_sources:
         # CASE-55: app source override. Build the app's image locally
         # from the user's checkout. Prefer Dockerfile.dev if the app
@@ -547,14 +554,14 @@ def _dev_service_block(
         if owner.spec.image.build_args:
             build_cfg["args"] = dict(owner.spec.image.build_args)
         block["build"] = build_cfg
-        block["image"] = f"{owner.spec.image.name}:dev"
+        block["image"] = f"{owner.spec.image.name}:{dev_image_tag(deployment.metadata.name)}"
     else:
         build_ctx = _resolve_build_context(owner, repo_root)
         if build_ctx is not None:
             block["build"] = {"context": str(build_ctx)}
             if owner.spec.image.build_args:
                 block["build"]["args"] = dict(owner.spec.image.build_args)
-            block["image"] = f"{owner.spec.image.name}:dev"
+            block["image"] = f"{owner.spec.image.name}:{dev_image_tag(deployment.metadata.name)}"
         elif isinstance(owner, App) and name not in apps_from_registry:
             # CASE-355: dev mode means dev. An enabled app with no local
             # source (no --app-source, no build_context) silently fell
@@ -673,7 +680,7 @@ def _dev_service_block(
     if volumes:
         block["volumes"] = volumes
 
-    block["networks"] = ["wip-network"]
+    block["networks"] = service_networks(owner.metadata.name)
     block["restart"] = "unless-stopped"
 
     hc = _healthcheck_block(owner)

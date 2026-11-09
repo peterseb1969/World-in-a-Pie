@@ -188,7 +188,7 @@ The architecture is **spec → config_gen → per-target renderers.** The spec (
 
 Code changes on disk reach running containers through one of three paths, each cheap to slow. Pick the smallest one that covers your edit.
 
-**Source-only edit, dev mode (the common case)** — `podman restart wip-<svc>`. wip-deploy v2 dev mode bind-mounts every backend service's `src/` into the container read-only. A restart re-imports the modules and picks up the new code in ~3 s. No rebuild needed. (Dev stacks rendered by `wip-deploy install --target dev` inject `WATCHFILES_FORCE_POLLING=1`, so uvicorn `--reload` polls the bind mount and hot-reloads edits in ~1-2 s — the manual restart becomes a fallback. Stacks rendered *before* that fix shipped still need the restart until re-rendered.)
+**Source-only edit, dev mode (the common case)** — `podman restart <install>_wip-<svc>` (`default_wip-registry` on the `default` install). Containers are named per install, `<install>_wip-<svc>`, so several installs can share a host; inside an install's own network services still reach each other as `wip-<svc>`. wip-deploy v2 dev mode bind-mounts every backend service's `src/` into the container read-only. A restart re-imports the modules and picks up the new code in ~3 s. No rebuild needed. (Dev stacks rendered by `wip-deploy install --target dev` inject `WATCHFILES_FORCE_POLLING=1`, so uvicorn `--reload` polls the bind mount and hot-reloads edits in ~1-2 s — the manual restart becomes a fallback. Stacks rendered *before* that fix shipped still need the restart until re-rendered.)
 
 **Dockerfile or `requirements.txt` edit** — `wip-deploy rebuild <svc>`. Reads the rendered `~/.wip-deploy/<name>/docker-compose.yaml` and runs `compose up -d --build --force-recreate <svc>` for that service only. Polls for healthy by default; pass `--no-wait` to skip. Multiple services: `wip-deploy rebuild registry def-store`.
 
@@ -199,11 +199,17 @@ Code changes on disk reach running containers through one of three paths, each c
 **Never** use the per-component `components/<svc>/docker-compose.yml` files directly — they're vestigial standalone composes from the pre-wip-deploy-v2 era and conflict with the wip-deploy-managed containers.
 
 Canonical sequence for "I just shipped a fix, verify it works":
-1. `podman restart wip-<svc>` — or `wip-deploy rebuild <svc>` if Dockerfile/requirements changed
+1. `podman restart <install>_wip-<svc>` — or `wip-deploy rebuild <svc>` if Dockerfile/requirements changed
 2. `/wip-status` — confirm the service is healthy
 3. **Run the actual code path the fix touches** — not just the health endpoint. See §4.2.
 
-**"Is my fix actually running?" — the stale-process signature.** Before concluding "the wrong image is deployed" or "it went to k8s, not localhost," check the cheap discriminator: is the symbol present **on disk** in the mounted clone but **absent from the running process** (`podman exec wip-<svc>` probing the service's internal port directly, bypassing Caddy), and does the **process start time predate the file's mtime**? That's a stale process — `podman restart wip-<svc>`; do not invent a deploy gap. (A real past misdiagnosis: native inotify never crossed the macOS podman bind mount, so `--reload` silently never fired — the fix "wasn't deployed" when it was simply never re-imported.)
+**"Is my fix actually running?" — the stale-process signature.** Before concluding "the wrong image is deployed" or "it went to k8s, not localhost," check the cheap discriminator: is the symbol present **on disk** in the mounted clone but **absent from the running process** (`podman exec <install>_wip-<svc>` probing the service's internal port directly, bypassing Caddy), and does the **process start time predate the file's mtime**? That's a stale process — `podman restart <install>_wip-<svc>`; do not invent a deploy gap. (A real past misdiagnosis: native inotify never crossed the macOS podman bind mount, so `--reload` silently never fired — the fix "wasn't deployed" when it was simply never re-imported.)
+
+**Your install, and only yours.** A host can run several installs side by side, typically one per clone, each with its own port, network and source mounts. This clone's install is the name in `.claude/wip-install` (written by `scripts/setup-backend-agent.sh`; `WIP_INSTALL=<name>` re-binds), and `.mcp.json` points at that install's port and key. Rules that follow from it:
+- **Pass `--name $(cat .claude/wip-install)` to every `wip-deploy` verb.** A bare verb targets `default`; a verb run against another clone's install re-stamps it to *your* checkout and mounts your source into someone else's stack. Act on another install only when Peter names it.
+- **Containers are `<install>_wip-<svc>`**, the network `<install>_wip-network`; inside the stack services still reach each other as `wip-<svc>`.
+- **Installs cannot reach each other** (strictly isolated networks, by design). A probe container joins your install's network (`--network <install>_wip-network`); it cannot see another stack, and that is not a bug.
+- Operator detail (ports, hostnames, adding a stack): `docs/deploy/multi-install.md`.
 
 ---
 

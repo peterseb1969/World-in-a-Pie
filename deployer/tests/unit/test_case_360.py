@@ -2,8 +2,8 @@
 
 Two surfaces:
 
-  1. `export_ca.export_caddy_internal_ca()` — pure-function wrapper
-     around `podman exec wip-caddy cat /data/caddy/.../root.crt`.
+  1. `export_ca.export_caddy_internal_ca(container)` — pure-function wrapper
+     around `podman exec <install>_wip-caddy cat /data/caddy/.../root.crt`.
      Tested with `subprocess.run` mocked, since CI doesn't have a
      real wip-caddy container.
 
@@ -147,21 +147,21 @@ class TestExportCaddyInternalCA:
                 self._ps_mock(running=True),
                 self._exec_mock(success=True),
             ]
-            assert export_caddy_internal_ca() == _FAKE_PEM
+            assert export_caddy_internal_ca("wip-caddy") == _FAKE_PEM
 
     def test_raises_when_podman_missing(self) -> None:
         with (
             patch("wip_deploy.export_ca.shutil.which", return_value=None),
             pytest.raises(ExportCAError, match="podman is not available"),
         ):
-            export_caddy_internal_ca()
+            export_caddy_internal_ca("wip-caddy")
 
     def test_raises_when_container_not_running(self) -> None:
         with patch("wip_deploy.export_ca.shutil.which", return_value="/usr/bin/podman"), \
              patch("wip_deploy.export_ca.subprocess.run") as run:
             run.return_value = self._ps_mock(running=False)
             with pytest.raises(ExportCAError, match="is not running"):
-                export_caddy_internal_ca()
+                export_caddy_internal_ca("wip-caddy")
 
     def test_raises_when_ca_not_yet_generated(self) -> None:
         """`podman exec cat` returns non-zero when the file doesn't
@@ -173,7 +173,7 @@ class TestExportCaddyInternalCA:
                 self._exec_mock(success=False),
             ]
             with pytest.raises(ExportCAError, match="Caddy generates the internal CA lazily"):
-                export_caddy_internal_ca()
+                export_caddy_internal_ca("wip-caddy")
 
     def test_raises_when_payload_is_empty(self) -> None:
         """podman exec succeeded but the file was empty — unusual but
@@ -186,7 +186,7 @@ class TestExportCaddyInternalCA:
                 self._exec_mock(success=True, payload=b""),
             ]
             with pytest.raises(ExportCAError, match="empty"):
-                export_caddy_internal_ca()
+                export_caddy_internal_ca("wip-caddy")
 
     def test_custom_container_name(self) -> None:
         """Allow the container name to be overridden — useful if the
@@ -287,7 +287,7 @@ class TestExportCaCLI:
             "wip_deploy.export_ca.shutil.which", return_value="/usr/bin/podman"
         ), patch("wip_deploy.export_ca.subprocess.run") as run:
             run.side_effect = [
-                MagicMock(returncode=0, stdout="wip-caddy\n", stderr=""),
+                MagicMock(returncode=0, stdout="ok-inst_wip-caddy\n", stderr=""),
                 _mounts(install),
                 MagicMock(returncode=0, stdout=_FAKE_PEM, stderr=b""),
             ]
@@ -308,7 +308,7 @@ class TestExportCaCLI:
             "wip_deploy.export_ca.shutil.which", return_value="/usr/bin/podman"
         ), patch("wip_deploy.export_ca.subprocess.run") as run:
             run.side_effect = [
-                MagicMock(returncode=0, stdout="wip-caddy\n", stderr=""),
+                MagicMock(returncode=0, stdout="stdout-inst_wip-caddy\n", stderr=""),
                 _mounts(install),
                 MagicMock(returncode=0, stdout=_FAKE_PEM, stderr=b""),
             ]

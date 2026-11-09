@@ -11,13 +11,17 @@ Check the current state of a running WIP instance — service health, container 
 2. **Check container health** (every container of the attached install, apps included):
    ```bash
    RT=$(command -v podman || command -v docker)
-   PROJECT=$("$RT" inspect wip-registry --format '{{index .Config.Labels "com.docker.compose.project"}}')
-   "$RT" ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}\t{{.Status}}'
+   # One compose project per install; an install's registry container names it.
+   for PROJECT in $("$RT" ps -a --filter "label=com.docker.compose.service=registry" --format '{{index .Labels "com.docker.compose.project"}}'); do
+     echo "== install $PROJECT"
+     "$RT" ps -a --filter "label=com.docker.compose.project=$PROJECT" --format '{{.Names}}\t{{.Status}}'
+   done
    ```
    - Report every container whose status is **not `Up …`** (Exited, Created, Restarting, Paused — **down**) or reads **`(unhealthy)`** (**unhealthy**). `(starting)` right after a restart is normal; say so only if it persists across two checks.
    - `Up …` with no health suffix is fine: that container has no healthcheck (dex, garage, caddy today).
    - Any down or unhealthy container makes the instance **DEGRADED**, whatever step 1 said. An unhealthy app container is the usual sign of a crash at startup while its SPA still loads — for a dev install, see the contract annex "Followed, not skipped: a dependency change reaches the dev container only when it restarts" (`docs/wip-deployable-app-contract.md`).
-   - If there is no container runtime (`RT` empty — a k8s install) or `wip-registry` is not a local container: say "container health not checked (no local container runtime — for k8s use `kubectl get pods`)" and continue.
+   - Several installs on the host each get their own block; mark this clone's (`cat .claude/wip-install`) and judge the instance by it — another clone's stack being down is information, not this session's problem.
+   - If there is no container runtime (`RT` empty — a k8s install) or no install has a local registry container: say "container health not checked (no local container runtime — for k8s use `kubectl get pods`)" and continue.
 
 3. **List terminologies:**
    - Call `list_terminologies`
