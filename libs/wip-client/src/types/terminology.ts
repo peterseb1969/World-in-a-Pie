@@ -298,10 +298,15 @@ export interface BulkValidateResponse {
 
 // ---- Audit Log ----
 
+export type AuditAction = 'created' | 'updated' | 'deprecated' | 'deleted' | 'restored' | 'merged'
+
 export interface AuditLogEntry {
+  /** Namespace the change was recorded in. */
+  namespace: string
+  /** The term changed; equals terminology_id on a terminology-level entry. */
   term_id: string
   terminology_id: string
-  action: 'created' | 'updated' | 'deprecated' | 'deleted'
+  action: AuditAction
   changed_at: string
   changed_by: string | null
   changed_fields: string[]

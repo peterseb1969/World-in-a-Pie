@@ -61,6 +61,65 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   deactivated (a hard delete is still blocked by any child).
 - **Action:** a script that soft-deletes with `force=true` during a Document
   Store outage now gets an error item; retry when it is back.
+
+### Every term and terminology lifecycle change is audited; the audit reads stay in their namespace (@wip/client 0.100.0)
+
+- Only `created` and `updated` were ever written. Deprecating, deleting
+  (soft or hard) and merging a term, and deleting or restoring a
+  terminology, now write `deprecated`, `deleted`, `merged` and `restored`
+  entries; a merge whose deprecation is undone writes `restored`.
+  Terminology-level entries carry `term_id == terminology_id` and the term
+  counts (`terms_deactivated`, `terms_removed`, `terms_reactivated`).
+- Every audit entry now serves `namespace`.
+- The `action` filter on `/audit` and `/audit/terminologies/{id}` accepts
+  only `created`, `updated`, `deprecated`, `deleted`, `restored`, `merged`.
+- `/audit/terms/{id}` and `/audit/terminologies/{id}` return only the
+  entity's own namespace's rows (a terminology id is unique per namespace
+  only), and check read on that namespace also when the entity has been
+  hard-deleted — that history was readable without the gate.
+- **Action:** an unknown `action` value is now a 422, not an empty page.
+- `@wip/client` 0.100.0: `AuditLogEntry` gains `namespace`, and `action` (and the
+  audit methods' `action` filter) is the `AuditAction` union of the six actions.
+
+### Deleting a mutable terminology is guarded like every permanent delete
+
+- Any delete of a mutable terminology removes it permanently, but the
+  plain delete was guarded like a soft delete: only active templates
+  counted, and `force=true` skipped the check entirely. It is now refused
+  while templates of any status reference the terminology, or when that
+  cannot be verified, and `force` does not apply — exactly as
+  `hard_delete=true`.
+- The dependency check also reads a term reference field's
+  `target_terminologies`; a terminology reached only that way could be
+  deleted under its templates. `GET /terminologies/{id}/dependencies`
+  lists those templates too.
+- The `mutable` flag cannot be switched while the terminology holds a term
+  of any status. Retiring every term used to free it, and the terms —
+  still referenced by documents — then hard-deleted on the next delete.
+- **Action:** a script that DELETEs a mutable terminology with `force=true`
+  while templates reference it is now refused; update or delete those
+  templates first.
+
+### A terminology's retirement and restore leave each term's own lifecycle alone
+
+- Soft-deleting a terminology deactivates its ACTIVE terms; a deprecated
+  term stays deprecated, with its reason and replacement, and its released
+  synonyms stay released. Restore used to bring such a term back `active`,
+  so its value matched new documents again. Restore still revives the
+  terminology's inactive terms, including terms soft-deleted on their own
+  before it.
+- A retired terminology refuses new terms (`invalid_state`,
+  `details.rule: not_active`, per item on single and bulk create); restore
+  it first.
+- `term_count` is 0 after a soft delete (it counts active terms).
+- reporting-sync carries a terminology's delete and restore to its terms:
+  soft delete deactivates the active term rows, restore reactivates the
+  inactive ones (unless `restore_terms=false`), hard delete removes the
+  terms, their names and every relation touching them; the namespace's
+  `term_closure` is rebuilt. Before, those rows stayed live in PostgreSQL.
+- The name-type and relation-type caches are dropped whenever a delete,
+  restore or deprecation changes those vocabularies.
+
 ### A namespace's `created_by` / `updated_by` name the authenticated caller
 
 - Namespace create, upsert, archive, restore and the deletion-mode PATCH

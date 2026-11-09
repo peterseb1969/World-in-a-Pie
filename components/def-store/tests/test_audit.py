@@ -60,9 +60,7 @@ async def terminology_with_terms(client: AsyncClient, auth_headers: dict):
         }]
     )
 
-    # Delete second term (generates a soft-delete; note: delete_term
-    # does NOT currently create an audit log entry via _create_audit_log,
-    # but the term status changes)
+    # Delete second term (a soft delete, audited as "deleted")
     await client.request(
         "DELETE",
         "/api/def-store/terms",
@@ -245,20 +243,18 @@ async def test_get_recent_audit_entries_filter_by_action(
 
 
 @pytest.mark.asyncio
-async def test_get_recent_audit_entries_no_results_for_nonexistent_action(
+async def test_get_recent_audit_entries_refuses_unknown_action(
     client: AsyncClient, auth_headers: dict, terminology_with_terms: dict
 ):
-    """Test that filtering by a non-matching action returns empty results."""
+    """The action filter accepts only the audit vocabulary; an unknown
+    action is a request error, not a filter that silently matches nothing."""
     response = await client.get(
         "/api/def-store/audit",
         headers=auth_headers,
         params={"action": "nonexistent_action"}
     )
 
-    assert response.status_code == 200
-    data = response.json()
-    assert data["total"] == 0
-    assert data["items"] == []
+    assert response.status_code == 422
 
 
 # =============================================================================

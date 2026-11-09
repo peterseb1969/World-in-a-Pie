@@ -166,8 +166,16 @@ async def create_terms(
             )
         except ValueError as e:
             fields = error_fields(e)
-            status_code = 404 if fields["error_code"] == "not_found" else 400
-            raise HTTPException(status_code=status_code, detail=fields["error"]) from None
+            if fields["error_code"] == "invalid_state":
+                # The terminology's state refuses every item alike — answered
+                # per item, as the single-item path does
+                results = [
+                    BulkResultItem(index=i, status="error", value=item.value, **fields)
+                    for i, item in enumerate(items)
+                ]
+            else:
+                status_code = 404 if fields["error_code"] == "not_found" else 400
+                raise HTTPException(status_code=status_code, detail=fields["error"]) from None
         except RegistryError as e:
             raise HTTPException(status_code=502, detail=f"Registry error: {e!s}") from e
 
@@ -566,7 +574,15 @@ async def delete_terms(
     ),
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
-    """Soft-delete one or more terms (set status to inactive)."""
+    """Delete one or more terms.
+
+    A term of a mutable terminology is removed permanently, with its
+    relations and Registry entry, whatever hard_delete and the namespace's
+    deletion_mode say. Otherwise the term is soft-deleted (status
+    'inactive'), or removed permanently on hard_delete=true in a namespace
+    with deletion_mode 'full'. No dependency check runs and force has no
+    effect: documents keep the term ids they hold.
+    """
     from wip_auth import resolve_bulk_ids
     # Write door: resolution must ask Registry, not the read cache — the
     # resolved id selects which term gets deleted.

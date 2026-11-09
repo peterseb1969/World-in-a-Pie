@@ -513,6 +513,8 @@ class SyncWorker:
                         term_data.get("updated_by"),
                     )
 
+            await self._cascade_terminology_to_terms(event_data, namespace, terminology_id)
+
             latency_ms = (time.perf_counter() - start_time) * 1000
             logger.info(
                 f"Synced terminology {term_data.get('value')} ({terminology_id}) "
@@ -523,6 +525,59 @@ class SyncWorker:
         except Exception as e:
             logger.error(f"Error syncing terminology: {e}")
             raise
+
+    async def _cascade_terminology_to_terms(
+        self, event_data: dict[str, Any], namespace: str, terminology_id: str,
+    ) -> None:
+        """Carry a terminology's delete or restore to its terms' rows.
+
+        def-store changes the terms with the terminology and announces only
+        the terminology, so the terms, term_names and term_relations rows
+        follow here, mirroring what def-store did: a soft delete deactivates
+        the ACTIVE terms (a deprecated term stays deprecated); a restore
+        reactivates the inactive ones unless it was made with
+        restore_terms=false (an event without the flag is a default
+        restore, which revives them); a hard delete removes the terms, their
+        names and every relation touching one of them.
+        """
+        event_type = event_data.get("event_type")
+        term_data = event_data.get("terminology", {})
+        if event_type == "terminology.deleted":
+            action = "remove" if term_data.get("hard_delete") else "deactivate"
+        elif event_type == "terminology.restored" and term_data.get("restore_terms", True):
+            action = "reactivate"
+        else:
+            return
+
+        terms = await self.schema_manager.ensure_terms_table(namespace)
+        async with self.pool.acquire() as conn:
+            if action == "remove":
+                relations = await self.schema_manager.ensure_term_relations_table(namespace)
+                names = await self.schema_manager.ensure_term_names_table(namespace)
+                ids = f'SELECT "term_id" FROM {terms} WHERE "namespace" = $1 AND "terminology_id" = $2'  # nosec B608  # identifiers validated by ensure_*, values bound
+                await conn.execute(
+                    f'DELETE FROM {relations} WHERE "namespace" = $1 AND ("source_term_id" IN ({ids}) OR "target_term_id" IN ({ids}))',  # nosec B608  # identifiers validated by ensure_*, values bound
+                    namespace, terminology_id,
+                )
+                await conn.execute(
+                    f'DELETE FROM {names} WHERE "namespace" = $1 AND "terminology_id" = $2',  # nosec B608  # identifiers validated by ensure_*, values bound
+                    namespace, terminology_id,
+                )
+                await conn.execute(
+                    f'DELETE FROM {terms} WHERE "namespace" = $1 AND "terminology_id" = $2',  # nosec B608  # identifiers validated by ensure_*, values bound
+                    namespace, terminology_id,
+                )
+            else:
+                old, new = ("active", "inactive") if action == "deactivate" else ("inactive", "active")
+                await conn.execute(
+                    f"""
+                    UPDATE {terms}
+                    SET "status" = $3, "updated_at" = NOW(), "updated_by" = $4
+                    WHERE "namespace" = $1 AND "terminology_id" = $2 AND "status" = $5
+                    """,  # nosec B608  # identifiers validated by ensure_*, values bound
+                    namespace, terminology_id, new, event_data.get("changed_by"), old,
+                )
+        self.closure.mark_dirty(namespace)
 
     async def _process_term_event(self, event_data: dict[str, Any]) -> bool:
         """

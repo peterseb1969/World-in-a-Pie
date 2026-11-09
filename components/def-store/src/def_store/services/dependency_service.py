@@ -161,16 +161,19 @@ class DependencyService:
 
             templates = all_templates
 
-            # Filter templates that reference this terminology
+            # A field reaches a terminology three ways: a term field's
+            # terminology_ref, an array of terms' array_terminology_ref, and
+            # a term reference's target_terminologies.
+            wanted = {terminology_id, terminology_value}
             referencing = []
             for template in templates:
-                fields = template.get("fields", [])
-                for field in fields:
-                    term_ref = field.get("terminology_ref")
-                    array_term_ref = field.get("array_terminology_ref")
-
-                    # Check if this field references our terminology
-                    if term_ref in (terminology_id, terminology_value):
+                for field in template.get("fields", []):
+                    targets = [
+                        field.get("terminology_ref"),
+                        field.get("array_terminology_ref"),
+                        *(field.get("target_terminologies") or []),
+                    ]
+                    if wanted.intersection(targets):
                         referencing.append({
                             "template_id": template.get("template_id"),
                             "value": template.get("value"),
@@ -178,14 +181,6 @@ class DependencyService:
                             "field": field.get("name")
                         })
                         break  # Only count template once
-                    elif array_term_ref in (terminology_id, terminology_value):
-                        referencing.append({
-                            "template_id": template.get("template_id"),
-                            "value": template.get("value"),
-                            "label": template.get("label"),
-                            "field": field.get("name")
-                        })
-                        break
 
             return referencing
         except Exception:

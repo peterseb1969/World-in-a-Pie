@@ -1942,14 +1942,16 @@ async def delete_terminology(
     """Delete a terminology. Mutable terminologies are always hard-deleted.
     Immutable ones are soft-deleted unless hard_delete=true (requires namespace deletion_mode='full').
 
-    Soft-delete is refused while active templates reference the terminology,
-    or when that cannot be verified — force=true deactivates anyway.
-    Hard-delete is refused while any template of any status references it,
-    or when that cannot be verified; force does not apply to hard-delete.
+    Soft-delete deactivates the active terms (deprecated terms stay
+    deprecated). It is refused while active templates reference the
+    terminology, or when that cannot be verified — force=true deactivates
+    anyway. Hard-delete — which every delete of a mutable terminology is —
+    is refused while any template of any status references it, or when that
+    cannot be verified; force does not apply to hard-delete.
 
     Args:
         terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
-        force: Deactivate even if templates reference the terminology (soft-delete only).
+        force: Deactivate even if templates reference the terminology (soft-delete of an immutable terminology only).
         hard_delete: Permanently remove (requires namespace deletion_mode='full').
     """
     try:
@@ -1971,7 +1973,7 @@ async def restore_terminology(
 
     Args:
         terminology_id: Terminology ID, value code (e.g., 'COUNTRY'), or synonym.
-        restore_terms: Also reactivate its inactive terms (default: true).
+        restore_terms: Also reactivate its inactive terms (default: true) — those deactivated with it and those soft-deleted on their own. Deprecated terms stay deprecated.
     """
     try:
         data = await get_client().restore_terminology(

@@ -293,6 +293,55 @@ async def restore_terminology(
     return result
 
 
+def _dependency_refusal(
+    i: int, item: DeleteItem, deps: TerminologyDependencies, *, removes: bool
+) -> BulkResultItem | None:
+    """The refusal a delete earns from what references the terminology, or
+    None when it may proceed.
+
+    A delete that removes the terminology for good (hard_delete, or any
+    delete of a mutable terminology) was judged on templates of every
+    status: an inactive template still validates the documents pinned to
+    it. force does not apply to such a delete — force means "deactivate
+    despite dependents", a reversible act. A soft delete deactivates every
+    term, so new writes against referencing templates start failing; it is
+    refused on active references unless force=true. Both refuse when the
+    reference set cannot be verified — "could not check" is never "none".
+    """
+    if removes:
+        why = "" if item.hard_delete else " A mutable terminology is always deleted permanently."
+        force_note = " force=true does not apply to hard-delete." if item.force else ""
+        if deps.template_count == -1:
+            error = (
+                "Hard-delete refused: cannot verify that no templates reference this "
+                f"terminology (Template Store unavailable).{why}{force_note}"
+            )
+            rule = "dependencies_unverifiable"
+        elif deps.template_count > 0:
+            error = (
+                f"Hard-delete refused: {deps.template_count} template(s) of any status "
+                f"reference this terminology. Update or delete them first.{why}{force_note}"
+            )
+            rule = "has_templates"
+        else:
+            return None
+    elif deps.template_count == -1:
+        error = (
+            "Could not verify template dependencies (Template Store "
+            "unavailable); retry, or use force=true to deactivate anyway."
+        )
+        rule = "dependencies_unverifiable"
+    elif deps.template_count > 0:
+        error = f"Terminology has {deps.template_count} dependent templates. Use force=true to delete anyway."
+        rule = "has_templates"
+    else:
+        return None
+    return BulkResultItem(
+        index=i, status="error", id=item.id, error=error,
+        error_code="invalid_state", details={"rule": rule},
+    )
+
+
 @router.delete("", response_model=BulkResponse, summary="Delete terminologies")
 async def delete_terminologies(
     items: list[DeleteItem] = Body(...),
@@ -300,17 +349,20 @@ async def delete_terminologies(
     identity: UserIdentity = Depends(require_api_key)
 ) -> BulkResponse:
     """
-    Soft-delete (deactivate) or hard-delete one or more terminologies.
+    Soft-delete (deactivate) or permanently delete one or more terminologies.
 
-    Soft-delete sets the terminology and all its terms to 'inactive'. It is
-    refused while active templates reference the terminology, or when that
-    cannot be verified (deactivating the terms breaks new writes against
-    referencing templates) — set force=true per item to deactivate anyway.
+    Soft-delete sets the terminology and its active terms to 'inactive'
+    (deprecated terms stay deprecated). It is refused while active templates
+    reference the terminology, or when that cannot be verified (deactivating
+    the terms breaks new writes against referencing templates) — set
+    force=true per item to deactivate anyway.
 
-    Hard-delete (hard_delete=true, namespace deletion_mode='full') removes
-    the terminology permanently and is refused while any template of any
-    status references it, or when that cannot be verified; force does not
-    apply to it.
+    A permanent delete removes the terminology, its terms and their
+    relations. It happens on hard_delete=true (namespace deletion_mode
+    'full'), and on ANY delete of a mutable terminology, whatever
+    deletion_mode says. It is refused while any template of any status
+    references the terminology, or when that cannot be verified; force does
+    not apply to it.
     """
     await resolve_bulk_ids(items, "id", "terminology", namespace=namespace)
 
@@ -318,9 +370,11 @@ async def delete_terminologies(
     # as update_terminologies above.
     from ..models.terminology import Terminology as _T
     ids = [item.id for item in items if item.id]
+    mutable: dict[str, bool] = {}
     if ids:
         existing_docs = await _T.find({"terminology_id": {"$in": ids}}).to_list()
         id_to_namespace = {d.terminology_id: d.namespace for d in existing_docs}
+        mutable = {d.terminology_id: d.mutable for d in existing_docs}
         for item in items:
             ns = id_to_namespace.get(item.id)
             if ns:
@@ -329,63 +383,16 @@ async def delete_terminologies(
     results = []
     for i, item in enumerate(items):
         try:
-            if item.hard_delete:
-                # Hard-delete permanently removes the terminology; a template
-                # whose fields reference it — of ANY status, since an inactive
-                # template still validates the documents pinned to it — would
-                # be left with a terminology_ref that resolves to nothing. So
-                # the guard refuses while such templates exist or while that
-                # cannot be verified. `force` means "deactivate despite
-                # dependents", a reversible act; it does not apply here.
-                force_note = " force=true does not apply to hard-delete." if item.force else ""
+            # The guard follows what the delete will do, not only what the
+            # request asked: a mutable terminology is removed by any delete.
+            removes = item.hard_delete or mutable.get(item.id, False)
+            if removes or not item.force:
                 deps = await DependencyService.check_terminology_dependencies(
-                    item.id, all_statuses=True
+                    item.id, all_statuses=removes
                 )
-                if deps.template_count == -1:
-                    results.append(BulkResultItem(
-                        index=i, status="error", id=item.id,
-                        error=(
-                            "Hard-delete refused: cannot verify that no templates "
-                            f"reference this terminology (Template Store unavailable).{force_note}"
-                        ),
-                        error_code="invalid_state", details={"rule": "dependencies_unverifiable"},
-                    ))
-                    continue
-                if deps.template_count > 0:
-                    results.append(BulkResultItem(
-                        index=i, status="error", id=item.id,
-                        error=(
-                            f"Hard-delete refused: {deps.template_count} template(s) of "
-                            "any status reference this terminology. Update or delete "
-                            f"them first.{force_note}"
-                        ),
-                        error_code="invalid_state", details={"rule": "has_templates"},
-                    ))
-                    continue
-            elif not item.force:
-                # Soft-delete also deactivates every term in the terminology,
-                # so new writes against referencing templates start failing —
-                # hence the guard refuses on known references AND on an
-                # unverifiable count (never reading "could not check" as
-                # "none"). force=true overrides both refusals; the deactivate
-                # stays reversible via restore.
-                deps = await DependencyService.check_terminology_dependencies(item.id)
-                if deps.template_count == -1:
-                    results.append(BulkResultItem(
-                        index=i, status="error", id=item.id,
-                        error=(
-                            "Could not verify template dependencies (Template Store "
-                            "unavailable); retry, or use force=true to deactivate anyway."
-                        ),
-                        error_code="invalid_state", details={"rule": "dependencies_unverifiable"},
-                    ))
-                    continue
-                if deps.template_count > 0:
-                    results.append(BulkResultItem(
-                        index=i, status="error", id=item.id,
-                        error=f"Terminology has {deps.template_count} dependent templates. Use force=true to delete anyway.",
-                        error_code="invalid_state", details={"rule": "has_templates"},
-                    ))
+                refusal = _dependency_refusal(i, item, deps, removes=removes)
+                if refusal is not None:
+                    results.append(refusal)
                     continue
 
             success = await TerminologyService.delete_terminology(

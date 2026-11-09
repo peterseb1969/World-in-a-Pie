@@ -273,9 +273,10 @@ Instead of versioning, term changes are recorded in an audit log:
 class TermAuditEntry(BaseModel):
     """An audit log entry for term changes."""
 
-    term_id: str
+    namespace: str
+    term_id: str          # == terminology_id on a terminology-level entry
     terminology_id: str
-    action: Literal["created", "updated", "deprecated", "deleted"]
+    action: Literal["created", "updated", "deprecated", "deleted", "restored", "merged"]
     changed_at: datetime
     changed_by: str
     changed_fields: list[str] = Field(
@@ -289,6 +290,16 @@ class TermAuditEntry(BaseModel):
         default_factory=dict
     )
 ```
+
+Every lifecycle change is recorded: `created` / `updated` (term or
+terminology written), `deprecated` (status, reason and replacement before and
+after), `deleted` (a soft delete — `new_values.status: "inactive"` — or a
+removal — `new_values.hard_delete: true`), `restored` (a terminology restore,
+with `terms_reactivated`; or a failed merge's deprecation undone) and `merged`
+(on the absorbed term: `merged_into`, `names_carried`). Terminology-level
+entries carry `term_id == terminology_id`. The id-scoped audit reads return
+only the entity's own namespace's rows and require read on it, also after a
+hard delete.
 
 **Example:**
 ```json

@@ -337,8 +337,8 @@ class DeleteItem(StrictModel):
     """Item in a bulk delete request."""
 
     id: str = Field(..., description="ID of entity to delete")
-    force: bool = Field(default=False, description="Force deletion even if dependencies exist")
-    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full')")
+    force: bool = Field(default=False, description="Deactivate a terminology even though active templates reference it, or when that cannot be verified. Does not apply to a permanent delete, nor to terms")
+    hard_delete: bool = Field(default=False, description="Permanently remove (requires namespace deletion_mode='full'). A mutable terminology and its terms are removed permanently by any delete, whatever this flag and deletion_mode say")
     updated_by: str | None = Field(default=None, description="User performing deletion")
 
 
@@ -497,11 +497,12 @@ class BulkValidateResponse(BaseModel):
 class AuditLogEntry(BaseModel):
     """A single audit log entry."""
 
-    term_id: str
+    namespace: str = Field(..., description="Namespace the change was recorded in")
+    term_id: str = Field(..., description="The term changed; equals terminology_id on a terminology-level entry")
     terminology_id: str
     action: str = Field(
         ...,
-        description="Type of change: created, updated, deprecated, deleted"
+        description="Type of change: created, updated, deprecated, deleted, restored, merged"
     )
     changed_at: datetime
     changed_by: str | None = None

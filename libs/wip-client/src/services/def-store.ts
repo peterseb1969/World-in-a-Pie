@@ -20,6 +20,7 @@ import type {
   TermSearchResponse,
   ReconcileTerminologyRequest,
   ReconcileTerminologyResponse,
+  AuditAction,
   AuditLogResponse,
 } from '../types/terminology.js'
 import type {
@@ -382,7 +383,7 @@ export class DefStoreService extends BaseService {
   // ---- Audit Log ----
 
   async getTerminologyAuditLog(terminologyId: string, params?: {
-    action?: string
+    action?: AuditAction
     page?: number
     page_size?: number
   }): Promise<AuditLogResponse> {
@@ -390,7 +391,7 @@ export class DefStoreService extends BaseService {
   }
 
   async getTermAuditLog(termId: string, params?: {
-    action?: string
+    action?: AuditAction
     namespace?: string
     /** Scopes a value-form termId as the opaque raw value (never colon-parsed). */
     terminology?: string
@@ -401,7 +402,7 @@ export class DefStoreService extends BaseService {
   }
 
   async getRecentAuditLog(params?: {
-    action?: string
+    action?: AuditAction
     page?: number
     page_size?: number
   }): Promise<AuditLogResponse> {

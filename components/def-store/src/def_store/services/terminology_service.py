@@ -22,7 +22,7 @@ from ..models.api_models import (
     UpdateTerminologyRequest,
     UpdateTermRequest,
 )
-from ..models.audit_log import TermAuditLog
+from ..models.audit_log import AuditAction, TermAuditLog
 from ..models.term import CASE_INSENSITIVE_COLLATION, Term, TermName
 from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
@@ -598,11 +598,14 @@ class TerminologyService:
         _track("mutable", terminology.mutable, request.mutable)
         _track("unique_names", terminology.unique_names, request.unique_names)
 
-        # Reject mutable changes if terms exist
+        # Reject mutable changes while the terminology holds a term of ANY
+        # status. term_count counts active terms only, and a deprecated or
+        # soft-deleted term is still referenced by documents — a mutable
+        # terminology would hard-delete it.
         if (
             request.mutable is not None
             and request.mutable != terminology.mutable
-            and terminology.term_count > 0
+            and await Term.find_one({"terminology_id": terminology_id}) is not None
         ):
             raise DefStoreError(
                 "Cannot change mutable flag on terminology with existing terms", "invalid_state", rule="has_terms"
@@ -671,15 +674,20 @@ class TerminologyService:
         hard_delete: bool = False,
     ) -> bool:
         """
-        Delete a terminology. Hard-deletes if mutable OR if hard_delete=True
-        and namespace deletion_mode is 'full'. Soft-deletes otherwise.
+        Delete a terminology. Hard-deletes if mutable (whatever hard_delete
+        says, and whatever the namespace's deletion_mode) OR if
+        hard_delete=True and namespace deletion_mode is 'full'. Soft-deletes
+        otherwise.
 
-        Also deletes/deactivates all terms and relations in the terminology.
+        Also deletes all terms and relations (hard), or deactivates the
+        active terms (soft). This method applies no dependency guard: the
+        route refuses a hard delete — mutable included — while templates of
+        any status reference the terminology.
 
         Args:
             terminology_id: Terminology to delete
             updated_by: Deprecated - uses authenticated identity
-            hard_delete: Force hard-delete (requires namespace deletion_mode='full')
+            hard_delete: Hard-delete a non-mutable terminology (requires namespace deletion_mode='full')
 
         Returns:
             True if deleted, False if not found
@@ -703,71 +711,21 @@ class TerminologyService:
                 )
             should_hard_delete = True
 
-        not_removed: list[str] = []
+        prior_status = terminology.status
         if should_hard_delete:
-            # HARD DELETE: remove terminology, all terms, and all relations
-
-            # 1. Get all term IDs in this terminology
-            term_ids = [
-                t.term_id
-                for t in await Term.find({"terminology_id": terminology_id}).to_list()
-            ]
-
-            # 2. Delete all relations involving these terms
-            if term_ids:
-                await TermRelation.find({
-                    "$or": [
-                        {"source_term_id": {"$in": term_ids}},
-                        {"target_term_id": {"$in": term_ids}}
-                    ]
-                }).delete()
-
-            # 3. Hard-delete all terms
-            await Term.find({"terminology_id": terminology_id}).delete()
-
-            # 4. Capture event dict before deleting
-            event_dict = TerminologyService._terminology_to_event_dict(terminology)
-            event_dict["hard_delete"] = True
-
-            # 5. Hard-delete the terminology document
-            await terminology.delete()
-
-            # 6. Hard-delete Registry entries for terminology and its terms.
-            # A mutable terminology is hard-deletable regardless of the
-            # namespace's deletion_mode, so its entries carry that exemption.
-            client = get_registry_client()
-            for entry_id in [terminology_id, *term_ids]:
-                try:
-                    await client.hard_delete_entry(
-                        entry_id, updated_by=actor, owner_hard_deleted=terminology.mutable,
-                    )
-                except RegistryError as e:
-                    logger.error(f"Registry entry {entry_id} not removed after hard delete: {e}")
-                    not_removed.append(entry_id)
+            event_dict, not_removed, removed = await TerminologyService._hard_delete_terminology(terminology, actor)
+            outcome: dict[str, Any] = {"hard_delete": True, "terms_removed": removed}
         else:
-            # SOFT DELETE: deactivate terminology and all terms (existing behavior)
-            terminology.status = "inactive"
-            terminology.updated_at = datetime.now(UTC)
-            terminology.updated_by = actor
-            await terminology.save()
-
-            await Term.find({"terminology_id": terminology_id}).update_many({
-                "$set": {
-                    "status": "inactive",
-                    "updated_at": datetime.now(UTC),
-                    "updated_by": actor
-                }
-            })
-            term_ids = [
-                t["term_id"] async for t in Term.get_motor_collection().find(
-                    {"terminology_id": terminology_id}, {"term_id": 1},
-                )
-            ]
-            await TerminologyService._sync_registry_lifecycle(
-                [terminology_id, *term_ids], retired=True, actor=actor,
-            )
-
-            event_dict = TerminologyService._terminology_to_event_dict(terminology)
+            event_dict, deactivated = await TerminologyService._soft_delete_terminology(terminology, actor)
+            not_removed = []
+            outcome = {"status": "inactive", "terms_deactivated": deactivated}
+        TerminologyService._drop_derived_caches(terminology.value)
+        await TerminologyService._create_audit_log(
+            term_id=terminology.terminology_id, terminology_id=terminology.terminology_id,
+            action="deleted", namespace=terminology.namespace, changed_by=actor,
+            changed_fields=["status"], previous_values={"status": prior_status},
+            new_values=outcome,
+        )
 
         # Publish NATS event
         await publish_terminology_event(
@@ -786,6 +744,97 @@ class TerminologyService:
         return True
 
     @staticmethod
+    async def _hard_delete_terminology(
+        terminology: Terminology, actor: str | None,
+    ) -> tuple[dict, list[str], int]:
+        """Remove the terminology, all its terms and their relations, and
+        their Registry entries. Returns the event payload, the entries the
+        Registry did not remove, and how many terms were removed."""
+        terminology_id = terminology.terminology_id
+        term_ids = [
+            t.term_id
+            for t in await Term.find({"terminology_id": terminology_id}).to_list()
+        ]
+        if term_ids:
+            await TermRelation.find({
+                "$or": [
+                    {"source_term_id": {"$in": term_ids}},
+                    {"target_term_id": {"$in": term_ids}}
+                ]
+            }).delete()
+        await Term.find({"terminology_id": terminology_id}).delete()
+
+        event_dict = TerminologyService._terminology_to_event_dict(terminology)
+        event_dict["hard_delete"] = True
+        await terminology.delete()
+
+        # A mutable terminology is hard-deletable regardless of the
+        # namespace's deletion_mode, so its entries carry that exemption.
+        client = get_registry_client()
+        not_removed: list[str] = []
+        for entry_id in [terminology_id, *term_ids]:
+            try:
+                await client.hard_delete_entry(
+                    entry_id, updated_by=actor, owner_hard_deleted=terminology.mutable,
+                )
+            except RegistryError as e:
+                logger.error(f"Registry entry {entry_id} not removed after hard delete: {e}")
+                not_removed.append(entry_id)
+        return event_dict, not_removed, len(term_ids)
+
+    @staticmethod
+    async def _soft_delete_terminology(terminology: Terminology, actor: str | None) -> tuple[dict, int]:
+        """Deactivate the terminology and its ACTIVE terms.
+
+        A deprecated term stays deprecated — its reason and replacement are
+        its own lifecycle, and its synonyms were released when it was
+        deprecated — and an already-inactive term stays inactive. Only the
+        terms this retirement deactivates are reported to the Registry.
+        Returns the event payload and how many terms were deactivated.
+        """
+        terminology_id = terminology.terminology_id
+        now = datetime.now(UTC)
+        retired_ids = [
+            t["term_id"] async for t in Term.get_motor_collection().find(
+                {"terminology_id": terminology_id, "status": "active"}, {"term_id": 1},
+            )
+        ]
+        await Term.find({"terminology_id": terminology_id, "status": "active"}).update_many({
+            "$set": {"status": "inactive", "updated_at": now, "updated_by": actor}
+        })
+
+        terminology.status = "inactive"
+        terminology.term_count = 0  # active terms; none are left
+        terminology.updated_at = now
+        terminology.updated_by = actor
+        await terminology.save()
+
+        await TerminologyService._sync_registry_lifecycle(
+            [terminology_id, *retired_ids], retired=True, actor=actor,
+        )
+        return TerminologyService._terminology_to_event_dict(terminology), len(retired_ids)
+
+    @staticmethod
+    def _require_active(terminology: Terminology) -> None:
+        """A retired terminology takes no new terms: restore it first."""
+        if terminology.status != "active":
+            raise DefStoreError(
+                f"Terminology '{terminology.value}' is {terminology.status}; restore it "
+                "before adding terms", "invalid_state", rule="not_active",
+            )
+
+    @staticmethod
+    def _drop_derived_caches(terminology_value: str | None) -> None:
+        """Drop the process-lifetime caches derived from a system vocabulary
+        when a write changes it: the name types (_NAME_TYPES) and the
+        ontology relation types (_ONTOLOGY_RELATIONSHIP_TYPES)."""
+        if terminology_value == NAME_TYPES_TERMINOLOGY_VALUE:
+            NameTypeService.invalidate_name_type_cache()
+        elif terminology_value == "_ONTOLOGY_RELATIONSHIP_TYPES":
+            from .ontology_service import OntologyService
+            OntologyService.invalidate_relation_type_cache()
+
+    @staticmethod
     async def restore_terminology(
         terminology_id: str,
         restore_terms: bool = True
@@ -793,7 +842,9 @@ class TerminologyService:
         """
         Restore a soft-deleted terminology (set status back to active).
 
-        Optionally reactivates all terms that were deactivated with it.
+        Optionally reactivates its inactive terms: those deactivated with it,
+        and terms soft-deleted on their own before it. A deprecated term is
+        not inactive and stays deprecated.
 
         Args:
             terminology_id: Terminology to restore
@@ -847,12 +898,20 @@ class TerminologyService:
         await TerminologyService._sync_registry_lifecycle(
             [terminology_id, *restored_term_ids], retired=False, actor=actor,
         )
+        TerminologyService._drop_derived_caches(terminology.value)
+        await TerminologyService._create_audit_log(
+            term_id=terminology_id, terminology_id=terminology_id, action="restored",
+            namespace=terminology.namespace, changed_by=actor, changed_fields=["status"],
+            previous_values={"status": "inactive"},
+            new_values={"status": "active", "terms_reactivated": len(restored_term_ids)},
+        )
 
-        # Publish NATS event
+        # Publish NATS event. restore_terms tells reporting whether the
+        # terminology's inactive terms came back with it.
+        event_dict = TerminologyService._terminology_to_event_dict(terminology)
+        event_dict["restore_terms"] = restore_terms
         await publish_terminology_event(
-            NatsEventType.TERMINOLOGY_RESTORED,
-            TerminologyService._terminology_to_event_dict(terminology),
-            changed_by=actor,
+            NatsEventType.TERMINOLOGY_RESTORED, event_dict, changed_by=actor,
         )
 
         return TerminologyService._to_terminology_response(terminology)
@@ -891,6 +950,7 @@ class TerminologyService:
         terminology = await Terminology.find_one({"terminology_id": terminology_id})
         if not terminology:
             raise DefStoreError(f"Terminology '{terminology_id}' not found", "not_found")
+        TerminologyService._require_active(terminology)
 
         namespace = terminology.namespace
 
@@ -1012,12 +1072,7 @@ class TerminologyService:
             changed_by=actor,
         )
 
-        # Invalidate the derived caches when a system terminology changes
-        if terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
-            from .ontology_service import OntologyService
-            OntologyService.invalidate_relation_type_cache()
-        if terminology.value == NAME_TYPES_TERMINOLOGY_VALUE:
-            NameTypeService.invalidate_name_type_cache()
+        TerminologyService._drop_derived_caches(terminology.value)
 
         return TerminologyService._to_term_response(term)
 
@@ -1531,6 +1586,7 @@ class TerminologyService:
         terminology = await Terminology.find_one({"terminology_id": terminology_id})
         if not terminology:
             raise DefStoreError(f"Terminology '{terminology_id}' not found", "not_found")
+        TerminologyService._require_active(terminology)
 
         namespace = terminology.namespace
 
@@ -1585,12 +1641,8 @@ class TerminologyService:
             terminology.updated_at = now
             await terminology.save()
 
-        # Invalidate the derived caches when a system terminology changes
-        if total_created > 0 and terminology.value == "_ONTOLOGY_RELATIONSHIP_TYPES":
-            from .ontology_service import OntologyService
-            OntologyService.invalidate_relation_type_cache()
-        if total_created > 0 and terminology.value == NAME_TYPES_TERMINOLOGY_VALUE:
-            NameTypeService.invalidate_name_type_cache()
+        if total_created > 0:
+            TerminologyService._drop_derived_caches(terminology.value)
 
         logger.info(
             f"Bulk import complete: {total_created} terms created out of {total_terms} submitted"
@@ -1856,9 +1908,8 @@ class TerminologyService:
             changed_by=actor,
         )
 
-        # A changed name-type term must not serve stale from the cache
-        if term.terminology_value == NAME_TYPES_TERMINOLOGY_VALUE:
-            NameTypeService.invalidate_name_type_cache()
+        # A changed system-vocabulary term must not serve stale from the cache
+        TerminologyService._drop_derived_caches(term.terminology_value)
 
         return TerminologyService._to_term_response(term)
 
@@ -1920,12 +1971,14 @@ class TerminologyService:
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
+        before = TerminologyService._lifecycle_values(term)
         term.status = "deprecated"
         term.deprecated_reason = request.reason
         term.replaced_by_term_id = request.replaced_by_term_id
         term.updated_at = datetime.now(UTC)
         term.updated_by = actor
         await term.save()
+        await TerminologyService._audit_lifecycle(term, "deprecated", before, actor)
         if release_synonyms:
             await TerminologyService._sync_registry_lifecycle([term_id], retired=True, actor=actor)
 
@@ -1945,9 +1998,8 @@ class TerminologyService:
             changed_by=actor,
         )
 
-        # A deprecated name type stops validating new names immediately
-        if term.terminology_value == NAME_TYPES_TERMINOLOGY_VALUE:
-            NameTypeService.invalidate_name_type_cache()
+        # A deprecated name or relation type stops validating at once
+        TerminologyService._drop_derived_caches(term.terminology_value)
 
         return TerminologyService._to_term_response(term)
 
@@ -1965,6 +2017,8 @@ class TerminologyService:
 
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
+
+        prior_status = term.status
 
         # Check if parent terminology is mutable
         terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
@@ -2050,6 +2104,14 @@ class TerminologyService:
                 "status": "active"
             }).count()
             await terminology.save()
+
+        TerminologyService._drop_derived_caches(term.terminology_value)
+        await TerminologyService._create_audit_log(
+            term_id=term_id, terminology_id=term.terminology_id, action="deleted",
+            namespace=term.namespace, changed_by=actor, changed_fields=["status"],
+            previous_values={"status": prior_status},
+            new_values={"hard_delete": True} if should_hard_delete else {"status": "inactive"},
+        )
 
         # Publish NATS event
         await publish_term_event(
@@ -2142,24 +2204,39 @@ class TerminologyService:
             raise DefStoreError(
                 f"Merge not applied — the Registry refused to merge the entries: {e}", "registry_error"
             ) from e
+        await TerminologyService._create_audit_log(
+            term_id=absorbed_id, terminology_id=absorbed.terminology_id, action="merged",
+            namespace=absorbed.namespace, changed_by=get_identity_string(),
+            changed_fields=["merged_into"],
+            new_values={"merged_into": survivor_id, "names_carried": [n.value for n in carried]},
+            comment=reason,
+        )
         return result, carried
 
     @staticmethod
     async def _restore_lifecycle(term_id: str, before: tuple[str, str | None, str | None]) -> None:
-        """Undo a deprecation made by a merge that did not complete."""
+        """Undo a deprecation made by a merge that did not complete.
+
+        The deprecation was audited when it was made, so its undo is too.
+        """
         term = await Term.find_one({"term_id": term_id})
         if term is None:
             return
+        deprecated = TerminologyService._lifecycle_values(term)
         term.status, term.deprecated_reason, term.replaced_by_term_id = before
         term.updated_at = datetime.now(UTC)
         term.updated_by = get_identity_string()
         await term.save()
+        await TerminologyService._audit_lifecycle(
+            term, "restored", deprecated, term.updated_by, comment="merge not applied",
+        )
         terminology = await Terminology.find_one({"terminology_id": term.terminology_id})
         if terminology:
             terminology.term_count = await Term.find({
                 "terminology_id": term.terminology_id, "status": "active",
             }).count()
             await terminology.save()
+        TerminologyService._drop_derived_caches(term.terminology_value)
         await publish_term_event(
             NatsEventType.TERM_UPDATED,
             TerminologyService._term_to_event_dict(term),
@@ -2452,10 +2529,33 @@ class TerminologyService:
         }
 
     @staticmethod
+    def _lifecycle_values(term: Term) -> dict[str, Any]:
+        return {
+            "status": term.status,
+            "deprecated_reason": term.deprecated_reason,
+            "replaced_by_term_id": term.replaced_by_term_id,
+        }
+
+    @staticmethod
+    async def _audit_lifecycle(
+        term: Term, action: str, before: dict[str, Any], actor: str | None,
+        comment: str | None = None,
+    ) -> None:
+        """Audit a change of a term's lifecycle state: its status,
+        deprecation reason and replacement, before and after."""
+        after = TerminologyService._lifecycle_values(term)
+        await TerminologyService._create_audit_log(
+            term_id=term.term_id, terminology_id=term.terminology_id, action=action,
+            namespace=term.namespace, changed_by=actor,
+            changed_fields=[k for k in after if after[k] != before.get(k)],
+            previous_values=before, new_values=after, comment=comment,
+        )
+
+    @staticmethod
     async def _create_audit_log(
         term_id: str,
         terminology_id: str,
-        action: str,
+        action: AuditAction,
         namespace: str,
         changed_by: str | None = None,
         changed_fields: list[str] | None = None,

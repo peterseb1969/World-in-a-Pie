@@ -1,11 +1,24 @@
 """Audit log models for tracking changes to terminologies and terms."""
 
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from beanie import Document
 from pydantic import Field
 from pymongo import DESCENDING, IndexModel
+
+AuditAction = Literal["created", "updated", "deprecated", "deleted", "restored", "merged"]
+"""Every action an audit entry records.
+
+created/updated: a term or terminology written. deprecated: a term retired
+with a reason (and replacement). deleted: a term or terminology soft-deleted
+(new_values.status 'inactive') or removed (new_values.hard_delete true).
+restored: a terminology restored, or a merge's deprecation undone because
+the merge did not complete. merged: a term absorbed into another
+(new_values.merged_into, on the absorbed term). Terminology-level entries
+carry term_id == terminology_id."""
+
+AUDIT_ACTIONS_TEXT = "created, updated, deprecated, deleted, restored, merged"
 
 
 class TermAuditLog(Document):
@@ -36,7 +49,7 @@ class TermAuditLog(Document):
     # Change metadata
     action: str = Field(
         ...,
-        description="Type of change: created, updated, deprecated, deleted"
+        description=f"Type of change: {AUDIT_ACTIONS_TEXT}"
     )
     changed_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC),

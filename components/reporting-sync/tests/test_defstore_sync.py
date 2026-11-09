@@ -153,7 +153,7 @@ class TestTerminologyEvents:
         result = await worker._process_terminology_event(event)
 
         assert result is True
-        sql = conn.execute.call_args[0][0]
+        sql = conn.execute.call_args_list[0][0][0]  # the terminology row; term rows follow
         assert "UPDATE" in sql
         assert "inactive" in sql
 
@@ -166,7 +166,7 @@ class TestTerminologyEvents:
         result = await worker._process_terminology_event(event)
 
         assert result is True
-        sql = conn.execute.call_args[0][0]
+        sql = conn.execute.call_args_list[0][0][0]  # the terminology row; term rows follow
         assert "DELETE FROM" in sql
         assert '"terminologies"' in sql
 
@@ -180,7 +180,7 @@ class TestTerminologyEvents:
         result = await worker._process_terminology_event(event)
 
         assert result is True
-        sql = conn.execute.call_args[0][0]
+        sql = conn.execute.call_args_list[0][0][0]  # the terminology row; term rows follow
         assert "UPDATE" in sql
         assert "inactive" in sql
         assert "DELETE" not in sql
