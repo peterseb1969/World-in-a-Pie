@@ -67,6 +67,7 @@ from ..models.entry import RegistryEntry, Synonym
 from ..models.id_algorithm import VALID_ENTITY_TYPES, IdAlgorithmConfig, IdFormatValidator
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key, require_privileged_key
+from ..services.bare_identity import bare_identity_refusal, identity_fields_by_template
 from ..services.claims import (
     claim_entries_keys_pending,
     claim_keys_pending_bulk,
@@ -493,6 +494,10 @@ async def register_keys(
         invalid_namespaces=invalid_namespaces,
         existing_by_hash=existing_by_hash,
         existing_by_entry_id=existing_by_entry_id,
+        identity_fields=await identity_fields_by_template(
+            (item.entity_type, item.composite_key)
+            for item in items if item.synonym_values
+        ),
     )
     for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
@@ -554,6 +559,8 @@ class _RegisterPlan:
     invalid_namespaces: set[str]
     existing_by_hash: dict[tuple[str, str, str], RegistryEntry]
     existing_by_entry_id: dict[str, RegistryEntry]
+    # The identity fields of the templates the batch's documents name.
+    identity_fields: dict[str, frozenset[str]] = field(default_factory=dict)
     entries: list[RegistryEntry] = field(default_factory=list)
     indices: list[int] = field(default_factory=list)
     # CASE-567: keyed by (namespace, entity_type, key_hash) — the same key
@@ -651,8 +658,9 @@ def _register_refusal(
 ) -> RegisterKeyResponse | None:
     """The error an item is refused with before its key is looked at: an
     unknown entity type, a namespace that does not exist, a key (or its
-    synonym values) scoped to another namespace, or a provided entry_id that
-    already exists."""
+    synonym values) scoped to another namespace, synonym values that are a
+    document's identity fields without "@template" (bare_identity), or a
+    provided entry_id that already exists."""
     if item.entity_type not in VALID_ENTITY_TYPES:
         return RegisterKeyResponse(
             index=i,
@@ -670,6 +678,8 @@ def _register_refusal(
     refusal = key_scope_refusal(item.composite_key, item.namespace) or (
         key_scope_refusal(
             item.synonym_values, item.namespace, rule="synonym_scope_mismatch",
+        ) or bare_identity_refusal(
+            item.entity_type, item.composite_key, item.synonym_values, plan.identity_fields,
         )
         if item.synonym_values and not item.skip_identity_value_synonym
         else None
@@ -1290,11 +1300,13 @@ async def reserve_ids(
 
 def _attach_activation_synonyms(
     entry: RegistryEntry, synonyms: list[ActivateSynonym],
+    identity_fields: dict[str, frozenset[str]],
 ) -> dict | None:
     """Give an entry the synonyms its activation item carries, in memory.
 
     The same rules as /synonyms/add: a synonym takes the entry's namespace
-    and entity type (anything else is synonym_scope_mismatch), one equal to
+    and entity type (anything else is synonym_scope_mismatch), a document's
+    identity fields without "@template" are refused (bare_identity), one equal to
     the primary key or already held is not added twice, and an inactive
     copy of the same key is replaced. The caller's claim covers them, since
     an entry's claims are its primary key plus its active synonyms. Returns
@@ -1318,6 +1330,9 @@ def _attach_activation_synonyms(
             }
         refusal = key_scope_refusal(
             item.synonym_composite_key, entry.namespace, rule="synonym_scope_mismatch",
+        ) or bare_identity_refusal(
+            entry.entity_type, entry.primary_composite_key, item.synonym_composite_key,
+            identity_fields,
         )
         if refusal:
             return refusal
@@ -1363,6 +1378,10 @@ async def _activate_keyed(
             e.entry_id: e
             async for e in RegistryEntry.find({"entry_id": {"$in": list(first_index)}})
         }
+        identity_fields = await identity_fields_by_template(
+            (loaded[eid].entity_type, items[i].composite_key)
+            for eid, i in first_index.items() if eid in loaded and items[i].synonyms
+        )
     except Exception as e:
         # A failed read decides nothing: every keyed item is an error of its
         # own, never a whole-request 500 (bulk-first, like the keyless path).
@@ -1374,7 +1393,7 @@ async def _activate_keyed(
     candidates: list[tuple[int, RegistryEntry]] = []
     for eid, i in first_index.items():
         entry = loaded.get(eid)
-        answer = _prepare_keyed_activation(i, eid, entry, items[i])
+        answer = _prepare_keyed_activation(i, eid, entry, items[i], identity_fields)
         if answer is not None:
             results[i] = answer
         else:
@@ -1408,6 +1427,7 @@ def _first_and_repeats(
 
 def _prepare_keyed_activation(
     i: int, eid: str, entry: RegistryEntry | None, item: ActivateItem,
+    identity_fields: dict[str, frozenset[str]],
 ) -> ActivateItemResponse | None:
     """Answer an item whose entry cannot take its key (missing, active
     already, not reserved, a key or synonym scoped elsewhere), or give the
@@ -1429,7 +1449,7 @@ def _prepare_keyed_activation(
         return ActivateItemResponse(index=i, status="error", entry_id=eid, **refusal)
     entry.primary_composite_key = key
     entry.primary_composite_key_hash = HashService.compute_composite_key_hash(key) if key else ""
-    refusal = _attach_activation_synonyms(entry, item.synonyms or [])
+    refusal = _attach_activation_synonyms(entry, item.synonyms or [], identity_fields)
     if refusal is not None:
         return ActivateItemResponse(index=i, status="error", entry_id=eid, **refusal)
     entry.rebuild_search_values()

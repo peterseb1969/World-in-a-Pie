@@ -403,6 +403,20 @@ Three places counted on it anyway, and now do not:
 The field stays on templates, as a suggested initial value for clients
 (`@wip/client`'s form helper prefills with it); its description says so.
 
+### A document's synonym cannot be its identity values without `@template`
+
+`/synonyms/add`, `/entries/register` (its `synonym_values`) and
+`/entries/activate` refuse, per item, a synonym on a document whose keys are
+exactly the identity fields of the document's template, unqualified by
+`@template` (`invalid_request`, `details.rule: bare_identity_synonym`). Such
+a synonym claims those values for every template in the namespace, and a
+restore refuses an archive that holds one, so before this any caller could
+add one and every later backup of the namespace failed to restore. The rule
+applies to every caller. A different key set (a subset, a superset, any other
+key) is unaffected, and the platform's own identity synonyms are
+`@template`-qualified. A namespace that already holds such synonyms still
+fails its restore with the message naming them; remove or re-key them.
+
 ### An integrity check that could not ask def-store or the template store is `incomplete`, never `healthy`; a peer whose read check the Registry could not answer fails the request (@wip/client 0.106.0)
 
 - **Integrity** (`GET /api/document-store/integrity`, namespace validation

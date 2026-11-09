@@ -1,5 +1,5 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-wip://data-model sha256:23669d87039df22f reviewed:1e60af64
+wip://data-model sha256:97f5dff9c335686b reviewed:ad5c5e3b
 wip://conventions sha256:bd4259ff22991af9 reviewed:1e60af64
 docs/WIP_PoNIFs.md sha256:5834cbc38977bdad reviewed:57e75bd9
 docs/design/ontology-support.md sha256:06666e3c8f3a3cc1 reviewed:ea985986

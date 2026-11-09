@@ -753,6 +753,9 @@ only ever returns an entity of the namespace and type it asked for.
   synonyms, matching the identity rule (identity is scoped to the template).
 - Keys starting with "@" are reserved for these system-generated synonyms;
   only system callers may register them.
+- A synonym on a document whose keys are exactly its template's identity
+  fields, without "@template", is refused (rule bare_identity_synonym): it
+  would claim those values for every template in the namespace.
 - Retiring an entity (soft-deleting a document or term, deprecating a term,
   deactivating every version of a template or a terminology) releases its
   synonyms: they stay recorded on the entry as inactive, but neither resolve

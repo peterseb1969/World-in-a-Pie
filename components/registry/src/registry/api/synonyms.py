@@ -23,6 +23,7 @@ from ..models.api_models import (
 )
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
+from ..services.bare_identity import bare_identity_refusal, identity_fields_by_template
 from ..services.claims import (
     claim_keys_pending_bulk,
     confirm_keys_bulk,
@@ -112,10 +113,13 @@ async def add_synonyms(
     results: list[AddSynonymResponse | None] = [None] * len(items)
     access = NamespaceAccess(identity)
     loaded = await _load_active_entries({item.target_id for item in items})
+    identity_fields = await identity_fields_by_template(
+        (e.entity_type, e.primary_composite_key) for e in loaded.values()
+    )
 
     # Decide every item in order, in memory. An addition needs a claim; it is
     # applied to its entry only once the claim holds.
-    plan = _AddPlan(results)
+    plan = _AddPlan(results, identity_fields)
     for i, item in enumerate(items):
         try:
             results[i] = await _decide_add(i, item, loaded.get(item.target_id), access, identity, plan)
@@ -160,11 +164,17 @@ class _AddPlan:
     ``planned`` holds (item index, entry, synonym, the inactive copy it
     replaces); ``pending`` the planned index of each (entry_id, hash) so a
     repeat rides on it; ``dependents`` the items riding on each planned one;
-    ``by_entry`` the planned indices whose claims held, per entry.
+    ``by_entry`` the planned indices whose claims held, per entry;
+    ``identity_fields`` the identity fields of the targets' templates.
     """
 
-    def __init__(self, results: list[AddSynonymResponse | None]) -> None:
+    def __init__(
+        self,
+        results: list[AddSynonymResponse | None],
+        identity_fields: dict[str, frozenset[str]] | None = None,
+    ) -> None:
         self.results = results
+        self.identity_fields = identity_fields or {}
         self.planned: list[tuple[int, RegistryEntry, Synonym, Synonym | None]] = []
         self.pending: dict[tuple[str, str], int] = {}
         self.dependents: dict[int, list[int]] = {}
@@ -206,6 +216,7 @@ async def _add_refusal(
     entry: RegistryEntry | None,
     access: NamespaceAccess,
     identity: UserIdentity,
+    identity_fields: dict[str, frozenset[str]],
 ) -> AddSynonymResponse | None:
     """The answer refusing an item before its key is looked at: an invalid
     entity type, a target the caller cannot read (or that is not active), no
@@ -218,18 +229,23 @@ async def _add_refusal(
     refusal = await _write_refusal(access, entry.namespace)
     if refusal:
         return AddSynonymResponse(index=i, status="forbidden", error=refusal)
-    return _add_key_refusal(i, item, entry, identity)
+    return _add_key_refusal(i, item, entry, identity, identity_fields)
 
 
 def _add_key_refusal(
     i: int, item: AddSynonymItem, entry: RegistryEntry, identity: UserIdentity,
+    identity_fields: dict[str, frozenset[str]],
 ) -> AddSynonymResponse | None:
-    """A synonym scoped to another namespace or entity type, or a reserved
-    '@' key from a caller that is not a system one."""
+    """A synonym scoped to another namespace or entity type, a document's
+    identity values without "@template" (bare_identity), or a reserved '@'
+    key from a caller that is not a system one."""
     mismatch = _scope_mismatch(
         entry, item.synonym_namespace, item.synonym_entity_type,
     ) or key_scope_refusal(
         item.synonym_composite_key, entry.namespace, rule="synonym_scope_mismatch",
+    ) or bare_identity_refusal(
+        entry.entity_type, entry.primary_composite_key, item.synonym_composite_key,
+        identity_fields,
     )
     if mismatch:
         return AddSynonymResponse(index=i, status="error", registry_id=entry.entry_id, **mismatch)
@@ -259,7 +275,7 @@ async def _decide_add(
     """Answer an item at once (refused, or the entry holds the key already),
     or plan it: riding on an earlier item with the same synonym for the same
     entry, or as an addition to claim. None when it is answered later."""
-    refusal = await _add_refusal(i, item, entry, access, identity)
+    refusal = await _add_refusal(i, item, entry, access, identity, plan.identity_fields)
     if refusal is not None:
         return refusal
     entry = cast(RegistryEntry, entry)
