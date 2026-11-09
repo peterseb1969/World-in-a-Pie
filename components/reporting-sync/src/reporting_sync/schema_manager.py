@@ -670,12 +670,17 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         """Create the tombstone table once per process.
 
         Concurrent first creators can collide on the catalog even with IF NOT
-        EXISTS; the loser's table exists all the same. The savepoint keeps a
+        EXISTS; the loser's table exists all the same. The collision surfaces
+        as a unique violation, a duplicate table, or — when the winner commits
+        between the loser's relation check and its row-type check — a
+        duplicate object ("type ... already exists"). The savepoint keeps a
         surrounding transaction usable after that collision.
         """
         if self._tombstones_ready:
             return
-        with contextlib.suppress(asyncpg.UniqueViolationError, asyncpg.DuplicateTableError):
+        with contextlib.suppress(
+            asyncpg.UniqueViolationError, asyncpg.DuplicateTableError, asyncpg.DuplicateObjectError,
+        ):
             async with conn.transaction():
                 await conn.execute(_TOMBSTONES_DDL)
         self._tombstones_ready = True
