@@ -248,34 +248,3 @@ class TestAPIKeyProvider:
         removed = provider.remove_key(key_hash)
         assert removed is True
         assert len(provider._keys) == 1
-
-    def test_namespace_access_check(self, provider):
-        """Should check namespace access for API key identities."""
-        from wip_auth import UserIdentity
-
-        # Identity with no namespace restrictions
-        identity1 = UserIdentity(
-            user_id="apikey:test",
-            username="test",
-            auth_method="api_key",
-            raw_claims={"namespaces": None},
-        )
-        assert provider.check_namespace_access(identity1, "any-namespace") is True
-
-        # Identity with namespace restrictions
-        identity2 = UserIdentity(
-            user_id="apikey:test",
-            username="test",
-            auth_method="api_key",
-            raw_claims={"namespaces": ["allowed-ns"]},
-        )
-        assert provider.check_namespace_access(identity2, "allowed-ns") is True
-        assert provider.check_namespace_access(identity2, "other-ns") is False
-
-        # JWT identity (no namespace concept)
-        identity3 = UserIdentity(
-            user_id="user:123",
-            username="user",
-            auth_method="jwt",
-        )
-        assert provider.check_namespace_access(identity3, "any-namespace") is True

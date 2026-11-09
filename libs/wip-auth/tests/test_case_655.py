@@ -10,8 +10,8 @@ Pinned here:
 
   - APIKeyRecord parses `grants` (config.py's _parse_key_dict path).
   - The api-key provider surfaces grants in raw_claims (the Registry's own
-    resolution reads them) and check_namespace_access accepts grant-only
-    namespaces.
+    resolution reads them), and loading a key that declares them warns that
+    the service does not read them (CASE-1220).
   - resolve_permission and resolve_accessible_namespaces ask the Registry
     for a key that declares grants, exactly as for one that does not.
 """
@@ -139,17 +139,6 @@ class TestProviderIdentity:
         identity = await provider.authenticate(_stub_request(_PLAINTEXT))
         assert identity is not None
         assert identity.raw_claims["grants"] == {"kb": "write"}
-
-    @pytest.mark.asyncio
-    async def test_namespace_access_includes_grant_only_namespace(self) -> None:
-        provider = self._provider_with_key(
-            namespaces=["library"], grants={"kb": "write"}
-        )
-        identity = await provider.authenticate(_stub_request(_PLAINTEXT))
-        assert identity is not None
-        assert provider.check_namespace_access(identity, "library")
-        assert provider.check_namespace_access(identity, "kb")
-        assert not provider.check_namespace_access(identity, "other")
 
 
 # Permission resolution: through the Registry (CASE-1035, CASE-1193)

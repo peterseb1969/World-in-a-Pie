@@ -166,8 +166,8 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     1. Superadmin (wip-admins group) → "admin"
     2. The owner of a runtime reservation of the prefix, while the namespace
        does not exist → "admin"
-    3. A config-file key that declares grants → its own declaration
-       (`_config_key_permission`)
+    3. A key the Registry loads as a wip-auth config key and that declares
+       grants → its own declaration (`_config_key_permission`)
     4. API key scope (`_grant_subjects`): a scoped key outside its list, or
        an unscoped key outside the privileged groups (wip-admins,
        wip-services) → "none"
@@ -180,8 +180,10 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     writes a read grant on each listed namespace it gives no other
     permission on, so the access ends with the grant — when the namespace is
     deleted (its grants are purged), when a restore writes it orphaned, or
-    when it is revoked. A config-file key that declares grants resolves from
-    its own declaration (step 3).
+    when it is revoked. A key imported from the install's key file has its
+    declared grants imported as grants, so steps 4-5 answer for it; step 3
+    is reached only by a Registry that also loads keys as wip-auth config
+    keys (an install rendered before WIP_REGISTRY_KEY_FILE existed).
     """
     # Locked namespaces are inaccessible to everyone
     ns = await Namespace.find_one({"prefix": namespace})
@@ -210,12 +212,11 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
 
 
 def _config_key_permission(identity: UserIdentity, namespace: str) -> str | None:
-    """A config-file key that declares grants (a spec-declared key) resolves
-    locally from its own definition, in the same order as wip-auth's
-    resolve_permission: the declared grant, else read on a namespace in the
-    key's scope, else none. Without this the Registry would answer "read"
-    where every other service answers the declared "write". None for any
-    other caller."""
+    """A key the Registry loads as a wip-auth config key and that declares
+    grants: the declared grant, else read on a namespace in the key's scope,
+    else none. Its imported twin stays dormant while the config key exists
+    (key_import.is_dormant), so without this its grants would answer
+    nothing. None for any other caller."""
     config_grants = (identity.raw_claims or {}).get("grants")
     if identity.auth_method != "api_key" or not isinstance(config_grants, dict):
         return None

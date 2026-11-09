@@ -269,6 +269,7 @@ class AuthConfig(BaseSettings):
 
         keys = _drop_shared_plaintexts(keys, plaintexts, logger)
         _warn_unscoped(keys, logger)
+        _warn_declared_grants(keys, logger)
         return keys
 
     def _legacy_key_record(self, plaintext: str) -> APIKeyRecord:
@@ -376,6 +377,23 @@ def _warn_unscoped(keys: list[APIKeyRecord], logger: logging.Logger) -> None:
                 "group — it will have NO access. Add 'namespaces' to the key "
                 "config or assign it to wip-admins/wip-services.",
                 key.name,
+            )
+
+
+def _warn_declared_grants(keys: list[APIKeyRecord], logger: logging.Logger) -> None:
+    """Warn, at load time, about each key that declares grants: a service
+    does not read them. Every permission is the Registry's answer, and the
+    Registry takes a key's grants from its own key file, so a key it never
+    imported has none there, whatever this config says."""
+    for key in keys:
+        if key.grants:
+            logger.warning(
+                "API key '%s' declares grants (%s); this service does not "
+                "read them. Permissions come from the Registry, which takes "
+                "a key's grants from its own key file — a key the Registry "
+                "has not imported has no grants, whatever this config says.",
+                key.name,
+                ", ".join(f"{ns}={perm}" for ns, perm in sorted(key.grants.items())),
             )
 
 

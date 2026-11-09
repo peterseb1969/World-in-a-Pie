@@ -565,23 +565,3 @@ class APIKeyProvider:
                 "grants": key_record.grants,
             },
         )
-
-    def check_namespace_access(
-        self, identity: UserIdentity, namespace: str
-    ) -> bool:
-        """Check if an API key identity has access to a namespace."""
-        if identity.auth_method != "api_key":
-            return True
-
-        raw_claims = identity.raw_claims or {}
-        namespaces = raw_claims.get("namespaces")
-
-        if namespaces is None:
-            return True
-
-        # A config-declared grant extends the key's reach to that
-        # namespace even if the namespaces list omits it (the deployer
-        # validates grants ⊆ namespaces, but runtime stays permissive
-        # for hand-written config files).
-        grants = raw_claims.get("grants") or {}
-        return namespace in namespaces or namespace in grants

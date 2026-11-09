@@ -242,7 +242,7 @@ def generate_api_keys_json(
                     "its manifest (spec.namespaces, spec.namespace_access)"
                     if k.owner.startswith("app:")
                     else "Spec-declared key (wip-deploy auth.api_keys) — "
-                    "scope and grants resolve locally in wip-auth"
+                    "the Registry imports its scope and grants from the key file"
                 ),
             }
         )

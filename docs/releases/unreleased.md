@@ -240,7 +240,9 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   to these keys too. Action: a service that loads its own keys through
   `WIP_AUTH_API_KEYS_JSON` / `WIP_AUTH_API_KEYS_FILE` with `grants` gets the
   Registry's answer for them, which knows those grants only if the Registry
-  holds the key.
+  holds the key. Loading such a key now logs a warning that the service
+  does not read its grants. `APIKeyProvider.check_namespace_access`, which
+  still widened a key's reach by them and had no caller, is removed.
 - **The platform group names have one definition.** wip-auth exports
   `ADMIN_GROUP`, `SERVICES_GROUP`, `PRIVILEGED_GROUPS` and `is_superadmin`;
   every service uses them, and each suite fails on a group name spelled

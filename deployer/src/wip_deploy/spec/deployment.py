@@ -179,15 +179,16 @@ CANARY_KEY_NAME = "wip-canary"
 class SpecAPIKey(WIPModel):
     """A declaratively provisioned API key (agents, external tools).
 
-    Rendered into wip-auth's config-file key mechanism
-    (WIP_AUTH_API_KEYS_FILE): the plaintext lives in the install's
-    secret backend under `<name>-api-key` (generated on first apply,
-    stable thereafter), and the key's read scope (`namespaces`) plus
-    write grants resolve locally in every service — no MongoDB row,
-    no Registry round-trip. Spec-declared keys therefore survive a
-    Mongo wipe/restore intact, unlike runtime keys created via
-    POST /api-keys (whose plaintext is server-generated and
-    unrecoverable once the api_keys collection is rebuilt).
+    Rendered into the install's key file, which only the Registry reads
+    (WIP_REGISTRY_KEY_FILE): the plaintext lives in the install's secret
+    backend under `<name>-api-key` (generated on first apply, stable
+    thereafter). The Registry imports the key, its scope (`namespaces`) and
+    its `grants` into its own records, and every service asks the Registry
+    for the key's permissions. Because the file is re-imported, a
+    spec-declared key survives a Mongo wipe/restore intact, unlike a
+    runtime key created via POST /api-keys (whose plaintext is
+    server-generated and unrecoverable once the api_keys collection is
+    rebuilt).
     """
 
     name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
