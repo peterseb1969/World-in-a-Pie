@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pymongo.errors import DuplicateKeyError
 
 from wip_auth import (
+    PRIVILEGED_GROUPS,
     APIKeyProvider,
     APIKeyRecord,
     UserIdentity,
@@ -452,7 +453,7 @@ async def list_api_keys(
 )
 async def sync_api_keys(
     response: Response,
-    identity: UserIdentity = Depends(require_groups(["wip-services", "wip-admins"])),
+    identity: UserIdentity = Depends(require_groups(PRIVILEGED_GROUPS)),
 ) -> list[APIKeySyncRecord]:
     """Return enabled runtime keys with hashes for service polling.
 

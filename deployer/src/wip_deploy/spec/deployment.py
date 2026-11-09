@@ -217,7 +217,9 @@ class SpecAPIKey(WIPModel):
 
 # Groups that bypass namespace authorization. Only local Dex users and API
 # keys ever hold them: a login federated through a connector can neither
-# bring them from its identity provider nor be mapped to them.
+# bring them from its identity provider nor be mapped to them. The same set
+# as wip_auth.groups.PRIVILEGED_GROUPS, copied because wip-deploy does not
+# depend on wip-auth; a deployer test pins the two together.
 RESERVED_GROUPS = ("wip-admins", "wip-services")
 
 # Dex's static-password connector. Its users are the install's local users.

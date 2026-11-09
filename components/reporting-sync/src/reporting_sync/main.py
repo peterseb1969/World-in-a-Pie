@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from wip_auth import (
+    PRIVILEGED_GROUPS,
     UserIdentity,
     build_metadata,
     check_namespace_permission,
@@ -725,11 +726,11 @@ router = APIRouter(
 # routes are gated by group, never by namespace. Raw SQL from other keys
 # (query, query-shaped export) is not gated here: it runs on a connection
 # that can read only the caller's namespaces (_caller_read_connection).
-_PRIVILEGED = Depends(require_groups(["wip-admins", "wip-services"]))
+_PRIVILEGED = Depends(require_groups(PRIVILEGED_GROUPS))
 
 
 def _is_privileged(identity: UserIdentity) -> bool:
-    return identity.has_group("wip-admins") or identity.has_group("wip-services")
+    return identity.has_any_group(PRIVILEGED_GROUPS)
 
 
 # Every relation a view depends on outside its own schema, read from the
@@ -3315,7 +3316,7 @@ async def delete_view(
     409 naming the dependency, instead of an orphaned live view that
     recreation no longer knows about.
     """
-    if not (identity.has_group("wip-admins") or identity.has_group("wip-services")):
+    if not (identity.has_any_group(PRIVILEGED_GROUPS)):
         await check_namespace_permission(identity, prefix, "admin")
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")

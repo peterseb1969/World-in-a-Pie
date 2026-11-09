@@ -16,7 +16,7 @@ Example usage:
         return {"admin": identity.username}
 """
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Collection
 
 from fastapi import HTTPException, Request
 
@@ -52,12 +52,12 @@ def require_identity() -> Callable[[Request], Awaitable[UserIdentity]]:
 
 
 def require_groups(
-    groups: list[str], require_all: bool = False
+    groups: Collection[str], require_all: bool = False
 ) -> Callable[[Request], Awaitable[UserIdentity]]:
     """Require identity with specified groups.
 
     Args:
-        groups: List of group names to require
+        groups: The group names to require
         require_all: If True, require all groups. If False (default), require any.
 
     Returns:
@@ -99,8 +99,7 @@ def require_groups(
 def require_admin() -> Callable[[Request], Awaitable[UserIdentity]]:
     """Require admin-level access.
 
-    Shortcut for require_groups(["wip-admins"]).
-    The admin group names can be configured in AuthConfig.
+    Shortcut for require_groups([ADMIN_GROUP]).
 
     This is a FACTORY — it must be CALLED inside Depends:
     ``Depends(require_admin())``. Written uncalled,

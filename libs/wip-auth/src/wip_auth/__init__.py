@@ -53,6 +53,7 @@ from .fastapi_helpers import (
     resolve_term_by_fields_or_404,
 )
 from .federation import FederatedGroupPolicy
+from .groups import ADMIN_GROUP, PRIVILEGED_GROUPS, SERVICES_GROUP
 from .health_cache import DEFAULT_TTL_SECONDS, HealthCache
 from .identity import (
     clear_current_identity,
@@ -78,6 +79,7 @@ from .permissions import (
     check_readable,
     clear_permission_cache,
     entity_write_refusals,
+    is_superadmin,
     permission_sufficient,
     resolve_accessible_namespaces,
     resolve_namespace_filter,
@@ -118,8 +120,11 @@ __version__ = "0.4.0"
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "ADMIN_GROUP",
     # Health-probe cache
     "DEFAULT_TTL_SECONDS",
+    "PRIVILEGED_GROUPS",
+    "SERVICES_GROUP",
     "APIKeyProvider",
     "APIKeyRecord",
     # Synonym resolution
@@ -174,6 +179,7 @@ __all__ = [
     "init_beanie_with_retry",
     # Liveness endpoint
     "install_liveness",
+    "is_superadmin",
     "miss_detail",
     "optional_identity",
     "permission_sufficient",

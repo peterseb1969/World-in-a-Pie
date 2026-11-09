@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
+    PRIVILEGED_GROUPS,
     HealthCache,
     RejectUnknownQueryParamsMiddleware,
     build_metadata,
@@ -521,7 +522,7 @@ app.add_api_route(
 @app.get(
     "/api/document-store/health/events",
     tags=["Health"],
-    dependencies=[Depends(require_groups(["wip-admins", "wip-services"]))],
+    dependencies=[Depends(require_groups(PRIVILEGED_GROUPS))],
 )
 async def events_health():
     """NATS event-bus state and counters: published, queued for retry, and
@@ -638,7 +639,7 @@ async def clear_caches():
     "/health/integrity",
     tags=["Health"],
     response_model=IntegrityCheckResult,
-    dependencies=[Depends(require_groups(["wip-admins", "wip-services"]))],
+    dependencies=[Depends(require_groups(PRIVILEGED_GROUPS))],
 )
 async def integrity_check(
     status: str | None = None,

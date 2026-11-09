@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
+from .groups import PRIVILEGED_GROUPS
 from .identity import get_current_identity
 from .models import UserIdentity
 from .permissions import (
@@ -30,9 +31,6 @@ from .permissions import (
 )
 
 WIP_NAMESPACE = "wip"
-
-# Groups whose keys act for the platform and are not limited by namespace.
-_PRIVILEGED_GROUPS = ("wip-admins", "wip-services")
 
 Verdict = Literal["ok", "outbound", "inbound"]
 
@@ -74,7 +72,7 @@ async def caller_can_read(target_ns: str, identity: UserIdentity | None = None) 
     identity = identity if identity is not None else get_current_identity()
     if identity is None:
         return False
-    if identity.has_any_group(list(_PRIVILEGED_GROUPS)):
+    if identity.has_any_group(PRIVILEGED_GROUPS):
         return True
     permission = await resolve_permission(identity, target_ns)
     if permission == PERMISSION_UNAVAILABLE:

@@ -15,7 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from pymongo.errors import DuplicateKeyError
 
-from wip_auth import UserIdentity, get_auth_config, get_identity_string
+from wip_auth import UserIdentity, get_auth_config, get_identity_string, is_superadmin
 
 from ..models.api_models import (
     NamespaceCreate,
@@ -54,7 +54,7 @@ from ..services.reservations import (
     SETTING_FIELDS,
     ReservationsUnavailable,
 )
-from .grants import _is_superadmin, _resolve_permission, reservation_owner
+from .grants import _resolve_permission, reservation_owner
 
 router = APIRouter()
 logger = logging.getLogger("registry.namespaces")
@@ -256,7 +256,7 @@ async def list_namespaces(
     # Filter to accessible namespaces. A namespace locked for deletion grants
     # no access to anyone; platform admins see it listed (status 'locked'),
     # so a stuck deletion is visible and can be resumed.
-    superadmin = _is_superadmin(identity)
+    superadmin = is_superadmin(identity)
     accessible = []
     for ns in namespaces:
         if ns.status == "locked":
@@ -285,7 +285,7 @@ async def get_namespace(
 
     # A locked namespace (deletion in progress) is shown to platform admins
     # only, as status 'locked'; it grants no access to anyone.
-    if ns.status == "locked" and _is_superadmin(identity):
+    if ns.status == "locked" and is_superadmin(identity):
         return namespace_to_response(ns)
     perm = await _resolve_permission(identity, prefix)
     if perm == "none":

@@ -241,6 +241,12 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `WIP_AUTH_API_KEYS_JSON` / `WIP_AUTH_API_KEYS_FILE` with `grants` gets the
   Registry's answer for them, which knows those grants only if the Registry
   holds the key.
+- **The platform group names have one definition.** wip-auth exports
+  `ADMIN_GROUP`, `SERVICES_GROUP`, `PRIVILEGED_GROUPS` and `is_superadmin`;
+  every service uses them, and each suite fails on a group name spelled
+  inline. The private `wip_auth.permissions._is_superadmin` is gone (use
+  `is_superadmin`). `has_any_group`, `has_all_groups` and `require_groups`
+  accept any collection of names.
 - **`WIP_AUTH_ADMIN_GROUPS` is gone.** The administrators' group is the
   platform name `wip-admins`, which the Registry and every service check for
   by name. A setting that replaced it split the two sides: the service

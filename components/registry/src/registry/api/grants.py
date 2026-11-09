@@ -10,7 +10,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from wip_auth import UserIdentity
+from wip_auth import PRIVILEGED_GROUPS, UserIdentity, is_superadmin
 
 from ..models.api_key import StoredAPIKey
 from ..models.grant import (
@@ -44,16 +44,6 @@ logger = logging.getLogger("registry.grants")
 
 # Permission hierarchy for comparison
 _PERMISSION_LEVELS = {"none": 0, "read": 1, "write": 2, "admin": 3}
-
-
-def _is_superadmin(identity: UserIdentity) -> bool:
-    """Check if identity has superadmin access (wip-admins group)."""
-    return identity.has_any_group(["wip-admins"])
-
-
-# Groups whose API keys are allowed to have namespaces=None (all-namespace access).
-# wip-admins: human/admin keys, wip-services: service-to-service keys (e.g. reporting-sync).
-_PRIVILEGED_GROUPS = {"wip-admins", "wip-services"}
 
 
 def _build_synthetic_identity(
@@ -198,7 +188,7 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     if ns and ns.status == "locked":
         return "none"
 
-    if _is_superadmin(identity):
+    if is_superadmin(identity):
         return "admin"
 
     # The owner of a runtime reservation is admin on its prefix while the
@@ -255,7 +245,7 @@ def _grant_subjects(identity: UserIdentity, namespace: str) -> list[tuple[str, s
         if namespaces is not None:
             if namespace not in namespaces:
                 return []
-        elif not any(g in _PRIVILEGED_GROUPS for g in identity.groups):
+        elif not any(g in PRIVILEGED_GROUPS for g in identity.groups):
             return []
     else:
         # OIDC user — check by email
@@ -297,7 +287,7 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
     endpoint: the identity is already the direct caller here, so there is no
     synthetic-identity reconstruction and no HTTP self-call.
     """
-    if _is_superadmin(identity):
+    if is_superadmin(identity):
         return None
 
     all_ns = await Namespace.find({"status": "active"}).to_list()
@@ -326,7 +316,7 @@ class NamespaceAccess:
 
     def __init__(self, identity: UserIdentity) -> None:
         self._identity = identity
-        self.unrestricted = identity.has_any_group(list(_PRIVILEGED_GROUPS))
+        self.unrestricted = identity.has_any_group(PRIVILEGED_GROUPS)
         self._permissions: dict[str, str] = {}
 
     async def allows(self, namespace: str, required: str) -> bool:
@@ -689,7 +679,7 @@ async def check_permission_internal(
     Only callable by privileged API keys (wip-admins or wip-services group).
     """
     caller = identity
-    if not any(g in _PRIVILEGED_GROUPS for g in caller.groups):
+    if not any(g in PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
     # Prefer groups from header (M2 — avoid leaking in logs/caches)
@@ -737,7 +727,7 @@ async def accessible_namespaces_internal(
     Only callable by privileged API keys (wip-admins or wip-services group).
     """
     caller = identity
-    if not any(g in _PRIVILEGED_GROUPS for g in caller.groups):
+    if not any(g in PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
     header_groups = request.headers.get("X-User-Groups")
@@ -753,7 +743,7 @@ async def accessible_namespaces_internal(
         key_namespaces_header=request.headers.get("X-Key-Namespaces"),
     )
 
-    if _is_superadmin(synthetic):
+    if is_superadmin(synthetic):
         return {"namespaces": None, "is_superadmin": True}
 
     all_ns = await Namespace.find({"status": "active"}).to_list()

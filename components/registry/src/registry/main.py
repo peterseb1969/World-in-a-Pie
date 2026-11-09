@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
+    ADMIN_GROUP,
     APIKeyProvider,
     build_metadata,
     check_production_security,
@@ -146,7 +147,7 @@ async def _ensure_wip_namespace() -> None:
 
     # Ensure default grants exist for the wip namespace
     default_grants = [
-        ("wip-admins", "group", "admin"),
+        (ADMIN_GROUP, "group", "admin"),
         ("wip-editors", "group", "write"),
         ("wip-viewers", "group", "read"),
     ]

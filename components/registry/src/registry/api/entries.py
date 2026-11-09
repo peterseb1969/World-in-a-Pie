@@ -14,7 +14,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pymongo import UpdateOne
 from pymongo.errors import BulkWriteError
 
-from wip_auth import UserIdentity
+from wip_auth import PRIVILEGED_GROUPS, UserIdentity, is_superadmin
 
 from ..models.api_models import (
     ActivateBulkResponse,
@@ -942,7 +942,7 @@ async def rekey_identity(
     A target key already held by a different entry is a per-item conflict
     (two formerly-forked documents converging — curation, not migration).
     """
-    if not identity.has_any_group(["wip-admins", "wip-services"]):
+    if not identity.has_any_group(PRIVILEGED_GROUPS):
         raise HTTPException(
             status_code=403,
             detail="Identity re-keying is restricted to wip-admins / wip-services",
@@ -1782,7 +1782,7 @@ async def export_entries(
     route does not confirm that an entry exists to a caller who cannot read
     its namespace.
     """
-    from .grants import _is_superadmin, _resolve_permission
+    from .grants import _resolve_permission
 
     entries_by_id: dict[str, RegistryEntry] = {}
     found_rows = await RegistryEntry.find(
@@ -1791,7 +1791,7 @@ async def export_entries(
     for row in found_rows:
         entries_by_id[row.entry_id] = row
 
-    superadmin = _is_superadmin(identity)
+    superadmin = is_superadmin(identity)
     permission_by_namespace: dict[str, str] = {}
 
     async def _permission_on(namespace: str) -> str:

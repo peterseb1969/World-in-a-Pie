@@ -277,11 +277,14 @@ async def _set_groups(name: str, groups: list[str]) -> None:
     await StoredAPIKey.find_one(StoredAPIKey.name == name).update({"$set": {"groups": groups}})
 
 
-def test_the_stack_wide_groups_are_the_registrys_privileged_groups():
-    from registry.api.grants import _PRIVILEGED_GROUPS
-    from registry.services.system_backup import _STACK_WIDE_GROUPS
+def test_the_stack_wide_groups_are_the_privileged_groups():
+    from registry.services.system_backup import stack_wide
 
-    assert _STACK_WIDE_GROUPS == _PRIVILEGED_GROUPS
+    assert stack_wide(["wip-admins"])
+    assert stack_wide(["wip-services"])
+    assert stack_wide(["wip-editors", "wip-services"])
+    assert not stack_wide(["wip-editors"])
+    assert not stack_wide([])
 
 
 @pytest.mark.asyncio

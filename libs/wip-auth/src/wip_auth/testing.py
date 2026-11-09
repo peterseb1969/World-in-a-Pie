@@ -40,6 +40,13 @@ template-store-wide fix had just applied it, when the next change to a
 neighbouring service added two new code-less error items — one for a
 condition template-store already reported with a code. A written rule
 does not reach the next change; this gate does.
+
+A fifth contract, ``assert_no_privileged_group_literals``, is a source
+check too: no service spells a platform group name ("wip-admins",
+"wip-services") inline, it takes them from ``wip_auth.groups``. Seven
+copies of the privileged set and a score of literals had accumulated, one
+per new gate, each a place where the services could silently come to
+disagree with the Registry about who is privileged.
 """
 
 import ast
@@ -347,6 +354,75 @@ def assert_error_items_carry_codes(
         "Error items without an error_code (callers can only match the "
         "message). Build them with the service's error_fields(exc), or name "
         "the code:\n" + "\n".join(f"  {o}" for o in offenders)
+    )
+
+
+# =========================================================================
+# Platform group names come from wip_auth.groups
+# =========================================================================
+
+
+def _docstring_nodes(tree: ast.AST) -> set[int]:
+    """ids of the string constants that are docstrings (prose, not code)."""
+    found: set[int] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Module | ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+            body = node.body
+            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+                found.add(id(body[0].value))
+    return found
+
+
+def collect_privileged_group_literals(package_dir: str | Path) -> tuple[list[str], int]:
+    """Return (offenders, examined_count) over the Python sources under
+    ``package_dir``.
+
+    An offender is a string constant that IS a platform group name
+    (``wip_auth.groups.PRIVILEGED_GROUPS``), outside a docstring:
+    ``"wip-admins"`` in code. Prose that merely mentions a group (an error
+    message, a comment, a docstring) is not one. Offenders are
+    ``"relative/path.py:line"`` strings; examined_count is how many source
+    files the walk read — zero means the path is wrong, never that the
+    service is clean.
+    """
+    from .groups import PRIVILEGED_GROUPS
+
+    root = Path(package_dir)
+    offenders: list[str] = []
+    examined = 0
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        examined += 1
+        docstrings = _docstring_nodes(tree)
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Constant)
+                and node.value in PRIVILEGED_GROUPS
+                and id(node) not in docstrings
+            ):
+                offenders.append(f"{path.relative_to(root)}:{node.lineno}")
+    return offenders, examined
+
+
+def assert_no_privileged_group_literals(package_dir: str | Path) -> None:
+    """Fail if code under ``package_dir`` spells a platform group name
+    inline instead of using ``wip_auth.ADMIN_GROUP`` / ``SERVICES_GROUP`` /
+    ``PRIVILEGED_GROUPS``.
+
+    Deliberately no allow-list: a group name in code is a copy that can
+    drift from the one every other service checks. Tests are not walked —
+    they should name the groups literally, so a retune of the constants
+    fails them instead of following along.
+    """
+    offenders, examined = collect_privileged_group_literals(package_dir)
+    assert examined > 0, (
+        f"The group-name gate read ZERO source files under {package_dir} — "
+        "the path is wrong. A gate that examines nothing must not pass."
+    )
+    assert not offenders, (
+        "Platform group names spelled inline — use wip_auth.ADMIN_GROUP, "
+        "SERVICES_GROUP or PRIVILEGED_GROUPS:\n"
+        + "\n".join(f"  {o}" for o in offenders)
     )
 
 

@@ -58,8 +58,11 @@ def _get_registry_url() -> str:
     )
 
 
-def _is_superadmin(identity: UserIdentity) -> bool:
-    """Check if identity has superadmin access."""
+def is_superadmin(identity: UserIdentity) -> bool:
+    """Whether the identity is a platform administrator (in ADMIN_GROUP).
+
+    For platform-level gates (system endpoints, URL imports, cross-
+    namespace file listings)."""
     config = get_auth_config()
     return identity.has_any_group(config.admin_groups)
 
@@ -138,7 +141,7 @@ async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
     Uses a 30-second in-process cache to avoid hitting the Registry on every request.
     """
     # Superadmin bypass
-    if _is_superadmin(identity):
+    if is_superadmin(identity):
         return "admin"
 
     cache_key = _cache_key(identity, namespace)
@@ -400,7 +403,7 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
     Raises HTTP 503 if the Registry could not be asked, rather than treating
     the outage as "no namespaces" (which would read as 403 or empty results).
     """
-    if _is_superadmin(identity):
+    if is_superadmin(identity):
         return None
 
     cache_key = _cache_key(identity)

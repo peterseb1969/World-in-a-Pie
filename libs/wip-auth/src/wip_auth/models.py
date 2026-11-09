@@ -1,5 +1,6 @@
 """Data models for WIP authentication."""
 
+from collections.abc import Collection
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -45,11 +46,11 @@ class UserIdentity(BaseModel):
         """Check if identity has a specific group."""
         return group in self.groups
 
-    def has_any_group(self, groups: list[str]) -> bool:
+    def has_any_group(self, groups: Collection[str]) -> bool:
         """Check if identity has at least one of the specified groups."""
         return any(g in self.groups for g in groups)
 
-    def has_all_groups(self, groups: list[str]) -> bool:
+    def has_all_groups(self, groups: Collection[str]) -> bool:
         """Check if identity has all of the specified groups."""
         return all(g in self.groups for g in groups)
 

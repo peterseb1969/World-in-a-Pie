@@ -120,7 +120,7 @@ from typing import Any, Final, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pymongo.errors import DuplicateKeyError
 
-from wip_auth import get_auth_config
+from wip_auth import PRIVILEGED_GROUPS, get_auth_config
 
 from ..models.api_key import StoredAPIKey, key_name_error
 from ..models.attachment import REMOVED_FIELDS as REMOVED_ATTACHMENT_FIELDS
@@ -190,15 +190,10 @@ class ArchiveScope(BaseModel):
         )
 
 
-# The Registry's own stack-wide groups (api/grants.py: wip-admins is admin on
-# every namespace, and wip-services keys may hold every namespace), plus the
-# admin groups the other services honour through wip-auth.
-_STACK_WIDE_GROUPS: Final = frozenset({"wip-admins", "wip-services"})
-
-
 def stack_wide(groups: list[str]) -> bool:
-    """Whether a key in these groups reaches every namespace, whatever its list."""
-    return bool(set(groups) & (_STACK_WIDE_GROUPS | set(get_auth_config().admin_groups)))
+    """Whether a key in these groups reaches every namespace, whatever its
+    list: the privileged groups (wip-admins, wip-services)."""
+    return bool(set(groups) & PRIVILEGED_GROUPS)
 
 
 class ArchiveSource(BaseModel):

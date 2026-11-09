@@ -348,8 +348,8 @@ async def import_from_url(
     # therefore open to superadmins (the admin groups) only; a scoped key
     # fetches the document itself and POSTs it to /import, where the
     # namespace is checked before anything is read.
-    from wip_auth.permissions import _is_superadmin
-    if not _is_superadmin(identity):
+    from wip_auth import is_superadmin
+    if not is_superadmin(identity):
         raise HTTPException(
             status_code=403,
             detail=(

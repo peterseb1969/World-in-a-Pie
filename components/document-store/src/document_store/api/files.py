@@ -11,13 +11,14 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from wip_auth import (
+    PRIVILEGED_GROUPS,
     UserIdentity,
     check_namespace_permission,
+    is_superadmin,
     resolve_accessible_namespaces,
     resolve_namespace_filter,
 )
 from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404, unresolved_detail
-from wip_auth.permissions import _is_superadmin
 
 from ..models.api_models import (
     MAX_BULK_ITEMS,
@@ -656,7 +657,7 @@ request is safe. Always 200 once the guards pass: per-key outcomes are in
 `deleted`, `refused` and `failed`.
     """,
     dependencies=[
-        Depends(require_groups(["wip-admins", "wip-services"])),
+        Depends(require_groups(PRIVILEGED_GROUPS)),
         Depends(require_file_storage),
     ],
 )
@@ -750,7 +751,7 @@ async def list_orphan_files(
     # CASE-384 — operational/maintenance endpoint that lists files across
     # all namespaces. Restrict to superadmin; non-admin keys cannot
     # enumerate files outside their own scope.
-    if not _is_superadmin(identity):
+    if not is_superadmin(identity):
         from fastapi import HTTPException
         raise HTTPException(
             status_code=403,
@@ -801,7 +802,7 @@ async def check_file_integrity(
 ):
     """Check file integrity. Admin-only (system-wide operational check)."""
     # CASE-384 — system-wide integrity check; restrict to superadmin.
-    if not _is_superadmin(identity):
+    if not is_superadmin(identity):
         from fastapi import HTTPException
         raise HTTPException(
             status_code=403,

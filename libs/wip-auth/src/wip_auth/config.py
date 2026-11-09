@@ -13,11 +13,8 @@ from typing import Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .groups import ADMIN_GROUP, PRIVILEGED_GROUPS
 from .models import APIKeyRecord
-
-# The platform administrators' group. A fixed platform name, like
-# "wip-services": the Registry and every service check for it by name.
-ADMIN_GROUP = "wip-admins"
 
 
 class AuthConfig(BaseSettings):
@@ -368,14 +365,12 @@ def _drop_shared_plaintexts(
     return [k for k in keys if k.name not in dropped]
 
 
-_PRIVILEGED_GROUPS = {"wip-admins", "wip-services"}
-
 
 def _warn_unscoped(keys: list[APIKeyRecord], logger: logging.Logger) -> None:
     """Warn, at load time, about each key with no namespace scope outside
     the privileged groups: it will have no access."""
     for key in keys:
-        if key.namespaces is None and not any(g in _PRIVILEGED_GROUPS for g in key.groups):
+        if key.namespaces is None and not any(g in PRIVILEGED_GROUPS for g in key.groups):
             logger.warning(
                 "API key '%s' has no namespace scope and is not in a privileged "
                 "group — it will have NO access. Add 'namespaces' to the key "

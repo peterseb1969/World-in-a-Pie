@@ -8,7 +8,7 @@ from typing import Any, cast
 
 from fastapi import APIRouter, Body, Depends
 
-from wip_auth import UserIdentity
+from wip_auth import PRIVILEGED_GROUPS, UserIdentity
 
 from ..models.api_models import (
     AddSynonymItem,
@@ -237,7 +237,7 @@ def _add_key_refusal(
     # "@template"). Only system callers may write them, so an explicit
     # synonym cannot claim the key a document will need.
     reserved = sorted(k for k in item.synonym_composite_key if k.startswith("@"))
-    if reserved and not identity.has_any_group(["wip-admins", "wip-services"]):
+    if reserved and not identity.has_any_group(PRIVILEGED_GROUPS):
         return AddSynonymResponse(
             index=i, status="forbidden",
             error=(
@@ -733,7 +733,7 @@ def _merge_refusal(
     # merge terms: a Registry-only merge would leave the absorbed term active
     # and its value still resolving to it.
     if "terms" in (preferred.entity_type, deprecated.entity_type) and not (
-        item.owner_merge and identity.has_any_group(["wip-admins", "wip-services"])
+        item.owner_merge and identity.has_any_group(PRIVILEGED_GROUPS)
     ):
         return MergeResponse(
             index=i, status="error",

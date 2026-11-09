@@ -7,6 +7,7 @@ It re-exports the common auth functions for backward compatibility.
 from fastapi import Depends, HTTPException, Request
 
 from wip_auth import (
+    PRIVILEGED_GROUPS,
     AuthConfig,
     UserIdentity,
     get_actor_info,
@@ -81,7 +82,7 @@ async def require_privileged_key(
     wip-services) may use them; app keys create entities through the
     stores.
     """
-    if not identity.has_any_group(["wip-admins", "wip-services"]):
+    if not identity.has_any_group(PRIVILEGED_GROUPS):
         raise HTTPException(
             status_code=403,
             detail=(

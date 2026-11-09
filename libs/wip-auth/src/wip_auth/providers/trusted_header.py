@@ -13,13 +13,17 @@ import logging
 
 from fastapi import Request
 
+from ..groups import PRIVILEGED_GROUPS
 from ..models import APIKeyRecord, UserIdentity
 from .api_key import APIKeyProvider, verify_api_key
 
 logger = logging.getLogger("wip_auth.trusted_header")
 
-# Groups whose keys may assert a user identity on a request.
-PROXY_KEY_GROUPS = frozenset({"wip-admins", "wip-services"})
+# Groups whose keys may assert a user identity on a request. Deliberately
+# its own name, though today it is exactly the privileged set: a key in it
+# can claim any user and any group, so widening PRIVILEGED_GROUPS widens
+# who may impersonate. Change that set knowing this follows it.
+PROXY_KEY_GROUPS = PRIVILEGED_GROUPS
 
 
 class TrustedHeaderProvider:
