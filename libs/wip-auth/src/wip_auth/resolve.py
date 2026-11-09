@@ -785,94 +785,121 @@ async def resolve_entity_ids(
     Raises:
         EntityNotFoundError: strict mode only — an identifier not found.
     """
+    result, to_resolve = _cached_resolutions(raw_ids, entity_type, namespace, bypass_cache)
+    if not to_resolve:
+        return result
+
+    registry_url = _get_registry_url()
+    api_key = _get_api_key()
+    for start in range(0, len(to_resolve), _RESOLVE_CHUNK):
+        chunk = to_resolve[start:start + _RESOLVE_CHUNK]
+        answers = await _post_resolve_chunk(
+            registry_url, api_key, chunk, entity_type, namespace, include_statuses,
+        )
+        for i, resolve_result in enumerate(answers):
+            raw_id = chunk[i]
+            canonical_id = await _settle_batch_resolution(
+                raw_id, resolve_result, entity_type, namespace, strict,
+            )
+            if canonical_id is not None:
+                _set_cached(f"{namespace}:{entity_type}:{raw_id}", canonical_id)
+                result[raw_id] = canonical_id
+    return result
+
+
+def _cached_resolutions(
+    raw_ids: list[str], entity_type: str, namespace: str, bypass_cache: bool,
+) -> tuple[dict[str, str], list[str]]:
+    """The cached answers, and the distinct identifiers left to resolve.
+
+    bypass_cache: the caller is doing a write that will persist the
+    resolved ID (e.g. template_service._normalize_field_references storing
+    terminology_ref as a canonical UUID on a template field). A stale cache
+    entry would bake a dead UUID into durable state, so reads are skipped;
+    the fresh Registry answers still update the cache (self-healing any
+    prior stale entry).
+    """
     result: dict[str, str] = {}
     to_resolve: list[str] = []
-
-    # bypass_cache: caller is doing a write that will persist the resolved
-    # ID (e.g., template_service._normalize_field_references storing
-    # terminology_ref as a canonical UUID on a template field). A stale
-    # cache entry would bake a dead UUID into durable state — see CASE-56.
-    # Skip reads; writes still update the cache with the fresh Registry
-    # result below (self-heals any prior stale entry).
     seen: set[str] = set()
     for raw_id in raw_ids:
         if raw_id in seen:
             continue
         seen.add(raw_id)
         if _cache_readable(bypass_cache):
-            cache_key = f"{namespace}:{entity_type}:{raw_id}"
-            cached = _get_cached(cache_key)
+            cached = _get_cached(f"{namespace}:{entity_type}:{raw_id}")
             if cached:
                 result[raw_id] = cached
                 continue
         to_resolve.append(raw_id)
+    return result, to_resolve
 
-    if not to_resolve:
-        return result
 
-    registry_url = _get_registry_url()
-    api_key = _get_api_key()
+async def _post_resolve_chunk(
+    registry_url: str,
+    api_key: str,
+    chunk: list[str],
+    entity_type: str,
+    namespace: str,
+    include_statuses: list[str] | None,
+) -> list[dict[str, Any]]:
+    """The Registry's per-item answers for one chunk. A Registry that does
+    not answer, or answers with an error, is unavailable — never a miss."""
+    payloads = [
+        _build_resolve_payload(rid, entity_type, namespace, include_statuses)
+        for rid in chunk
+    ]
+    try:
+        client = _get_resolve_client()
+        response = await client.post(
+            f"{registry_url}/api/registry/entries/resolve",
+            headers={"X-API-Key": api_key, "Content-Type": "application/json"},
+            json=payloads,
+        )
+    except (httpx.HTTPError, OSError) as e:
+        logger.warning("Registry unreachable for batch resolution: %s", e)
+        raise registry_unavailable_from("batch resolve", error=e) from e
+    if response.status_code != 200:
+        logger.warning("Registry batch resolve failed: %s", response.status_code)
+        raise registry_unavailable_from("batch resolve", response)
+    return list(response.json().get("results", []))
 
-    for start in range(0, len(to_resolve), _RESOLVE_CHUNK):
-        chunk = to_resolve[start:start + _RESOLVE_CHUNK]
-        payloads = [
-            _build_resolve_payload(rid, entity_type, namespace, include_statuses)
-            for rid in chunk
-        ]
-        try:
-            client = _get_resolve_client()
-            response = await client.post(
-                f"{registry_url}/api/registry/entries/resolve",
-                headers={"X-API-Key": api_key, "Content-Type": "application/json"},
-                json=payloads,
-            )
-        except (httpx.HTTPError, OSError) as e:
-            logger.warning("Registry unreachable for batch resolution: %s", e)
-            raise registry_unavailable_from("batch resolve", error=e) from e
 
-        if response.status_code != 200:
-            logger.warning("Registry batch resolve failed: %s", response.status_code)
-            raise registry_unavailable_from("batch resolve", response)
+async def _settle_batch_resolution(
+    raw_id: str,
+    resolve_result: dict[str, Any],
+    entity_type: str,
+    namespace: str,
+    strict: bool,
+) -> str | None:
+    """The canonical id one batch answer gives, or None (non-strict miss).
 
-        data = response.json()
-        for i, resolve_result in enumerate(data.get("results", [])):
-            raw_id = chunk[i]
-            if resolve_result.get("status") == "found":
-                canonical_id = resolve_result["entry_id"]
-                cache_key = f"{namespace}:{entity_type}:{raw_id}"
-                _set_cached(cache_key, canonical_id)
-                result[raw_id] = canonical_id
-                continue
-            if resolve_result.get("status") == "ambiguous":
-                # Several entities hold the key. Strict callers get the
-                # refusal; otherwise it stays unresolved, never picked.
-                if strict:
-                    candidates = resolve_result.get("candidates") or []
-                    raise AmbiguousEntityError(raw_id, entity_type, candidates, len(candidates))
-                continue
-            if strict:
-                # Same reasoning as the single-resolve path: a per-item miss
-                # is a real lookup failure, so it carries the namespace hint.
-                raise EntityNotFoundError(raw_id, entity_type, namespace)
-            # Non-strict miss: the single door falls back to the by-id
-            # lookup for non-term, non-UUID identifiers (value-form
-            # references whose synonym key shapes /resolve cannot
-            # hash-match) — the batch door must not be weaker, or moving a
-            # caller from per-item to batch resolution would silently break
-            # exactly those references. Misses are rare; the per-miss call
-            # does not reintroduce the per-item round-trip storm.
-            if entity_type != "term" and not _looks_like_uuid(raw_id):
-                ns_prefix, value = split_qualified_value(raw_id)
-                try:
-                    fallback = await _post_lookup_by_id(
-                        value, ns_prefix or namespace, entity_type,
-                    )
-                except AmbiguousEntityError:
-                    # Non-strict: an ambiguous value stays unresolved, like a
-                    # miss — the batch never picks one of its candidates.
-                    fallback = None
-                if fallback is not None:
-                    _set_cached(f"{namespace}:{entity_type}:{raw_id}", fallback)
-                    result[raw_id] = fallback
-
-    return result
+    Strict callers get the refusal for an ambiguous key or a miss.
+    Non-strict, an ambiguous key stays unresolved, never picked; a miss
+    falls back to the by-id lookup for non-term, non-UUID identifiers, as
+    the single-resolve door does (value-form references whose synonym key
+    shapes /resolve cannot hash-match) — the batch door must not be weaker,
+    or moving a caller from per-item to batch resolution would silently
+    break exactly those references. Misses are rare; the per-miss call does
+    not reintroduce the per-item round-trip storm.
+    """
+    status = resolve_result.get("status")
+    if status == "found":
+        return cast(str, resolve_result["entry_id"])
+    if status == "ambiguous":
+        if strict:
+            candidates = resolve_result.get("candidates") or []
+            raise AmbiguousEntityError(raw_id, entity_type, candidates, len(candidates))
+        return None
+    if strict:
+        # Same reasoning as the single-resolve path: a per-item miss is a
+        # real lookup failure, so it carries the namespace hint.
+        raise EntityNotFoundError(raw_id, entity_type, namespace)
+    if entity_type == "term" or _looks_like_uuid(raw_id):
+        return None
+    ns_prefix, value = split_qualified_value(raw_id)
+    try:
+        return await _post_lookup_by_id(value, ns_prefix or namespace, entity_type)
+    except AmbiguousEntityError:
+        # Non-strict: an ambiguous value stays unresolved, like a miss.
+        return None
