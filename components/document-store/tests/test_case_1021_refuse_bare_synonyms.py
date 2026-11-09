@@ -58,6 +58,9 @@ def test_bare_identity_synonyms_are_refused_with_a_count_per_namespace():
 
     assert f"{SOURCE}: 1 document(s)" in str(exc.value)
     assert "earlier WIP release" in str(exc.value)
+    # It names the entry and key, and the current-release remedy
+    assert "OLD-DOC {'code': 'X-1'}" in str(exc.value)
+    assert "remove them" in str(exc.value)
 
 
 def test_qualified_identity_synonyms_and_custom_synonyms_pass():

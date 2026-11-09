@@ -228,27 +228,48 @@ def _drop_merge_rows(
     return doc_groups
 
 
+# The entity kinds a merge's documents can point at, with each kind's id field.
+_MERGE_REFERENCE_ID_FIELD = {
+    "templates": "template_id", "terms": "term_id", "terminologies": "terminology_id",
+    "documents": "document_id", "files": "file_id",
+}
+_MERGE_REFERENCE_NOUN = {
+    "templates": "template", "terms": "term", "terminologies": "terminology",
+    "documents": "document", "files": "file",
+}
+# The kinds a reference field's resolved half names (a file field is in
+# file_references; a term field also writes term_references, both count once).
+_RESOLVED_KINDS = (
+    ("document_id", "documents"), ("template_id", "templates"),
+    ("term_id", "terms"), ("terminology_id", "terminologies"),
+)
+
+
+def _collect_resolved_ids(resolved: dict[str, Any], wanted: dict[str, set[str]]) -> None:
+    """Add every id a reference's resolved half names to `wanted`, by kind."""
+    for field_name, kind in _RESOLVED_KINDS:
+        if resolved.get(field_name):
+            wanted[kind].add(resolved[field_name])
+
+
 def _merge_arriving(definitions: Any, built: dict[str, Any]) -> dict[str, set[str]]:
     """What a merge is about to bring with it — a reference is satisfied by
     the target OR by something arriving alongside."""
     empty_documents = EntityPlan(entity_type="documents")
     empty_files = EntityPlan(entity_type="files")
-    return {
-        "templates": {
-            t["template_id"] for t in definitions.to_add["templates"] if t.get("template_id")
-        },
-        "terms": {
-            t["term_id"] for t in definitions.to_add["terms"] if t.get("term_id")
-        },
-        "documents": {
-            d["document_id"] for d in built.get("documents", empty_documents).to_insert
-            if d.get("document_id")
-        },
-        "files": {
-            f["file_id"] for f in built.get("files", empty_files).to_insert
-            if f.get("file_id")
-        },
+    arriving = {
+        kind: {r[_MERGE_REFERENCE_ID_FIELD[kind]] for r in definitions.to_add[kind]
+               if r.get(_MERGE_REFERENCE_ID_FIELD[kind])}
+        for kind in ("templates", "terms", "terminologies")
     }
+    arriving["documents"] = {
+        d["document_id"] for d in built.get("documents", empty_documents).to_insert
+        if d.get("document_id")
+    }
+    arriving["files"] = {
+        f["file_id"] for f in built.get("files", empty_files).to_insert if f.get("file_id")
+    }
+    return arriving
 
 
 def _dropped_row(entity_type: str, row: dict[str, Any], dropped: set[str]) -> bool:
@@ -540,6 +561,15 @@ PROVISION_BATCH = 1000
 
 class BackupEngineError(Exception):
     """Raised when the backup engine encounters a fatal error."""
+
+
+def _names_foreign_namespace(key: Any, namespace: str) -> bool:
+    """Whether a composite key names a namespace other than `namespace` — the
+    Registry's key-scope rule: a key carrying `ns` must carry its entry's,
+    unless a member starting with "@" makes it system-qualified."""
+    if not isinstance(key, dict) or any(isinstance(k, str) and k.startswith("@") for k in key):
+        return False
+    return "ns" in key and key["ns"] != namespace
 
 
 class RestoreEngineError(Exception):
@@ -2018,6 +2048,7 @@ class DirectRestoreEngine:
             # target is created or anything reserved: found later, it left a
             # half-provisioned target that a retry refused as not empty.
             await self._off_loop(check_collisions_before_writing, remap_sources)
+            self._refuse_foreign_scoped_keys(reader, mapping)
 
             # The namespaces have to exist before anything is provisioned: the
             # Registry mints ids per the TARGET namespace's id_config, and
@@ -2818,33 +2849,6 @@ class DirectRestoreEngine:
                     # so it recognizes as in-archive here.
                     idx.setdefault(row["template_id"], row["template_id"])
 
-        async def _resolve_on_target(target: str, lookup: str) -> str | None:
-            # In-archive first (reserved identities are invisible to the
-            # Registry until activation). Bare value → this target's index;
-            # qualified → the named (already-remapped) namespace's index.
-            hit = value_index.get(target, {}).get(lookup)
-            if hit:
-                return hit
-            if ":" in lookup:
-                ns_half, rest = lookup.split(":", 1)
-                hit = value_index.get(ns_half, {}).get(rest)
-                if hit:
-                    return hit
-            # Out-of-archive: resolve it on the target the way every write
-            # does, through the shared resolver: a qualified 'ns:VALUE'
-            # names its own namespace, and a value or id is read in the
-            # target's. The by-id lookup used before matched the whole
-            # string and only inside the target namespace, so a valid
-            # endpoint in another namespace (`other:ROLE`) was cleared. The
-            # result is persisted, so the cache is bypassed.
-            from wip_auth.resolve import resolve_entity_id
-
-            try:
-                return await resolve_entity_id(lookup, "template", target, bypass_cache=True)
-            except Exception as exc:  # not found, ambiguous, or no answer
-                logger.info("Endpoint %r does not resolve on %s: %s", lookup, target, exc)
-                return None
-
         for src, target in mapping.items():
             for row in plans[src].rows.get("templates") or []:
                 if row.get("usage") != "relationship":
@@ -2871,23 +2875,64 @@ class DirectRestoreEngine:
                             repaired.append(entry)
                             continue
                         entry["lookup_value"] = lookup
-                        hit = await _resolve_on_target(target, lookup)
-                        if hit:
-                            entry["resolved"] = hit
-                        else:
-                            entry["resolved"] = None
+                        hit, why = await self._resolve_endpoint_on_target(value_index, target, lookup)
+                        entry["resolved"] = hit
+                        if hit is None:
                             self._emit(
                                 "warning",
                                 f"[{target}] edge type '{row.get('value')}' "
-                                f"endpoint '{entry['lookup_value']}' does not "
-                                "resolve on this install — resolved half "
-                                "cleared; the lookup anchor is kept and "
-                                "enforcement falls back to resolving it "
-                                "per write.",
+                                f"endpoint '{entry['lookup_value']}' {why} — "
+                                "resolved half cleared; the lookup anchor is "
+                                "kept and enforcement falls back to resolving "
+                                "it per write.",
                             )
                         repaired.append(entry)
                     if entries:
                         row[prop] = repaired
+
+    @staticmethod
+    async def _resolve_endpoint_on_target(
+        value_index: dict[str, dict[str, str]], target: str, lookup: str,
+    ) -> tuple[str | None, str | None]:
+        """An edge endpoint's id on the target, or None with why it has none.
+
+        In-archive first (reserved identities are invisible to the Registry
+        until activation): a bare value → this target's index; qualified →
+        the named (already-remapped) namespace's index. Out of archive it is
+        resolved on the target the way every write does, through the shared
+        resolver — a qualified 'ns:VALUE' names its own namespace, a value
+        or id is read in the target's — bypassing the cache, since the
+        result is persisted.
+
+        Only an answer from the Registry clears an endpoint: "not found", or
+        "several templates carry it" (ambiguous). A Registry that does not
+        answer is no answer — the restore fails rather than persist an
+        outage as a cleared endpoint and blame the endpoint for it.
+        """
+        hit = value_index.get(target, {}).get(lookup)
+        if hit:
+            return hit, None
+        if ":" in lookup:
+            ns_half, rest = lookup.split(":", 1)
+            hit = value_index.get(ns_half, {}).get(rest)
+            if hit:
+                return hit, None
+        from wip_auth.registry_client import RegistryUnavailableError
+        from wip_auth.resolve import AmbiguousEntityError, EntityNotFoundError, resolve_entity_id
+
+        try:
+            return await resolve_entity_id(lookup, "template", target, bypass_cache=True), None
+        except AmbiguousEntityError as exc:
+            return None, f"is ambiguous on this install ({exc.total} templates carry it)"
+        except EntityNotFoundError:
+            return None, "does not resolve on this install"
+        except RegistryUnavailableError as exc:
+            raise RestoreEngineError(
+                f"[{target}] edge-type endpoint '{lookup}' could not be checked: the "
+                f"Registry did not answer ({exc}). Nothing was cleared; the target "
+                "namespace was already provisioned, so a fresh restore needs it "
+                "deleted before a retry."
+            ) from exc
 
     async def _write_remapped(
         self, namespace: str, plan: RemapPlan, batch_size: int
@@ -3106,6 +3151,32 @@ class DirectRestoreEngine:
                         )
         return by_new
 
+    def _refuse_foreign_scoped_keys(self, reader: Any, mapping: dict[str, str]) -> None:
+        """Refuse, before anything is provisioned, an archive carrying a
+        synonym key that names a namespace other than its entry's.
+
+        The Registry refuses such a key (a key's `ns` must be its entry's
+        namespace, unless the key is system-qualified with an `@` member).
+        Archives taken before that was enforced can carry one; found at the
+        synonym step, it failed the restore after the target was written and
+        activated. A dry run reports it too.
+        """
+        foreign: list[str] = []
+        for src in mapping:
+            for entry in reader.read_entities("registry_entries", namespace=src):
+                for syn in entry.get("synonyms") or []:
+                    key = syn.get("composite_key") if isinstance(syn, dict) else None
+                    if _names_foreign_namespace(key, src) and syn.get("status") != "inactive":
+                        foreign.append(f"{entry.get('entry_id')}: {key}")
+        if foreign:
+            raise RestoreEngineError(
+                f"{len(foreign)} archived synonym key(s) name a namespace other than "
+                f"their entry's, which the Registry refuses: {'; '.join(foreign[:5])}"
+                f"{' …' if len(foreign) > 5 else ''}. Nothing was written. Remove or "
+                "re-key these synonyms on the source install and take a new backup.",
+                details={"rule": "foreign_scoped_synonym", "keys": foreign[:50]},
+            )
+
     async def _restore_synonyms(
         self,
         mapping: dict[str, str],
@@ -3148,12 +3219,12 @@ class DirectRestoreEngine:
                 new_key[k] = flat_id_map[v]
             else:
                 new_key[k] = v
-        syn_ns = syn.get("namespace")
-        return {
-            "synonym_namespace": target if syn_ns == source else syn_ns,
-            "synonym_entity_type": entity_type,
-            "synonym_composite_key": new_key,
-        }
+        # The scope fields are left out: a carried-over synonym belongs to
+        # its own entry, and the Registry gives an omitted scope the entry's.
+        # An archive from before scope was enforced can carry a foreign
+        # scope; sending it through made the Registry refuse the synonym
+        # after the target was already written and activated.
+        return {"synonym_composite_key": new_key}
 
     async def _retired_entry_ids(self, namespace: str) -> list[str]:
         """The Registry entry IDs of the namespace's retired entities: documents
@@ -3287,6 +3358,11 @@ class DirectRestoreEngine:
         bare when its key set is exactly its template's identity_fields. A
         document whose template is not in the archive cannot be judged and is
         not counted.
+
+        The current release can produce such a synonym too: the Registry's
+        synonym door accepts a caller-added synonym of that shape. The rule
+        is kept; the message says which entries carry one and how to clear
+        it on the source.
         """
         sources = self._archive_namespaces(reader, manifest)
         identity: dict[str, set[str]] = {}
@@ -3298,6 +3374,7 @@ class DirectRestoreEngine:
         if not identity:
             return
         counts: dict[str, int] = {}
+        examples: list[str] = []
         for src in sources:
             for entry in reader.read_entities("registry_entries", namespace=src):
                 if entry.get("entity_type") != "documents":
@@ -3306,19 +3383,26 @@ class DirectRestoreEngine:
                 keys = identity.get(template_id) if isinstance(template_id, str) else None
                 if not keys:
                     continue
-                if any(
-                    isinstance(syn, dict) and set(syn.get("composite_key") or {}) == keys
-                    for syn in entry.get("synonyms") or []
-                ):
+                bare = [
+                    syn["composite_key"] for syn in entry.get("synonyms") or []
+                    if isinstance(syn, dict) and set(syn.get("composite_key") or {}) == keys
+                ]
+                if bare:
                     counts[src] = counts.get(src, 0) + 1
+                    examples.append(f"{entry.get('entry_id')} {bare[0]}")
         if counts:
             listed = ", ".join(f"{ns}: {n}" for ns, n in sorted(counts.items()))
             raise RestoreEngineError(
-                "This archive carries document identity synonyms in the old bare "
-                f"form, without '@template' ({listed} document(s)). That form is "
-                "no longer restored. Restore it with an earlier WIP release, which "
-                "re-qualifies identity synonyms on restore, then take a new backup "
-                "there."
+                "This archive carries document synonyms whose keys are exactly their "
+                f"template's identity fields, without '@template' ({listed} document(s); "
+                f"e.g. {'; '.join(examples[:3])}). That is the old bare form of identity "
+                "synonyms, which is not restored: it claims the spelling for every "
+                "template in the namespace. If the archive was taken before identity "
+                "synonyms were qualified, restore it with an earlier WIP release, which "
+                "re-qualifies them, then take a new backup there. If it was taken by "
+                "this release, a caller added these synonyms: remove them, or give them "
+                "a key that is not exactly the identity fields, on the source install, "
+                "then take a new backup."
             )
 
     def _check_derived_archive(
@@ -4825,11 +4909,9 @@ class DirectRestoreEngine:
 
     @staticmethod
     def _referenced_ids(rows: list[dict[str, Any]]) -> dict[str, set[str]]:
-        """Every entity id the given document rows point at, by kind."""
-        wanted: dict[str, set[str]] = {
-            "templates": set(), "terms": set(),
-            "documents": set(), "files": set(),
-        }
+        """Every entity id the given document rows point at, by kind — every
+        kind a reference field resolves to, not only documents."""
+        wanted: dict[str, set[str]] = {kind: set() for kind in _MERGE_REFERENCE_ID_FIELD}
         for row in rows:
             if row.get("template_id"):
                 wanted["templates"].add(row["template_id"])
@@ -4837,9 +4919,7 @@ class DirectRestoreEngine:
                 if ref.get("term_id"):
                     wanted["terms"].add(ref["term_id"])
             for ref in row.get("references") or []:
-                resolved = ref.get("resolved") or {}
-                if resolved.get("document_id"):
-                    wanted["documents"].add(resolved["document_id"])
+                _collect_resolved_ids(ref.get("resolved") or {}, wanted)
             for ref in row.get("file_references") or []:
                 if ref.get("file_id"):
                     wanted["files"].add(ref["file_id"])
@@ -4855,10 +4935,7 @@ class DirectRestoreEngine:
         """
         if not wanted:
             return set()
-        id_field = {
-            "templates": "template_id", "terms": "term_id",
-            "documents": "document_id", "files": "file_id",
-        }[entity_type]
+        id_field = _MERGE_REFERENCE_ID_FIELD[entity_type]
         db_name, coll_name = COLLECTION_MAP[entity_type]
         collection = self._mongo[db_name][coll_name]
         found: set[str] = set()
@@ -4914,7 +4991,7 @@ class DirectRestoreEngine:
                 continue
             unresolved -= await self._resolvable_ids(entity_type, unresolved)
             for missing in sorted(unresolved)[:5]:
-                problems.append(f"{entity_type[:-1]} '{missing}'")
+                problems.append(f"{_MERGE_REFERENCE_NOUN[entity_type]} '{missing}'")
 
         if problems:
             raise RestoreEngineError(

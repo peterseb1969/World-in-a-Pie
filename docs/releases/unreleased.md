@@ -7,6 +7,35 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A restore does not read a Registry outage as an answer; a merge checks every reference kind
+
+- **Edge-type endpoints (fresh restore):** an endpoint outside the archive is
+  re-resolved on the target. Any failure — including a Registry that did not
+  answer — cleared its resolved half and warned that the endpoint "does not
+  resolve on this install". Now only an answer clears it: "not found", or
+  "ambiguous" (several templates carry the value; the warning says so). A
+  Registry that does not answer fails the restore and clears nothing. That
+  happens after the target is provisioned: delete the target namespace
+  before retrying, as the error says.
+- **Synonym scope (fresh restore):** carried-over synonyms were sent with
+  the scope stored in the archive. An archive from before synonym scope was
+  enforced can name a foreign scope, and the Registry refused it after the
+  target was written and activated. Synonyms are now written in their own
+  entry's scope. An archived key whose `ns` names another namespace — which
+  the Registry refuses — is refused before anything is written (a dry run
+  reports it), naming the keys.
+- **Bare identity synonyms:** the refusal of a document synonym whose keys
+  are exactly its template's identity fields is unchanged, but its message
+  now names example entries and keys, and covers the current-release case —
+  a caller-added synonym of that shape: remove or re-key it on the source.
+- **Merge reference gate:** the pre-write check considered a document's
+  `references[]` only for document targets. It now checks their template,
+  term and terminology targets too; a dangling one refuses the merge, like a
+  dangling document reference.
+- **Action:** run restores while the Registry is up; a merge whose
+  documents reference a terminology neither the target holds nor the merge
+  brings is now refused.
+
 ### def-store retires or revives nothing the Registry has not recorded
 
 - Deprecating a term, soft-deleting a term or a terminology, and restoring
