@@ -591,114 +591,11 @@ async def merge_entries(
     """
     results = []
     access = NamespaceAccess(identity)
-
     for i, item in enumerate(items):
         try:
-            preferred = await RegistryEntry.find_one({
-                "entry_id": item.preferred_id, "status": "active"
-            })
-            if not preferred or not await access.allows(preferred.namespace, "read"):
-                results.append(MergeResponse(
-                    index=i, status="preferred_not_found",
-                    preferred_id=item.preferred_id,
-                ))
-                continue
-
-            deprecated = await RegistryEntry.find_one({"entry_id": item.deprecated_id})
-            if (
-                deprecated is not None and deprecated.merged_into == preferred.entry_id
-                and await access.allows(deprecated.namespace, "read")
-            ):
-                # Already merged into this entry: a retry, answered as done.
-                results.append(MergeResponse(
-                    index=i, status="merged",
-                    preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
-                ))
-                continue
-            if (
-                deprecated is None or deprecated.status != "active"
-                or not await access.allows(deprecated.namespace, "read")
-            ):
-                results.append(MergeResponse(
-                    index=i, status="deprecated_not_found",
-                    deprecated_id=item.deprecated_id,
-                ))
-                continue
-
-            refusal = await _write_refusal(access, preferred.namespace, deprecated.namespace)
-            if refusal:
-                results.append(MergeResponse(
-                    index=i, status="forbidden",
-                    preferred_id=preferred.entry_id,
-                    deprecated_id=deprecated.entry_id,
-                    error=refusal,
-                ))
-                continue
-
-            if str(preferred.id) == str(deprecated.id):
-                results.append(MergeResponse(
-                    index=i, status="error",
-                    error="Cannot merge an entry with itself",
-                    error_code="invalid_request", details={"rule": "self_merge"},
-                ))
-                continue
-            # Two entries are "the same real-world entity" only within one
-            # namespace and entity type: merging across either would make a
-            # document's old ID resolve to a template, or one namespace's key
-            # resolve into another.
-            if (preferred.namespace, preferred.entity_type) != (
-                deprecated.namespace, deprecated.entity_type
-            ):
-                results.append(MergeResponse(
-                    index=i, status="error",
-                    preferred_id=preferred.entry_id,
-                    deprecated_id=deprecated.entry_id,
-                    error=(
-                        "Only entries of one namespace and entity type merge: "
-                        f"preferred is {preferred.namespace}/{preferred.entity_type}, "
-                        f"deprecated is {deprecated.namespace}/{deprecated.entity_type}"
-                    ),
-                    error_code="invalid_request", details={"rule": "merge_scope_mismatch"},
-                ))
-                continue
-            # A term's identity lives in two places — this entry and the
-            # def-store term whose value and names drive validation — so only
-            # def-store may merge terms: a Registry-only merge would leave the
-            # absorbed term active and its value still resolving to it.
-            if "terms" in (preferred.entity_type, deprecated.entity_type) and not (
-                item.owner_merge and identity.has_any_group(["wip-admins", "wip-services"])
-            ):
-                results.append(MergeResponse(
-                    index=i, status="error",
-                    error=(
-                        "Terms are merged by def-store (POST /api/def-store/terms/merge), "
-                        "which moves the absorbed term's value and names to the survivor "
-                        "and then merges these entries."
-                    ),
-                    error_code="invalid_request", details={"rule": "terms_merge_in_def_store"},
-                ))
-                continue
-
-            try:
-                await merge_into(preferred, deprecated, item.updated_by)
-            except (MergeKeyConflict, MergedEntryChanged) as e:
-                results.append(MergeResponse(
-                    index=i, status="error",
-                    preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
-                    error=str(e), error_code=e.error_code, details=getattr(e, "details", None),
-                ))
-                continue
-
-            results.append(MergeResponse(
-                index=i, status="merged",
-                preferred_id=preferred.entry_id,
-                deprecated_id=deprecated.entry_id,
-            ))
-
+            results.append(await _merge_one(i, item, access, identity))
         except Exception as e:
-            results.append(MergeResponse(
-                index=i, status="error", **error_fields(e)
-            ))
+            results.append(MergeResponse(index=i, status="error", **error_fields(e)))
 
     # A merged-away entry's id and names now resolve to the preferred entry;
     # caches holding them for the deprecated one drop them.
@@ -712,3 +609,109 @@ async def merge_entries(
             "preferred_not_found", "deprecated_not_found", "forbidden", "error",
         )),
     )
+
+
+async def _merge_one(
+    i: int, item: MergeItem, access: NamespaceAccess, identity: UserIdentity,
+) -> MergeResponse:
+    """Merge one deprecated entry into its preferred one, or say why not."""
+    pair = await _merge_pair(i, item, access)
+    if isinstance(pair, MergeResponse):
+        return pair
+    preferred, deprecated = pair
+
+    refusal = await _write_refusal(access, preferred.namespace, deprecated.namespace)
+    if refusal:
+        return MergeResponse(
+            index=i, status="forbidden",
+            preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id, error=refusal,
+        )
+    invalid = _merge_refusal(i, item, preferred, deprecated, identity)
+    if invalid is not None:
+        return invalid
+
+    try:
+        await merge_into(preferred, deprecated, item.updated_by)
+    except (MergeKeyConflict, MergedEntryChanged) as e:
+        return MergeResponse(
+            index=i, status="error",
+            preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
+            error=str(e), error_code=e.error_code, details=getattr(e, "details", None),
+        )
+    return MergeResponse(
+        index=i, status="merged",
+        preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
+    )
+
+
+async def _merge_pair(
+    i: int, item: MergeItem, access: NamespaceAccess,
+) -> tuple[RegistryEntry, RegistryEntry] | MergeResponse:
+    """The (preferred, deprecated) entries a merge item names, or its answer
+    when either is not there to merge: not found (or unreadable), or merged
+    into this preferred entry already (a retry, answered as done)."""
+    preferred = await RegistryEntry.find_one({"entry_id": item.preferred_id, "status": "active"})
+    if not preferred or not await access.allows(preferred.namespace, "read"):
+        return MergeResponse(index=i, status="preferred_not_found", preferred_id=item.preferred_id)
+    deprecated = await RegistryEntry.find_one({"entry_id": item.deprecated_id})
+    readable = deprecated is not None and await access.allows(deprecated.namespace, "read")
+    if deprecated is None or not readable:
+        return MergeResponse(index=i, status="deprecated_not_found", deprecated_id=item.deprecated_id)
+    if deprecated.merged_into == preferred.entry_id:
+        return MergeResponse(
+            index=i, status="merged",
+            preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
+        )
+    if deprecated.status != "active":
+        return MergeResponse(index=i, status="deprecated_not_found", deprecated_id=item.deprecated_id)
+    return preferred, deprecated
+
+
+def _merge_refusal(
+    i: int,
+    item: MergeItem,
+    preferred: RegistryEntry,
+    deprecated: RegistryEntry,
+    identity: UserIdentity,
+) -> MergeResponse | None:
+    """A merge the Registry refuses whoever asks: an entry with itself, two
+    entries of different namespaces or entity types, or terms (which only
+    def-store merges)."""
+    if str(preferred.id) == str(deprecated.id):
+        return MergeResponse(
+            index=i, status="error",
+            error="Cannot merge an entry with itself",
+            error_code="invalid_request", details={"rule": "self_merge"},
+        )
+    # Two entries are "the same real-world entity" only within one namespace
+    # and entity type: merging across either would make a document's old ID
+    # resolve to a template, or one namespace's key resolve into another.
+    if (preferred.namespace, preferred.entity_type) != (deprecated.namespace, deprecated.entity_type):
+        return MergeResponse(
+            index=i, status="error",
+            preferred_id=preferred.entry_id,
+            deprecated_id=deprecated.entry_id,
+            error=(
+                "Only entries of one namespace and entity type merge: "
+                f"preferred is {preferred.namespace}/{preferred.entity_type}, "
+                f"deprecated is {deprecated.namespace}/{deprecated.entity_type}"
+            ),
+            error_code="invalid_request", details={"rule": "merge_scope_mismatch"},
+        )
+    # A term's identity lives in two places — this entry and the def-store
+    # term whose value and names drive validation — so only def-store may
+    # merge terms: a Registry-only merge would leave the absorbed term active
+    # and its value still resolving to it.
+    if "terms" in (preferred.entity_type, deprecated.entity_type) and not (
+        item.owner_merge and identity.has_any_group(["wip-admins", "wip-services"])
+    ):
+        return MergeResponse(
+            index=i, status="error",
+            error=(
+                "Terms are merged by def-store (POST /api/def-store/terms/merge), "
+                "which moves the absorbed term's value and names to the survivor "
+                "and then merges these entries."
+            ),
+            error_code="invalid_request", details={"rule": "terms_merge_in_def_store"},
+        )
+    return None
