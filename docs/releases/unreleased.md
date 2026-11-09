@@ -7,6 +7,28 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `verify` checks a document's template and terminology references (wip-archive 0.38.0)
+
+- `verify` checked a document's stored term references only. A document
+  naming a template or terminology (a `reference_type: template` /
+  `terminology` field) whose target the archive neither carries nor records
+  as a referent verified clean, and the restore failed on it later. Such a
+  target is now a `missing_template_reference` /
+  `missing_terminology_reference` **error**, like `missing_term_reference`;
+  a target carried in a namespace outside `verify --namespace`'s selection
+  counts as carried. Without a referents table (older archives) absence
+  cannot be proven and nothing is reported, as for terms.
+- References are checked even for a document whose own template the archive
+  does not carry, or whose pinned version is missing — terms included,
+  which were skipped in that case before.
+- `inspect` lists such a target as an outside reference (kinds `template` /
+  `terminology` in `external`), where it was dropped silently. The `--json`
+  `document_checks` object gains `missing_template_references` and
+  `missing_terminology_references`; both changes are additive, so the schema
+  stays `1.3`.
+- **Action:** an archive that used to verify clean can now fail `verify`;
+  the finding names the documents and targets.
+
 ### A restore does not read a Registry outage as an answer; a merge checks every reference kind
 
 - **Edge-type endpoints (fresh restore):** an endpoint outside the archive is
@@ -1287,8 +1309,8 @@ carried (filter), with everything its schema needs, and a named terminology
 is kept whole. `inspect`'s data closure lists them too. They are definitions,
 so `filter --boundary strict` carries them rather than refusing. Re-run
 `prune` or `filter` on an archive cut with an older version if its documents
-use such fields; `verify` does not detect the cut (it checks stored term
-references, not template- or terminology-typed ones).
+use such fields; `verify` detects the cut since `wip-archive` 0.38.0
+(`missing_template_reference` / `missing_terminology_reference`).
 
 ### Query filters can't carry MongoDB operators; MongoDB runs without server-side JavaScript
 

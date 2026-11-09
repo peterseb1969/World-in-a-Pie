@@ -8,8 +8,10 @@ template version it is pinned to:
   stages — not the term stage, because a stored document must not be
   re-resolved as a new write (existing data keeps resolving retired terms,
   PoNIF #1);
-- its stored `term_references` must point at terms the archive carries or
-  records as referenced-but-not-carried;
+- its stored `term_references`, and the template and terminology targets of
+  its `references`, must point at entities the archive carries (in any of
+  its namespaces) or records as referenced-but-not-carried — checked even
+  when the document's own template cannot be judged;
 - its `identity_hash` must equal the hash recomputed offline from its data.
 
 It streams: one document at a time, counters keyed by what failed and capped
@@ -44,9 +46,10 @@ class DocumentCheck:
     # True when the archive carries a referents table, so a term id absent
     # from both the archive and the table is provably missing.
     has_referents_table: bool
-    # Term ids the archive carries in namespaces outside the checked selection
-    # (verify --namespace): carried, so not missing, though not loaded.
-    carried_terms: frozenset[str] = frozenset()
+    # Ids the archive carries in namespaces outside the checked selection
+    # (verify --namespace), by kind ("terms", "templates", "terminologies"):
+    # carried, so not missing, though not loaded.
+    carried: dict[str, frozenset[str]] = field(default_factory=dict)
     checked: int = 0
     # (template label, version, field, code) -> documents
     invalid: Counter = field(default_factory=Counter)
@@ -60,6 +63,12 @@ class DocumentCheck:
     identity_samples: list[str] = field(default_factory=list)
     missing_terms: Counter = field(default_factory=Counter)
     missing_term_samples: list[str] = field(default_factory=list)
+    # Template / terminology ids named by `references[].resolved` that are
+    # neither carried nor referents, matched by id (a version is not judged).
+    missing_templates: Counter = field(default_factory=Counter)
+    missing_template_samples: list[str] = field(default_factory=list)
+    missing_terminologies: Counter = field(default_factory=Counter)
+    missing_terminology_samples: list[str] = field(default_factory=list)
     # (kind, ref) -> documents
     unverifiable: Counter = field(default_factory=Counter)
     unverifiable_samples: list[str] = field(default_factory=list)
@@ -94,6 +103,10 @@ class DocumentCheck:
         version = int(row.get("template_version") or 1)
         tag = f"{document_id} v{row.get('version', 1)}"
         self.checked += 1
+        # A reference's target is judged whether or not the document's own
+        # template can be: it needs nothing from that template.
+        self._check_term_references(row, tag)
+        self._check_definition_references(row, tag)
 
         if template_id not in self._template_ids:
             # The document is based on a template the archive does not carry
@@ -128,7 +141,6 @@ class DocumentCheck:
             self.unverifiable[(entry["kind"], entry["ref"])] += 1
             _sample(self.unverifiable_samples, f"{tag}: {entry['kind']} {entry['ref']}")
 
-        self._check_term_references(row, tag)
         self._check_identity(row, template, label, version, tag)
 
     def _check_term_references(self, row: dict[str, Any], tag: str) -> None:
@@ -138,10 +150,37 @@ class DocumentCheck:
             term_id = ref.get("term_id")
             if not term_id or term_id in self.definitions.terms:
                 continue
-            if term_id in self.definitions.referents or term_id in self.carried_terms:
+            if term_id in self.definitions.referents or term_id in self.carried.get("terms", ()):
                 continue
             self.missing_terms[term_id] += 1
             _sample(self.missing_term_samples, f"{tag}: {ref.get('field_path')} → {term_id}")
+
+    def _check_definition_references(self, row: dict[str, Any], tag: str) -> None:
+        """Template- and terminology-typed references: their resolved target
+        must be carried or a referent. Term-typed ones are not read here —
+        a term field writes `term_references` too, checked above."""
+        if not self.has_referents_table:
+            return
+        for ref in row.get("references") or ():
+            resolved = ref.get("resolved") or {}
+            template_id = resolved.get("template_id")
+            if template_id and self._missing("templates", template_id, self._template_ids):
+                self.missing_templates[template_id] += 1
+                _sample(self.missing_template_samples, f"{tag}: {ref.get('field_path')} → {template_id}")
+            terminology_id = resolved.get("terminology_id")
+            if terminology_id and self._missing("terminologies", terminology_id, self.definitions.terminologies):
+                self.missing_terminologies[terminology_id] += 1
+                _sample(
+                    self.missing_terminology_samples, f"{tag}: {ref.get('field_path')} → {terminology_id}"
+                )
+
+    def _missing(self, kind: str, entity_id: str, loaded: Any) -> bool:
+        """An id neither loaded, carried elsewhere in the archive, nor a referent."""
+        return (
+            entity_id not in loaded
+            and entity_id not in self.carried.get(kind, ())
+            and entity_id not in self.definitions.referents
+        )
 
     def _check_identity(
         self, row: dict[str, Any], template: dict[str, Any], label: str, version: int, tag: str,
@@ -195,6 +234,24 @@ class DocumentCheck:
                 "count": sum(self.missing_terms.values()),
                 "samples": tuple(self.missing_term_samples),
             })
+        for finding_class, kind, counter, samples in (
+            ("missing_template_reference", "templates", self.missing_templates,
+             self.missing_template_samples),
+            ("missing_terminology_reference", "terminologies", self.missing_terminologies,
+             self.missing_terminology_samples),
+        ):
+            if counter:
+                out.append({
+                    "severity": "error",
+                    "finding_class": finding_class,
+                    "subject": "documents",
+                    "detail": (
+                        f"stored references point at {kind} neither in the archive nor "
+                        "recorded as referenced outside it — they will not resolve after restore"
+                    ),
+                    "count": sum(counter.values()),
+                    "samples": tuple(samples),
+                })
         if self.invalid_documents:
             out.append({
                 "severity": "warning",
@@ -259,6 +316,8 @@ class DocumentCheck:
                 ],
             },
             "missing_term_references": sum(self.missing_terms.values()),
+            "missing_template_references": sum(self.missing_templates.values()),
+            "missing_terminology_references": sum(self.missing_terminologies.values()),
             "unverifiable": [
                 {"kind": k, "ref": r, "documents": n}
                 for (k, r), n in sorted(self.unverifiable.items(), key=str)

@@ -59,6 +59,30 @@ from .models import Manifest
 # versions reference.
 SCHEMA_VERSION = "1.3"
 
+# A template- or terminology-typed reference: the resolved id key, the
+# model's map of carried ones, and the ReferenceGraph counter it feeds.
+_DEFINITION_REFERENCE = {
+    "template": ("template_id", "templates", "template_use"),
+    "terminology": ("terminology_id", "terminologies", "terminology_use"),
+}
+
+
+def _carried_ids(reader: Any, namespaces: list[str]) -> dict[str, frozenset[str]]:
+    """The term, template and terminology ids carried in `namespaces` — the
+    archive's namespaces outside a checked selection — by kind."""
+    return {
+        kind: frozenset(
+            str(row[id_key])
+            for ns in namespaces
+            for row in reader.read_entities(kind, namespace=ns)
+            if row.get(id_key)
+        )
+        for kind, id_key in (
+            ("terms", "term_id"), ("templates", "template_id"), ("terminologies", "terminology_id"),
+        )
+    }
+
+
 # Entity types that carry a Registry identity row. Mirrors the restore door's
 # own list: these are the rows whose absence makes a restored namespace look
 # healthy on list surfaces while every id-based read fails.
@@ -597,19 +621,14 @@ class ArchiveModel:
             # A third streaming pass: every document against its pinned
             # template version (document_check.py). Opt-in, because it
             # validates every row; inspect does not need it, verify does.
-            # A term carried in a namespace outside the selection is neither
-            # loaded nor in the referents table (which lists only what the
-            # archive lacks); its id still counts as carried, not missing.
-            carried_terms = frozenset(
-                str(row["term_id"])
-                for ns in available if ns not in model.namespaces
-                for row in reader.read_entities("terms", namespace=ns)
-                if row.get("term_id")
-            )
+            # A term, template or terminology carried in a namespace outside
+            # the selection is neither loaded nor in the referents table
+            # (which lists only what the archive lacks); its id still counts
+            # as carried, not missing.
             check = DocumentCheck(
                 model.definitions,
                 has_referents_table=model.manifest.referents is not None,
-                carried_terms=carried_terms,
+                carried=_carried_ids(reader, [ns for ns in available if ns not in model.namespaces]),
             )
             for ns in model.namespaces:
                 for row in reader.read_entities("documents", namespace=ns):
@@ -976,17 +995,25 @@ class ArchiveModel:
         document needs the target's definition, which must travel with it."""
         for ref in row.get("references") or []:
             kind = ref.get("reference_type")
-            resolved = ref.get("resolved") or {}
-            if kind == "template":
-                target = resolved.get("template_id")
-                if target and target in self.templates:
-                    for acc in targets:
-                        acc.template_use[(template_id, target)] += 1
-            elif kind == "terminology":
-                target = resolved.get("terminology_id")
-                if target and target in self.terminologies:
-                    for acc in targets:
-                        acc.terminology_use[(template_id, target)] += 1
+            spec = _DEFINITION_REFERENCE.get(kind)
+            target = (ref.get("resolved") or {}).get(spec[0]) if spec else None
+            if not target:
+                continue
+            if target in getattr(self, spec[1]):
+                for acc in targets:
+                    getattr(acc, spec[2])[(template_id, target)] += 1
+            else:
+                self._record_definition_external(kind, target, template_id, targets)
+
+    def _record_definition_external(
+        self, kind: str, target: str, template_id: str, targets: list[ReferenceGraph],
+    ) -> None:
+        """A template or terminology a document names that the archive does
+        not carry: an outside reference, reported like a term's."""
+        self._record_external(
+            kind, target, self._outside_reason(target),
+            f"template {self.template_label(template_id)}", template_id, targets,
+        )
 
     def _term_reference_edges(
         self,
