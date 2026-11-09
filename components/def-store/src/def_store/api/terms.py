@@ -396,6 +396,11 @@ async def search_terms(
             if not parent:
                 raise HTTPException(status_code=404, detail="Terminology not found")
             terminology_id = parent.terminology_id
+        # An id resolves wherever it lives; one in a namespace the caller
+        # cannot see answers as an id that names nothing.
+        await check_readable(identity, parent.namespace, miss_detail(
+            terminology, "terminology", search_namespace, "Terminology not found", "terminology",
+        ))
 
     status_list = [s.strip() for s in statuses.split(",") if s.strip()]
 

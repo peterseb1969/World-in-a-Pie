@@ -62,6 +62,7 @@ def _hidden(namespace: str, patched: bool):
 
 DOORS = {
     "list terms": ("GET", "/terminologies/{tid}/terms", None),
+    "term search": ("GET", "/terms/search?q=a&namespace=wip&terminology={tid}", None),
     "get terminology": ("GET", "/terminologies/{tid}", None),
     "terminology dependencies": ("GET", "/terminologies/{tid}/dependencies", None),
     "export": ("GET", "/import-export/export/{tid}", None),
