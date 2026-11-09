@@ -495,6 +495,10 @@ def make_validation_runner(
                     f"[{namespace}] integrity {result.status}: "
                     f"{result.summary.documents_with_issues} document(s) with "
                     f"issues out of {result.summary.documents_checked} checked"
+                    + (
+                        f"; checks not run: {result.summary.checks_not_run}"
+                        if result.summary.checks_not_run else ""
+                    )
                 ),
             ))
             # A validation spawned by a restore reports on THAT restore's

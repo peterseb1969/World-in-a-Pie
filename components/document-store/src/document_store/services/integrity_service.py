@@ -106,6 +106,15 @@ class IntegritySummary(BaseModel):
             "to not found"
         ),
     )
+    checks_not_run: dict[str, int] = Field(
+        default_factory=dict,
+        description=(
+            "Checks skipped because a service could not answer, counted by "
+            "'<check>:<service>' (e.g. 'term_reference:def-store'). Any count "
+            "makes the status incomplete: an unchecked reference is not a "
+            "healthy one."
+        ),
+    )
 
 
 class IntegrityCheckResult(BaseModel):
@@ -113,7 +122,11 @@ class IntegrityCheckResult(BaseModel):
 
     status: str = Field(
         ...,
-        description="Overall status: healthy, warning, error"
+        description=(
+            "Overall status: error or warning by the worst issue; incomplete "
+            "when some checks could not run (summary.checks_not_run) and "
+            "nothing was found; healthy only when every check ran"
+        )
     )
     checked_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
@@ -137,6 +150,15 @@ _term_check_cache: dict[str, bool] = {}  # term_id -> exists
 # fetching it per document would be one HTTP call per row.
 _identity_fields_cache: dict[tuple[str, int], Any] = {}
 
+# Checks skipped in this run because the service they ask could not answer,
+# by "<check>:<service>". Reset with the caches at the start of each run.
+_checks_not_run: dict[str, int] = {}
+
+
+def _not_run(check: str, service: str) -> None:
+    key = f"{check}:{service}"
+    _checks_not_run[key] = _checks_not_run.get(key, 0) + 1
+
 
 def clear_integrity_cache():
     """Clear the integrity check cache (call between checks if needed)."""
@@ -144,6 +166,7 @@ def clear_integrity_cache():
     _template_check_cache.clear()
     _term_check_cache.clear()
     _identity_fields_cache.clear()
+    _checks_not_run.clear()
 
 
 async def check_template_reference(
@@ -178,7 +201,9 @@ async def check_template_reference(
                 exists, status = True, "version_missing"
             _template_check_cache[key] = (exists, status)
         except TemplateStoreError:
-            # Can't reach Template Store, skip check
+            # The template store could not answer: the check did not run,
+            # which makes the result incomplete — never healthy.
+            _not_run("template_reference", "template-store")
             return
 
     if not exists:
@@ -234,7 +259,9 @@ async def check_term_reference(
             exists = term is not None
             _term_check_cache[term_id] = exists
         except DefStoreError:
-            # Can't reach Def-Store, skip check
+            # def-store could not answer: the check did not run, which makes
+            # the result incomplete — never healthy.
+            _not_run("term_reference", "def-store")
             return
 
     if not exists:
@@ -505,7 +532,10 @@ async def check_identity_hash(
             ))
         return
     if shape is None:
-        return  # template store unreachable: not a finding, and not cached
+        # The template store could not answer: not a finding, and not cached,
+        # but the check did not run (the result is incomplete).
+        _not_run("identity_hash", "template-store")
+        return
     identity_fields, template_fields, referent_paths = shape
 
     if not identity_fields:
@@ -674,9 +704,10 @@ async def check_all_documents(
         if progress is not None:
             progress(documents_checked, effective_limit)
 
+    summary = _summarize(all_issues, total_count, documents_checked)
     return IntegrityCheckResult(
-        status=_overall_status(all_issues),
-        summary=_summarize(all_issues, total_count, documents_checked),
+        status=_overall_status(all_issues, summary),
+        summary=summary,
         issues=all_issues,
     )
 
@@ -748,13 +779,17 @@ def _summarize(
         documents_checked=documents_checked,
         documents_with_issues=len({issue.document_id for issue in issues}),
         **counts,
+        checks_not_run=dict(_checks_not_run),
     )
 
 
-def _overall_status(issues: list[IntegrityIssue]) -> str:
+def _overall_status(issues: list[IntegrityIssue], summary: IntegritySummary) -> str:
     """Anything that breaks resolution or identity is an error; a reference to
     a retired-but-present template is a warning (PoNIF #1 — inactive means
-    retired, and existing data keeps resolving)."""
+    retired, and existing data keeps resolving). With no finding, a check that
+    could not run makes it incomplete: healthy only when every check ran."""
     if any(i.severity == "error" for i in issues):
         return "error"
-    return "warning" if issues else "healthy"
+    if issues:
+        return "warning"
+    return "incomplete" if summary.checks_not_run else "healthy"

@@ -258,6 +258,11 @@ async def lifespan(app: FastAPI):
             if result.status == "healthy":
                 logger.info(f"Integrity check: OK ({result.summary.total_documents} documents checked)")
             else:
+                if result.summary.checks_not_run:
+                    logger.warning(
+                        "Integrity check %s: checks not run (a service did not answer): %s",
+                        result.status, result.summary.checks_not_run,
+                    )
                 logger.warning(f"Integrity check found {len(result.issues)} issues:")
                 # Group issues by type
                 issue_counts: dict[str, int] = {}

@@ -374,13 +374,25 @@ async def _latest_peer_documents(peer_ids: set[str]) -> dict[str, Document]:
 
 
 async def _can_read_namespace(identity: Any, ns: str, cache: dict[str, str]) -> bool:
-    """Read on a peer's namespace, resolved once per namespace."""
-    from wip_auth.permissions import permission_sufficient, resolve_permission
+    """Read on a peer's namespace, resolved once per namespace.
+
+    A Registry that cannot answer fails the request (503) instead of reading
+    as "no access": the peer would otherwise be reported as not_found.
+    """
+    from wip_auth.permissions import (
+        PERMISSION_UNAVAILABLE,
+        permission_sufficient,
+        resolve_permission,
+    )
 
     if identity is None:
         return False  # nothing vouches for the caller
     if ns not in cache:
         cache[ns] = await resolve_permission(identity, ns)
+    if cache[ns] == PERMISSION_UNAVAILABLE:
+        raise RegistryUnavailableError(
+            f"Registry unavailable (read permission on {ns!r} for a peer)", "permission check",
+        )
     return permission_sufficient(cache[ns], "read")
 
 
@@ -2310,9 +2322,11 @@ class DocumentService:
         active version, projected to {document_id, namespace, template_value,
         template_id, status, data: {title?, doc_status?}}. Closes the N+1
         fetch loop the relationships sidebar would otherwise pay (CASE-303).
-        Cross-namespace peers respect read permission: an unauthorised
-        peer namespace populates peer_error_code='forbidden' on that item
-        rather than 403'ing the whole request.
+        Cross-namespace peers respect read permission: a peer in a
+        namespace the caller cannot read reports peer_error_code='not_found'
+        on that item (as a missing peer does), rather than 403'ing the whole
+        request. A Registry that cannot answer the permission check fails
+        the request with 503.
 
         `template_ids` are edge-type template IDs the caller already
         resolved through the Registry.

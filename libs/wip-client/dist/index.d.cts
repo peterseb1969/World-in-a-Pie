@@ -1961,6 +1961,12 @@ interface NamespaceIntegritySummary {
     identity_hash_mismatches: number;
     /** Documents whose identity could not be compared (a value or resolution missing, or the pinned template version not found). */
     identity_unverified: number;
+    /**
+     * Checks skipped because a service could not answer, counted by
+     * `'<check>:<service>'` (e.g. `'term_reference:def-store'`). Any count
+     * makes the status `incomplete`.
+     */
+    checks_not_run: Record<string, number>;
 }
 /**
  * The outcome of a namespace validation job.
@@ -1971,7 +1977,12 @@ interface NamespaceIntegritySummary {
  * issue per document.
  */
 interface NamespaceIntegrityResult {
-    status: 'healthy' | 'warning' | 'error';
+    /**
+     * `error` / `warning` by the worst issue; `incomplete` when some checks
+     * could not run (`summary.checks_not_run`) and nothing was found;
+     * `healthy` only when every check ran.
+     */
+    status: 'healthy' | 'warning' | 'error' | 'incomplete';
     summary: NamespaceIntegritySummary;
     issues: NamespaceIntegrityIssue[];
     issues_truncated: number;

@@ -34,6 +34,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   a claim that is not a list of strings no longer crashes the permission
   check with a 500.
 
+### An integrity check that could not ask def-store or the template store is `incomplete`, never `healthy`; a peer whose read check the Registry could not answer fails the request (@wip/client 0.106.0)
+
+- **Integrity** (`GET /api/document-store/integrity`, namespace validation
+  jobs): the template-reference, term-reference and identity-hash checks
+  skipped a document silently when their store did not answer, and the
+  status was graded from the issues alone, so an outage read as `healthy`.
+  Each skipped check is now counted in `summary.checks_not_run`, keyed
+  `'<check>:<service>'` (e.g. `term_reference:def-store`), and a result with
+  no finding but skipped checks is **`incomplete`**. Findings still decide
+  `error` / `warning`. A namespace validation job names the skipped checks
+  in its warning; the startup check logs them.
+- **`?include=peers`** turned a Registry outage on a peer namespace's read
+  check into `peer_error_code: not_found`. The request now answers 503
+  (`registry_unavailable`). A namespace the caller cannot read is still
+  reported as `not_found`, as a missing peer is.
+- **@wip/client 0.106.0:** `NamespaceIntegrityResult.status` gains
+  `'incomplete'`; `NamespaceIntegritySummary` gains `checks_not_run`.
+  **Action:** re-vendor `libs/wip-client/wip-client-0.106.0.tgz`; a caller
+  that switches on the status needs an `incomplete` case.
+
 ### A document write whose def-store or template store cannot answer is refused as `dependency_unavailable`, never read as "not found" or a warning
 
 - **New per-item code `dependency_unavailable`** (`details.dependency`:
