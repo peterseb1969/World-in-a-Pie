@@ -5,7 +5,7 @@ For developers iterating on component source locally. Produces the same
 file set as the compose renderer but with three dev-friendly changes:
 
   1. `build:` contexts materialized into the render tree at
-     build-contexts/<name>/ — no pulling from a registry. For the 5
+     build-contexts/<name>/ — no pulling from a registry. For the
      Python services that use `wip_auth` the context is patched to
      COPY + pip install `libs/wip-auth` (mirrors `build-release.sh`
      for production). `document-store` additionally gets `libs/wip-archive`
@@ -111,7 +111,7 @@ from wip_deploy.spec.component import Component
 # patched by build-release.sh; dev gets the same treatment here).
 _AUTH_SERVICES: frozenset[str] = frozenset({
     "registry", "def-store", "template-store", "document-store", "reporting-sync",
-    "ingest-gateway",
+    "ingest-gateway", "mcp-server", "auth-gateway",
 })
 
 # Services that additionally import from libs/wip-archive (the archive

@@ -33,6 +33,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.middleware.sessions import SessionMiddleware
 
+from wip_auth.ratelimit import setup_rate_limiting
+
 from . import app_origins
 from .config import (
     check_production_security,
@@ -65,6 +67,21 @@ app.add_middleware(
     # header either way, so the internal plain-HTTP hop is unaffected.
     https_only=app_origins.cookie_secure(),
 )
+
+# Per-client rate limit, the same rule and the same WIP_RATE_LIMIT as every
+# WIP service: a request that came through Caddy (it carries
+# X-Forwarded-For) is limited per client address; one without it, and the
+# health probe, is not. Added after the session middleware so it runs first
+# and a flood costs no session parsing.
+#
+# /auth/verify answers once per protected request, for every service and
+# every app, so this one budget is a client's platform-wide cap on protected
+# routes: a client spreading requests over several services reaches it
+# before any single service's. Behind Caddy a refused verify reaches the
+# client as the 429 with its Retry-After; behind a hand-built nginx
+# auth_request (not rendered by the deployer) it becomes a 500, as any
+# non-401/403 answer does there.
+setup_rate_limiting(app)
 
 
 # ---------------------------------------------------------------------------

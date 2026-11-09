@@ -918,13 +918,17 @@ when its manifest counts entities or lists no namespaces.
 
 ### `WIP_RATE_LIMIT` is enforced, per client, on requests through the proxy
 
-`WIP_RATE_LIMIT` (default `40000/minute`) was read by registry, def-store, template-store, document-store and reporting-sync, but none of them installed the middleware that applies it, so no request was ever rate-limited. Now:
+`WIP_RATE_LIMIT` (default `40000/minute`) was read by registry, def-store, template-store, document-store and reporting-sync, but none of them installed the middleware that applies it, so no request was ever rate-limited. Now every HTTP service applies it — those five, ingest-gateway, auth-gateway and the MCP server's network transports:
 - **Who is limited.** Each request that reached a service through Caddy is limited per client address, the first `X-Forwarded-For` entry, which Caddy writes itself. The limit runs before authentication.
+- **One budget per service.** A client's requests to every path of a service draw on one budget. (The first cut scoped it per URL path, so every document id started a fresh budget and the limit bound nobody.)
+- **auth-gateway:** `/auth/verify` answers once per protected request on every service and app, so its budget is a client's platform-wide cap on protected routes. Behind Caddy a refused verify reaches the client as the 429; behind a hand-built nginx `auth_request` it becomes a 500.
+- **MCP server (`/mcp`):** the limit runs before the key check, so a flood of made-up keys no longer turns into one Registry key check each. stdio is unaffected.
+- **ingest-gateway:** ingest itself arrives over NATS; the limit covers its HTTP surface — result polling, status and metrics.
 - **Who is not.** A request without `X-Forwarded-For` came from inside the platform (another service, ingest's deliveries, a restore, a health probe) and is not limited. Neither is any path ending in `health`, `ready` or `livez`.
 - **The 429.** It carries `Retry-After` and `X-RateLimit-Limit` / `-Remaining` / `-Reset`.
 - **Disabling.** An empty `WIP_RATE_LIMIT` turns it off.
-- **Scope.** Buckets are in memory per process: N replicas allow N times the limit, and a restart resets them. auth-gateway and ingest-gateway configure no limiter yet.
-- **Dependency.** `wip-auth` now requires `slowapi>=0.1.10`.
+- **Scope.** Buckets are in memory per process: N replicas allow N times the limit, and a restart resets them.
+- **Dependency.** `wip-auth` now requires `slowapi>=0.1.10`. auth-gateway and mcp-server now depend on wip-auth too: their release and dev images bake it in, and mcp-server's image installs a new `requirements-docker.txt`.
 
 `reports/SECURITY-AUDIT.md` C3 is back to Fixed.
 

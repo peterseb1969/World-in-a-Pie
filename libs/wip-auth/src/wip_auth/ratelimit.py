@@ -70,6 +70,10 @@ def create_limiter() -> Limiter:
         default_limits=default_limits,
         enabled=bool(default_limit),
         headers_enabled=True,
+        # Scope a budget by the limit target (_service), not by the request
+        # path. slowapi's default ("url") gives every distinct path its own
+        # budget, so a client walking document ids would never be limited.
+        key_style="endpoint",
     )
 
 

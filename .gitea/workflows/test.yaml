@@ -327,9 +327,6 @@ jobs:
         run: |
           . "$GITHUB_WORKSPACE/.venv/bin/activate"
           pip install -r requirements.txt
-          # wip_auth.testing backs the request-model-strictness gate; this
-          # service does not otherwise depend on wip_auth, so install it here.
-          pip install -e ../../libs/wip-auth
           pip install pytest pytest-asyncio
 
       - name: Run tests

@@ -5448,6 +5448,17 @@ def build_network_app(transport: str):
 
         starlette_app.add_middleware(ApiKeyMiddleware)
 
+    # Per-client rate limit, the same rule and WIP_RATE_LIMIT as every WIP
+    # service: a request that came through Caddy (it carries
+    # X-Forwarded-For) is limited per client address; one without it, and
+    # /health, is not. Added last so it runs first: a flood of made-up keys
+    # is shed here instead of each costing a Registry key check (only valid
+    # keys are cached). Imported here because only the network transports
+    # need it; stdio runs without wip-auth.
+    from wip_auth.ratelimit import setup_rate_limiting
+
+    setup_rate_limiting(starlette_app)
+
     return starlette_app
 
 

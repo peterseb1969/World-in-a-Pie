@@ -55,6 +55,10 @@ def client(monkeypatch):
     async def thing(identity: UserIdentity = Depends(require_identity())):
         return {"user": identity.username}
 
+    @router.get("/api/svc/things/{thing_id}")
+    async def one_thing(thing_id: str, identity: UserIdentity = Depends(require_identity())):
+        return {"id": thing_id}
+
     @router.get("/api/svc/health")
     async def health():
         return {"status": "healthy"}
@@ -72,6 +76,15 @@ def test_a_client_past_the_limit_gets_429_with_its_retry_window(client):
     assert "Rate limit exceeded" in refused.json()["detail"]
     assert int(refused.headers["Retry-After"]) > 0
     assert refused.headers["X-RateLimit-Limit"] == "3"
+
+
+def test_one_budget_covers_every_path_of_the_service(client):
+    # Not a budget per URL: then every distinct path, each document id among
+    # them, would start a fresh budget and the limit would bind nobody.
+    xff = _client("203.0.113.15")
+    for path in ("/api/svc/thing", "/api/svc/things/a", "/api/svc/things/b"):
+        assert client.get(path, headers={**KEY, **xff}).status_code == 200
+    assert client.get("/api/svc/things/c", headers={**KEY, **xff}).status_code == 429
 
 
 def test_every_response_through_the_proxy_reports_its_budget(client):

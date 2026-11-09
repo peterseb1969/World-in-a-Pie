@@ -1,0 +1,13 @@
+# WIP MCP Server runtime dependencies (the container image). wip-auth, for the
+# per-client rate limit on the network transports, is baked into the image by
+# scripts/build-release.sh and the dev renderer, after this file's install.
+
+# MCP SDK
+mcp[cli]>=1.0.0,<2.0.0
+
+# HTTP client for WIP API calls
+httpx>=0.26.0,<0.28.0
+
+# Data validation
+pydantic>=2.5.0,<3.0.0
+pydantic-settings>=2.1.0,<3.0.0

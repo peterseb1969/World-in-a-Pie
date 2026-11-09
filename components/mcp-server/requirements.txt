@@ -9,3 +9,7 @@ httpx>=0.26.0,<0.28.0
 # Data validation
 pydantic>=2.5.0,<3.0.0
 pydantic-settings>=2.1.0,<3.0.0
+
+# Shared WIP library: the per-client rate limit on the network transports
+# (wip_auth.ratelimit). Container images bake it in instead.
+-e ../../libs/wip-auth

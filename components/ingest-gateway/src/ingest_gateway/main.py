@@ -24,6 +24,7 @@ from wip_auth import (
 )
 from wip_auth.cache_events import subscribe_cache_invalidation
 from wip_auth.events import EventBus, StreamSpec
+from wip_auth.ratelimit import setup_rate_limiting
 from wip_auth.security import check_production_security
 
 from . import __version__
@@ -176,6 +177,15 @@ app = FastAPI(
 # outside the router, and the probe is exempted so a stale key on a monitor
 # does not turn into a 401.
 _providers = setup_auth(app, public_paths=["/api/ingest-gateway/health"])
+
+# Per-client rate limit, the same rule as every WIP service: a request that
+# came through Caddy (it carries X-Forwarded-For) is limited per client
+# address, before authentication; calls from inside the platform and the
+# health probe are not. Ingest itself arrives over NATS, so what this limits
+# is the HTTP surface producers use: result polling (one lookup can ask for
+# up to 1000 ids), status and metrics. Added after setup_auth so it runs
+# first and a flood of unknown keys costs no key check.
+setup_rate_limiting(app)
 
 router = APIRouter(
     prefix="/api/ingest-gateway", dependencies=[Depends(require_api_key)]
