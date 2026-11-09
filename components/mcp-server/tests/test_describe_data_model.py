@@ -1,14 +1,11 @@
 """Tests for describe_data_model tool and wip://query-assistant-prompt resource."""
 
-import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-sys.modules.setdefault("yaml", MagicMock())
-
-from wip_mcp.client import WipClient  # noqa: E402
-from wip_mcp.server import describe_data_model, get_query_assistant_prompt  # noqa: E402
+from wip_mcp.client import WipClient
+from wip_mcp.server import describe_data_model, get_query_assistant_prompt
 
 
 def _mock_client():
@@ -24,15 +21,26 @@ def _mock_client():
                 "namespace": "clinic",
                 "version": 2,
                 "identity_fields": ["email"],
+                # Field shapes as template-store serves them (GET /templates):
+                # `type`, `terminology_ref` as the terminology's canonical id,
+                # `reference_type` + `target_templates` as template ids.
                 "fields": [
-                    {"name": "name", "field_type": "text", "mandatory": True, "description": "Full name"},
-                    {"name": "email", "field_type": "text", "mandatory": True, "description": "Contact email"},
+                    {"name": "name", "label": "Full name", "type": "string", "mandatory": True},
+                    {"name": "email", "label": "Contact email", "type": "string", "mandatory": True},
                     {
                         "name": "condition",
-                        "field_type": "term",
+                        "label": "Primary condition",
+                        "type": "term",
                         "mandatory": False,
-                        "term_terminology_value": "CONDITION",
-                        "description": "Primary condition",
+                        "terminology_ref": "TRM-001",
+                        "reference_type": "term",
+                    },
+                    {
+                        "name": "departments",
+                        "label": "Departments | wards",
+                        "type": "array",
+                        "array_item_type": "term",
+                        "array_terminology_ref": "TRM-002",
                     },
                 ],
                 "rules": [],
@@ -46,9 +54,16 @@ def _mock_client():
                 "version": 1,
                 "identity_fields": ["patient_id", "visit_date"],
                 "fields": [
-                    {"name": "patient_id", "field_type": "reference", "mandatory": True, "description": "Patient ref"},
-                    {"name": "visit_date", "field_type": "date", "mandatory": True, "description": "Date of visit"},
-                    {"name": "notes", "field_type": "text", "mandatory": False},
+                    {
+                        "name": "patient_id",
+                        "label": "Patient ref",
+                        "type": "reference",
+                        "mandatory": True,
+                        "reference_type": "document",
+                        "target_templates": ["0190c000-0000-7000-0000-000000000001"],
+                    },
+                    {"name": "visit_date", "label": "Date of visit", "type": "date", "mandatory": True},
+                    {"name": "notes", "label": "Notes", "type": "string", "mandatory": False},
                 ],
                 "rules": [],
                 "status": "active",
@@ -76,7 +91,7 @@ def _mock_client():
                 "value": "DEPARTMENT",
                 "label": "Hospital Departments",
                 "namespace": "clinic",
-                "active_term_count": 8,
+                "term_count": 8,
                 "mutable": True,
                 "status": "active",
             },
@@ -132,13 +147,18 @@ async def test_describe_data_model_fields_per_template():
     assert "name" in result
     assert "email" in result
     assert "condition" in result
-    assert "term" in result  # field_type for condition
-    assert "CONDITION" in result  # term_terminology_value
+    # A term field shows its type and its terminology by value, not by id
+    assert "| condition | term |  | CONDITION | Primary condition |" in result
+    assert "| departments | array of term |  | DEPARTMENT | Departments \\| wards |" in result
+    assert "TRM-001" not in result
+    # No invented type names
+    assert "| text |" not in result
 
     # VISIT template fields
     assert "patient_id" in result
     assert "visit_date" in result
-    assert "reference" in result  # field_type
+    # A document reference shows the target template by value
+    assert "| patient_id | reference (document) | yes | PATIENT | Patient ref |" in result
 
 
 @pytest.mark.asyncio
@@ -306,6 +326,23 @@ async def test_query_assistant_prompt_has_all_sections():
     assert "query_by_template" in result
     assert "run_report_query" in result
     assert "list_report_tables" in result
-    assert "UPPERCASE" in result
+    assert "UPPERCASE" not in result
+    assert "_term_id" in result
     assert "500 words" in result
     assert "cannot" in result.lower()  # read-only reminder
+
+
+def test_field_keys_read_exist_in_template_store_spec():
+    """Every FieldDefinition key the data-model builder reads is one
+    template-store serves. The builder once read `field_type` and
+    `term_terminology_id`, which do not exist, and showed every field as
+    "text" while a fixture with the same invented keys kept the suite green."""
+    import json
+    from pathlib import Path
+
+    from wip_mcp.server import FIELD_KEYS_READ
+
+    spec_path = Path(__file__).resolve().parents[3] / "schemas" / "template-store.json"
+    spec = json.loads(spec_path.read_text())
+    served = set(spec["components"]["schemas"]["FieldDefinition"]["properties"])
+    assert set(FIELD_KEYS_READ) <= served, set(FIELD_KEYS_READ) - served

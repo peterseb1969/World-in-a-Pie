@@ -444,16 +444,15 @@ This means the AI never needs to construct or parse bulk envelopes.
 
 ### OpenAPI Schema Patching
 
-Tool parameter schemas are derived from the actual OpenAPI specs of WIP services, not hand-written. The flow:
+Tool parameter schemas are derived from the actual OpenAPI specs of WIP services, not hand-written. A tool's prose is its docstring in `server.py`; the generated part only adds to it. The flow:
 
-1. `scripts/generate_schemas.py` fetches `/openapi.json` from each running service
-2. Extracts request model schemas (e.g., `CreateTerminologyRequest`, `FieldDefinition`)
-3. Writes `_generated_schemas.py` with `TOOL_SCHEMAS` and `TOOL_DESCRIPTIONS`
-4. At startup, `server.py` patches registered tool metadata with these schemas
+1. `tools.yaml` names, per tool, the OpenAPI request model (e.g. `CreateTerminologyRequest`, `FieldDefinition`) and the parameter that receives it
+2. `scripts/generate_schemas.py` reads the committed specs in `schemas/` (refresh them first with `scripts/update-schemas.sh`), resolves the models, and writes `src/wip_mcp/_generated_schemas.py`: `TOOL_SCHEMAS`, `TOOL_PARAMS` (tool → parameter → model) and `TOOL_FIELD_DOCS` (the field list per tool)
+3. At startup, `server.py` appends each tool's field list to its docstring and replaces the mapped parameter's schema with the OpenAPI model
+
+`_generated_schemas.py` ships inside the package, so a container serves the same descriptions as a source checkout; the server reads neither `tools.yaml` nor PyYAML. A generated entry naming a tool or parameter that does not exist stops the server at startup.
 
 This ensures the AI sees correct field names (`mandatory` not `required`, `terminology_ref` not `terminology_id`) — the same names the API validates against.
-
-Configuration for which schemas map to which tools lives in `tools.yaml`.
 
 ### Error Handling
 

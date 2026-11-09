@@ -16,6 +16,34 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   the test suite, so a new tool fails the tests until someone decides which
   it is.
 
+### MCP server: what it teaches matches the platform, in every way it is started
+
+- **`describe_data_model`** (and the `wip://query-assistant-prompt` built
+  from it) shows each field's real type — it showed every field as `text` —
+  and what it refers to: a term field's terminology, a reference's target
+  templates, an object's template, an array's item type, by value. Table
+  cells escape `|` and line breaks.
+- **`get_wip_status`** reads each service's body as well as its HTTP code. A
+  service answering 200 with `status: unhealthy` (reporting-sync with NATS and
+  PostgreSQL down) shows as `UNHEALTHY`, and a dependency a service reports as
+  disconnected is listed under it; either makes the overall line `DEGRADED`.
+- **Tool descriptions are the same in a container and a source checkout.** The
+  image had neither `tools.yaml` nor PyYAML, so containers served no OpenAPI
+  field lists; a source run replaced 21 tools' docstrings with thinner text.
+  Now a tool's description is its docstring plus, for the 8 tools that take a
+  request model, the generated field list, all from `_generated_schemas.py`
+  inside the package. `tools.yaml` keeps only the model mapping and is read by
+  `scripts/generate_schemas.py` alone; PyYAML moved to the `generate` extra.
+- Served texts corrected: PoNIF #6 no longer says pinned template versions
+  are cached permanently (their status is re-read within seconds); term
+  values are not "UPPERCASE" — the query guidance points at `search_terms`
+  and the `<field>_term_id` column; `reconcile_terminology` says an explicit
+  null clears `description` / `parent_term_id`; the edge-type hint says the
+  endpoint lists can be widened with `add_edge_type_endpoints`;
+  `create_template` says `template_ref` is for object fields, and references
+  use `reference_type` + `target_templates`. The two "already exists" hints
+  keep the `WIP error [code]:` form.
+
 ### ingest-gateway: every message ends in one outcome its producer can read
 
 - **The envelope is mandatory.** A message must be

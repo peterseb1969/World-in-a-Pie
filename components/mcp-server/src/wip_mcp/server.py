@@ -13,6 +13,7 @@ import json
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
@@ -1014,7 +1015,9 @@ Rule: Use merge_entries() to reconcile duplicates. Synonyms enable cross-system
 ## 6. Template Cache — Changes Aren't Instant
 "Latest active" template resolution has a 5-second cache TTL. After updating
 a template, the old definition may be used for up to 5 seconds. Lookups by
-explicit version are cached permanently (immutable).
+explicit version keep their schema (a version's schema never changes), but
+its active/inactive status is re-read within the same few seconds, so a
+deactivated version stops accepting documents shortly after.
 
 Trap: You update a template and immediately create a document — it validates
       against the OLD version from cache.
@@ -1155,7 +1158,10 @@ You **cannot** create, modify, or delete anything. All tools are read-only.
 
 - Use `search` for broad text searches across all entity types.
 - Use `query_by_template` to list/filter documents of a specific template type.
-- Term field values are UPPERCASE (e.g., "BEAST", "EVOCATION").
+- A term field holds the value as it was submitted (any of the term's names,
+  in whatever case the writer used); case handling is set per terminology.
+  Do not guess the spelling: look the term up (`search_terms`, `list_terms`)
+  and, in SQL, filter on the `<field>_term_id` column with its term_id.
 - Reference fields store entity IDs — use `get_document` to resolve them to full details.
 - For aggregations, cross-template JOINs, or analytics, use `run_report_query` with SQL.
   - Each namespace is its own PostgreSQL schema; a table is `"<namespace>"."doc_<value>"`.
@@ -1190,6 +1196,15 @@ You **cannot** create, modify, or delete anything. All tools are read-only.
 # ===================================================================
 
 
+def _health_label(info: dict) -> str:
+    """healthy, UNHEALTHY with the status the service reported, or DOWN."""
+    if info["healthy"]:
+        return "healthy"
+    if info.get("status"):
+        return f"UNHEALTHY (reports {info['status']})"
+    return "DOWN"
+
+
 @mcp.tool()
 async def get_wip_status() -> str:
     """Check health of WIP's backend services. Call this first to verify connectivity.
@@ -1204,16 +1219,74 @@ async def get_wip_status() -> str:
         lines = ["WIP Service Status:"]
         all_healthy = True
         for name, info in results.items():
-            status = "healthy" if info["healthy"] else "DOWN"
-            if not info["healthy"]:
-                all_healthy = False
-            lines.append(f"  {name}: {status}")
+            down = info.get("dependencies_down") or []
+            all_healthy = all_healthy and info["healthy"] and not down
+            lines.append(f"  {name}: {_health_label(info)}")
+            if down:
+                lines.append(f"    dependencies not connected: {', '.join(down)}")
             if info.get("error"):
                 lines.append(f"    error: {info['error']}")
         lines.insert(1, f"  overall: {'all healthy' if all_healthy else 'DEGRADED'}")
         return "\n".join(lines)
     except Exception as e:
         return _error(e)
+
+
+def _md_cell(value: Any) -> str:
+    """One markdown table cell: pipes escaped, line breaks flattened."""
+    text = "" if value is None else str(value)
+    return " ".join(text.split()).replace("|", "\\|")
+
+
+# The template-store FieldDefinition keys _field_type_and_target reads. A test
+# checks each against the committed template-store OpenAPI spec, so a key the
+# API does not serve fails the suite instead of rendering every field blank.
+FIELD_KEYS_READ = (
+    "name", "label", "type", "mandatory", "terminology_ref",
+    "array_item_type", "array_terminology_ref", "array_template_ref",
+    "template_ref", "reference_type", "target_templates",
+    "target_terminologies",
+)
+
+
+def _field_type_and_target(
+    field: dict, terminology_names: dict[str, str], template_names: dict[str, str],
+) -> tuple[str, str]:
+    """A field's type as an agent should read it, and what it refers to.
+
+    Terminology and template references are served as canonical ids; they
+    are shown by value when the catalog knows them, else as the id.
+    """
+    def terms(refs: list) -> str:
+        return ", ".join(terminology_names.get(r, r) for r in refs if r)
+
+    def templates(refs: list) -> str:
+        return ", ".join(template_names.get(r, r) for r in refs if r)
+
+    def reference_target() -> str:
+        if (field.get("reference_type") or "document") == "document":
+            return templates(field.get("target_templates") or [])
+        return terms(field.get("target_terminologies") or [])
+
+    ftype = field.get("type") or "?"
+    item = field.get("array_item_type") or "?"
+    rtype = field.get("reference_type") or "document"
+    # (shown type, target) per field shape; anything else has no target.
+    shapes = {
+        ("term", None): ("term", lambda: terms([field.get("terminology_ref")])),
+        ("object", None): ("object", lambda: templates([field.get("template_ref")])),
+        ("reference", None): (f"reference ({rtype})", reference_target),
+        ("array", "term"): ("array of term", lambda: terms([field.get("array_terminology_ref")])),
+        ("array", "object"): (
+            "array of object", lambda: templates([field.get("array_template_ref")]),
+        ),
+        ("array", "reference"): (f"array of reference ({rtype})", reference_target),
+    }
+    key = (ftype, item if ftype == "array" else None)
+    if key in shapes:
+        shown, target = shapes[key]
+        return shown, target()
+    return (f"array of {item}" if ftype == "array" else ftype), ""
 
 
 async def _build_data_model_markdown(namespace: str | None = None) -> str:
@@ -1247,6 +1320,15 @@ async def _build_data_model_markdown(namespace: str | None = None) -> str:
             break
         page += 1
 
+    terminology_names = {
+        t["terminology_id"]: t.get("value", t["terminology_id"])
+        for t in all_terminologies if t.get("terminology_id")
+    }
+    template_names = {
+        t["template_id"]: t.get("value", t["template_id"])
+        for t in all_templates if t.get("template_id")
+    }
+
     # Build markdown output
     lines: list[str] = ["# WIP Data Model"]
 
@@ -1264,7 +1346,10 @@ async def _build_data_model_markdown(namespace: str | None = None) -> str:
             fields = t.get("fields", [])
             identity = ", ".join(t.get("identity_fields", []))
             ns = t.get("namespace", "")
-            lines.append(f"| {value} | {label} | {len(fields)} | {identity or '—'} | {ns} |")
+            lines.append(
+                f"| {_md_cell(value)} | {_md_cell(label)} | {len(fields)} "
+                f"| {_md_cell(identity) or '—'} | {_md_cell(ns)} |"
+            )
 
         # --- Fields per template ---
         lines.append("\n## Fields by Template\n")
@@ -1274,15 +1359,15 @@ async def _build_data_model_markdown(namespace: str | None = None) -> str:
             if not fields:
                 continue
             lines.append(f"### {value}\n")
-            lines.append("| Field | Type | Mandatory | Term Terminology | Description |")
-            lines.append("|-------|------|-----------|------------------|-------------|")
+            lines.append("| Field | Type | Mandatory | Refers to | Label |")
+            lines.append("|-------|------|-----------|-----------|-------|")
             for f in fields:
-                name = f.get("name", "?")
-                ftype = f.get("field_type", "text")
+                ftype, target = _field_type_and_target(f, terminology_names, template_names)
                 mandatory = "yes" if f.get("mandatory") else ""
-                term_ref = f.get("term_terminology_id") or f.get("term_terminology_value") or ""
-                desc = (f.get("description") or "")[:60]
-                lines.append(f"| {name} | {ftype} | {mandatory} | {term_ref} | {desc} |")
+                lines.append(
+                    f"| {_md_cell(f.get('name', '?'))} | {_md_cell(ftype)} | {mandatory} "
+                    f"| {_md_cell(target)} | {_md_cell(f.get('label'))[:60]} |"
+                )
             lines.append("")
     else:
         lines.append("No active templates found.")
@@ -1295,10 +1380,13 @@ async def _build_data_model_markdown(namespace: str | None = None) -> str:
         for t in sorted(all_terminologies, key=lambda x: x.get("value", "")):
             value = t.get("value", "?")
             label = t.get("label", "")
-            term_count = t.get("term_count", t.get("active_term_count", "?"))
+            term_count = t.get("term_count", "?")
             mutable = "yes" if t.get("mutable") else ""
             ns = t.get("namespace", "")
-            lines.append(f"| {value} | {label} | {term_count} | {mutable} | {ns} |")
+            lines.append(
+                f"| {_md_cell(value)} | {_md_cell(label)} | {term_count} "
+                f"| {mutable} | {_md_cell(ns)} |"
+            )
     else:
         lines.append("No active terminologies found.")
 
@@ -1306,7 +1394,10 @@ async def _build_data_model_markdown(namespace: str | None = None) -> str:
     lines.append("\n## Query Conventions\n")
     lines.append("- Use `query_by_template` to list/filter documents of a specific template.")
     lines.append("- Use `search` for cross-template free-text search.")
-    lines.append("- Term field values are UPPERCASE (e.g., creature_type: \"BEAST\").")
+    lines.append(
+        "- A term field holds the value as submitted (any of the term's names, any case); "
+        "look the term up with `search_terms` and, in SQL, filter on `<field>_term_id`."
+    )
     lines.append("- Reference fields store entity IDs — use `get_document` to resolve.")
     lines.append("- Use `run_report_query` for SQL aggregations, JOINs, and analytics.")
     lines.append(
@@ -2120,9 +2211,12 @@ async def reconcile_terminology(
     explicit choice (pass dry_run=false).
 
     Semantics: terms are keyed by exact value; the snapshot is
-    authoritative for label and names, while description/sort_order/parent
-    apply only when set (reconcile never clears a field — re-runs are
-    idempotent); metadata is honored on create, never rewritten. Active
+    authoritative for label and names. description and parent_term_id
+    change only when the snapshot item names them: omitted keeps the stored
+    value, an explicit null clears it (RFC 7396, like update_term).
+    sort_order applies only when it is non-zero. Re-runs of the same
+    snapshot are idempotent; metadata is honored on create, never
+    rewritten. Active
     terms absent from the snapshot are DEPRECATED (never deleted) and only
     under on_missing='deprecate', optionally with successors (which may
     themselves be new in the snapshot). A snapshot value matching a
@@ -2721,16 +2815,19 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
             label: str,         # display label
             type: str,          # string, number, integer, boolean, date, datetime, term, reference, file, array, object
             mandatory: bool,    # whether the field is required (NOTE: "mandatory", not "required")
-            terminology_ref: str,  # for type=term: terminology_id of the referenced terminology
-            template_ref: str,  # for type=reference: template_id of the referenced template
+            terminology_ref: str,  # for type=term: the terminology (id, value or ns:VALUE)
+            reference_type: str,   # for type=reference: document, term, terminology or template
+            target_templates: [str],  # for reference_type=document: allowed target templates
+            template_ref: str,     # for type=object: the template of the nested object
             semantic_type: str,  # email, url, latitude, longitude, percentage, duration, geo_point
             ...
         }
 
     IMPORTANT field naming:
         - Use "mandatory" (not "required") for required fields
-        - Use "terminology_ref" (not "terminology_id") for term field references
-        - Use "template_ref" (not "template_id") for reference field references
+        - Use "terminology_ref" (not "terminology_id") for term fields
+        - A reference field is type "reference" with "reference_type" and, for
+          documents, "target_templates"; "template_ref" is for "object" fields
 
     Example:
         create_template({
@@ -2756,7 +2853,7 @@ async def create_template(template: dict, namespace: str | None = None) -> str:
         err = str(e)
         # The code, from servers that send one; the message for older ones.
         if getattr(e, "error_code", None) == "already_exists" or "already exists" in err:
-            return f"WIP error: {err}\n\nTo add or modify fields on an existing template, use update_template(template_id, {{\"fields\": [...]}}) instead. This creates a new version."
+            return f"{_error(e)}\n\nTo add or modify fields on an existing template, use update_template(template_id, {{\"fields\": [...]}}) instead. This creates a new version."
         return _error(e)
 
 
@@ -2941,10 +3038,11 @@ async def create_edge_type(
         # The code, from servers that send one; the message for older ones.
         if getattr(e, "error_code", None) == "already_exists" or "already exists" in err:
             return (
-                f"WIP error: {err}\n\nTo evolve an existing edge type, use "
-                f"update_template — it creates a new version. Note that "
-                f"`usage`, `source_templates`, `target_templates`, and "
-                f"`versioned` are immutable after creation."
+                f"{_error(e)}\n\nTo evolve an existing edge type, use "
+                f"update_template — it creates a new version. `usage` and "
+                f"`versioned` are immutable after creation. The endpoint "
+                f"lists (`source_templates`, `target_templates`) can be "
+                f"widened in place with add_edge_type_endpoints, not narrowed."
             )
         return _error(e)
 
@@ -3444,6 +3542,8 @@ async def create_document(document: dict, namespace: str | None = None) -> str:
 async def create_documents_bulk(documents: list[dict], namespace: str | None = None) -> str:
     """Create multiple documents at once. Returns per-item results.
 
+    Each item has the same shape as create_document's document.
+
     Args:
         documents: List of document data dicts.
         namespace: Namespace for all documents. Omit to use per-document namespace or server default.
@@ -3825,6 +3925,8 @@ async def import_terminology(
 ) -> str:
     """Import a terminology with terms from JSON data.
 
+    The import format is the one export_terminology produces.
+
     Args:
         data: The terminology data to import (JSON format).
         format: Import format ('json').
@@ -4082,6 +4184,8 @@ async def upload_file(
     category: str | None = None,
 ) -> str:
     """Upload a file to WIP from a local path. Returns file_id and metadata.
+
+    Use the returned file_id as the value of a document's file field.
 
     Args:
         file_path: Absolute path to the file on the local machine.
@@ -4597,6 +4701,7 @@ async def import_documents_csv(
     Reads a local file, maps columns to template fields, and creates
     documents in bulk. If column_mapping is omitted, columns are
     auto-mapped to template fields by matching names (case-insensitive).
+    Term fields take human-readable values in the file, as in create_document.
 
     Args:
         file_path: Path to a CSV or XLSX file.
@@ -4679,7 +4784,8 @@ async def start_replay(
     """Start replaying stored documents as NATS events.
 
     Replayed events go to a dedicated NATS stream with metadata.replay=true.
-    Use this to onboard new consumers or backfill data.
+    Use this to onboard new consumers or backfill data. Track it with
+    get_replay_status; stop it with cancel_replay.
 
     Args:
         template_value: Replay documents for this template (optional, replays all if omitted).
@@ -5185,64 +5291,47 @@ async def check_reporting_parity(
 
 
 def _patch_tool_schemas():
-    """Patch tool descriptions and parameter schemas from generated OpenAPI data.
+    """Extend tools with their OpenAPI-derived field lists and parameter schemas.
 
-    This function runs at import time. It reads tools.yaml for hand-written
-    metadata and _generated_schemas.py for OpenAPI-derived field definitions,
-    then patches the registered MCP tools so the AI sees correct field names.
+    Runs at import time from _generated_schemas.py alone, which ships inside
+    the package, so a container, a source checkout and a stdio run serve the
+    same descriptions. A tool's prose is its docstring; the generated field
+    list is appended to it, never substituted for it.
     """
-    try:
-        from ._generated_schemas import TOOL_DESCRIPTIONS, TOOL_SCHEMAS
-    except ImportError:
-        # Generated file doesn't exist yet — run generate_schemas.py first
-        return
+    from ._generated_schemas import TOOL_FIELD_DOCS, TOOL_PARAMS, TOOL_SCHEMAS
 
-    config_path = Path(__file__).parent.parent.parent / "tools.yaml"
-    if not config_path.exists():
-        return
+    tools = {t.name: t for t in mcp._tool_manager.list_tools()}
+    unknown = (set(TOOL_FIELD_DOCS) | set(TOOL_PARAMS)) - set(tools)
+    if unknown:
+        raise RuntimeError(
+            f"_generated_schemas.py names tools that are not registered: "
+            f"{sorted(unknown)} — update tools.yaml and regenerate"
+        )
 
-    try:
-        import yaml
-    except ImportError:
-        return
+    for tool_name, field_docs in TOOL_FIELD_DOCS.items():
+        tool = tools[tool_name]
+        tool.description = f"{(tool.description or '').rstrip()}\n\n{field_docs}"
 
-    config = yaml.safe_load(config_path.read_text())
-    tools_config = config.get("tools", {})
-
-    for tool_name, tc in tools_config.items():
-        # Find the registered tool
-        registered_tools = mcp._tool_manager.list_tools()
-        tool = None
-        for t in registered_tools:
-            if t.name == tool_name:
-                tool = t
-                break
-        if not tool:
-            continue
-
-        # Patch description with composed version (hand-written + generated)
-        if tool_name in TOOL_DESCRIPTIONS:
-            tool.description = TOOL_DESCRIPTIONS[tool_name]
-
-        # Patch parameter schema for dict params
-        schema_ref = tc.get("openapi_schema")
-        param_name = tc.get("param_name")
-        if schema_ref and param_name and schema_ref in TOOL_SCHEMAS:
-            openapi_schema = TOOL_SCHEMAS[schema_ref]
-            props = tool.parameters.get("properties", {})
-            if param_name in props:
-                if tc.get("param_type") == "list":
-                    props[param_name] = {
-                        "type": "array",
-                        "items": openapi_schema,
-                        "description": props[param_name].get("description", ""),
-                    }
-                else:
-                    # Merge OpenAPI schema into the existing property
-                    merged = dict(openapi_schema)
-                    if "description" in props[param_name]:
-                        merged.setdefault("description", props[param_name]["description"])
-                    props[param_name] = merged
+    for tool_name, mapping in TOOL_PARAMS.items():
+        props = tools[tool_name].parameters.get("properties", {})
+        param_name = mapping["param_name"]
+        if param_name not in props:
+            raise RuntimeError(
+                f"{tool_name} has no parameter {param_name!r} for "
+                f"{mapping['schema_ref']} — update tools.yaml and regenerate"
+            )
+        openapi_schema = TOOL_SCHEMAS[mapping["schema_ref"]]
+        if mapping["param_type"] == "list":
+            props[param_name] = {
+                "type": "array",
+                "items": openapi_schema,
+                "description": props[param_name].get("description", ""),
+            }
+        else:
+            merged = dict(openapi_schema)
+            if "description" in props[param_name]:
+                merged.setdefault("description", props[param_name]["description"])
+            props[param_name] = merged
 
 
 _patch_tool_schemas()

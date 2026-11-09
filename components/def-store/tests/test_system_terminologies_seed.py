@@ -4,12 +4,11 @@ The relation types in ``_ONTOLOGY_RELATIONSHIP_TYPES`` are a SEEDED DEFAULT,
 not an immutable set: apps can add their own types, and OBO Graph import
 auto-creates any type it references. But the seeded baseline is what the served
 surfaces advertise (``wip://conventions``, ``wip://data-model``, and the
-``create_term_relations`` tool description generated from
-``components/mcp-server/tools.yaml``). This test pins that baseline so it cannot
-drift from the docs silently.
+``create_term_relations`` tool docstring in ``components/mcp-server``). This
+test pins that baseline so it cannot drift from the docs silently.
 
 If you add or remove a seeded relation type, update this set AND those doc
-surfaces in the same change, then regenerate ``_generated_schemas.py``.
+surfaces in the same change.
 """
 
 from def_store.services.system_terminologies import (
@@ -49,7 +48,7 @@ def test_relation_type_seed_matches_documented_set():
     assert seeded == EXPECTED_RELATION_TYPES, (
         "Seeded ontology relation types drifted from the documented set. "
         "Update the seed AND the wip://conventions / wip://data-model resource "
-        "text plus components/mcp-server/tools.yaml, then regenerate schemas."
+        "text plus the create_term_relations docstring in components/mcp-server."
     )
 
 

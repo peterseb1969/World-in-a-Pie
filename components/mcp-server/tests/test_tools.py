@@ -5,18 +5,13 @@ Tests the tool functions directly by mocking the WipClient.
 
 import json
 import os
-
-# Mock yaml before importing server (it may not be installed in test env)
-import sys
 import tempfile
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-sys.modules.setdefault("yaml", MagicMock())
-
-from wip_mcp.client import WipClient  # noqa: E402
-from wip_mcp.server import (  # noqa: E402
+from wip_mcp.client import WipClient
+from wip_mcp.server import (
     cancel_replay,
     export_report_csv,
     export_table_csv,

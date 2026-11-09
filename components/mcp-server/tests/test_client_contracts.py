@@ -362,9 +362,56 @@ async def test_check_health_keeps_the_body_of_an_unhealthy_503() -> None:
     with patch.object(client, "_get_client", return_value=mock_http):
         results = await client.check_health()
     assert results["def_store"] == {
-        "healthy": False, "details": {"status": "unhealthy", "database": "error"},
+        "healthy": False, "status": "unhealthy", "dependencies_down": ["database"],
+        "details": {"status": "unhealthy", "database": "error"},
     }
     assert results["registry"]["healthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_check_health_reads_the_body_status_of_a_200() -> None:
+    """A service answering 200 with status "unhealthy" in its body (as
+    reporting-sync does with NATS and PostgreSQL down) is unhealthy."""
+    client = _make_client(registry_url="https://h:8443")
+    mock_http = AsyncMock()
+    good = MagicMock()
+    good.status_code = 200
+    good.json.return_value = {"status": "healthy"}
+    sick = MagicMock()
+    sick.status_code = 200
+    sick.json.return_value = {
+        "status": "unhealthy", "nats_connected": False, "postgres_connected": False,
+    }
+    mock_http.get.side_effect = [good, good, good, good, sick]
+    with patch.object(client, "_get_client", return_value=mock_http):
+        results = await client.check_health()
+    assert results["reporting_sync"]["healthy"] is False
+    assert results["reporting_sync"]["dependencies_down"] == ["nats", "postgres"]
+    assert results["registry"]["healthy"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_wip_status_shows_a_disconnected_dependency() -> None:
+    """A store that calls itself healthy while its Registry is disconnected
+    is shown with that dependency, and the overall line is not "all healthy"."""
+    from wip_mcp.server import get_wip_status
+
+    results = {
+        "registry": {"healthy": True, "status": "healthy", "dependencies_down": []},
+        "template_store": {
+            "healthy": True, "status": "healthy", "dependencies_down": ["registry"],
+        },
+        "reporting_sync": {
+            "healthy": False, "status": "unhealthy", "dependencies_down": ["nats"],
+        },
+    }
+    mock = AsyncMock()
+    mock.check_health.return_value = results
+    with patch("wip_mcp.server.get_client", return_value=mock):
+        out = await get_wip_status()
+    assert "overall: DEGRADED" in out
+    assert "dependencies not connected: registry" in out
+    assert "reporting_sync: UNHEALTHY (reports unhealthy)" in out
 
 
 # =========================================================================

@@ -3,7 +3,7 @@
 
 Fetches OpenAPI specs from running WIP services (or reads cached copies),
 resolves $ref pointers, and produces src/wip_mcp/_generated_schemas.py
-with resolved JSON schemas and composed tool descriptions.
+with resolved JSON schemas, per-tool field lists and the parameter mapping.
 
 Usage:
     python -m scripts.generate_schemas --fetch    # Fetch fresh specs + generate
@@ -256,25 +256,10 @@ def _format_type(prop: dict) -> str:
     return t
 
 
-def compose_description(
-    tool_config: dict,
-    schemas: dict[str, dict],
-    specs: dict,
-) -> str | None:
-    """Compose a tool description from hand-written prose + generated schema."""
+def compose_field_docs(tool_config: dict, schemas: dict[str, dict]) -> str | None:
+    """The generated field list a tool's docstring is extended with."""
     parts = []
 
-    # Hand-written description
-    desc = tool_config.get("description", "")
-    if desc:
-        parts.append(desc.strip())
-
-    # Hand-written notes (gotchas, conventions)
-    notes = tool_config.get("notes", "")
-    if notes:
-        parts.append(notes.strip())
-
-    # Generated field reference from OpenAPI
     schema_ref = tool_config.get("openapi_schema")
     if schema_ref and "#" in schema_ref:
         schema = schemas.get(schema_ref)
@@ -295,36 +280,56 @@ def compose_description(
     return "\n\n".join(parts) if parts else None
 
 
+def tool_params(tools_config: dict) -> dict[str, dict]:
+    """Per tool: which parameter takes which OpenAPI schema, and its shape."""
+    params = {}
+    for tool_name, tc in sorted(tools_config.items()):
+        schema_ref = tc.get("openapi_schema")
+        param_name = tc.get("param_name")
+        if schema_ref and param_name:
+            params[tool_name] = {
+                "param_name": param_name,
+                "param_type": tc.get("param_type", "dict"),
+                "schema_ref": schema_ref,
+            }
+    return params
+
+
 # ---------------------------------------------------------------------------
 # Code generation
 # ---------------------------------------------------------------------------
 
 
 def generate_output(
-    tools_config: dict,
     resolved_schemas: dict[str, dict],
-    descriptions: dict[str, str],
+    field_docs: dict[str, str],
+    params: dict[str, dict],
 ) -> str:
     """Generate the _generated_schemas.py file content."""
     lines = [
-        '"""Auto-generated from WIP OpenAPI specs. Do not edit manually.',
+        '"""Auto-generated from WIP OpenAPI specs and tools.yaml. Do not edit manually.',
         "",
-        "Regenerate with: python -m scripts.generate_schemas [--fetch]",
+        "Regenerate with: python -m scripts.generate_schemas",
+        "",
+        "The server appends TOOL_FIELD_DOCS[tool] to that tool's docstring and",
+        "replaces the parameter TOOL_PARAMS[tool] names with TOOL_SCHEMAS[ref].",
         '"""',
         "",
         "",
     ]
 
-    # TOOL_SCHEMAS dict
     lines.append("TOOL_SCHEMAS: dict[str, dict] = " + _format_dict(resolved_schemas))
     lines.append("")
     lines.append("")
+    lines.append("TOOL_PARAMS: dict[str, dict] = " + _format_dict(params))
+    lines.append("")
+    lines.append("")
 
-    # TOOL_DESCRIPTIONS dict
-    lines.append("TOOL_DESCRIPTIONS: dict[str, str] = {")
-    for tool_name, desc in sorted(descriptions.items()):
-        escaped = desc.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-        lines.append(f'    {tool_name!r}: """{escaped}""",')
+    # repr() escapes every quote, backslash and control character, so no
+    # description text can break the generated module.
+    lines.append("TOOL_FIELD_DOCS: dict[str, str] = {")
+    for tool_name, doc in sorted(field_docs.items()):
+        lines.append(f"    {tool_name!r}: {doc!r},")
     lines.append("}")
     lines.append("")
 
@@ -399,24 +404,26 @@ def main():
         else:
             print(f"  {ref}: NOT FOUND")
 
-    # Compose descriptions
-    print("\nComposing tool descriptions...")
-    descriptions: dict[str, str] = {}
+    # Compose the field lists and parameter mapping
+    print("\nComposing field lists...")
+    field_docs: dict[str, str] = {}
     for tool_name, tc in tools.items():
-        desc = compose_description(tc, resolved_schemas, specs)
-        if desc:
-            descriptions[tool_name] = desc
-            print(f"  {tool_name}: {len(desc)} chars")
+        doc = compose_field_docs(tc, resolved_schemas)
+        if doc:
+            field_docs[tool_name] = doc
+            print(f"  {tool_name}: {len(doc)} chars")
+    params = tool_params(tools)
 
-    # Generate output
+    # Generate output; refuse to write a module that does not compile
     print(f"\nWriting {OUTPUT_FILE}...")
-    output = generate_output(tools, resolved_schemas, descriptions)
+    output = generate_output(resolved_schemas, field_docs, params)
+    compile(output, str(OUTPUT_FILE), "exec")
     OUTPUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT_FILE.write_text(output)
     print(f"  Written {len(output)} bytes")
 
     # Summary
-    print(f"\nDone. {len(resolved_schemas)} schemas resolved, {len(descriptions)} descriptions composed.")
+    print(f"\nDone. {len(resolved_schemas)} schemas resolved, {len(field_docs)} field lists composed.")
     print(f"Output: {OUTPUT_FILE}")
 
 

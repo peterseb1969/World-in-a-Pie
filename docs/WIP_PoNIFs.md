@@ -154,7 +154,7 @@ An entity can have multiple WIP IDs. This is not a bug or an edge case — it's 
 
 **What goes wrong:** On Day 4, the FIN_IMPORT template was updated from v1 (PDF-only) to v2 (PDF + CSV). v1 was deactivated. The document store continued validating against cached v1, rejecting CSV uploads. Only a service restart cleared the cache. The debugging took 25 minutes because the template showed the correct (v2) definition in every inspection tool — the bug was invisible except in the validation behaviour.
 
-**Sensible default:** This was fixed during the experiment: versioned template lookups are cached permanently (immutable), "latest" resolution uses a 5-second TTL. But the incident demonstrates that cache invalidation is a PoNIF in its own right — the developer expects changes to take effect immediately, the system serves stale data until the cache expires.
+**Sensible default:** This was fixed during the experiment: a pinned version's schema is cached (a version's schema never changes) while its active/inactive status is re-read within about 5 seconds, and "latest" resolution uses a 5-second TTL. But the incident demonstrates that cache invalidation is a PoNIF in its own right — the developer expects changes to take effect immediately, the system serves stale data until the cache expires.
 
 *This PoNIF was identified by Constellation-Claude during its review of this document — itself an example of the collaborative review process catching gaps.*
 

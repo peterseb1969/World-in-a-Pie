@@ -23,6 +23,26 @@ class BulkError(Exception):
         super().__init__(msg)
 
 
+def _dependencies_down(body: Any) -> list[str]:
+    """The dependencies a /health body reports as not connected.
+
+    Services report a dependency either as `"<dep>": "connected" |
+    "disconnected" | "error"` or as `"<dep>_connected": true | false`. A
+    service may still call itself healthy while one is down (the stores
+    compute their status from MongoDB alone), so the caller shows these
+    separately.
+    """
+    if not isinstance(body, dict):
+        return []
+    down = []
+    for key, value in body.items():
+        if key.endswith("_connected") and value is False:
+            down.append(key.removesuffix("_connected"))
+        elif key not in ("status", "error") and value in ("disconnected", "error"):
+            down.append(key)
+    return sorted(down)
+
+
 def _raise_for_status_with_body(resp: httpx.Response) -> None:
     """Like httpx.Response.raise_for_status(), but the raised exception's
     message includes the response body — so consumers see the server's
@@ -2167,8 +2187,14 @@ class WipClient:
                         details = resp.json()
                     except ValueError:
                         details = None
+                body_status = details.get("status") if isinstance(details, dict) else None
                 results[name] = {
-                    "healthy": resp.status_code == 200,
+                    # A 200 is not enough: some services answer 200 with
+                    # status "unhealthy" or "degraded" in the body.
+                    "healthy": resp.status_code == 200
+                    and body_status in (None, "healthy"),
+                    "status": body_status,
+                    "dependencies_down": _dependencies_down(details),
                     "details": details,
                 }
             except Exception as e:
