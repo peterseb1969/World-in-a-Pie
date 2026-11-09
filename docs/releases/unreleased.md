@@ -382,6 +382,27 @@ deletion of a name since re-created), is refused with 409; a live namespace
 still is; an unreachable Registry is still 503. The Registry's own deletion
 flow writes its journal before any step runs, so it is unaffected.
 
+### A field's `default_value` is informational; it never makes a mandatory field optional
+
+The platform has never filled an omitted field with its `default_value`: a
+mandatory field left out of a write is refused (`required`), default or not.
+Three places counted on it anyway, and now do not:
+
+- **Template versions.** A new version that adds a mandatory field with a
+  default is reported under `added_required`, not `added_optional`, so the
+  version event says it is incompatible and offers no migration. It used to
+  read as compatible and migration-eligible, and document-store then refused
+  each of those migrations.
+- **Merge alignment** (`align_templates`) no longer places documents on a
+  target version that requires a field they lack because the field declares
+  a default. They are reported as not placeable, as for any newly required
+  field, instead of landing with data their own template version refuses.
+- **The scaffold's bootstrap note** no longer tells apps to rely on a default
+  for the BOOTSTRAP_RECORD's mandatory fields: send them.
+
+The field stays on templates, as a suggested initial value for clients
+(`@wip/client`'s form helper prefills with it); its description says so.
+
 ### An integrity check that could not ask def-store or the template store is `incomplete`, never `healthy`; a peer whose read check the Registry could not answer fails the request (@wip/client 0.106.0)
 
 - **Integrity** (`GET /api/document-store/integrity`, namespace validation

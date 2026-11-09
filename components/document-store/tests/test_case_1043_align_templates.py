@@ -149,6 +149,23 @@ class TestAlignment:
         assert "requires new field(s) code" in entry["versions"]["2"]
 
     @pytest.mark.asyncio
+    async def test_a_new_required_field_with_a_default_is_still_required(self, mongo):
+        """A default_value is never applied, so it cannot stand in for the
+        field: a document re-pinned without it would hold data its own
+        template version refuses (CASE-1200)."""
+        await _target(mongo, _tpl("B-tpl", 1, [AGE_INT, {**CODE, "default_value": "X"}]))
+        archive = _archive({
+            "templates": [_tpl("A-tpl", 2, [AGE_INT])],
+            "documents": [_doc("D1", 2, {"age": 4})],
+        })
+        events: list = []
+        await _run_merge(mongo, archive, events, align_templates=True)
+
+        assert await _rows(mongo, "documents") == []
+        [entry] = _result(events)["unplaceable_documents"]
+        assert "requires new field(s) code" in entry["versions"]["2"]
+
+    @pytest.mark.asyncio
     async def test_a_removed_field_is_fine_while_the_documents_leave_it_empty(self, mongo):
         await _target(mongo, _tpl("B-tpl", 1, [AGE_INT]))
         archive = _archive({

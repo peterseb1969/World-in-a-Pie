@@ -135,7 +135,12 @@ class FieldDefinition(BaseModel):
     )
     default_value: Any | None = Field(
         default=None,
-        description="Default value if not provided"
+        description=(
+            "A suggested initial value, for clients (a form's prefill). "
+            "Informational only: the platform never fills an omitted field "
+            "with it, so a mandatory field with a default is still required "
+            "on every write."
+        ),
     )
 
     # For type=term: reference to Def-Store terminology (legacy)

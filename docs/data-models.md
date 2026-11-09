@@ -472,7 +472,7 @@ class FieldDefinition(BaseModel):
     label: str                          # Human-readable label
     type: FieldType
     mandatory: bool = False
-    default_value: Any | None = None
+    default_value: Any | None = None  # informational (client prefill); never applied to a document
 
     # For type=term: terminology reference (resolved from value at creation)
     terminology_ref: str | None = Field(

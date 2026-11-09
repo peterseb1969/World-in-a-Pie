@@ -826,7 +826,7 @@ def _compatibility(
     a_fields, t_fields = a_schema["fields"], t_schema["fields"]
     added_required = sorted(
         name for name in set(t_fields) - set(a_fields)
-        if t_fields[name].get("mandatory") and t_fields[name].get("default_value") is None
+        if t_fields[name].get("mandatory")
     )
     if added_required:
         return f"the target requires new field(s) {', '.join(added_required)}", []

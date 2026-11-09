@@ -1604,8 +1604,9 @@ class TemplateService:
 
         Returns a (verdict, diff) tuple where verdict is one of:
         - "identical": no schema differences — proposed matches existing exactly
-        - "compatible": only differences are added fields that are optional, or
-          mandatory with a default value
+        - "compatible": only differences are added optional fields (a
+          mandatory field is required whatever its default_value, which the
+          platform never applies)
         - "incompatible": any other change (removed field, type change, made-required,
           identity_fields change, modified existing field, added required field,
           changed source/target_templates on a relationship template)
@@ -1646,7 +1647,7 @@ class TemplateService:
         added_required: list[str] = []
         for name in sorted(added_names):
             f = proposed_fields[name]
-            if f.mandatory and f.default_value is None:
+            if f.mandatory:
                 added_required.append(name)
             else:
                 added_optional.append(name)

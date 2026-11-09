@@ -871,10 +871,9 @@ async function writeBootstrapRecord(meta: {
   }
   // NOTE: if your app's BOOTSTRAP_RECORD seed declares additional
   // mandatory fields (e.g., title, authored_by, doc_status), add them
-  // here OR set `default_value` in the seed and let the platform
-  // apply defaults at validation time. With CASE-299's mapField fix,
-  // default_value declared in seed JSON is now forwarded through to
-  // template-store, so server-side defaults work as documented.
+  // here. A field's `default_value` does not help: the platform stores
+  // it (clients may prefill forms with it) but never fills an omitted
+  // field with it, so this write is refused without them.
   const result = await wipPost('/api/document-store/documents', [doc])
   assertBulkSuccess(result, 'BOOTSTRAP_RECORD write')
 }
