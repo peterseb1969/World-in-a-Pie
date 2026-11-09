@@ -243,6 +243,17 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   holds the key. Loading such a key now logs a warning that the service
   does not read its grants. `APIKeyProvider.check_namespace_access`, which
   still widened a key's reach by them and had no caller, is removed.
+- **An administrator's permission is the Registry's answer too.** A
+  service no longer answers `wip-admins` "admin" on a namespace itself; it
+  asks the Registry, which answers "admin" everywhere except a namespace
+  locked for deletion, closed to everyone. The Registry's own entry and
+  search doors no longer let `wip-admins` and `wip-services` callers into a
+  locked namespace either, and taking the lock tells every service to drop
+  its cached permissions. Cost: an administrator's first request per
+  namespace in 30 s is a Registry lookup, and during a Registry outage
+  administrators get 503 like every other caller. Not covered: a listing
+  that names no namespace still reads every namespace for an administrator,
+  a locked one included.
 - **The platform group names have one definition.** wip-auth exports
   `ADMIN_GROUP`, `SERVICES_GROUP`, `PRIVILEGED_GROUPS` and `is_superadmin`;
   every service uses them, and each suite fails on a group name spelled

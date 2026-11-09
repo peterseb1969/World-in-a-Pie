@@ -61,8 +61,10 @@ def _get_registry_url() -> str:
 def is_superadmin(identity: UserIdentity) -> bool:
     """Whether the identity is a platform administrator (in ADMIN_GROUP).
 
-    For platform-level gates (system endpoints, URL imports, cross-
-    namespace file listings)."""
+    For platform-level gates only (system endpoints, URL imports, cross-
+    namespace file listings). A permission on a namespace's data is never
+    decided by it: that is the Registry's answer, which refuses even an
+    administrator a namespace locked for deletion."""
     config = get_auth_config()
     return identity.has_any_group(config.admin_groups)
 
@@ -138,12 +140,14 @@ def _cache_key(identity: UserIdentity, namespace: str | None = None) -> tuple:
 async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
     """Resolve the effective permission for an identity on a namespace.
 
-    Uses a 30-second in-process cache to avoid hitting the Registry on every request.
+    Always the Registry's answer, a platform administrator's included: the
+    Registry gives wip-admins admin on every namespace except one locked
+    for deletion, which is closed to everyone. A service answering admins
+    itself would keep that namespace's data open to them while the Registry
+    deletes it. Uses a 30-second in-process cache to avoid hitting the
+    Registry on every request; the Registry drops it when it locks a
+    namespace.
     """
-    # Superadmin bypass
-    if is_superadmin(identity):
-        return "admin"
-
     cache_key = _cache_key(identity, namespace)
 
     # Check cache (TTLCache handles expiry automatically)

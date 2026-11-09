@@ -719,12 +719,15 @@ def answer_permissions_from_declared_grants(monkeypatch: Any) -> None:
     For suites that declare their test keys in WIP_AUTH_API_KEYS_JSON and
     run without a Registry to ask: every permission is the Registry's answer
     (a service never resolves a key's grants itself), so the suite states
-    that answer. A caller with no declared grants gets no access; a
-    superadmin never reaches the lookup.
+    that answer. A platform administrator gets admin, as from the Registry
+    on a namespace that is not locked; a caller with no declared grants gets
+    no access.
     """
     from . import permissions
 
     async def permission(identity: Any, namespace: str) -> str:
+        if permissions.is_superadmin(identity):
+            return "admin"
         return registry_held_grants(identity).get(namespace, "none")
 
     async def accessible(identity: Any) -> list[str]:

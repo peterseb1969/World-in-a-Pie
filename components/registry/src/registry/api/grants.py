@@ -304,9 +304,10 @@ class NamespaceAccess:
 
     Privileged callers (wip-admins, wip-services) are unrestricted: they are
     the platform services calling with the install's key, and they act on
-    every namespace on behalf of their own callers. Everyone else gets
-    exactly what _resolve_permission grants — reading an entry needs read
-    on its namespace, changing one needs write.
+    every namespace on behalf of their own callers — except a namespace
+    locked for deletion, which is closed to them as to everyone. Everyone
+    else gets exactly what _resolve_permission grants — reading an entry
+    needs read on its namespace, changing one needs write.
 
     Isolation rules (open mode, allowed_external_refs) decide what a
     namespace may REFERENCE, never what a caller may READ, so they play no
@@ -322,7 +323,11 @@ class NamespaceAccess:
 
     async def allows(self, namespace: str, required: str) -> bool:
         if self.unrestricted:
-            return True
+            if namespace not in self._permissions:
+                ns = await Namespace.find_one({"prefix": namespace})
+                locked = ns is not None and ns.status == "locked"
+                self._permissions[namespace] = "none" if locked else "admin"
+            return self._permissions[namespace] != "none"
         if namespace not in self._permissions:
             self._permissions[namespace] = await _resolve_permission(
                 self._identity, namespace

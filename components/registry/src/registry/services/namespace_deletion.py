@@ -34,7 +34,7 @@ from ..models.deletion_journal import (
 )
 from ..models.entry import RegistryEntry
 from ..models.namespace import Namespace, set_unless_locked
-from .event_bus import get_event_bus
+from .event_bus import access_changed, get_event_bus
 
 logger = logging.getLogger("registry.namespace_deletion")
 
@@ -529,6 +529,10 @@ class NamespaceDeletionService:
                 f"Namespace '{prefix}' is already locked (deletion in progress)"
             )
         logger.info("Namespace '%s' locked for deletion", prefix)
+        # Every service drops its cached permissions now: an answer cached
+        # before the lock would otherwise keep the namespace open for the
+        # rest of its lifetime (30 s) while its data is being deleted.
+        await access_changed(keys=False)
 
         # Build journal. A failure from here to journal.create() leaves the
         # namespace locked with no journal; resume_deletion builds one then.
