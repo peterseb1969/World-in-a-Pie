@@ -250,116 +250,108 @@ class MetricsCollector:
         if not self._alert_config.enabled:
             return []
 
-        new_alerts: list[Alert] = []
         thresholds = self._alert_config.thresholds
+        new_alerts: list[Alert | None] = [
+            self._connection_alert(nats_connected, postgres_connected),
+        ]
 
-        # 1. Check connection alerts
-        if not nats_connected:
-            if AlertType.CONNECTION_LOST.value not in self._active_alerts:
-                alert = self._create_alert(
-                    AlertType.CONNECTION_LOST,
-                    AlertSeverity.CRITICAL,
-                    "Lost connection to NATS",
-                    {"connection": "nats"},
-                )
-                new_alerts.append(alert)
-        elif not postgres_connected:
-            if AlertType.CONNECTION_LOST.value not in self._active_alerts:
-                alert = self._create_alert(
-                    AlertType.CONNECTION_LOST,
-                    AlertSeverity.CRITICAL,
-                    "Lost connection to PostgreSQL",
-                    {"connection": "postgres"},
-                )
-                new_alerts.append(alert)
-        else:
-            self._resolve_alert(AlertType.CONNECTION_LOST)
-
-        # 2. Check queue lag alerts
         if consumer_info:
             pending = consumer_info.pending_messages + consumer_info.ack_pending
+            new_alerts.append(self._tiered_alert(
+                AlertType.QUEUE_LAG, pending,
+                thresholds.queue_lag_critical, thresholds.queue_lag_warning,
+                critical=(
+                    f"Queue lag critical: {pending} pending messages",
+                    {"pending_messages": pending, "threshold": thresholds.queue_lag_critical},
+                ),
+                warning=(
+                    f"Queue lag warning: {pending} pending messages",
+                    {"pending_messages": pending, "threshold": thresholds.queue_lag_warning},
+                ),
+            ))
 
-            if pending >= thresholds.queue_lag_critical:
-                if AlertType.QUEUE_LAG.value not in self._active_alerts or \
-                   self._active_alerts[AlertType.QUEUE_LAG.value].severity != AlertSeverity.CRITICAL:
-                    alert = self._create_alert(
-                        AlertType.QUEUE_LAG,
-                        AlertSeverity.CRITICAL,
-                        f"Queue lag critical: {pending} pending messages",
-                        {"pending_messages": pending, "threshold": thresholds.queue_lag_critical},
-                    )
-                    new_alerts.append(alert)
-            elif pending >= thresholds.queue_lag_warning:
-                if AlertType.QUEUE_LAG.value not in self._active_alerts:
-                    alert = self._create_alert(
-                        AlertType.QUEUE_LAG,
-                        AlertSeverity.WARNING,
-                        f"Queue lag warning: {pending} pending messages",
-                        {"pending_messages": pending, "threshold": thresholds.queue_lag_warning},
-                    )
-                    new_alerts.append(alert)
-            else:
-                self._resolve_alert(AlertType.QUEUE_LAG)
-
-        # 3. Check processing stalled alert
         if self.last_event_at:
-            seconds_since_event = (
-                datetime.now(UTC) - self.last_event_at
-            ).total_seconds()
+            seconds_since_event = (datetime.now(UTC) - self.last_event_at).total_seconds()
+            new_alerts.append(self._tiered_alert(
+                AlertType.PROCESSING_STALLED, seconds_since_event,
+                thresholds.stall_critical_seconds, thresholds.stall_warning_seconds,
+                critical=(
+                    f"Processing stalled: no events for {int(seconds_since_event)}s",
+                    {"seconds_since_event": seconds_since_event},
+                ),
+                warning=(
+                    f"Processing may be stalled: no events for {int(seconds_since_event)}s",
+                    {"seconds_since_event": seconds_since_event},
+                ),
+            ))
 
-            if seconds_since_event >= thresholds.stall_critical_seconds:
-                if AlertType.PROCESSING_STALLED.value not in self._active_alerts or \
-                   self._active_alerts[AlertType.PROCESSING_STALLED.value].severity != AlertSeverity.CRITICAL:
-                    alert = self._create_alert(
-                        AlertType.PROCESSING_STALLED,
-                        AlertSeverity.CRITICAL,
-                        f"Processing stalled: no events for {int(seconds_since_event)}s",
-                        {"seconds_since_event": seconds_since_event},
-                    )
-                    new_alerts.append(alert)
-            elif seconds_since_event >= thresholds.stall_warning_seconds:
-                if AlertType.PROCESSING_STALLED.value not in self._active_alerts:
-                    alert = self._create_alert(
-                        AlertType.PROCESSING_STALLED,
-                        AlertSeverity.WARNING,
-                        f"Processing may be stalled: no events for {int(seconds_since_event)}s",
-                        {"seconds_since_event": seconds_since_event},
-                    )
-                    new_alerts.append(alert)
-            else:
-                self._resolve_alert(AlertType.PROCESSING_STALLED)
-
-        # 4. Check error rate (simple: errors in last minute based on ratio)
+        # Error rate (simple: errors in last minute based on ratio)
         total = self.events_processed + self.events_failed
         if total > 0:
             error_rate = (self.events_failed / total) * 100
-            if error_rate >= thresholds.error_rate_critical:
-                if AlertType.ERROR_RATE.value not in self._active_alerts or \
-                   self._active_alerts[AlertType.ERROR_RATE.value].severity != AlertSeverity.CRITICAL:
-                    alert = self._create_alert(
-                        AlertType.ERROR_RATE,
-                        AlertSeverity.CRITICAL,
-                        f"Error rate critical: {error_rate:.1f}%",
-                        {"error_rate": error_rate, "threshold": thresholds.error_rate_critical},
-                    )
-                    new_alerts.append(alert)
-            elif error_rate >= thresholds.error_rate_warning:
-                if AlertType.ERROR_RATE.value not in self._active_alerts:
-                    alert = self._create_alert(
-                        AlertType.ERROR_RATE,
-                        AlertSeverity.WARNING,
-                        f"Error rate elevated: {error_rate:.1f}%",
-                        {"error_rate": error_rate, "threshold": thresholds.error_rate_warning},
-                    )
-                    new_alerts.append(alert)
-            else:
-                self._resolve_alert(AlertType.ERROR_RATE)
+            new_alerts.append(self._tiered_alert(
+                AlertType.ERROR_RATE, error_rate,
+                thresholds.error_rate_critical, thresholds.error_rate_warning,
+                critical=(
+                    f"Error rate critical: {error_rate:.1f}%",
+                    {"error_rate": error_rate, "threshold": thresholds.error_rate_critical},
+                ),
+                warning=(
+                    f"Error rate elevated: {error_rate:.1f}%",
+                    {"error_rate": error_rate, "threshold": thresholds.error_rate_warning},
+                ),
+            ))
 
+        raised = [a for a in new_alerts if a is not None]
         # Send webhook notifications for new alerts
-        if new_alerts and self._alert_config.webhook_url:
-            await self._send_webhook_notifications(new_alerts)
+        if raised and self._alert_config.webhook_url:
+            await self._send_webhook_notifications(raised)
+        return raised
 
-        return new_alerts
+    def _connection_alert(self, nats_connected: bool, postgres_connected: bool) -> Alert | None:
+        """A new connection-lost alert (NATS first, then PostgreSQL) unless
+        one is active; with both connected, the active one is resolved."""
+        if nats_connected and postgres_connected:
+            self._resolve_alert(AlertType.CONNECTION_LOST)
+            return None
+        if AlertType.CONNECTION_LOST.value in self._active_alerts:
+            return None
+        connection, name = ("nats", "NATS") if not nats_connected else ("postgres", "PostgreSQL")
+        return self._create_alert(
+            AlertType.CONNECTION_LOST,
+            AlertSeverity.CRITICAL,
+            f"Lost connection to {name}",
+            {"connection": connection},
+        )
+
+    def _tiered_alert(
+        self,
+        alert_type: AlertType,
+        value: float,
+        critical_at: float,
+        warning_at: float,
+        *,
+        critical: tuple[str, dict[str, Any]],
+        warning: tuple[str, dict[str, Any]],
+    ) -> Alert | None:
+        """The new alert a value raises against its two thresholds, if any.
+
+        At the critical level an alert is raised unless a critical one is
+        active (an active warning is escalated). At the warning level one is
+        raised only when none of the type is active, so an active critical is
+        never downgraded. Below both, the active alert is resolved.
+        """
+        active = self._active_alerts.get(alert_type.value)
+        if value >= critical_at:
+            if active is not None and active.severity == AlertSeverity.CRITICAL:
+                return None
+            return self._create_alert(alert_type, AlertSeverity.CRITICAL, *critical)
+        if value >= warning_at:
+            if active is not None:
+                return None
+            return self._create_alert(alert_type, AlertSeverity.WARNING, *warning)
+        self._resolve_alert(alert_type)
+        return None
 
     async def _send_webhook_notifications(self, alerts: list[Alert]) -> None:
         """Send webhook notifications for new alerts."""
