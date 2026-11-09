@@ -476,6 +476,24 @@ class RegistryClient(RegistryClientBase):
             )
         return cast(str, response.json().get("status"))
 
+    async def get_namespace_deletion_journal(self, namespace: str) -> dict[str, Any] | None:
+        """The Registry's most recent deletion journal for the namespace, or
+        None when it has none (404 — also what a key that is not a platform
+        admin gets). Raises RegistryError when the Registry cannot answer."""
+        async with _transport_errors("deletion journal"), self._make_client() as client:
+            response = await client.get(
+                f"{self.base_url}/api/registry/namespaces/{namespace}/deletion-status",
+                headers=self._get_headers(),
+            )
+        if response.status_code == 404:
+            return None
+        if response.status_code != 200:
+            raise RegistryError(
+                f"Failed to fetch the deletion journal of {namespace}: "
+                f"{response.status_code} - {response.text}"
+            )
+        return cast(dict[str, Any], response.json())
+
 
 # ── Singleton ───────────────────────────────────────────────────────────────
 

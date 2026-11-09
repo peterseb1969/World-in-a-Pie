@@ -34,6 +34,19 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   a claim that is not a list of strings no longer crashes the permission
   check with a 500.
 
+### Namespace storage deletion needs a deletion the Registry is running
+
+`POST /api/document-store/files/storage/delete` deleted a namespace's stored
+objects whenever the Registry did not serve the namespace — but the Registry
+answers 404 alike for a namespace that is gone, one locked for deletion, and
+one the caller's key holds no grant on. It now requires a positive signal:
+the Registry's deletion journal for the namespace in a running state
+(`in_progress`, `failed` or `completed_with_warnings`, the states a deletion
+resumes from). No journal, or only a `completed` one (perhaps an earlier
+deletion of a name since re-created), is refused with 409; a live namespace
+still is; an unreachable Registry is still 503. The Registry's own deletion
+flow writes its journal before any step runs, so it is unaffected.
+
 ### An integrity check that could not ask def-store or the template store is `incomplete`, never `healthy`; a peer whose read check the Registry could not answer fails the request (@wip/client 0.106.0)
 
 - **Integrity** (`GET /api/document-store/integrity`, namespace validation

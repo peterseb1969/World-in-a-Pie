@@ -626,6 +626,10 @@ class StorageDeleteRequest(StrictModel):
     )
 
 
+# The deletion-journal states a namespace deletion runs or resumes from.
+_DELETION_RUNNING = ("in_progress", "failed", "completed_with_warnings")
+
+
 @router.post(
     "/storage/delete",
     summary="Delete the stored objects of a namespace being deleted",
@@ -637,9 +641,13 @@ even after the files' records are gone.
 
 Guards, because this removes bytes outright:
 - wip-admins / wip-services only;
-- the namespace must be `locked` (deletion in progress) or already gone
-  from the Registry — a live namespace is refused with 409, and an
-  unreachable Registry with 503;
+- the Registry must hold a deletion journal for the namespace that is
+  still running (`in_progress`, `failed` or `completed_with_warnings`, the
+  states a deletion resumes from), and the namespace must not be live —
+  without such a journal, or for a live namespace, the request is refused
+  with 409, and with an unreachable Registry with 503. A namespace the
+  Registry does not serve (gone, locked, or not visible to this service's
+  key) is never by itself a reason to delete bytes;
 - a key whose file record belongs to a different namespace is refused
   per key and left untouched.
 
@@ -657,19 +665,27 @@ async def delete_namespace_storage_objects(request: StorageDeleteRequest) -> dic
     from ..models.file import File as FileModel
 
     try:
-        ns_status = await get_registry_client().get_namespace_status(request.namespace)
+        registry = get_registry_client()
+        ns_status = await registry.get_namespace_status(request.namespace)
+        journal = await registry.get_namespace_deletion_journal(request.namespace)
     except Exception as e:
         raise HTTPException(
             status_code=503,
             detail=f"Registry could not confirm that namespace {request.namespace!r} "
             f"is being deleted: {e}",
         ) from e
-    # The Registry answers 404 for a namespace locked for deletion, so
-    # "deletion in progress" and "already deleted" both arrive as None. An
-    # active or archived namespace comes back with its status; that relies on
-    # this service's Registry key being privileged (the install's service
-    # key) — a non-privileged key would get 404 for namespaces it holds no
-    # grant on, and this guard would let them through.
+    # Bytes go only on a positive signal: a deletion journal the Registry is
+    # still running. The namespace's own status cannot give it — the
+    # Registry answers 404 alike for a namespace that is gone, one locked for
+    # deletion, and one this service's key holds no grant on — and a
+    # completed journal may belong to an earlier deletion of a namespace
+    # since re-created under the same name.
+    if journal is None or journal.get("status") not in _DELETION_RUNNING:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No deletion of namespace {request.namespace!r} is in progress; "
+            "stored objects are only deleted while one is.",
+        )
     if ns_status not in (None, "locked"):
         raise HTTPException(
             status_code=409,

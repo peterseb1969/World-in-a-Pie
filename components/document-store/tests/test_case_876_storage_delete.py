@@ -7,9 +7,11 @@ its deletion journal to POST /api/document-store/files/storage/delete,
 which deletes them with document-store's own storage client.
 
 Because the endpoint removes bytes outright, its guards are the contract
-under test here: privileged keys only, the namespace must be locked
-(deletion in progress) or already gone in the real Registry, and a key whose
-file record belongs to another namespace is refused per key. The storage
+under test here: privileged keys only, the real Registry must hold a deletion
+journal for the namespace that is still running (a namespace that is merely
+absent from the Registry — gone, locked, or not visible to the key — is never
+enough on its own, CASE-1139), the namespace must not be live, and a key
+whose file record belongs to another namespace is refused per key. The storage
 client is mocked; the signed delete against a real object store is verified
 live (the case's reproduction re-run on a dev install).
 """
@@ -24,6 +26,7 @@ from httpx import ASGITransport, AsyncClient
 from document_store.models.file import File, FileMetadata, FileStatus
 from document_store.services.file_storage_client import FileStorageError
 from registry.main import app as registry_app
+from registry.models.deletion_journal import DeletionJournal
 from registry.models.namespace import Namespace
 
 URL = "/api/document-store/files/storage/delete"
@@ -44,6 +47,12 @@ async def _registry_namespace(prefix: str, headers: dict, *, locked: bool) -> No
         assert ns is not None
         ns.status = "locked"
         await ns.save()
+        await _journal(prefix, "in_progress")
+
+
+async def _journal(prefix: str, status: str) -> None:
+    """The Registry's deletion journal for the namespace, in the given state."""
+    await DeletionJournal(namespace=prefix, status=status).insert()
 
 
 async def _file_record(namespace: str) -> str:
@@ -130,17 +139,52 @@ async def test_live_namespace_is_refused(client, auth_headers, storage):
 
 @pytest.mark.asyncio
 async def test_namespace_gone_from_registry_is_allowed(client, auth_headers, storage):
-    # A completed deletion removes the namespace record; resuming a journal
-    # whose storage step failed must still be able to clean up.
+    # A deletion removes the namespace record; resuming a journal whose
+    # storage step failed must still be able to clean up.
+    ns = _prefix()
+    await _journal(ns, "failed")
     key = str(uuid.uuid4())
 
     resp = await client.post(
-        URL, json={"namespace": _prefix(), "storage_keys": [key]}, headers=auth_headers
+        URL, json={"namespace": ns, "storage_keys": [key]}, headers=auth_headers
     )
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["deleted"] == 1
     storage.delete.assert_awaited_once_with(key)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("journal", [None, "completed"], ids=["no_journal", "completed_journal"])
+async def test_a_namespace_absent_from_the_registry_is_not_enough(client, auth_headers, storage, journal):
+    # The Registry answers 404 alike for a namespace that is gone, one locked
+    # for deletion, and one the caller's key holds no grant on. Without a
+    # deletion it is running, no bytes go — and a completed journal may
+    # belong to an earlier deletion of a name since re-created.
+    ns = _prefix()
+    if journal:
+        await _journal(ns, journal)
+    resp = await client.post(
+        URL, json={"namespace": ns, "storage_keys": [str(uuid.uuid4())]}, headers=auth_headers
+    )
+
+    assert resp.status_code == 409, resp.text
+    storage.delete.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_locked_namespace_without_a_journal_is_refused(client, auth_headers, storage):
+    ns = _prefix()
+    await _registry_namespace(ns, auth_headers, locked=False)
+    record = await Namespace.find_one({"prefix": ns})
+    record.status = "locked"
+    await record.save()
+    resp = await client.post(
+        URL, json={"namespace": ns, "storage_keys": [str(uuid.uuid4())]}, headers=auth_headers
+    )
+
+    assert resp.status_code == 409, resp.text
+    storage.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
