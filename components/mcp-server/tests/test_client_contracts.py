@@ -346,6 +346,27 @@ async def test_check_health_marks_service_unhealthy_on_non_200() -> None:
                ("def_store", "template_store", "document_store", "reporting_sync"))
 
 
+@pytest.mark.asyncio
+async def test_check_health_keeps_the_body_of_an_unhealthy_503() -> None:
+    """An unhealthy service answers 503 with the body naming the failing
+    dependency; it is reported unhealthy AND its details are kept."""
+    client = _make_client(registry_url="https://h:8443")
+    mock_http = AsyncMock()
+    good = MagicMock()
+    good.status_code = 200
+    good.json.return_value = {"status": "healthy"}
+    down = MagicMock()
+    down.status_code = 503
+    down.json.return_value = {"status": "unhealthy", "database": "error"}
+    mock_http.get.side_effect = [good, down, good, good, good]
+    with patch.object(client, "_get_client", return_value=mock_http):
+        results = await client.check_health()
+    assert results["def_store"] == {
+        "healthy": False, "details": {"status": "unhealthy", "database": "error"},
+    }
+    assert results["registry"]["healthy"] is True
+
+
 # =========================================================================
 # Test G — tool-call E2E (in-process) with mocked backend
 # =========================================================================

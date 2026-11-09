@@ -311,8 +311,10 @@ def _dependency_refusal(
     it. force does not apply to such a delete — force means "deactivate
     despite dependents", a reversible act. A soft delete deactivates every
     term, so new writes against referencing templates start failing; it is
-    refused on active references unless force=true. Both refuse when the
-    reference set cannot be verified — "could not check" is never "none".
+    refused on active references unless force=true. Every delete, force
+    included, is refused when the reference set cannot be verified: force
+    means "even though templates use it", not "even though nobody could
+    check" — "could not check" is never "none".
     """
     if removes:
         why = "" if item.hard_delete else " A mutable terminology is always deleted permanently."
@@ -334,10 +336,10 @@ def _dependency_refusal(
     elif deps.template_count == -1:
         error = (
             "Could not verify template dependencies (Template Store "
-            "unavailable); retry, or use force=true to deactivate anyway."
+            "unavailable); retry when it answers."
         )
         rule = "dependencies_unverifiable"
-    elif deps.template_count > 0:
+    elif deps.template_count > 0 and not item.force:
         error = f"Terminology has {deps.template_count} dependent templates. Use force=true to delete anyway."
         rule = "has_templates"
     else:
@@ -359,9 +361,9 @@ async def delete_terminologies(
 
     Soft-delete sets the terminology and its active terms to 'inactive'
     (deprecated terms stay deprecated). It is refused while active templates
-    reference the terminology, or when that cannot be verified (deactivating
-    the terms breaks new writes against referencing templates) — set
-    force=true per item to deactivate anyway.
+    reference the terminology (deactivating the terms breaks new writes
+    against referencing templates) — set force=true per item to deactivate
+    anyway — and, force or not, when Template Store cannot say.
 
     A permanent delete removes the terminology, its terms and their
     relations. It happens on hard_delete=true (namespace deletion_mode
@@ -391,15 +393,16 @@ async def delete_terminologies(
         try:
             # The guard follows what the delete will do, not only what the
             # request asked: a mutable terminology is removed by any delete.
+            # It always asks Template Store — force overrides a known count,
+            # never a missing answer.
             removes = item.hard_delete or mutable.get(item.id, False)
-            if removes or not item.force:
-                deps = await DependencyService.check_terminology_dependencies(
-                    item.id, all_statuses=removes
-                )
-                refusal = _dependency_refusal(i, item, deps, removes=removes)
-                if refusal is not None:
-                    results.append(refusal)
-                    continue
+            deps = await DependencyService.check_terminology_dependencies(
+                item.id, all_statuses=removes
+            )
+            refusal = _dependency_refusal(i, item, deps, removes=removes)
+            if refusal is not None:
+                results.append(refusal)
+                continue
 
             success = await TerminologyService.delete_terminology(
                 terminology_id=item.id, updated_by=item.updated_by,

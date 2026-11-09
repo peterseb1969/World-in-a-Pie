@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A forced terminology deactivation needs Template Store's answer; def-store's and document-store's `/health` answer 503 when unhealthy
+
+- `DELETE /api/def-store/terminologies` with `force=true` skipped the
+  dependency check entirely, so a deactivation went ahead while Template
+  Store could not say whether templates use the terminology. It now always
+  asks, and is refused (`dependencies_unverifiable`) when Template Store
+  cannot answer, force included — force overrides a known count only, as
+  template-store's deletes already do.
+- def-store's and document-store's `/health` (and the api-prefixed route)
+  answered 200 with `"status": "unhealthy"`. They now answer **503** with
+  the same body, so the image `HEALTHCHECK` and status-code probes (e.g.
+  `wip status`) see it. Orchestrators probe `/ready` and `/livez`, which are
+  unchanged. The MCP server's `get_wip_status` keeps the 503 body as the
+  service's details.
+- A term of a mutable terminology is still deleted without checking whether
+  documents use it — the accepted cost of a user-prunable vocabulary, now
+  documented.
+- **Action:** a script that force-deactivates a terminology during a
+  Template Store outage now gets an error item; retry when it answers.
+
 ### `verify` checks a document's template and terminology references (wip-archive 0.38.0)
 
 - `verify` checked a document's stored term references only. A document

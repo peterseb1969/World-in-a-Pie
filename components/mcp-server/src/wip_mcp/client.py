@@ -2159,9 +2159,17 @@ class WipClient:
         for name, base, path in services:
             try:
                 resp = await client.get(f"{base}{path}", timeout=5.0)
+                # An unhealthy service answers 503 with the same body, which
+                # names the failing dependency — keep it.
+                details = None
+                if resp.status_code in (200, 503):
+                    try:
+                        details = resp.json()
+                    except ValueError:
+                        details = None
                 results[name] = {
                     "healthy": resp.status_code == 200,
-                    "details": resp.json() if resp.status_code == 200 else None,
+                    "details": details,
                 }
             except Exception as e:
                 results[name] = {"healthy": False, "error": str(e)}

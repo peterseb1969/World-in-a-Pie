@@ -481,18 +481,24 @@ async def health_check(fresh: bool = False):
     Health check endpoint.
 
     Verifies MongoDB, Registry, Template Store, and Def-Store connectivity.
+    Unhealthy (no MongoDB) answers 503 with the same body: a probe that
+    reads only the status code (the image's HEALTHCHECK, curl -f) must not
+    see 200. Orchestrators probe /ready and /livez instead.
     """
     deps = await _health_cache.get(_probe_dependencies, force=fresh)
 
     status = "healthy" if deps["database"] == "connected" else "unhealthy"
 
-    return {
+    body = {
         "status": status,
         **deps,
         # Live, not cached: the event bus's state is in-process and free to
         # read. One of connected / connecting / reconnecting / not_configured.
         "nats": nats_stats()["state"],
     }
+    if status != "healthy":
+        return JSONResponse(status_code=503, content=body)
+    return body
 
 
 async def health_check_fresh():

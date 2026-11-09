@@ -6,8 +6,9 @@ Template Store collapsed to template_count -1 (and ``-1 > 0`` is false, so
 the delete proceeded), and a non-200 answer collapsed to an empty template
 list — count 0, indistinguishable from "no dependencies". Now:
 
-- a non-forced soft delete is refused when references exist OR when the
-  check cannot complete (force=true overrides both);
+- a soft delete is refused when references exist (force=true overrides
+  that) OR when the check cannot complete (force or not — reversed for
+  CASE-1186: if Template Store cannot answer, no deletion goes ahead);
 - a hard-delete is refused when templates of ANY status reference the
   terminology or when that cannot be verified — force does not apply;
 - GET /dependencies reports an incomplete check as template_count -1 with
@@ -77,7 +78,7 @@ async def test_soft_delete_refused_when_template_store_unreachable(
 
     assert data["failed"] == 1 and data["succeeded"] == 0
     assert "could not verify" in data["results"][0]["error"].lower()
-    assert "force=true" in data["results"][0]["error"]
+    assert "force=true" not in data["results"][0]["error"]  # force cannot override a missing answer
 
     template_store.unreachable = False
     assert await _status_of(client, auth_headers, tid) == "active"
@@ -118,21 +119,22 @@ async def test_soft_delete_refused_when_referenced(
 
 
 @pytest.mark.asyncio
-async def test_force_overrides_unverifiable_check(
+async def test_force_does_not_override_unverifiable_check(
     client: AsyncClient, auth_headers: dict, template_store
 ):
-    """force=true keeps its meaning for the reversible soft delete: it
-    proceeds even when the check cannot complete."""
+    """Reversed (Peter, 2026-11-09): if Template Store cannot answer, no
+    deletion goes ahead, force included. force overrides a known count
+    only."""
     tid = await _create_terminology(client, auth_headers, "probe_force")
     template_store.unreachable = True
 
     data = await _delete(client, auth_headers, tid, force=True)
 
-    assert data["succeeded"] == 1
-    assert data["results"][0]["status"] == "deleted"
+    assert data["failed"] == 1
+    assert data["results"][0]["details"]["rule"] == "dependencies_unverifiable"
 
     template_store.unreachable = False
-    assert await _status_of(client, auth_headers, tid) == "inactive"
+    assert await _status_of(client, auth_headers, tid) == "active"
 
 
 @pytest.mark.asyncio

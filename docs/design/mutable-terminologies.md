@@ -51,6 +51,12 @@ For mutable terminologies, the same endpoint performs a **hard delete**:
 
 The endpoint checks `terminology.mutable` before deciding the delete mode. No new endpoint needed.
 
+A term's delete does **not** check whether documents use it: documents keep the
+term id they hold, which then no longer resolves to a term. That is the accepted
+cost of a vocabulary its users may prune. Deleting the terminology itself is
+guarded like every permanent delete — refused while templates of any status
+reference it, or when Template Store cannot say.
+
 ### Event Handling
 
 No new events. The existing `term.deleted` event already exists and is handled by:
