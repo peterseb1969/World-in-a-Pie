@@ -20,10 +20,14 @@ from ..services.reservations import ReservationSettings
 
 
 class StoredAPIKey(Document):
-    """A runtime API key persisted in MongoDB.
+    """An API key persisted in MongoDB: a Console key made through the API,
+    a restored one, or a key imported from the deployer's key file
+    (`managed_by: "wip-deploy"`, `origin: "file"`).
 
-    Config-file keys (wip-admins, wip-services) are NOT stored here —
-    they live in the wip-auth config and are loaded at startup.
+    Keys loaded only from the wip-auth config (the environment and the
+    master key) are not stored here. An imported key-file key is a record
+    here, and stays dormant in the provider while the Registry also loads
+    the same file as config keys.
     """
 
     name: str = Field(..., description="Unique human-readable key name")

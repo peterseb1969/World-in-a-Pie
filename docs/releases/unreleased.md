@@ -7,6 +7,20 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Registry auth: reservations, key import, grants, attachments and the system restore say and do one thing
+
+- **Runtime keys.** A reservation is written only by the key that holds it:
+  a prefix another key or the install's file took after the request's check
+  refuses the request (409), and nothing of it is left behind. A create
+  writes its reservations before the key, a widen before the scope and the
+  grant, so a refused reservation no longer leaves a key holding admin on a
+  prefix it does not own. One create cannot reserve two namespaces that
+  claim one ID prefix. A reservation a narrow kept (its namespace exists) no
+  longer blocks every later `PATCH namespaces`. A disabled key-file key is
+  listed, as the config key it is (`source: "config"`, `enabled: false`).
+  The create response carries `origin`, `managed_by` and `shadowed_by` like
+  a read does.
+
 ### `@wip/proxy` 0.9.0 no longer forwards a client's identity: `forwardIdentity` is removed
 
 - `forwardIdentity: true` copied `X-WIP-User` / `X-WIP-Groups` from the

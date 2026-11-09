@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic import ValidationError
+from pymongo.errors import DuplicateKeyError
 
 from ..models.id_algorithm import validate_id_config_write
 from ..models.namespace import WIP_NAMESPACE, Namespace, prefix_error
@@ -92,25 +93,40 @@ async def list_reservations() -> list[ReservationView]:
     ]
 
 
-async def check_new_reservation(prefix: str, settings: ReservationSettings, owner: str) -> None:
-    """Refuse (ReservationRefused) a runtime reservation that cannot be made.
-
-    Re-reserving a prefix the same key already holds is allowed (its settings
-    are replaced). A prefix the install's file reserves raises
-    ManagedRecordRefused (409, managed_by_deployer).
-    """
-    if prefix == WIP_NAMESPACE:
-        raise ReservationRefused(400, "the 'wip' namespace cannot be reserved")
-    if error := prefix_error(prefix):
-        raise ReservationRefused(400, error)
-    await _current()
-    held = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
+def _refuse_holder(prefix: str, held: RuntimeReservation | None, owner: str) -> None:
+    """Refuse a reservation of `prefix` by `owner` that `held` already holds
+    for someone else: the install's file (ManagedRecordRefused) or another
+    runtime key (ReservationRefused, 409)."""
     if held is not None and held.managed_by is not None:
         raise reservation_refusal(prefix, held.app)
     if held is not None and held.app != owner:
         raise ReservationRefused(
             409, f"namespace '{prefix}' is already reserved by runtime API key '{held.app}'"
         )
+
+
+async def check_new_reservation(
+    prefix: str,
+    settings: ReservationSettings,
+    owner: str,
+    pending: list[tuple[str, list[str]]] | None = None,
+) -> list[str]:
+    """Refuse (ReservationRefused) a runtime reservation that cannot be made,
+    and return the ID prefixes it claims.
+
+    Re-reserving a prefix the same key already holds is allowed (its settings
+    are replaced). A prefix the install's file reserves raises
+    ManagedRecordRefused (409, managed_by_deployer). `pending` holds the
+    (prefix, claimed ID prefixes) of reservations checked earlier in the same
+    request and not yet written: an ID prefix one of them claims is refused
+    here too.
+    """
+    if prefix == WIP_NAMESPACE:
+        raise ReservationRefused(400, "the 'wip' namespace cannot be reserved")
+    if error := prefix_error(prefix):
+        raise ReservationRefused(400, error)
+    await _current()
+    _refuse_holder(prefix, await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix), owner)
 
     effective = Reservation(prefix=prefix, app=owner, settings=settings).effective_settings()
     try:
@@ -124,8 +140,11 @@ async def check_new_reservation(prefix: str, settings: ReservationSettings, owne
         raise ReservationRefused(e.status_code, e.detail) from e
 
     # An ID prefix names one sequence on the install: no other reservation
-    # (the install's or the API's) may claim one this reservation claims.
-    others: list[tuple[str, str, list[str]]] = []
+    # (the install's, the API's, or one this request makes) may claim one
+    # this reservation claims.
+    others: list[tuple[str, str, list[str]]] = [
+        (other, "this request", claimed) for other, claimed in pending or [] if other != prefix
+    ]
     for doc in await RuntimeReservation.find(RuntimeReservation.prefix != prefix).to_list():
         res = _as_reservation(doc)
         label = f"app '{doc.app}'" if doc.managed_by is not None else f"runtime key '{doc.app}'"
@@ -139,16 +158,23 @@ async def check_new_reservation(prefix: str, settings: ReservationSettings, owne
                 f"for namespace '{other_prefix}' ({owner_label}); a prefix names one ID "
                 "sequence on the install",
             )
+    return id_prefixes
 
 
 async def save_reservation(
     prefix: str, settings: ReservationSettings, owner: str, actor: str
-) -> RuntimeReservation:
-    """Create or replace the runtime reservation of `prefix` (checked first)."""
+) -> tuple[RuntimeReservation, bool]:
+    """Create or replace `owner`'s runtime reservation of `prefix`; returns
+    the record and whether this call created it.
+
+    The write itself is conditional on the holder, so a check made earlier
+    in the request is never acted on stale: a prefix the install's file took
+    meanwhile raises ManagedRecordRefused, one another key took raises
+    ReservationRefused (409), and another key's settings are never replaced.
+    """
     stored = settings.model_dump(exclude_none=True)
     doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
-    if doc is not None and doc.managed_by is not None:
-        raise reservation_refusal(prefix, doc.app)
+    _refuse_holder(prefix, doc, owner)
     from .namespace_identity import reservation_namespace_id
 
     namespace_id = await reservation_namespace_id(prefix, owner, doc)
@@ -157,12 +183,26 @@ async def save_reservation(
             prefix=prefix, namespace_id=namespace_id, app=owner, settings=stored,
             created_by=actor,
         )
-        await doc.insert()
-    else:
-        doc.settings = stored
-        doc.namespace_id = namespace_id
-        await doc.save()
-    return doc
+        try:
+            await doc.insert()
+        except DuplicateKeyError:
+            await _refuse_taken(prefix, owner)
+        return doc, True
+    result = await RuntimeReservation.get_motor_collection().update_one(
+        {"prefix": prefix, "app": owner, "managed_by": None},
+        {"$set": {"settings": stored, "namespace_id": namespace_id}},
+    )
+    if result.matched_count == 0:
+        await _refuse_taken(prefix, owner)
+    doc.settings, doc.namespace_id = stored, namespace_id
+    return doc, False
+
+
+async def _refuse_taken(prefix: str, owner: str) -> None:
+    """The holder of `prefix` changed between the read and the write: refuse
+    as the new holder dictates, or ask for a retry when it was released."""
+    _refuse_holder(prefix, await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix), owner)
+    raise ReservationRefused(409, f"the reservation of '{prefix}' changed while it was written; retry")
 
 
 async def release(prefix: str) -> str | None:

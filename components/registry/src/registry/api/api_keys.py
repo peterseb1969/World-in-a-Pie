@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from pymongo.errors import DuplicateKeyError
 
 from wip_auth import (
     APIKeyProvider,
@@ -133,16 +134,57 @@ async def _reserved_by(name: str) -> list[str]:
     return [r.prefix for r in await reservation_store.reservations_of(name)]
 
 
-async def _check_reservation(prefix: str, settings: ReservationSettings, owner: str) -> None:
-    """The reservation checks as an HTTP error."""
+async def _check_reservation(
+    prefix: str,
+    settings: ReservationSettings,
+    owner: str,
+    pending: list[tuple[str, list[str]]] | None = None,
+) -> list[str]:
+    """The reservation checks as an HTTP error; returns the ID prefixes the
+    reservation claims. `pending`: the request's reservations checked before
+    this one, with their claimed ID prefixes."""
     try:
-        await reservation_store.check_new_reservation(prefix, settings, owner)
+        return await reservation_store.check_new_reservation(prefix, settings, owner, pending)
     except ReservationRefused as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
     except ReservationsUnavailable as e:
         raise HTTPException(
             status_code=503, detail=f"Namespace reservations are unavailable: {e}"
         ) from e
+
+
+async def _save_reservation(prefix: str, settings: ReservationSettings, owner: str) -> bool:
+    """Write the reservation (conditional on its holder, see save_reservation)
+    as an HTTP error; True when this call created it."""
+    try:
+        _, created = await reservation_store.save_reservation(
+            prefix, settings, owner, get_identity_string()
+        )
+    except ReservationRefused as e:
+        raise HTTPException(status_code=e.status_code, detail=e.detail) from e
+    return created
+
+
+async def _drop_new_reservations(owner: str, prefixes: list[str]) -> None:
+    """Undo the reservations a refused request created (never one it found)."""
+    if prefixes:
+        await RuntimeReservation.find(
+            {"prefix": {"$in": prefixes}, "app": owner, "managed_by": None}
+        ).delete()
+
+
+async def _save_reservations(owner: str, reserve: list) -> list[str]:
+    """Write the request's reservations, all or none; returns the prefixes
+    this request created (the ones to undo if a later step fails)."""
+    created: list[str] = []
+    try:
+        for r in reserve:
+            if await _save_reservation(r.prefix, r.settings, owner):
+                created.append(r.prefix)
+    except BaseException:
+        await _drop_new_reservations(owner, created)
+        raise
+    return created
 
 
 async def _set_grant(name: str, prefix: str, permission: Literal["read", "write", "admin"]) -> None:
@@ -183,6 +225,11 @@ async def _refresh_provider(doc: StoredAPIKey) -> None:
         provider.remove_key(doc.key_hash)
         if not key_shadowing.is_shadowed(doc.name):
             provider.add_key(key_shadowing.runtime_record(doc))
+
+
+def _as_config_key(response: APIKeyResponse) -> APIKeyResponse:
+    """An imported record presented as the config key it is."""
+    return response.model_copy(update={"source": "config", "created_by": "config-file"})
 
 
 def _config_key_to_response(
@@ -266,17 +313,21 @@ async def create_api_key(
             detail=f"reserve: {', '.join(outside)} not in `namespaces`; a key reserves "
             "only namespaces it is scoped to",
         )
+    pending: list[tuple[str, list[str]]] = []
     for r in reserve:
-        await _check_reservation(r.prefix, r.settings, request.name)
+        pending.append((r.prefix, await _check_reservation(r.prefix, r.settings, request.name, pending)))
+
+    # The reservations are written before the key, each conditional on its
+    # holder: a prefix taken since the check refuses the request with
+    # nothing else written, and a later failure undoes what this request
+    # reserved.
+    new_reservations = await _save_reservations(request.name, reserve)
 
     # Generate and hash
     plaintext = generate_plaintext_key()
-    key_hash = hash_api_key(plaintext, key_salt.current_salt())
-
-    # Persist to MongoDB
     doc = StoredAPIKey(
         name=request.name,
-        key_hash=key_hash,
+        key_hash=hash_api_key(plaintext, key_salt.current_salt()),
         owner=request.owner,
         groups=request.groups,
         description=request.description,
@@ -284,7 +335,13 @@ async def create_api_key(
         namespaces=request.namespaces,
         created_by=get_identity_string(),
     )
-    await doc.insert()
+    try:
+        await doc.insert()
+    except DuplicateKeyError as e:
+        await _drop_new_reservations(request.name, new_reservations)
+        raise HTTPException(
+            status_code=409, detail=f"Runtime key '{request.name}' already exists"
+        ) from e
 
     # Add to local provider so it works immediately. A plaintext the Registry
     # generated cannot already be a config key's; a config key that takes it
@@ -316,28 +373,14 @@ async def create_api_key(
             granted_namespaces, doc.name, request.grant_permission, reserved_prefixes,
         )
 
-    for r in reserve:
-        await reservation_store.save_reservation(
-            r.prefix, r.settings, doc.name, get_identity_string()
-        )
     if reserve:
         logger.info("Runtime key %s reserves %s", doc.name, reserved_prefixes)
     await access_changed()
 
     return APIKeyCreatedResponse(
-        granted_namespaces=granted_namespaces,
-        name=doc.name,
-        owner=doc.owner,
-        groups=doc.groups,
-        description=doc.description,
-        created_at=doc.created_at,
-        expires_at=doc.expires_at,
-        enabled=doc.enabled,
-        namespaces=doc.namespaces,
-        created_by=doc.created_by,
-        source="runtime",
+        **_stored_to_response(doc, reserved_prefixes).model_dump(),
         plaintext_key=plaintext,
-        reserved_namespaces=sorted(reserved_prefixes),
+        granted_namespaces=granted_namespaces,
     )
 
 
@@ -366,8 +409,10 @@ async def list_api_keys(
     managed = {d.name: d for d in runtime_docs if d.managed_by is not None}
 
     # Config-file keys, marked managed when the Registry holds their import
+    served: set[str] = set()
     for record in provider.iter_keys():
         if record.name in config_names:
+            served.add(record.name)
             results.append(_config_key_to_response(record, managed.get(record.name)))
 
     reserved: dict[str, list[str]] = {}
@@ -375,10 +420,15 @@ async def list_api_keys(
         reserved.setdefault(r.app, []).append(r.prefix)
     declared = await _declared_grants(runtime_docs)
     for doc in runtime_docs:
-        # A dormant import is the config key listed above: list it once.
+        response = _stored_to_response(doc, reserved.get(doc.name), declared.get(doc.name))
         if key_import.is_dormant(doc, config_names):
+            # A dormant import is the config key listed above: list it once.
+            # A disabled config key is not served, so the provider holds no
+            # record of it; its import is what describes it.
+            if doc.name not in served:
+                results.append(_as_config_key(response))
             continue
-        results.append(_stored_to_response(doc, reserved.get(doc.name), declared.get(doc.name)))
+        results.append(response)
 
     results.sort(key=lambda r: r.name)
     total = len(results)
@@ -457,6 +507,16 @@ async def get_api_key(
         for record in provider.iter_keys():
             if record.name == name:
                 return _config_key_to_response(record, await _managed_doc(name))
+        # A disabled config key is not served, so the provider holds no
+        # record of it: its import, when there is one, describes it.
+        managed_doc = await _managed_doc(name)
+        if managed_doc is not None:
+            declared = await _declared_grants([managed_doc])
+            return _as_config_key(_stored_to_response(managed_doc, [], declared.get(name)))
+        raise HTTPException(
+            status_code=404,
+            detail=f"API key '{name}' is a disabled config-file key; the Registry holds no record of it",
+        )
 
     # Check runtime keys
     doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
@@ -491,14 +551,7 @@ async def update_api_key(
 
     reserved = await _reserved_by(name)
     if request.namespaces is not None:
-        dropped = sorted(set(reserved) - set(request.namespaces))
-        if dropped:
-            raise HTTPException(
-                status_code=409,
-                detail=f"namespaces would drop {', '.join(dropped)}, which the key "
-                f"reserves; narrow with DELETE /api-keys/{name}/namespaces/<prefix>, "
-                "which also handles the reservation and the grant",
-            )
+        _refuse_dropping_reserved(name, reserved, doc.namespaces, request.namespaces)
 
     # Apply updates
     if request.description is not None:
@@ -519,6 +572,23 @@ async def update_api_key(
     logger.info("Updated runtime API key: name=%s by=%s", name, get_identity_string())
 
     return _stored_to_response(doc, reserved)
+
+
+def _refuse_dropping_reserved(
+    name: str, reserved: list[str], scope: list[str] | None, new_scope: list[str],
+) -> None:
+    """Refuse a scope change that drops a prefix the key reserves. Only a
+    reserved prefix still in the key's scope can be dropped: a reservation a
+    narrow kept (its namespace exists) is already out of scope, and is
+    released with DELETE /reservations/{prefix}."""
+    dropped = sorted((set(reserved) & set(scope or [])) - set(new_scope))
+    if dropped:
+        raise HTTPException(
+            status_code=409,
+            detail=f"namespaces would drop {', '.join(dropped)}, which the key "
+            f"reserves; narrow with DELETE /api-keys/{name}/namespaces/<prefix>, "
+            "which also handles the reservation and the grant",
+        )
 
 
 async def _runtime_key(name: str) -> StoredAPIKey:
@@ -566,6 +636,9 @@ async def add_key_namespace(
                 detail="a key reserving a namespace holds admin on it; omit permission or send 'admin'",
             )
         await _check_reservation(prefix, request.reserve, name)
+        # Written first and conditional on its holder: a prefix taken since
+        # the check refuses the widen before the scope or the grant changes.
+        await _save_reservation(prefix, request.reserve, name)
 
     if prefix not in doc.namespaces:
         doc.namespaces = [*doc.namespaces, prefix]
@@ -573,10 +646,6 @@ async def add_key_namespace(
         await _refresh_provider(doc)
     await _set_grant(name, prefix, permission)
     await access_changed()
-    if request.reserve is not None:
-        await reservation_store.save_reservation(
-            prefix, request.reserve, name, get_identity_string()
-        )
     logger.info(
         "Widened runtime key %s to %s (permission=%s, reserved=%s) by=%s",
         name, prefix, permission, request.reserve is not None, get_identity_string(),
