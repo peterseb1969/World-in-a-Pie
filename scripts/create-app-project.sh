@@ -126,7 +126,7 @@ while [[ $# -gt 0 ]]; do
             echo "              KB client, drops the /wip-case stub, registers the role. Scheme is"
             echo "              optional (https:// assumed). Without --kb (and no existing kb.json)"
             echo "              the repo stays tier 2 (WIP-only); an existing kb.json keeps its other keys."
-            echo "              Give the KB app's own origin (kb.kb.internal → https://kb.kb.internal),"
+            echo "              Give the KB app's own origin (kb.prod.internal → https://kb.prod.internal),"
             echo "              not WIP's: a URL that redirects breaks the client."
             echo "  --kb-key    Path to the KB API key file issued with this installation. Required"
             echo "              with --kb unless .claude/kb.json already records one; no default."

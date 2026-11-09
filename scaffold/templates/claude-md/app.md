@@ -208,7 +208,7 @@ Key commands:
 
 Remote WIP instances:
 ```bash
-wip-toolkit --host kb.internal --proxy export kb /tmp/kb-backup.zip
+wip-toolkit --host prod.internal --proxy export kb /tmp/kb-backup.zip
 ```
 
 ## Session Awareness

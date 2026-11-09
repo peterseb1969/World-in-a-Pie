@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # redeploy-kb.sh — build the KB app image from WIP-KB, push to GHCR, and roll it on
-# the kb.internal k8s cluster, with the bits agents kept forgetting BAKED IN and
+# the canonical KB install (prod.internal) on the k8s cluster, with the bits agents kept forgetting BAKED IN and
 # every failure made LOUD. Born from two compounding mistakes on 2026-06-27:
 #   1. an image built for the wrong base path → index.html pointed its assets at a
 #      path nothing served → blank page (MIME error). The KB is served at the root
@@ -23,7 +23,7 @@
 #
 # Env overrides (defaults target Peter's canonical setup):
 #   WIP_KB_DIR   (default: $HOME/Development/WIP-KB)
-#   KUBE_CONTEXT (default: microk8s)   KB_NAMESPACE (default: kb)
+#   KUBE_CONTEXT (default: kubi5)   KB_NAMESPACE (default: prod)
 set -euo pipefail
 
 # ── Config (one place; not scattered across an agent's memory) ──────────────────
@@ -31,8 +31,8 @@ WIP_KB_DIR="${WIP_KB_DIR:-$HOME/Development/WIP-KB}"
 IMAGE="ghcr.io/peterseb1969/wip-kb"
 DEPLOYMENT="wip-wip-kb"        # k8s deployment name
 CONTAINER="wip-kb"            # container within the deployment
-KB_NAMESPACE="${KB_NAMESPACE:-kb}"
-KUBE_CONTEXT="${KUBE_CONTEXT:-microk8s}"
+KB_NAMESPACE="${KB_NAMESPACE:-prod}"
+KUBE_CONTEXT="${KUBE_CONTEXT:-kubi5}"
 PLATFORM="linux/arm64"        # Pi nodes are arm64; native on Apple Silicon
 ASSET_MARKER='="/assets/'      # what a correct index.html must reference (root base)
 FORBIDDEN_MARKER="/apps/"      # what it must never contain (an image built for path mode)
@@ -141,5 +141,5 @@ fi
 
 echo
 echo "✅ Deployed $IMAGE:$TAG"
-echo "   served-page check is OIDC-gated (302) — hard-refresh https://kb.kb.internal/ to confirm in-browser."
+echo "   served-page check is OIDC-gated (302) — hard-refresh https://kb.prod.internal/ to confirm in-browser."
 echo "   rollback:  $0 --rollback ${ROLLBACK_REF##*:}"

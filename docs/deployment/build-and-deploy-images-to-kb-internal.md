@@ -1,4 +1,4 @@
-# Building WIP backend images & deploying them to kb.internal
+# Building WIP backend images & deploying them to the canonical install (prod.internal)
 
 **Read this first, then ASK THE OPERATOR which route to take — do not self-educate.**
 The whole point of this doc is to skip the grep-the-workflows / list-the-cluster /
@@ -14,8 +14,10 @@ check-the-token fumbling. Two build routes exist; the deploy (roll) step is shar
 
 ## What runs where (so you don't re-derive it)
 
-- **kb.internal** is the `microk8s` k8s cluster — 3 **arm64** Raspberry Pi nodes
-  (`kubi5-1/2/3`). kubectl context: `microk8s`. Namespace: `kb`.
+- **prod.internal** (the canonical install; the KB app is at `https://kb.prod.internal`)
+  runs on the MicroK8s cluster — 3 **arm64** Raspberry Pi nodes (`kubi5-1/2/3`).
+  kubectl context: `kubi5`. Namespace: `prod`. Until 2026-11-09 the canonical
+  install was `kb.internal` (namespace `kb`).
 - It runs the **full WIP backend platform**, not just the KB app. Backend
   deployments (all on `ghcr.io/peterseb1969/<svc>:<tag>`):
   `wip-registry, wip-def-store, wip-template-store, wip-document-store,
@@ -40,7 +42,7 @@ check-the-token fumbling. Two build routes exist; the deploy (roll) step is shar
   If missing: `gh auth refresh -s write:packages`.
 - You are building the branch you intend — usually **`develop`**. Confirm
   `origin/develop` has the commits you want (`git fetch origin develop`).
-- kubectl reaches the cluster: `kubectl --context microk8s -n kb get deploy`.
+- kubectl reaches the cluster: `kubectl --context kubi5 -n prod get deploy`.
 - **Route B only:** `podman machine list` shows the machine **running** (give it
   ≥6 GiB; bump if builds OOM).
 
@@ -121,16 +123,16 @@ skopeo inspect docker://ghcr.io/peterseb1969/template-store:<tag> >/dev/null && 
 # Roll each backend deployment to the new tag (all 8, or just the changed subset).
 for svc in registry def-store template-store document-store reporting-sync \
            auth-gateway ingest-gateway mcp-server; do
-  kubectl --context microk8s -n kb set image \
+  kubectl --context kubi5 -n prod set image \
     deployment/wip-$svc $svc=ghcr.io/peterseb1969/$svc:20260627a
 done
 
 # Wait for each rollout, then confirm pods are healthy.
 for svc in registry def-store template-store document-store reporting-sync \
            auth-gateway ingest-gateway mcp-server; do
-  kubectl --context microk8s -n kb rollout status deployment/wip-$svc --timeout=180s
+  kubectl --context kubi5 -n prod rollout status deployment/wip-$svc --timeout=180s
 done
-kubectl --context microk8s -n kb get pods
+kubectl --context kubi5 -n prod get pods
 ```
 
 - Roll only the services you rebuilt. For a code change in one component (e.g.
@@ -143,7 +145,7 @@ kubectl --context microk8s -n kb get pods
 
 ## Gotchas (the trail, so you trust the above)
 
-- kb.internal = the **whole platform**, not just the KB app. Image source is
+- prod.internal = the **whole platform**, not just the KB app. Image source is
   **World-in-a-Pie on GitHub**, built by **GitHub Actions** (not Gitea).
 - The **KB app** (`wip-wip-kb`) is a different repo (`WIP-KB`, **main-only**) with
   its own build — out of scope here.
