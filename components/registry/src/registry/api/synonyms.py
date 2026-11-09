@@ -475,96 +475,126 @@ async def remove_synonyms(
 
     loaded = await _load_active_entries({item.target_id for item in items})
 
-    removals: dict[str, list[tuple[int, tuple]]] = {}  # entry_id -> (item, claim key)
-    changed: dict[str, RegistryEntry] = {}
-    updated_by: dict[str, str | None] = {}
+    plan = _RemovePlan()
     for i, item in enumerate(items):
         try:
-            entry = loaded.get(item.target_id)
-            if not entry or not await access.allows(entry.namespace, "read"):
-                results[i] = RemoveSynonymResponse(
-                    index=i, status="not_found", registry_id=item.target_id,
-                )
-                continue
-
-            synonym_namespace = item.synonym_namespace or entry.namespace
-            synonym_entity_type = item.synonym_entity_type or entry.entity_type
-
-            refusal = await _write_refusal(access, entry.namespace, synonym_namespace)
-            if refusal:
-                results[i] = RemoveSynonymResponse(
-                    index=i, status="forbidden", registry_id=entry.entry_id, error=refusal,
-                )
-                continue
-
-            synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
-
-            original_count = len(entry.synonyms)
-            entry.synonyms = [
-                s for s in entry.synonyms
-                if not (s.namespace == synonym_namespace
-                        and s.entity_type == synonym_entity_type
-                        and s.composite_key_hash == synonym_hash)
-            ]
-            if len(entry.synonyms) == original_count:
-                results[i] = RemoveSynonymResponse(
-                    index=i, status="not_found", registry_id=entry.entry_id,
-                    error="Synonym not found in entry",
-                )
-                continue
-
-            changed[entry.entry_id] = entry
-            updated_by[entry.entry_id] = item.updated_by
-            removals.setdefault(entry.entry_id, []).append((i, (
-                synonym_namespace, synonym_entity_type, synonym_hash, entry.entry_id, "synonym",
-            )))
+            results[i] = await _decide_removal(i, item, loaded.get(item.target_id), access, plan)
         except Exception as e:
             results[i] = RemoveSynonymResponse(index=i, status="error", **error_fields(e))
 
-    def reapply_removals(entry_id: str, entry: RegistryEntry) -> SynonymOutcomes:
-        outcomes: SynonymOutcomes = {}
-        for _i, (ns, entity_type, h, _owner, _kind) in removals[entry_id]:
-            before = len(entry.synonyms)
-            entry.synonyms = [
-                s for s in entry.synonyms
-                if not (s.namespace == ns and s.entity_type == entity_type
-                        and s.composite_key_hash == h)
-            ]
-            outcomes[h] = "removed" if len(entry.synonyms) < before else "not_found"
-        return outcomes
-
     failed, redecided = await _write_synonym_lists(
-        changed, reapply_removals, updated_by=updated_by,
+        plan.changed,
+        lambda entry_id, entry: _reapply_removals(plan, entry_id, entry),
+        updated_by=plan.updated_by,
     )
-    released = []
-    for entry_id, entry_removals in removals.items():
-        for i, key in entry_removals:
-            if entry_id in failed:
-                results[i] = RemoveSynonymResponse(index=i, status="error", **failed[entry_id])
-            elif redecided.get(entry_id, {}).get(key[2], "removed") == "not_found":
-                # Another request removed it first; its claim went with it.
-                results[i] = RemoveSynonymResponse(
-                    index=i, status="not_found", registry_id=entry_id,
-                    error="Synonym not found in entry",
-                )
-            else:
-                released.append(key)
-                results[i] = RemoveSynonymResponse(
-                    index=i, status="removed", registry_id=entry_id,
-                )
+    released = _settle_removals(plan, failed, redecided, results)
     # Release the removed synonyms' claims (CASE-427), each scoped to its
     # owner so a claim that belongs elsewhere is never deleted. A leftover
     # claim is a benign orphan that reconciliation clears.
     await release_keys_bulk(released)
     # The removed synonyms no longer resolve to their entries.
     await entries_changed(key[3] for key in released)
+    return _remove_response(results, len(items))
 
+
+def _remove_response(
+    results: list[RemoveSynonymResponse | None], total: int,
+) -> BulkSynonymRemoveResponse:
     done = [r for r in results if r is not None]
     return BulkSynonymRemoveResponse(
-        results=done, total=len(items),
+        results=done, total=total,
         succeeded=sum(1 for r in done if r.status == "removed"),
         failed=sum(1 for r in done if r.status in ("not_found", "forbidden", "error")),
     )
+
+
+class _RemovePlan:
+    """The removals a synonym-remove request applied in memory: each entry's
+    (item index, claim key) pairs, the changed entries, and who updated
+    each."""
+
+    def __init__(self) -> None:
+        self.removals: dict[str, list[tuple[int, tuple]]] = {}
+        self.changed: dict[str, RegistryEntry] = {}
+        self.updated_by: dict[str, str | None] = {}
+
+
+def _drop_synonym(entry: RegistryEntry, namespace: str, entity_type: str, synonym_hash: str) -> bool:
+    """Remove the entry's synonym with this key; whether there was one."""
+    before = len(entry.synonyms)
+    entry.synonyms = [
+        s for s in entry.synonyms
+        if not (s.namespace == namespace and s.entity_type == entity_type
+                and s.composite_key_hash == synonym_hash)
+    ]
+    return len(entry.synonyms) < before
+
+
+async def _decide_removal(
+    i: int,
+    item: RemoveSynonymItem,
+    entry: RegistryEntry | None,
+    access: NamespaceAccess,
+    plan: _RemovePlan,
+) -> RemoveSynonymResponse | None:
+    """Answer an item at once (not found, forbidden, no such synonym), or
+    remove its synonym from the entry in memory and plan the write. None
+    when it is answered after the write."""
+    if not entry or not await access.allows(entry.namespace, "read"):
+        return RemoveSynonymResponse(index=i, status="not_found", registry_id=item.target_id)
+    synonym_namespace = item.synonym_namespace or entry.namespace
+    synonym_entity_type = item.synonym_entity_type or entry.entity_type
+    refusal = await _write_refusal(access, entry.namespace, synonym_namespace)
+    if refusal:
+        return RemoveSynonymResponse(
+            index=i, status="forbidden", registry_id=entry.entry_id, error=refusal,
+        )
+    synonym_hash = HashService.compute_composite_key_hash(item.synonym_composite_key)
+    if not _drop_synonym(entry, synonym_namespace, synonym_entity_type, synonym_hash):
+        return RemoveSynonymResponse(
+            index=i, status="not_found", registry_id=entry.entry_id,
+            error="Synonym not found in entry",
+        )
+    plan.changed[entry.entry_id] = entry
+    plan.updated_by[entry.entry_id] = item.updated_by
+    plan.removals.setdefault(entry.entry_id, []).append((i, (
+        synonym_namespace, synonym_entity_type, synonym_hash, entry.entry_id, "synonym",
+    )))
+    return None
+
+
+def _reapply_removals(plan: _RemovePlan, entry_id: str, entry: RegistryEntry) -> "SynonymOutcomes":
+    """Apply an entry's removals again to the entry as re-read after another
+    writer changed it, deciding each against it as it now is."""
+    outcomes: SynonymOutcomes = {}
+    for _i, (ns, entity_type, h, _owner, _kind) in plan.removals[entry_id]:
+        outcomes[h] = "removed" if _drop_synonym(entry, ns, entity_type, h) else "not_found"
+    return outcomes
+
+
+def _settle_removals(
+    plan: _RemovePlan,
+    failed: dict[str, dict],
+    redecided: "dict[str, SynonymOutcomes]",
+    results: list[RemoveSynonymResponse | None],
+) -> list[tuple]:
+    """Answer each planned removal by its entry's write: an error, not_found
+    when another request removed it first (its claim went with it), else
+    removed. Returns the claim keys to release."""
+    released = []
+    for entry_id, entry_removals in plan.removals.items():
+        for i, key in entry_removals:
+            if entry_id in failed:
+                results[i] = RemoveSynonymResponse(index=i, status="error", **failed[entry_id])
+            elif redecided.get(entry_id, {}).get(key[2], "removed") == "not_found":
+                results[i] = RemoveSynonymResponse(
+                    index=i, status="not_found", registry_id=entry_id,
+                    error="Synonym not found in entry",
+                )
+            else:
+                released.append(key)
+                results[i] = RemoveSynonymResponse(index=i, status="removed", registry_id=entry_id)
+    return released
 
 
 @router.post(
