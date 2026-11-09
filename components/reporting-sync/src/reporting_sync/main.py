@@ -2772,155 +2772,17 @@ async def register_view(
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     sm = SchemaManager(state.postgres_pool)
-    try:
-        safe_name = sm._safe_ident(body.name)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-
-    if SchemaManager.is_reserved_relation_name(body.name):
-        raise HTTPException(
-            status_code=400,
-            detail="View name collides with the platform's reporting relations "
-                   "(doc_*, *__v<N>, *__entities, metadata tables, _wip_*). "
-                   "Pick a distinct name, e.g. a v_ prefix.",
-        )
-
-    # Trailing semicolons would break the subselect wrap below; strip them
-    # so "SELECT 1;" registers cleanly while "SELECT 1; DROP x" still fails.
-    view_sql = body.sql.strip().rstrip(";").strip()
-    if not view_sql:
-        raise HTTPException(status_code=400, detail="View SQL is empty")
-
-    # Reject DDL/write keywords in the view SQL
-    if _DANGEROUS_SQL_RE.search(view_sql):
-        raise HTTPException(
-            status_code=400,
-            detail="View SQL must be a read-only SELECT. "
-                   "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
-        )
-
-    try:
-        # The schema may not exist yet when an app bootstraps views before
-        # its first sync; creating it is harmless and namespace deletion
-        # cleans it up. A deleted namespace gets no schema back.
-        schema = await sm.ensure_schema(prefix)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e)) from e
-    except NamespaceDeletedError as e:
-        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}") from e
-
+    safe_name, view_sql = _validated_view(sm, body)
+    schema = await _view_schema(sm, prefix)
     async with state.postgres_pool.acquire() as conn:
-        already_registered = bool(await conn.fetchval(
-            "SELECT TRUE FROM public._wip_views WHERE namespace = $1 AND view_name = $2",
-            prefix, body.name,
-        ))
-        if not already_registered:
-            # The name must be free: replacing a relation this endpoint does
-            # not own (an entity view, a metadata table, a manual view)
-            # would hijack it.
-            occupied = await conn.fetchval(
-                """
-                SELECT TRUE FROM pg_class c
-                JOIN pg_namespace n ON n.oid = c.relnamespace
-                WHERE n.nspname = $1 AND c.relname = $2
-                """,
-                schema, body.name,
-            )
-            if occupied:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"Relation {body.name!r} already exists in schema "
-                           f"{schema!r} and is not a registered view",
-                )
-
-        # Validate before touching anything: a PREPARED statement (fetch)
-        # admits exactly one SQL command — a ';'-separated second statement
-        # fails at parse instead of executing — and the subselect wrap plus
-        # the read-only transaction keep planning side-effect-free.
-        # Planned on the caller's own connection, which a namespace-scoped
-        # key's is limited to its namespaces: planning EVALUATES stable
-        # functions while estimating (table_to_xml reads a table), and the
-        # error returned below would carry what they read.
-        if not state.read_pool:
-            raise HTTPException(status_code=503, detail="PostgreSQL not connected")
-        try:
-            async with _caller_read_connection(identity) as read_conn, read_conn.transaction(
-                readonly=True
-            ):
-                await read_conn.execute(f'SET LOCAL search_path = "{schema}", public')
-                await read_conn.fetch(
-                    f"EXPLAIN SELECT * FROM ({view_sql}) _wip_view_check"  # nosec B608  # caller SQL, planned read-only as a role limited to what the caller may read
-                )
-        except asyncpg.InsufficientPrivilegeError as e:
-            # The same refusal the dependency check below gives, earlier.
-            raise HTTPException(
-                status_code=403,
-                detail=f"View references relations this key cannot read ({e}).",
-            ) from e
-        except asyncpg.PostgresError as e:
-            raise HTTPException(
-                status_code=400, detail=f"View SQL is invalid: {e}"
-            ) from e
-
-        # Create (or replace) the view and persist it, atomically.
-        try:
-            async with conn.transaction():
-                await conn.execute(f'SET LOCAL search_path = "{schema}", public')
-                if already_registered:
-                    # DROP + CREATE rather than CREATE OR REPLACE: Postgres
-                    # rejects OR REPLACE when the column set changes, and
-                    # evolving a view's columns is the normal workflow here.
-                    await conn.execute(
-                        f'DROP VIEW IF EXISTS "{schema}"."{safe_name}"'
-                    )
-                await conn.execute(
-                    f'CREATE VIEW "{schema}"."{safe_name}" '
-                    f"WITH ({REGISTERED_VIEW_OPTIONS}) AS {view_sql}"
-                )
-                if not privileged:
-                    # A namespace-admin registration may draw only on
-                    # namespaces its key can read: ask Postgres which
-                    # relations the view it just created depends on, and roll
-                    # the whole registration back if any lies in a namespace
-                    # the key cannot read or in platform tables.
-                    foreign = await conn.fetch(
-                        _VIEW_FOREIGN_DEPENDENCIES_SQL, schema, safe_name,
-                    )
-                    unreadable = await _unreadable_view_dependencies(identity, foreign)
-                    if unreadable:
-                        names = ", ".join(
-                            f"{r['schema']}.{r['relation']}" for r in unreadable
-                        )
-                        raise HTTPException(
-                            status_code=403,
-                            detail=(
-                                "View references relations this key cannot read "
-                                f"({names}). A namespace-admin key may register "
-                                "views over its own namespace and namespaces it "
-                                "can read; views over platform tables require a "
-                                "wip-admins or wip-services key."
-                            ),
-                        )
-                await conn.execute(
-                    """
-                    INSERT INTO public._wip_views (namespace, view_name, view_sql, registered_by)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (namespace, view_name) DO UPDATE
-                        SET view_sql = EXCLUDED.view_sql,
-                            registered_at = NOW(),
-                            registered_by = EXCLUDED.registered_by
-                    """,
-                    prefix, body.name, view_sql,
-                    body.registered_by or get_identity_string(),
-                )
-        except asyncpg.PostgresError as e:
-            status = (
-                409 if getattr(e, "sqlstate", None) == _PG_DEPENDENT_OBJECTS
-                else 400
-            )
-            raise HTTPException(
-                status_code=status, detail=f"View registration failed: {e}"
-            ) from e
+        already_registered = await _registered_or_free(conn, prefix, schema, body.name)
+        await _plan_view_sql(identity, schema, view_sql)
+        await _create_registered_view(
+            conn, identity, prefix, schema, safe_name, view_sql,
+            registered_by=body.registered_by or get_identity_string(),
+            replace=already_registered,
+            check_dependencies=not privileged,
+        )
 
     response.status_code = 200 if already_registered else 201
     logger.info(f"Registered view {prefix}.{body.name}")
@@ -2930,6 +2792,174 @@ async def register_view(
         "schema_qualified": f'"{schema}"."{safe_name}"',
         "created": not already_registered,
     }
+
+
+def _validated_view(sm: SchemaManager, body: RegisterViewRequest) -> tuple[str, str]:
+    """The view's quoted-safe name and its SQL, or a 400: an unsafe or
+    reserved name, empty SQL, or write/DDL keywords. Trailing semicolons are
+    stripped, so "SELECT 1;" registers cleanly while "SELECT 1; DROP x"
+    still fails (the prepared subselect admits one statement)."""
+    try:
+        safe_name = sm._safe_ident(body.name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if SchemaManager.is_reserved_relation_name(body.name):
+        raise HTTPException(
+            status_code=400,
+            detail="View name collides with the platform's reporting relations "
+                   "(doc_*, *__v<N>, *__entities, metadata tables, _wip_*). "
+                   "Pick a distinct name, e.g. a v_ prefix.",
+        )
+    view_sql = body.sql.strip().rstrip(";").strip()
+    if not view_sql:
+        raise HTTPException(status_code=400, detail="View SQL is empty")
+    if _DANGEROUS_SQL_RE.search(view_sql):
+        raise HTTPException(
+            status_code=400,
+            detail="View SQL must be a read-only SELECT. "
+                   "INSERT, UPDATE, DELETE, DROP, ALTER, CREATE, TRUNCATE, GRANT, and REVOKE are prohibited.",
+        )
+    return safe_name, view_sql
+
+
+async def _view_schema(sm: SchemaManager, prefix: str) -> str:
+    """The namespace's reporting schema, created if missing.
+
+    The schema may not exist yet when an app bootstraps views before its
+    first sync; creating it is harmless and namespace deletion cleans it up.
+    A deleted namespace gets no schema back (404).
+    """
+    try:
+        return await sm.ensure_schema(prefix)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except NamespaceDeletedError as e:
+        raise HTTPException(status_code=404, detail=f"Namespace not found: {prefix}") from e
+
+
+async def _registered_or_free(conn: Any, prefix: str, schema: str, name: str) -> bool:
+    """Whether the name is already a registered view of the namespace. If
+    not, it must be free: replacing a relation this endpoint does not own (an
+    entity view, a metadata table, a manual view) would hijack it (409)."""
+    if await conn.fetchval(
+        "SELECT TRUE FROM public._wip_views WHERE namespace = $1 AND view_name = $2",
+        prefix, name,
+    ):
+        return True
+    occupied = await conn.fetchval(
+        """
+        SELECT TRUE FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = $1 AND c.relname = $2
+        """,
+        schema, name,
+    )
+    if occupied:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Relation {name!r} already exists in schema "
+                   f"{schema!r} and is not a registered view",
+        )
+    return False
+
+
+async def _plan_view_sql(identity: UserIdentity, schema: str, view_sql: str) -> None:
+    """Validate the view SQL before touching anything.
+
+    A PREPARED statement (fetch) admits exactly one SQL command — a
+    ';'-separated second statement fails at parse instead of executing — and
+    the subselect wrap plus the read-only transaction keep planning
+    side-effect-free. Planned on the caller's own connection, which a
+    namespace-scoped key's is limited to its namespaces: planning EVALUATES
+    stable functions while estimating (table_to_xml reads a table), and the
+    error returned would carry what they read.
+    """
+    if not state.read_pool:
+        raise HTTPException(status_code=503, detail="PostgreSQL not connected")
+    try:
+        async with _caller_read_connection(identity) as read_conn, read_conn.transaction(
+            readonly=True
+        ):
+            await read_conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            await read_conn.fetch(
+                f"EXPLAIN SELECT * FROM ({view_sql}) _wip_view_check"  # nosec B608  # caller SQL, planned read-only as a role limited to what the caller may read
+            )
+    except asyncpg.InsufficientPrivilegeError as e:
+        # The same refusal the dependency check gives, earlier.
+        raise HTTPException(
+            status_code=403,
+            detail=f"View references relations this key cannot read ({e}).",
+        ) from e
+    except asyncpg.PostgresError as e:
+        raise HTTPException(status_code=400, detail=f"View SQL is invalid: {e}") from e
+
+
+async def _create_registered_view(
+    conn: Any,
+    identity: UserIdentity,
+    prefix: str,
+    schema: str,
+    safe_name: str,
+    view_sql: str,
+    *,
+    registered_by: str,
+    replace: bool,
+    check_dependencies: bool,
+) -> None:
+    """Create (or replace) the view and persist its registration, in one
+    transaction. A dependent object blocking the replace is a 409; any other
+    database error a 400."""
+    try:
+        async with conn.transaction():
+            await conn.execute(f'SET LOCAL search_path = "{schema}", public')
+            if replace:
+                # DROP + CREATE rather than CREATE OR REPLACE: Postgres
+                # rejects OR REPLACE when the column set changes, and
+                # evolving a view's columns is the normal workflow here.
+                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{safe_name}"')
+            await conn.execute(
+                f'CREATE VIEW "{schema}"."{safe_name}" '
+                f"WITH ({REGISTERED_VIEW_OPTIONS}) AS {view_sql}"
+            )
+            if check_dependencies:
+                await _refuse_unreadable_dependencies(conn, identity, schema, safe_name)
+            await conn.execute(
+                """
+                INSERT INTO public._wip_views (namespace, view_name, view_sql, registered_by)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (namespace, view_name) DO UPDATE
+                    SET view_sql = EXCLUDED.view_sql,
+                        registered_at = NOW(),
+                        registered_by = EXCLUDED.registered_by
+                """,
+                prefix, safe_name, view_sql, registered_by,
+            )
+    except asyncpg.PostgresError as e:
+        status = 409 if getattr(e, "sqlstate", None) == _PG_DEPENDENT_OBJECTS else 400
+        raise HTTPException(status_code=status, detail=f"View registration failed: {e}") from e
+
+
+async def _refuse_unreadable_dependencies(
+    conn: Any, identity: UserIdentity, schema: str, safe_name: str,
+) -> None:
+    """A namespace-admin registration may draw only on namespaces its key
+    can read: ask Postgres which relations the view it just created depends
+    on, and refuse (403, rolling the whole registration back) if any lies in
+    a namespace the key cannot read or in platform tables."""
+    foreign = await conn.fetch(_VIEW_FOREIGN_DEPENDENCIES_SQL, schema, safe_name)
+    unreadable = await _unreadable_view_dependencies(identity, foreign)
+    if unreadable:
+        names = ", ".join(f"{r['schema']}.{r['relation']}" for r in unreadable)
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "View references relations this key cannot read "
+                f"({names}). A namespace-admin key may register "
+                "views over its own namespace and namespaces it "
+                "can read; views over platform tables require a "
+                "wip-admins or wip-services key."
+            ),
+        )
 
 
 @router.get("/namespace/{prefix}/views")
