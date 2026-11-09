@@ -2,6 +2,7 @@
 
 import logging
 from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -67,6 +68,102 @@ class IngestHTTPClient:
         """Get base URL from settings attribute."""
         return cast(str, getattr(settings, attr_name))
 
+    @staticmethod
+    def _refused(action: IngestAction, correlation_id: str, error: str) -> IngestResult:
+        """A payload that cannot be forwarded as it is (nothing was sent)."""
+        return IngestResult(
+            correlation_id=correlation_id,
+            action=action,
+            status=IngestResultStatus.FAILED,
+            http_status_code=400,
+            error=f"invalid payload: {error}",
+        )
+
+    @staticmethod
+    def _build_request(
+        endpoint_config: dict[str, Any], payload: dict[str, Any]
+    ) -> tuple[str, list[Any]] | str:
+        """The path and JSON body for a payload, or why it cannot be sent.
+
+        Path parameters (terminology_id for terms.bulk) come out of the
+        payload and go into the path as one encoded segment: a raw '?', '#'
+        or '/' would re-point the request. Every write endpoint takes a JSON
+        array: a create wraps its object; a bulk action sends the list in
+        payload[payload_key] (a single object is wrapped). A missing list is
+        refused: forwarding [] would report a successful ingest of nothing.
+        """
+        path = endpoint_config["path"]
+        working_payload = payload.copy()  # Don't mutate original
+        for param in endpoint_config.get("path_params", []):
+            value = working_payload.pop(param, None)
+            if not isinstance(value, str) or not value.strip():
+                return f"payload.{param} is required: a non-empty string"
+            path = path.replace(f"{{{param}}}", quote(value, safe=""))
+
+        payload_key = endpoint_config.get("payload_key")
+        if not payload_key:
+            return path, [working_payload]
+        if payload_key not in working_payload:
+            return f"payload.{payload_key} is required: the list of items to write"
+        items = working_payload[payload_key]
+        return path, items if isinstance(items, list) else [items]
+
+    @staticmethod
+    def _outcome(
+        action: IngestAction, correlation_id: str, response: httpx.Response
+    ) -> IngestResult:
+        """The outcome of a target's answer."""
+        response_data = None
+        try:
+            response_data = response.json()
+        except Exception:
+            response_data = {"raw": response.text[:1000]}
+
+        # Handle HTTP-level errors. A 5xx, 408 or 429 means the target
+        # could not take the request right now (starting, overloaded,
+        # restarting) — redelivery may succeed. Any other 4xx is a
+        # definitive answer about this request (validation, auth,
+        # not found) that redelivery cannot change.
+        if response.status_code >= 400:
+            error_detail = response_data.get("detail") if response_data else response.text[:500]
+            return IngestResult(
+                correlation_id=correlation_id,
+                action=action,
+                status=IngestResultStatus.FAILED,
+                http_status_code=response.status_code,
+                response=response_data,
+                error=f"HTTP {response.status_code}: {error_detail}",
+                retryable=(
+                    response.status_code >= 500
+                    or response.status_code in _TRANSIENT_4XX
+                ),
+            )
+
+        # Check BulkResponse for per-item failures.
+        # All write endpoints return BulkResponse with {results, total, succeeded, failed}.
+        status = IngestResultStatus.SUCCESS
+        if response_data and isinstance(response_data, dict):
+            failed_count = response_data.get("failed", 0)
+            total_count = response_data.get("total", 0)
+            if failed_count > 0:
+                status = (
+                    IngestResultStatus.FAILED
+                    if failed_count >= total_count
+                    else IngestResultStatus.PARTIAL
+                )
+
+        logger.debug(
+            f"Forwarded {action.value} correlation_id={correlation_id} "
+            f"status={response.status_code}"
+        )
+        return IngestResult(
+            correlation_id=correlation_id,
+            action=action,
+            status=status,
+            http_status_code=response.status_code,
+            response=response_data,
+        )
+
     async def forward_request(
         self,
         action: IngestAction,
@@ -96,37 +193,11 @@ class IngestHTTPClient:
                 error=f"Unknown action: {action}",
             )
 
-        base_url = self._get_base_url(endpoint_config["base_url_attr"])
-        path = endpoint_config["path"]
-
-        # Handle path parameters (e.g., terminology_id for terms.bulk)
-        # These are extracted from payload and used in the URL
-        path_params = endpoint_config.get("path_params", [])
-        working_payload = payload.copy()  # Don't mutate original
-
-        for param in path_params:
-            if param in working_payload:
-                path = path.replace(f"{{{param}}}", str(working_payload.pop(param)))
-            else:
-                return IngestResult(
-                    correlation_id=correlation_id,
-                    action=action,
-                    status=IngestResultStatus.FAILED,
-                    error=f"Missing required path parameter: {param}",
-                )
-
-        url = f"{base_url}{path}"
-
-        # Convert payload to bulk format — all write endpoints expect JSON arrays.
-        # Single-entity actions: wrap dict as [dict].
-        # Bulk actions with payload_key: extract list from payload[key].
-        payload_key = endpoint_config.get("payload_key")
-        if payload_key:
-            request_body = working_payload.get(payload_key, [])
-            if not isinstance(request_body, list):
-                request_body = [request_body]
-        else:
-            request_body = [working_payload]
+        built = self._build_request(endpoint_config, payload)
+        if isinstance(built, str):
+            return self._refused(action, correlation_id, built)
+        path, request_body = built
+        url = f"{self._get_base_url(endpoint_config['base_url_attr'])}{path}"
 
         try:
             logger.debug(f"Forwarding {action.value} to {url}")
@@ -141,58 +212,7 @@ class IngestHTTPClient:
                 },
             )
 
-            # Parse response
-            response_data = None
-            try:
-                response_data = response.json()
-            except Exception:
-                response_data = {"raw": response.text[:1000]}
-
-            # Handle HTTP-level errors. A 5xx, 408 or 429 means the target
-            # could not take the request right now (starting, overloaded,
-            # restarting) — redelivery may succeed. Any other 4xx is a
-            # definitive answer about this request (validation, auth,
-            # not found) that redelivery cannot change.
-            if response.status_code >= 400:
-                error_detail = response_data.get("detail") if response_data else response.text[:500]
-                return IngestResult(
-                    correlation_id=correlation_id,
-                    action=action,
-                    status=IngestResultStatus.FAILED,
-                    http_status_code=response.status_code,
-                    response=response_data,
-                    error=f"HTTP {response.status_code}: {error_detail}",
-                    retryable=(
-                        response.status_code >= 500
-                        or response.status_code in _TRANSIENT_4XX
-                    ),
-                )
-
-            # Check BulkResponse for per-item failures.
-            # All write endpoints return BulkResponse with {results, total, succeeded, failed}.
-            status = IngestResultStatus.SUCCESS
-            if response_data and isinstance(response_data, dict):
-                failed_count = response_data.get("failed", 0)
-                total_count = response_data.get("total", 0)
-                if failed_count > 0:
-                    status = (
-                        IngestResultStatus.FAILED
-                        if failed_count >= total_count
-                        else IngestResultStatus.PARTIAL
-                    )
-
-            logger.debug(
-                f"Forwarded {action.value} correlation_id={correlation_id} "
-                f"status={response.status_code}"
-            )
-
-            return IngestResult(
-                correlation_id=correlation_id,
-                action=action,
-                status=status,
-                http_status_code=response.status_code,
-                response=response_data,
-            )
+            return self._outcome(action, correlation_id, response)
 
         except httpx.TimeoutException as e:
             logger.error(f"Timeout calling {url}: {e}")

@@ -4,9 +4,11 @@ metadata:
   name: ingest-gateway
   category: optional
   description: |
-    Async bulk ingestion via NATS JetStream. Accepts high-throughput
-    document streams and emits validated writes into Document-Store
-    via NATS consumers. Requires nats to be deployed.
+    Async bulk ingestion via NATS JetStream. Forwards each work item
+    (terminologies, terms, templates, documents) to def-store,
+    template-store or document-store with the producer's own API key;
+    the target service validates it. Each item's outcome is readable by
+    its producer over HTTP. Requires nats to be deployed.
 
 spec:
   image:
@@ -83,4 +85,7 @@ spec:
 
   healthcheck:
     endpoint: /api/ingest-gateway/health
+    # /health answers 503 while NATS is down; restarting the gateway cannot
+    # fix that, so liveness probes the dependency-free /livez.
+    liveness_endpoint: /livez
     start_period_seconds: 20

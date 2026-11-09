@@ -160,7 +160,7 @@ async def test_start_applies_consumer_config_before_subscribing():
         return sub
 
     js.pull_subscribe = pull_subscribe
-    worker = IngestWorker(MagicMock(), js, MagicMock(), MagicMock())
+    worker = IngestWorker(MagicMock(), js, MagicMock(), MagicMock(), identify_producer=str)
     await worker.start()
 
     assert calls == ["add_consumer", "pull_subscribe"]
@@ -177,7 +177,7 @@ async def test_start_continues_when_the_consumer_update_is_refused():
     sub.fetch = AsyncMock(side_effect=asyncio.CancelledError)
     js.pull_subscribe = AsyncMock(return_value=sub)
 
-    worker = IngestWorker(MagicMock(), js, MagicMock(), MagicMock())
+    worker = IngestWorker(MagicMock(), js, MagicMock(), MagicMock(), identify_producer=str)
     await worker.start()
     js.pull_subscribe.assert_awaited_once()
 
@@ -205,14 +205,17 @@ async def test_existing_consumer_is_converged_in_place(monkeypatch):
             ack_policy=AckPolicy.EXPLICIT, ack_wait=60, max_deliver=3,
             filter_subject="wip.ingest.>",
         ))
-        await js.publish("wip.ingest.documents.create", b"{}")
-        await js.publish("wip.ingest.documents.create", b"{}")
+        # Valid items whose key the worker cannot identify: it naks them,
+        # so the ack floor moves only if the first ack is lost.
+        item = json.dumps({"correlation_id": "c", "payload": {}}).encode()
+        for _ in range(2):
+            await js.publish("wip.ingest.documents.create", item, headers={"X-API-Key": "k"})
         old = await js.pull_subscribe("wip.ingest.>", durable=durable, stream=stream)
         (first,) = await old.fetch(1, timeout=2)
         await first.ack()
         await asyncio.sleep(0.2)
 
-        worker = IngestWorker(nc, js, MagicMock(), MagicMock())
+        worker = IngestWorker(nc, js, MagicMock(), MagicMock(), identify_producer=lambda _k: None)
         task = asyncio.create_task(worker.start())
         await asyncio.sleep(1.0)
         task.cancel()

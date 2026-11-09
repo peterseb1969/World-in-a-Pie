@@ -209,6 +209,27 @@ class TestAPIKeyProvider:
         assert provider.identify_key("off-secret") is None
         assert provider.identify_key("old-secret") is None
 
+    def test_identify_key_can_tell_unverifiable_from_unknown(self):
+        """Past the runtime-key deadline a runtime key cannot be verified:
+        None by default, KeysUnverifiable on request; an unknown key and a
+        config key answer as before."""
+        from wip_auth.providers.api_key import KeysUnverifiable
+
+        provider = APIKeyProvider([
+            APIKeyRecord(name="cfg", key_hash=hash_api_key("cfg-secret")),
+        ])
+        provider.replace_runtime_keys([
+            APIKeyRecord(name="rt", key_hash=hash_api_key("rt-secret")),
+        ])
+        provider.expire_runtime_keys()
+
+        assert provider.identify_key("rt-secret") is None
+        with pytest.raises(KeysUnverifiable):
+            provider.identify_key("rt-secret", raise_unverifiable=True)
+        with pytest.raises(KeysUnverifiable):
+            provider.identify_key("nobody", raise_unverifiable=True)
+        assert provider.identify_key("cfg-secret", raise_unverifiable=True).username == "cfg"
+
     def test_add_key(self, provider):
         """Should be able to add keys at runtime."""
         new_key = APIKeyRecord(

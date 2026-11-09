@@ -25,10 +25,6 @@ class TestDefaultValues:
         s = Settings()
         assert s.nats_ingest_stream_name == "WIP_INGEST"
 
-    def test_nats_ingest_consumer_name(self):
-        s = Settings()
-        assert s.nats_ingest_consumer_name == "ingest-gateway"
-
     def test_nats_ingest_durable_name(self):
         s = Settings()
         assert s.nats_ingest_durable_name == "ingest-gateway-durable"
@@ -150,11 +146,6 @@ class TestEnvironmentVariables:
         with patch.dict(os.environ, {"NATS_INGEST_STREAM_NAME": "CUSTOM_INGEST"}):
             s = Settings()
             assert s.nats_ingest_stream_name == "CUSTOM_INGEST"
-
-    def test_nats_ingest_consumer_name_from_env(self):
-        with patch.dict(os.environ, {"NATS_INGEST_CONSUMER_NAME": "custom-consumer"}):
-            s = Settings()
-            assert s.nats_ingest_consumer_name == "custom-consumer"
 
     def test_nats_ingest_durable_name_from_env(self):
         with patch.dict(os.environ, {"NATS_INGEST_DURABLE_NAME": "custom-durable"}):

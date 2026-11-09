@@ -521,17 +521,24 @@ class APIKeyProvider:
 
         return self._identity(key_record)
 
-    def identify_key(self, api_key: str) -> UserIdentity | None:
+    def identify_key(
+        self, api_key: str, *, raise_unverifiable: bool = False
+    ) -> UserIdentity | None:
         """The identity of a raw API key, or None when it is unknown or expired.
 
         For a service that receives a key outside an HTTP request: the
         ingest gateway reads a producer's key from a NATS message header and
-        needs to know whose it is. Neither logs nor raises — an unusable key
-        is simply no identity, and so is one that cannot be verified now.
+        needs to know whose it is. Never logs. By default an unusable key is
+        simply no identity, and so is one that cannot be verified now; with
+        raise_unverifiable=True the second case raises KeysUnverifiable
+        instead, for a caller that must tell "this key is wrong" from "the
+        Registry has not confirmed the keys" (the latter may pass later).
         """
         try:
             key_record, error = self._validate_key(api_key)
         except KeysUnverifiable:
+            if raise_unverifiable:
+                raise
             return None
         if error is not None or key_record is None:
             return None

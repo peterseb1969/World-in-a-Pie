@@ -68,45 +68,35 @@ class TestMessageFormats:
         msg.ack.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_direct_payload_format(self, worker, mock_http_client, mock_result_publisher):
-        """Messages without wrapper use entire data as payload with auto correlation_id."""
-        mock_http_client.forward_request = AsyncMock(
-            return_value=_success_result("auto-x", IngestAction.TERMINOLOGIES_CREATE)
-        )
-
+    async def test_an_unwrapped_payload_is_refused(self, worker, mock_http_client, mock_result_publisher):
+        """A body that is not the {correlation_id, payload} envelope is never
+        forwarded; with a correlation_id the refusal is an outcome under it."""
         msg = make_nats_msg("wip.ingest.terminologies.create", {
-            "value": "COUNTRY",
-            "label": "Country",
+            "correlation_id": "my-id",
+            "value": "STATUS",
+            "label": "Status",
         })
         await worker._process_message(msg)
 
-        call_args = mock_http_client.forward_request.call_args
-        assert call_args.args[0] == IngestAction.TERMINOLOGIES_CREATE
-        assert call_args.args[1] == {"value": "COUNTRY", "label": "Country"}
-        # Auto-generated correlation_id
-        assert call_args.args[2].startswith("auto-")
+        mock_http_client.forward_request.assert_not_called()
+        published = mock_result_publisher.publish.call_args.args[0]
+        assert published.correlation_id == "my-id"
+        assert published.status == IngestResultStatus.FAILED
+        assert published.http_status_code == 400
+        assert "payload" in published.error
+        msg.ack.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_direct_format_with_correlation_id(self, worker, mock_http_client, mock_result_publisher):
-        """Direct payload with a correlation_id field uses it (not auto-generated)."""
-        mock_http_client.forward_request = AsyncMock(
-            return_value=_success_result("my-id", IngestAction.TERMINOLOGIES_CREATE)
-        )
-
-        msg = make_nats_msg("wip.ingest.terminologies.create", {
-            "correlation_id": "my-id",
-            "value": "STATUS",
-            "label": "Status",
-        })
+    async def test_an_unwrapped_payload_without_correlation_id_is_counted(
+        self, worker, mock_http_client, mock_result_publisher
+    ):
+        msg = make_nats_msg("wip.ingest.terminologies.create", {"value": "COUNTRY"})
         await worker._process_message(msg)
 
-        call_args = mock_http_client.forward_request.call_args
-        # Entire data (including correlation_id) is the payload
-        assert call_args.args[1] == {
-            "correlation_id": "my-id",
-            "value": "STATUS",
-            "label": "Status",
-        }
+        mock_http_client.forward_request.assert_not_called()
+        mock_result_publisher.publish.assert_not_awaited()
+        msg.ack.assert_awaited_once()
+        assert worker.messages_without_outcome == 1
 
 
 # ---- Subject routing ----
@@ -191,23 +181,33 @@ class TestSubjectRouting:
 class TestErrorHandling:
 
     @pytest.mark.asyncio
-    async def test_unknown_subject_acks_without_forwarding(self, worker, mock_http_client):
-        """Unknown subjects are acked immediately, never forwarded."""
-        msg = make_nats_msg("wip.ingest.unknown.action", {
+    async def test_unknown_subject_is_refused_with_an_outcome(
+        self, worker, mock_http_client, mock_result_publisher
+    ):
+        """An unknown subject is never forwarded; its producer reads why."""
+        msg = make_nats_msg("wip.ingest.documents.creates", {
             "correlation_id": "c-20",
             "payload": {},
         })
         await worker._process_message(msg)
 
         mock_http_client.forward_request.assert_not_called()
+        published = mock_result_publisher.publish.call_args.args[0]
+        assert published.correlation_id == "c-20"
+        assert published.action is None
+        assert "unknown ingest subject" in published.error
         msg.ack.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_invalid_json_acks_and_publishes_error(self, worker, mock_http_client, mock_result_publisher):
-        """Invalid JSON is acked (no retry) and error result published."""
+    @pytest.mark.parametrize("body", [b"not valid json{{", b"\xff\xfe not utf-8", b'"a string"', b"[1, 2]"])
+    async def test_a_body_with_no_correlation_id_is_acked_and_counted(
+        self, worker, mock_http_client, mock_result_publisher, body
+    ):
+        """No correlation_id to file an outcome under: no invented id (the
+        producer could never ask for it), no retries — consumed and counted."""
         msg = MagicMock()
         msg.subject = "wip.ingest.terminologies.create"
-        msg.data = b"not valid json{{"
+        msg.data = body
         msg.ack = AsyncMock()
         msg.nak = AsyncMock()
 
@@ -216,12 +216,8 @@ class TestErrorHandling:
         msg.ack.assert_awaited_once()
         msg.nak.assert_not_awaited()
         mock_http_client.forward_request.assert_not_called()
-
-        # Error result published
-        mock_result_publisher.publish.assert_awaited_once()
-        published = mock_result_publisher.publish.call_args.args[0]
-        assert published.status == IngestResultStatus.FAILED
-        assert "Invalid JSON" in published.error
+        mock_result_publisher.publish.assert_not_awaited()
+        assert worker.messages_without_outcome == 1
 
     @pytest.mark.asyncio
     async def test_unexpected_exception_naks_for_retry(self, worker, mock_http_client, mock_result_publisher):

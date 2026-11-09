@@ -185,15 +185,19 @@ async def test_forwarded_outcome_records_the_submitter(
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_key_records_no_submitter(
+async def test_an_unknown_key_is_not_forwarded(
     identifying_worker, mock_http_client, mock_result_publisher
 ):
+    """An outcome without a submitter is one its producer cannot read, so an
+    unidentified item is not written (CASE-1206: retried, then refused)."""
     worker, _ = identifying_worker
-    mock_http_client.forward_request = AsyncMock(return_value=_outcome("c-896", None))
+    msg = _msg({INGEST_API_KEY_HEADER: "k-unknown"})
 
-    await worker._process_message(_msg({INGEST_API_KEY_HEADER: "k-unknown"}))
+    await worker._process_message(msg)
 
-    assert mock_result_publisher.publish.call_args.args[0].submitted_by is None
+    mock_http_client.forward_request.assert_not_awaited()
+    mock_result_publisher.publish.assert_not_awaited()
+    msg.nak.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -206,13 +210,6 @@ async def test_a_keyless_item_is_not_identified(identifying_worker, mock_result_
     assert mock_result_publisher.publish.call_args.args[0].submitted_by is None
 
 
-@pytest.mark.asyncio
-async def test_a_parse_error_outcome_records_the_submitter(identifying_worker, mock_result_publisher):
-    worker, _ = identifying_worker
-
-    await worker._process_message(_msg({INGEST_API_KEY_HEADER: "k-a"}, data=b"{not json"))
-
-    assert mock_result_publisher.publish.call_args.args[0].submitted_by == "apikey:producer-a"
 
 
 # ---- Lookup endpoints ----

@@ -67,9 +67,19 @@ def test_reporting_sync_keeps_health_for_readiness(discovery):
 
 
 def test_without_liveness_endpoint_all_probes_share_endpoint(discovery):
-    probes = _probes(_component(discovery, "ingest-gateway"))
+    component = _with_healthcheck(_component(discovery, "ingest-gateway"), liveness_endpoint=None)
+    probes = _probes(component)
     paths = {_path(probes[k]) for k in ("readinessProbe", "livenessProbe", "startupProbe")}
     assert paths == {"/api/ingest-gateway/health"}
+
+
+def test_ingest_gateway_readiness_follows_nats_and_liveness_does_no_io(discovery):
+    """Its /health answers 503 while NATS is down (CASE-1207): readiness
+    only, or a NATS outage would restart the pod in a loop."""
+    probes = _probes(_component(discovery, "ingest-gateway"))
+    assert _path(probes["readinessProbe"]) == "/api/ingest-gateway/health"
+    assert _path(probes["livenessProbe"]) == "/livez"
+    assert _path(probes["startupProbe"]) == "/livez"
 
 
 @pytest.mark.parametrize("name", [*STORES, "reporting-sync"])

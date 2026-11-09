@@ -46,10 +46,13 @@ def mock_result_publisher():
 
 @pytest.fixture
 def worker(mock_http_client, mock_result_publisher):
-    """Create IngestWorker with mocked dependencies."""
+    """Create IngestWorker with mocked dependencies; every key is known."""
     nc = MagicMock()
     js = MagicMock()
-    return IngestWorker(nc, js, mock_http_client, mock_result_publisher)
+    return IngestWorker(
+        nc, js, mock_http_client, mock_result_publisher,
+        identify_producer=lambda key: "apikey:producer",
+    )
 
 
 def make_mock_response(status_code=200, json_data=None, text=""):

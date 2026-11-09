@@ -19,10 +19,6 @@ class Settings(BaseSettings):
         default="WIP_INGEST",
         alias="NATS_INGEST_STREAM_NAME"
     )
-    nats_ingest_consumer_name: str = Field(
-        default="ingest-gateway",
-        alias="NATS_INGEST_CONSUMER_NAME"
-    )
     nats_ingest_durable_name: str = Field(
         default="ingest-gateway-durable",
         alias="NATS_INGEST_DURABLE_NAME"
@@ -71,6 +67,7 @@ class Settings(BaseSettings):
         default=1024 * 1024 * 1024,  # 1GB
         alias="STREAM_MAX_BYTES"
     )
+    # Outcomes older than this are dropped from the results stream.
     results_max_age_seconds: int = Field(
         default=60 * 60 * 24 * 7,  # 7 days
         alias="RESULTS_MAX_AGE_SECONDS"

@@ -1376,7 +1376,7 @@ release claims.
 
 ### 7.4 Ongoing health monitoring
 
-Every WIP service exposes `/health`, `/metrics`, and `/health/integrity`, but in a non-techie deployment nobody is watching them. `wip-toolkit status` aggregates these and exits non-zero on anomalies — wire it to cron + email and the install will tell you when something is wrong:
+Every WIP service exposes `/health` (and document-store, template-store and reporting-sync a `/health/integrity` check), but in a non-techie deployment nobody is watching them. `wip-toolkit status` aggregates these and exits non-zero on anomalies — wire it to cron + email and the install will tell you when something is wrong:
 
 ```cron
 */5 * * * *  /usr/local/bin/wip-toolkit --proxy --host wip.local status --quiet --json | mail -E -s "WIP status alert" you@example.com

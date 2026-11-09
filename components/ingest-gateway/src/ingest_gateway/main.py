@@ -12,12 +12,15 @@ from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 from nats.js.errors import NotFoundError
 
 from wip_auth import (
     APIKeyProvider,
     UserIdentity,
+    build_metadata,
     get_auth_config,
+    install_liveness,
     require_api_key,
     setup_auth,
     setup_key_sync,
@@ -88,6 +91,7 @@ def _ingest_streams() -> list[StreamSpec]:
             subjects=("wip.ingest.results.>",),
             max_msgs=settings.stream_max_msgs,
             max_bytes=settings.stream_max_bytes,
+            max_age_seconds=settings.results_max_age_seconds,
         ),
     ]
 
@@ -178,6 +182,10 @@ app = FastAPI(
 # does not turn into a 401.
 _providers = setup_auth(app, public_paths=["/api/ingest-gateway/health"])
 
+# GET /livez: the process answers HTTP. The k8s liveness probe; /health is
+# readiness and fails while NATS is down, which a restart cannot fix.
+install_liveness(app)
+
 # Per-client rate limit, the same rule as every WIP service: a request that
 # came through Caddy (it carries X-Forwarded-For) is limited per client
 # address, before authentication; calls from inside the platform and the
@@ -195,17 +203,25 @@ router = APIRouter(
 def identify_producer(api_key: str) -> str | None:
     """The principal of a producer's API key ("apikey:<name>"), or None when
     the gateway does not know the key — the same keys, runtime keys included
-    via key sync, that authenticate the gateway's own routes."""
+    via key sync, that authenticate the gateway's own routes. Raises
+    KeysUnverifiable while the Registry has not confirmed the runtime keys
+    (after a start, or past the sync deadline): the key may well be valid."""
     for provider in _providers:
         if isinstance(provider, APIKeyProvider):
-            identity = provider.identify_key(api_key)
+            identity = provider.identify_key(api_key, raise_unverifiable=True)
             return identity.identity_string if identity else None
     return None
 
 
-@app.get("/api/ingest-gateway/health", response_model=HealthResponse)
-async def health_check() -> HealthResponse:
-    """Health check endpoint."""
+@app.get(
+    "/api/ingest-gateway/health",
+    response_model=HealthResponse,
+    responses={503: {"model": HealthResponse, "description": "NATS is not connected"}},
+)
+async def health_check() -> Any:
+    """Readiness: 200 while NATS is connected ("degraded" while the worker
+    is restarting, which it does on its own), 503 while it is not — nothing
+    can be ingested or looked up then. Liveness is GET /livez."""
     nats_ok = state.bus.connected
     worker_ok = state.worker is not None and state.worker.is_running
 
@@ -216,7 +232,7 @@ async def health_check() -> HealthResponse:
     else:
         status = "unhealthy"
 
-    return HealthResponse(
+    body = HealthResponse(
         status=status,
         service=settings.service_name,
         version=__version__,
@@ -226,14 +242,31 @@ async def health_check() -> HealthResponse:
             "nats_url": settings.nats_url,
             "ingest_stream": settings.nats_ingest_stream_name,
             "results_stream": settings.nats_results_stream_name,
-            # Redeliveries after transient forward failures, and messages
-            # given up on after the last allowed delivery. Reported, not
-            # turned into a non-200: this endpoint is also the liveness
-            # probe, and restarting the gateway cannot fix a down target.
+            # Redeliveries after transient failures, messages given up on
+            # after the last allowed delivery, and messages consumed with no
+            # readable outcome. Reported, not turned into a non-200: a down
+            # target is not this service being unready.
             "messages_retried": state.worker.messages_retried if state.worker else 0,
             "messages_gave_up": state.worker.messages_gave_up if state.worker else 0,
+            "messages_without_outcome": (
+                state.worker.messages_without_outcome if state.worker else 0
+            ),
         },
     )
+    if status == "unhealthy":
+        return JSONResponse(status_code=503, content=body.model_dump())
+    return body
+
+
+# The bare path every WIP service answers, for probes made straight at the
+# container (port 8006); on the app, so no key is needed.
+app.add_api_route(
+    "/health",
+    health_check,
+    methods=["GET"],
+    response_model=HealthResponse,
+    include_in_schema=False,
+)
 
 
 @router.get("/status", response_model=StatusResponse)
@@ -249,27 +282,29 @@ async def get_status() -> StatusResponse:
         messages_failed=state.worker.messages_failed if state.worker else 0,
         messages_retried=state.worker.messages_retried if state.worker else 0,
         messages_gave_up=state.worker.messages_gave_up if state.worker else 0,
+        messages_without_outcome=state.worker.messages_without_outcome if state.worker else 0,
         uptime_seconds=uptime,
     )
 
 
 @router.get("/metrics", response_model=MetricsResponse)
 async def get_metrics() -> MetricsResponse:
-    """Get detailed metrics."""
+    """Message counts and timings since the gateway started."""
     uptime = time.time() - state.start_time if state.start_time > 0 else 0
-    total_processed = state.worker.messages_processed if state.worker else 0
-    total_failed = state.worker.messages_failed if state.worker else 0
-    total_success = total_processed - total_failed
+    worker = state.worker
+    by_action = worker.by_action if worker else {}
 
-    # Calculate average duration (placeholder - would need tracking)
-    avg_duration = 0.0
+    def total(status: str) -> int:
+        return sum(counts.get(status, 0) for counts in by_action.values())
 
     return MetricsResponse(
-        total_processed=total_processed,
-        total_failed=total_failed,
-        total_success=total_success,
-        by_action={},  # Would need per-action tracking
-        avg_duration_ms=avg_duration,
+        total_processed=worker.messages_processed if worker else 0,
+        total_failed=worker.messages_failed if worker else 0,
+        total_success=total("success"),
+        total_partial=total("partial"),
+        total_without_outcome=worker.messages_without_outcome if worker else 0,
+        by_action=by_action,
+        avg_duration_ms=worker.avg_duration_ms if worker else 0.0,
         uptime_seconds=uptime,
     )
 
@@ -324,8 +359,8 @@ async def get_result(
 
     Only items submitted with the caller's own API key are visible. 404 when
     there is no such outcome: not processed yet, never submitted under this
-    key, or already dropped by the results stream's size limits. A reused
-    correlation_id returns its latest outcome.
+    key, or already dropped by the results stream's age or size limits. A
+    reused correlation_id returns its latest outcome.
     """
     result = await _lookup_result(_results_owner(identity, submitted_by), correlation_id)
     if result is None:
@@ -363,6 +398,7 @@ async def root() -> dict[str, Any]:
     return {
         "service": settings.service_name,
         "version": __version__,
+        "build": build_metadata(__version__),
         "docs": "/docs",
         "health": "/api/ingest-gateway/health",
         "status": "/api/ingest-gateway/status",

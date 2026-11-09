@@ -49,10 +49,12 @@ SUBJECT_TO_ACTION: dict[str, IngestAction] = {
 
 
 class IngestMessage(StrictModel):
-    """Incoming ingest message structure."""
+    """Incoming ingest message structure. The worker validates every message
+    against it: a message that does not fit is refused, never forwarded."""
 
     correlation_id: str = Field(
         ...,
+        min_length=1,
         description="Unique ID for tracking request/response"
     )
     payload: dict[str, Any] = Field(
@@ -80,7 +82,8 @@ class IngestResult(BaseModel):
     """Result of an ingest operation, published to results stream."""
 
     correlation_id: str
-    action: IngestAction
+    # None for a message on a subject that names no action.
+    action: IngestAction | None
     status: IngestResultStatus
     http_status_code: int | None = None
     response: dict[str, Any] | None = None
@@ -102,7 +105,7 @@ class IngestResult(BaseModel):
         """Dump to JSON-serializable dict."""
         return {
             "correlation_id": self.correlation_id,
-            "action": self.action.value,
+            "action": self.action.value if self.action else None,
             "status": self.status.value,
             "http_status_code": self.http_status_code,
             "response": self.response,
@@ -118,7 +121,7 @@ class PublishedIngestResult(BaseModel):
     the results lookup."""
 
     correlation_id: str
-    action: str
+    action: str | None
     status: str
     http_status_code: int | None = None
     response: dict[str, Any] | None = None
@@ -170,15 +173,28 @@ class StatusResponse(BaseModel):
     messages_failed: int
     messages_retried: int = 0
     messages_gave_up: int = 0
+    messages_without_outcome: int = 0
     uptime_seconds: float
 
 
 class MetricsResponse(BaseModel):
-    """Detailed metrics response."""
+    """Detailed metrics response, since the gateway started."""
 
     total_processed: int
-    total_failed: int
-    total_success: int
-    by_action: dict[str, dict[str, int]]
-    avg_duration_ms: float
+    total_failed: int = Field(
+        ..., description="Finished messages whose outcome is failed, or that have none"
+    )
+    total_success: int = Field(..., description="Finished messages whose outcome is success")
+    total_partial: int = Field(
+        ..., description="Finished bulk messages in which some items failed"
+    )
+    total_without_outcome: int = Field(
+        ..., description="Messages consumed with no outcome their producer can read"
+    )
+    by_action: dict[str, dict[str, int]] = Field(
+        ..., description="Published outcomes per action, counted by status"
+    )
+    avg_duration_ms: float = Field(
+        ..., description="Mean processing time of the messages whose outcome was published"
+    )
     uptime_seconds: float

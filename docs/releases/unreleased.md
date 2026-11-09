@@ -7,6 +7,44 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### ingest-gateway: every message ends in one outcome its producer can read
+
+- **The envelope is mandatory.** A message must be
+  `{"correlation_id": ..., "payload": {...}}`. The direct-payload form, an
+  unknown envelope key, a missing bulk list (`documents` / `templates` /
+  `terms`) and a non-string or empty `terminology_id` are refused with a 400
+  outcome under the message's `correlation_id`, never forwarded. A missing
+  bulk list used to be forwarded as `[]` and reported as a success. A message
+  on an unknown subject gets a refusal outcome instead of a silent ack.
+- **An item is written only once its producer is identified.** An item whose
+  key the gateway does not know or cannot verify yet (right after a gateway
+  restart, until the Registry confirms the keys) is retried with the usual
+  backoff and not forwarded; after the last delivery it is refused with a
+  401 or 503 outcome. It used to be written, with its outcome filed where
+  the producer could not read it.
+- **A message is acknowledged only once its outcome is stored.** A failed
+  outcome publish is retried, and the redelivery publishes the kept outcome
+  without writing the item again (within one gateway process).
+- **Not recoverable:** a body that is not JSON, not UTF-8, or not an object
+  has no `correlation_id` to file an outcome under. It is acknowledged and
+  counted in `messages_without_outcome` (`/status`, `/metrics`, `/health`
+  details) instead of getting an outcome under an invented id.
+- `terminology_id` is URL-encoded as one path segment.
+- Outcomes now expire from the results stream after
+  `RESULTS_MAX_AGE_SECONDS` (default 7 days). The setting was declared but
+  never applied, so the stream kept outcomes until its size limits dropped
+  them. `NATS_INGEST_CONSUMER_NAME` is removed: it was never read, and the
+  consumer is `NATS_INGEST_DURABLE_NAME`.
+- **`/api/ingest-gateway/health` answers 503 while NATS is down** (it was
+  200 in every state). "degraded" (the worker restarting itself) stays 200.
+  Liveness is the new `GET /livez` (the manifest's `liveness_endpoint`), so a
+  NATS outage does not restart the pod. A bare `GET /health` exists like on
+  every other service.
+- `/metrics`: `total_success` counts only successes (partial outcomes were
+  counted in it); `total_partial`, `total_without_outcome`, `by_action` and
+  `avg_duration_ms` are real (they were `{}` and `0`). A retried message is
+  counted once, when it finishes. The service root carries the `build` block.
+
 ### `verify --security` and `check-app-deployability` report only what they established
 
 - **`verify --security`:** "not applicable" is the install's call (its

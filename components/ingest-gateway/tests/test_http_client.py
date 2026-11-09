@@ -146,20 +146,21 @@ class TestBulkPayloadExtraction:
         assert result.status == IngestResultStatus.SUCCESS
 
     @pytest.mark.asyncio
-    async def test_missing_payload_key_sends_empty_list(self, http_client):
-        """If the expected key is absent, sends empty list."""
-        bulk_resp = make_bulk_response([], total=0, succeeded=0, failed=0)
-        http_client._client.request = AsyncMock(
-            return_value=make_mock_response(200, bulk_resp)
-        )
+    async def test_missing_payload_key_is_refused(self, http_client):
+        """An absent list key is refused, not forwarded as [] — the target
+        would answer an empty 200, reported as a successful ingest of nothing."""
+        http_client._client.request = AsyncMock()
 
         # TEMPLATES_BULK expects "templates" key, but we provide "items"
-        await http_client.forward_request(
+        result = await http_client.forward_request(
             IngestAction.TEMPLATES_BULK, {"items": [{"value": "X"}]}, "corr-7", "producer-key"
         )
 
-        sent_body = http_client._client.request.call_args.kwargs["json"]
-        assert sent_body == []
+        http_client._client.request.assert_not_called()
+        assert result.status == IngestResultStatus.FAILED
+        assert result.http_status_code == 400
+        assert "payload.templates is required" in result.error
+        assert not result.retryable
 
 
 # ---- Path parameter extraction ----
@@ -196,8 +197,7 @@ class TestPathParameters:
         )
 
         assert result.status == IngestResultStatus.FAILED
-        assert "Missing required path parameter" in result.error
-        assert "terminology_id" in result.error
+        assert "payload.terminology_id is required" in result.error
 
     @pytest.mark.asyncio
     async def test_path_param_not_in_request_body(self, http_client):

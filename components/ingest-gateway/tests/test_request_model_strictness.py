@@ -13,7 +13,7 @@ from wip_auth.testing import assert_strict_request_models
 
 
 def test_request_models_forbid_unknown_keys():
-    # The gateway's HTTP surface is read-only (GET health/status/metrics);
-    # ingest payloads arrive over NATS, where the strict IngestMessage
-    # envelope does the unknown-key rejection outside this gate's scope.
+    # The gateway's HTTP request bodies are checked here; ingest payloads
+    # arrive over NATS, where the worker validates each message against the
+    # strict IngestMessage envelope (tests/test_case_1206_outcomes.py).
     assert_strict_request_models(app, expect_request_bodies=False)
