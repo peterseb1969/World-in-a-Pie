@@ -1570,73 +1570,107 @@ async def _restore_grants(
     user_grants: bool, planned: dict[str, str], removed_keys: set[str] | None = None,
 ) -> None:
     out = report.grants
-    scope = archive.source.scope
     for g in archive.grants:
-        gid = _grant_id(g.namespace, g.subject_type, g.subject)
-        if scope is not None and g.namespace not in scope.namespaces:
-            out.skipped.append(_skip_grant(g, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
+        skip = _grant_refusal(g, archive.source.scope, user_grants, removed_keys)
+        if skip is not None:
+            out.skipped.append(skip)
             continue
-        if g.subject_type == "user" and not user_grants:
-            out.skipped.append(_skip_grant(g, "other_oidc_issuer", "user grant from another OIDC issuer"))
-            continue
-        if (
-            removed_keys and g.subject_type == "api_key"
-            and g.subject.removeprefix("apikey:") in removed_keys
-        ):
-            out.skipped.append(_skip_grant(
-                g, "mirror_removes_key", "its key is not in the archive, and the mirror removes it",
-            ))
-            continue
-        # Ownership first: the import writes a key's declared grants whether
-        # or not the namespace exists, and "restore the namespace" would send
-        # an operator after one that never comes.
-        existing = await NamespaceGrant.find_one({
-            "namespace": g.namespace, "subject": g.subject, "subject_type": g.subject_type,
-        })
-        if await _grant_owned_by_file(g, existing):
-            out.skipped.append(_skip_grant(g, "managed_by_deployer", _MANAGED))
-            continue
-        orphaned = g.orphaned or not await _grantable(g, planned)
-        if existing is not None and not existing.orphaned and g.orphaned:
-            # An archived orphan was never access on its source. Replacing an
-            # effective grant here with it would take access away, or (with a
-            # higher permission) hand out what nobody granted.
-            out.skipped.append(_skip_grant(
-                g, "orphaned_in_archive", "orphaned in the archive, effective here; left as it is",
-            ))
-            continue
-        if existing is not None:
-            if _grant_content(existing) == _grant_content(g, orphaned, g.namespace_id):
-                out.unchanged.append(gid)
-                continue
-            if not overwrite:
-                if existing.orphaned and not orphaned:
-                    out.skipped.append(_skip_grant(
-                        g, "orphaned_here",
-                        "orphaned on this instance; activate it on the namespace, or pass "
-                        "overwrite to replace it",
-                    ))
-                else:
-                    out.skipped.append(_skip_grant(g, "differs", _DIFFERS))
-                continue
-            out.replaced.append(gid)
-        else:
-            out.created.append(gid)
-        if orphaned:
-            out.orphaned.append(gid)
-        if dry_run:
-            continue
-        fields = {
-            "permission": g.permission, "granted_by": g.granted_by,
-            "granted_at": g.granted_at or datetime.now(UTC), "expires_at": g.expires_at,
-            "managed_by": None, "origin": "restored",
-            "orphaned": orphaned,
-            "orphaned_at": (g.orphaned_at or datetime.now(UTC)) if orphaned else None,
-            "namespace_id": g.namespace_id if orphaned else None,
-        }
-        if existing is not None:
-            await existing.set(fields)
-        else:
-            await NamespaceGrant(
-                namespace=g.namespace, subject=g.subject, subject_type=g.subject_type, **fields,
-            ).insert()
+        await _restore_grant(g, out, planned, dry_run=dry_run, overwrite=overwrite)
+
+
+def _grant_refusal(
+    g: ArchiveGrant,
+    scope: ArchiveScope | None,
+    user_grants: bool,
+    removed_keys: set[str] | None,
+) -> SkippedRecord | None:
+    """Why a grant is skipped before the target is read: outside the
+    archive's scope, a user grant from another OIDC issuer, or a grant to a
+    key the mirror removes."""
+    if scope is not None and g.namespace not in scope.namespaces:
+        return _skip_grant(g, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE)
+    if g.subject_type == "user" and not user_grants:
+        return _skip_grant(g, "other_oidc_issuer", "user grant from another OIDC issuer")
+    if (
+        removed_keys and g.subject_type == "api_key"
+        and g.subject.removeprefix("apikey:") in removed_keys
+    ):
+        return _skip_grant(
+            g, "mirror_removes_key", "its key is not in the archive, and the mirror removes it",
+        )
+    return None
+
+
+async def _restore_grant(
+    g: ArchiveGrant, out: Any, planned: dict[str, str], *, dry_run: bool, overwrite: bool,
+) -> None:
+    """Restore (or report) one archived grant into ``out``."""
+    gid = _grant_id(g.namespace, g.subject_type, g.subject)
+    # Ownership first: the import writes a key's declared grants whether
+    # or not the namespace exists, and "restore the namespace" would send
+    # an operator after one that never comes.
+    existing = await NamespaceGrant.find_one({
+        "namespace": g.namespace, "subject": g.subject, "subject_type": g.subject_type,
+    })
+    if await _grant_owned_by_file(g, existing):
+        out.skipped.append(_skip_grant(g, "managed_by_deployer", _MANAGED))
+        return
+    orphaned = g.orphaned or not await _grantable(g, planned)
+    if existing is not None:
+        settled = _existing_grant_outcome(g, existing, orphaned, overwrite)
+        if settled == "unchanged":
+            out.unchanged.append(gid)
+            return
+        if settled is not None:
+            out.skipped.append(settled)
+            return
+        out.replaced.append(gid)
+    else:
+        out.created.append(gid)
+    if orphaned:
+        out.orphaned.append(gid)
+    if not dry_run:
+        await _write_grant(g, existing, orphaned)
+
+
+def _existing_grant_outcome(
+    g: ArchiveGrant, existing: NamespaceGrant, orphaned: bool, overwrite: bool,
+) -> SkippedRecord | Literal["unchanged"] | None:
+    """What a grant this instance already holds comes to: "unchanged", a
+    skip, or None to replace it."""
+    if not existing.orphaned and g.orphaned:
+        # An archived orphan was never access on its source. Replacing an
+        # effective grant here with it would take access away, or (with a
+        # higher permission) hand out what nobody granted.
+        return _skip_grant(
+            g, "orphaned_in_archive", "orphaned in the archive, effective here; left as it is",
+        )
+    if _grant_content(existing) == _grant_content(g, orphaned, g.namespace_id):
+        return "unchanged"
+    if overwrite:
+        return None
+    if existing.orphaned and not orphaned:
+        return _skip_grant(
+            g, "orphaned_here",
+            "orphaned on this instance; activate it on the namespace, or pass "
+            "overwrite to replace it",
+        )
+    return _skip_grant(g, "differs", _DIFFERS)
+
+
+async def _write_grant(g: ArchiveGrant, existing: NamespaceGrant | None, orphaned: bool) -> None:
+    """Write the archived grant over the one held here, or insert it."""
+    fields = {
+        "permission": g.permission, "granted_by": g.granted_by,
+        "granted_at": g.granted_at or datetime.now(UTC), "expires_at": g.expires_at,
+        "managed_by": None, "origin": "restored",
+        "orphaned": orphaned,
+        "orphaned_at": (g.orphaned_at or datetime.now(UTC)) if orphaned else None,
+        "namespace_id": g.namespace_id if orphaned else None,
+    }
+    if existing is not None:
+        await existing.set(fields)
+    else:
+        await NamespaceGrant(
+            namespace=g.namespace, subject=g.subject, subject_type=g.subject_type, **fields,
+        ).insert()
