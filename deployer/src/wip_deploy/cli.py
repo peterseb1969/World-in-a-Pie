@@ -1619,9 +1619,11 @@ def verify(
                 "authorized for nothing) must be refused by each service's "
                 "privileged and namespace-scoped routes; each enabled app's "
                 "own key must be refused outside its namespaces and pass "
-                "inside them. Canary writes carry invalid bodies; app-key "
-                "writes carry recognisable values (wip-verify-*, "
-                "WIP_VERIFY_PROBE) that a failure names if one got through."
+                "inside them. Canary writes carry invalid bodies, except the "
+                "namespace upsert (it parses first; a missing check would "
+                "create 'wip-canary-probe'); app-key writes carry "
+                "recognisable values (wip-verify-*, WIP_VERIFY_PROBE). A "
+                "failure names anything that may have been written."
             ),
         ),
     ] = False,
@@ -5479,9 +5481,11 @@ def check_app_deployability_cmd(
         Path | None,
         typer.Option(
             "--repo-root",
+            envvar="WIP_REPO_ROOT",
             help=(
                 "Path to the World-in-a-Pie repo root. Defaults to the "
-                "auto-discovered root."
+                "repo this wip-deploy runs from, else the one above the "
+                "working directory."
             ),
         ),
     ] = None,
@@ -5559,11 +5563,15 @@ def check_app_deployability_cmd(
     if report.ok:
         typer.echo(
             typer.style(
-                f"✓ {len(report.results)} check(s) passed. App is wip-deployable.",
+                f"✓ {len(report.results)} check(s) passed.",
                 fg=typer.colors.GREEN,
                 bold=True,
             )
         )
+        if report.not_checked:
+            typer.echo("  Not checked by this tool (see docs/wip-deployable-app-contract.md):")
+            for row in report.not_checked:
+                typer.echo(f"    - {row}")
         raise typer.Exit(0)
 
     n_failed = len(report.failures)
@@ -5696,7 +5704,7 @@ def export_ca(
         raise typer.Exit(2)
 
     try:
-        pem = export_caddy_internal_ca()
+        pem = export_caddy_internal_ca(install_dir=install_dir)
     except ExportCAError as e:
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
         raise typer.Exit(1) from e
@@ -5716,7 +5724,8 @@ def export_ca(
         ),
     )
     typer.echo("")
-    typer.echo(TRUST_INSTRUCTIONS.format(out=out))
+    # The absolute path: every line must work from any directory.
+    typer.echo(TRUST_INSTRUCTIONS.format(out=out.resolve()))
 
 
 # ────────────────────────────────────────────────────────────────────

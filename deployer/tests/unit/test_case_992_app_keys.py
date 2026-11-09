@@ -57,6 +57,11 @@ def _enforcing(request: httpx.Request) -> httpx.Response:
             return _json(200, [{"prefix": p} for p in ("wip", "cooking", "kb")])
         if path == "/api/registry/entries":
             return _json(200, {"items": [{"entry_id": FOREIGN_ENTRY}], "total": 1})
+        if request.method == "GET" and path in (
+            "/api/def-store/terminologies", "/api/template-store/templates",
+            "/api/document-store/documents", "/api/reporting-sync/tables",
+        ):
+            return _json(200, {"items": []})  # the control: the route exists
         return _json(500)
     if key != COOK:
         return _json(401)
@@ -161,7 +166,7 @@ def test_a_key_that_cannot_reach_its_own_namespace_fails():
 
     [result] = _run(handler)
     assert not result.passed
-    assert "GET documents in its own 'cooking': app key got 404, expected 200" in result.fix_hint
+    assert "GET documents in its own 'cooking': got 404, expected 200" in result.fix_hint
 
 
 def test_a_view_permission_control_expects_the_reserved_name_refusal():
@@ -206,7 +211,7 @@ def test_changing_its_own_namespace_against_the_reservation_must_be_refused():
 
     [result] = _run(handler)
     assert not result.passed
-    assert "'cooking' may now be isolation_mode=strict, restore it" in result.fix_hint
+    assert "'cooking' may now be isolation_mode=strict — or have been created with it" in result.fix_hint
 
 
 def test_writing_into_wip_must_be_refused():
@@ -232,6 +237,47 @@ def test_rows_without_a_target_are_reported_as_skipped_never_as_passed():
     assert result.passed, result.fix_hint
     assert "no other namespace on this install" in result.message
     assert "the app has not bootstrapped" in result.message
+
+
+def test_a_failed_namespace_listing_fails():
+    """A 403 or a restart's 503 on the admin listing is not "no namespaces"
+    (CASE-1203): every probe that needs one would be skipped."""
+    def handler(request):
+        if request.headers.get("X-API-Key") == ADMIN and request.url.path == "/api/registry/namespaces":
+            return _json(503)
+        return _enforcing(request)
+
+    [result] = _run(handler)
+    assert not result.passed
+    assert "could not list the install's namespaces" in result.message
+
+
+def test_no_probe_ran_fails():
+    [result] = _run(_enforcing, active=set())
+    assert not result.passed
+    assert "no probe ran" in result.fix_hint
+
+
+def test_a_refusal_on_a_route_the_admin_key_cannot_reach_is_not_a_refusal():
+    def handler(request):
+        if request.url.path == "/api/template-store/templates":
+            return _json(404, {"detail": "Not Found"})
+        return _enforcing(request)
+
+    [result] = _run(handler)
+    assert not result.passed
+    assert "GET templates in 'kb' (admin key, control): got 404, expected 200" in result.fix_hint
+
+
+def test_a_hidden_entry_answering_another_status_than_a_missing_one_fails():
+    def handler(request):
+        if request.url.path == f"/api/registry/entries/{FOREIGN_ENTRY}":
+            return _json(403, {"detail": "Forbidden"})
+        return _enforcing(request)
+
+    [result] = _run(handler)
+    assert not result.passed
+    assert "the status shows it exists" in result.fix_hint
 
 
 def test_no_app_keys_no_results():

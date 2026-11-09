@@ -317,11 +317,13 @@ class TestCheckPublishedPorts:
         assert not r.passed
         assert "Garage admin" in r.message
 
-    def test_no_compose_file_not_applicable(self, tmp_path: Path) -> None:
+    def test_a_compose_install_without_its_render_fails(self, tmp_path: Path) -> None:
+        """Not applicable is the target's call: a compose install whose
+        compose file is missing could not be checked (CASE-1203)."""
         d = _make_deployment(tmp_path)
         r = check_published_ports(tmp_path, d)
-        assert r.passed
-        assert "not applicable" in r.message
+        assert not r.passed
+        assert "rendered file missing" in r.message
 
 
 # ────────────────────────────────────────────────────────────────────

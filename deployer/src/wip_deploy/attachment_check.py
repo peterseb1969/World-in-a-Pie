@@ -1,12 +1,12 @@
 """An apply may not give an app a route an app attachment already owns.
 
 An attachment (an app put under the umbrella through the Registry's API)
-owns `/apps/<name>`. The Registry refuses an attachment named like a route of
-the install's own apps, from the attach policy file the deployer renders. The
-other direction is checked here: an apply that would add or enable an app
-whose route prefix is `/apps/<name>` of an existing attachment, active or
-not, is refused, naming the attachment. Deactivate does not free a name: a
-revive would take the route back.
+owns its origin, `<name>.<hostname>`. The Registry refuses an attachment
+named like the label of one of the install's own apps, from the attach
+policy file the deployer renders. The other direction is checked here: an
+apply that would add or enable an app whose label is an existing
+attachment's name, active or not, is refused, naming the attachment.
+Deactivate does not free a name: a revive would take the origin back.
 
 When the Registry cannot be reached (a fresh install, a stopped stack) or
 predates attachments, the apply proceeds with a note, as the runtime

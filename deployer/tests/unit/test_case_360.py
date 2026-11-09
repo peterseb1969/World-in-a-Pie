@@ -52,6 +52,13 @@ def isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     return fake_home
 
 
+def _mounts(install: Path) -> MagicMock:
+    """`podman inspect` of a wip-caddy that serves ``install``."""
+    return MagicMock(
+        returncode=0, stdout=f"{install / 'config' / 'caddy' / 'Caddyfile'}\n/x/data\n", stderr="",
+    )
+
+
 def _seed_install(
     home: Path,
     name: str = "default",
@@ -273,7 +280,7 @@ class TestExportCaCLI:
     ) -> None:
         """compose + tls=internal + container running + CA available
         → exit 0, file written, trust instructions printed."""
-        _seed_install(isolated_home, name="ok-inst")
+        install = _seed_install(isolated_home, name="ok-inst")
         out_path = tmp_path / "ca.crt"
 
         with patch(
@@ -281,6 +288,7 @@ class TestExportCaCLI:
         ), patch("wip_deploy.export_ca.subprocess.run") as run:
             run.side_effect = [
                 MagicMock(returncode=0, stdout="wip-caddy\n", stderr=""),
+                _mounts(install),
                 MagicMock(returncode=0, stdout=_FAKE_PEM, stderr=b""),
             ]
             r = runner.invoke(
@@ -289,17 +297,19 @@ class TestExportCaCLI:
         assert r.exit_code == 0, r.output
         assert out_path.read_bytes() == _FAKE_PEM
         assert "Wrote internal CA" in r.output
-        assert "NODE_EXTRA_CA_CERTS" in r.output
+        assert f"NODE_EXTRA_CA_CERTS={out_path.resolve()}" in r.output
+        assert "$(pwd)" not in r.output  # the absolute path works from anywhere
 
     def test_happy_path_stdout(self, isolated_home: Path) -> None:
         """No --out → PEM goes to stdout. Useful for `... | openssl x509`."""
-        _seed_install(isolated_home, name="stdout-inst")
+        install = _seed_install(isolated_home, name="stdout-inst")
 
         with patch(
             "wip_deploy.export_ca.shutil.which", return_value="/usr/bin/podman"
         ), patch("wip_deploy.export_ca.subprocess.run") as run:
             run.side_effect = [
                 MagicMock(returncode=0, stdout="wip-caddy\n", stderr=""),
+                _mounts(install),
                 MagicMock(returncode=0, stdout=_FAKE_PEM, stderr=b""),
             ]
             # mix_stderr=False would help here, but the CliRunner default

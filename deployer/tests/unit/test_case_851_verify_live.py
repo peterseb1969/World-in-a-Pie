@@ -64,8 +64,29 @@ def _client(handler) -> httpx.Client:
 
 
 def test_secure_install_passes():
-    result = check_anonymous_refusal(BASE, ALL, _client(_secure_install))
+    result = check_anonymous_refusal(BASE, ALL, _client(_secure_install), ADMIN)
     assert result.passed, result.fix_hint
+
+
+def test_a_refusal_needs_a_control():
+    """Without the admin key no refusal can be paired with a request that
+    proves its route exists, so the check cannot pass (CASE-1203)."""
+    result = check_anonymous_refusal(BASE, ALL, _client(_secure_install))
+    assert not result.passed
+    assert "no admin key" in result.fix_hint
+
+
+def test_a_route_the_install_does_not_serve_is_not_a_refusal():
+    """A JSON 404 from a service whose image lacks the route reads like a
+    refusal; the admin key's 404 on the same request shows it is not."""
+    def handler(request):
+        if request.url.path == "/api/reporting-sync/metrics":
+            return _json(404, {"detail": "Not Found"})
+        return _secure_install(request)
+
+    result = check_anonymous_refusal(BASE, ALL, _client(handler), ADMIN)
+    assert not result.passed
+    assert "GET /api/reporting-sync/metrics: the admin key gets 404 too" in result.fix_hint
 
 
 def test_a_route_served_without_credentials_fails():
@@ -111,7 +132,7 @@ def test_inactive_components_are_not_probed():
         seen.append(request.url.path)
         return _secure_install(request)
 
-    result = check_anonymous_refusal(BASE, {"registry"}, _client(handler))
+    result = check_anonymous_refusal(BASE, {"registry"}, _client(handler), ADMIN)
     assert result.passed
     assert all(path.startswith("/api/registry/") for path in seen)
 

@@ -44,9 +44,9 @@ check mutates anything; the whole module is read-only.
      should send Strict-Transport-Security. The renderer emits the
      hardening-header block for letsencrypt installs (CASE-691), so a
      failure here means the rendered Caddyfile predates that and needs
-     a re-render; LAN-shaped installs (tls=internal) pass with a note,
-     and k8s installs are not applicable (their edge is nginx-ingress,
-     with controller-provided HSTS).
+     a re-render; LAN-shaped installs (tls=internal) pass with a note.
+     On k8s wip-caddy runs the same Caddyfile behind the ingress
+     controller, so its ConfigMap is checked the same way.
 
   7. **NATS requires authentication** — the rendered NATS config must
      define per-service users (an install rendered before NATS
@@ -66,6 +66,13 @@ check mutates anything; the whole module is read-only.
      shared auth directory, mounted into every service; that fails with a
      re-render hint.
 
+  10. **MongoDB without server-side JavaScript** — the serving mongod
+     runs with --noscripting: no WIP query needs $where or $function.
+
+  "Not applicable" is the install's call (its target, its modules), never
+  the conclusion from a missing file: a compose install whose rendered
+  file is missing fails with a re-render hint.
+
 ### What's NOT checked
 
   - Live service health — that's `wip-deploy status`.
@@ -73,33 +80,42 @@ check mutates anything; the whole module is read-only.
     compose-shaped checks report "not applicable" on k8s installs
     rather than guessing at cluster state.
   - PostgreSQL authentication config: its credentials are rendered per
-    install and the service roles are probed live (check 11).
+    install and the service roles are probed live (check 12).
 
 ### Live checks (`--live`, opt-in)
 
   The checks above read files. With `--live` the command also sends
   requests to the running install through its public base URL:
 
-  10. **Anonymous requests refused** — one read-only, credential-less
+  11. **Anonymous requests refused** — one read-only, credential-less
      request per protected route group of every active service must get a
-     JSON 401/403/404; each service's health probe must answer 200 without
-     a key. An HTML answer is the SPA fallback for an unserved route and
-     counts as a failure, not a refusal.
+     JSON 401/403/404, and the admin key's same request must not get a
+     404 (the route exists — otherwise the refusal proves nothing); each
+     service's health probe must answer 200 without a key. An HTML answer
+     is the SPA fallback for an unserved route and counts as a failure,
+     not a refusal.
 
-  11. **reporting-sync on unprivileged roles** — with the install's
+  12. **reporting-sync on unprivileged roles** — with the install's
      api-key, reporting-sync's status must report
      postgres_service_roles_ok = true.
 
-  12. **Authenticated callers without permission refused** — the install's
+  13. **Authenticated callers without permission refused** — the install's
      canary key (authenticates, authorized for nothing) must be refused
      by one privileged and one namespace-scoped route per active service,
      with a JSON 403/404. A 401 means the service does not know the canary,
      which would make every refusal meaningless, so it is a failure. The
      admin key sends the same request and must reach the handler, which
      proves the route exists. Write routes are probed with a body that
-     fails validation: the permission check answers first, so the probe
-     cannot write even where that check is missing. The canary must also
-     see no namespace and no Registry entry in `wip`.
+     fails validation where the permission check answers first. One does
+     not: the Registry's namespace upsert parses its body first, so its
+     probe sends a valid one (`{}`) and, if that route's permission check
+     were missing, would create the namespace `wip-canary-probe` — the
+     failure says so. The canary must also see no namespace and no
+     Registry entry in `wip`.
+
+  The live checks probe what an install runs. An apps-only install runs no
+  WIP service of its own; they are not applicable there (by its spec, not
+  because nothing answered) and belong on the WIP it attaches to.
 """
 
 from __future__ import annotations
@@ -108,6 +124,8 @@ import ipaddress
 import re
 import socket
 import stat
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeout
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -128,6 +146,9 @@ _DEFAULT_DEV_API_KEY = "dev_master_key_for_testing"
 # Below this length a random key has too little entropy to matter.
 # `wip-deploy install` generates token_urlsafe(16) → 22 chars.
 _MIN_API_KEY_LENGTH = 16
+
+# A hostname lookup answers within this, or counts as not resolving.
+_DNS_TIMEOUT_SECONDS = 5.0
 
 # Container ports that must never be published to the host on an
 # exposed install: reaching them bypasses Caddy and every auth layer.
@@ -205,10 +226,16 @@ def _resolves_private_only(hostname: str) -> bool | None:
     online, run-before-exposure check) and never used in spec validation,
     which must stay deterministic and offline.
     """
+    # getaddrinfo has no timeout of its own: bounded here, like the HTTP
+    # clients of the live checks. A lookup that does not answer in time is
+    # "does not resolve" (None), which the caller treats as public.
+    pool = ThreadPoolExecutor(max_workers=1)
     try:
-        infos = socket.getaddrinfo(hostname, None)
-    except (OSError, UnicodeError):
+        infos = pool.submit(socket.getaddrinfo, hostname, None).result(timeout=_DNS_TIMEOUT_SECONDS)
+    except (OSError, UnicodeError, FuturesTimeout):
         return None
+    finally:
+        pool.shutdown(wait=False)
     addrs = []
     for info in infos:
         try:
@@ -412,10 +439,10 @@ def check_published_ports(install_dir: Path, deployment: Deployment) -> CheckRes
     """No datastore/admin container port published to the host."""
     name = "published host ports"
     compose_yaml = install_dir / "docker-compose.yaml"
-    if deployment.spec.target == "k8s" or not compose_yaml.is_file():
-        return CheckResult(
-            name, True, "not applicable (no rendered compose file — k8s install)"
-        )
+    if deployment.spec.target == "k8s":
+        return CheckResult(name, True, "not applicable (k8s install: no compose file)")
+    if not compose_yaml.is_file():
+        return _render_missing(name, compose_yaml)
 
     try:
         compose = yaml.safe_load(compose_yaml.read_text())
@@ -461,15 +488,28 @@ def check_published_ports(install_dir: Path, deployment: Deployment) -> CheckRes
     return CheckResult(name, True, f"no datastore/admin ports on the host (published: {summary})")
 
 
+def _render_missing(name: str, path: Path) -> CheckResult:
+    """A compose or dev install whose rendered file is missing: the check
+    could not look, so it fails — "not applicable" is the target's call."""
+    return CheckResult(
+        name, False, f"rendered file missing: {path}",
+        fix_hint="re-render the install: `wip-deploy redeploy --name <install>`",
+    )
+
+
+class _RenderMissing(Exception):
+    """A rendered file a check needs is not on disk."""
+
+
 def check_key_file_mounts(install_dir: Path, deployment: Deployment) -> CheckResult:
     """Only the Registry's container holds the key file's plaintexts: every
     other service resolves keys through the Registry."""
     name = "key file only in the Registry"
     compose_yaml = install_dir / "docker-compose.yaml"
-    if deployment.spec.target == "k8s" or not compose_yaml.is_file():
-        return CheckResult(
-            name, True, "not applicable (no rendered compose file — k8s install)"
-        )
+    if deployment.spec.target == "k8s":
+        return CheckResult(name, True, "not applicable (k8s install: no compose file)")
+    if not compose_yaml.is_file():
+        return _render_missing(name, compose_yaml)
     legacy = install_dir / "config" / "auth" / "api-keys.json"
     if legacy.is_file():
         return CheckResult(
@@ -503,21 +543,30 @@ def check_key_file_mounts(install_dir: Path, deployment: Deployment) -> CheckRes
     return CheckResult(name, True, f"mounted only into {', '.join(mounting) or 'nothing'}")
 
 
+def _rendered_caddyfile(install_dir: Path, deployment: Deployment) -> str:
+    """The front door's rendered Caddyfile. On k8s wip-caddy runs the same
+    Caddyfile behind the ingress controller (whichever one: nginx or
+    Traefik), from its ConfigMap in services/caddy.yaml."""
+    if deployment.spec.target != "k8s":
+        path = install_dir / "config" / "caddy" / "Caddyfile"
+        if not path.is_file():
+            raise _RenderMissing(str(path))
+        return path.read_text()
+    path = install_dir / "services" / "caddy.yaml"
+    if not path.is_file():
+        raise _RenderMissing(str(path))
+    for doc in yaml.safe_load_all(path.read_text()):
+        if isinstance(doc, dict) and doc.get("kind") == "ConfigMap":
+            text = (doc.get("data") or {}).get("Caddyfile")
+            if text:
+                return str(text)
+    raise _RenderMissing(f"{path} (no Caddyfile ConfigMap)")
+
+
 def check_caddy_security_headers(install_dir: Path, deployment: Deployment) -> CheckResult:
     """Public (letsencrypt) installs should send Strict-Transport-Security."""
     name = "security headers (Caddyfile)"
     network = deployment.spec.network
-    if deployment.spec.target == "k8s":
-        # The k8s edge is nginx-ingress, not Caddy — there is no edge
-        # Caddyfile to inspect. The ingress controller's defaults provide
-        # HSTS on TLS ingresses; verify empirically on the cluster
-        # (`curl -sI https://<host>/ | grep -i strict-transport`).
-        return CheckResult(
-            name,
-            True,
-            "not applicable (k8s edge is nginx-ingress; HSTS is "
-            "controller-provided — verify with curl -sI on the cluster)",
-        )
     if network.tls != "letsencrypt":
         return CheckResult(
             name,
@@ -525,16 +574,15 @@ def check_caddy_security_headers(install_dir: Path, deployment: Deployment) -> C
             f"LAN-shaped install (tls={network.tls}) — HSTS applies to public installs",
         )
 
-    caddyfile = install_dir / "config" / "caddy" / "Caddyfile"
-    if not caddyfile.is_file():
+    try:
+        text = _rendered_caddyfile(install_dir, deployment)
+    except (_RenderMissing, yaml.YAMLError) as exc:
         return CheckResult(
             name,
             False,
-            f"rendered Caddyfile missing: {caddyfile}",
-            fix_hint="re-run `wip-deploy install` to render the Caddy config",
+            f"rendered Caddyfile missing or unreadable: {exc}",
+            fix_hint="re-render the install: `wip-deploy redeploy --name <install>`",
         )
-
-    text = caddyfile.read_text()
     if re.search(r"Strict-Transport-Security", text, re.IGNORECASE):
         return CheckResult(name, True, "Strict-Transport-Security present")
     return CheckResult(
@@ -562,7 +610,7 @@ def _rendered_nats_conf(install_dir: Path, deployment: Deployment) -> tuple[bool
         return True, None
     compose_yaml = install_dir / "docker-compose.yaml"
     if not compose_yaml.is_file():
-        return False, None
+        raise _RenderMissing(str(compose_yaml))
     services = (yaml.safe_load(compose_yaml.read_text()) or {}).get("services") or {}
     if "nats" not in services:
         return False, None
@@ -577,6 +625,8 @@ def check_nats_authentication(install_dir: Path, deployment: Deployment) -> Chec
         deployed, conf = _rendered_nats_conf(install_dir, deployment)
     except yaml.YAMLError as exc:
         return CheckResult(name, False, f"could not parse the rendered manifests: {exc}")
+    except _RenderMissing as exc:
+        return _render_missing(name, Path(str(exc)))
     if not deployed:
         return CheckResult(name, True, "not applicable (NATS not deployed)")
     fix_hint = (
@@ -590,6 +640,11 @@ def check_nats_authentication(install_dir: Path, deployment: Deployment) -> Chec
     if "http: 127.0.0.1:" not in conf:
         return CheckResult(name, False, "NATS monitoring endpoint is not bound to 127.0.0.1", fix_hint=fix_hint)
     users = len(re.findall(r"^\s*\{ user: ", conf, re.MULTILINE))
+    if users == 0:
+        return CheckResult(
+            name, False, "NATS defines no user: its authorization block is empty",
+            fix_hint=fix_hint,
+        )
     return CheckResult(name, True, f"{users} authenticated NATS users; monitor on 127.0.0.1")
 
 
@@ -606,7 +661,7 @@ def _rendered_mongodb_entrypoint(install_dir: Path, deployment: Deployment) -> t
         return True, None
     compose_yaml = install_dir / "docker-compose.yaml"
     if not compose_yaml.is_file():
-        return False, None
+        raise _RenderMissing(str(compose_yaml))
     services = (yaml.safe_load(compose_yaml.read_text()) or {}).get("services") or {}
     if "mongodb" not in services:
         return False, None
@@ -621,6 +676,8 @@ def check_mongodb_authentication(install_dir: Path, deployment: Deployment) -> C
         deployed, script = _rendered_mongodb_entrypoint(install_dir, deployment)
     except yaml.YAMLError as exc:
         return CheckResult(name, False, f"could not parse the rendered manifests: {exc}")
+    except _RenderMissing as exc:
+        return _render_missing(name, Path(str(exc)))
     if not deployed:
         return CheckResult(name, True, "not applicable (MongoDB not deployed)")
     if script is None or "exec mongod --auth" not in script:
@@ -650,6 +707,8 @@ def check_mongodb_scripting(install_dir: Path, deployment: Deployment) -> CheckR
         deployed, script = _rendered_mongodb_entrypoint(install_dir, deployment)
     except yaml.YAMLError as exc:
         return CheckResult(name, False, f"could not parse the rendered manifests: {exc}")
+    except _RenderMissing as exc:
+        return _render_missing(name, Path(str(exc)))
     if not deployed:
         return CheckResult(name, True, "not applicable (MongoDB not deployed)")
     serving = [
@@ -747,19 +806,48 @@ def _is_json(response: Any) -> bool:
     return str(response.headers.get("content-type", "")).startswith("application/json")
 
 
+def _route_missing(client: Any, base_url: str, probe: LiveProbe, admin_key: str | None) -> str | None:
+    """Why a refusal of ``probe`` proves nothing — its route answers the
+    admin key with 404 too — or None. Every anonymous probe is read-only, so
+    the control is harmless."""
+    if admin_key is None:
+        return None  # reported once by the caller
+    try:
+        control = client.request(
+            probe.method, f"{base_url}{probe.path}", json=probe.body,
+            headers={"X-API-Key": admin_key},
+        )
+    except Exception as e:
+        return f"control request with the admin key failed ({e})"
+    if control.status_code == 404 or not _is_json(control):
+        return (
+            f"the admin key gets {control.status_code} too — the route is not served "
+            "by this install, so the refusal proves nothing"
+        )
+    return None
+
+
 def check_anonymous_refusal(
-    base_url: str, active: set[str], client: Any
+    base_url: str, active: set[str], client: Any, admin_key: str | None = None,
 ) -> CheckResult:
     """Every probed route refuses a request without credentials; health
     probes answer without one.
 
-    A refusal must be a JSON 401/403/404. A 200 with an HTML body is the
-    single-page-app fallback answering a route the install does not serve
-    — it says nothing about authentication, so it counts as a failure
-    rather than as a refusal.
+    A refusal must be a JSON 401/403/404, and it counts only beside a
+    control: the admin key sends the same request and must not get a 404,
+    which proves the route exists. Without the control a route missing
+    from the deployed image (a JSON 404 from its service) would pass as
+    "refused". A 200 with an HTML body is the single-page-app fallback
+    answering a route the install does not serve — it says nothing about
+    authentication, so it counts as a failure rather than as a refusal.
     """
     problems: list[str] = []
     probed = 0
+    if admin_key is None:
+        problems.append(
+            "no admin key: a refusal cannot be paired with a request that proves "
+            "the route exists, so none counts"
+        )
     for probe in ANONYMOUS_PROBES:
         if probe.component not in active:
             continue
@@ -770,6 +858,9 @@ def check_anonymous_refusal(
             problems.append(f"{probe.method} {probe.path}: request failed ({e})")
             continue
         if resp.status_code in _REFUSED and _is_json(resp):
+            missing = _route_missing(client, base_url, probe, admin_key)
+            if missing:
+                problems.append(f"{probe.method} {probe.path}: {missing}")
             continue
         kind = "served without credentials" if resp.status_code < 300 and _is_json(resp) else (
             "not served by this install (non-JSON answer)" if not _is_json(resp)
@@ -1042,11 +1133,21 @@ def verify_live(
     # not transport trust (check_tls_hostname_sanity covers that), so it does
     # not let an untrusted certificate stop the probes.
     verify_tls = deployment.spec.network.tls == "letsencrypt"
+    if deployment.spec.modules.suppress_core:
+        # Decided by the spec, not by finding nothing to probe: an apps-only
+        # install runs no WIP service of its own, so the live checks belong
+        # to the WIP it attaches to.
+        return [CheckResult(
+            name="live checks",
+            passed=True,
+            message="not applicable (apps-only install: no WIP service runs here — "
+            "run `verify --security --live` on the WIP it attaches to)",
+        )]
     with httpx.Client(
         transport=transport, verify=verify_tls, timeout=10.0, follow_redirects=False
     ) as client:
         return [
-            check_anonymous_refusal(base_url, active, client),
+            check_anonymous_refusal(base_url, active, client, admin_key),
             check_reporting_roles(base_url, admin_key, active, client),
             check_authorization_refusal(base_url, active, canary_key, admin_key, client),
             *check_app_keys(base_url, app_keys or [], admin_key, active, client),

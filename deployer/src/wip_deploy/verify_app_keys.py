@@ -126,12 +126,17 @@ def check_app_keys(
     admin = {"X-API-Key": admin_key}
     try:
         listing = client.get(f"{base_url}/api/registry/namespaces", headers=admin)
-        namespaces = [ns["prefix"] for ns in listing.json()] if listing.status_code == 200 else []
+        if listing.status_code != 200 or not _is_json(listing):
+            # Not "no namespaces": the probes that need one would be skipped
+            # and the check would pass having looked at nothing.
+            raise RuntimeError(f"the admin key got {listing.status_code}")
+        namespaces = [ns["prefix"] for ns in listing.json()]
     except Exception as e:
         return [CheckResult(
             name="app keys confined to their namespaces",
             passed=False,
             message=f"could not list the install's namespaces: {e}",
+            fix_hint="Check the admin key (--api-key-file) and that the Registry is up.",
         )]
     owners = {ns: k.app for k in keys for ns in k.owned}
     return [
@@ -199,8 +204,8 @@ def _check_one(
     def passes(label: str, resp: Any, expected: int = 200) -> None:
         if resp.status_code != expected:
             problems.append(
-                f"{label}: app key got {resp.status_code}, expected {expected} — "
-                "the key does not reach what it owns"
+                f"{label}: got {resp.status_code}, expected {expected} — "
+                "the key does not reach what it should"
             )
 
     try:
@@ -211,7 +216,12 @@ def _check_one(
             for service, what, path in NAMESPACE_READS:
                 if service in active:
                     probed += 1
-                    refused(f"GET {what} in '{foreign}'", send("GET", f"{path}?namespace={foreign}"))
+                    url = f"{path}?namespace={foreign}"
+                    refused(f"GET {what} in '{foreign}'", send("GET", url))
+                    # The control: the admin key reads the same thing, so the
+                    # route exists and the app key's refusal is a refusal.
+                    passes(f"GET {what} in '{foreign}' (admin key, control)",
+                           send("GET", url, auth=admin))
             if "registry" in active:
                 entry = _first_entry(base_url, foreign, admin, client)
                 if entry is None:
@@ -221,7 +231,12 @@ def _check_one(
                     hidden = send("GET", f"/api/registry/entries/{entry}")
                     absent = send("GET", f"/api/registry/entries/{ABSENT_ENTRY_ID}")
                     refused(f"GET an entry of '{foreign}'", hidden)
-                    if hidden.status_code == absent.status_code and _is_json(hidden):
+                    if hidden.status_code != absent.status_code:
+                        problems.append(
+                            f"GET an entry of '{foreign}': answered {hidden.status_code}, "
+                            f"a missing entry {absent.status_code} — the status shows it exists"
+                        )
+                    elif _is_json(hidden) and _is_json(absent):
                         shown = json.dumps(hidden.json()).replace(entry, "<ID>")
                         missing = json.dumps(absent.json()).replace(ABSENT_ENTRY_ID, "<ID>")
                         if shown != missing:
@@ -287,7 +302,8 @@ def _check_one(
                 resp = send("PUT", f"/api/registry/namespaces/{prefix}", {"isolation_mode": other})
                 if resp.status_code != 403:
                     hint = (
-                        f"; '{prefix}' may now be isolation_mode={other}, restore it"
+                        f"; '{prefix}' may now be isolation_mode={other} — or have been "
+                        "created with it, if it did not exist yet — restore it"
                         if resp.status_code == 200 else ""
                     )
                     problems.append(
@@ -310,6 +326,8 @@ def _check_one(
         problems.append(f"request failed ({e})")
 
     note = "; ".join(skipped + [NOT_PROBED])
+    if probed == 0 and not problems:
+        problems.append("no probe ran: none of the probed services is active")
     if problems:
         return CheckResult(
             name=name, passed=False,
@@ -331,6 +349,14 @@ def check_rendered_master_key(
     bypasses the spec's refusal is caught here.
     """
     name = "only privileged apps hold the master key"
+    if deployment.spec.modules.suppress_core:
+        # Apps-only: no local Registry imports a derived key, so every app
+        # runs with the install's api-key by design (config_gen/env.py).
+        return CheckResult(
+            name, True,
+            "not applicable (apps-only install: each app runs with the install's "
+            "api-key by design; the WIP it attaches to issues the keys)",
+        )
     enabled = {r.name for r in deployment.spec.apps if r.enabled}
     privileged = {a.metadata.name for a in apps if a.spec.privileged_key and a.metadata.name in enabled}
     holders = _master_key_holders(install_dir, deployment, enabled)

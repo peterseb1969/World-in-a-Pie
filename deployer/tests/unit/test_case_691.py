@@ -81,11 +81,23 @@ class TestVerifySecurityIntegration:
         assert r.passed
         assert "Strict-Transport-Security present" in r.message
 
-    def test_k8s_install_is_not_applicable(self, tmp_path: Path) -> None:
-        """CASE-445's check misfired on public k8s installs ('rendered
-        Caddyfile missing') — the k8s edge is nginx-ingress, no Caddyfile
-        exists. Corrected to not-applicable."""
+    def test_k8s_reads_wip_caddys_configmap(self, tmp_path: Path) -> None:
+        """On k8s wip-caddy runs the same Caddyfile behind the ingress
+        controller (nginx or Traefik), from its ConfigMap (CASE-1203)."""
+        import yaml
+
+        d = _deployment(tls="letsencrypt", hostname="wip.example.com", target="k8s")
+        (tmp_path / "services").mkdir()
+        doc = {"kind": "ConfigMap", "data": {"Caddyfile": "header Strict-Transport-Security max-age=1"}}
+        (tmp_path / "services" / "caddy.yaml").write_text(yaml.safe_dump(doc))
+        assert check_caddy_security_headers(tmp_path, d).passed
+
+        doc["data"]["Caddyfile"] = ":8080 { respond 200 }"
+        (tmp_path / "services" / "caddy.yaml").write_text(yaml.safe_dump(doc))
+        assert not check_caddy_security_headers(tmp_path, d).passed
+
+    def test_k8s_without_its_render_fails(self, tmp_path: Path) -> None:
         d = _deployment(tls="letsencrypt", hostname="wip.example.com", target="k8s")
         r = check_caddy_security_headers(tmp_path, d)
-        assert r.passed
-        assert "nginx-ingress" in r.message
+        assert not r.passed
+        assert "missing" in r.message

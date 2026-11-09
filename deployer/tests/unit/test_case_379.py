@@ -343,7 +343,10 @@ class TestCheckAppDeployabilityCLI:
         )
         assert r.exit_code == 0, r.output
         assert "check(s) passed" in r.output
-        assert "App is wip-deployable" in r.output
+        # A pass covers what was checked; the contract rows the tool cannot
+        # read are named, not claimed (CASE-1204).
+        assert "App is wip-deployable" not in r.output
+        assert "Not checked by this tool" in r.output
 
     def test_exit_1_with_fix_hints_when_failures(self, tmp_path: Path) -> None:
         src = _make_app_source(

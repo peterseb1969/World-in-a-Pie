@@ -22,6 +22,11 @@ from __future__ import annotations
 
 import shutil
 import subprocess
+from pathlib import Path
+from typing import Any
+
+# Each podman call answers within this, or export-ca stops with an error.
+_PODMAN_TIMEOUT_SECONDS = 30
 
 # Caddy's PKI directory layout is stable across 2.x. The default CA
 # (when tls.issuer=internal) is named 'local' and its root is here.
@@ -36,7 +41,38 @@ class ExportCAError(Exception):
     """
 
 
-def export_caddy_internal_ca(container_name: str = "wip-caddy") -> bytes:
+def _podman(args: list[str], *, text: bool) -> subprocess.CompletedProcess[Any]:
+    """One podman call, bounded (a hung podman socket would hang export-ca)."""
+    try:
+        return subprocess.run(
+            ["podman", *args], check=False, capture_output=True, text=text,
+            timeout=_PODMAN_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise ExportCAError(
+            f"`podman {' '.join(args[:2])}` did not answer within {_PODMAN_TIMEOUT_SECONDS}s"
+        ) from e
+
+
+def _check_belongs_to(container_name: str, install_dir: Path) -> None:
+    """The container serves this install: it mounts the install's own
+    Caddyfile. Every install's front door is named wip-caddy, so the name
+    alone cannot tell two installs on one host apart."""
+    expected = (install_dir / "config" / "caddy" / "Caddyfile").resolve()
+    inspect = _podman(
+        ["inspect", "--format", "{{range .Mounts}}{{.Source}}\n{{end}}", container_name], text=True,
+    )
+    sources = {Path(line.strip()).resolve() for line in (inspect.stdout or "").splitlines() if line.strip()}
+    if inspect.returncode != 0 or expected not in sources:
+        raise ExportCAError(
+            f"container {container_name!r} does not serve this install: it does not "
+            f"mount {expected}. Is another install running on this host?"
+        )
+
+
+def export_caddy_internal_ca(
+    container_name: str = "wip-caddy", install_dir: Path | None = None,
+) -> bytes:
     """Read the Caddy internal-CA root cert from a running container.
 
     Uses `podman exec <container> cat <path>` rather than `podman cp`
@@ -59,14 +95,14 @@ def export_caddy_internal_ca(container_name: str = "wip-caddy") -> bytes:
 
     # Container-running check first — gives a much clearer error than
     # falling through to `podman exec` against a non-existent container.
-    ps = subprocess.run(
+    ps = _podman(
         [
-            "podman", "ps",
+            "ps",
             "--filter", f"name=^{container_name}$",
             "--filter", "status=running",
             "--format", "{{.Names}}",
         ],
-        check=False, capture_output=True, text=True,
+        text=True,
     )
     if ps.returncode != 0 or container_name not in ps.stdout:
         raise ExportCAError(
@@ -77,10 +113,9 @@ def export_caddy_internal_ca(container_name: str = "wip-caddy") -> bytes:
     # `podman exec ... cat <file>` streams the raw bytes to stdout.
     # Use bytes mode (no text=True) because the cert is technically PEM
     # text but we don't want any Python-side codec re-encoding.
-    result = subprocess.run(
-        ["podman", "exec", container_name, "cat", _CADDY_INTERNAL_CA_PATH],
-        check=False, capture_output=True,
-    )
+    if install_dir is not None:
+        _check_belongs_to(container_name, install_dir)
+    result = _podman(["exec", container_name, "cat", _CADDY_INTERNAL_CA_PATH], text=False)
     if result.returncode != 0:
         # Most common cause: Caddy hasn't generated the CA yet because
         # no HTTPS request has triggered cert provisioning. Trigger it
@@ -105,7 +140,7 @@ def export_caddy_internal_ca(container_name: str = "wip-caddy") -> bytes:
             f"This is unusual — check the container's logs."
         )
 
-    return result.stdout
+    return bytes(result.stdout)
 
 
 # Trust-instruction copy printed after a successful --out write. Kept
@@ -113,9 +148,9 @@ def export_caddy_internal_ca(container_name: str = "wip-caddy") -> bytes:
 # or other surfaces without duplicating the OS list.
 TRUST_INSTRUCTIONS = """\
 To trust this CA in:
-  Node.js:  export NODE_EXTRA_CA_CERTS=$(pwd)/{out}
-  macOS:    security add-trusted-cert -d -r trustRoot -k login.keychain {out}
-  Linux:    sudo cp {out} /usr/local/share/ca-certificates/ \\
+  Node.js:  export NODE_EXTRA_CA_CERTS={out}
+  macOS:    security add-trusted-cert -r trustRoot -k ~/Library/Keychains/login.keychain-db {out}
+  Linux:    sudo cp {out} /usr/local/share/ca-certificates/wip-internal-ca.crt \\
               && sudo update-ca-certificates
   curl:     curl --cacert {out} https://<wip-host>:<port>/...
 """

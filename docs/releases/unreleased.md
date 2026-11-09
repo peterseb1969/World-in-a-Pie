@@ -7,6 +7,37 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `verify --security` and `check-app-deployability` report only what they established
+
+- **`verify --security`:** "not applicable" is the install's call (its
+  target, its modules), never the conclusion from a missing file. A compose
+  install whose rendered compose file, NATS config or MongoDB start script
+  is missing now fails with a re-render hint instead of passing. The
+  security-headers check reads wip-caddy's Caddyfile on k8s too (from its
+  ConfigMap), whatever the ingress controller. NATS with an empty user list
+  fails.
+- **`verify --security --live`:** an anonymous refusal counts only if the
+  admin key's same request does not get a 404 (the route exists); without
+  the admin key nothing counts. App-key checks fail when they probed
+  nothing or could not list the install's namespaces, pair each
+  cross-namespace refusal with an admin read of the same thing, and catch a
+  hidden entry that answers another status than a missing one. On an
+  apps-only install the live checks are not applicable (they belong on the
+  WIP it attaches to), and the master-key rule does not apply.
+- **`check-app-deployability`:** the probe-binary check reads only the
+  runtime stage, joins continuation lines and knows `apk --no-cache add`;
+  the npx check follows `npm start` / `npm run <script>`, absolute
+  `node_modules/.bin` paths and bins named unlike their package (or says
+  "not checked"). A missing production Dockerfile, a `--manifest` that does
+  not exist and a vite proxy section the check cannot read now fail. A pass
+  no longer says "App is wip-deployable"; it lists the contract rows the
+  tool cannot check. The repo root comes from `WIP_REPO_ROOT` or the repo
+  wip-deploy runs from, not the app checkout you run it in.
+- **`export-ca`** refuses a wip-caddy that does not mount this install's
+  Caddyfile (another install on the host), bounds every podman call at
+  30 s, and prints trust commands with the absolute path, the macOS login
+  keychain's real path and a `.crt` name `update-ca-certificates` picks up.
+
 ### wip-auth: every permission is the Registry's answer to the request at hand
 
 - **A config key's declared grants are resolved by the Registry.** A service

@@ -63,10 +63,12 @@ For a given app source directory (e.g. `~/Development/WIP-KB/`):
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -100,6 +102,8 @@ class CheckReport:
     manifest_path: Path | None
     app_name: str | None
     results: list[CheckResult]
+    # Contract rows this tool cannot check; a pass says nothing about them.
+    not_checked: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -332,10 +336,22 @@ def check_vite_proxy_port_matches_manifest(
     text = cfg.read_text()
     targets = _extract_vite_proxy_targets(text)
     if not targets:
+        if re.search(r"\bproxy\s*:", text):
+            # A proxy section whose targets this pattern cannot read is not
+            # a pass: it would let a wrong port through unseen.
+            return CheckResult(
+                name, False,
+                f"{cfg.name} has a proxy section, but no target this check can "
+                "read (it reads `'http://localhost:<port>'` literals)",
+                fix_hint=(
+                    f"Write each proxy target as 'http://localhost:{http_port}', "
+                    "the manifest's http port."
+                ),
+            )
         # No proxy section at all — may be intentional for some apps
         return CheckResult(
             name, True,
-            "skipped — no `http://localhost:<port>` proxy targets in vite.config.ts",
+            "skipped — vite.config.ts has no proxy section",
         )
 
     expected = f"http://localhost:{http_port}"
@@ -421,6 +437,27 @@ def check_manifest_declares_dev_port(
 
 
 _DOCKERFILE_FROM = re.compile(r"^\s*FROM\s+(\S+)", re.MULTILINE | re.IGNORECASE)
+# A package-manager install, flags allowed before the verb (apk --no-cache add).
+_INSTALLS = re.compile(
+    r"\b(apk(?:\s+-\S+)*\s+add|apt-get(?:\s+-\S+)*\s+install|apt(?:\s+-\S+)*\s+install)\b"
+)
+
+
+def _runtime_stage(text: str) -> str:
+    """The Dockerfile's last stage (from its last FROM), with backslash
+    continuations joined so one instruction is one line."""
+    text = text.replace("\\\n", " ")
+    froms = list(_DOCKERFILE_FROM.finditer(text))
+    return text[froms[-1].start():] if froms else text
+
+
+def _installs_package(stage: str, package: str) -> bool:
+    """Whether an install line of ``stage`` names ``package``."""
+    return any(
+        re.search(rf"\b{re.escape(package)}\b", line[m.end():])
+        for line in stage.splitlines()
+        if (m := _INSTALLS.search(line))
+    )
 
 
 def check_healthcheck_probe_binary(
@@ -476,15 +513,14 @@ def check_healthcheck_probe_binary(
     except OSError as exc:
         return CheckResult(name, False, f"cannot read {dockerfile}: {exc}")
 
-    froms = _DOCKERFILE_FROM.findall(text)
+    stage = _runtime_stage(text)
+    froms = _DOCKERFILE_FROM.findall(stage)
     runtime_base = froms[-1] if froms else ""
     base_is_alpine = "alpine" in runtime_base.lower()
-    has_curl = bool(re.search(
-        r"(apk\s+add|apt-get\s+install|apt\s+install)[^\n]*\bcurl\b", text
-    ))
-    has_wget = bool(re.search(
-        r"(apk\s+add|apt-get\s+install|apt\s+install)[^\n]*\bwget\b", text
-    ))
+    # Only the runtime stage's installs end up in the image the probe runs
+    # in; a build stage's curl is gone by then.
+    has_curl = bool(_INSTALLS.search(stage)) and _installs_package(stage, "curl")
+    has_wget = bool(_INSTALLS.search(stage)) and _installs_package(stage, "wget")
 
     # busybox (alpine) provides wget but NOT curl — an explicit probe: curl
     # needs a real curl install even on alpine.
@@ -524,7 +560,8 @@ _PROD_ONLY_INSTALL = re.compile(
     re.IGNORECASE,
 )
 _NODE_MODULES_COPY = re.compile(r"COPY\s+--from=\S+\s+\S*node_modules", re.IGNORECASE)
-_LOCAL_BIN = re.compile(r"^(?:\./)?node_modules/\.bin/(.+)$")
+# A node_modules/.bin runner, relative or absolute (/app/node_modules/.bin/x).
+_LOCAL_BIN = re.compile(r"^(?:\./|/(?:[^/]+/)*)?node_modules/\.bin/([^/]+)$")
 
 
 def _start_tokens(stage: str) -> list[str]:
@@ -544,6 +581,62 @@ def _start_tokens(stage: str) -> list[str]:
         return shlex.split(raw)
     except ValueError:
         return raw.split()
+
+
+def _package_json(source_dir: Path) -> dict[str, Any]:
+    try:
+        data = json.loads((source_dir / "package.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+# Commands an npm script runs that are not a package's bin.
+_NOT_BINS = frozenset({"node", "npx", "npm", "sh", "bash", "exec", "env"})
+
+
+def _npm_script_tokens(tokens: list[str], pkg: dict[str, Any]) -> list[str]:
+    """`npm start` / `npm run <script>` start what package.json's script
+    says: its tokens, so the runner it calls is checked too."""
+    if len(tokens) < 2 or tokens[0] != "npm":
+        return tokens
+    if tokens[1] == "start":
+        script = "start"
+    elif tokens[1] in ("run", "run-script") and len(tokens) > 2:
+        script = tokens[2]
+    else:
+        return tokens
+    command = (pkg.get("scripts") or {}).get(script)
+    if not isinstance(command, str):
+        return tokens
+    try:
+        inner = shlex.split(command)
+    except ValueError:
+        inner = command.split()
+    # npm runs a script with node_modules/.bin on the PATH: a bare command
+    # there is a package's bin, unless it is the shell's or node itself.
+    if inner and inner[0] not in _NOT_BINS and "/" not in inner[0]:
+        inner = [f"node_modules/.bin/{inner[0]}", *inner[1:]]
+    return inner
+
+
+def _package_providing(runner: str, source_dir: Path, deps: dict[str, Any]) -> str | None:
+    """The dependency that provides the `runner` bin: one of that name, or
+    one whose installed package.json declares it as a bin (tsc is
+    typescript's). None when neither says."""
+    if runner in deps:
+        return runner
+    for name in deps:
+        try:
+            meta = json.loads((source_dir / "node_modules" / name / "package.json").read_text())
+        except (OSError, ValueError):
+            continue
+        bins = meta.get("bin") if isinstance(meta, dict) else None
+        if isinstance(bins, dict) and runner in bins:
+            return str(name)
+        if isinstance(bins, str) and str(name).rsplit("/", 1)[-1] == runner:
+            return str(name)
+    return None
 
 
 def check_runtime_fetches_nothing(source_dir: Path) -> CheckResult:
@@ -578,10 +671,9 @@ def check_runtime_fetches_nothing(source_dir: Path) -> CheckResult:
     except OSError as exc:
         return CheckResult(name, False, f"cannot read {dockerfile}: {exc}")
 
-    text = text.replace("\\\n", " ")
-    froms = list(_DOCKERFILE_FROM.finditer(text))
-    stage = text[froms[-1].start():] if froms else text
-    tokens = _start_tokens(stage)
+    stage = _runtime_stage(text)
+    pkg = _package_json(source_dir)
+    tokens = _npm_script_tokens(_start_tokens(stage), pkg)
 
     runner: str | None = None
     via_npx = False
@@ -618,14 +710,17 @@ def check_runtime_fetches_nothing(source_dir: Path) -> CheckResult:
             ),
         )
 
-    deps: dict = {}
-    dev_deps: dict = {}
-    try:
-        pkg = json.loads((source_dir / "package.json").read_text())
-        deps = pkg.get("dependencies") or {}
-        dev_deps = pkg.get("devDependencies") or {}
-    except (OSError, ValueError):
-        pass
+    deps: dict[str, Any] = pkg.get("dependencies") or {}
+    dev_deps: dict[str, Any] = pkg.get("devDependencies") or {}
+    package = _package_providing(runner, source_dir, {**dev_deps, **deps})
+    if package is None:
+        return CheckResult(
+            name, True,
+            f"not checked — start command `{command}` runs {runner}, and no "
+            "dependency in package.json is known to provide it (install "
+            "node_modules and re-run to map a bin to its package)",
+        )
+    runner = package
     prod_only = bool(_PROD_ONLY_INSTALL.search(stage)) and not _NODE_MODULES_COPY.search(stage)
     if runner in dev_deps and runner not in deps and prod_only:
         return CheckResult(
@@ -669,6 +764,41 @@ def check_manifest_validates(
 # ────────────────────────────────────────────────────────────────────
 
 
+# The app contract's rows (docs/wip-deployable-app-contract.md) this tool
+# does not read: they need the running app or the app's own code paths.
+NOT_CHECKED = (
+    "`.dockerignore` excludes node_modules, dist, *.log and .git",
+    "the server sets `app.set('trust proxy', 1)` (HTTPS terminates at the edge)",
+    "`GET /api/app-config` returns the client-visible config (at least `namespace`)",
+)
+
+
+def check_production_dockerfile(source_dir: Path) -> CheckResult:
+    """The app ships a production Dockerfile: wip-deploy builds the image
+    from it, and the Dockerfile checks below read it."""
+    name = "production Dockerfile present"
+    if (source_dir / "Dockerfile").is_file():
+        return CheckResult(name, True, "Dockerfile")
+    return CheckResult(
+        name, False, f"no Dockerfile in {source_dir}",
+        fix_hint="Add the production Dockerfile: the deployer builds the app's image from it.",
+    )
+
+
+def _default_repo_root() -> Path:
+    """WIP_REPO_ROOT, else the repo this deployer runs from, else the one
+    above the working directory. Run from an app's own checkout, the
+    working directory's .git would otherwise be taken for WIP's."""
+    env = os.environ.get("WIP_REPO_ROOT")
+    if env:
+        return Path(env).expanduser().resolve()
+    here = Path(__file__).resolve()
+    for ancestor in here.parents:
+        if (ancestor / "components").is_dir() and (ancestor / "deployer").is_dir():
+            return ancestor
+    return find_repo_root()
+
+
 def check_app_deployability(
     source_dir: Path,
     manifest_path: Path | None = None,
@@ -681,7 +811,7 @@ def check_app_deployability(
     root (via `find_repo_root`)."""
     source_dir = source_dir.expanduser().resolve()
     repo_root = (
-        find_repo_root() if repo_root is None else repo_root.expanduser().resolve()
+        _default_repo_root() if repo_root is None else repo_root.expanduser().resolve()
     )
 
     if not source_dir.is_dir():
@@ -703,7 +833,10 @@ def check_app_deployability(
         )
     else:
         manifest_path = manifest_path.expanduser().resolve()
-        if manifest_path.is_file():
+        if not manifest_path.is_file():
+            ambiguity_note = f"--manifest {manifest_path} does not exist"
+            manifest_path = None
+        else:
             try:
                 data = yaml.safe_load(manifest_path.read_text())
                 app_name = (data.get("metadata") or {}).get("name")
@@ -712,6 +845,7 @@ def check_app_deployability(
 
     results: list[CheckResult] = []
 
+    results.append(check_production_dockerfile(source_dir))
     results.append(check_dockerfile_dev(source_dir))
     results.append(check_vite_host(source_dir))
     results.append(check_vite_proxy_port_matches_manifest(source_dir, manifest_path))
@@ -744,4 +878,5 @@ def check_app_deployability(
         manifest_path=manifest_path,
         app_name=app_name,
         results=results,
+        not_checked=NOT_CHECKED,
     )
