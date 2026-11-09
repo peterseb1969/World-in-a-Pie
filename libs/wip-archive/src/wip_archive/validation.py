@@ -22,11 +22,12 @@ What the archive cannot answer is reported, never guessed: a terminology or
 nested template the archive does not carry is listed in `unverifiable`, and the
 value it governs is not judged.
 
-Two live behaviours it cannot reproduce, both without effect on validity:
-the closed-namespace refusal of term values depends on the caller's
-permissions, not the archive; and when a name is ambiguous on a non-identity
-field, live picks the first-created bearer, while archives are sorted by value,
-so the bearer recorded in `term_references` can differ (both warn).
+One live behaviour it cannot reproduce: the closed-namespace refusal of term
+values depends on the caller's permissions, not the archive. When a name is
+ambiguous on a non-identity field, live picks the first-created bearer and so
+does this resolver, ordering bearers by their `created_at`, then `term_id`. Term
+rows without a `created_at` sort ahead of every dated one, so only there can
+the recorded bearer differ from live's (both warn).
 """
 
 from __future__ import annotations
@@ -136,6 +137,11 @@ class OfflineValidator:
         self._carried_namespaces = {
             row.get("namespace") for row in definitions.templates.values()
         } | {row.get("namespace") for row in definitions.terminologies.values()}
+        # Whether the validation in progress resolves term values: a stored
+        # document's are not re-resolved, and that holds for a duration's
+        # unit (a _TIME_UNITS term reached from the fields stage) as much as
+        # for a term field. Set for the length of one validate() call.
+        self._resolving_terms = True
 
     # ------------------------------------------------------------------
     # The pipeline
@@ -156,6 +162,8 @@ class OfflineValidator:
         must not re-resolve its values as a new write would, because existing
         data keeps resolving terms retired since (PoNIF #1). The stored
         `term_references` are checked for existence by the archive check instead.
+        A duration's unit is a term too, so it is not resolved either; its
+        shape (a number and a string) is still checked.
         """
         result = ValidationOutcome()
         if not isinstance(data, dict):
@@ -163,7 +171,11 @@ class OfflineValidator:
             return result
         template_ns = template.get("namespace") or namespace
 
-        self._validate_fields(data, template, result, template_ns)
+        self._resolving_terms = resolve_terms
+        try:
+            self._validate_fields(data, template, result, template_ns)
+        finally:
+            self._resolving_terms = True
         if not result.valid:
             return result
         if resolve_terms:
@@ -522,6 +534,11 @@ class OfflineValidator:
                 code="invalid_duration", message=f"Field '{path}.unit' must be a string",
                 field=f"{path}.unit",
             )
+            return
+        if not self._resolving_terms:
+            # A stored document: its unit is not re-resolved, exactly as a
+            # term field's value is not — a unit retired since the document
+            # was written still stands (PoNIF #1).
             return
         # _TIME_UNITS is a system terminology in the `wip` namespace, which
         # most archives do not carry.

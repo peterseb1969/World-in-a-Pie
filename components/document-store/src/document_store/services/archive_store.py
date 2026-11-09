@@ -277,6 +277,7 @@ class ArchiveStore:
         if self.backend != BACKEND_MINIO:
             return
         key = _object_key_for(job.job_id)
+        size = scratch.stat().st_size
         try:
             await self._ensure_bucket()
             await self._storage().upload_file(key, str(scratch))
@@ -298,6 +299,9 @@ class ArchiveStore:
         await job.set({
             BackupJob.archive_backend: BACKEND_MINIO,
             BackupJob.archive_path: key,
+            # Recorded here: the job turns COMPLETE only after this move, by
+            # when the scratch file the size would be read from is gone.
+            BackupJob.archive_size: size,
         })
         with contextlib.suppress(OSError):
             scratch.unlink()
@@ -426,14 +430,14 @@ def archive_lifecycle_hook(job_id: str):
     """Async per-event hook that settles a job's archive at terminal state.
 
     Wired into ``start_async_job(on_event=...)`` so it runs on the consumer
-    task AFTER the terminal event has been persisted — sequential with the
-    progress pipeline, but CONCURRENT with the detached follow-up tasks the
-    terminal event schedules (batch sync, validation): those interleave into
-    this hook's awaits and write their own fields on the same job document.
-    The hook must therefore only ever write the fields it owns, via atomic
-    updates — a full-document save from its held copy erases the concurrent
-    writers' work. Only the ``phase`` attribute of the event is touched,
-    keeping this module free of toolkit types.
+    task BEFORE the terminal event is persisted: the job still reads RUNNING
+    while its archive is uploaded, so DELETE (which refuses a running job)
+    cannot remove the record mid-upload and strand the object in the bucket.
+    The job document has other writers (warnings, a restore's validation
+    back-link), so the hook only ever writes the fields it owns, via atomic
+    updates — a full-document save from its held copy erases their work.
+    Only the ``phase`` attribute of the event is touched, keeping this module
+    free of toolkit types.
     """
 
     async def hook(event) -> None:

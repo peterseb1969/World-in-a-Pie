@@ -46,6 +46,29 @@ created them had. Only the volume wipe (or an explicit migration) renews them.
 
 ---
 
+## Taking the backup: stop the writers first
+
+A backup is **not a point-in-time copy**. The engine reads each namespace one
+entity type at a time (terminologies, terms, term relations, templates,
+documents, files, Registry entries), each with its own cursor, and MongoDB as
+WIP runs it (a single node, no replica set) has no snapshot read that would
+make those reads one moment. A term or template created after its type was
+read, and used by a document read later, lands in the archive as a reference
+to something the archive does not carry; an entity deleted in between leaves a
+Registry entry without its entity, or the reverse.
+
+So take a backup while nothing writes to the namespaces it covers: stop or
+pause the apps that write there. The backup checks what it can. It counts each
+entity type before reading, counts what it read, and counts again afterwards.
+When the numbers differ, entities were created or deleted during the backup,
+and the job gets a warning naming the namespace, the type and the three
+counts. Take the backup again. Matching counts do **not** prove the archive
+consistent: an update, or a create and a delete of the same type, leaves them
+equal. Restoring the archive is the full check, because a restore that writes
+data starts a validation job that resolves every reference.
+
+---
+
 ## What the restore verifies for you
 
 Restore is not blind anymore. The engine runs three verification phases per
@@ -375,7 +398,9 @@ env).
 ## Quick checklist
 
 ```
+[ ] Writers to the namespaces stopped while the backup ran
 [ ] Backup taken and verified downloadable (list_backup_jobs / download)
+[ ] Backup job's `warnings` empty — a "created or deleted while the backup read them" warning means back up again
 [ ] Inventory of runtime API keys + grants that will need re-minting
 [ ] Mongo AND postgres volumes wiped together (or target namespaces + schemas absent)
 [ ] Restore run; drop_stale_reporting only after understanding what it drops

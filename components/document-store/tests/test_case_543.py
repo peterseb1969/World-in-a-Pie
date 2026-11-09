@@ -177,6 +177,9 @@ class TestFinalizeBackup:
         fresh = await BackupJob.find_one(BackupJob.job_id == job.job_id)
         assert fresh.archive_backend == "minio"
         assert fresh.archive_path == f"{job.job_id}.zip"
+        # The job turns COMPLETE after the move, when the scratch file the
+        # size was read from is gone, so the move records it.
+        assert fresh.archive_size == len(b"ZIPDATA")
 
     @pytest.mark.asyncio
     async def test_minio_upload_failure_keeps_local_archive(self, client, monkeypatch):

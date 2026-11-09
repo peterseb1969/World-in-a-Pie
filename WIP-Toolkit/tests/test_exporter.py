@@ -99,6 +99,23 @@ class TestRunExportBasic:
     @patch(f"{EXPORTER}.ArchiveWriter")
     @patch(f"{EXPORTER}.compute_closure")
     @patch(f"{EXPORTER}.EntityCollector")
+    def test_manifest_names_the_toolkit_that_wrote_it(self, MockCollector, mock_closure,
+                                                      MockWriter, mock_client,
+                                                      mock_collector, mock_writer):
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        from wip_toolkit import __version__
+        from wip_toolkit.export.exporter import run_export
+        run_export(mock_client, "wip", "/tmp/export.zip")
+
+        manifest = mock_writer.write.call_args.args[0]
+        assert manifest.tool_version == f"wip-toolkit {__version__}"
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
     def test_entities_written_to_archive(self, MockCollector, mock_closure,
                                           MockWriter, mock_client,
                                           mock_collector, mock_writer):

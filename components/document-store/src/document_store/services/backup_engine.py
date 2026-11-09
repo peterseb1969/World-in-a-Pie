@@ -37,6 +37,7 @@ from wip_archive.models import (
 from wip_archive.referents import ReferentCollector
 from wip_archive.remap import IDRemapper
 
+from wip_auth.build_info import build_metadata
 from wip_auth.composite_key import compute_composite_key_hash
 
 from .archived_status import retire_archived_row
@@ -643,6 +644,16 @@ _NAMESPACE_SETTINGS = (
 # ---------------------------------------------------------------------------
 
 
+def _engine_tool_version() -> str:
+    """What the manifest records as having written an engine archive: this
+    service's version plus the image and build it runs, which are what an
+    operator can match to a release ("dev" on an unstamped local build)."""
+    from .. import __version__
+
+    build = build_metadata(__version__)
+    return f"document-store {build['version']} (image {build['image_tag']}, build {build['sha']})"
+
+
 class DirectBackupEngine:
     """Backup a namespace via direct MongoDB cursor reads.
 
@@ -719,6 +730,10 @@ class DirectBackupEngine:
                     include_files=include_files, skip_documents=skip_documents,
                 )
 
+            await self._warn_if_changed_while_read(
+                namespaces, per_ns_counts, writer, skip_documents, left_out,
+            )
+
             self._emit(
                 "phase_referents",
                 "Recording referenced entities the archive does not carry",
@@ -755,6 +770,49 @@ class DirectBackupEngine:
             with contextlib.suppress(Exception):
                 writer._cleanup()
             raise
+
+    async def _warn_if_changed_while_read(
+        self,
+        namespaces: list[str],
+        before: dict[str, dict[str, int]],
+        writer: ArchiveWriter,
+        skip_documents: bool,
+        left_out: dict[str, list[tuple[str, int]]],
+    ) -> None:
+        """Warn when a namespace was written to while the backup read it.
+
+        A backup is not a point-in-time copy: each entity type is read by its
+        own cursor, one after another, and MongoDB without a replica set has
+        no snapshot read to make them one. A write in between can leave the
+        archive with a document whose term or template it does not carry, or
+        a Registry entry whose entity it does not. Creating or hard-deleting
+        an entity, the writes that do that, change a count, so the counts
+        taken before reading, the rows read, and the counts taken after are
+        compared. Matching counts do not prove the archive consistent (an
+        update, or a create and a delete of the same type, leaves them
+        equal); a mismatch proves something changed.
+        """
+        changed: list[str] = []
+        for ns in namespaces:
+            after = await self._pre_count(ns, skip_documents, left_out.get(ns, []))
+            for entity_type in BACKUP_ENTITY_ORDER:
+                if skip_documents and entity_type == "documents":
+                    continue
+                pre, post = before[ns].get(entity_type, 0), after.get(entity_type, 0)
+                read = writer.entity_count(entity_type, namespace=ns)
+                if not pre == read == post:
+                    changed.append(
+                        f"{ns} {entity_type}: {pre} before, {read} read, {post} after"
+                    )
+        if changed:
+            self._emit(
+                "warning",
+                "Entities were created or deleted while the backup read them ("
+                + "; ".join(changed)
+                + "), so the archive may hold references to entities it does "
+                "not carry. Back up again while nothing writes to the "
+                "namespace(s).",
+            )
 
     def _warn_if_files_unavailable(self, include_files: bool) -> None:
         """Files asked for with no storage to read them from: the archive
@@ -891,6 +949,7 @@ class DirectBackupEngine:
             format_version="3.1",
             exported_at=datetime.now(UTC),
             source_host=socket.gethostname(),
+            tool_version=_engine_tool_version(),
             namespaces=ns_entries,
             namespace=namespaces[0] if single else "",
             namespace_config=ns_entries[0].namespace_config if single else None,
@@ -1967,7 +2026,7 @@ class DirectRestoreEngine:
         batch_size: int,
         processed: int,
         total: int,
-        skipped: set[str] = frozenset(),
+        skipped: set[str] | None = None,
     ) -> int:
         """Write one entity type of one namespace in batches of batch_size;
         returns the rows written. ``processed`` is the run's count before this
@@ -1987,7 +2046,7 @@ class DirectRestoreEngine:
 
         batch: list[dict[str, Any]] = []
         count = claimed = taken_by_other = 0
-        for entity in self._rows_to_restore(reader, entity_type, src, dropped, repoint, skipped):
+        for entity in self._rows_to_restore(reader, entity_type, src, dropped, repoint, skipped or set()):
             batch.append(entity)
             if len(batch) < batch_size:
                 continue

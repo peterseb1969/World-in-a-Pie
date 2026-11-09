@@ -55,9 +55,12 @@ class TestManifest:
         # source_ref/target_ref constraint is projected rather than stored.
         assert m.format_version == "3.1"
 
-    def test_default_tool_version(self):
-        m = Manifest()
-        assert m.tool_version == "0.5.0"
+    def test_tool_version_unknown_unless_stated(self):
+        # An archive that does not say what wrote it reads back as unknown,
+        # never as some particular version.
+        assert Manifest().tool_version == ""
+        assert Manifest(**{"format_version": "3.1"}).tool_version == ""
+        assert Manifest(tool_version="wip-toolkit 1.2.3").tool_version == "wip-toolkit 1.2.3"
 
     def test_default_namespace_empty(self):
         m = Manifest()

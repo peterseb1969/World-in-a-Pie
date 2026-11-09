@@ -515,6 +515,45 @@ flow writes its journal before any step runs, so it is unaffected.
   that still spoke of a toolkit worker thread, omitted `val-` jobs, or
   described merge as same-install only are corrected.
 
+### Backup: a job reads RUNNING until its archive is stored; a backup taken while namespaces were written to says so; archives name what wrote them (wip-archive 0.39.0, WIP-Toolkit 0.27.0)
+
+- **A backup or restore job turns `complete` or `failed` only after its
+  archive is settled.** Uploading a finished backup to the object store can
+  take minutes. The job used to read `complete` throughout, so a DELETE in
+  that window removed the job while the upload went on, and the uploaded
+  object stayed in the bucket with nothing pointing at it. The job now reads
+  `running` until the archive is in the bucket, and DELETE refuses a running
+  job. A client that polls for `complete` gets a job whose `archive_path`
+  and `archive_size` already describe the stored archive. Orphaned objects
+  from earlier occurrences are not removed: they are `<job_id>.zip` keys in
+  the backup bucket with no job of that id.
+- **A backup is not a point-in-time copy, and now says when that mattered.**
+  Each entity type is read separately, and MongoDB without a replica set
+  has no snapshot read. The backup counts each entity type before reading,
+  counts what it read, and counts again afterwards. When they differ, the
+  job gets a warning naming the namespace, the type and the counts, and the
+  archive may reference entities it does not carry. Back up while nothing
+  writes to the namespaces. Matching counts do not prove consistency. See
+  `docs/deployment/backup-restore.md`, "Taking the backup".
+- **`tool_version` in an archive's manifest names what wrote it**:
+  `document-store <version> (image <tag>, build <sha>)` for a backup job,
+  `wip-toolkit <version>` for a toolkit export. It used to be `0.5.0` for
+  every archive. An archive that does not record one now reads back as
+  unknown (`""`, shown as `unknown` by `inspect`) instead of `0.5.0`.
+- **wip-archive fixes:**
+  - `latest-only` and `migrate` count a document row's version as the
+    archive model does: a missing, null or zero version is 1, and `"3"` is 3.
+    `latest-only` used to drop such rows, and with them a whole document
+    whose newest row carried a string version. `migrate` reported such rows
+    migrated while leaving them unchanged.
+  - Checking a stored document no longer re-resolves a `duration` field's
+    unit, just as it does not re-resolve a term field. A unit retired since
+    the document was written used to be reported as invalid.
+  - Docstrings corrected: the phase names a `ProgressEvent` carries (the
+    toolkit and the engine use different ones), the fields `remap_document`
+    rewrites (the `data` walk among them), validation's ambiguous-name
+    ordering, and the extra read `diff` makes of each archive.
+
 ### A field's `default_value` is informational; it never makes a mandatory field optional
 
 The platform has never filled an omitted field with its `default_value`: a

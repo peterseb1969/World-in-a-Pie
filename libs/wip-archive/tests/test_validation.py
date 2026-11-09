@@ -140,6 +140,25 @@ class TestWhatTheArchiveCannotAnswer:
         }
 
 
+    def test_a_stored_documents_retired_unit_is_not_re_resolved(self):
+        # A stored document keeps a unit retired since it was written, as it
+        # keeps any term value (PoNIF #1); a new write is refused it.
+        field = {"name": "took", "type": "object", "semantic_type": "duration"}
+        units = _terminology(tid="lov-units", value="_TIME_UNITS", ns="wip")
+        index = _index([units], [_term("t-h", "hours", tid="lov-units", ns="wip", status="inactive")])
+        data = {"took": {"value": 3, "unit": "hours"}}
+        validator = OfflineValidator(index)
+        stored = validator.validate(_template([field]), data, NS, resolve_terms=False)
+        assert stored.valid and stored.term_references == [] and stored.unverifiable == []
+        assert _codes(validator.validate(_template([field]), data, NS)) == {
+            ("took.unit", "invalid_duration_unit"),
+        }
+        # Its shape is still checked.
+        assert _codes(validator.validate(
+            _template([field]), {"took": {"value": "3", "unit": "hours"}}, NS, resolve_terms=False,
+        )) == {("took.value", "invalid_duration")}
+
+
 class TestFields:
     def test_a_qualified_terminology_ref_crosses_namespaces(self):
         other = _terminology(tid="lov-other", value="SIZE", ns="shared")

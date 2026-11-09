@@ -101,7 +101,10 @@ class Manifest(BaseModel):
     # detectable. Minor, deliberately: every gate tests startswith("3"), so a
     # major bump would make 3.1 archives unrestorable everywhere.
     format_version: str = "3.1"
-    tool_version: str = "0.5.0"
+    # What wrote the archive, as "<producer> <version>" (the toolkit's
+    # exporter, document-store's backup engine). Empty when the archive does
+    # not say: a constant default here once made every archive claim 0.5.0.
+    tool_version: str = ""
     exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     source_host: str = ""
     # v3: the authoritative list of namespaces in this archive.
@@ -157,9 +160,16 @@ class ProgressEvent(BaseModel):
     model is the payload.
 
     Conventions:
-    - ``phase`` names are stable (e.g. ``"start"``, ``"phase_1a_entities"``,
-      ``"phase_1b_documents"``, ``"phase_3_finalize"``, ``"complete"``).
-      Callers may use them for ordering / progress-bar bucketing.
+    - ``phase`` names come from two producers with different vocabularies.
+      Both begin with ``"start"`` and end with ``"complete"`` (or ``"error"``),
+      and both use ``"warning"`` for a non-fatal finding. In between, the
+      toolkit's exporter emits numbered phases (``"phase_1a_entities"``,
+      ``"phase_1b_documents"``, ``"phase_3_finalize"``, ...), while
+      document-store's backup and restore engines emit named ones
+      (``"phase_<entity type>"``, ``"phase_validate"``, ``"phase_referents"``,
+      ``"phase_finalize"``, ``"phase_blobs"``, ...). A caller may use the
+      phase for display or progress-bar bucketing, but should not depend on
+      a particular intermediate phase appearing.
     - ``percent`` is best-effort and may be ``None`` for phases where total
       work is unknown ahead of time. When set, it covers 0-100 across the
       whole operation, not the current phase.

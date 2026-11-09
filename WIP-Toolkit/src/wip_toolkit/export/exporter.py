@@ -31,6 +31,7 @@ from wip_archive.models import (
     ProgressEvent,
 )
 
+from .. import __version__
 from .._progress import ProgressCallback
 from .._progress import emit as _emit
 from ..client import WIPClient
@@ -398,6 +399,7 @@ def run_export(
     ))
     manifest = Manifest(
         source_host=client.config.host,
+        tool_version=f"wip-toolkit {__version__}",
         namespaces=[
             NamespaceEntry(
                 prefix=namespace, namespace_config=ns_config, counts=counts

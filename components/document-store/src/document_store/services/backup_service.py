@@ -175,11 +175,11 @@ def _complete_fields(job: BackupJob, event: ProgressEvent) -> dict[Any, Any]:
     # result back to null. Observed exactly that on a live dry run.
     if event.details:
         fields[BackupJob.result] = dict(event.details)
-    # Populate archive_size from disk if the archive file exists.
-    # This is the first opportunity after the backup engine has finalized
-    # the ZIP; the API layer set archive_path at job creation but
-    # cannot know the size until the worker writes the file.
-    if job.archive_path:
+    # Populate archive_size from disk if the archive is a local file. The
+    # API layer set archive_path at job creation but cannot know the size
+    # until the worker writes the file. An archive the lifecycle hook has
+    # already moved into the bucket had its size recorded by the move.
+    if job.archive_path and job.archive_backend == "local":
         with contextlib.suppress(OSError):
             fields[BackupJob.archive_size] = Path(job.archive_path).stat().st_size
     return fields
@@ -305,9 +305,17 @@ async def start_async_job(
         runner: A coroutine function that performs the job. It receives a
             progress_callback and is expected to call it at phase
             boundaries. Exceptions become FAILED status.
-        on_event: Optional async hook called for every event as it is
-            persisted. Every job wires it: the archive store settles a job's
-            archive on its terminal event (archive_lifecycle_hook).
+        on_event: Optional async hook called for every event. A progress
+            event reaches it after the event is persisted; a terminal event
+            ('complete' or 'error') reaches it BEFORE, so whatever the hook
+            settles is settled by the time the record turns terminal. Every
+            job wires it: the archive store settles a job's archive on its
+            terminal event (archive_lifecycle_hook) — an upload that can take
+            minutes. While it runs the record still reads RUNNING, which
+            DELETE refuses; settled after the terminal write instead, a DELETE
+            in that window removed the record while the upload went on, and
+            the uploaded object was left in the bucket with nothing pointing
+            at it.
 
     Returns:
         The asyncio.Task that consumes the queue. The task completes when
@@ -318,6 +326,16 @@ async def start_async_job(
     """
     if job_id in _job_queues:
         raise ValueError(f"Job {job_id} is already running in this worker")
+
+    async def _run_hook(
+        hook: Callable[[ProgressEvent], Awaitable[None]] | None, event: ProgressEvent,
+    ) -> None:
+        if hook is None:
+            return
+        try:
+            await hook(event)
+        except Exception:
+            logger.exception("on_event hook failed for %s", job_id)
 
     queue: asyncio.Queue[ProgressEvent | _Sentinel] = asyncio.Queue()
     _job_queues[job_id] = queue
@@ -355,14 +373,14 @@ async def start_async_job(
                 item = await queue.get()
                 if isinstance(item, _Sentinel):
                     return
+                terminal = item.phase in ("complete", "error")
+                if terminal:
+                    await _run_hook(on_event, item)
                 written = await _persist_with_retry(job_id, item)
-                if not written and item.phase in ("complete", "error"):
+                if not written and terminal:
                     unpersisted_terminal = item
-                if on_event is not None:
-                    try:
-                        await on_event(item)
-                    except Exception:
-                        logger.exception("on_event hook failed for %s", job_id)
+                if not terminal:
+                    await _run_hook(on_event, item)
         finally:
             job = await BackupJob.find_one(BackupJob.job_id == job_id)
             if job is not None and job.status == BackupJobStatus.RUNNING:

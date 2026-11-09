@@ -67,6 +67,16 @@ _DEFINITION_REFERENCE = {
 }
 
 
+def row_version(row: dict[str, Any]) -> int:
+    """A template or document row's version, as every reader of an archive
+    counts it: a missing, null, empty or zero version is version 1, and a
+    numeric string or float is its integer. One definition, so a pass that
+    selects rows by version (latest-only, migrate) keys them exactly as the
+    model counted them; a pass that compared the raw value dropped the rows
+    the model had counted under the coerced one."""
+    return int(row.get("version", 1) or 1)
+
+
 def _carried_ids(reader: Any, namespaces: list[str]) -> dict[str, frozenset[str]]:
     """The term, template and terminology ids carried in `namespaces` — the
     archive's namespaces outside a checked selection — by kind."""
@@ -738,7 +748,7 @@ class ArchiveModel:
         node = TemplateVersionNode(
             namespace=ns,
             template_id=template_id,
-            version=int(row.get("version", 1) or 1),
+            version=row_version(row),
             value=row.get("value", "") or "",
             label=row.get("label", "") or "",
             usage=str(row.get("usage", "entity") or "entity"),
@@ -853,7 +863,7 @@ class ArchiveModel:
             doc_id = row.get("document_id")
             if not doc_id:
                 continue
-            version = int(row.get("version", 1) or 1)
+            version = row_version(row)
             entry = self.documents.get(doc_id)
             if entry is None:
                 self.documents[doc_id] = DocumentEntry(
@@ -894,7 +904,7 @@ class ArchiveModel:
             entry = self.documents.get(doc_id)
             if entry is None:
                 continue
-            version = int(row.get("version", 1) or 1)
+            version = row_version(row)
             is_latest = version == entry.max_version
             targets = (
                 [self.history, self.latest] if is_latest else [self.history]
@@ -996,7 +1006,9 @@ class ArchiveModel:
         for ref in row.get("references") or []:
             kind = ref.get("reference_type")
             spec = _DEFINITION_REFERENCE.get(kind)
-            target = (ref.get("resolved") or {}).get(spec[0]) if spec else None
+            if spec is None:
+                continue
+            target = (ref.get("resolved") or {}).get(spec[0])
             if not target:
                 continue
             if target in getattr(self, spec[1]):

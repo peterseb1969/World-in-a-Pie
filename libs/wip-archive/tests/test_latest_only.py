@@ -112,3 +112,47 @@ def test_applied_the_output_says_it_is_not_all_versions(archive, tmp_path):
     assert result.hop["summary"]["pinned_versions_kept"] == 2
     # The dropped file takes its Registry row with it.
     assert result.dropped == {"documents": 2, "files": 1, "registry_entries": 1}
+
+
+D, E, G = (f"019d0000-0000-7000-8000-0000000000{n}" for n in ("d1", "e1", "g1"))
+
+
+def _write(path, documents):
+    writer = ArchiveWriter(path, default_namespace=NS)
+    writer.add_entity("templates", {"template_id": TPL, "version": 1, "value": "ITEM",
+                                    "namespace": NS, "status": "active",
+                                    "identity_fields": [], "fields": []}, namespace=NS)
+    for doc in documents:
+        writer.add_entity("documents", doc, namespace=NS)
+    writer.write({"format_version": "3.1", "namespace": NS, "include_all_versions": True,
+                  "counts": {}, "namespaces": [{"prefix": NS, "counts": {}}],
+                  "referents": writer.write_referents_file([])})
+    return path
+
+
+def test_a_version_the_model_counts_is_one_the_plan_keeps(tmp_path):
+    # The model counts a missing, null or zero version as 1 and a numeric
+    # string as its integer. The plan keys rows the same way: a document
+    # whose newest row is written "3" keeps that row (and drops 1 and 2),
+    # and a single-row document with no usable version is kept, not lost.
+    no_version = _doc(E, 1)
+    del no_version["version"]
+    documents = [_doc(D, 1), _doc(D, 2), _doc(D, "3", status="active"),
+                 no_version, _doc(G, 0, status="active")]
+    path = _write(tmp_path / "in.zip", documents)
+
+    plan = _plan(path)
+
+    kept = [d for d in documents if plan.keep_row(NS, "documents", d)]
+    assert [(d["document_id"], d.get("version")) for d in kept] == [
+        (D, "3"), (E, None), (G, 0),
+    ]
+    assert plan.versions_dropped == 2
+
+
+def test_a_pin_written_as_a_string_keeps_the_version_it_names(tmp_path):
+    documents = [_doc(A, 1), _doc(A, 2, status="active"),
+                 _doc(B, 1, status="active", refs=[_ref(A, "1", "pinned")])]
+    plan = _plan(_write(tmp_path / "in.zip", documents))
+    assert (A, 1) in plan.rows
+    assert plan.pinned_versions_kept == 1

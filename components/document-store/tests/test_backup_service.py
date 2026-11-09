@@ -123,6 +123,41 @@ class TestStartAsyncJobHappyPath:
 
         assert [e.phase for e in received] == ["start", "phase_documents", "complete"]
 
+    @pytest.mark.parametrize("terminal", ["complete", "error"])
+    async def test_a_terminal_event_is_settled_before_the_record_turns_terminal(
+        self, fresh_job: BackupJob, terminal: str,
+    ):
+        # The archive hook uploads a finished backup, which can take minutes.
+        # It must run while the record still reads RUNNING, which DELETE
+        # refuses: a DELETE that landed on a COMPLETE record mid-upload
+        # removed the record and left the uploaded object in the bucket with
+        # nothing pointing at it. A progress event reaches the hook after it
+        # is persisted, as before.
+        events = [
+            ProgressEvent(phase="start", message="go", percent=0.0),
+            ProgressEvent(phase="phase_documents", message="d", percent=50.0),
+            ProgressEvent(phase=terminal, message="end", percent=100.0),
+        ]
+        seen: list[tuple[str, BackupJobStatus, str | None]] = []
+
+        async def on_event(ev: ProgressEvent) -> None:
+            job = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+            assert job is not None
+            seen.append((ev.phase, job.status, job.phase))
+
+        task = await backup_service.start_async_job(
+            fresh_job.job_id, _scripted_runner(events), on_event=on_event
+        )
+        await asyncio.wait_for(task, timeout=5.0)
+
+        assert seen == [
+            ("start", BackupJobStatus.RUNNING, "start"),
+            ("phase_documents", BackupJobStatus.RUNNING, "phase_documents"),
+            (terminal, BackupJobStatus.RUNNING, "phase_documents"),
+        ]
+        final = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert final is not None and final.phase == terminal
+
     async def test_cleans_up_process_state(self, fresh_job: BackupJob):
         events = [
             ProgressEvent(phase="start", message="go", percent=0.0),

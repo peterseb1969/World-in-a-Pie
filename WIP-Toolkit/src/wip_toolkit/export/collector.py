@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 
 from rich.console import Console
 
@@ -225,7 +225,7 @@ class EntityCollector:
         data = self.client.get(
             "document-store", f"/documents/{document_id}/versions",
         )
-        return data.get("versions", [])
+        return cast(list[dict[str, Any]], data.get("versions", []))
 
     def fetch_document_version(self, document_id: str, version: int) -> dict[str, Any]:
         """Fetch a specific document version."""

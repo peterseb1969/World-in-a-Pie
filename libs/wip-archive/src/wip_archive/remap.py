@@ -242,12 +242,12 @@ class IDRemapper:
         - template_id → template map
         - term_references[].term_id → term map
         - term_references[].terminology_ref → terminology map
-        - references[].resolved.document_id → document map
-        - references[].resolved.template_id → template map
-        - references[].resolved.term_id → term map
-        - references[].resolved.terminology_id → terminology map
-        - references[].resolved.identity_hash → pass through
+        - references[]: see _remap_document_reference (lookup_value, and the
+          resolved snapshot's ids and namespace)
         - file_references[].file_id → file map
+        - data, at any depth: every string that is a file, document,
+          template, term or terminology id, or a qualified '<ns>:<value>'
+          whose namespace is remapped (see _remap_data_ids)
         """
         result = dict(document)
 
@@ -309,6 +309,16 @@ class IDRemapper:
         context. A QUALIFIED one ('<ns>:<value>') is not namespace-agnostic —
         it names a namespace explicitly, so it follows the namespace and id
         maps like any other reference string.
+
+        Fields rewritten:
+        - lookup_value → every id map, and the namespace map when qualified
+        - resolved.document_id → document map
+        - resolved.template_id → template map, resolved.namespace → namespace
+          map; but a document the archive does not carry, mapped to a target
+          document by add_external_document_mapping, takes that document's
+          own namespace, template_id and identity_hash instead
+        - resolved.term_id → term map, resolved.terminology_id → terminology map
+        - resolved.identity_hash → unchanged, except as above
         """
         result = dict(ref)
         lookup = result.get("lookup_value")

@@ -8,7 +8,7 @@ contract is the model's ``to_dict`` — tables are for humans, JSON is the API.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from rich.console import Console
 from rich.table import Table
@@ -39,7 +39,7 @@ def _render_header(model: ArchiveModel, console: Console) -> None:
     table.add_column("Property", style="bold")
     table.add_column("Value")
     table.add_row("Format version", str(summary["format_version"]))
-    table.add_row("Tool version", str(summary["tool_version"]))
+    table.add_row("Tool version", str(summary["tool_version"] or "unknown"))
     table.add_row("Exported at", str(summary["exported_at"]))
     table.add_row("Source host", str(summary["source_host"]))
     table.add_row("Namespaces", ", ".join(summary["namespaces"]) or "(none)")
@@ -409,7 +409,7 @@ def json_payload(
     payload = model.to_dict(templates=templates, terminologies=terminologies)
     # Schema 1.2: the --target-version assessment, null unless requested.
     payload["migratability"] = migratability.to_dict() if migratability else None
-    return payload
+    return cast(dict[str, Any], payload)
 
 
 def render_migratability(report: MigrationReport, console: Console) -> None:

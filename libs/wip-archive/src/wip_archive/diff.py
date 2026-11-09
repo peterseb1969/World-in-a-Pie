@@ -10,8 +10,9 @@ as canonical JSON, so key order and formatting never count. For a capped
 sample of changed rows the differing top-level fields are named.
 
 Memory is one digest per row of the first archive; the second streams past
-it. Naming the fields of the sampled changes costs one more pass over the
-first archive, for those rows only.
+it. Naming the fields of the sampled changes costs one more pass over each
+archive, for those rows only: the comparison keeps a digest of a first-archive
+row, not the row, so both sides are read again for the sampled keys.
 """
 
 from __future__ import annotations

@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .archive import ArchiveReader
-from .model import ArchiveModel
+from .model import ArchiveModel, row_version
 
 
 @dataclass
@@ -41,7 +41,7 @@ class LatestOnlyPlan:
 
     def keep_row(self, _namespace: str, entity_type: str, row: dict[str, Any]) -> bool:
         if entity_type == "documents":
-            return (row.get("document_id"), row.get("version")) in self.rows
+            return _key(row) in self.rows
         if entity_type == "files":
             return row.get("file_id") not in self.files_dropped
         return True
@@ -59,16 +59,19 @@ def _pinned(row: dict[str, Any]) -> set[tuple[str, int]]:
         if ref.get("reference_type") != "document" or ref.get("version_strategy") != "pinned":
             continue
         resolved = ref.get("resolved") or {}
-        doc_id, version = resolved.get("document_id"), resolved.get("version")
-        if isinstance(doc_id, str) and isinstance(version, int):
-            out.add((doc_id, version))
+        doc_id = resolved.get("document_id")
+        if isinstance(doc_id, str) and resolved.get("version") is not None:
+            out.add((doc_id, row_version(resolved)))
     return out
 
 
 def _key(row: dict[str, Any]) -> tuple[str, int] | None:
-    doc_id, version = row.get("document_id"), row.get("version")
-    if isinstance(doc_id, str) and isinstance(version, int):
-        return (doc_id, version)
+    """A document row's (document_id, version), its version counted as the
+    model counts it (row_version), so a row the model indexed is never one
+    this plan cannot name."""
+    doc_id = row.get("document_id")
+    if isinstance(doc_id, str) and doc_id:
+        return (doc_id, row_version(row))
     return None
 
 

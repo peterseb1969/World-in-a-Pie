@@ -243,3 +243,15 @@ def test_a_format_spec_that_does_not_fit_the_value_is_refused(tmp_path):
                "fill": {"region": "EU", "label": {"format": "{code:d}"}}}
     with pytest.raises(MigrationRefused, match="does not apply"):
         _plan(_archive(tmp_path), mapping)
+
+
+def test_a_row_whose_version_is_written_as_a_string_migrates(tmp_path):
+    # The plan's cohort counts a "1" as version 1, as the model does; the
+    # rewrite has to recognise the same row, or the plan reports it migrated
+    # while the output carries it unchanged.
+    doc = _doc(A, "A")
+    doc["version"] = "1"
+    plan, _result, rows = _migrate(_archive(tmp_path, documents=[doc]), tmp_path / "out.zip", MAPPING)
+    assert plan.cohort == {(A, 1)}
+    assert rows[(A, 2)]["template_version"] == 2
+    assert rows[(A, "1")]["status"] == "inactive"

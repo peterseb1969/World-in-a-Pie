@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 
 import httpx
 from rich.console import Console
@@ -57,7 +57,7 @@ class WIPClient:
             console.print(f"[dim]GET {url} {params or ''}[/dim]")
         resp = self._client.get(url, params=params)
         self._check_response(resp)
-        return resp.json()
+        return cast(dict[Any, Any], resp.json())
 
     def post(self, service: str, path: str, json: Any = None, params: dict | None = None) -> dict:
         url = f"{self.config.service_url(service)}{path}"
@@ -65,7 +65,7 @@ class WIPClient:
             console.print(f"[dim]POST {url} {params or ''}[/dim]")
         resp = self._client.post(url, json=json, params=params)
         self._check_response(resp)
-        return resp.json()
+        return cast(dict[Any, Any], resp.json())
 
     def put(self, service: str, path: str, json: Any = None) -> dict:
         url = f"{self.config.service_url(service)}{path}"
@@ -73,7 +73,7 @@ class WIPClient:
             console.print(f"[dim]PUT {url}[/dim]")
         resp = self._client.put(url, json=json)
         self._check_response(resp)
-        return resp.json()
+        return cast(dict[Any, Any], resp.json())
 
     def patch(self, service: str, path: str, json: Any = None) -> dict:
         url = f"{self.config.service_url(service)}{path}"
@@ -81,7 +81,7 @@ class WIPClient:
             console.print(f"[dim]PATCH {url}[/dim]")
         resp = self._client.patch(url, json=json)
         self._check_response(resp)
-        return resp.json()
+        return cast(dict[Any, Any], resp.json())
 
     def post_form(
         self, service: str, path: str,
@@ -93,7 +93,7 @@ class WIPClient:
             console.print(f"[dim]POST (form) {url}[/dim]")
         resp = self._client.post(url, data=data, files=files)
         self._check_response(resp)
-        return resp.json()
+        return cast(dict[Any, Any], resp.json())
 
     def stream_to_file(
         self,

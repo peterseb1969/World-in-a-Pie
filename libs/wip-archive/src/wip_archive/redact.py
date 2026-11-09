@@ -177,7 +177,7 @@ def _check_path(model: ArchiveModel, label: str, declared: _Declared, path: str)
         if not below:
             raise RedactionRefused(f"{label}.{walked} has no fields: nothing follows it in a path")
         level = _FREE if any(c is _FREE for c in below) else {
-            k: v for c in below for k, v in c.items()  # type: ignore[union-attr]
+            k: v for c in below for k, v in c.items()  # type: ignore[union-attr,attr-defined]
         }
 
 

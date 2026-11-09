@@ -52,7 +52,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .definitions import UnresolvableTemplate
-from .model import AmbiguousNameError, ArchiveModel
+from .model import AmbiguousNameError, ArchiveModel, row_version
 from .surgery import SurgeryError, actor, rename_paths, require_same_identity, stamp
 from .validation import OfflineValidator
 
@@ -78,7 +78,7 @@ def _get(data: dict[str, Any], path: str) -> Any:
     return current
 
 
-def _format_parts(pattern: str, name: str) -> list[tuple[str, str | None, str, str | None]]:
+def _format_parts(pattern: str, name: str) -> list[tuple[str, str | None, str | None, str | None]]:
     """The literal text and fields of a format fill, or MigrationRefused.
 
     Each field is a data path, dotted for a nested field (resolved like a
@@ -179,7 +179,7 @@ class MigrationPlan:
         return data, filled
 
     def rewrite_row(self, ns: str, entity_type: str, row: dict[str, Any]) -> list[dict[str, Any]]:
-        if entity_type != "documents" or (row.get("document_id"), row.get("version")) not in self.cohort:
+        if entity_type != "documents" or (str(row.get("document_id")), row_version(row)) not in self.cohort:
             return [row]
         assert self._validator is not None
         data, _filled = self.migrated_data(row)
@@ -203,7 +203,7 @@ class MigrationPlan:
             return [migrated]
         retired = {**row, "status": "inactive", "updated_at": self.now, "updated_by": ACTOR}
         migrated.update({
-            "version": self.next_version[(str(row["document_id"]), int(row.get("version") or 1))],
+            "version": self.next_version[(str(row["document_id"]), row_version(row))],
             "status": "active",
             "created_by": ACTOR,
         })
@@ -302,7 +302,7 @@ def plan_migration(reader: Any, model: ArchiveModel, mapping: dict[str, Any], *,
                     plan.failed.append(f"{row.get('document_id')} v{row.get('version')}: {problem}")
                 plan.skipped += 1
                 continue
-            doc_id, version = str(row["document_id"]), int(row.get("version") or 1)
+            doc_id, version = str(row["document_id"]), row_version(row)
             plan.cohort.add((doc_id, version))
             entry = model.documents.get(doc_id)
             written = highest.get(doc_id, entry.max_version if entry else 1) + 1
