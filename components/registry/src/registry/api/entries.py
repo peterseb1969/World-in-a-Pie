@@ -1851,103 +1851,109 @@ async def lookup_by_ids(
     keys; when several entries the caller can read carry it, the item is
     ambiguous with the candidates (/lookup/candidates lists them all).
     """
-    results = []
-    found_count = 0
-    not_found_count = 0
-    ambiguous_count = 0
-    error_count = 0
     access = NamespaceAccess(identity)
-
+    results: list[LookupResponse] = []
     async with httpx.AsyncClient(timeout=10.0) as client:
         for i, item in enumerate(items):
             try:
-                invalid = invalid_entity_type_fields(item.entity_type)
-                if invalid:
-                    results.append(LookupResponse(index=i, status="error", **invalid))
-                    error_count += 1
-                    continue
-
-                matched_via = None
-
-                # 1. Find by entry_id
-                q1: dict = {"entry_id": item.entry_id, "status": "active"}
-                if item.namespace:
-                    q1["namespace"] = item.namespace
-                if item.entity_type:
-                    q1["entity_type"] = item.entity_type
-                entry = await RegistryEntry.find_one(q1)
-                if entry and not await access.allows(entry.namespace, "read"):
-                    entry = None
-                if entry:
-                    matched_via = "entry_id"
-
-                # 2. Composite key value search (covers merged IDs via
-                # search_values), over the entries the caller can read. A
-                # value several of them carry is ambiguous: answered with the
-                # candidates, never with whichever the database returns first.
-                if not entry:
-                    q3: dict = {"search_values": item.entry_id, "status": "active"}
-                    if item.namespace:
-                        q3["namespace"] = item.namespace
-                    elif not access.unrestricted:
-                        q3["namespace"] = {
-                            "$in": await resolve_accessible_namespaces(identity) or [],
-                        }
-                    if item.entity_type:
-                        q3["entity_type"] = item.entity_type
-                    matches = await RegistryEntry.find(q3).sort("+created_at").limit(
-                        _RESOLVE_CANDIDATE_LIMIT + 1,
-                    ).to_list()
-                    matches = [m for m in matches if await access.allows(m.namespace, "read")]
-                    if len(matches) > 1:
-                        results.append(LookupResponse(
-                            index=i, status="ambiguous",
-                            error=(
-                                f"'{item.entry_id}' is carried by {len(matches)} entries; "
-                                "qualify it (namespace, entity_type) or use a canonical ID."
-                            ),
-                            error_code="ambiguous",
-                            candidates=[
-                                _candidate(m, item.entry_id)
-                                for m in matches[:_RESOLVE_CANDIDATE_LIMIT]
-                            ],
-                        ))
-                        ambiguous_count += 1
-                        continue
-                    entry = matches[0] if matches else None
-                    if entry:
-                        matched_via = "composite_key_value"
-
-                if not entry:
-                    results.append(LookupResponse(index=i, status="not_found"))
-                    not_found_count += 1
-                    continue
-
-                # Optionally fetch source data
-                source_data = None
-                if item.fetch_source_data and entry.source_info and entry.source_info.endpoint_url:
-                    try:
-                        resp = await client.get(entry.source_info.endpoint_url)
-                        resp.raise_for_status()
-                        source_data = resp.json()
-                    except Exception as e:
-                        source_data = {"error": f"Failed to fetch: {e!s}"}
-
-                results.append(build_lookup_response(
-                    index=i, entry=entry,
-                    matched_via=matched_via, source_data=source_data
-                ))
-                found_count += 1
-
+                results.append(await _lookup_one(i, item, access, identity, client))
             except Exception as e:
                 results.append(LookupResponse(index=i, status="error", **error_fields(e)))
-                error_count += 1
-
+    statuses = [r.status for r in results]
     return LookupBulkResponse(
         results=results, total=len(items),
-        found=found_count, not_found=not_found_count,
-        ambiguous=ambiguous_count, errors=error_count,
+        found=statuses.count("found"), not_found=statuses.count("not_found"),
+        ambiguous=statuses.count("ambiguous"), errors=statuses.count("error"),
     )
+
+
+async def _lookup_one(
+    i: int,
+    item: LookupByIdItem,
+    access: NamespaceAccess,
+    identity: UserIdentity,
+    client: httpx.AsyncClient,
+) -> LookupResponse:
+    """Look one item up: by entry_id, else by the values of entries' keys."""
+    invalid = invalid_entity_type_fields(item.entity_type)
+    if invalid:
+        return LookupResponse(index=i, status="error", **invalid)
+
+    entry = await _lookup_by_entry_id(item, access)
+    matched_via = "entry_id" if entry else None
+    if not entry:
+        found = await _lookup_by_key_value(i, item, access, identity)
+        if isinstance(found, LookupResponse):
+            return found
+        entry = found
+        if entry:
+            matched_via = "composite_key_value"
+    if not entry:
+        return LookupResponse(index=i, status="not_found")
+
+    source_data = None
+    if item.fetch_source_data and entry.source_info and entry.source_info.endpoint_url:
+        source_data = await _fetch_source_data(client, entry.source_info.endpoint_url)
+    return build_lookup_response(
+        index=i, entry=entry, matched_via=matched_via, source_data=source_data,
+    )
+
+
+async def _lookup_by_entry_id(item: LookupByIdItem, access: NamespaceAccess) -> RegistryEntry | None:
+    """The active entry with this id (in the item's namespace and entity
+    type, when given), if the caller can read it."""
+    query: dict = {"entry_id": item.entry_id, "status": "active"}
+    if item.namespace:
+        query["namespace"] = item.namespace
+    if item.entity_type:
+        query["entity_type"] = item.entity_type
+    entry = await RegistryEntry.find_one(query)
+    if entry and not await access.allows(entry.namespace, "read"):
+        return None
+    return entry
+
+
+async def _lookup_by_key_value(
+    i: int, item: LookupByIdItem, access: NamespaceAccess, identity: UserIdentity,
+) -> RegistryEntry | LookupResponse | None:
+    """The one readable active entry carrying the value among its keys'
+    values (which covers merged IDs via search_values), None, or the
+    ambiguous answer when several carry it — never whichever the database
+    returns first."""
+    query: dict = {"search_values": item.entry_id, "status": "active"}
+    if item.namespace:
+        query["namespace"] = item.namespace
+    elif not access.unrestricted:
+        query["namespace"] = {"$in": await resolve_accessible_namespaces(identity) or []}
+    if item.entity_type:
+        query["entity_type"] = item.entity_type
+    matches = await RegistryEntry.find(query).sort("+created_at").limit(
+        _RESOLVE_CANDIDATE_LIMIT + 1,
+    ).to_list()
+    matches = [m for m in matches if await access.allows(m.namespace, "read")]
+    if len(matches) > 1:
+        return LookupResponse(
+            index=i, status="ambiguous",
+            error=(
+                f"'{item.entry_id}' is carried by {len(matches)} entries; "
+                "qualify it (namespace, entity_type) or use a canonical ID."
+            ),
+            error_code="ambiguous",
+            candidates=[_candidate(m, item.entry_id) for m in matches[:_RESOLVE_CANDIDATE_LIMIT]],
+        )
+    return matches[0] if matches else None
+
+
+async def _fetch_source_data(client: httpx.AsyncClient, url: str) -> Any:
+    """The JSON the entry's source endpoint answers, or a note of the
+    failure."""
+    try:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        return {"error": f"Failed to fetch: {e!s}"}
+
 
 
 def _candidate(entry: RegistryEntry, value: str) -> LookupCandidate:
