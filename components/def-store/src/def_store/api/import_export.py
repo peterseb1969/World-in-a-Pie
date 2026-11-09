@@ -9,6 +9,7 @@ from wip_auth import (
     UserIdentity,
     check_namespace_permission,
     check_readable,
+    miss_detail,
     resolve_accessible_namespaces,
     resolve_or_404,
 )
@@ -40,6 +41,7 @@ async def export_terminology(
     Supports JSON and CSV formats. Use include_relations=true to include
     ontology relations (is_a, part_of, etc.) in JSON exports.
     """
+    raw_id = terminology_id
     terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
 
     # CASE-384 — gate export by read permission on the terminology's
@@ -48,7 +50,9 @@ async def export_terminology(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        await check_readable(identity, existing.namespace, "Terminology not found")
+        await check_readable(identity, existing.namespace, miss_detail(
+            raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+        ))
 
     try:
         language_list = languages.split(",") if languages else None

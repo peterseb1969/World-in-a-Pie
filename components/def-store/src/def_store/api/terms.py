@@ -12,6 +12,9 @@ from wip_auth import (
     check_namespace_permission,
     check_readable,
     entity_write_refusals,
+    field_unresolved_detail,
+    miss_detail,
+    resolution_miss,
     resolve_accessible_namespaces,
     resolve_namespace_filter,
     resolve_or_404,
@@ -118,6 +121,7 @@ async def create_terms(
         )
 
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
+    raw_id = terminology_id
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace, param_name="terminology_id"
     )
@@ -125,9 +129,10 @@ async def create_terms(
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
     if term_parent:
-        await check_entity_permission(
-            identity, term_parent.namespace, "write", f"Terminology '{terminology_id}' not found",
-        )
+        await check_entity_permission(identity, term_parent.namespace, "write", miss_detail(
+            raw_id, "terminology", namespace, f"Terminology '{terminology_id}' not found",
+            "terminology_id",
+        ))
         # A parent is a term of this terminology: resolve it there (a value
         # is that terminology's value, never colon-parsed; a UUID passes).
         # Write door — the id is persisted, so the cache is bypassed. What
@@ -223,6 +228,7 @@ async def reconcile_terminology(
     Registry registration, names validation, the collision guard, events
     and audit behave exactly like individual writes.
     """
+    raw_id = terminology_id
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace, param_name="terminology_id"
     )
@@ -230,7 +236,9 @@ async def reconcile_terminology(
     if not terminology:
         raise HTTPException(status_code=404, detail="Terminology not found")
 
-    await check_entity_permission(identity, terminology.namespace, "write", "Terminology not found")
+    await check_entity_permission(identity, terminology.namespace, "write", miss_detail(
+        raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+    ))
 
     return await TermReconcileService.reconcile(terminology, request)
 
@@ -255,6 +263,7 @@ async def list_terms(
     ns_filter = await resolve_namespace_filter(identity, namespace)
 
     # Resolve terminology_id synonym (e.g., "STATUS" → UUID)
+    raw_id = terminology_id
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace, param_name="terminology_id"
     )
@@ -271,6 +280,10 @@ async def list_terms(
             raise HTTPException(status_code=400, detail=str(e)) from e
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
+    # One in a namespace the caller cannot see answers as an unknown id.
+    await check_readable(identity, terminology.namespace, miss_detail(
+        raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+    ))
 
     terms, total = await TerminologyService.list_terms(
         terminology_id=terminology.terminology_id,
@@ -293,6 +306,20 @@ async def list_terms(
         terminology_id=terminology.terminology_id,
         terminology_value=terminology.value
     )
+
+
+async def _terminology_namespace(identity: UserIdentity, terminology: str) -> str | None:
+    """The namespace a terminology named by id or as NS:VALUE lives in.
+
+    One in a namespace the caller cannot see names none — as an id that
+    names nothing — so the answer does not confirm that it exists.
+    """
+    if ":" in terminology:
+        return split_qualified_value(terminology)[0]
+    coordinates = await terminology_coordinates_by_id(terminology)
+    if coordinates is not None and await can_read(identity, coordinates[0]):
+        return coordinates[0]
+    return None
 
 
 @router.get(
@@ -340,12 +367,7 @@ async def search_terms(
     # the terms it scopes live there, so it needs no ?namespace=. Read
     # access to that namespace is still checked below.
     if namespace is None and terminology is not None:
-        if ":" in terminology:
-            namespace = split_qualified_value(terminology)[0]
-        else:
-            coordinates = await terminology_coordinates_by_id(terminology)
-            if coordinates is not None:
-                namespace = coordinates[0]
+        namespace = await _terminology_namespace(identity, terminology)
 
     # Search needs one concrete namespace: ranking spans one vocabulary
     # scope and rollup walks that namespace's relations.
@@ -408,14 +430,17 @@ async def get_term(
 ) -> TermResponse:
     """Get a term by canonical UUID, fully qualified 'ns:terminology:value',
     or — with terminology= — the opaque raw value (never colon-parsed)."""
+    raw_id = term_id
     if terminology is not None:
         # Field-form door: the identifier is the raw value, uninterpreted
         term_id = await resolve_term_by_fields_or_404(
             term_id, terminology, namespace, param_name="term_id"
         )
+        not_found = field_unresolved_detail(raw_id, terminology, namespace, "term_id")
     else:
         # Resolve synonym — supports colon notation for terms
         term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+        not_found = miss_detail(raw_id, "term", namespace, "Term not found", "term_id")
 
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:
@@ -423,7 +448,7 @@ async def get_term(
 
     # Read on the term's namespace; one the caller cannot see answers as an
     # id that names nothing.
-    await check_readable(identity, result.namespace, "Term not found")
+    await check_readable(identity, result.namespace, not_found)
     return result
 
 
@@ -819,6 +844,72 @@ def _resolution_to_response(
 # VALIDATION
 # =============================================================================
 
+async def _visible_terminology(
+    identity: UserIdentity, terminology: Any, raw_id: str | None,
+) -> tuple[Any, HTTPException | None]:
+    """(terminology, None) when the caller may read it; (None, miss) when
+    it is absent or in a namespace the caller cannot see.
+
+    A hidden one answers exactly as an id that names nothing: ``miss`` is
+    the resolution 404 an unknown id gets in this request (ids resolve in
+    the caller's single namespace), or None when the not-found answer is
+    the door's own (ids pass through, or the terminology was named by value
+    and searched only where the caller can read).
+    """
+    if terminology is not None and await can_read(identity, terminology.namespace):
+        return terminology, None
+    if terminology is None or not raw_id:
+        return None, None
+    return None, resolution_miss(raw_id, "terminology", None, "terminology_id")
+
+
+async def _terminology_by_id(item: Any, terminologies: dict[str, Any]) -> Any:
+    """Resolve the item's terminology_id in place (404 when it names nothing)
+    and return its terminology, cached in ``terminologies``."""
+    item.terminology_id = await resolve_or_404(
+        item.terminology_id, "terminology", namespace=None, param_name="terminology_id"
+    )
+    if item.terminology_id not in terminologies:
+        terminologies[item.terminology_id] = await Terminology.find_one(
+            {"terminology_id": item.terminology_id}
+        )
+    return terminologies[item.terminology_id]
+
+
+async def _bulk_item_terminology(
+    item: Any, identity: UserIdentity, terminologies: dict[str, Any], readable: list[list[str] | None],
+) -> tuple[Any, tuple[str, str] | None]:
+    """A bulk-validate item's terminology, or (None, (error, error_code)).
+
+    Every refusal is the item's, not the request's (bulk-first): an id that
+    names nothing, an ambiguous value, a terminology the caller cannot see
+    (answered as an unknown id), or neither id nor value. ``terminologies``
+    caches lookups by id; ``readable`` holds the caller's readable
+    namespaces once a value-form item asked for them.
+    """
+    raw_id = item.terminology_id or ""
+    if raw_id:
+        try:
+            terminology = await _terminology_by_id(item, terminologies)
+        except HTTPException as e:
+            if e.status_code != 404:
+                raise
+            return None, (str(e.detail), "not_found")
+    elif item.terminology_value:
+        try:
+            if not readable:
+                readable.append(await resolve_accessible_namespaces(identity))
+            terminology = await TerminologyService.find_by_value(item.terminology_value, None, readable[0])
+        except AmbiguousTerminologyValueError as e:
+            return None, (str(e), "ambiguous_terminology")
+    else:
+        return None, ("Must provide terminology_id or terminology_value", "invalid_request")
+    terminology, miss = await _visible_terminology(identity, terminology, raw_id)
+    if terminology is None:
+        return None, (str(miss.detail) if miss is not None else "Terminology not found", "not_found")
+    return terminology, None
+
+
 @router.post(
     "/validate",
     response_model=ValidateValueResponse,
@@ -841,6 +932,7 @@ async def validate_value(
         )
 
     # Resolve terminology_id synonym if provided
+    raw_id = request.terminology_id
     if request.terminology_id:
         request.terminology_id = await resolve_or_404(
             request.terminology_id, "terminology", namespace=None, param_name="terminology_id"
@@ -869,9 +961,10 @@ async def validate_value(
                 error_code="ambiguous_terminology",
             )
 
-    # A terminology in a namespace the caller cannot see answers exactly as
-    # one that does not exist.
-    if not terminology or not await can_read(identity, terminology.namespace):
+    terminology, miss = await _visible_terminology(identity, terminology, raw_id)
+    if miss is not None:
+        raise miss
+    if not terminology:
         return ValidateValueResponse(
             valid=False,
             terminology_id=request.terminology_id or "",
@@ -921,37 +1014,9 @@ async def validate_values_bulk(
         ))
 
     for index, item in enumerate(request.items):
-        # Resolve terminology_id synonym
-        if item.terminology_id:
-            item.terminology_id = await resolve_or_404(
-                item.terminology_id, "terminology", namespace=None, param_name="terminology_id"
-            )
-
-        # Get terminology — per-item: an ambiguous unscoped value fails
-        # that item, not the request (bulk-first)
-        if item.terminology_id:
-            if item.terminology_id not in terminologies:
-                terminologies[item.terminology_id] = await Terminology.find_one(
-                    {"terminology_id": item.terminology_id}
-                )
-            terminology = terminologies[item.terminology_id]
-        elif item.terminology_value:
-            try:
-                if not readable:
-                    readable.append(await resolve_accessible_namespaces(identity))
-                terminology = await TerminologyService.find_by_value(
-                    item.terminology_value, None, readable[0]
-                )
-            except AmbiguousTerminologyValueError as e:
-                _invalid(item, str(e), "ambiguous_terminology", terminology_value=item.terminology_value)
-                continue
-        else:
-            _invalid(item, "Must provide terminology_id or terminology_value", "invalid_request")
-            continue
-
-        if not terminology or not await can_read(identity, terminology.namespace):
-            # One the caller cannot see answers exactly as one that does not exist.
-            _invalid(item, "Terminology not found", "not_found", item.terminology_id or "", item.terminology_value or "")
+        terminology, refusal = await _bulk_item_terminology(item, identity, terminologies, readable)
+        if refusal is not None:
+            _invalid(item, *refusal, item.terminology_id or "", item.terminology_value or "")
             continue
 
         if terminology.terminology_id not in groups:

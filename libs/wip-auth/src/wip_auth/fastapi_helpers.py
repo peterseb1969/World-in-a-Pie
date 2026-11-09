@@ -286,11 +286,61 @@ async def resolve_term_by_fields_or_404(
     except EntityNotFoundError:
         raise HTTPException(
             status_code=404,
-            detail=(
-                f"Could not resolve {param_name} value '{value}' in "
-                f"terminology '{terminology}' (namespace '{namespace}')"
-            ),
+            detail=field_unresolved_detail(value, terminology, namespace, param_name),
         ) from None
+
+
+def field_unresolved_detail(
+    value: str, terminology: str, namespace: str | None, param_name: str = "term",
+) -> str:
+    """The 404 detail resolve_term_by_fields_or_404 gives a value that names
+    no term; ``namespace`` as the door passed it (None derives it, as the
+    resolver does)."""
+    if namespace is None:
+        namespace = _derive_namespace_from_identity()
+    return (
+        f"Could not resolve {param_name} value '{value}' in "
+        f"terminology '{terminology}' (namespace '{namespace}')"
+    )
+
+
+def resolution_miss(
+    raw_id: str,
+    entity_type: str,
+    namespace: str | None,
+    param_name: str | None = None,
+) -> HTTPException | None:
+    """The 404 resolve_or_404 raises, in this request, for an id that names
+    nothing — or None when it would pass such an id through unresolved (no
+    namespace given and none derivable from the caller's key), leaving the
+    door's own miss as the answer.
+
+    A door that resolved an id and found the entity in a namespace the
+    caller cannot read answers exactly what an unknown id gets: this 404
+    when there is one, its own miss otherwise. ``namespace`` is what the
+    door passed to resolve_or_404.
+    """
+    if namespace is None:
+        namespace = _derive_namespace_from_identity()
+    if namespace is None:
+        return None
+    return HTTPException(
+        status_code=404, detail=unresolved_detail(raw_id, entity_type, namespace, param_name),
+    )
+
+
+def miss_detail(
+    raw_id: str,
+    entity_type: str,
+    namespace: str | None,
+    own: str,
+    param_name: str | None = None,
+) -> str:
+    """The 404 text an unknown id gets on a door whose own miss is the 404
+    ``own``: resolve_or_404's text when it resolves in a namespace, else
+    ``own`` (see resolution_miss)."""
+    miss = resolution_miss(raw_id, entity_type, namespace, param_name)
+    return own if miss is None else str(miss.detail)
 
 
 async def resolve_bulk_ids(

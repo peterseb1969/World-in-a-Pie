@@ -45,6 +45,9 @@ from .dependencies import (
     require_namespace_write,
 )
 from .fastapi_helpers import (
+    field_unresolved_detail,
+    miss_detail,
+    resolution_miss,
     resolve_bulk_ids,
     resolve_or_404,
     resolve_term_by_fields_or_404,
@@ -157,6 +160,8 @@ __all__ = [
     "create_providers_from_config",
     "declare_api_key_security",
     "entity_write_refusals",
+    # Synonym resolution
+    "field_unresolved_detail",
     "get_actor_info",
     "get_auth_config",
     # Identity context
@@ -168,6 +173,7 @@ __all__ = [
     "init_beanie_with_retry",
     # Liveness endpoint
     "install_liveness",
+    "miss_detail",
     "optional_identity",
     "permission_sufficient",
     "require_admin",
@@ -182,8 +188,8 @@ __all__ = [
     "require_namespace_write",
     "reset_auth_config",
     "reset_current_identity",
+    "resolution_miss",
     "resolve_accessible_namespaces",
-    # Synonym resolution
     "resolve_bulk_ids",
     "resolve_entity_id",
     "resolve_entity_ids",

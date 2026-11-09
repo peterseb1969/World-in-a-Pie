@@ -11,6 +11,7 @@ from wip_auth import (
     check_namespace_permission,
     check_readable,
     entity_write_refusals,
+    miss_detail,
     resolve_accessible_namespaces,
     resolve_bulk_ids,
     resolve_namespace_filter,
@@ -160,6 +161,7 @@ async def get_terminology(
     When falling back to value lookup, namespace is used for scoping.
     """
     # Resolve synonym (e.g., "STATUS" → UUID)
+    raw_id = terminology_id
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace, param_name="terminology_id"
     )
@@ -183,7 +185,9 @@ async def get_terminology(
     # Read on the entity's own namespace; one the caller cannot see answers
     # exactly as an id that names nothing, so the 404 does not confirm that
     # the terminology exists, or where.
-    await check_readable(identity, result.namespace, "Terminology not found")
+    await check_readable(identity, result.namespace, miss_detail(
+        raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+    ))
 
     return result
 
@@ -262,6 +266,7 @@ async def get_terminology_dependencies(
     template_count is -1 and has_dependencies is null ("unknown") — never
     false. Use this to check before deactivating a terminology.
     """
+    raw_id = terminology_id
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace=None, param_name="terminology_id"
     )
@@ -272,7 +277,9 @@ async def get_terminology_dependencies(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        await check_readable(identity, existing.namespace, f"Terminology {terminology_id} not found")
+        await check_readable(identity, existing.namespace, miss_detail(
+            raw_id, "terminology", None, f"Terminology {terminology_id} not found", "terminology_id",
+        ))
 
     try:
         return await DependencyService.check_terminology_dependencies(terminology_id)
@@ -293,6 +300,7 @@ async def restore_terminology(
     By default also reactivates all terms that were deactivated with it.
     Set restore_terms=false to restore only the terminology itself.
     """
+    raw_id = terminology_id
     terminology_id = await resolve_or_404(
         terminology_id, "terminology", namespace, param_name="terminology_id"
     )
@@ -303,7 +311,9 @@ async def restore_terminology(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        await check_entity_permission(identity, existing.namespace, "write", "Terminology not found")
+        await check_entity_permission(identity, existing.namespace, "write", miss_detail(
+            raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
+        ))
 
     try:
         result = await TerminologyService.restore_terminology(

@@ -5,6 +5,7 @@ No mock registry — all ID generation and resolution goes through
 the real Registry code via ASGITransport.
 """
 
+import json
 import os
 import sys
 from collections.abc import AsyncGenerator
@@ -36,6 +37,19 @@ os.environ.setdefault("REGISTRY_URL", "http://registry")
 os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
 os.environ.setdefault("MASTER_API_KEY", "test_api_key")
 os.environ.setdefault("AUTH_ENABLED", "true")
+# A key scoped to the single namespace 'wip' (write), to which 'xns-closed'
+# is invisible: what an app's key looks like. The admin key passes every
+# check and passes ids through unresolved, so it alone cannot exercise the
+# doors as an app reaches them. Read by setup_auth when def_store.main is
+# imported below.
+os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
+    "name": "test-xns-writer",
+    "key": "test_xns_writer_key",
+    "owner": "test-xns-writer",
+    "groups": [],
+    "namespaces": ["wip"],
+    "grants": {"wip": "write"},
+}]))
 
 # Def-store models and app (must be after env var setup)
 from def_store.api.auth import set_api_key  # noqa: E402
@@ -124,7 +138,7 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])
 
     # Create test namespaces in Registry
-    for prefix in ("wip", "test-ns"):
+    for prefix in ("wip", "test-ns", "xns-closed"):
         await Namespace(prefix=prefix, description=f"Test namespace: {prefix}").insert()
 
     # Mount Registry in-process

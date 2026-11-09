@@ -2,11 +2,13 @@
 
 
 from beanie.odm.enums import SortDirection
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from wip_auth import (
     UserIdentity,
     can_read,
+    field_unresolved_detail,
+    resolution_miss,
     resolve_accessible_namespaces,
     resolve_or_404,
     resolve_term_by_fields_or_404,
@@ -37,6 +39,7 @@ def _to_audit_entry(log: TermAuditLog) -> AuditLogEntry:
 
 async def _audited_namespace(
     identity: UserIdentity, entity_namespace: str | None, id_field: str, entity_id: str,
+    miss: HTTPException | None,
 ) -> str | None:
     """The namespace whose audit rows an id-scoped door reads, after checking
     read on it — None when there is no history the caller may read.
@@ -54,10 +57,12 @@ async def _audited_namespace(
         if latest is None:
             return None
         namespace = latest.namespace
-    # A namespace the caller cannot see has, for it, no history: the door
-    # answers the empty page an unknown id gets, not a 404 that would
-    # confirm the entity exists.
+    # A namespace the caller cannot see answers what an unknown id gets:
+    # ``miss`` (the resolution 404 of this request) when there is one, else
+    # the empty page — never an answer that confirms the entity exists.
     if not await can_read(identity, namespace):
+        if miss is not None:
+            raise miss
         return None
     return namespace
 
@@ -102,18 +107,23 @@ async def get_term_audit_log(
     identity: UserIdentity = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for a specific term."""
+    raw_id = term_id
     if terminology is not None:
         # Field-form door: the identifier is the raw value, uninterpreted
         term_id = await resolve_term_by_fields_or_404(
             term_id, terminology, namespace, param_name="term_id"
         )
+        miss: HTTPException | None = HTTPException(
+            404, field_unresolved_detail(raw_id, terminology, namespace, "term_id"),
+        )
     else:
         term_id = await resolve_or_404(term_id, "term", namespace=namespace, param_name="term_id")
+        miss = resolution_miss(raw_id, "term", namespace, "term_id")
 
     from ..models.term import Term as _Term
     existing = await _Term.find_one({"term_id": term_id})
     ns = await _audited_namespace(
-        identity, existing.namespace if existing else None, "term_id", term_id,
+        identity, existing.namespace if existing else None, "term_id", term_id, miss,
     )
     if ns is None:
         return _empty(page, page_size)
@@ -135,6 +145,7 @@ async def get_terminology_audit_log(
     identity: UserIdentity = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get audit log entries for all terms in a terminology."""
+    raw_id = terminology_id
     terminology_id = await resolve_or_404(terminology_id, "terminology", namespace=namespace, param_name="terminology_id")
 
     from ..models.terminology import Terminology as _T
@@ -144,6 +155,7 @@ async def get_terminology_audit_log(
     existing = await _T.find_one(lookup)
     ns = await _audited_namespace(
         identity, existing.namespace if existing else None, "terminology_id", terminology_id,
+        resolution_miss(raw_id, "terminology", namespace, "terminology_id"),
     )
     if ns is None:
         return _empty(page, page_size)

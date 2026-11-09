@@ -77,10 +77,14 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   share one probe bounded at 1 s, connection acquisition included.
 - **Hidden reads as missing.** A def-store or template-store door addressed
   by id answers a terminology, term or template in a namespace the caller
-  cannot read exactly as an id that names nothing — the door's own 404
-  text instead of "Namespace not found", and on doors whose miss is not a
-  404 the same body (an empty audit page or children list, a `not_found`
-  validation). Bulk writes (update/delete terminologies and terms,
+  cannot read exactly as an id that names nothing on the same request: for
+  a single-namespace (app) key, whose ids resolve in its namespace, the
+  resolution 404 `Could not resolve <param> '<id>' in namespace '<ns>'`;
+  for a caller whose ids pass through unresolved, the door's own miss (its
+  404 text, an empty audit page or children list, a `not_found`
+  validation). The terminology's term list and the term search's
+  `terminology` parameter are gated the same way. Bulk validate answers an
+  id that names nothing on its item instead of failing the request. Bulk writes (update/delete terminologies and terms,
   deprecate, merge, update/delete templates) refuse such an item per item
   (`not_found`, or `forbidden` for one the caller may only read) instead of
   failing the whole request with a 404 or 403. A caller who can see an
