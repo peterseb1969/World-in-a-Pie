@@ -2,7 +2,8 @@
 
 import contextlib
 import logging
-from collections.abc import Mapping
+from collections.abc import AsyncIterator, Mapping
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -20,7 +21,7 @@ from wip_auth.resolve import (
     resolve_entity_id,
     resolve_entity_ids,
 )
-from wip_auth.synonym_lifecycle import sync_entry_lifecycle
+from wip_auth.synonym_lifecycle import LifecycleRefused, entry_lifecycle
 
 from ..api.auth import get_identity_string
 from ..models.api_models import (
@@ -1986,12 +1987,14 @@ class TemplateService:
             updated_by=actor,
         )
         await TemplateService._stamp_referent_paths(new_template)
-        was_retired = await Template.find_one(
-            {"template_id": original.template_id, "status": "active"}
-        ) is None
-        await new_template.insert()
-        if was_retired:
-            await TemplateService._sync_registry_lifecycle(original.template_id, actor)
+        # A new active version of a template with no active version revives it.
+        revives = new_template.status == "active" and await TemplateService._none_active(
+            original.template_id,
+        )
+        async with TemplateService._lifecycle(
+            original.template_id, change=revives, retired=False, actor=actor,
+        ):
+            await new_template.insert()
 
         # Publish template updated event — skip for drafts, as create does
         if new_template.status != "draft":
@@ -2073,12 +2076,17 @@ class TemplateService:
         if template.status == "inactive":
             return True  # Already inactive
 
-        # Deactivate template
-        template.status = "inactive"
-        template.updated_at = datetime.now(UTC)
-        template.updated_by = actor
-        await template.save()
-        await TemplateService._sync_registry_lifecycle(template_id, actor)
+        # Deactivating the last active version retires the template.
+        retires = template.status == "active" and await TemplateService._none_active(
+            template_id, besides=template.version,
+        )
+        async with TemplateService._lifecycle(
+            template_id, change=retires, retired=True, actor=actor,
+        ):
+            template.status = "inactive"
+            template.updated_at = datetime.now(UTC)
+            template.updated_by = actor
+            await template.save()
 
         # Publish template deleted event
         await publish_template_event(
@@ -2115,9 +2123,14 @@ class TemplateService:
             # Every version goes: the event names none, which is what tells
             # reporting to drop the whole template rather than one version.
             event_payload.pop("version", None)
-        await Template.find(query).delete()
-        if others > 0 and target.status == "active":
-            await TemplateService._sync_registry_lifecycle(template_id, actor)
+        # Deleting the last active version, with others left, retires it.
+        retires = others > 0 and target.status == "active" and await TemplateService._none_active(
+            template_id, besides=target.version,
+        )
+        async with TemplateService._lifecycle(
+            template_id, change=retires, retired=True, actor=actor,
+        ):
+            await Template.find(query).delete()
 
         await publish_template_event(
             EventType.TEMPLATE_DELETED, event_payload, changed_by=actor,
@@ -2178,11 +2191,14 @@ class TemplateService:
         await TemplateService._prepare_activation([template], template.namespace)
 
         actor = get_identity_string()
-        template.status = "active"
-        template.updated_at = datetime.now(UTC)
-        template.updated_by = actor
-        await template.save()
-        await TemplateService._sync_registry_lifecycle(template_id, actor)
+        revives = await TemplateService._none_active(template_id)
+        async with TemplateService._lifecycle(
+            template_id, change=revives, retired=False, actor=actor,
+        ):
+            template.status = "active"
+            template.updated_at = datetime.now(UTC)
+            template.updated_by = actor
+            await template.save()
 
         await publish_template_event(
             EventType.TEMPLATE_UPDATED,
@@ -2193,8 +2209,22 @@ class TemplateService:
         return TemplateService._to_template_response(template)
 
     @staticmethod
-    async def _sync_registry_lifecycle(template_id: str, actor: str | None) -> None:
-        """Tell the Registry whether this template is retired.
+    async def _none_active(template_id: str, *, besides: int | None = None) -> bool:
+        """True when no version of the template is active, leaving out the
+        version ``besides`` (the one the caller is about to retire)."""
+        query: dict[str, Any] = {"template_id": template_id, "status": "active"}
+        if besides is not None:
+            query["version"] = {"$ne": besides}
+        return await Template.find_one(query) is None
+
+    @staticmethod
+    @asynccontextmanager
+    async def _lifecycle(
+        template_id: str, *, change: bool, retired: bool, actor: str | None,
+    ) -> AsyncIterator[None]:
+        """Run the block (the template write) after the Registry recorded the
+        template as retired or revived, when ``change`` says the write does
+        either.
 
         A template keeps one Registry entry across its versions, so it is
         retired only when no version is active: then its synonyms are
@@ -2202,16 +2232,22 @@ class TemplateService:
         nor resolve), and they are claimed again as soon as a version is
         active. Its {ns, type, value} key is the entry's primary key, never
         released — a retired template stays addressable by value, to
-        reactivate it. The
-        template write has already committed, so a failed call is logged;
-        /maintenance/reconcile-synonym-lifecycle repairs it.
+        reactivate it. The caller decides ``change`` from the state BEFORE
+        its write.
+
+        A Registry that refuses the change makes it TemplateError
+        (registry_error); one that does not answer raises
+        RegistryUnavailableError (503). Either way nothing is written, and a
+        write that fails undoes what the Registry recorded.
         """
-        active = await Template.find_one({"template_id": template_id, "status": "active"})
-        for warning in await sync_entry_lifecycle(
-            get_registry_client(), template_id,
-            retired=active is None, actor=actor, noun="template",
-        ):
-            logger.warning("Template %s: %s", template_id, warning)
+        try:
+            async with entry_lifecycle(
+                get_registry_client(), [template_id] if change else [],
+                retired=retired, actor=actor,
+            ):
+                yield
+        except LifecycleRefused as e:
+            raise TemplateError(f"Not changed — {e}", "registry_error") from e
 
     @staticmethod
     async def add_edge_type_endpoints(
@@ -3628,17 +3664,20 @@ class TemplateService:
         # drafts, rather than an error that hides the half-activated set.
         for t in activation_set:
             try:
-                t.status = "active"
-                t.updated_at = now
-                t.updated_by = actor
-                await t.save()
+                # A draft version activated on a template whose other
+                # versions are all inactive brings the template back.
+                revives = await TemplateService._none_active(t.template_id)
+                async with TemplateService._lifecycle(
+                    t.template_id, change=revives, retired=False, actor=actor,
+                ):
+                    t.status = "active"
+                    t.updated_at = now
+                    t.updated_by = actor
+                    await t.save()
             except Exception as e:
                 logger.exception("Activation stopped at %s", t.template_id)
                 return TemplateService._partial_activation(activation_set, activated_ids, t, e)
             activated_ids.append(t.template_id)
-            # A draft version activated on a template whose other versions
-            # are all inactive brings the template back.
-            await TemplateService._sync_registry_lifecycle(t.template_id, actor)
 
             # Publish activation event
             await publish_template_event(

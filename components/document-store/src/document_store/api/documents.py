@@ -14,6 +14,7 @@ from wip_auth import (
     resolve_or_404,
 )
 from wip_auth.fastapi_helpers import unresolved_detail
+from wip_auth.registry_client import RegistryUnavailableError
 
 from ..models.api_models import (
     MAX_BULK_ITEMS,
@@ -887,7 +888,9 @@ async def delete_documents(
                     index=i, status="deleted", id=item.id, warnings=warnings,
                     details={"broken_references": broken} if broken else None,
                 ))
-        except ValueError as e:
+        except (ValueError, RegistryUnavailableError) as e:
+            # A Registry that cannot record the item's retirement refuses
+            # that item (nothing written for it); the items before it stand.
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
     return BulkResponse(

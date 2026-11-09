@@ -33,7 +33,7 @@ from ..models.api_models import (
 )
 from ..models.template import Template
 from ..services.dependency_service import DependencyService, TemplateDependencies
-from ..services.errors import TemplateUnresolvable, error_fields
+from ..services.errors import TemplateError, TemplateUnresolvable, error_fields
 from ..services.inheritance_service import InheritanceService
 from ..services.portable import template_with_portable_refs
 from ..services.registry_client import RegistryError
@@ -811,6 +811,11 @@ async def reactivate_template(
             template_id=template_id,
             version=version,
         )
+    except TemplateError as e:
+        # A Registry that refused to record the revival is a Registry fault,
+        # answered as this route answers every other one; nothing was written.
+        status = 502 if e.code == "registry_error" else 400
+        raise HTTPException(status_code=status, detail=str(e)) from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 

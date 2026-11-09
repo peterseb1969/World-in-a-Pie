@@ -372,17 +372,21 @@ def _watch_api_keys_file(config: AuthConfig, provider: APIKeyProvider) -> None:
 
 
 async def registry_unavailable_handler(request, exc: RegistryUnavailableError):
-    """HTTP 503 for a Registry that did not answer (registered by setup_auth)."""
+    """HTTP 503 for a Registry that did not answer (registered by setup_auth).
+
+    An outage that stopped a pass part-way carries the pass's report of what
+    it had already applied (``report``); the 503 body includes it."""
     from fastapi.responses import JSONResponse
 
     logger.warning("%s %s: %s", request.method, request.url.path, exc)
-    return JSONResponse(
-        status_code=503,
-        content={
-            "detail": f"{exc}; retry shortly",
-            "error_code": "registry_unavailable",
-        },
-    )
+    content: dict = {
+        "detail": f"{exc}; retry shortly",
+        "error_code": "registry_unavailable",
+    }
+    report = getattr(exc, "report", None)
+    if report is not None:
+        content["report"] = report.to_dict()
+    return JSONResponse(status_code=503, content=content)
 
 
 def setup_auth(

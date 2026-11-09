@@ -23,7 +23,6 @@ from httpx import AsyncClient
 
 from template_store.models.template import Template
 from template_store.services.registry_client import RegistryError
-from template_store.services.template_service import TemplateService
 
 from .test_hard_delete import _create_template, _create_version, _delete_template, _full_mode_registry
 
@@ -64,14 +63,16 @@ async def test_hard_deleting_the_only_active_version_retires_the_template(
     tid = await _create_template(client, auth_headers, "C1168_LAST_ACTIVE", "Last active")
     await _create_version(client, auth_headers, tid)  # v2 active
     await (await Template.find_one({"template_id": tid, "version": 1})).set({"status": "inactive"})
-    with (
-        patch("template_store.services.template_service.get_registry_client",
-              return_value=_full_mode_registry()),
-        patch.object(TemplateService, "_sync_registry_lifecycle", new=AsyncMock()) as sync,
-    ):
+    registry = _full_mode_registry()
+    registry.deactivate_entries = AsyncMock(
+        return_value=[{"registry_id": tid, "status": "deactivated"}],
+    )
+    with patch("template_store.services.template_service.get_registry_client",
+               return_value=registry):
         data = await _delete_template(client, auth_headers, tid, version=2, hard_delete=True)
     assert data["succeeded"] == 1, data
-    sync.assert_awaited_once()
+    registry.deactivate_entries.assert_awaited_once()
+    assert registry.deactivate_entries.await_args.args[0] == [tid]
 
 
 @pytest.mark.asyncio

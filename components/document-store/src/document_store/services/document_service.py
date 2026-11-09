@@ -16,7 +16,11 @@ from wip_auth.document_identity import (
     build_referent_resolutions,
     substitute_resolved_referents,
 )
-from wip_auth.synonym_lifecycle import sync_entry_lifecycle
+from wip_auth.synonym_lifecycle import (
+    LifecycleRefused,
+    record_entry_lifecycle,
+    undo_entry_lifecycle,
+)
 from wip_auth.term_resolution import term_resolution_batch
 
 # Import identity helper from wip-auth
@@ -1750,62 +1754,29 @@ class DocumentService:
                 warnings=validation_result.warnings + synonym_warnings
             ), None
 
-        # Phase 3: templates with versioned=false overwrite in place.
-        if not await self._is_template_versioned(request.template_id):
-            overwritten, err = await self._overwrite_in_place(
-                request, existing, validation_result, namespace,
-                extra_warnings=synonym_warnings,
-            )
-            if revival and err is None:
-                overwritten.warnings += await self._sync_registry_lifecycle(
-                    document_id, retired=False, actor=get_identity_string(),
-                )
-            return overwritten, err
-
         # Get authenticated identity (not client-provided)
         actor = get_identity_string()
 
-        # Deactivate old version
-        prior = {existing.id: (existing.updated_at, existing.updated_by)}
-        existing.status = DocumentStatus.INACTIVE
-        existing.updated_at = datetime.now(UTC)
-        existing.updated_by = actor
-        await existing.save()
-
-        # Create new version with SAME document_id (stable).
-        # metadata=None carries the existing custom metadata forward (the
-        # caller did not address it); a supplied dict replaces it wholesale,
-        # including an explicit {} to clear. Mirrors the change gate above —
-        # None must mean the same thing in the gate and in the write, or a
-        # data-only update would silently wipe metadata.
-        now = datetime.now(UTC)
-        new_version = existing.version + 1
-        metadata = DocumentMetadata(
-            warnings=validation_result.warnings + synonym_warnings,
-            custom=request.metadata if request.metadata is not None
-            else dict(existing.metadata.custom if existing.metadata else {}),
-        )
-
-        document = await self._insert_or_restore(
-            prior,
-            namespace=namespace,
-            document_id=document_id,
-            template_id=request.template_id,
-            template_version=validation_result.template_version,
-            template_value=validation_result.template_value,
-            identity_hash=validation_result.identity_hash or "",
-            version=new_version,
-            data=request.data,
-            term_references=validation_result.term_references,
-            references=validation_result.references,
-            file_references=validation_result.file_references,
-            metadata=metadata,
-            actor=actor,
-            now=now,
-            # Successor version: keep the entity's original creation time
-            # rather than stamping this write as a new creation (CASE-802).
-            entity_created_at=existing.created_at,
-        )
+        # A revival is recorded in the Registry before anything is written:
+        # one it cannot record is not written.
+        try:
+            lifecycle_warnings = await self._record_revival(document_id, revival, actor)
+        except (DocumentStoreError, RegistryUnavailableError) as e:
+            return None, error_fields(e)
+        try:
+            written = await self._write_new_version(
+                request, existing, validation_result, document_id, namespace,
+                synonym_warnings, actor, lifecycle_warnings,
+            )
+        except BaseException:
+            await self._undo_revival(document_id, revival, namespace, actor)
+            raise
+        if not isinstance(written, Document):
+            # Overwritten in place (a versioned=false template): done.
+            if written[1] is not None:
+                await self._undo_revival(document_id, revival, namespace, actor)
+            return written
+        document = written
         new_version = document.version  # May have been incremented by retry
 
         # Publish document updated event
@@ -1821,10 +1792,6 @@ class DocumentService:
             await self._update_file_reference_counts(existing.file_references, delta=-1)
         await self._update_file_reference_counts(validation_result.file_references, delta=1)
 
-        lifecycle_warnings = (
-            await self._sync_registry_lifecycle(document_id, retired=False, actor=actor)
-            if revival else []
-        )
         return DocumentCreateResponse(
             document_id=document_id,
             namespace=namespace,
@@ -2008,21 +1975,108 @@ class DocumentService:
         """
         return existing.status != DocumentStatus.ACTIVE
 
-    async def _sync_registry_lifecycle(
-        self, document_id: str, *, retired: bool, actor: str | None,
-    ) -> list[str]:
-        """Tell the Registry a document was retired (soft delete) or revived
-        (a write to its identity), returning warnings for the caller's result.
+    async def _write_new_version(
+        self,
+        request: DocumentCreateRequest,
+        existing: Document,
+        validation_result,
+        document_id: str,
+        namespace: str,
+        synonym_warnings: list[str],
+        actor: str,
+        lifecycle_warnings: list[str],
+    ) -> "tuple[DocumentCreateResponse | None, dict[str, Any] | None] | Document":
+        """Write the single-item update of ``existing``: overwritten in place
+        when its template is not versioned (the (response, error) the caller
+        returns), else its successor version (the written document)."""
+        # Phase 3: templates with versioned=false overwrite in place.
+        if not await self._is_template_versioned(request.template_id):
+            overwritten, err = await self._overwrite_in_place(
+                request, existing, validation_result, namespace,
+                extra_warnings=synonym_warnings,
+            )
+            if err is None:
+                overwritten.warnings += lifecycle_warnings
+            return overwritten, err
+
+        # Deactivate old version
+        prior = {existing.id: (existing.updated_at, existing.updated_by)}
+        existing.status = DocumentStatus.INACTIVE
+        existing.updated_at = datetime.now(UTC)
+        existing.updated_by = actor
+        await existing.save()
+
+        # Create new version with SAME document_id (stable).
+        # metadata=None carries the existing custom metadata forward (the
+        # caller did not address it); a supplied dict replaces it wholesale,
+        # including an explicit {} to clear. Mirrors the change gate above —
+        # None must mean the same thing in the gate and in the write, or a
+        # data-only update would silently wipe metadata.
+        metadata = DocumentMetadata(
+            warnings=validation_result.warnings + synonym_warnings,
+            custom=request.metadata if request.metadata is not None
+            else dict(existing.metadata.custom if existing.metadata else {}),
+        )
+        return await self._insert_or_restore(
+            prior,
+            namespace=namespace,
+            document_id=document_id,
+            template_id=request.template_id,
+            template_version=validation_result.template_version,
+            template_value=validation_result.template_value,
+            identity_hash=validation_result.identity_hash or "",
+            version=existing.version + 1,
+            data=request.data,
+            term_references=validation_result.term_references,
+            references=validation_result.references,
+            file_references=validation_result.file_references,
+            metadata=metadata,
+            actor=actor,
+            now=datetime.now(UTC),
+            # Successor version: keep the entity's original creation time
+            # rather than stamping this write as a new creation (CASE-802).
+            entity_created_at=existing.created_at,
+        )
+
+    @staticmethod
+    async def _record_lifecycle(document_id: str, *, retired: bool, actor: str | None) -> list[str]:
+        """Have the Registry record the document as retired (soft delete) or
+        revived (a write to its identity) BEFORE the write; returns the
+        Registry's warnings (a revived synonym another entity took meanwhile).
 
         Retiring releases the document's synonyms — the identity-values
         synonym and any caller-added ones — so a different identity with the
         same spellings is no longer refused; reviving claims them again where
-        nobody took them meanwhile. A failed call is a warning, not an error:
-        the document write has already committed.
+        nobody took them meanwhile. A Registry that refuses raises
+        DocumentStoreError (registry_error); one that does not answer raises
+        RegistryUnavailableError. Either way the caller writes nothing.
         """
-        return await sync_entry_lifecycle(
-            get_registry_client(), document_id,
-            retired=retired, actor=actor, noun="document",
+        try:
+            return await record_entry_lifecycle(
+                get_registry_client(), [document_id], retired=retired, actor=actor,
+            )
+        except LifecycleRefused as e:
+            raise DocumentStoreError(f"Not changed — {e}", "registry_error") from e
+
+    async def _record_revival(self, document_id: str, revival: bool, actor: str) -> list[str]:
+        """``_record_lifecycle`` for a write that revives, else nothing."""
+        if not revival:
+            return []
+        return await self._record_lifecycle(document_id, retired=False, actor=actor)
+
+    async def _undo_revival(
+        self, document_id: str, revival: bool, namespace: str, actor: str,
+    ) -> None:
+        """Retire the Registry entry again after a revival whose write failed
+        — unless the document came back anyway (the write landed and what
+        failed came after it), when the Registry is right as it is."""
+        if not revival:
+            return
+        latest = await self._find_latest_by_document_id(document_id, namespace)
+        if latest is not None and latest.status == DocumentStatus.ACTIVE:
+            return
+        await undo_entry_lifecycle(
+            get_registry_client(), [document_id], retired=False, actor=actor,
         )
 
     def _format_validation_errors(
@@ -2683,14 +2737,19 @@ class DocumentService:
             return False
         document = results[0]
 
-        document.status = DocumentStatus.INACTIVE
-        document.updated_at = datetime.now(UTC)
-        document.updated_by = actor
-        await document.save()
-
-        lifecycle_warnings = await self._sync_registry_lifecycle(
-            document_id, retired=True, actor=actor,
-        )
+        # The retirement is recorded in the Registry first: one it cannot
+        # record is not written.
+        lifecycle_warnings = await self._record_lifecycle(document_id, retired=True, actor=actor)
+        try:
+            document.status = DocumentStatus.INACTIVE
+            document.updated_at = datetime.now(UTC)
+            document.updated_by = actor
+            await document.save()
+        except BaseException:
+            await undo_entry_lifecycle(
+                get_registry_client(), [document_id], retired=True, actor=actor,
+            )
+            raise
         if warnings is not None:
             warnings.extend(lifecycle_warnings)
 
@@ -3669,6 +3728,38 @@ class DocumentService:
             return refused
 
         revival = existing is not None and self._is_revival(existing)
+        # A revival is recorded in the Registry before anything is written:
+        # one it cannot record fails this item and writes nothing.
+        lifecycle_warnings = await self._record_revival(document_id, revival, actor)
+        try:
+            outcome = await self._write_validated_item(
+                i, item, validation_result, document_id, existing, revival,
+                version_override, synonym_warnings, existing_by_doc_id,
+                namespace, actor, now,
+            )
+        except BaseException:
+            await self._undo_revival(document_id, revival, namespace, actor)
+            raise
+        outcome.result.warnings = (outcome.result.warnings or []) + lifecycle_warnings
+        return outcome
+
+    async def _write_validated_item(
+        self,
+        i: int,
+        item: DocumentCreateRequest,
+        validation_result,
+        document_id: str,
+        existing: Document | None,
+        revival: bool,
+        version_override: int | None,
+        synonym_warnings: list[str],
+        existing_by_doc_id: dict,
+        namespace: str,
+        actor: str,
+        now: datetime,
+    ) -> "_ItemOutcome":
+        """Write one validated item: unchanged, overwritten in place, or a
+        new document or version."""
         prior: dict[Any, tuple[datetime | None, str | None]] | None = None
         if existing and version_override is None:
             settled = await self._settle_without_new_version(
@@ -3768,10 +3859,6 @@ class DocumentService:
             item, existing, validation_result, namespace,
             extra_warnings=synonym_warnings,
         )
-        if revival:
-            response.warnings += await self._sync_registry_lifecycle(
-                existing.document_id, retired=False, actor=actor,
-            )
         # existing_by_doc_id already holds this Document object, mutated in
         # place — later same-identity items in the batch see the fresh data.
         # No pending event: _overwrite_in_place publishes DOCUMENT_UPDATED
@@ -3859,8 +3946,8 @@ class DocumentService:
         if document_id:
             existing_by_doc_id[document_id] = document
 
-        pending_event, lifecycle_warnings = await self._after_item_write(
-            document, existing, revival, validation_result, actor,
+        pending_event = await self._after_item_write(
+            document, existing, revival, validation_result,
         )
         return _ItemOutcome(
             BulkResultItem(
@@ -3871,7 +3958,7 @@ class DocumentService:
                 version=document.version,
                 template_version=document.template_version,
                 is_new=is_new,
-                warnings=validation_result.warnings + synonym_warnings + lifecycle_warnings,
+                warnings=validation_result.warnings + synonym_warnings,
             ),
             pending_event,
             "created" if is_new else "updated",
@@ -3883,14 +3970,13 @@ class DocumentService:
         existing: Document | None,
         revival: bool,
         validation_result,
-        actor: str,
-    ) -> tuple[tuple, list[str]]:
-        """(the deferred event, the lifecycle warnings) of a written item.
+    ) -> tuple:
+        """The deferred event of a written item.
 
         The event is published concurrently after the loop. The written
         version's file references are counted, and the replaced version's
         released — unless it was deleted, whose references the delete already
-        released. A revival restores the Registry entry's lifecycle.
+        released.
         """
         is_new = document.version == 1
         event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
@@ -3899,12 +3985,7 @@ class DocumentService:
         if not is_new and existing and not revival:
             await self._update_file_reference_counts(existing.file_references, delta=-1)
         await self._update_file_reference_counts(validation_result.file_references, delta=1)
-
-        lifecycle_warnings = (
-            await self._sync_registry_lifecycle(document.document_id, retired=False, actor=actor)
-            if revival else []
-        )
-        return pending_event, lifecycle_warnings
+        return pending_event
 
     async def _refuse_document_id_mismatches(
         self,

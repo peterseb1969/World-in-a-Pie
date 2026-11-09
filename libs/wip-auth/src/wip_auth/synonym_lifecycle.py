@@ -6,62 +6,147 @@ nor resolve. Its canonical ID, primary key and auto-synonym keep resolving —
 retired is not gone, and re-posting the same identity still revives it. A
 revived entity claims its synonyms again where nobody took them meanwhile.
 
-Each store tells the Registry as it retires or revives (``sync_entry_lifecycle``)
-and offers a maintenance pass (``reconcile_synonym_lifecycle``) for what those
-calls could not cover: entities retired before the Registry learned about
-retirement, and calls that failed. The store supplies only which of its IDs
-are retired and which are active; the rest is the same everywhere.
+Each store has the Registry record a retirement or revival before it writes
+one (``entry_lifecycle``): when the Registry cannot record it, the store
+writes nothing. A maintenance pass (``reconcile_synonym_lifecycle``) covers
+what those calls could not: entities retired before the Registry learned
+about retirement, and an undo that failed. The store supplies only which of
+its IDs are retired and which are active; the rest is the same everywhere.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import AsyncIterable, Callable
+from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from .registry_client import RegistryClientBase
+from .registry_client import RegistryClientBase, RegistryError, RegistryUnavailableError
 
 logger = logging.getLogger(__name__)
 
 
-async def sync_entry_lifecycle(
+class LifecycleRefused(RegistryError):
+    """The Registry answered, but did not record every entry as retired or
+    revived (an entry it refused or does not know, or an incomplete answer).
+
+    A ``RegistryError``: stores report it as ``registry_error``. A Registry
+    that does not answer at all raises ``RegistryUnavailableError`` instead
+    (HTTP 503), never this.
+    """
+
+
+def _refusal(results: list[dict[str, Any]], expected: int) -> tuple[list[str], str] | None:
+    """None when the Registry recorded every entry; else the entries it did
+    record (to undo) and what it refused."""
+    refused = [r for r in results if r.get("status") in ("error", "not_found")]
+    if not refused and len(results) == expected:
+        return None
+    recorded = [r["registry_id"] for r in results if r not in refused and r.get("registry_id")]
+    return recorded, _refusal_detail(refused)
+
+
+def _refusal_detail(refused: list[dict[str, Any]]) -> str:
+    """What the Registry refused, for the error message (at most five)."""
+    detail = "; ".join(
+        f"{r.get('registry_id')}: {r.get('status')} {r.get('error') or ''}".strip()
+        for r in refused[:5]
+    )
+    return detail or "the Registry did not answer every entry"
+
+
+async def _change(
+    registry: RegistryClientBase, entry_ids: list[str], *, retired: bool, actor: str | None,
+) -> list[dict[str, Any]]:
+    if retired:
+        return await registry.deactivate_entries(entry_ids, updated_by=actor)
+    return await registry.reactivate_entries(entry_ids, updated_by=actor)
+
+
+async def record_entry_lifecycle(
     registry: RegistryClientBase,
-    entry_id: str,
+    entry_ids: list[str],
     *,
     retired: bool,
     actor: str | None,
-    noun: str,
 ) -> list[str]:
-    """Tell the Registry an entity was retired or revived; return warnings.
+    """Have the Registry record these entities as retired or revived BEFORE
+    the store writes the change; return the Registry's warnings.
 
-    The entity's own write has already committed, so a failure is reported,
-    never raised: its synonyms keep their previous state until the store's
-    reconcile-synonym-lifecycle pass runs. A revival that could not reclaim a
-    synonym (another entity took it) comes back as the Registry's warning.
+    The Registry is the identity authority: a retirement it has not recorded
+    leaves the entity's synonyms resolving as though it were alive, and a
+    revival it has not recorded leaves them released. So when the Registry
+    does not answer (``RegistryUnavailableError``, or whatever the call
+    raised) or refuses any entry (``LifecycleRefused``), what it did record
+    is undone and the error is raised: the caller writes nothing.
+
+    The warnings are not refusals: a revived entity whose synonym another
+    entity took meanwhile is revived without it, and the warning names it.
     """
-    verb = "retired" if retired else "revived"
+    if not entry_ids:
+        return []
+    verb = "retire" if retired else "revive"
     try:
-        if retired:
-            results = await registry.deactivate_entries([entry_id], updated_by=actor)
-        else:
-            results = await registry.reactivate_entries([entry_id], updated_by=actor)
-    except Exception as e:
-        logger.warning("Registry not told %s %s was %s: %s", noun, entry_id, verb, e)
-        return [
-            f"The Registry was not told this {noun} was {verb} ({e}); its "
-            "synonyms keep their previous state until "
-            "/maintenance/reconcile-synonym-lifecycle runs"
-        ]
+        results = await _change(registry, entry_ids, retired=retired, actor=actor)
+    except Exception:
+        # It may have recorded part of a batched request before failing.
+        await undo_entry_lifecycle(registry, entry_ids, retired=retired, actor=actor)
+        raise
+    refusal = _refusal(results, len(entry_ids))
+    if refusal is not None:
+        recorded, detail = refusal
+        await undo_entry_lifecycle(registry, recorded, retired=retired, actor=actor)
+        raise LifecycleRefused(f"the Registry could not {verb} it ({detail})")
     warnings: list[str] = []
     for r in results:
-        warnings.extend(r.get("warnings") or [])
-        if r.get("status") in ("error", "not_found"):
-            warnings.append(
-                f"The Registry could not record this {noun} as {verb}: "
-                f"{r.get('error') or r.get('status')}"
-            )
+        for warning in r.get("warnings") or []:
+            logger.warning("Entry %s: %s", r.get("registry_id"), warning)
+            warnings.append(warning)
     return warnings
+
+
+async def undo_entry_lifecycle(
+    registry: RegistryClientBase,
+    entry_ids: list[str],
+    *,
+    retired: bool,
+    actor: str | None,
+) -> None:
+    """Best effort: reverse a lifecycle change the Registry recorded for a
+    write that is not going ahead. A failure here is logged — the write it
+    served is refused either way, and the store's
+    /maintenance/reconcile-synonym-lifecycle settles what is left."""
+    if not entry_ids:
+        return
+    try:
+        await _change(registry, entry_ids, retired=not retired, actor=actor)
+    except Exception as e:
+        logger.error("Registry lifecycle change for %d entries not undone: %s", len(entry_ids), e)
+
+
+@asynccontextmanager
+async def entry_lifecycle(
+    registry: RegistryClientBase,
+    entry_ids: list[str],
+    *,
+    retired: bool,
+    actor: str | None,
+) -> AsyncIterator[list[str]]:
+    """Record the lifecycle change in the Registry, then run the block (the
+    store's write); yields the Registry's warnings.
+
+    Nothing runs when the Registry cannot record the change (see
+    ``record_entry_lifecycle``); when the block raises, the Registry change
+    is undone and the error propagates. No entry ids, no Registry call: the
+    write does not change whether anything is retired.
+    """
+    warnings = await record_entry_lifecycle(registry, entry_ids, retired=retired, actor=actor)
+    try:
+        yield warnings
+    except BaseException:
+        await undo_entry_lifecycle(registry, entry_ids, retired=retired, actor=actor)
+        raise
 
 
 @dataclass
@@ -89,6 +174,7 @@ class LifecycleReport:
     unchanged: int = 0
     not_found: int = 0
     errors: int = 0
+    aborted: str | None = None
     items: list[LifecycleItem] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -104,6 +190,7 @@ class LifecycleReport:
             "unchanged": self.unchanged,
             "not_found": self.not_found,
             "errors": self.errors,
+            "aborted": self.aborted,
             "items": [vars(i) for i in self.items],
         }
 
@@ -120,7 +207,35 @@ class LifecycleReport:
         return False
 
 
+class SynonymLifecycleAborted(RegistryUnavailableError):
+    """The Registry stopped answering part-way through the pass.
+
+    An outage, so HTTP 503 like any other; ``report`` holds what the pass
+    had already applied (its ``aborted`` says why it stopped), which the 503
+    carries — those changes are real, and the pass is idempotent, so running
+    it again once the Registry answers finishes the rest.
+    """
+
+    def __init__(self, report: LifecycleReport, cause: RegistryUnavailableError):
+        report.aborted = str(cause)
+        self.report = report
+        super().__init__(
+            f"Synonym lifecycle pass on {report.namespace} stopped: {cause}", cause.operation,
+        )
+
+
 IdBatches = Callable[[], AsyncIterable[list[str]]]
+
+
+async def _answered(
+    report: LifecycleReport, call: Awaitable[list[dict[str, Any]]],
+) -> list[dict[str, Any]]:
+    """The Registry's answer to one batch of the pass; an outage stops the
+    pass with what it has applied so far (SynonymLifecycleAborted)."""
+    try:
+        return await call
+    except RegistryUnavailableError as e:
+        raise SynonymLifecycleAborted(report, e) from e
 
 
 async def reconcile_synonym_lifecycle(
@@ -134,12 +249,16 @@ async def reconcile_synonym_lifecycle(
 ) -> LifecycleReport:
     """Release the synonyms of every retired entity and, with revive=True
     (applied only — it touches every active entity), reclaim those of every
-    active one. Dry-run reports what retiring would release. Idempotent."""
+    active one. Dry-run reports what retiring would release. Idempotent.
+
+    A Registry that stops answering part-way raises SynonymLifecycleAborted
+    (a 503) carrying the report of what was already applied; its batches
+    are counted as scanned only once the Registry answered them."""
     report = LifecycleReport(namespace=namespace, dry_run=dry_run, revive=revive)
 
     async for batch in retired_ids():
+        results = await _answered(report, registry.deactivate_entries(batch, dry_run=dry_run))
         report.retired_scanned += len(batch)
-        results = await registry.deactivate_entries(batch, dry_run=dry_run)
         for entry_id, r in zip(batch, results, strict=False):
             if report._failed(r, entry_id):
                 continue
@@ -151,8 +270,8 @@ async def reconcile_synonym_lifecycle(
 
     if revive and not dry_run:
         async for batch in active_ids():
+            results = await _answered(report, registry.reactivate_entries(batch))
             report.active_scanned += len(batch)
-            results = await registry.reactivate_entries(batch)
             for entry_id, r in zip(batch, results, strict=False):
                 if report._failed(r, entry_id):
                     continue

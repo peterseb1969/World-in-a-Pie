@@ -8,10 +8,10 @@ auto-synonym stay, so re-posting the identity still revives the document —
 and the revival claims the released synonym again, unless another entity
 took it meanwhile, in which case the result says so.
 
-A delete or revival whose Registry call fails still commits (the document
-write already has) and reports a warning; /maintenance/reconcile-synonym-
-lifecycle repairs the Registry afterwards, and also covers documents retired
-before deletes told the Registry anything.
+A delete or revival the Registry cannot record is not written at all (see
+test_registry_lifecycle_fails_write.py). /maintenance/reconcile-synonym-
+lifecycle settles documents whose Registry state drifted anyway — retired
+before deletes told the Registry anything, or a failed undo.
 """
 
 import os
@@ -20,8 +20,8 @@ import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from document_store.models.document import Document
 from document_store.services.backup_engine import DirectRestoreEngine
-from document_store.services.registry_client import RegistryClient, RegistryError
 from registry.main import app as registry_app
 from registry.models.entry import RegistryEntry
 
@@ -136,20 +136,20 @@ async def test_revival_without_a_synonym_another_entity_took(
     assert await _synonym_states(document_id) == {"spelling": "inactive", "auto": "active"}
 
 
+async def _set_status(document_id: str, status: str) -> None:
+    """Change the document's row behind the Registry's back — the drift the
+    reconcile pass exists for (a document retired before deletes told the
+    Registry, or an undo that failed)."""
+    await Document.find({"document_id": document_id}).update({"$set": {"status": status}})
+
+
 @pytest.mark.asyncio
-async def test_failed_retirement_is_reported_and_reconciled(
-    client: AsyncClient, auth_headers: dict, monkeypatch,
+async def test_a_retirement_the_registry_never_recorded_is_reconciled(
+    client: AsyncClient, auth_headers: dict,
 ):
     [created] = await _post(client, auth_headers, [{"template_id": PERSON, "data": _person("555555555")}])
     document_id = created["document_id"]
-
-    async def _unreachable(self, *args, **kwargs):
-        raise RegistryError("registry down")
-
-    with monkeypatch.context() as m:
-        m.setattr(RegistryClient, "deactivate_entries", _unreachable)
-        deleted = await _delete(client, auth_headers, document_id)
-    assert any("registry down" in w for w in deleted["warnings"]), deleted
+    await _set_status(document_id, "inactive")
     assert await _synonym_states(document_id) == {"spelling": "active", "auto": "active"}
 
     async def _reconcile(dry_run: bool) -> dict:
@@ -180,19 +180,12 @@ async def test_failed_retirement_is_reported_and_reconciled(
 
 @pytest.mark.asyncio
 async def test_reconcile_revive_reclaims_an_active_documents_synonyms(
-    client: AsyncClient, auth_headers: dict, monkeypatch,
+    client: AsyncClient, auth_headers: dict,
 ):
     [created] = await _post(client, auth_headers, [{"template_id": PERSON, "data": _person("666666666")}])
     document_id = created["document_id"]
     await _delete(client, auth_headers, document_id)
-
-    async def _unreachable(self, *args, **kwargs):
-        raise RegistryError("registry down")
-
-    with monkeypatch.context() as m:
-        m.setattr(RegistryClient, "reactivate_entries", _unreachable)
-        revived = await _revive(client, auth_headers, "666666666", bulk=False)
-    assert any("registry down" in w for w in revived["warnings"])
+    await _set_status(document_id, "active")
     assert await _synonym_states(document_id) == {"spelling": "inactive", "auto": "active"}
 
     response = await client.post(

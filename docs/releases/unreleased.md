@@ -66,6 +66,34 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `forwardIdentity` from the `wipProxy({...})` call (WIP-Cooking sets it).
   Per-user identity for a privileged app needs an identity the edge proves;
   that is not built.
+### A template or document is retired or revived only once the Registry has recorded it
+
+def-store has followed this rule since the term/terminology fix; template-store
+and document-store now follow it too, through one shared rule in wip-auth.
+
+- **Ask first, write after.** Deactivating a template's last active version,
+  reactivating one, a new active version or an activated draft of a template
+  with no active version, a document soft delete, and a write that brings a
+  deleted document back all ask the Registry before writing. When it does not
+  answer, or refuses, nothing is written: a per-item error (`registry_error`;
+  `details.rule: registry_unavailable` for an outage on document-store's
+  bulk doors) or, on a single-object door, 503 for an outage and 502 for a
+  refusal. A write that fails after the Registry recorded the change undoes
+  it. Before, the write went through and the response carried a warning; the
+  synonyms stayed in their old state until `reconcile-synonym-lifecycle` ran.
+- **A Registry entry the Registry does not know refuses the change** (as in
+  def-store): an entity with no Registry entry cannot be retired until one
+  exists.
+- **`reconcile-synonym-lifecycle`** (def-store, template-store,
+  document-store): a Registry that stops answering part-way is a 503
+  `registry_unavailable`, not a 500, and the 503 body carries `report` —
+  what the pass had already applied, with `aborted` saying why it stopped.
+  Running it again finishes the rest.
+- **wip-auth:** `sync_entry_lifecycle` is replaced by `entry_lifecycle` /
+  `record_entry_lifecycle` / `undo_entry_lifecycle`; the Registry client's
+  `deactivate_entries` / `reactivate_entries` raise `RegistryUnavailableError`
+  for a transport error, timeout, 5xx or 429, and `RegistryError` only for a
+  definite refusal.
 
 ### A terminology export → import round trip keeps lifecycle, hierarchy and flags; a by-value read sees only readable namespaces (@wip/client 0.105.0)
 

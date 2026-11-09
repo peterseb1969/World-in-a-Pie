@@ -10,6 +10,12 @@ from typing import Any, NamedTuple, cast
 from beanie.odm.enums import SortDirection
 from pymongo.errors import BulkWriteError, DuplicateKeyError
 
+from wip_auth.synonym_lifecycle import (
+    LifecycleRefused,
+    record_entry_lifecycle,
+    undo_entry_lifecycle,
+)
+
 # Import identity helper from wip-auth
 # This returns the authenticated identity, not the client-provided value
 from ..api.auth import get_identity_string
@@ -214,17 +220,6 @@ def _pointer_refusal(
             "reference_violation", rule="not_active",
         )
     return None
-
-
-def _lifecycle_refusal(results: list[dict], expected: int) -> tuple[list[str], str] | None:
-    """None when the Registry recorded every entry; else the entries it did
-    record (to undo) and what it refused."""
-    refused = [r for r in results if r.get("status") in ("error", "not_found")]
-    if not refused and len(results) == expected:
-        return None
-    recorded = [r["registry_id"] for r in results if r not in refused]
-    detail = "; ".join(f"{r.get('registry_id')}: {r.get('status')} {r.get('error') or ''}".strip() for r in refused[:5])
-    return recorded, detail or "the Registry did not answer every entry"
 
 
 def _check_batch_sizes(batch_size: int, registry_batch_size: int) -> None:
@@ -2200,59 +2195,23 @@ class TerminologyService:
         auto-synonym and the primary key are never released, so a retired
         term or terminology stays addressable by value.
 
-        The Registry is the identity authority: a retirement it has not
-        recorded leaves the entity's synonyms resolving as though it were
-        alive. So when the Registry does not answer, or refuses any entry,
-        what it did record is undone and DefStoreError (registry_error) is
+        The rule is wip-auth's ``record_entry_lifecycle``, shared by every
+        store: when the Registry does not answer, or refuses any entry, what
+        it did record is undone and DefStoreError (registry_error) is
         raised; the caller then writes nothing.
         """
-        if not entry_ids:
-            return
         verb = "retire" if retired else "revive"
         try:
-            results = await TerminologyService._lifecycle_call(entry_ids, retired=retired, actor=actor)
+            await record_entry_lifecycle(
+                get_registry_client(), entry_ids, retired=retired, actor=actor,
+            )
+        except LifecycleRefused as e:
+            raise DefStoreError(f"Not changed — {e}", "registry_error") from e
         except Exception as e:
-            await TerminologyService._undo_lifecycle(entry_ids, retired=retired, actor=actor)
             raise DefStoreError(
                 f"Not changed — the Registry did not answer the request to {verb} it: {e}",
                 "registry_error",
             ) from e
-        refusal = _lifecycle_refusal(results, len(entry_ids))
-        if refusal is not None:
-            recorded, detail = refusal
-            await TerminologyService._undo_lifecycle(recorded, retired=retired, actor=actor)
-            raise DefStoreError(f"Not changed — the Registry could not {verb} it ({detail})", "registry_error")
-
-    @staticmethod
-    async def _lifecycle_call(entry_ids: list[str], *, retired: bool, actor: str | None) -> list[dict]:
-        """Ask the Registry to retire or revive the entries; log its warnings
-        (a revived synonym another entity took meanwhile)."""
-        client = get_registry_client()
-        if retired:
-            results = await client.deactivate_entries(entry_ids, updated_by=actor)
-        else:
-            results = await client.reactivate_entries(entry_ids, updated_by=actor)
-        for r in results:
-            for warning in r.get("warnings") or []:
-                logger.warning("Entry %s: %s", r.get("registry_id"), warning)
-        return results
-
-    @staticmethod
-    async def _undo_lifecycle(entry_ids: list[str], *, retired: bool, actor: str | None) -> None:
-        """Best effort: reverse a lifecycle change the Registry recorded for
-        a write that is not going ahead. A failure here is logged — the
-        write it served is refused either way, and
-        /maintenance/reconcile-synonym-lifecycle settles what is left."""
-        if not entry_ids:
-            return
-        try:
-            client = get_registry_client()
-            if retired:
-                await client.reactivate_entries(entry_ids, updated_by=actor)
-            else:
-                await client.deactivate_entries(entry_ids, updated_by=actor)
-        except Exception as e:
-            logger.error("Registry lifecycle change for %d entries not undone: %s", len(entry_ids), e)
 
     @staticmethod
     async def _lifecycle_write(
@@ -2265,7 +2224,9 @@ class TerminologyService:
         try:
             await write()
         except Exception:
-            await TerminologyService._undo_lifecycle(entry_ids, retired=retired, actor=actor)
+            await undo_entry_lifecycle(
+                get_registry_client(), entry_ids, retired=retired, actor=actor,
+            )
             raise
 
     @staticmethod

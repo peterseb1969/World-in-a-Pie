@@ -92,7 +92,7 @@ async def test_a_soft_delete_needs_an_active_version_and_no_collector(clean):
     await _doc("GONE", 1, active=False)
     await _doc("LIVE", 2)
     service = DocumentService()
-    with patch.object(DocumentService, "_sync_registry_lifecycle", AsyncMock(return_value=["w"])):
+    with patch.object(DocumentService, "_record_lifecycle", AsyncMock(return_value=["w"])):
         assert await service.delete_document("GONE") is False
         assert await service.delete_document("LIVE") is True
     rows = await Document.find({"document_id": "LIVE"}).to_list()

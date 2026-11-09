@@ -2,7 +2,9 @@
 Registry, batched, with the per-item results handed back to the caller.
 
 A non-200 raises: a store must know its retirement did not reach the
-Registry, because then the retired entity's synonyms are still claimed.
+Registry, because then the retired entity's synonyms are still claimed. A
+Registry that does not answer (transport error, 5xx, 429) raises
+RegistryUnavailableError; any other refusal RegistryError.
 """
 
 import json
@@ -10,7 +12,7 @@ import json
 import pytest
 
 from wip_auth import registry_client
-from wip_auth.registry_client import RegistryClientBase, RegistryError
+from wip_auth.registry_client import RegistryClientBase, RegistryError, RegistryUnavailableError
 
 BASE = "http://registry.test:8001"
 
@@ -65,9 +67,18 @@ async def test_large_requests_are_batched(httpx_mock, monkeypatch):
 @pytest.mark.asyncio
 async def test_non_200_raises(httpx_mock):
     httpx_mock.add_response(
-        url=f"{BASE}/api/registry/entries/deactivate", method="POST", status_code=503,
+        url=f"{BASE}/api/registry/entries/deactivate", method="POST", status_code=403,
     )
     with pytest.raises(RegistryError, match="deactivate"):
+        await _client().deactivate_entries(["e-1"])
+
+
+@pytest.mark.asyncio
+async def test_an_unanswered_call_is_an_outage(httpx_mock):
+    httpx_mock.add_response(
+        url=f"{BASE}/api/registry/entries/deactivate", method="POST", status_code=503,
+    )
+    with pytest.raises(RegistryUnavailableError, match="deactivate"):
         await _client().deactivate_entries(["e-1"])
 
 

@@ -604,7 +604,8 @@ class RegistryClientBase:
         resolve), while the canonical ID, primary key and auto-synonym keep
         resolving. Returns the per-item results (status deactivated /
         unchanged / not_found / error, with the released keys). Raises
-        RegistryError on transport failure or a non-200 answer.
+        RegistryUnavailableError when the Registry does not answer, and
+        RegistryError when it refuses the request.
         """
         return await self._entry_lifecycle(
             "deactivate", entry_ids, updated_by, {"dry_run": "true"} if dry_run else None,
@@ -618,8 +619,9 @@ class RegistryClientBase:
         """Tell the Registry these entities were revived: their released
         synonyms are claimed again where free. A synonym another entity took
         meanwhile stays with it — the item's `warnings` and `not_reclaimed`
-        name it. Returns the per-item results; raises RegistryError on
-        transport failure or a non-200 answer.
+        name it. Returns the per-item results; raises
+        RegistryUnavailableError when the Registry does not answer, and
+        RegistryError when it refuses the request.
         """
         return await self._entry_lifecycle("reactivate", entry_ids, updated_by, None)
 
@@ -630,22 +632,32 @@ class RegistryClientBase:
         updated_by: str | None,
         params: dict[str, str] | None,
     ) -> list[dict[str, Any]]:
+        """POST the entries in batches. A Registry that does not answer — a
+        transport error, a timeout, a 5xx or a 429 — raises
+        RegistryUnavailableError; any other non-200 is the Registry's definite
+        refusal and raises RegistryError."""
+        operation = f"entries {verb}"
         results: list[dict[str, Any]] = []
-        async with self._make_client() as client:
-            for start in range(0, len(entry_ids), _LIFECYCLE_BATCH):
-                batch = entry_ids[start:start + _LIFECYCLE_BATCH]
-                response = await client.post(
-                    f"{self.base_url}/api/registry/entries/{verb}",
-                    headers=self._get_headers(),
-                    params=params,
-                    json=[{"entry_id": eid, "updated_by": updated_by} for eid in batch],
-                )
-                if response.status_code != 200:
-                    raise RegistryError(
-                        f"Failed to {verb} {len(batch)} entries: "
-                        f"{response.status_code} - {response.text}"
+        try:
+            async with self._make_client() as client:
+                for start in range(0, len(entry_ids), _LIFECYCLE_BATCH):
+                    batch = entry_ids[start:start + _LIFECYCLE_BATCH]
+                    response = await client.post(
+                        f"{self.base_url}/api/registry/entries/{verb}",
+                        headers=self._get_headers(),
+                        params=params,
+                        json=[{"entry_id": eid, "updated_by": updated_by} for eid in batch],
                     )
-                results.extend(response.json().get("results") or [])
+                    if response.status_code >= 500 or response.status_code == 429:
+                        raise registry_unavailable_from(operation, response)
+                    if response.status_code != 200:
+                        raise RegistryError(
+                            f"Failed to {verb} {len(batch)} entries: "
+                            f"{response.status_code} - {response.text}"
+                        )
+                    results.extend(response.json().get("results") or [])
+        except httpx.HTTPError as e:
+            raise registry_unavailable_from(operation, error=e) from e
         return results
 
     async def merge_entries(
