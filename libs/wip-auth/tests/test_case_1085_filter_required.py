@@ -112,14 +112,3 @@ async def test_an_outage_on_one_namespace_is_503_not_a_smaller_list(monkeypatch)
     with pytest.raises(HTTPException) as exc:
         await resolve_namespace_filter(_key(["a", "b"]), None, "write")
     assert exc.value.status_code == 503
-
-
-@pytest.mark.asyncio
-async def test_config_declared_read_scope_is_not_write(monkeypatch):
-    """A config-file key's `namespaces` are read scope; only `grants` give write."""
-    identity = UserIdentity(
-        user_id="apikey:cfg", username="cfg", auth_method="api_key", groups=[],
-        raw_claims={"key_name": "cfg", "namespaces": ["a", "b"], "grants": {"b": "write"}},
-    )
-    nsf = await resolve_namespace_filter(identity, None, "write")
-    assert nsf.namespaces == ["b"]

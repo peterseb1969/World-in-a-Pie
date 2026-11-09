@@ -283,6 +283,17 @@ def auth_headers(api_key: str) -> dict:
     return {"X-API-Key": api_key}
 
 
+@pytest.fixture(autouse=True)
+def _registry_permission_answers(monkeypatch):
+    """Permission lookups answer each test key's declared grants, as the
+    Registry does once it imported them. The shared lookup
+    (wip_auth.permissions) makes its own HTTP call, and the in-process
+    Registry is not reachable at the URL it names."""
+    from wip_auth.testing import answer_permissions_from_declared_grants
+
+    answer_permissions_from_declared_grants(monkeypatch)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _drop_worker_database():
     """Drop this xdist worker's suffixed database when its session ends,

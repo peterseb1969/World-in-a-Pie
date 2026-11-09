@@ -7,6 +7,33 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### wip-auth: every permission is the Registry's answer to the request at hand
+
+- **A config key's declared grants are resolved by the Registry.** A service
+  no longer answers a permission from a key's `grants` itself; it asks the
+  Registry, as for every other key. Since only the Registry reads the key
+  file, it imports those grants as the key's own, so a shipped install sees
+  no difference, except that a namespace locked for deletion is now closed
+  to these keys too. Action: a service that loads its own keys through
+  `WIP_AUTH_API_KEYS_JSON` / `WIP_AUTH_API_KEYS_FILE` with `grants` gets the
+  Registry's answer for them, which knows those grants only if the Registry
+  holds the key.
+- **`WIP_AUTH_ADMIN_GROUPS` is gone.** The administrators' group is the
+  platform name `wip-admins`, which the Registry and every service check for
+  by name. A setting that replaced it split the two sides: the service
+  stopped recognising `wip-admins` while the Registry still made them admin,
+  and the master key lost the group that key sync requires. The setting is
+  ignored. No shipped manifest set it.
+- **Cached permissions answer only the question that was asked.** The 30 s
+  permission and accessible-namespace caches are keyed by everything sent
+  to the Registry (user id, groups, key scope, email, username), not by
+  user id alone. So one user arriving with different groups, or a key name
+  whose scope changed, no longer reuses another request's answer.
+- **Only an API key's scope is forwarded as one.** An OIDC token's
+  `namespaces` claim is no longer sent to the Registry as a key scope, and
+  a claim that is not a list of strings no longer crashes the permission
+  check with a 500.
+
 ### Registry auth: reservations, key import, grants, attachments and the system restore say and do one thing
 
 - **Runtime keys.** A reservation is written only by the key that holds it:

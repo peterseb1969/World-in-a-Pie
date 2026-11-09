@@ -552,9 +552,9 @@ class APIKeyProvider:
                 "key_name": key_record.name,
                 "owner": key_record.owner,
                 "namespaces": key_record.namespaces,
-                # Non-None only for config-file keys that declare grants —
-                # the signal that flips permission resolution to local
-                # (see wip_auth.permissions.resolve_permission).
+                # Non-None only for config-file keys that declare grants.
+                # Only the Registry reads them (its own resolution order);
+                # a service asks the Registry for every permission.
                 "grants": key_record.grants,
             },
         )

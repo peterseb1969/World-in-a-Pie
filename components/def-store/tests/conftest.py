@@ -255,6 +255,17 @@ class FakeTemplateStore:
 
 
 @pytest.fixture(autouse=True)
+def _registry_permission_answers(monkeypatch):
+    """Permission lookups answer the test key's declared grants, as the
+    Registry does once it imported them. The shared lookup
+    (wip_auth.permissions) makes its own HTTP call, and the Registry it
+    names is not reachable here."""
+    from wip_auth.testing import answer_permissions_from_declared_grants
+
+    answer_permissions_from_declared_grants(monkeypatch)
+
+
+@pytest.fixture(autouse=True)
 def template_store(monkeypatch) -> FakeTemplateStore:
     fake = FakeTemplateStore()
     shim = SimpleNamespace(

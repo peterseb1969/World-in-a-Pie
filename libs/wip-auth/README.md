@@ -87,7 +87,6 @@ All settings are read from environment variables with the `WIP_AUTH_` prefix:
 | `WIP_AUTH_JWT_AUDIENCE` | `wip` | Expected JWT audience |
 | `WIP_AUTH_JWT_GROUPS_CLAIM` | `groups` | JWT claim containing user groups |
 | `WIP_AUTH_DEFAULT_GROUPS` | `wip-users` | Groups for users without explicit groups |
-| `WIP_AUTH_ADMIN_GROUPS` | `wip-admins` | Groups considered admin |
 
 ### API Keys File Format
 

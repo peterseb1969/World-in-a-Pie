@@ -82,8 +82,16 @@ class TestAuthConfig:
 
     def test_groups_from_string(self):
         """Groups can be comma-separated string in constructor."""
-        config = AuthConfig(admin_groups="admins,superusers")
-        assert config.admin_groups == ["admins", "superusers"]
+        config = AuthConfig(default_groups="users,readers")
+        assert config.default_groups == ["users", "readers"]
+
+    def test_admin_group_is_not_configurable(self, monkeypatch):
+        """The admin group is the platform name the Registry and every
+        service check for; a setting that renamed it in one service only
+        would split the two sides (CASE-1193)."""
+        monkeypatch.setenv("WIP_AUTH_ADMIN_GROUPS", "ops-admins")
+        assert AuthConfig().admin_groups == ["wip-admins"]
+        assert AuthConfig(admin_groups="ops-admins").admin_groups == ["wip-admins"]
 
 
 class TestConfigSingleton:

@@ -1038,23 +1038,16 @@ def sample_employee_data() -> dict:
 
 
 @pytest.fixture(autouse=True)
-def _registry_permission_answers_no_access(monkeypatch):
-    """The namespace-permission lookup answers "no access", explicitly.
+def _registry_permission_answers(monkeypatch):
+    """The namespace-permission lookup answers as the Registry would.
 
     Registry calls in this suite go through an in-process transport, but the
     shared permission lookup (wip_auth.permissions) makes its own HTTP call,
-    and the Registry it names does not exist here. Every non-admin key in the
-    suite is therefore meant to be refused. That used to happen only because
-    an unreachable Registry read as "no access"; an outage now answers 503 —
-    so the refusal is stated as a real Registry answer instead.
+    and the Registry it names does not exist here. The answer is stated
+    instead: a key declaring grants (WIP_AUTH_API_KEYS_JSON above) gets the
+    grants the Registry imports for it, every other non-admin caller gets
+    no access. (An unreachable Registry would answer 503, not "no access".)
     """
-    import wip_auth.permissions as permissions
+    from wip_auth.testing import answer_permissions_from_declared_grants
 
-    async def no_access(identity, namespace):
-        return "none"
-
-    async def no_namespaces(identity):
-        return []
-
-    monkeypatch.setattr(permissions, "_fetch_permission_from_registry", no_access)
-    monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", no_namespaces)
+    answer_permissions_from_declared_grants(monkeypatch)

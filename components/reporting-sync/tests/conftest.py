@@ -25,10 +25,11 @@ import pytest_asyncio
 # alone because the live-pipeline availability checks below read it.
 os.environ.setdefault("WIP_AUTH_LEGACY_API_KEY", "rs_test_admin_key")
 os.environ.setdefault("WIP_AUTH_REGISTRY_URL", "http://registry.invalid")
-# Non-admin keys for the authorization matrix. Config-file keys that declare
-# `grants` resolve their permissions locally (no Registry call), so these
-# give real permission decisions in-process. rs-service mirrors a
-# wip-services key with no namespace grants.
+# Non-admin keys for the authorization matrix. A service asks the Registry
+# for every permission; the _registry_permission_answers fixture below
+# answers each key's declared `grants` as the Registry does once it imported
+# them, so these give real permission decisions in-process. rs-service
+# mirrors a wip-services key with no namespace grants.
 os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([
     {"name": "rs-reader", "key": "rs_reader_key", "owner": "rs-reader",
      "groups": [], "namespaces": ["ns-a"], "grants": {"ns-a": "read"}},
@@ -52,6 +53,17 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([
      "groups": [], "namespaces": ["ns-a", "ns-other"],
      "grants": {"ns-a": "read", "ns-other": "read"}},
 ]))
+
+
+
+@pytest.fixture(autouse=True)
+def _registry_permission_answers(monkeypatch):
+    """Permission lookups answer each test key's declared grants, as the
+    Registry does for an imported key; the Registry URL above is unroutable."""
+    from wip_auth.testing import answer_permissions_from_declared_grants
+
+    answer_permissions_from_declared_grants(monkeypatch)
+
 
 # Connection URIs for integration tests (set in CI or locally)
 POSTGRES_TEST_URI = os.environ.get(

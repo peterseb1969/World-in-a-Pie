@@ -15,6 +15,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .models import APIKeyRecord
 
+# The platform administrators' group. A fixed platform name, like
+# "wip-services": the Registry and every service check for it by name.
+ADMIN_GROUP = "wip-admins"
+
 
 class AuthConfig(BaseSettings):
     """Authentication configuration.
@@ -152,10 +156,6 @@ class AuthConfig(BaseSettings):
         default_factory=lambda: ["wip-users"],
         description="Default groups assigned to authenticated users without explicit groups"
     )
-    admin_groups: list[str] = Field(
-        default_factory=lambda: ["wip-admins"],
-        description="Groups considered admin (for require_admin dependency)"
-    )
 
     @field_validator("jwt_algorithms", mode="before")
     @classmethod
@@ -165,13 +165,26 @@ class AuthConfig(BaseSettings):
             return [a.strip() for a in v.split(",")]
         return v
 
-    @field_validator("default_groups", "admin_groups", mode="before")
+    @field_validator("default_groups", mode="before")
     @classmethod
     def parse_groups(cls, v):
         """Parse groups from comma-separated string or list."""
         if isinstance(v, str):
             return [g.strip() for g in v.split(",")]
         return v
+
+    @property
+    def admin_groups(self) -> list[str]:
+        """The platform administrators' group, as a list: ``[ADMIN_GROUP]``.
+
+        Not configurable. The Registry, every store and the auth gateway
+        name the group "wip-admins" themselves, so a service told another
+        name would disagree with the authority it asks: its own admin check
+        would stop recognising wip-admins while the Registry still granted
+        them admin, and its master key would lose the group key sync
+        requires. A WIP_AUTH_ADMIN_GROUPS setting is ignored.
+        """
+        return [ADMIN_GROUP]
 
     @property
     def jwt_audiences(self) -> list[str]:

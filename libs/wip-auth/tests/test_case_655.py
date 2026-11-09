@@ -1,20 +1,19 @@
-"""Tests for CASE-655 — config-declared grants resolve locally.
+"""Tests for CASE-655 — config-declared key grants.
 
-A config-file API key that declares `grants` opts into fully local
-permission resolution: namespaces give read, grants give their declared
-level, and neither the Registry nor MongoDB is consulted. This is what
-makes spec-declared keys survive a Mongo wipe/restore intact — key,
-read scope, and write grants all come from the config file.
+A config-file API key may declare `grants`. CASE-655 resolved them locally
+in every service; since CASE-1035 only the Registry holds the key file, it
+imports the grants as the key's own, and (CASE-1193) every service asks
+the Registry for every permission, so a namespace locked for deletion is
+closed to these keys too.
 
 Pinned here:
 
   - APIKeyRecord parses `grants` (config.py's _parse_key_dict path).
-  - The api-key provider surfaces grants in raw_claims and
-    check_namespace_access accepts grant-only namespaces.
-  - resolve_permission answers from config grants with NO Registry
-    call; namespaces-only → read; undeclared → none.
-  - resolve_accessible_namespaces returns the union locally.
-  - Keys WITHOUT grants keep today's Registry-resolution behaviour.
+  - The api-key provider surfaces grants in raw_claims (the Registry's own
+    resolution reads them) and check_namespace_access accepts grant-only
+    namespaces.
+  - resolve_permission and resolve_accessible_namespaces ask the Registry
+    for a key that declares grants, exactly as for one that does not.
 """
 
 from __future__ import annotations
@@ -153,88 +152,34 @@ class TestProviderIdentity:
         assert not provider.check_namespace_access(identity, "other")
 
 
-# ────────────────────────────────────────────────────────────────────
-# Local permission resolution
+# Permission resolution: through the Registry (CASE-1035, CASE-1193)
 # ────────────────────────────────────────────────────────────────────
 
 
-class TestLocalResolution:
+class TestGrantsResolveThroughRegistry:
+    """A service never answers a permission from a key's declared grants:
+    the Registry imported them as the key's grants and is the one that
+    resolves them, after checking that the namespace is not locked."""
+
     @pytest.mark.asyncio
-    async def test_granted_namespace_resolves_locally(self) -> None:
-        identity = _identity(
-            namespaces=["library", "kb"], grants={"kb": "write"}
-        )
+    @pytest.mark.parametrize("grants", [{"kb": "write"}, {}])
+    async def test_declared_grants_are_asked_of_the_registry(self, grants) -> None:
+        identity = _identity(namespaces=["library", "kb"], grants=grants)
         with patch(
             "wip_auth.permissions._fetch_permission_from_registry",
             new_callable=AsyncMock,
+            return_value="none",  # e.g. the namespace is locked for deletion
         ) as fetch:
-            assert await resolve_permission(identity, "kb") == "write"
-            assert await resolve_permission(identity, "library") == "read"
-            assert await resolve_permission(identity, "other") == "none"
-            fetch.assert_not_awaited()
+            assert await resolve_permission(identity, "kb") == "none"
+            fetch.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_accessible_namespaces_resolve_locally(self) -> None:
-        identity = _identity(
-            namespaces=["library", "kb"], grants={"kb": "write"}
-        )
+    async def test_accessible_namespaces_are_asked_of_the_registry(self) -> None:
+        identity = _identity(namespaces=["library", "kb"], grants={"kb": "write"})
         with patch(
             "wip_auth.permissions._fetch_accessible_from_registry",
             new_callable=AsyncMock,
+            return_value=["library"],
         ) as fetch:
-            assert await resolve_accessible_namespaces(identity) == ["kb", "library"]
-            fetch.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_grant_outside_namespaces_still_accessible(self) -> None:
-        """Runtime is permissive for hand-written configs: a grant on a
-        namespace missing from `namespaces` still resolves (the deployer
-        validates grants ⊆ namespaces at spec level)."""
-        identity = _identity(namespaces=["library"], grants={"kb": "write"})
-        with patch(
-            "wip_auth.permissions._fetch_permission_from_registry",
-            new_callable=AsyncMock,
-        ) as fetch:
-            assert await resolve_permission(identity, "kb") == "write"
-            fetch.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_key_without_grants_hits_registry_as_before(self) -> None:
-        identity = _identity(namespaces=["library"], grants=None)
-        with patch(
-            "wip_auth.permissions._fetch_permission_from_registry",
-            new_callable=AsyncMock,
-            return_value="read",
-        ) as fetch:
-            assert await resolve_permission(identity, "library") == "read"
+            assert await resolve_accessible_namespaces(identity) == ["library"]
             fetch.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_oidc_identity_unaffected(self) -> None:
-        oidc = UserIdentity(
-            user_id="user@wip.local",
-            username="user",
-            auth_method="jwt",
-            groups=[],
-            raw_claims={"grants": {"kb": "write"}},  # hostile/odd claims ignored
-        )
-        with patch(
-            "wip_auth.permissions._fetch_permission_from_registry",
-            new_callable=AsyncMock,
-            return_value="none",
-        ) as fetch:
-            assert await resolve_permission(oidc, "kb") == "none"
-            fetch.assert_awaited_once()
-
-    @pytest.mark.asyncio
-    async def test_empty_grants_dict_is_still_local(self) -> None:
-        """grants={} declares 'no write anywhere' — local resolution with
-        read-only scope, not a fall-through to the Registry."""
-        identity = _identity(namespaces=["library"], grants={})
-        with patch(
-            "wip_auth.permissions._fetch_permission_from_registry",
-            new_callable=AsyncMock,
-        ) as fetch:
-            assert await resolve_permission(identity, "library") == "read"
-            assert await resolve_permission(identity, "kb") == "none"
-            fetch.assert_not_awaited()

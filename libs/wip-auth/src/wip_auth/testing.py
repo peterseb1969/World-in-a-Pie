@@ -616,3 +616,43 @@ def _public_route_sections(
         ("Routes the auth middleware always serves without credentials, "
          "missing from the public allowlist", implicitly_public),
     ]
+
+
+# ---------------------------------------------------------------------------
+# A Registry that answers a test key's declared grants
+# ---------------------------------------------------------------------------
+
+
+def registry_held_grants(identity: Any) -> dict[str, str]:
+    """The grants the Registry holds for a config key once it imported the
+    key file: read on each namespace of the key's scope, its declared grants
+    on top (the Registry's key import). Empty for any other caller, and for
+    a key that declares no grants (its grants live under the Registry API).
+    """
+    claims = identity.raw_claims or {}
+    grants = claims.get("grants")
+    if identity.auth_method != "api_key" or not isinstance(grants, dict):
+        return {}
+    return {**{ns: "read" for ns in claims.get("namespaces") or []}, **grants}
+
+
+def answer_permissions_from_declared_grants(monkeypatch: Any) -> None:
+    """Make wip_auth.permissions' Registry lookups answer from the caller's
+    declared key grants, as the real Registry does for an imported key.
+
+    For suites that declare their test keys in WIP_AUTH_API_KEYS_JSON and
+    run without a Registry to ask: every permission is the Registry's answer
+    (a service never resolves a key's grants itself), so the suite states
+    that answer. A caller with no declared grants gets no access; a
+    superadmin never reaches the lookup.
+    """
+    from . import permissions
+
+    async def permission(identity: Any, namespace: str) -> str:
+        return registry_held_grants(identity).get(namespace, "none")
+
+    async def accessible(identity: Any) -> list[str]:
+        return sorted(registry_held_grants(identity))
+
+    monkeypatch.setattr(permissions, "_fetch_permission_from_registry", permission)
+    monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", accessible)

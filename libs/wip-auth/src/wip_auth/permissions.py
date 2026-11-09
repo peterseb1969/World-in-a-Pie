@@ -69,21 +69,67 @@ def permission_sufficient(actual: str, required: str) -> bool:
     return PERMISSION_LEVELS.get(actual, 0) >= PERMISSION_LEVELS.get(required, 0)
 
 
-def _config_declared_grants(identity: UserIdentity) -> dict[str, str] | None:
-    """The config-file grants carried by an api-key identity, or None.
+def _key_scope(identity: UserIdentity) -> list[str] | None:
+    """An api key's namespace scope, or None (unscoped, or not a key).
 
-    Non-None only for config-file keys whose definition declares grants.
-    Such keys resolve permissions locally — key, read scope, and write
-    grants all come from the config file, so they survive a MongoDB
-    wipe/restore with no Registry round-trip. Runtime (Mongo-stored)
-    keys never carry this claim and resolve through the Registry.
+    Only a key's record carries a scope; another identity's ``namespaces``
+    claim (an OIDC token may carry any claim) is not one. A scope that is not
+    a list of strings is not forwarded, so the Registry answers the key as
+    unscoped, which gives a non-privileged key nothing.
     """
     if identity.auth_method != "api_key":
         return None
-    grants = (identity.raw_claims or {}).get("grants")
-    if not isinstance(grants, dict):
+    scope = (identity.raw_claims or {}).get("namespaces")
+    if not isinstance(scope, list) or not all(isinstance(ns, str) for ns in scope):
         return None
-    return grants
+    return scope
+
+
+def _registry_question(
+    identity: UserIdentity, namespace: str | None = None
+) -> tuple[dict[str, str], dict[str, str]]:
+    """The query parameters and identity headers a permission lookup sends to
+    the Registry: everything its answer depends on, apart from the service
+    key that authenticates the call."""
+    params = {"user_id": identity.user_id, "auth_method": identity.auth_method}
+    if namespace is not None:
+        params["namespace"] = namespace
+    if identity.email:
+        params["email"] = identity.email
+    # Forward username so api_key grant subjects match the same spelling
+    # (bare key name) on this path as on direct Registry calls; without it
+    # the Registry's synthetic identity falls back to username=user_id
+    # ("apikey:<name>") and grants stored under the key name never match.
+    if identity.username:
+        params["username"] = identity.username
+    # Groups and key scope travel as headers, keeping group names out of
+    # access logs. The scope lets the Registry's synthetic identity see the
+    # same scoping the calling service does; without it every api key would
+    # look unscoped and a non-privileged key would get "none".
+    headers: dict[str, str] = {}
+    if identity.groups:
+        headers["X-User-Groups"] = ",".join(identity.groups)
+    scope = _key_scope(identity)
+    if scope is not None:
+        headers["X-Key-Namespaces"] = ",".join(scope)
+    return params, headers
+
+
+def _cache_key(identity: UserIdentity, namespace: str | None = None) -> tuple:
+    """The cache key of a lookup: the whole question sent to the Registry.
+
+    The answer depends on the caller's groups and key scope as well as its
+    user_id, so two identities sharing a user_id (one user arriving with
+    different groups, a key name whose scope changed) never share an answer.
+    Group and scope order do not change the answer, so they are sorted.
+    """
+    params, _ = _registry_question(identity, namespace)
+    scope = _key_scope(identity)
+    return (
+        tuple(sorted(params.items())),
+        tuple(sorted(identity.groups or [])),
+        None if scope is None else tuple(sorted(scope)),
+    )
 
 
 async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
@@ -95,17 +141,7 @@ async def resolve_permission(identity: UserIdentity, namespace: str) -> str:
     if _is_superadmin(identity):
         return "admin"
 
-    # Config-declared grants: local resolution, no Registry, no cache
-    # needed (pure in-memory lookup).
-    config_grants = _config_declared_grants(identity)
-    if config_grants is not None:
-        declared = config_grants.get(namespace)
-        if declared is not None:
-            return declared
-        key_namespaces = (identity.raw_claims or {}).get("namespaces") or []
-        return "read" if namespace in key_namespaces else "none"
-
-    cache_key = f"{identity.user_id}:{namespace}"
+    cache_key = _cache_key(identity, namespace)
 
     # Check cache (TTLCache handles expiry automatically)
     cached: str | None = _grant_cache.get(cache_key)
@@ -136,33 +172,8 @@ async def _fetch_permission_from_registry(
         os.getenv("API_KEY", ""),
     )
 
-    params = {
-        "namespace": namespace,
-        "user_id": identity.user_id,
-        "auth_method": identity.auth_method,
-    }
-    if identity.email:
-        params["email"] = identity.email
-    # CASE-450 — forward username so api_key grant subjects match the same
-    # spelling (bare key name) on this path as on direct Registry calls.
-    # Without it the Registry's synthetic identity falls back to
-    # username=user_id ("apikey:<name>") and grants stored under the key
-    # name never match cross-service checks.
-    if identity.username:
-        params["username"] = identity.username
-
-    # Pass groups in header (M2 — avoid leaking group names in access logs/caches)
-    headers = {"X-API-Key": api_key}
-    if identity.groups:
-        headers["X-User-Groups"] = ",".join(identity.groups)
-    # CASE-351 — forward the api-key's namespace scope so the Registry's
-    # synthetic identity sees the same scoping the calling service does.
-    # Without this, the Registry treats every api_key call as unscoped
-    # and returns "none" for non-privileged keys. Header (not param)
-    # matches the existing X-User-Groups pattern.
-    key_namespaces = (identity.raw_claims or {}).get("namespaces")
-    if key_namespaces is not None:
-        headers["X-Key-Namespaces"] = ",".join(key_namespaces)
+    params, identity_headers = _registry_question(identity, namespace)
+    headers = {"X-API-Key": api_key, **identity_headers}
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:
@@ -392,15 +403,7 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
     if _is_superadmin(identity):
         return None
 
-    # Config-declared grants: accessible set is the config-declared
-    # scope — namespaces (read) plus granted namespaces — resolved
-    # locally, same rationale as in resolve_permission.
-    config_grants = _config_declared_grants(identity)
-    if config_grants is not None:
-        key_namespaces = (identity.raw_claims or {}).get("namespaces") or []
-        return sorted(set(key_namespaces) | set(config_grants))
-
-    cache_key = identity.user_id
+    cache_key = _cache_key(identity)
 
     # Use sentinel to distinguish "not cached" from "cached None"
     cached: list[str] | object | None = _accessible_cache.get(cache_key, _SENTINEL)
@@ -430,24 +433,8 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] |
         os.getenv("API_KEY", ""),
     )
 
-    params = {
-        "user_id": identity.user_id,
-        "auth_method": identity.auth_method,
-    }
-    if identity.email:
-        params["email"] = identity.email
-    # CASE-450 — see _fetch_permission_from_registry.
-    if identity.username:
-        params["username"] = identity.username
-
-    headers = {"X-API-Key": api_key}
-    if identity.groups:
-        headers["X-User-Groups"] = ",".join(identity.groups)
-    # CASE-351 — forward the api-key's namespace scope (see sibling
-    # _fetch_permission_from_registry for the full rationale).
-    key_namespaces = (identity.raw_claims or {}).get("namespaces")
-    if key_namespaces is not None:
-        headers["X-Key-Namespaces"] = ",".join(key_namespaces)
+    params, identity_headers = _registry_question(identity)
+    headers = {"X-API-Key": api_key, **identity_headers}
 
     try:
         async with httpx.AsyncClient(timeout=5.0) as client:

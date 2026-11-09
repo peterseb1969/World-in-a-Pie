@@ -2,8 +2,8 @@
 
 Two gates: the source namespace's isolation_mode (outbound) and the target
 namespace's inbound_references (inbound, decided by the writer's read). The
-identities below are config-file keys, whose permissions resolve locally, so
-no Registry is involved.
+Registry is a fake that answers from the key's grants, else read on its
+scope, else none — the rule the real one applies to these keys.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -20,6 +20,23 @@ from wip_auth.reference_policy import (
     inbound_open,
     outbound_allows,
 )
+
+
+@pytest.fixture(autouse=True)
+def _registry():
+    async def answer(identity: UserIdentity, namespace: str) -> str:
+        claims = identity.raw_claims or {}
+        declared = (claims.get("grants") or {}).get(namespace)
+        if declared:
+            return declared
+        return "read" if namespace in (claims.get("namespaces") or []) else "none"
+
+    from wip_auth.permissions import clear_permission_cache
+    clear_permission_cache()
+    with patch("wip_auth.permissions._fetch_permission_from_registry", side_effect=answer):
+        yield
+    clear_permission_cache()
+
 
 OPEN = {"isolation_mode": "open", "allowed_external_refs": []}
 
