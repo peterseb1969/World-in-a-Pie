@@ -2496,132 +2496,140 @@ async def resolve_synonyms(
     read holds the key, the item is ``ambiguous`` with the candidates —
     never one of them picked.
     """
-    results = []
-    found_count = 0
-    not_found_count = 0
-    ambiguous_count = 0
-    error_count = 0
     access = NamespaceAccess(identity)
-
+    results: list[ResolveResponse] = []
     for i, item in enumerate(items):
         try:
-            invalid = invalid_entity_type_fields(item.entity_type)
-            if invalid:
-                results.append(ResolveResponse(index=i, status="error", **invalid))
-                error_count += 1
-                continue
-
-            if not item.entry_id and not item.composite_key:
-                results.append(ResolveResponse(
-                    index=i, status="error",
-                    error="Provide either entry_id or composite_key", error_code="invalid_request",
-                ))
-                error_count += 1
-                continue
-
-            status_filter = (
-                {"$in": item.include_statuses}
-                if item.include_statuses
-                else "active"
-            )
-            entry = None
-
-            # Path 1: Canonical ID verification. With entity_type given, an id
-            # resolves only as its own type: a template's id is not a
-            # terminology. A miss falls through to the composite key, so a
-            # value equal to another type's id still finds its own entry.
-            # Namespace stays out: canonical ids are namespace-free. The id of
-            # an entry merged into another resolves to that entry.
-            if item.entry_id:
-                entry = await _resolve_entry_id(item.entry_id, item.entity_type, status_filter)
-
-            if entry and not await access.allows(entry.namespace, "read"):
-                entry = None
-
-            # Path 2: Composite key resolution (synonym or primary key).
-            # Scoped to the namespace asked for, else the one the key names
-            # (its 'ns'): key claims are unique per namespace, so a key that
-            # names its namespace has one possible holder there. Only
-            # entries the caller can read take part, and more than one
-            # match is refused as ambiguous, never answered with one of them.
-            if not entry and item.composite_key:
-                key_hash = HashService.compute_composite_key_hash(item.composite_key)
-                query: dict[str, Any] = {
-                    "$or": [
-                        {"primary_composite_key_hash": key_hash},
-                        {"synonyms": {"$elemMatch": {
-                            "composite_key_hash": key_hash,
-                            "status": {"$ne": "inactive"},
-                        }}},
-                    ],
-                    "status": status_filter,
-                }
-                scope = item.namespace or named_namespace(item.composite_key)
-                if scope:
-                    query["namespace"] = scope
-                elif not access.unrestricted:
-                    query["namespace"] = {"$in": await resolve_accessible_namespaces(identity) or []}
-                if item.entity_type:
-                    query["entity_type"] = item.entity_type
-                matches = await RegistryEntry.find(query).sort("+created_at").limit(
-                    _RESOLVE_CANDIDATE_LIMIT + 1,
-                ).to_list()
-                matches = [m for m in matches if await access.allows(m.namespace, "read")]
-                if len(matches) > 1:
-                    logger.warning(
-                        "Composite key %s resolves to %d entries %s: answered ambiguous.",
-                        key_hash, len(matches), [e.entry_id for e in matches],
-                    )
-                    results.append(ResolveResponse(
-                        index=i,
-                        status="ambiguous",
-                        composite_key=item.composite_key,
-                        error=(
-                            f"The key resolves to {len(matches)} entries; qualify it "
-                            "(namespace, a canonical ID) to name one."
-                        ),
-                        error_code="ambiguous",
-                        candidates=[
-                            LookupCandidate(
-                                entry_id=m.entry_id, namespace=m.namespace,
-                                entity_type=m.entity_type, matched_via=(
-                                    "primary_key" if m.primary_composite_key_hash == key_hash
-                                    else "synonym"
-                                ),
-                                matched_composite_key=item.composite_key,
-                            )
-                            for m in matches[:_RESOLVE_CANDIDATE_LIMIT]
-                        ],
-                    ))
-                    ambiguous_count += 1
-                    continue
-                entry = matches[0] if matches else None
-
-            if entry:
-                results.append(ResolveResponse(
-                    index=i,
-                    status="found",
-                    composite_key=item.composite_key,
-                    entry_id=entry.entry_id,
-                ))
-                found_count += 1
-            else:
-                results.append(ResolveResponse(
-                    index=i,
-                    status="not_found",
-                    composite_key=item.composite_key,
-                    entry_id=item.entry_id,
-                ))
-                not_found_count += 1
-
+            results.append(await _resolve_one(i, item, access, identity))
         except Exception as e:
-            results.append(ResolveResponse(
-                index=i, status="error", **error_fields(e),
-            ))
-            error_count += 1
-
+            results.append(ResolveResponse(index=i, status="error", **error_fields(e)))
+    statuses = [r.status for r in results]
     return BulkResolveResponse(
         results=results, total=len(items),
-        found=found_count, not_found=not_found_count,
-        ambiguous=ambiguous_count, errors=error_count,
+        found=statuses.count("found"), not_found=statuses.count("not_found"),
+        ambiguous=statuses.count("ambiguous"), errors=statuses.count("error"),
+    )
+
+
+async def _resolve_one(
+    i: int, item: ResolveItem, access: NamespaceAccess, identity: UserIdentity,
+) -> ResolveResponse:
+    """Resolve one item: by canonical id, else by composite key.
+
+    Canonical ID verification: with entity_type given, an id resolves only
+    as its own type (a template's id is not a terminology). A miss falls
+    through to the composite key, so a value equal to another type's id
+    still finds its own entry. Namespace stays out: canonical ids are
+    namespace-free. The id of an entry merged into another resolves to that
+    entry.
+    """
+    refused = _resolve_request_error(i, item)
+    if refused is not None:
+        return refused
+    status_filter: Any = {"$in": item.include_statuses} if item.include_statuses else "active"
+    entry = None
+    if item.entry_id:
+        entry = await _resolve_entry_id(item.entry_id, item.entity_type, status_filter)
+    if entry and not await access.allows(entry.namespace, "read"):
+        entry = None
+    if not entry and item.composite_key:
+        found = await _resolve_composite_key(i, item, status_filter, access, identity)
+        if isinstance(found, ResolveResponse):
+            return found
+        entry = found
+    if entry:
+        return ResolveResponse(
+            index=i, status="found", composite_key=item.composite_key, entry_id=entry.entry_id,
+        )
+    return ResolveResponse(
+        index=i, status="not_found", composite_key=item.composite_key, entry_id=item.entry_id,
+    )
+
+
+def _resolve_request_error(i: int, item: ResolveItem) -> ResolveResponse | None:
+    """An item that cannot be resolved as asked: an invalid entity type, or
+    neither an entry_id nor a composite key."""
+    invalid = invalid_entity_type_fields(item.entity_type)
+    if invalid:
+        return ResolveResponse(index=i, status="error", **invalid)
+    if not item.entry_id and not item.composite_key:
+        return ResolveResponse(
+            index=i, status="error",
+            error="Provide either entry_id or composite_key", error_code="invalid_request",
+        )
+    return None
+
+
+async def _resolve_composite_key(
+    i: int,
+    item: ResolveItem,
+    status_filter: Any,
+    access: NamespaceAccess,
+    identity: UserIdentity,
+) -> RegistryEntry | ResolveResponse | None:
+    """The one readable entry holding the item's composite key (its primary
+    key or an active synonym), None, or the ambiguous answer.
+
+    Scoped to the namespace asked for, else the one the key names (its
+    'ns'): key claims are unique per namespace, so a key that names its
+    namespace has one possible holder there. Only entries the caller can
+    read take part, and more than one match is refused as ambiguous, never
+    answered with one of them.
+    """
+    composite_key = cast(dict[str, Any], item.composite_key)
+    key_hash = HashService.compute_composite_key_hash(composite_key)
+    query: dict[str, Any] = {
+        "$or": [
+            {"primary_composite_key_hash": key_hash},
+            {"synonyms": {"$elemMatch": {
+                "composite_key_hash": key_hash,
+                "status": {"$ne": "inactive"},
+            }}},
+        ],
+        "status": status_filter,
+    }
+    scope = item.namespace or named_namespace(composite_key)
+    if scope:
+        query["namespace"] = scope
+    elif not access.unrestricted:
+        query["namespace"] = {"$in": await resolve_accessible_namespaces(identity) or []}
+    if item.entity_type:
+        query["entity_type"] = item.entity_type
+    matches = await RegistryEntry.find(query).sort("+created_at").limit(
+        _RESOLVE_CANDIDATE_LIMIT + 1,
+    ).to_list()
+    matches = [m for m in matches if await access.allows(m.namespace, "read")]
+    if len(matches) > 1:
+        return _ambiguous_resolution(i, composite_key, key_hash, matches)
+    return matches[0] if matches else None
+
+
+def _ambiguous_resolution(
+    i: int, composite_key: dict[str, Any], key_hash: str, matches: list[RegistryEntry],
+) -> ResolveResponse:
+    """The answer for a key several readable entries hold: ambiguous, with
+    each candidate and whether it matched by primary key or synonym."""
+    logger.warning(
+        "Composite key %s resolves to %d entries %s: answered ambiguous.",
+        key_hash, len(matches), [e.entry_id for e in matches],
+    )
+    return ResolveResponse(
+        index=i,
+        status="ambiguous",
+        composite_key=composite_key,
+        error=(
+            f"The key resolves to {len(matches)} entries; qualify it "
+            "(namespace, a canonical ID) to name one."
+        ),
+        error_code="ambiguous",
+        candidates=[
+            LookupCandidate(
+                entry_id=m.entry_id, namespace=m.namespace,
+                entity_type=m.entity_type, matched_via=(
+                    "primary_key" if m.primary_composite_key_hash == key_hash else "synonym"
+                ),
+                matched_composite_key=composite_key,
+            )
+            for m in matches[:_RESOLVE_CANDIDATE_LIMIT]
+        ],
     )
