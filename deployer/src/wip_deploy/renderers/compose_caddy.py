@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import dataclasses
 from io import StringIO
+from urllib.parse import quote
 
 from wip_deploy.config_gen.caddy import (
     APP_SESSION_COOKIE,
@@ -36,8 +37,9 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     """Render a Caddyfile as a string."""
     out = StringIO()
 
-    # Global options (email for letsencrypt, etc.). Kept minimal here;
-    # letsencrypt mode would add `email admin@example.com`.
+    # Global options. No `email` is written for letsencrypt: Caddy
+    # registers its ACME account without a contact address (the spec has no
+    # field for one).
     out.write("{\n")
     if cfg.plain_http_port is not None:
         # k8s: plain HTTP behind the ingress controller, which owns TLS.
@@ -98,10 +100,8 @@ def render_caddyfile(cfg: CaddyConfig) -> str:
     # parsing a leading-`/` destination as a matcher (same disambiguation
     # as the bare-path redirect in _write_route).
     has_root_route = any(r.path == "/" for r in cfg.routes)
-    if cfg.root_redirect and not has_root_route:
-        out.write("    handle / {\n")
-        out.write(f"        redir * {cfg.root_redirect} permanent\n")
-        out.write("    }\n\n")
+    if not has_root_route:
+        _write_root(out, cfg.root_redirect)
 
     # All browser-facing routes (/dex/*, /auth/*, /api/*, /apps/*, /)
     # flow through the component manifest → _write_route pipeline. No
@@ -171,6 +171,7 @@ def _write_tls(out: StringIO, cfg: CaddyConfig) -> None:
 
 def _write_forward_auth(
     out: StringIO, cfg: CaddyConfig, route: ResolvedRoute, login: str | None = None,
+    *, stripped: bool = False,
 ) -> None:
     """Emit the forward_auth block shared by routes and the catch-all.
 
@@ -207,12 +208,34 @@ def _write_forward_auth(
     # second query parameter ("…?q=foo&page=3") became a parameter of the
     # login URL and was lost, and an encoded %26 came back as a real "&".
     # On an app origin `login` is the handshake on WIP's origin, absolute.
-    target = login or "/auth/login?return_to={http.request.uri_escaped}"
+    return_to = _return_to(route, stripped)
+    target = (
+        login.replace(_URI_ESCAPED, return_to) if login
+        else f"/auth/login?return_to={return_to}"
+    )
     out.write(f"                redir * {target} 302\n")
     out.write("            }\n")
     out.write("        }\n")
 
 
+
+
+_URI_ESCAPED = "{http.request.uri_escaped}"
+
+
+def _return_to(route: ResolvedRoute, stripped: bool) -> str:
+    """The escaped URI a login returns to.
+
+    Inside `handle_path` Caddy has already stripped the route's prefix when
+    it reads {http.request.uri_escaped}, and it offers no escaped form of
+    the original URI ({http.request.orig_uri} is unescaped, so a second
+    query parameter would leak into the login URL) — checked against the
+    `caddy:2` image (2.11.x). The prefix is static, so it is escaped here
+    and written in front.
+    """
+    if not stripped:
+        return _URI_ESCAPED
+    return quote(route.path.rstrip("/"), safe="") + _URI_ESCAPED
 
 
 def _write_forwarded(out: StringIO, cfg: CaddyConfig, indent: str) -> None:
@@ -251,6 +274,31 @@ def _write_reverse_proxy(out, backend: str, route, cfg: CaddyConfig) -> None:  #
     else:
         out.write(f"        reverse_proxy {backend}\n")
 
+# What `/` answers when no app is enabled: a redirect has nowhere to go,
+# and a redirect to the login loops (a login lands back on `/`).
+NO_APP_PAGE = (
+    "<!doctype html><title>World In a Pie</title>"
+    "<h1>World In a Pie</h1>"
+    "<p>No app is enabled on this install yet. Add one with "
+    "<code>wip-deploy add-app</code>.</p>"
+)
+
+
+def _write_root(out: StringIO, root_redirect: str | None) -> None:
+    """The bare host: a redirect to the first enabled app, or the no-app
+    page. The redirect is a 302 that is never cached — the first app is
+    whichever the spec lists first, and a cached 301 would pin browsers to
+    an app that has since moved or gone."""
+    out.write("    handle / {\n")
+    if root_redirect:
+        out.write('        header Cache-Control "no-store"\n')
+        out.write(f"        redir * {root_redirect} 302\n")
+    else:
+        out.write('        header Content-Type "text/html; charset=utf-8"\n')
+        out.write(f"        respond `{NO_APP_PAGE}` 200\n")
+    out.write("    }\n\n")
+
+
 def _write_route(out, route, cfg: CaddyConfig, login: str | None = None) -> None:  # type: ignore[no-untyped-def]
     # Bare-path redirect: /apps/rc (no trailing slash) must 301 to
     # /apps/rc/, otherwise the bare path falls through the /apps/rc/*
@@ -284,7 +332,7 @@ def _write_route(out, route, cfg: CaddyConfig, login: str | None = None) -> None
         for sub in route.preserve_prefix_subpaths:
             out.write(f"    handle {sub}/* {{\n")
             if route.auth_protected:
-                _write_forward_auth(out, cfg, route, login)
+                _write_forward_auth(out, cfg, route, login)  # `handle`: path kept
             _write_identity_strip(out, route)
             if login is not None:
                 _write_app_cookie_strip(out)
@@ -301,7 +349,7 @@ def _write_route(out, route, cfg: CaddyConfig, login: str | None = None) -> None
     def _emit_block(matcher_path: str) -> None:
         out.write(f"    {directive} {matcher_path} {{\n")
         if route.auth_protected:
-            _write_forward_auth(out, cfg, route, login)
+            _write_forward_auth(out, cfg, route, login, stripped=bool(route.strip_prefix))
         _write_identity_strip(out, route)
         if login is not None:
             _write_app_cookie_strip(out)

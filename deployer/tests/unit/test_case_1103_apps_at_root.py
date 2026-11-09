@@ -74,7 +74,7 @@ def test_wips_origin_serves_nothing_under_apps(discovery: Discovery) -> None:
     assert "/apps" not in main
     assert "reverse_proxy wip-app-edge" not in main
     # The bare host goes straight to the root of the first app's origin.
-    assert "redir * https://rc.wip.example:8443/ permanent" in main
+    assert "redir * https://rc.wip.example:8443/ 302" in main
 
 
 def test_each_deployer_app_is_served_at_its_origins_root(discovery: Discovery) -> None:

@@ -27,7 +27,6 @@ from wip_deploy.config_gen.routing import (
     resolve_routes,
 )
 from wip_deploy.spec import Deployment
-from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
 
@@ -56,15 +55,14 @@ class CaddyConfig:
     hostname: str
     https_port: int  # external HTTPS port Caddy binds to inside the container
     tls_mode: str  # "internal" | "letsencrypt" | "external"
-    admin_email: str | None  # present for letsencrypt
-    gateway_enabled: bool  # forward_auth blocks emitted iff True
+    # Where forward_auth asks; a route is protected iff its resolved
+    # `auth_protected` says so (the gateway being on is part of that).
     gateway_service: str  # DNS name of the auth-gateway container
     gateway_port: int
     routes: list[ResolvedRoute]
-    has_dex: bool  # whether to emit /dex/* proxy
-    dex_service: str  # DNS name of dex
-    # Bare-host `/` redirect target (CASE-368), or None to leave `/`
-    # unhandled. Resolved in the shared layer so every target agrees.
+    # Bare-host `/` redirect target (the first enabled app's origin), or
+    # None: `/` then answers the no-app page. Resolved in the shared layer
+    # so every target agrees.
     root_redirect: str | None
     # Emit the hardening-header block (HSTS et al.) in the site block.
     # Keyed on public exposure (tls=letsencrypt): LAN installs stay
@@ -126,13 +124,9 @@ def generate_caddy_config(
     net = deployment.spec.network
 
     gateway = next((c for c in components if c.metadata.name == "auth-gateway"), None)
-    gateway_active = gateway is not None and is_component_active(gateway, deployment)
     gateway_port = 4180
     if gateway is not None and gateway.spec.ports:
         gateway_port = gateway.spec.ports[0].container_port
-
-    dex = next((c for c in components if c.metadata.name == "dex"), None)
-    dex_active = dex is not None and is_component_active(dex, deployment)
 
     behind_ingress = deployment.spec.target == "k8s"
     k8s = deployment.spec.platform.k8s
@@ -152,13 +146,9 @@ def generate_caddy_config(
         hostname=net.hostname,
         https_port=net.https_port,
         tls_mode=net.tls,
-        admin_email=None,  # populated by the renderer from spec when letsencrypt
-        gateway_enabled=gateway_active and deployment.spec.auth.gateway,
         gateway_service=f"wip-auth-gateway.{namespace}.svc.cluster.local" if behind_ingress else "wip-auth-gateway",
         gateway_port=gateway_port,
         routes=routes,
-        has_dex=dex_active,
-        dex_service="wip-dex",
         root_redirect=root_redirect,
         emit_hardening_headers=(net.tls == "letsencrypt"),
         plain_http_port=PUBLIC_CADDY_K8S_PORT if behind_ingress else None,

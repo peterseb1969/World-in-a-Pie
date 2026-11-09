@@ -135,14 +135,14 @@ class TestRootRedirect:
         target = resolve_root_redirect(d, real_discovery.apps)
         assert target == "https://rc.wip.local:8443/"
 
-    def test_no_apps_with_gateway_redirects_to_login(
+    def test_no_apps_with_gateway_has_no_redirect(
         self, compose_deployment: Deployment, real_discovery: Discovery
     ) -> None:
+        """Redirecting to /auth/login looped: a login lands back on `/`."""
         d = compose_deployment.model_copy(deep=True)
         d.spec.apps = []
         d.spec.auth.gateway = True
-        target = resolve_root_redirect(d, real_discovery.apps)
-        assert target == "/auth/login"
+        assert resolve_root_redirect(d, real_discovery.apps) is None
 
     def test_no_apps_no_gateway_no_redirect(
         self, compose_deployment: Deployment, real_discovery: Discovery

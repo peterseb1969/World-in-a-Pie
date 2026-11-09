@@ -572,40 +572,10 @@ def _render_configmaps(
     ns: str,
     secrets: ResolvedSecrets,
 ) -> str:
-    """Render shared config as a ConfigMap + Dex config if active."""
+    """Render the Dex config ConfigMap, if Dex is active, and the other
+    per-component ConfigMaps. There is no shared env ConfigMap: every
+    variable is set inline on its container."""
     docs: list[dict[str, Any]] = []
-
-    # wip-config: union of all literal env vars that appear in 2+ components.
-    # In practice, the shared ones are CORS, file storage, postgres, service
-    # URLs, auth settings. We just dump the full literal env from the first
-    # core component (registry) as the shared set — components already
-    # get envFrom: configMapRef so they'll pick up everything.
-    shared_env: dict[str, str] = {}
-    for _name, env in resolved_env.items():
-        for k, v in env.merged().items():
-            if isinstance(v, Literal) and k not in shared_env:
-                shared_env[k] = v.value
-
-    # Filter to truly shared keys (appear in 2+ envs).
-    key_counts: dict[str, int] = {}
-    for _name, env in resolved_env.items():
-        for k in env.merged():
-            key_counts[k] = key_counts.get(k, 0) + 1
-    shared_keys = {k for k, count in key_counts.items() if count >= 2}
-    shared_data: dict[str, str] = {
-        k: v for k, v in sorted(shared_env.items()) if k in shared_keys
-    }
-
-    docs.append({
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {
-            "name": "wip-config",
-            "namespace": ns,
-            "labels": {_LABELS_PART_OF: "wip"},
-        },
-        "data": shared_data,
-    })
 
     # Dex config
     dex_yaml = render_dex_conf(deployment, components, apps, secrets)
@@ -942,8 +912,9 @@ def _container_spec(
     if cmd is not None:
         container["command"] = cmd
 
-    # Env: per-component vars as explicit env entries (secrets from secretKeyRef,
-    # literals inline). Shared literals come from envFrom configMapRef.
+    # Env: every variable as an explicit env entry (secrets from secretKeyRef,
+    # literals inline) — nothing comes from a shared ConfigMap, so the pod's
+    # config hash and `status --diff` see every value.
     env_entries: list[dict[str, Any]] = []
     for k, v in sorted(env.merged().items()):
         if isinstance(v, SecretRef):

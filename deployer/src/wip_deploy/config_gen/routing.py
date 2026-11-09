@@ -134,10 +134,10 @@ def resolve_root_redirect(
         root of its origin, https://<label>.<hostname>[:port]/.
         Deterministic; couples to declaration order by design (the operator
         lists their primary app first).
-      - No apps enabled, gateway on → `/auth/login` (the user has to auth
-        first anyway).
-      - No apps enabled, gateway off → None: nothing meaningful to point at,
-        so no redirect is emitted and the bare host stays unhandled.
+      - No apps enabled → None: there is nothing to send the user to.
+        wip-caddy then answers `/` with a page saying no app is enabled
+        yet. (It redirected to `/auth/login` when the gateway was on; a
+        login lands back on `/`, so that was a loop.)
     """
     by_name = {a.metadata.name: a for a in apps}
     for ref in deployment.spec.apps:
@@ -146,8 +146,6 @@ def resolve_root_redirect(
         app = by_name.get(ref.name)
         if app is not None:
             return app_origin(deployment, app.app_metadata.label) + "/"
-    if deployment.spec.auth.gateway:
-        return "/auth/login"
     return None
 
 

@@ -398,11 +398,11 @@ class TestIngress:
 
     def test_root_redirect_to_the_app(self, tmp_path: Path, real_discovery: Discovery) -> None:
         _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery, apps=["react-console"])
-        assert "redir * https://rc.wip-kubi.local:8443/ permanent" in _handle_block(caddyfile, "/")
+        assert "redir * https://rc.wip-kubi.local:8443/ 302" in _handle_block(caddyfile, "/")
 
-    def test_root_redirect_to_login_without_apps(self, tmp_path: Path, real_discovery: Discovery) -> None:
+    def test_no_app_page_without_apps(self, tmp_path: Path, real_discovery: Discovery) -> None:
         _, _, caddyfile = _k8s_front_door(tmp_path, real_discovery)
-        assert "redir * /auth/login permanent" in _handle_block(caddyfile, "/")
+        assert "No app is enabled on this install yet" in _handle_block(caddyfile, "/")
 
     def test_unrouted_paths_get_real_404s(self, tmp_path: Path, real_discovery: Discovery) -> None:
         """CASE-944 / CASE-513: never Caddy's empty 200."""

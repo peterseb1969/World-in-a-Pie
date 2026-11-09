@@ -342,11 +342,11 @@ def render_dev_simple(
     # Config-file API keys (the spec's plus the canary) — same render + posture as the
     # compose target (0644 inside the 0700 install directory, mounted
     # where the manifest declares the env).
-    tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets, apps))
+    tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets, apps), atomic=True)
     tree.obsolete.add(Path(LEGACY_API_KEYS_RENDER_PATH))
-    tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment))
-    tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps))
-    tree.add(ATTACH_POLICY_RENDER_PATH, attach_policy_json(deployment, components, apps))
+    tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment), atomic=True)
+    tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps), atomic=True)
+    tree.add(ATTACH_POLICY_RENDER_PATH, attach_policy_json(deployment, components, apps), atomic=True)
 
     if dex_conf is not None:
         tree.add("config/dex/config.yaml", dex_conf)

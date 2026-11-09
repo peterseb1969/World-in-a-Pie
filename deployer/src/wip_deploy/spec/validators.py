@@ -255,6 +255,31 @@ def _validate_app_labels_unique(deployment: Deployment, apps: list[App]) -> list
     return errs
 
 
+# Names the renderers give a service of their own, outside the component
+# list: the public Caddy (compose service `caddy`, k8s `services/caddy.yaml`).
+RESERVED_SERVICE_NAMES = frozenset({"caddy"})
+
+
+def _validate_app_names_free(
+    deployment: Deployment, components: list[Component], apps: list[App],
+) -> list[ValidationError]:
+    """An enabled app's name is its service's name on every target (the
+    compose service key, the k8s Service and its file), so it cannot be a
+    component's or the front door's: the renderer would silently replace
+    one with the other."""
+    enabled = {ref.name for ref in deployment.spec.apps if ref.enabled}
+    taken = {c.metadata.name for c in components} | RESERVED_SERVICE_NAMES
+    return [
+        ValidationError(
+            f"app {app.metadata.name!r} has the name of "
+            f"{'the front door' if app.metadata.name in RESERVED_SERVICE_NAMES else 'a component'}; "
+            "rename the app — its service would replace that one"
+        )
+        for app in apps
+        if app.metadata.name in enabled and app.metadata.name in taken
+    ]
+
+
 # ────────────────────────────────────────────────────────────────────
 # Orchestrator
 # ────────────────────────────────────────────────────────────────────
@@ -362,4 +387,5 @@ def validate_all(
     report.errors.extend(_validate_namespace_reservations(deployment, apps))
     report.errors.extend(_validate_app_key_names(deployment, apps))
     report.errors.extend(_validate_app_labels_unique(deployment, apps))
+    report.errors.extend(_validate_app_names_free(deployment, components, apps))
     return report

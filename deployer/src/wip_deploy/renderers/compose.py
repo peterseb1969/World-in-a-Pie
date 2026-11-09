@@ -178,11 +178,11 @@ def render_compose(
     # manifest declares WIP_AUTH_API_KEYS_FILE. It carries plaintext, but
     # registry and mcp-server read it as a non-root user, so it is 0644
     # inside the 0700 install directory (see FileEntry).
-    tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets, apps))
+    tree.add(API_KEYS_RENDER_PATH, generate_api_keys_json(deployment, secrets, apps), atomic=True)
     tree.obsolete.add(Path(LEGACY_API_KEYS_RENDER_PATH))
-    tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment))
-    tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps))
-    tree.add(ATTACH_POLICY_RENDER_PATH, attach_policy_json(deployment, components, apps))
+    tree.add(FEDERATED_GROUPS_RENDER_PATH, federated_groups_policy(deployment), atomic=True)
+    tree.add(RESERVATIONS_RENDER_PATH, namespace_reservations_json(deployment, apps), atomic=True)
+    tree.add(ATTACH_POLICY_RENDER_PATH, attach_policy_json(deployment, components, apps), atomic=True)
 
     # wip-router Caddyfile — emitted whenever the router component is
     # active (it's infrastructure, so effectively always).

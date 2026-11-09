@@ -28,10 +28,39 @@ class FileEntry:
     file unreadable inside the container. 0o600 is only for files no
     non-root container reads (`.env`, which compose reads on the host;
     Garage's config, whose container runs as root).
+
+    `atomic` replaces the file in one step (a temporary file in the same
+    directory, then `os.replace`), so a reader never sees it empty or half
+    written. Only for a file that reaches its containers through a
+    *directory* mount and is re-read while they run (the auth config and key
+    files): the new inode shows up in the mounted directory. A file mounted
+    on its own must not be: the container keeps the inode it started with,
+    so it would never see a later render.
     """
 
     content: str
     mode: int = 0o644
+    atomic: bool = False
+
+
+def _replace_atomically(target: Path, entry: FileEntry) -> None:
+    """Write `entry` to a temporary file beside `target`, then rename it
+    over `target`: a reader sees the old content or the new, never an empty
+    or partial file."""
+    import contextlib
+    import os
+    import tempfile
+
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(entry.content)
+        with contextlib.suppress(NotImplementedError, OSError):
+            os.chmod(tmp, entry.mode)
+        os.replace(tmp, target)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
 
 
 @dataclass
@@ -50,8 +79,8 @@ class FileTree:
     files: dict[Path, FileEntry] = field(default_factory=dict)
     obsolete: set[Path] = field(default_factory=set)
 
-    def add(self, path: str | Path, content: str, *, mode: int = 0o644) -> None:
-        self.files[Path(path)] = FileEntry(content=content, mode=mode)
+    def add(self, path: str | Path, content: str, *, mode: int = 0o644, atomic: bool = False) -> None:
+        self.files[Path(path)] = FileEntry(content=content, mode=mode, atomic=atomic)
 
     def paths(self) -> list[Path]:
         return sorted(self.files.keys())
@@ -76,6 +105,9 @@ class FileTree:
         for rel, entry in self.files.items():
             target = root / rel
             target.parent.mkdir(parents=True, exist_ok=True)
+            if entry.atomic:
+                _replace_atomically(target, entry)
+                continue
             target.write_text(entry.content)
             with contextlib.suppress(NotImplementedError, OSError):
                 target.chmod(entry.mode)

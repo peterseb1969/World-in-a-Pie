@@ -249,35 +249,37 @@ class TestComposeYaml:
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
         assert "handle / {" in caddyfile
-        assert "redir * https://rc.wip.local:8443/ permanent" in caddyfile
+        # 302, never cached: the first app is whichever the spec lists first.
+        assert "redir * https://rc.wip.local:8443/ 302" in caddyfile
+        assert 'header Cache-Control "no-store"' in caddyfile
 
-    def test_root_redirect_to_login_without_apps(
+    def test_no_app_page_without_apps(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """No apps + gateway on → bare `/` redirects to /auth/login."""
+        """No apps + gateway on → bare `/` answers the no-app page. It
+        redirected to /auth/login, and a login lands back on `/`: a loop."""
         d = _minimal_compose()
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
-        assert "redir * /auth/login permanent" in caddyfile
+        root = caddyfile[caddyfile.index("    handle / {"):]
+        root = root[:root.index("    }\n")]
+        assert "No app is enabled on this install yet" in root
+        assert "redir" not in root
 
-    def test_no_root_redirect_without_apps_or_gateway(
+    def test_no_app_page_without_apps_or_gateway(
         self, tmp_path: Path, real_discovery: Discovery
     ) -> None:
-        """No apps + gateway off → nothing to point `/` at, no root redirect.
-
-        `handle / {` is the exact-root block unique to the root redirect;
-        per-route bare-path redirects use `handle /api/registry {` etc., so
-        this discriminates the root redirect from those (which still emit
-        their own `permanent` redirs)."""
+        """No apps + gateway off → `/` answers the no-app page, not a redirect."""
         d = _minimal_compose()
         d.spec.auth.gateway = False
         s = _secrets(tmp_path, d, real_discovery)
         tree = render_compose(d, real_discovery.components, real_discovery.apps, s)
         caddyfile = tree.files[Path("config/caddy/Caddyfile")].content
 
-        assert "handle / {" not in caddyfile
+        assert "No app is enabled on this install yet" in caddyfile
+        assert "/auth/login" not in caddyfile[caddyfile.index("    handle / {"):][:400]
 
     def test_garage_active_document_store_gets_public_endpoint_env(
         self, tmp_path: Path, real_discovery: Discovery

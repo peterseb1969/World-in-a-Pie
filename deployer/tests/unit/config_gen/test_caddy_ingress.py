@@ -34,7 +34,6 @@ class TestCaddy:
         cfg = generate_caddy_config(
             compose_deployment, real_discovery.components, real_discovery.apps
         )
-        assert cfg.gateway_enabled is True
         assert cfg.gateway_service == "wip-auth-gateway"
         assert cfg.gateway_port == 4180
 
@@ -44,7 +43,7 @@ class TestCaddy:
         d = compose_deployment.model_copy(deep=True)
         d.spec.auth.gateway = False
         cfg = generate_caddy_config(d, real_discovery.components, real_discovery.apps)
-        assert cfg.gateway_enabled is False
+        assert not any(r.auth_protected for r in cfg.routes)
 
     def test_dex_proxy_when_dex_active(
         self, compose_deployment: Deployment, real_discovery: Discovery
@@ -52,7 +51,7 @@ class TestCaddy:
         cfg = generate_caddy_config(
             compose_deployment, real_discovery.components, real_discovery.apps
         )
-        assert cfg.has_dex is True
+        assert any(r.path.startswith("/dex") for r in cfg.routes)
 
     def test_no_dex_proxy_for_api_key_only(
         self, compose_deployment: Deployment, real_discovery: Discovery
@@ -62,7 +61,7 @@ class TestCaddy:
         d.spec.auth.mode = "api-key-only"
         d.spec.auth.users = []
         cfg = generate_caddy_config(d, real_discovery.components, real_discovery.apps)
-        assert cfg.has_dex is False
+        assert not any(r.path.startswith("/dex") for r in cfg.routes)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -130,7 +129,6 @@ class TestCrossTargetInvariants:
             k8s_deployment, real_discovery.components, real_discovery.apps
         )
         assert compose.routes == k8s.routes
-        assert compose.gateway_enabled and k8s.gateway_enabled
 
     def test_k8s_front_door_is_plain_http_with_set_forwarded_headers(
         self,
@@ -161,7 +159,6 @@ class TestCrossTargetInvariants:
             site = next(a for a in caddy.app_sites if a.label == "dnd")
             dnd_route = next(r for r in site.routes if r.path == "/")
             assert dnd_route.auth_protected is True
-            assert caddy.gateway_enabled is True
 
     def test_streaming_flag_preserved_across_targets(
         self,
