@@ -67,7 +67,8 @@ async def create_term_relations(
     )
 
     results = await OntologyService.create_term_relations(namespace, items)
-    succeeded = sum(1 for r in results if r.status == "created")
+    # A duplicate relation is "skipped", which counts as succeeded
+    succeeded = sum(1 for r in results if r.status in ("created", "skipped"))
     return BulkResponse(
         results=results,
         total=len(results),
@@ -107,7 +108,10 @@ async def list_term_relations(
             term_id, terminology, namespace, param_name="term_id"
         )
     else:
-        term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
+        # strict: with no namespace to resolve a value in, an identifier
+        # that resolves to nothing is refused, not passed through as a raw
+        # id that matches nothing (an empty 200)
+        term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id", strict=True)
 
     items, total = await OntologyService.list_term_relations(
         term_id=term_id,
@@ -198,7 +202,8 @@ async def list_all_term_relations(
     # Resolve source_terminology_id synonym if provided
     if source_terminology_id:
         source_terminology_id = await resolve_or_404(
-            source_terminology_id, "terminology", namespace, param_name="source_terminology_id"
+            source_terminology_id, "terminology", namespace,
+            param_name="source_terminology_id", strict=True,
         )
 
     items, total = await OntologyService.list_all_term_relations(

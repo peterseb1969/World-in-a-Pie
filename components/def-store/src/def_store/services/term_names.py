@@ -256,11 +256,9 @@ class NameTypeService:
             return cls._name_types
 
         from ..models.term import Term
-        from ..models.terminology import Terminology
+        from .system_vocabulary import find_system_terminology
 
-        terminology = await Terminology.find_one({
-            "value": NAME_TYPES_TERMINOLOGY_VALUE
-        })
+        terminology = await find_system_terminology(NAME_TYPES_TERMINOLOGY_VALUE)
         if not terminology:
             logger.warning("%s terminology not found", NAME_TYPES_TERMINOLOGY_VALUE)
             return {}

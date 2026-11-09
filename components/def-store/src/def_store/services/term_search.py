@@ -208,7 +208,7 @@ class TermSearchService:
             ))
 
         if rollup == "root":
-            items = await TermSearchService._rollup_to_root(items, namespace)
+            items = await TermSearchService._rollup_to_root(items, namespace, statuses)
 
         return TermSearchResponse(
             query=query,
@@ -220,7 +220,7 @@ class TermSearchService:
 
     @staticmethod
     async def _rollup_to_root(
-        items: list[TermSearchHit], namespace: str
+        items: list[TermSearchHit], namespace: str, statuses: list[str],
     ) -> list[TermSearchHit]:
         """Replace each hit's term with its root is_a ancestor, dedup by root.
 
@@ -229,7 +229,9 @@ class TermSearchService:
         walk is deterministic but single-path; multi-parent semantics
         belong to the closure surface, not typeahead. A term with no
         parent is its own root. Hits sharing a root keep the best-ranked
-        one, with the actual match preserved in matched_term.
+        one, with the actual match preserved in matched_term. A root whose
+        status is not among `statuses` does not replace the hit: the hit is
+        kept as it is (a deprecated root would be refused by /validate).
         """
         from .ontology_service import OntologyService
         from .terminology_service import TerminologyService
@@ -263,7 +265,7 @@ class TermSearchService:
                 rolled[root_id] = hit
             else:
                 root_term = await Term.find_one({
-                    "namespace": namespace, "term_id": root_id,
+                    "namespace": namespace, "term_id": root_id, "status": {"$in": statuses},
                 })
                 if not root_term:
                     rolled[root_id] = hit

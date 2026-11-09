@@ -14,7 +14,8 @@ from typing import Any, cast
 
 from ..models.api_models import CreateTerminologyRequest, CreateTermRequest
 from ..models.term import Term
-from ..models.terminology import Terminology, TerminologyMetadata
+from ..models.terminology import TerminologyMetadata
+from .system_vocabulary import find_system_terminology
 from .terminology_service import TerminologyService
 
 # System terminology definitions
@@ -289,7 +290,7 @@ async def ensure_system_terminologies() -> dict[str, Any]:
     for term_def in SYSTEM_TERMINOLOGIES:
         try:
             # Check if terminology already exists
-            existing = await Terminology.find_one({"value": term_def["value"]})
+            existing = await find_system_terminology(term_def["value"])
 
             if existing:
                 print(f"  System terminology '{term_def['value']}' already exists")
@@ -346,13 +347,23 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                 ))
 
             if term_requests:
-                await TerminologyService.create_terms_bulk(
+                results = await TerminologyService.create_terms_bulk(
                     terminology_id=terminology_id,
                     terms=term_requests,
                     created_by="system:bootstrap",
                 )
-                summary["terms_created"] += len(term_requests)
-                print(f"  Created {len(term_requests)} terms for '{term_def['value']}'")
+                # Count what was created; a per-item error is an error of the
+                # seed (it keeps the startup retry going). "skipped" — the
+                # term already exists — is success.
+                created = sum(1 for r in results if r.status == "created")
+                failed = [r for r in results if r.status == "error"]
+                summary["terms_created"] += created
+                print(f"  Created {created} terms for '{term_def['value']}'")
+                for r in failed:
+                    summary["errors"].append(
+                        f"System terminology '{term_def['value']}': term "
+                        f"'{term_requests[r.index].value}' not created: {r.error}"
+                    )
 
         except Exception as e:
             error_msg = f"Error processing system terminology '{term_def['value']}': {e}"

@@ -37,6 +37,7 @@ from .nats_client import (
     publish_terminology_event,
 )
 from .registry_client import RegistryError, get_registry_client
+from .system_vocabulary import refuse_reserved_value
 from .term_names import (
     NAME_TYPES_TERMINOLOGY_VALUE,
     NameTypeService,
@@ -361,6 +362,8 @@ class TerminologyService:
             ValueError: If value already exists
             RegistryError: If Registry communication fails
         """
+        refuse_reserved_value(namespace, request.value)
+
         # Check if value already exists within namespace
         existing = await Terminology.find_one({"namespace": namespace, "value": request.value})
         if existing:
@@ -585,6 +588,7 @@ class TerminologyService:
 
         # If value changes, add auto-synonym in Registry for new value
         if value_changed:
+            refuse_reserved_value(terminology.namespace, request.value)
             # Check new value doesn't exist within the same namespace
             existing = await Terminology.find_one({"namespace": terminology.namespace, "value": request.value})
             if existing:

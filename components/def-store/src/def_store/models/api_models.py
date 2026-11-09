@@ -654,4 +654,11 @@ class TraversalResponse(BaseModel):
     direction: str  # "ancestors" or "descendants"
     nodes: list[TraversalNode]
     total: int
-    max_depth_reached: bool = False
+    max_depth_reached: bool = Field(
+        default=False,
+        description="True when the depth limit cut the traversal short: a further level would have added nodes",
+    )
+    truncated: bool = Field(
+        default=False,
+        description="True when the traversal stopped at its node limit (10 000) before reaching every node",
+    )

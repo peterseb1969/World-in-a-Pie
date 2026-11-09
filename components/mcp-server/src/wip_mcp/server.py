@@ -480,6 +480,10 @@ def get_data_model() -> str:
 A terminology is a controlled vocabulary (e.g., COUNTRY, GENDER, DIAGNOSIS_CODE).
 - Fields: value (unique code), label (display name), description
 - Terms belong to a terminology
+- Values starting with `_` are reserved for the platform's own vocabularies
+  (`_NAME_TYPES`, `_ONTOLOGY_RELATIONSHIP_TYPES`, …), which live in `wip`:
+  any other namespace is refused one (validation_failed, rule
+  reserved_value), and the platform reads its vocabularies from `wip` only
 
 ## Terms
 A term is an entry in a terminology (e.g., "GB" in COUNTRY, "Male" in GENDER).
@@ -741,7 +745,9 @@ Terms can be connected via typed relations:
 - Types (seeded defaults, not a fixed set): is_a, has_subtype, part_of, has_part, maps_to, mapped_from, related_to, finding_site, causative_agent, regulates, positively_regulates, negatively_regulates
 - Extensible: apps can add their own relation types to _ONTOLOGY_RELATIONSHIP_TYPES; OBO Graph import auto-creates any type it references
 - Fields: source_term_id, target_term_id, relation_type
-- Supports traversal: ancestors, descendants, parents, children
+- Supports traversal: ancestors, descendants, parents, children. An
+  ancestors/descendants traversal returns at most 10 000 nodes and says
+  `truncated` when it stops there
 - Reporting carries a platform-maintained `term_closure` table per
   namespace schema: one row per (ancestor_id, descendant_id,
   relation_type) with shortest-path depth, reflexive rows included,

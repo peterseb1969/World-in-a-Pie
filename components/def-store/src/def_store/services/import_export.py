@@ -816,6 +816,7 @@ class ImportExportService:
         Invalidates the OntologyService cache after adding new types.
         """
         from .system_terminologies import TERM_RELATION_TYPES_TERMINOLOGY_VALUE
+        from .system_vocabulary import find_system_terminology
 
         valid_types = await OntologyService.get_valid_relation_types()
         missing = needed_types - set(valid_types.keys())
@@ -826,9 +827,7 @@ class ImportExportService:
         logger.info(f"Auto-creating {len(missing)} missing relation types: {missing}")
 
         # Find the _ONTOLOGY_RELATIONSHIP_TYPES terminology
-        terminology = await Terminology.find_one({
-            "value": TERM_RELATION_TYPES_TERMINOLOGY_VALUE,
-        })
+        terminology = await find_system_terminology(TERM_RELATION_TYPES_TERMINOLOGY_VALUE)
         if not terminology:
             logger.error(
                 f"Cannot auto-create relation types: "

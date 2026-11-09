@@ -1,7 +1,6 @@
 """Ontology service for managing term relations and traversal."""
 
 import logging
-from collections import deque
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,6 +26,12 @@ from .registry_client import get_registry_client
 logger = logging.getLogger(__name__)
 
 
+# The most nodes one ancestor/descendant traversal returns; past it the
+# response says `truncated`. Depth alone does not bound breadth: one hub term
+# can have tens of thousands of children.
+MAX_TRAVERSAL_NODES = 10_000
+
+
 class OntologyService:
     """Service for managing ontology relations and traversal queries."""
 
@@ -48,11 +53,10 @@ class OntologyService:
         if cls._relation_types is not None:
             return cls._relation_types
 
-        from ..models.terminology import Terminology
+        from .system_terminologies import TERM_RELATION_TYPES_TERMINOLOGY_VALUE
+        from .system_vocabulary import find_system_terminology
 
-        terminology = await Terminology.find_one({
-            "value": "_ONTOLOGY_RELATIONSHIP_TYPES"
-        })
+        terminology = await find_system_terminology(TERM_RELATION_TYPES_TERMINOLOGY_VALUE)
         if not terminology:
             logger.warning("_ONTOLOGY_RELATIONSHIP_TYPES terminology not found")
             return {}
@@ -232,6 +236,8 @@ class OntologyService:
                             "relation_type": item.relation_type,
                             "source_terminology_id": existing.source_terminology_id,
                             "target_terminology_id": existing.target_terminology_id,
+                            "source_term_value": source_term.value,
+                            "target_term_value": target_term.value,
                             "metadata": existing.metadata or {},
                             "status": "active",
                             "created_by": actor,
@@ -563,6 +569,54 @@ class OntologyService:
     # =========================================================================
 
     @staticmethod
+    async def _neighbours(
+        ids: list[str], namespace: str, relation_type: str, direction: str,
+    ) -> dict[str, set[str]]:
+        """Each id's neighbours one hop away: one relation query for the whole
+        level, plus one term query for is_a's parent_term_id links.
+
+        Ancestors follow source→target relations, descendants target→source.
+        A parent_term_id link is followed only to an active term, in both
+        directions: a retired term neither appears nor carries the walk.
+        """
+        out: dict[str, set[str]] = {i: set() for i in ids}
+        here, there = (
+            ("source_term_id", "target_term_id") if direction == "ancestors"
+            else ("target_term_id", "source_term_id")
+        )
+        async for rel in TermRelation.find({
+            "namespace": namespace, here: {"$in": ids},
+            "relation_type": relation_type, "status": "active",
+        }):
+            out[getattr(rel, here)].add(getattr(rel, there))
+        if relation_type != "is_a":
+            return out
+        if direction == "ancestors":
+            parent_of = {
+                t.term_id: t.parent_term_id
+                async for t in Term.find({
+                    "namespace": namespace, "term_id": {"$in": ids},
+                    "parent_term_id": {"$ne": None},
+                })
+            }
+            active = {
+                t.term_id
+                async for t in Term.find({
+                    "namespace": namespace, "term_id": {"$in": list(set(parent_of.values()))},
+                    "status": "active",
+                })
+            } if parent_of else set()
+            for child, parent in parent_of.items():
+                if parent in active:
+                    out[child].add(parent)
+        else:
+            async for child in Term.find({
+                "namespace": namespace, "parent_term_id": {"$in": ids}, "status": "active",
+            }):
+                out[child.parent_term_id].add(child.term_id)
+        return out
+
+    @staticmethod
     async def _traverse(
         start_term_id: str,
         namespace: str,
@@ -570,100 +624,41 @@ class OntologyService:
         direction: str,
         max_depth: int,
     ) -> TraversalResponse:
-        """
-        Generic BFS traversal.
+        """Breadth-first traversal, one level per query.
 
-        For ancestors: follow source→target (outgoing relations).
-        For descendants: follow target→source (incoming relations).
+        Returns at most MAX_TRAVERSAL_NODES nodes; when it stops there,
+        `truncated` is true. `max_depth_reached` is true only when the depth
+        limit cut something off — a level beyond it that would have added a
+        node.
         """
         visited: set[str] = {start_term_id}
-        frontier: deque[tuple[str, int, list[str]]] = deque()
-        # (term_id, depth, path_from_start)
-        frontier.append((start_term_id, 0, [start_term_id]))
-
+        level: list[tuple[str, list[str]]] = [(start_term_id, [start_term_id])]
         nodes: list[TraversalNode] = []
-        max_depth_reached = False
-        use_parent_term_id = (relation_type == "is_a")
-
-        while frontier:
-            current_id, depth, path = frontier.popleft()
-
+        max_depth_reached = truncated = False
+        depth = 0
+        while level and not truncated:
+            neighbours = await OntologyService._neighbours(
+                [term_id for term_id, _ in level], namespace, relation_type, direction,
+            )
             if depth >= max_depth:
-                max_depth_reached = True
-                continue
-
-            # Batch query: find next level neighbors
-            next_ids: set[str] = set()
-
-            if direction == "ancestors":
-                # Outgoing: current is source, targets are ancestors
-                rels = await TermRelation.find({
-                    "namespace": namespace,
-                    "source_term_id": current_id,
-                    "relation_type": relation_type,
-                    "status": "active",
-                }).to_list()
-                for r in rels:
-                    next_ids.add(r.target_term_id)
-
-                # Also check parent_term_id for is_a
-                if use_parent_term_id:
-                    term = await Term.find_one({
-                        "namespace": namespace,
-                        "term_id": current_id,
-                    })
-                    if term and term.parent_term_id:
-                        next_ids.add(term.parent_term_id)
-
-            else:  # descendants
-                # Incoming: current is target, sources are descendants
-                rels = await TermRelation.find({
-                    "namespace": namespace,
-                    "target_term_id": current_id,
-                    "relation_type": relation_type,
-                    "status": "active",
-                }).to_list()
-                for r in rels:
-                    next_ids.add(r.source_term_id)
-
-                # Also check children via parent_term_id for is_a
-                if use_parent_term_id:
-                    children = await Term.find({
-                        "namespace": namespace,
-                        "parent_term_id": current_id,
-                        "status": "active",
-                    }).to_list()
-                    for child in children:
-                        next_ids.add(child.term_id)
-
-            # Add unvisited neighbors to frontier
-            for next_id in next_ids:
-                if next_id not in visited:
+                max_depth_reached = any(n not in visited for ns in neighbours.values() for n in ns)
+                break
+            next_level: list[tuple[str, list[str]]] = []
+            for term_id, path in level:
+                for next_id in sorted(neighbours[term_id] - visited):
+                    if len(nodes) >= MAX_TRAVERSAL_NODES:
+                        truncated = True
+                        break
                     visited.add(next_id)
-                    new_path = [*path, next_id]
-                    nodes.append(TraversalNode(
-                        term_id=next_id,
-                        depth=depth + 1,
-                        path=new_path,
-                    ))
-                    frontier.append((next_id, depth + 1, new_path))
+                    next_path = [*path, next_id]
+                    nodes.append(TraversalNode(term_id=next_id, depth=depth + 1, path=next_path))
+                    next_level.append((next_id, next_path))
+                if truncated:
+                    break
+            level = next_level
+            depth += 1
 
-        # Denormalize: batch-fetch term values for all discovered nodes
-        if nodes:
-            term_ids = [n.term_id for n in nodes]
-            terms_by_id: dict[str, Term] = {}
-            async for term in Term.find({
-                "namespace": namespace,
-                "term_id": {"$in": term_ids},
-            }):
-                terms_by_id[term.term_id] = term
-
-            for node in nodes:
-                term = terms_by_id.get(node.term_id)
-                if term:
-                    node.value = term.value
-                    node.terminology_id = term.terminology_id
-
+        await OntologyService._denormalise_nodes(nodes, namespace)
         return TraversalResponse(
             term_id=start_term_id,
             relation_type=relation_type,
@@ -671,7 +666,25 @@ class OntologyService:
             nodes=nodes,
             total=len(nodes),
             max_depth_reached=max_depth_reached,
+            truncated=truncated,
         )
+
+    @staticmethod
+    async def _denormalise_nodes(nodes: list[TraversalNode], namespace: str) -> None:
+        """Fill each node's value and terminology_id in one query."""
+        if not nodes:
+            return
+        terms_by_id = {
+            t.term_id: t
+            async for t in Term.find({
+                "namespace": namespace, "term_id": {"$in": [n.term_id for n in nodes]},
+            })
+        }
+        for node in nodes:
+            term = terms_by_id.get(node.term_id)
+            if term:
+                node.value = term.value
+                node.terminology_id = term.terminology_id
 
     @staticmethod
     def _to_term_relation_response(

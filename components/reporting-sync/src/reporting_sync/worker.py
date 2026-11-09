@@ -797,8 +797,9 @@ class SyncWorker:
                         ON CONFLICT ("namespace", "source_term_id", "target_term_id", "relation_type")
                         DO UPDATE SET
                             "status" = EXCLUDED."status",
-                            "source_term_value" = EXCLUDED."source_term_value",
-                            "target_term_value" = EXCLUDED."target_term_value",
+                            -- an event without the values keeps the stored ones
+                            "source_term_value" = COALESCE(EXCLUDED."source_term_value", {table_name}."source_term_value"),
+                            "target_term_value" = COALESCE(EXCLUDED."target_term_value", {table_name}."target_term_value"),
                             "metadata" = EXCLUDED."metadata",
                             "created_by" = EXCLUDED."created_by"
                         """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound

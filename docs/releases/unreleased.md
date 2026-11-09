@@ -7,6 +7,35 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### System vocabularies are read from `wip` only, and `_` terminology names are reserved to it; ontology traversal is bounded and honest
+
+- def-store read `_ONTOLOGY_RELATIONSHIP_TYPES` and `_NAME_TYPES` (and the
+  bootstrap checked for its system terminologies) by value alone, across
+  namespaces. A tenant terminology of the same name could stand in for the
+  platform's, and the bootstrap, finding it, seeded into it instead of
+  creating `wip`'s copy. All four lookups now read `wip` only.
+- A terminology value starting with `_` is refused outside `wip`, on create
+  and on rename (`validation_failed`, `details.rule: reserved_value`).
+- Ancestor/descendant traversal queries one level at a time (it made one or
+  two queries per node), returns at most 10 000 nodes and says so with a new
+  `truncated` field, reports `max_depth_reached` only when the depth limit
+  cut something off, and follows `parent_term_id` links through active
+  terms only, in both directions (ancestors used to walk through retired
+  terms).
+- A reactivated term relation's event carries the term values, and
+  reporting-sync keeps stored values an event does not carry — reactivation
+  used to blank `source_term_value` / `target_term_value` in PostgreSQL.
+- `GET /terms/search?rollup=root` keeps a hit whose root is not of an
+  included status, instead of replacing it with (say) a deprecated root
+  that `/validate` refuses.
+- The bootstrap counts the terms it created and reports per-item failures,
+  so a partly failed seed is retried.
+- `POST /ontology/term-relations` counts a `skipped` duplicate as succeeded.
+- `GET /ontology/term-relations` and `/term-relations/all` refuse an
+  identifier they cannot resolve (404) instead of answering an empty 200.
+- **Action:** an app that created terminologies named `_…` in its own
+  namespace must rename them before its next create of one.
+
 ### A forced terminology deactivation needs Template Store's answer; def-store's and document-store's `/health` answer 503 when unhealthy
 
 - `DELETE /api/def-store/terminologies` with `force=true` skipped the
