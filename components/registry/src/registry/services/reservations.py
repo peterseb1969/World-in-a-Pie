@@ -1,7 +1,8 @@
 """Namespace reservations: the operator-approved namespaces of an install.
 
 The deployer renders each app's declared namespaces and their settings into a
-JSON file beside the config-file API keys (WIP_NAMESPACE_RESERVATIONS_FILE).
+JSON file (WIP_NAMESPACE_RESERVATIONS_FILE), which the Registry imports into
+its reservation records (key_import).
 A reservation does two things at the namespace upsert:
 
 - It lets a key that is not a platform admin create its app's namespace: the
@@ -15,8 +16,9 @@ A reservation does two things at the namespace upsert:
 A reservation never retunes a namespace that exists: changing one later
 changes nothing until an operator applies the new settings with an admin key.
 
-The file is read on every upsert. Upserts are rare and the file is small, so
-a changed reservation applies at once, with no reload interval or restart.
+Every reservation lookup first checks whether the file changed and, if it
+did, imports it before answering, so a changed reservation applies at once,
+with no reload interval or restart.
 """
 
 from __future__ import annotations
@@ -79,28 +81,31 @@ class ReservationsUnavailable(Exception):
     """The configured reservations file exists but cannot be used."""
 
 
-def load_reservations() -> dict[str, Reservation]:
-    """The install's reservations by prefix; empty when none are configured.
+def load_reservations() -> dict[str, Reservation] | None:
+    """The install's reservations by prefix; None when there is no file to
+    read (none configured, or the configured file is absent), and the caller
+    keeps what it has.
 
-    A configured but absent file means no reservations (the deployer renders
-    one on every install, so absence is a hand-run Registry). A file that is
-    present and does not parse raises ReservationsUnavailable: guessing would
-    either refuse an app its own namespace or create one at settings nobody
-    approved.
+    A file that is present and unusable raises ReservationsUnavailable: one
+    that does not parse, and an empty one, which the deployer never renders
+    (it always writes `{"reservations": [...]}`), so an empty read is a file
+    caught mid-write. Guessing would either refuse an app its own namespace
+    or create one at settings nobody approved; `{"reservations": []}` is how
+    a file says there are none.
     """
     path = os.getenv(RESERVATIONS_FILE_ENV)
     if not path:
-        return {}
+        return None
     try:
         with open(path) as f:
             raw = f.read()
     except FileNotFoundError:
-        logger.warning("%s=%s does not exist; no namespace reservations", RESERVATIONS_FILE_ENV, path)
-        return {}
+        logger.warning("%s=%s does not exist; the previous reservations stand", RESERVATIONS_FILE_ENV, path)
+        return None
     except OSError as e:
         raise ReservationsUnavailable(f"cannot read {path}: {e}") from e
     if not raw.strip():
-        return {}
+        raise ReservationsUnavailable(f"{path} is empty; a rendered file always holds a reservations list")
     try:
         parsed = _ReservationsFile.model_validate(json.loads(raw))
     except (ValueError, ValidationError) as e:

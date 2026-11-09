@@ -13,16 +13,21 @@ A pass runs at startup before the Registry serves, every
 RECONCILE_INTERVAL_SECONDS, and when a reservation lookup finds either file
 changed. It is idempotent: it creates what the files declare and is missing,
 corrects what differs, and removes managed records the files no longer
-declare. It never removes a record it did not import: Console and restored
-records are only ever taken over, never deleted.
+declare. It never deletes a key or reservation it did not import: a Console
+or restored one is only ever taken over. Grants are the exception, on two
+paths: when the file declares a key's grants, the key's API-made grants on
+namespaces the file does not declare are removed; and a managed key the
+file drops goes as a revoke takes it, with all its grants (API-made
+included) and its API reservations of namespaces never created.
 
 Rules:
 
 - **Never remove on a bad read.** A key file that is missing, unreadable,
   does not parse, or lacks the canary key (every rendered file has it, so a
   file without it is a broken render, not an install with no keys) imports
-  nothing and removes nothing. The same holds for a missing or unparseable
-  reservations file. The previous import stands until the file is fixed.
+  nothing and removes nothing. The same holds for a missing, empty or
+  unparseable reservations file. The previous import stands until the file
+  is fixed.
 - **A collision: the managed record wins, loudly.** A Console or restored
   record with a name, grant or reserved prefix the file declares is taken
   over (the database keeps one record per name, grant and prefix), logged
@@ -446,10 +451,12 @@ async def _import_reservations(report: ImportReport) -> None:
     path = os.getenv(RESERVATIONS_FILE_ENV)
     if not path:
         return
-    if not os.path.exists(path):
+    reservations = load_reservations()  # raises ReservationsUnavailable
+    if reservations is None:
+        # Absent (also when it vanished since the change check): a bad read,
+        # so the previous import stands.
         report.skipped.append(f"{RESERVATIONS_FILE_ENV}={path} does not exist")
         return
-    reservations = load_reservations()  # raises ReservationsUnavailable
 
     for prefix, r in reservations.items():
         settings = r.settings.model_dump(exclude_none=True)

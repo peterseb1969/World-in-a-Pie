@@ -9,7 +9,9 @@ Two writers keep them here, one record per prefix:
   `app` names the app, and wip-deploy owns them;
 - the Registry's API: a platform admin creates a runtime API key that reserves
   its namespaces, for an app wip-deploy does not deploy. `app` names that key,
-  the reservation's owner, and revoking the key releases it.
+  the reservation's owner. Revoking the key releases the reservation while
+  its namespace was never created; once the namespace exists, the
+  reservation is kept for an operator to release (DELETE /reservations/{prefix}).
 """
 
 from datetime import UTC, datetime

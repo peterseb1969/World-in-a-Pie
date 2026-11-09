@@ -20,6 +20,10 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   listed, as the config key it is (`source: "config"`, `enabled: false`).
   The create response carries `origin`, `managed_by` and `shadowed_by` like
   a read does.
+- **Key import.** An empty reservations file, or one that vanishes while it
+  is read, is a bad read: the managed reservations stand (the deployer never
+  renders an empty file; `{"reservations": []}` still means none). The key
+  shadow check runs one pass at a time, whoever starts it.
 
 ### `@wip/proxy` 0.9.0 no longer forwards a client's identity: `forwardIdentity` is removed
 

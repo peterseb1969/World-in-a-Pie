@@ -48,6 +48,11 @@ RECONCILE_INTERVAL_SECONDS = 10.0
 # just removed, or the reverse.
 provider_lock = asyncio.Lock()
 
+# One reconcile pass at a time: startup, the import loop and a system
+# restore all reconcile, and their passes share the match cache and the
+# shadow map below.
+_reconcile_lock = asyncio.Lock()
+
 # runtime key name -> name of the config key that shadows it
 _shadowed: dict[str, str] = {}
 # (runtime key_hash, config prehash) -> whether they match
@@ -115,8 +120,13 @@ async def reconcile(provider: APIKeyProvider) -> dict[str, str]:
 
     Newly shadowed keys leave the provider (which evicts their cached
     matches); keys no longer shadowed return to it if they still exist and
-    are enabled. Returns the current shadow map.
+    are enabled. Returns the current shadow map. Passes run one at a time.
     """
+    async with _reconcile_lock:
+        return await _reconcile(provider)
+
+
+async def _reconcile(provider: APIKeyProvider) -> dict[str, str]:
     # Only API-made keys can be shadowed: a managed key is the key file's own
     # (key_import), so it cannot shadow itself. Its plaintext shadows an API
     # key of the same value as a loaded config key's does.
@@ -136,7 +146,7 @@ async def reconcile(provider: APIKeyProvider) -> dict[str, str]:
     }
     runtime = [(d.name, d.key_hash) for d in docs]
     # bcrypt is slow and CPU-bound: keep it off the event loop. The cache is
-    # only touched by reconcile, which runs one pass at a time.
+    # only touched here, under _reconcile_lock.
     shadows = await asyncio.to_thread(
         compute_shadows, config_prehashes, runtime, _match_cache
     )
@@ -164,18 +174,6 @@ async def reconcile(provider: APIKeyProvider) -> dict[str, str]:
         _shadowed.clear()
         _shadowed.update(shadows)
     return dict(shadows)
-
-
-async def run_reconcile_loop(provider: APIKeyProvider) -> None:
-    """Reconcile every RECONCILE_INTERVAL_SECONDS until cancelled."""
-    while True:
-        await asyncio.sleep(RECONCILE_INTERVAL_SECONDS)
-        try:
-            await reconcile(provider)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("API key shadow check failed; keeping the previous result")
 
 
 def reset_for_tests() -> None:
