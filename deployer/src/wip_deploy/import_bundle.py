@@ -9,10 +9,9 @@ consume on a laptop side to seed an apps-only install. It carries:
   - The cloud's internal CA cert bytes (PEM) for TLS trust
   - A suggested-apps list (informational; the operator picks)
 
-This module is the *parser* half. CLI wiring lives in `cli.py`. The
-sister module `secrets.py` (file backend) is what eventually owns the
-written secret values; this module only validates + returns the
-structured data.
+This module is the *parser* half: it only validates and returns the
+structured data. `cli.py`'s `import-bundle` writes the secret files itself
+(`_write_secret`), in the file secret backend's layout and modes.
 
 Design constraints captured by the schema and enforced here:
 

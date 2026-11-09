@@ -1,7 +1,8 @@
 """Named preset fragments.
 
 Each preset is a partial DeploymentSpec (dict form) that provides
-sensible defaults for `modules`, `auth`, `apps`, and `images`. The CLI
+sensible defaults for `modules`, `auth` and `apps` (a preset may also
+carry `images`; none does today). The CLI
 fills in `target`, `network`, `platform`, and `secrets` from user flags,
 then merges the preset on top.
 

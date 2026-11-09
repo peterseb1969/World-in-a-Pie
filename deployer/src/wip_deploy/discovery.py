@@ -106,7 +106,7 @@ def _load_component(path: Path) -> Component | DiscoveryError:
         data = yaml.safe_load(path.read_text())
     except yaml.YAMLError as e:
         return DiscoveryError(path, f"YAML parse error: {e}")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         return DiscoveryError(path, f"read error: {e}")
 
     if not isinstance(data, dict):
@@ -123,7 +123,7 @@ def _load_app(path: Path) -> App | DiscoveryError:
         data = yaml.safe_load(path.read_text())
     except yaml.YAMLError as e:
         return DiscoveryError(path, f"YAML parse error: {e}")
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         return DiscoveryError(path, f"read error: {e}")
 
     if not isinstance(data, dict):

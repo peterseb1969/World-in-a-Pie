@@ -7,6 +7,46 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### wip-deploy: smaller CLI corrections
+
+- **`install --install-dir DIR`** keeps a new install's file secrets in
+  `DIR/secrets` (they went to `~/.wip-deploy/<name>/secrets`, outside the
+  install dir). An existing install keeps the location its saved spec
+  records.
+- `install --no-wait` (and every mutating verb with it) says "applied;
+  health not checked" in yellow instead of a green "✓ Install complete."
+- `remove-app` removes the app's container only after the apply succeeds
+  (as `remove-module` does); a refused apply leaves the app running, matching
+  the saved spec.
+- `redeploy` warns about tag overrides that match nothing on every run, not
+  only when the call passes `--image-tag`.
+- `--apps-only` with `--auth-mode` other than `api-key-only`, or with
+  `--auth-gateway`, is refused by name instead of failing as "oidc needs a
+  Dex user".
+- `import-bundle` refuses a `--name` that is not an install name (it wrote
+  secrets wherever `--name ../x` pointed), refuses to replace a different
+  master `api-key` in a dir holding a saved install, prints a valid suggested
+  command when the bundle suggests no app, and fingerprints every
+  certificate of a chain, CRLF line ends included.
+- Missing, unreadable or malformed operator files (`connector add
+  --secret-file/--config-file`, `user add --password-hash-file`, `user import
+  --file/--groups-file`, `export-ca --out`) end in `error:` and exit 2, not a
+  traceback. `connector add --config KEY=20250101` keeps the value a string
+  (numbers and `null` were coerced), and the redirect-URI line is printed only
+  for connectors that take one (not ldap, keystone, atlassian-crowd).
+- `nuke --purge-all` also removes each install's pod (`pod_<install>`), which
+  it left behind. `nuke` and `status` bound their kubectl calls (30 s for
+  reads, 600 s for deletes that wait on finalizers).
+- `render`'s live-install guard reads the pre-rename `deployment.json` too;
+  `discover()` collects a non-UTF-8 manifest as an error instead of raising.
+- Help and docs say what the code does: `--secrets-backend` (only `file` is
+  implemented), `--namespace` (derives `--name` on k8s only), `status`
+  (no image tags), `images` (the public edge is not listed), dev image tags
+  `<name>:dev-<install>`, `rotate-key` (prints nothing without
+  `--show-key`), container names `<install>_wip-<name>`, the `wip-kb` app
+  name in examples, and the design doc's `--on-timeout` / `upgrade` /
+  hook-order claims (none exist as described).
+
 ### wip-deploy nuke: `--dry-run` removes nothing; a k8s nuke keeps the data unless `--remove-data`
 
 - **`nuke --dry-run` was destructive on one install.** The flag reached

@@ -1,5 +1,7 @@
-"""Which image each service of an install runs, and why — and what a tag
-change would move.
+"""Which image each component and app of an install runs, and why — and
+what a tag change would move. The public edge (`wip-caddy`) is not listed:
+the renderer adds it with the pinned upstream caddy image, which no tag
+moves.
 
 `wip-deploy images` prints this; a tag roll (`redeploy --tag`) uses it to
 see which apps the new base tag would carry along. Read-only: it computes
@@ -9,7 +11,7 @@ A service's tag comes from the first precedence step that has one
 (`config_gen/images.py`): a per-service pin, the deployment-wide tag, the
 manifest pin, then `latest`. Fully-qualified (infra) images skip the
 deployment-wide tag. On the dev target, components with a build context
-and apps with a local source are built from source as `<name>:dev`; tags
+and apps with a local source are built from source as `<name>:dev-<install>`; tags
 do not reach them.
 """
 

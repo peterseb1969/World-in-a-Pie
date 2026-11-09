@@ -92,6 +92,9 @@ class ApplyResult:
     # entry is a "<hook> on <owner>" label the CLI surfaces so the skip is
     # visible, not silent (CASE-426).
     post_install_skipped: list[str] = field(default_factory=list)
+    # False when the apply did not wait (--no-wait): `healthy` is then not a
+    # finding, only its default.
+    health_checked: bool = True
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -258,6 +261,7 @@ def apply_compose(
         services_up=up_count,
         healthy=healthy,
         post_install_skipped=post_install_skipped,
+        health_checked=deployment.spec.apply.wait,
     )
 
 
@@ -729,7 +733,7 @@ def _reload_proxy(container: str) -> None:
 
 
 def stop_and_remove_container(install: str, name: str) -> None:
-    """Force-stop and remove a single `wip-<name>` container.
+    """Force-stop and remove one install's `<install>_wip-<name>` container.
 
     Used by `wip-deploy remove-app` / `remove-module` (CASE-313) so a
     spec mutation that drops a component doesn't leave an orphan
@@ -1038,7 +1042,10 @@ def _parse_ps_output(stdout: str) -> dict[str, str]:
 
     Fields we care about:
       - Name / Service: the container name
-      - Health: one of 'healthy' | 'unhealthy' | 'starting' | 'none' | ''
+      - Health: the container's health ('healthy' | 'unhealthy' |
+        'starting'), or, for a container without a healthcheck, its state
+        ('running', 'exited', 'created', 'restarting', 'paused', 'dead', …).
+        Callers treat anything but 'healthy' as not ready.
     """
     stdout = stdout.strip()
     if not stdout:
@@ -1103,8 +1110,9 @@ def _post_install_owners(
     apps: list[App],
     deployment: Deployment,
 ) -> list[tuple[str, list[PostInstallHook]]]:
-    """Active components + enabled apps that declare post-install hooks,
-    in apply order. Single source of truth for who has hooks, shared by the
+    """Active components + enabled apps that declare post-install hooks:
+    components in discovery order (directory name), then apps. `depends_on`
+    does not order them. Single source of truth for who has hooks, shared by the
     runners and by the skip-accounting path (CASE-426)."""
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
 
@@ -1440,6 +1448,7 @@ def apply_k8s(
         services_up=up_count,
         healthy=healthy,
         post_install_skipped=post_install_skipped,
+        health_checked=deployment.spec.apply.wait,
     )
 
 
@@ -1585,8 +1594,10 @@ def _ensure_self_signed_tls_secret(
 
     First run: creates the namespace if missing, generates a CN=hostname
     self-signed cert (RSA-4096, 1y validity), creates the Secret.
-    Re-run: detects existing Secret and no-ops (rotation is via
-    `kubectl delete secret <name> -n <ns>` then re-install).
+    Re-run: an existing Secret is kept only when its certificate's SAN
+    covers the hostname and every app origin; otherwise (a mismatch, or a
+    cert it cannot read) it refuses with ApplyError and says to delete the
+    Secret (`kubectl delete secret <name> -n <ns>`) and re-apply.
 
     Required for tls=self-signed (auto-applied for --target k8s when
     --tls is unspecified or 'internal'). See CASE-247.

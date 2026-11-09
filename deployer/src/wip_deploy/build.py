@@ -49,7 +49,6 @@ class BuildInputs:
     # 8443 for compose/dev (Caddy as non-root). Explicit ports pass through.
     https_port: int | None = None
     http_port: int | None = None
-    # "path" | "subdomain"; None → subdomain, the default for new installs.
     # CASE-358: URL of a remote WIP this install points at. Plumbs to
     # NetworkSpec.remote_wip_url. None for standard same-host installs.
     remote_wip_url: str | None = None
@@ -148,6 +147,14 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
                 f"({', '.join(inputs.add)}). All optional WIP services "
                 f"have from_component: deps on core, which is suppressed "
                 f"in apps-only mode. Either drop --apps-only or drop --add."
+            )
+        # The overrides below would undo the apps-only auth and then fail
+        # as an unrelated "oidc needs a Dex user" error; refuse them here.
+        if inputs.auth_mode not in (None, "api-key-only") or inputs.auth_gateway:
+            raise ValueError(
+                "--apps-only runs with auth.mode=api-key-only and no gateway "
+                "(there is no Dex in apps-only mode): drop --auth-mode / "
+                "--auth-gateway, or drop --apps-only."
             )
         # Preset's modules.optional list (mcp-server, reporting-sync,
         # etc.) all need core. Clear them.

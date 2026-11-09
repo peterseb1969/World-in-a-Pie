@@ -584,14 +584,13 @@ wip-deploy install [OPTIONS]
     --tag TAG
     --no-wait                   # skip healthy-wait
     --wait-timeout N            # override spec timeout
-    --on-timeout fail|warn|continue
-    --save-spec PATH            # dump resolved spec
-    --from-spec PATH            # use dumped spec as input
     -y, --yes                   # skip confirmation
+    # (Planned and not built: --on-timeout, --save-spec, --from-spec.)
 
-wip-deploy upgrade [--target T] [--tag TAG] [wait options]
-    # Re-render, re-apply. Secrets preserved. Useful for image-tag bumps
-    # or picking up manifest changes.
+wip-deploy redeploy --name N [--tag TAG]
+    # Re-render the saved spec, re-apply. Secrets preserved. Image-tag
+    # bumps and manifest changes. (An `upgrade` verb was planned; redeploy
+    # is what exists.)
 
 wip-deploy stop  [--name N | --namespace NS]   # CASE-475
 wip-deploy start [--name N | --namespace NS]    # CASE-475
@@ -607,7 +606,8 @@ wip-deploy restart [COMPONENT...]
     # required) — `compose restart <svc>`. NOT a whole-install verb.
 
 wip-deploy status
-    # Reads deployed state: running containers/pods, health, image tags.
+    # Reads deployed state: running containers/pods and their health
+    # (name / state / health; image tags are `wip-deploy images`).
 
 wip-deploy render --target T --output-dir DIR
     # Dry-run: emit the file tree without applying.
@@ -644,7 +644,7 @@ wip-deploy dev [--mode tilt|simple]
 
 Configuration precedence (highest wins):
 
-1. CLI flag (`--no-wait`, `--wait-timeout N`, `--on-timeout X`)
+1. CLI flag (`--no-wait`, `--wait-timeout N`; there is no `--on-timeout` flag)
 2. Deployment spec (`spec.apply.wait`, `spec.apply.timeout_seconds`, `spec.apply.on_timeout`)
 3. Built-in defaults (`wait=true`, `timeout=300s`, `on_timeout="fail"`)
 
@@ -659,7 +659,10 @@ Both must be true. Post-install hooks run *after* the component is healthy; each
 
 - `fail` — exit non-zero, surface which components didn't reach healthy
 - `warn` — log warning, continue (install "succeeds")
-- `continue` — quieter form of warn, intended for CI/scripted flows
+- `continue` — today the same as `warn`; the code does not tell them apart
+
+Only `fail` is reachable without hand-editing the saved spec, since no
+flag sets `on_timeout`.
 
 **Rationale:** first-install ergonomics need wait-to-healthy — otherwise `wip-deploy install && wip-deploy status` reports breakage because the platform is still starting. CI/scripted flows benefit from `--no-wait`. Upgrade operations benefit from `--on-timeout warn` because one stuck pod shouldn't fail the whole upgrade. Neither default is right for the other context; configurability at both levels is necessary.
 
@@ -675,7 +678,7 @@ Each component declares `depends_on: [mongodb, registry]`.
 
 **Dev renderer (Tilt)** uses Tilt's native resource graph: `resource(name, deps=[...])`.
 
-**Post-install hooks** handle cases the platform can't (e.g., Registry's `initialize-wip` API call). They run after the target component reports healthy, in declaration order within a component, across components in `depends_on` topological order.
+**Post-install hooks** handle cases the platform can't (e.g., Registry's `initialize-wip` API call). They run after the target component reports healthy, in declaration order within a component; across components in discovery order (component directories alphabetically), then apps. `depends_on` does not order them.
 
 ---
 

@@ -697,9 +697,10 @@ class PlatformSpec(WIPModel):
 class SecretsSpec(WIPModel):
     """How secrets are resolved. The spec never carries secret values.
 
-    - `file`: generate on first install, persist to a directory
-    - `k8s-secret`: read from / write to k8s Secret objects
-    - `sops`: SOPS-encrypted YAML file
+    - `file`: generate on first install, persist to a directory — the
+      only backend implemented
+    - `k8s-secret`, `sops`: reserved names; every render/install refuses
+      them (`_ensure_secrets_via_spec`)
     """
 
     backend: Literal["file", "k8s-secret", "sops"]
@@ -717,7 +718,8 @@ class ApplySpec(WIPModel):
 
     `wait=True` (default) polls for every component's healthcheck to
     succeed (and for platform-level readiness) before returning. The CLI
-    can override via `--no-wait`, `--wait-timeout N`, `--on-timeout X`."""
+    can override `wait` and the timeout via `--no-wait` / `--wait-timeout N`.
+    No flag sets `on_timeout`, and `warn` and `continue` behave alike."""
 
     wait: bool = True
     timeout_seconds: int = Field(default=300, ge=1)

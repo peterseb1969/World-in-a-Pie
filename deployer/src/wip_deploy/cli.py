@@ -1,7 +1,7 @@
-"""wip-deploy CLI entrypoint.
+"""wip-deploy CLI entrypoint: every verb (`wip-deploy --help` lists them).
 
-Step 3 scope: `validate` and `show-spec` verbs. Renderers + `install` /
-`upgrade` / `render` come in later steps.
+There is no `upgrade` verb by design: re-applying a changed spec is
+`redeploy` (docs/design/wip-deploy-v2.md).
 """
 
 from __future__ import annotations
@@ -367,9 +367,10 @@ def _namespace_opt() -> typer.models.OptionInfo:
     return typer.Option(
         "--namespace",
         help=(
-            "K8s namespace. Defaults to 'wip'. Bidirectional with --name: "
-            "passing --namespace X (without --name) auto-derives "
-            "--name X (install dir → ~/.wip-deploy/X/); passing --name X "
+            "K8s namespace. Defaults to 'wip'. Bidirectional with --name "
+            "on --target k8s: passing --namespace X (without --name) "
+            "auto-derives --name X (install dir → ~/.wip-deploy/X/); "
+            "on compose/dev the name stays 'default'. Passing --name X "
             "(without --namespace) for --target k8s auto-derives the "
             "namespace to X. Pass both explicitly to use different values "
             "(e.g., --name prod-instance --namespace prod). (CASE-365)"
@@ -607,8 +608,8 @@ def _secrets_backend_opt() -> typer.models.OptionInfo:
         help=(
             "Secret backend. Default: file (all targets, incl. k8s — the k8s "
             "renderer bakes file values into an in-cluster Secret). "
-            "'k8s-secret' is not yet implemented and is rejected at install; "
-            "'sops' requires --secrets-location."
+            "Only 'file' is implemented: 'k8s-secret' and 'sops' are "
+            "accepted by the spec but every render/install refuses them."
         ),
     )
 
@@ -655,9 +656,10 @@ def _resolve_name(
     - Unspecified name otherwise: 'default' (matches the historical
       behaviour for compose/dev installs).
 
-    Verbs that don't take --target / --namespace (status, rebuild,
-    restart, nuke) call this with just `name`, falling through to
-    'default' for the unspecified case.
+    Verbs that take neither --target nor --namespace (verify, rebuild,
+    restart, up, nuke, …) call this with just `name`, falling through to
+    'default' for the unspecified case. status, stop and start pass the
+    target they derive and the namespace too.
     """
     if name is not None:
         return name
@@ -1048,10 +1050,13 @@ def render(
     # `rebuild`/`restart`/`start` act on the rendered files as they stand —
     # so writing a preview over a live install would silently replace what
     # those verbs run.
-    if (install_dir / _DEPLOYMENT_STATE_FILENAME).exists():
+    saved_state = next(
+        (install_dir / n for n in STATE_FILENAMES if (install_dir / n).exists()), None,
+    )
+    if saved_state is not None:
         typer.echo(
             f"error: {install_dir} holds a live install (it has a "
-            f"{_DEPLOYMENT_STATE_FILENAME}); render will not overwrite its "
+            f"{saved_state.name}); render will not overwrite its "
             "files. Pass --output-dir <scratch dir> to preview, or use "
             "`wip-deploy redeploy` to re-render the install itself.",
             err=True,
@@ -1223,6 +1228,7 @@ def install(
     hostname = _resolve_hostname(hostname, target)
     namespace = _resolve_namespace(name, target=target, namespace=namespace)
     name = _resolve_name(name, target=target, namespace=namespace)
+    secrets_location = _install_secrets_location(secrets_location, install_dir)
     deployment, components, apps_list = _assemble(
         preset=preset,
         target=target,
@@ -1416,16 +1422,7 @@ def install(
     )
 
     typer.echo("")
-    if result.healthy:
-        typer.echo(typer.style("✓ Install complete.", fg=typer.colors.GREEN, bold=True))
-    else:
-        typer.echo(
-            typer.style(
-                "⚠ Install finished, but not all services reached healthy",
-                fg=typer.colors.YELLOW,
-                bold=True,
-            )
-        )
+    _echo_apply_outcome(result, "Install complete", "Install")
     _echo_skipped_post_install(result)
     scheme_port = deployment.spec.network.https_port
     scheme_suffix = "" if scheme_port in (443,) else f":{scheme_port}"
@@ -1471,8 +1468,8 @@ def status(
                 "Re-render manifests from the persisted spec and run "
                 "`kubectl diff` against the live cluster. K8s only. "
                 "Exits 0 on no drift, 1 on drift, 2 on error. Requires "
-                "an install dir with a deployment.json (written by "
-                "`wip-deploy install`)."
+                "an install dir with a saved spec "
+                "(deployment.deployer-state, written by `wip-deploy install`)."
             ),
         ),
     ] = False,
@@ -2252,7 +2249,7 @@ def register_app_cmd(
     Examples:
 
       wip-deploy register-app react-console --path /Users/peter/Development/WIP-ReactConsole
-      wip-deploy register-app kb --path /Users/peter/Development/WIP-KB
+      wip-deploy register-app wip-kb --path /Users/peter/Development/WIP-KB
     """
     from wip_deploy.app_registry import AppRegistryError, register_app
 
@@ -2285,7 +2282,7 @@ def unregister_app_cmd(
 
     Examples:
 
-      wip-deploy unregister-app kb
+      wip-deploy unregister-app wip-kb
     """
     from wip_deploy.app_registry import unregister_app
 
@@ -2436,12 +2433,35 @@ def validate_manifest_cmd(
 # ────────────────────────────────────────────────────────────────────
 
 
+def _note_repo_root_move(
+    root: Path, stamped: Path, deployment: Deployment, *, will_persist: bool,
+) -> None:
+    """An explicit root that differs from the stamped one moves the install:
+    discovery, the re-stamped state and — on the dev target — the
+    bind-mounted source all follow the flag. Legitimate, but never silent.
+    A read-only verb re-stamps nothing, and says so."""
+    mounts = " and the dev source mounts" if deployment.spec.target == "dev" else ""
+    restamp = (
+        f"manifests{mounts} now come from {root}, and the install is re-stamped to it"
+        if will_persist
+        else f"this read uses {root}'s manifests; the install is not changed"
+    )
+    typer.echo(
+        f"note: --repo-root {root} differs from the checkout this install "
+        f"was stamped with ({stamped}); {restamp}.",
+        err=True,
+    )
+
+
 def _load_and_discover_for_mutation(
     install_name: str | None,
     install_dir: Path | None,
     repo_root: Path | None = None,
+    *,
+    will_persist: bool = True,
 ) -> tuple[str, Path, Deployment, list[Component], list[App], Path]:
-    """Shared prelude for the additive verbs.
+    """Shared prelude for the additive verbs. A read-only caller passes
+    `will_persist=False`: it re-stamps nothing, so the note says so.
 
     Resolves the install dir, loads the persisted Deployment (exits
     cleanly if missing — additive verbs only make sense against an
@@ -2469,17 +2489,7 @@ def _load_and_discover_for_mutation(
         if stamped is not None and stamped.is_dir():
             root = stamped
     elif stamped is not None and stamped.resolve() != root.resolve():
-        # An explicit root that differs from the stamped one moves the
-        # install: discovery, the re-stamped state and — on the dev target —
-        # the bind-mounted source all follow the flag. Legitimate, but never
-        # silent.
-        mounts = " and the dev source mounts" if deployment.spec.target == "dev" else ""
-        typer.echo(
-            f"note: --repo-root {root} differs from the checkout this install "
-            f"was stamped with ({stamped}); manifests{mounts} now come from "
-            f"{root}, and the install is re-stamped to it.",
-            err=True,
-        )
+        _note_repo_root_move(root, stamped, deployment, will_persist=will_persist)
     if root is None:
         try:
             root = find_repo_root()
@@ -2620,17 +2630,31 @@ def _apply_and_persist_mutation(
 
     _persist_deployment(deployment, target_dir, repo_root=repo_root, secrets=secrets)
 
-    if result.healthy:
-        typer.echo(typer.style(f"✓ {action_label}.", fg=typer.colors.GREEN, bold=True))
-    else:
+    _echo_apply_outcome(result, action_label, action_label)
+    _echo_skipped_post_install(result)
+
+
+def _echo_apply_outcome(result: ApplyResult, done: str, what: str) -> None:
+    """Green only when health was checked and held; --no-wait never checked."""
+    if not result.health_checked:
         typer.echo(
             typer.style(
-                f"⚠ {action_label} finished, but not all services reached healthy",
+                f"⊙ {what} applied; health not checked (--no-wait) — "
+                f"`wip-deploy status` shows it.",
                 fg=typer.colors.YELLOW,
                 bold=True,
             )
         )
-    _echo_skipped_post_install(result)
+    elif result.healthy:
+        typer.echo(typer.style(f"✓ {done}.", fg=typer.colors.GREEN, bold=True))
+    else:
+        typer.echo(
+            typer.style(
+                f"⚠ {what} finished, but not all services reached healthy",
+                fg=typer.colors.YELLOW,
+                bold=True,
+            )
+        )
 
 
 @app.command("add-app")
@@ -2692,7 +2716,7 @@ def add_app(
     Examples:
 
       wip-deploy add-app react-console --name wip-dev-local
-      wip-deploy add-app kb --app-source /Users/peter/Development/WIP-KB
+      wip-deploy add-app wip-kb --app-source /Users/peter/Development/WIP-KB
       wip-deploy add-app wip-aa --tag 20261018a --name prod-test
     """
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
@@ -2789,7 +2813,8 @@ def remove_app(
     `spec.apps`, drops any `app_sources` entry on the dev platform and
     any `images.tag_overrides` entry for the app, re-renders,
     re-applies, persists. The removed app's container is
-    force-removed via `podman rm -f wip-<name>` so it doesn't linger
+    force-removed (`podman rm -f <install>_wip-<name>`), once the apply
+    has succeeded, so it doesn't linger
     as an orphan after the rendered compose stops mentioning it
     (CASE-313).
 
@@ -2821,24 +2846,25 @@ def remove_app(
     # the app returns months later, silently pins it to a stale tag.
     deployment.spec.images.tag_overrides.pop(app_name, None)
 
-    # Stop the orphan container BEFORE re-applying so the operator
-    # doesn't see a "running" app that's no longer in the spec.
-    from wip_deploy.apply import stop_and_remove_container
-    stop_and_remove_container(deployment.metadata.name, app_name)
-
     _apply_and_persist_mutation(
         deployment,
         components,
         apps_list,
         target_dir,
         f"Removed app {app_name!r} from {resolved_name}",
-        # CASE-443: config-only apply — the container is already removed
-        # above; an empty scope skips `compose up` entirely (a bare
-        # `up -d` would recreate the whole stack) and still reloads the
-        # proxies so the dropped route disappears.
+        # Config-only apply: an empty scope skips `compose up` entirely (a
+        # bare `up -d` would recreate the whole stack) and still reloads
+        # the proxies so the dropped route disappears. The container is
+        # removed below.
         services_scope=[],
         repo_root=repo_root,
     )
+
+    # Only once the apply succeeded (as remove-module does): a refused
+    # validation, secret check or render leaves the app running, matching
+    # the saved spec that still lists it.
+    from wip_deploy.apply import stop_and_remove_container
+    stop_and_remove_container(deployment.metadata.name, app_name)
 
 
 @app.command("app-deploy")
@@ -3073,10 +3099,11 @@ def redeploy(
             f"no longer moves it — roll it with --image-tag {app_name}=<tag> "
             "or `app-deploy`)."
         )
+    # An override that matches no enabled component/app is never consulted:
+    # warn on every redeploy, as install does, not only when this call
+    # passes one, so a pin an earlier mutation left dead still surfaces.
+    _warn_unmatched_tag_overrides(deployment, components, apps_list)
     if overrides:
-        # CASE-556: an override that matches no enabled component/app is
-        # never consulted — warn here as install does.
-        _warn_unmatched_tag_overrides(deployment, components, apps_list)
         _warn_app_edge_reach(deployment)
     ranges_changed = False
     if cluster_cidr:
@@ -3232,14 +3259,15 @@ def images(
     ] = "table",
     repo_root: Annotated[Path | None, _repo_root_opt()] = None,
 ) -> None:
-    """Show the image each service of an install runs, and why. Changes nothing.
+    """Show the image each component and app of an install runs, and why
+    (not the public edge, which runs the pinned upstream caddy image). Changes nothing.
 
     SOURCE names the rule that decided the tag: `pin` (a per-service
     `--image-tag`, also written by `add-app --tag` / `app-deploy --tag`),
     `base` (the deployment-wide `--tag`), `manifest` (the tag in the
     component's or app's manifest), `latest`, `upstream` (an infra image's
     own version pin, which a base tag never touches), or `source` (dev
-    target: built locally as `<name>:dev`, tags do not apply).
+    target: built locally as `<name>:dev-<install>`, tags do not apply).
 
     With `--tag` / `--image-tag` it previews exactly the roll `redeploy`
     would make with the same flags, without applying it: each row says
@@ -3265,7 +3293,7 @@ def images(
         raise typer.Exit(2)
 
     resolved_name, _, deployment, components, apps_list, _ = (
-        _load_and_discover_for_mutation(name, install_dir, repo_root)
+        _load_and_discover_for_mutation(name, install_dir, repo_root, will_persist=False)
     )
 
     preview = tag is not None or bool(image_tag)
@@ -3405,7 +3433,7 @@ def rotate_key(
     definition carries a hash of the secrets and key files it reads at
     start, so a changed key is a changed definition (k8s rolls those pods,
     compose recreates those containers; dev recreates everything anyway).
-    The new plaintext is printed ONCE.
+    The new plaintext is not printed unless --show-key is passed (then once).
 
     No grace window: once the apply completes the old value is refused.
     Holders outside the install (scripts, other machines, people) must be
@@ -3963,7 +3991,7 @@ def _load_import_entries(path: Path, fmt: str) -> list[dict[str, Any]]:
 
     if fmt == "auto":
         fmt = "csv" if path.suffix.lower() == ".csv" else "dex"
-    text = path.read_text()
+    text = _read_operator_file(path)
     entries: list[dict[str, Any]] = []
     if fmt == "csv":
         reader = csv.DictReader(text.splitlines())
@@ -3986,7 +4014,11 @@ def _load_import_entries(path: Path, fmt: str) -> list[dict[str, Any]]:
             })
         return entries
 
-    data = yaml.safe_load(text)
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError as e:
+        typer.echo(f"error: {path} is not valid YAML: {e}", err=True)
+        raise typer.Exit(2) from e
     static = data.get("staticPasswords") if isinstance(data, dict) else data
     if not isinstance(static, list):
         typer.echo(
@@ -4010,7 +4042,7 @@ def _load_import_entries(path: Path, fmt: str) -> list[dict[str, Any]]:
 def _load_groups_file(path: Path) -> dict[str, list[str]]:
     """username -> groups, from a YAML (or JSON) mapping whose values are a
     list of groups or a comma-separated string."""
-    data = yaml.safe_load(path.read_text()) or {}
+    data = _load_operator_yaml(path) or {}
     if not isinstance(data, dict):
         typer.echo(
             f"error: {path} must map usernames to groups, e.g. "
@@ -4090,7 +4122,9 @@ def user_import(
     entries = _load_import_entries(file, fmt)
 
     resolved_name, target_dir, deployment, components, apps_list, repo_root = (
-        _load_and_discover_for_mutation(name, install_dir, repo_root)
+        _load_and_discover_for_mutation(
+            name, install_dir, repo_root, will_persist=not dry_run,
+        )
     )
     declared = {u.username: u for u in deployment.spec.auth.users}
     emails = {u.email: u.username for u in deployment.spec.auth.users}
@@ -4454,12 +4488,38 @@ def _file_secrets_dir(deployment: Deployment, *, what: str = "connector secrets"
     return Path(spec.location)
 
 
+def _read_operator_file(path: Path) -> str:
+    """An operator-supplied file's text, or `error:` + exit 2 when it is
+    missing, unreadable or not UTF-8 (instead of a traceback)."""
+    try:
+        return path.read_text()
+    except (OSError, UnicodeDecodeError) as e:
+        typer.echo(f"error: cannot read {path}: {e}", err=True)
+        raise typer.Exit(2) from e
+
+
+def _write_operator_file(path: Path, content: bytes) -> None:
+    try:
+        path.write_bytes(content)
+    except OSError as e:
+        typer.echo(f"error: cannot write {path}: {e}", err=True)
+        raise typer.Exit(2) from e
+
+
+def _load_operator_yaml(path: Path) -> Any:
+    try:
+        return yaml.safe_load(_read_operator_file(path))
+    except yaml.YAMLError as e:
+        typer.echo(f"error: {path} is not valid YAML: {e}", err=True)
+        raise typer.Exit(2) from e
+
+
 def _read_secret_source(source: Path) -> str:
     """The secret from a file, or from stdin for '-'. Never from the
     command line, where it would land in shell history."""
     import sys
 
-    value = sys.stdin.read() if str(source) == "-" else source.read_text()
+    value = sys.stdin.read() if str(source) == "-" else _read_operator_file(source)
     value = value.strip()
     if not value:
         typer.echo(f"error: no secret in {source}", err=True)
@@ -4479,7 +4539,7 @@ def _parse_connector_config(
 ) -> dict[str, Any]:
     config: dict[str, Any] = {}
     if config_file is not None:
-        loaded = yaml.safe_load(config_file.read_text()) or {}
+        loaded = _load_operator_yaml(config_file) or {}
         if not isinstance(loaded, dict):
             typer.echo(f"error: {config_file} must hold a mapping", err=True)
             raise typer.Exit(2)
@@ -4489,10 +4549,24 @@ def _parse_connector_config(
         if not sep or not key:
             typer.echo(f"error: --config expects KEY=VALUE, got {pair!r}", err=True)
             raise typer.Exit(2)
-        # YAML scalars, so `insecureSkipEmailVerified=true` is a boolean and
-        # `scopes=[openid, email]` a list; anything else stays a string.
-        config[key] = yaml.safe_load(raw) if raw else raw
+        # YAML, so `insecureSkipEmailVerified=true` is a boolean and
+        # `scopes=[openid, email]` a list. A value YAML reads as a number or
+        # null stays the string it was typed as (`clientID=20250101`):
+        # Dex settings of that shape are strings.
+        config[key] = _connector_value(raw)
     return config
+
+
+def _connector_value(raw: str) -> Any:
+    if not raw:
+        return raw
+    try:
+        value = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return raw
+    if value is None or (isinstance(value, (int, float)) and not isinstance(value, bool)):
+        return raw
+    return value
 
 
 @connector_app.command("add")
@@ -4545,7 +4619,8 @@ def connector_add(
     """Declare a Dex connector on the install and apply.
 
     The connector's redirect URI is <issuer>/callback; register that URL
-    with the provider. Users who log in through it get the groups their
+    with the provider (password connectors — ldap, keystone,
+    atlassian-crowd — take none). Users who log in through it get the groups their
     provider sends, minus wip-admins and wip-services, plus any group
     mappings (wip-deploy group-map).
     """
@@ -4596,8 +4671,11 @@ def connector_add(
         repo_root=repo_root,
         services_scope=_user_verb_scope(deployment, components),
     )
-    issuer = make_spec_context(deployment, components, apps_list).auth.issuer_url_public
-    typer.echo(f"Register this redirect URI with the provider: {issuer}/callback")
+    from wip_deploy.config_gen.dex import _PASSWORD_CONNECTOR_TYPES
+
+    if connector_type not in _PASSWORD_CONNECTOR_TYPES:
+        issuer = make_spec_context(deployment, components, apps_list).auth.issuer_url_public
+        typer.echo(f"Register this redirect URI with the provider: {issuer}/callback")
 
 
 @connector_app.command("set-secret")
@@ -4964,7 +5042,7 @@ def app_namespace_list(
 ) -> None:
     """The namespaces an app's key reaches: its manifest's and this install's."""
     _resolved, _target, deployment, _components, apps_list, _root = (
-        _load_and_discover_for_mutation(name, install_dir, repo_root)
+        _load_and_discover_for_mutation(name, install_dir, repo_root, will_persist=False)
     )
     ref = _app_ref_or_exit(deployment, apps_list, app_name)
     app_manifest = next(a for a in apps_list if a.metadata.name == app_name)
@@ -5063,8 +5141,8 @@ def remove_module(
 ) -> None:
     """Disable an optional module in an existing install without dropping anything.
 
-    Inverse of `add-module`. Force-removes the module's container via
-    `podman rm -f wip-<name>` so it doesn't linger as an orphan
+    Inverse of `add-module`. Force-removes the module's container
+    (`podman rm -f <install>_wip-<name>`) so it doesn't linger as an orphan
     (CASE-313).
 
     Examples:
@@ -5363,6 +5441,20 @@ def nuke(
         raise typer.Exit(1) from e
 
     _echo_nuke_result(report)
+
+
+def _install_secrets_location(explicit: str | None, install_dir: Path | None) -> str | None:
+    """Where an install keeps its file secrets when --secrets-location is
+    not given. With --install-dir: what the saved spec there records (an
+    existing install never moves its secrets), else `<install-dir>/secrets`,
+    so the install dir holds its own secrets. Without: None, and the build
+    default (~/.wip-deploy/<name>/secrets) applies."""
+    if explicit is not None or install_dir is None:
+        return explicit
+    previous = _try_load_previous_deployment(install_dir)
+    if previous is not None and previous.spec.secrets.location:
+        return previous.spec.secrets.location
+    return str(install_dir / "secrets")
 
 
 def _nuke_secrets_location(
@@ -5665,7 +5757,8 @@ def export_ca(
     Limitations:
       - Only supported for installs with `--tls internal` (the default
         for compose/dev). letsencrypt + external + self-signed paths
-        each have a different right answer — see `wip-deploy help`.
+        each have a different right answer (the modes are listed under
+        --tls in `wip-deploy install --help`).
       - k8s installs are not yet supported (they use an operator-
         provided cert in a TLS Secret; the deployer doesn't generate
         a CA).
@@ -5765,7 +5858,7 @@ def export_ca(
         sys.stdout.buffer.write(pem)
         return
 
-    out.write_bytes(pem)
+    _write_operator_file(out, pem)
     typer.echo(
         typer.style(
             f"✓ Wrote internal CA to {out}", fg=typer.colors.GREEN,
@@ -5850,8 +5943,21 @@ def import_bundle(
         raise typer.Exit(2) from e
 
     name = _resolve_name(name)
+    # The install-name rule (DeploymentMetadata.name), checked before
+    # anything is created: `--name ../x` would otherwise write secrets
+    # outside ~/.wip-deploy/.
+    if not re.fullmatch(r"[a-z][a-z0-9-]*", name):
+        typer.echo(
+            f"error: --name {name!r} is not an install name (lowercase letter, "
+            "then lowercase letters, digits and '-')",
+            err=True,
+        )
+        raise typer.Exit(2)
     install_dir = _default_install_dir(name)
     secrets_dir = install_dir / "secrets"
+    api_key_path = secrets_dir / "api-key"
+    if not update_ca_only:
+        _refuse_replacing_a_live_installs_key(install_dir, api_key_path, bundle.api_key.value)
     secrets_dir.mkdir(parents=True, exist_ok=True)
 
     # Best-effort 0700 on the secrets dir — same convention as
@@ -5873,13 +5979,12 @@ def import_bundle(
         )
         return
 
-    api_key_path = secrets_dir / "api-key"
     _write_secret(api_key_path, bundle.api_key.value.encode() + b"\n")
 
-    # Audit trail — record where this state came from. Survives the
-    # apps-only install and gives future operators (or future-me) a
-    # paper trail. Distinct from deployment.deployer-state so the
-    # install dir stays self-describing.
+    # Audit trail — record where this state came from. A compose/dev
+    # apps-only install leaves it in place; a k8s apply clears every
+    # top-level *.yaml in the install dir, this file included. Distinct
+    # from deployment.deployer-state.
     bootstrap_state = {
         "imported_from_bundle": {
             "name": bundle.name,
@@ -5913,13 +6018,40 @@ def import_bundle(
     typer.echo(f"  CA fingerprint: {_pem_fingerprint(bundle.ca_cert_pem)}")
     typer.echo("")
     typer.echo("Suggested install command:")
-    apps_flags = "".join(f" --app {a}" for a in bundle.suggested_apps)
+    # --apps-only needs at least one --app; a bundle that suggests none
+    # gets a placeholder rather than a command install would refuse.
+    apps_flags = "".join(f" --app {a}" for a in bundle.suggested_apps) or " --app <app>"
     typer.echo(
         f"  wip-deploy install --name {name} --target dev --apps-only \\"
     )
     typer.echo(
         f"    --remote-wip {bundle.external_base_url}{apps_flags}"
     )
+
+
+def _refuse_replacing_a_live_installs_key(
+    install_dir: Path, api_key_path: Path, new_key: str,
+) -> None:
+    """A bundle carries a new master key. Into a dir that holds a saved
+    install with a different key, it would only make that install's next
+    apply stop on secret drift — refuse instead of replacing it silently.
+    Into a dir without one, a different key is replaced, and said so."""
+    try:
+        current = api_key_path.read_text().strip()
+    except OSError:
+        return
+    if not current or current == new_key:
+        return
+    if any((install_dir / n).exists() for n in STATE_FILENAMES):
+        typer.echo(
+            f"error: {install_dir} holds an install whose master api-key differs "
+            "from the bundle's; importing would replace it. Use another --name, "
+            "or remove the install first (`wip-deploy nuke --name "
+            f"{install_dir.name}`).",
+            err=True,
+        )
+        raise typer.Exit(2)
+    typer.echo(f"note: replacing the existing api-key in {api_key_path.parent}", err=True)
 
 
 def _write_secret(path: Path, content: bytes) -> None:
@@ -5947,21 +6079,26 @@ def _pem_fingerprint(pem: bytes) -> str:
     import hashlib
     import re
 
-    # Strip headers + whitespace, base64-decode the body, hash the DER.
-    body_match = re.search(
-        rb"-----BEGIN CERTIFICATE-----\n(.+?)\n-----END CERTIFICATE-----",
+    # Every certificate of a chain, CRLF or LF line ends; base64-decode
+    # each body and hash the DER.
+    bodies = re.findall(
+        rb"-----BEGIN CERTIFICATE-----\s*(.+?)\s*-----END CERTIFICATE-----",
         pem,
         re.DOTALL,
     )
-    if not body_match:
+    if not bodies:
         return "<malformed>"
-    try:
-        der = base64.b64decode(body_match.group(1).replace(b"\n", b""))
-    except Exception:
-        return "<malformed>"
-    digest = hashlib.sha256(der).hexdigest()
-    short = digest[:32]  # 16 bytes / 32 hex chars
-    return ":".join(short[i:i + 2] for i in range(0, len(short), 2))
+    prints = []
+    for body in bodies:
+        try:
+            der = base64.b64decode(re.sub(rb"\s+", b"", body), validate=True)
+        except Exception:
+            return "<malformed>"
+        short = hashlib.sha256(der).hexdigest()[:32]  # 16 bytes / 32 hex chars
+        prints.append(":".join(short[i:i + 2] for i in range(0, len(short), 2)))
+    if len(prints) == 1:
+        return prints[0]
+    return f"{prints[0]} (+{len(prints) - 1} more in the chain: {', '.join(prints[1:])})"
 
 
 def _confirm(prompt: str) -> bool:
@@ -6290,8 +6427,8 @@ def _assemble(
     # CASE-358 + CASE-359: when both are off, no warning. When only
     # --remote-wip is set, point at --apps-only as the cleaner path.
     # When only --apps-only is set, point at --remote-wip (apps will
-    # default external_base_url to localhost, which probably isn't
-    # what the operator wants).
+    # default external_base_url to this install's own hostname, which has
+    # no WIP backend in apps-only mode).
     if apps_only and remote_wip_url is None:
         typer.echo(
             typer.style(

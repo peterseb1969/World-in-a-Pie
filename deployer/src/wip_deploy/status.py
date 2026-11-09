@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from wip_deploy.apply import ApplyError, _compose_ps, _detect_compose_cmd
-from wip_deploy.kube import kubectl
+from wip_deploy.kube import QUERY_TIMEOUT_SECONDS, kubectl
 from wip_deploy.naming import container_name
 
 # ────────────────────────────────────────────────────────────────────
@@ -104,23 +104,32 @@ def split_services_and_apps(
 # ────────────────────────────────────────────────────────────────────
 
 
-def read_k8s_status(namespace: str) -> list[ServiceStatus]:
-    """Run `kubectl get pods -n <ns> -o json` and return a normalized table."""
-    if not shutil.which("kubectl"):
-        raise StatusError("kubectl not on PATH")
-
+def _kubectl_get_pods(namespace: str) -> subprocess.CompletedProcess[str]:
     try:
-        result = subprocess.run(
+        return subprocess.run(
             [*kubectl(), "get", "pods", "-n", namespace, "-o", "json"],
             check=True,
             capture_output=True,
             text=True,
+            timeout=QUERY_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as e:
+        raise StatusError(
+            f"kubectl get pods did not answer within {QUERY_TIMEOUT_SECONDS} s"
+        ) from e
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.strip() if e.stderr else ""
         raise StatusError(
             f"kubectl get pods failed (exit {e.returncode}): {stderr}"
         ) from e
+
+
+def read_k8s_status(namespace: str) -> list[ServiceStatus]:
+    """Run `kubectl get pods -n <ns> -o json` and return a normalized table."""
+    if not shutil.which("kubectl"):
+        raise StatusError("kubectl not on PATH")
+
+    result = _kubectl_get_pods(namespace)
 
     try:
         doc = json.loads(result.stdout)

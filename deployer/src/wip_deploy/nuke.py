@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from wip_deploy.apply import PODMAN_COMPOSE_PARALLEL
-from wip_deploy.kube import kubectl
+from wip_deploy.kube import DELETE_TIMEOUT_SECONDS, QUERY_TIMEOUT_SECONDS, kubectl
 from wip_deploy.naming import NETWORK_KEY
 
 # The persisted install spec, plus its pre-rename name.
@@ -279,8 +279,14 @@ def nuke_k8s_install_dir(
                 "--wait=true",
             ],
             check=True,
+            timeout=DELETE_TIMEOUT_SECONDS,
         )
         report.k8s_namespace_removed = namespace
+    except subprocess.TimeoutExpired as e:
+        raise NukeError(
+            f"kubectl delete namespace {namespace} did not finish within "
+            f"{DELETE_TIMEOUT_SECONDS} s (finalizers still pending?)"
+        ) from e
     except subprocess.CalledProcessError as e:
         raise NukeError(
             f"kubectl delete namespace {namespace} failed (exit {e.returncode})"
@@ -329,7 +335,13 @@ def _k8s_delete_workloads(namespace: str) -> None:
                 "--wait=true",
             ],
             check=True,
+            timeout=DELETE_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as e:
+        raise NukeError(
+            f"kubectl delete of WIP workloads in {namespace} did not finish "
+            f"within {DELETE_TIMEOUT_SECONDS} s"
+        ) from e
     except subprocess.CalledProcessError as e:
         raise NukeError(
             f"kubectl delete of WIP workloads in {namespace} failed (exit {e.returncode})"
@@ -378,8 +390,9 @@ def _list_pvs_in_namespace(namespace: str) -> list[str]:
             check=True,
             capture_output=True,
             text=True,
+            timeout=QUERY_TIMEOUT_SECONDS,
         )
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return []
     out: list[str] = []
     for line in result.stdout.splitlines():
@@ -404,9 +417,10 @@ def _delete_pvs(pv_names: list[str]) -> list[str]:
             subprocess.run(
                 [*kubectl(), "delete", "pv", pv, "--ignore-not-found=true"],
                 check=True,
+                timeout=DELETE_TIMEOUT_SECONDS,
             )
             removed.append(pv)
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
             # Don't abort the whole nuke for one stuck PV; the operator
             # can clean it up manually after.
             continue
@@ -472,8 +486,9 @@ def nuke_purge_all(
         ["rm", "-f"], containers, "container", report, dry_run=dry_run,
     )
 
-    pods = _podman_ls_names(["pod", "ls", "--format", "{{.Name}}"])
-    wip_pods = [p for p in pods if _looks_like_wip_pod(p)]
+    root = install_root if install_root is not None else (Path.home() / ".wip-deploy")
+    install_dirs = sorted(d for d in root.iterdir() if d.is_dir()) if root.exists() else []
+    wip_pods = _wip_pods(install_dirs)
     report.pods_removed = _remove_each(
         ["pod", "rm", "-f"], wip_pods, "pod", report, dry_run=dry_run,
     )
@@ -510,30 +525,36 @@ def nuke_purge_all(
                 report.images_removed = wip_images
 
     if remove_secrets:
-        root = install_root if install_root is not None else (Path.home() / ".wip-deploy")
-        if root.exists():
-            for child in sorted(root.iterdir()):
-                if not child.is_dir():
-                    continue
-                secrets_dir = child / "secrets"
-                if secrets_dir.is_dir():
-                    if not dry_run:
-                        _remove_tree(secrets_dir)
-                    report.secrets_dirs_removed.append(secrets_dir)
+        report.secrets_dirs_removed = _remove_secrets_dirs(install_dirs, dry_run=dry_run)
 
     # Every wip-* volume on the host is gone, so every install's saved
     # state is stale. purge-all refuses to run while a k8s install exists,
     # so only compose/dev states can be here.
     if remove_data:
-        root = install_root if install_root is not None else (Path.home() / ".wip-deploy")
-        if root.exists():
-            for child in sorted(root.iterdir()):
-                if child.is_dir():
-                    report.state_files_removed.extend(
-                        _remove_state_files(child, dry_run=dry_run)
-                    )
+        for child in install_dirs:
+            report.state_files_removed.extend(_remove_state_files(child, dry_run=dry_run))
 
     return report
+
+
+def _wip_pods(install_dirs: list[Path]) -> list[str]:
+    """The pods purge-all removes: the fixed WIP patterns, plus each
+    install's own pod, which podman-compose names after the project, i.e.
+    the install dir (`pod_tc02`)."""
+    install_pods = {f"pod_{d.name}" for d in install_dirs}
+    pods = _podman_ls_names(["pod", "ls", "--format", "{{.Name}}"])
+    return [p for p in pods if _looks_like_wip_pod(p) or p in install_pods]
+
+
+def _remove_secrets_dirs(install_dirs: list[Path], *, dry_run: bool) -> list[Path]:
+    removed = []
+    for child in install_dirs:
+        secrets_dir = child / "secrets"
+        if secrets_dir.is_dir():
+            if not dry_run:
+                _remove_tree(secrets_dir)
+            removed.append(secrets_dir)
+    return removed
 
 
 # ────────────────────────────────────────────────────────────────────

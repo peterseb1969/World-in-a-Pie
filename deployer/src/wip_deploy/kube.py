@@ -26,6 +26,10 @@ from wip_deploy.spec.deployment import K8sCluster
 # identity, where a server URL is only an address.
 _IDENTITY_NAMESPACE = "kube-system"
 _TIMEOUT_SECONDS = 30
+# A read that does not answer in this long is a dead or unreachable cluster.
+QUERY_TIMEOUT_SECONDS = _TIMEOUT_SECONDS
+# A delete with --wait waits on finalizers; generous, but never unbounded.
+DELETE_TIMEOUT_SECONDS = 600
 
 
 class KubeError(Exception):
