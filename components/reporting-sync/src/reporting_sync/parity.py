@@ -411,7 +411,74 @@ async def check_namespace_parity(
     """Run the parity check for one namespace."""
     sm = SchemaManager(pool)
     schema = sm.schema_for(namespace)
+    result = await _schema_presence(pool, namespace, schema)
+    await _check_bookkeeping(pool, namespace, result)
 
+    try:
+        templates = await _fetch_namespace_templates(namespace)
+    except httpx.HTTPError as e:
+        result.bookkeeping_error = (result.bookkeeping_error or "") + (
+            f" template-store unavailable: {e}"
+        )
+        result.ok = False
+        return result
+
+    for template in templates:
+        config = ReportingConfig(**(template.get("reporting") or {}))
+        if not config.sync_enabled:
+            result.templates_skipped_sync_disabled += 1
+            continue
+        row = await _template_parity(
+            pool, sm, schema, namespace, template, config,
+            include_counts=include_counts,
+            bookkeeping_ok=result.bookkeeping_tables_ok,
+        )
+        if not row.structural_ok:
+            result.structural_issues += 1
+        if row.counts_match is False:
+            result.count_mismatches += 1
+        result.templates.append(row)
+
+    await _derived_parity(pool, sm, schema, namespace, result, include_counts=include_counts)
+    result.ok = _all_clear(result)
+    return result
+
+
+def _all_clear(result: NamespaceParityResult) -> bool:
+    """Usable bookkeeping, and no structural, count or derived issue."""
+    return (
+        result.bookkeeping_tables_ok
+        and result.structural_issues == 0
+        and result.count_mismatches == 0
+        and result.derived_issues == 0
+    )
+
+
+async def _derived_parity(
+    pool: asyncpg.Pool,
+    sm: SchemaManager,
+    schema: str,
+    namespace: str,
+    result: NamespaceParityResult,
+    *,
+    include_counts: bool,
+) -> None:
+    """The registered views and, with counts, the derived tables; and how
+    many of them have an issue."""
+    result.views = await _registered_views_parity(sm, schema, namespace)
+    if include_counts:
+        result.derived_tables = await _derived_table_parity(pool, schema, namespace)
+    result.derived_issues = (
+        sum(1 for t in result.derived_tables if t.issue)
+        + sum(1 for v in result.views if not v.present)
+    )
+
+
+async def _schema_presence(
+    pool: asyncpg.Pool, namespace: str, schema: str,
+) -> NamespaceParityResult:
+    """The namespace's result, started with whether its schema exists and
+    how many tables it holds."""
     async with pool.acquire() as conn:
         schema_present = bool(await conn.fetchval(
             "SELECT EXISTS (SELECT 1 FROM information_schema.schemata "
@@ -420,18 +487,25 @@ async def check_namespace_parity(
         table_count = int(await conn.fetchval(
             "SELECT count(*) FROM pg_tables WHERE schemaname = $1", schema,
         ) or 0)
-
-    result = NamespaceParityResult(
+    return NamespaceParityResult(
         namespace=namespace,
         schema_name=schema,
         schema_present=schema_present,
         table_count=table_count,
     )
 
-    # The bookkeeping tables must be namespace-keyed for any of the
-    # per-template rows below to be meaningful. A database whose tables
-    # predate the namespace re-keying fails HERE, loudly, with remediation —
-    # instead of every doc-type sync failing one by one.
+
+async def _check_bookkeeping(
+    pool: asyncpg.Pool, namespace: str, result: NamespaceParityResult,
+) -> None:
+    """Whether the bookkeeping tables are namespace-keyed.
+
+    They must be for any of the per-template rows to be meaningful. A
+    database whose tables predate the namespace re-keying fails HERE,
+    loudly, with remediation — instead of every doc-type sync failing one by
+    one. No bookkeeping table at all is a genuinely fresh database;
+    init_postgres_schema creates it at service startup.
+    """
     async with pool.acquire() as conn:
         try:
             await conn.fetchval(
@@ -447,103 +521,107 @@ async def check_namespace_parity(
                 "or applying the namespace-column ALTER."
             )
         except asyncpg.UndefinedTableError:
-            # No bookkeeping table at all — a genuinely fresh database;
-            # init_postgres_schema creates it at service startup.
             pass
 
+
+async def _template_parity(
+    pool: asyncpg.Pool,
+    sm: SchemaManager,
+    schema: str,
+    namespace: str,
+    template: dict[str, Any],
+    config: ReportingConfig,
+    *,
+    include_counts: bool,
+    bookkeeping_ok: bool,
+) -> TemplateParity:
+    """One template's row. A failure is recorded on the row: one bad
+    template must not hide the rest."""
+    template_value = template.get("value", "")
+    row = TemplateParity(template_value=template_value)
     try:
-        templates = await _fetch_namespace_templates(namespace)
-    except httpx.HTTPError as e:
-        result.bookkeeping_error = (result.bookkeeping_error or "") + (
-            f" template-store unavailable: {e}"
-        )
-        result.ok = False
-        return result
+        version_tables = await _template_structure(sm, row, schema, namespace, template, config)
+        if bookkeeping_ok:
+            async with pool.acquire() as conn:
+                row.bookkeeping_row = bool(await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM public._wip_schema_migrations "
+                    "WHERE namespace = $1 AND template_value = $2)",
+                    namespace, template_value,
+                ))
+        if include_counts and row.table_present:
+            await _template_counts(pool, row, schema, namespace, template, config, version_tables)
+    except Exception as e:
+        row.error = str(e)
+        logger.warning(f"Parity check failed for {namespace}/{template_value}: {e}")
+    return row
 
-    for template in templates:
-        template_value = template.get("value", "")
-        reporting_data = template.get("reporting") or {}
-        config = ReportingConfig(**reporting_data) if reporting_data else ReportingConfig()
-        if not config.sync_enabled:
-            result.templates_skipped_sync_disabled += 1
-            continue
 
-        row = TemplateParity(template_value=template_value)
-        try:
-            fields = SchemaManager.parse_template_fields(template.get("fields", []))
-            usage = template.get("usage", "entity")
-            latest_version = int(template.get("version", 1))
-            table_name = sm.get_table_name(template_value, config, latest_version)
-            base_name = sm.get_table_name(template_value, config)
+async def _template_structure(
+    sm: SchemaManager,
+    row: TemplateParity,
+    schema: str,
+    namespace: str,
+    template: dict[str, Any],
+    config: ReportingConfig,
+) -> dict[int, str]:
+    """Fill the row's structural findings; the template's version tables.
 
-            # The latest version's table is what the next write against
-            # latest lands in — its presence and shape are the structural
-            # gate. Older version tables are listed; their columns were
-            # shaped by their own version's fields at creation time.
-            row.table_present = await sm.table_exists(schema, table_name)
-            if row.table_present:
-                existing = await sm.get_existing_columns(schema, table_name)
-                expected = sm.expected_columns_for_template(fields, config, usage=usage)
-                row.missing_columns = sorted(expected - existing)
+    The latest version's table is what the next write against latest lands
+    in — its presence and shape are the structural gate. Older version
+    tables are listed; their columns were shaped by their own version's
+    fields at creation time.
+    """
+    template_value = row.template_value
+    fields = SchemaManager.parse_template_fields(template.get("fields", []))
+    usage = template.get("usage", "entity")
+    latest_version = int(template.get("version", 1))
+    table_name = sm.get_table_name(template_value, config, latest_version)
+    base_name = sm.get_table_name(template_value, config)
 
-            version_tables = await sm.list_version_tables(namespace, template_value, config)
-            row.version_tables = sorted(version_tables)
-            bare_kind = await sm.relation_kind(schema, base_name)
-            row.view_present = bare_kind == "view"
-            row.legacy_table = bare_kind == "table"
+    row.table_present = await sm.table_exists(schema, table_name)
+    if row.table_present:
+        existing = await sm.get_existing_columns(schema, table_name)
+        expected = sm.expected_columns_for_template(fields, config, usage=usage)
+        row.missing_columns = sorted(expected - existing)
 
-            if result.bookkeeping_tables_ok:
-                async with pool.acquire() as conn:
-                    row.bookkeeping_row = bool(await conn.fetchval(
-                        "SELECT EXISTS (SELECT 1 FROM public._wip_schema_migrations "
-                        "WHERE namespace = $1 AND template_value = $2)",
-                        namespace, template_value,
-                    ))
+    version_tables = await sm.list_version_tables(namespace, template_value, config)
+    row.version_tables = sorted(version_tables)
+    bare_kind = await sm.relation_kind(schema, base_name)
+    row.view_present = bare_kind == "view"
+    row.legacy_table = bare_kind == "table"
+    return version_tables
 
-            if include_counts and row.table_present:
-                strategy = str(getattr(config, "sync_strategy", "latest_only"))
-                if "all_versions" in strategy:
-                    row.counts_comparable = False
-                else:
-                    row.expected_documents = await _expected_document_total(
-                        template.get("id") or template.get("template_id") or template_value,
-                        namespace,
-                    )
-                    # A document lives in exactly one version table under
-                    # latest_only — the entity count is the sum across them.
-                    # A soft-deleted document keeps its row with status
-                    # 'deleted'; it is not live, so it is not counted.
-                    total_rows = 0
-                    async with pool.acquire() as conn:
-                        for _v, vt in version_tables.items():
-                            total_rows += int(await conn.fetchval(
-                                f'SELECT count(*) FROM "{schema}"."{vt}" '  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
-                                "WHERE status <> 'deleted'"
-                            ) or 0)
-                    row.actual_rows = total_rows
-                    row.counts_match = row.expected_documents == row.actual_rows
-        except Exception as e:  # per-template isolation: one bad template must not hide the rest
-            row.error = str(e)
-            logger.warning(f"Parity check failed for {namespace}/{template_value}: {e}")
 
-        if not row.structural_ok:
-            result.structural_issues += 1
-        if row.counts_match is False:
-            result.count_mismatches += 1
-        result.templates.append(row)
+async def _template_counts(
+    pool: asyncpg.Pool,
+    row: TemplateParity,
+    schema: str,
+    namespace: str,
+    template: dict[str, Any],
+    config: ReportingConfig,
+    version_tables: dict[int, str],
+) -> None:
+    """Compare the template's live documents with its rows.
 
-    result.views = await _registered_views_parity(sm, schema, namespace)
-    if include_counts:
-        result.derived_tables = await _derived_table_parity(pool, schema, namespace)
-    result.derived_issues = (
-        sum(1 for t in result.derived_tables if t.issue)
-        + sum(1 for v in result.views if not v.present)
+    Not comparable under all_versions. Under latest_only a document lives in
+    exactly one version table — the entity count is the sum across them. A
+    soft-deleted document keeps its row with status 'deleted'; it is not
+    live, so it is not counted.
+    """
+    strategy = str(getattr(config, "sync_strategy", "latest_only"))
+    if "all_versions" in strategy:
+        row.counts_comparable = False
+        return
+    row.expected_documents = await _expected_document_total(
+        template.get("id") or template.get("template_id") or row.template_value,
+        namespace,
     )
-
-    result.ok = (
-        result.bookkeeping_tables_ok
-        and result.structural_issues == 0
-        and result.count_mismatches == 0
-        and result.derived_issues == 0
-    )
-    return result
+    total_rows = 0
+    async with pool.acquire() as conn:
+        for vt in version_tables.values():
+            total_rows += int(await conn.fetchval(
+                f'SELECT count(*) FROM "{schema}"."{vt}" '  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+                "WHERE status <> 'deleted'"
+            ) or 0)
+    row.actual_rows = total_rows
+    row.counts_match = row.expected_documents == row.actual_rows
