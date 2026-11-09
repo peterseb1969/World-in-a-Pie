@@ -9,8 +9,10 @@ CASE-398 consolidated the universal infrastructure into the canonical
 base; what's left here is document-store-specific.
 """
 
+import contextlib
 import logging
 import uuid
+from collections.abc import AsyncIterator
 from typing import Any, cast
 
 import httpx
@@ -25,6 +27,19 @@ from wip_auth.registry_client import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.asynccontextmanager
+async def _transport_errors(operation: str) -> AsyncIterator[None]:
+    """A call the Registry could not be reached for raises RegistryError, as
+    an error status does, so every caller reports it per item as
+    registry_error. A bare httpx error escaped them as a 500."""
+    try:
+        yield
+    except httpx.HTTPError as e:
+        raise RegistryError(
+            f"Registry unreachable ({operation}): {type(e).__name__}: {e}"
+        ) from e
 
 __all__ = [
     "SYSTEM_QUALIFIER_KEY",
@@ -112,7 +127,7 @@ class RegistryClient(RegistryClientBase):
         if entry_id:
             item["entry_id"] = entry_id
 
-        async with self._make_client() as client:
+        async with _transport_errors("document ID registration"), self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
@@ -168,7 +183,7 @@ class RegistryClient(RegistryClientBase):
                 entry["entry_id"] = item["entry_id"]
             registry_items.append(entry)
 
-        async with self._make_client() as client:
+        async with _transport_errors("document ID registration"), self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/register",
                 headers=self._get_headers(),
@@ -237,7 +252,7 @@ class RegistryClient(RegistryClientBase):
         its own sanctioned path, distinct from identity-changing moves).
         Returns the per-item result list.
         """
-        async with self._make_client() as client:
+        async with _transport_errors("identity re-key"), self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/entries/rekey-identity",
                 headers=self._get_headers(),
@@ -273,7 +288,7 @@ class RegistryClient(RegistryClientBase):
             }
             for syn in synonyms
         ]
-        async with self._make_client() as client:
+        async with _transport_errors("synonym registration"), self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/synonyms/add",
                 headers=self._get_headers(),
@@ -305,7 +320,7 @@ class RegistryClient(RegistryClientBase):
             }
             for syn in synonyms
         ]
-        async with self._make_client() as client:
+        async with _transport_errors("synonym removal"), self._make_client() as client:
             response = await client.post(
                 f"{self.base_url}/api/registry/synonyms/remove",
                 headers=self._get_headers(),

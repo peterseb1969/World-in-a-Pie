@@ -70,6 +70,11 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 - **Any other failure while checking a reference** is the field error
   `reference_check_failed`, never a warning: an unchecked reference is never
   written.
+- **A Registry write document-store cannot reach** (ID registration, synonym
+  add / remove, identity re-key) is a per-item `registry_error`; the
+  transport error escaped as a 500. A single create whose auto-synonym
+  registration fails is rolled back and refused with `registry_error` (it
+  was a 500), as the bulk path already did.
 - Unchanged: a non-identity term field whose value def-store cannot resolve
   still degrades to a warning (PoNIF #3); identity term fields still fail
   closed.

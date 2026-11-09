@@ -1374,8 +1374,9 @@ class DocumentService:
         except DocumentStoreError as e:
             return None, error_fields(e)
 
-        # Register auto-synonym for migration portability (version 1 only)
-        # On failure, roll back the MongoDB document and re-raise
+        # Register auto-synonym for migration portability (version 1 only).
+        # On failure, roll back the MongoDB document and refuse the item with
+        # registry_error, as the bulk path does — never a 500.
         if version == 1 and not version_override:
             try:
                 registry = get_registry_client()
@@ -1387,13 +1388,13 @@ class DocumentService:
                     has_identity_fields=bool(validation_result.identity_hash),
                     created_by=actor,
                 )
-            except RegistryError:
+            except RegistryError as e:
                 logger.error(
                     "Auto-synonym registration failed for document %s — rolling back",
                     document_id,
                 )
                 await document.delete()
-                raise
+                return None, error_fields(e)
 
         # Publish document created event
         await publish_document_event(
