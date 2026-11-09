@@ -13,6 +13,7 @@ import contextlib
 import json
 import logging
 import re
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, ClassVar
 
@@ -165,6 +166,76 @@ def _parse_date(value: Any) -> date | None:
             logger.warning(f"Failed to parse date: {value}")
             return None
     return None
+
+
+# Event enrichment on a relationship document's data: not template fields.
+_RELATIONSHIP_ENRICHMENT = (
+    "source_ref_resolved", "target_ref_resolved",
+    "source_template_value", "target_template_value",
+)
+
+
+@dataclass
+class _FieldMaps:
+    """What a template's fields tell the transform: each field's type, its
+    semantic type, and which file fields are single or multiple."""
+
+    types: dict[str, str] = field(default_factory=dict)
+    semantic: dict[str, SemanticType] = field(default_factory=dict)
+    single_file: set[str] = field(default_factory=set)
+    multiple_file: set[str] = field(default_factory=set)
+
+
+def _template_field_maps(template: dict[str, Any]) -> _FieldMaps:
+    """The template's field maps. File-field multiplicity decides the column
+    shape, mirroring the schema_manager DDL: multiple -> one bare JSONB
+    column; single -> three columns (<name>_file_id/_filename/_content_type),
+    NO bare column at all."""
+    maps = _FieldMaps()
+    for f in template.get("fields", []):
+        maps.types[f["name"]] = f.get("type", "string")
+        if f.get("semantic_type"):
+            with contextlib.suppress(ValueError):
+                maps.semantic[f["name"]] = SemanticType(f["semantic_type"])
+        if f.get("type") == "file":
+            if (f.get("file_config") or {}).get("multiple"):
+                maps.multiple_file.add(f["name"])
+            else:
+                maps.single_file.add(f["name"])
+    return maps
+
+
+def _term_references_by_field(refs: list[dict[str, Any]]) -> dict[str, Any]:
+    """{field_path: term_id} from the document's term references; an indexed
+    path ("languages[0]") collects a list under its base path. A reference
+    without a path or a term id is ignored."""
+    by_field: dict[str, Any] = {}
+    for ref in refs:
+        field_path = ref.get("field_path", "")
+        term_id = ref.get("term_id", "")
+        if not (field_path and term_id):
+            continue
+        if "[" in field_path:
+            by_field.setdefault(field_path.split("[")[0], []).append(term_id)
+        else:
+            by_field[field_path] = term_id
+    return by_field
+
+
+def _file_references_by_field(refs: list[dict[str, Any]]) -> dict[str, Any]:
+    """{field_path: reference} from the document's file references; an
+    indexed path ("attachments[0]") collects a list under its base path. A
+    reference without a path is ignored."""
+    by_field: dict[str, Any] = {}
+    for ref in refs:
+        field_path = ref.get("field_path", "")
+        if not field_path:
+            continue
+        if "[" in field_path:
+            by_field.setdefault(field_path.split("[")[0], []).append(ref)
+        else:
+            by_field[field_path] = ref
+    return by_field
 
 
 class DocumentTransformer:
@@ -397,179 +468,49 @@ class DocumentTransformer:
         """
         data = document.get("data", {})
         term_references_list = document.get("term_references", [])
-
-        # Build field type map and semantic type map from template
-        field_types: dict[str, str] = {}
-        semantic_types: dict[str, SemanticType] = {}
-        # File-field multiplicity decides the column shape, mirroring the
-        # schema_manager DDL: multiple -> one bare JSONB column; single ->
-        # three columns (<name>_file_id/_filename/_content_type), NO bare
-        # column at all.
-        single_file_fields: set[str] = set()
-        multiple_file_fields: set[str] = set()
-        for field in template.get("fields", []):
-            field_types[field["name"]] = field.get("type", "string")
-            if field.get("semantic_type"):
-                with contextlib.suppress(ValueError):
-                    semantic_types[field["name"]] = SemanticType(field["semantic_type"])
-            if field.get("type") == "file":
-                if (field.get("file_config") or {}).get("multiple"):
-                    multiple_file_fields.add(field["name"])
-                else:
-                    single_file_fields.add(field["name"])
         file_references_list = document.get("file_references", [])
+        fields = _template_field_maps(template)
+        term_references = _term_references_by_field(term_references_list)
+        file_references = _file_references_by_field(file_references_list)
 
-        # Convert array format to dict for compatibility with existing flattening logic
-        # Array format: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
-        # Dict format: {"gender": "019abc42-...", ...}
-        term_references: dict[str, Any] = {}
-        for ref in term_references_list:
-            field_path = ref.get("field_path", "")
-            term_id = ref.get("term_id", "")
-            if field_path and term_id:
-                # Handle array indices in field path (e.g., "languages[0]")
-                if "[" in field_path:
-                    base_path = field_path.split("[")[0]
-                    if base_path not in term_references:
-                        term_references[base_path] = []
-                    term_references[base_path].append(term_id)
-                else:
-                    term_references[field_path] = term_id
-
-        # Convert file_references to dict for column mapping
-        # Array format: [{"field_path": "photo", "file_id": "FILE-001", "filename": "...", "content_type": "..."}, ...]
-        file_references: dict[str, Any] = {}
-        for ref in file_references_list:
-            field_path = ref.get("field_path", "")
-            if field_path:
-                # Handle array indices in field path (e.g., "attachments[0]")
-                if "[" in field_path:
-                    base_path = field_path.split("[")[0]
-                    if base_path not in file_references:
-                        file_references[base_path] = []
-                    file_references[base_path].append(ref)
-                else:
-                    file_references[field_path] = ref
-
-        # Base row with system columns
-        base_row = {
-            "document_id": document["document_id"],
-            "namespace": document["namespace"],
-            "template_id": document["template_id"],
-            "template_version": document.get("template_version", 1),
-            "version": document.get("version", 1),
-            "status": document.get("status", "active"),
-            "identity_hash": document.get("identity_hash", ""),
-        }
-
-        # Metadata columns
-        if self.config.include_metadata:
-            base_row.update({
-                "created_at": _parse_datetime(document.get("created_at")),
-                "created_by": document.get("created_by"),
-                "updated_at": _parse_datetime(document.get("updated_at")),
-                "updated_by": document.get("updated_by"),
-            })
-
-        # Phase 6/7 — relationship templates carry extra resolution
-        # metadata in event-payload data (source_ref_resolved,
-        # target_ref_resolved, source_template_value, target_template_value).
-        # These are NOT template fields — they're event enrichment — so
-        # exclude them from the flatten step or the row will end up with
-        # columns the table doesn't have.
+        base_row = self._system_columns(document)
+        # Relationship templates carry extra resolution metadata in the
+        # event-payload data (source_ref_resolved, target_ref_resolved,
+        # source_template_value, target_template_value). These are NOT
+        # template fields — they're event enrichment — so they are kept out
+        # of the flatten step or the row would get columns the table lacks.
         is_relationship = template.get("usage") == "relationship"
         flatten_input = data
         if is_relationship:
-            flatten_input = {
-                k: v for k, v in data.items()
-                if k not in (
-                    "source_ref_resolved", "target_ref_resolved",
-                    "source_template_value", "target_template_value",
-                )
-            }
-
-        # Flatten the data
-        flattened_data = self._flatten_object(
-            flatten_input, "", term_references, field_types=field_types,
-        )
-        base_row.update(flattened_data)
+            flatten_input = {k: v for k, v in data.items() if k not in _RELATIONSHIP_ENRICHMENT}
+        base_row.update(self._flatten_object(
+            flatten_input, "", term_references, field_types=fields.types,
+        ))
 
         # Single-file fields have no bare column — the DDL creates the
         # three-column form instead. The generic flatten just emitted the
         # raw data value under the bare name; drop it, or the INSERT
         # references a column that does not exist and the row is lost.
-        for name in single_file_fields:
+        for name in fields.single_file:
             base_row.pop(self._safe_column_name(name), None)
 
-        # Process semantic types if template is provided
-        if semantic_types:
-            self._process_semantic_types(base_row, data, term_references, semantic_types)
-
-        # Add term_id columns for top-level term references. A dotted path is
-        # a term inside an object field ("one.kind"); the DDL stores the whole
-        # object as one JSONB column and declares no "<path>_term_id" column
-        # for it, so emitting one makes the INSERT fail and the row is lost.
-        # Its term_id stays available in term_references_json. (A duration's
-        # "<field>.unit" is written by _process_duration above.)
-        for field_path, term_id in term_references.items():
-            if "." in field_path:
-                continue
-            if not isinstance(term_id, (list, dict)):
-                safe_field = self._safe_column_name(field_path)
-                col_name = f"{safe_field}_term_id"
-                if col_name not in base_row:
-                    base_row[col_name] = term_id
-
-        # Add file columns for file references. Branch on the TEMPLATE's
-        # declared multiplicity (the same thing the DDL branched on), not on
-        # the reference payload's shape — a lone indexed ref on a multiple
-        # field arrives as a one-element list, and a shape-based branch would
-        # write three columns the table doesn't have.
-        for field_path, file_ref in file_references.items():
-            safe_field = self._safe_column_name(field_path)
-            refs = file_ref if isinstance(file_ref, list) else [file_ref]
-            if field_path in multiple_file_fields:
-                base_row[safe_field] = json.dumps(refs)
-            elif field_path in single_file_fields:
-                base_row[f"{safe_field}_file_id"] = refs[0].get("file_id")
-                base_row[f"{safe_field}_filename"] = refs[0].get("filename")
-                base_row[f"{safe_field}_content_type"] = refs[0].get("content_type")
-            elif isinstance(file_ref, list):
-                # Field not in this template version (e.g. ref from an older
-                # data shape) — keep the pre-existing shape-based behavior.
-                base_row[safe_field] = json.dumps(file_ref)
-            else:
-                base_row[f"{safe_field}_file_id"] = file_ref.get("file_id")
-                base_row[f"{safe_field}_filename"] = file_ref.get("filename")
-                base_row[f"{safe_field}_content_type"] = file_ref.get("content_type")
-
-        # Full-text-indexed fields: populate <field>_search with the
-        # markdown-stripped value. The schema_manager creates a
-        # GENERATED tsvector column from this — we don't write the
-        # tsvector itself. Only top-level string fields are eligible
-        # (validator at template-creation enforces type=string).
-        for f in template.get("fields", []):
-            if not f.get("full_text_indexed"):
-                continue
-            if f.get("type") != "string":
-                continue
-            field_name = f["name"]
-            raw = data.get(field_name)
-            search_col = f"{self._safe_column_name(field_name)}_search"
-            base_row[search_col] = _strip_md(raw) if isinstance(raw, str) else None
+        if fields.semantic:
+            self._process_semantic_types(base_row, data, term_references, fields.semantic)
+        self._add_term_id_columns(base_row, term_references)
+        self._add_file_columns(base_row, file_references, fields)
+        self._add_search_columns(base_row, template, data)
 
         # Store original JSON
         base_row["data_json"] = json.dumps(data)
         base_row["term_references_json"] = json.dumps(term_references_list)
         base_row["file_references_json"] = json.dumps(file_references_list)
 
-        # Phase 7 — relationship templates carry source_ref_id and
-        # target_ref_id columns populated from the Phase-6 enriched
-        # event payload (data.source_ref_resolved / data.target_ref_resolved).
-        # Fall back to the raw refs for resilience: if the producer was
-        # pre-Phase-6, the resolved keys won't exist, but the columns
-        # are still useful for JOINs against documents whose document_id
-        # equals the source_ref / target_ref value.
+        # Relationship templates carry source_ref_id and target_ref_id columns
+        # populated from the enriched event payload (data.source_ref_resolved
+        # / data.target_ref_resolved). They fall back to the raw refs: an
+        # older producer sends no resolved keys, and the columns are still
+        # useful for JOINs against documents whose document_id equals the
+        # source_ref / target_ref value.
         if is_relationship:
             base_row["source_ref_id"] = (
                 data.get("source_ref_resolved") or data.get("source_ref")
@@ -579,9 +520,89 @@ class DocumentTransformer:
             )
 
         # Expand arrays if configured
-        rows = self._expand_arrays(base_row, data, term_references)
+        return self._expand_arrays(base_row, data, term_references)
 
-        return rows
+    def _system_columns(self, document: dict[str, Any]) -> dict[str, Any]:
+        """The row's system columns, and its metadata columns when the
+        config includes them."""
+        row = {
+            "document_id": document["document_id"],
+            "namespace": document["namespace"],
+            "template_id": document["template_id"],
+            "template_version": document.get("template_version", 1),
+            "version": document.get("version", 1),
+            "status": document.get("status", "active"),
+            "identity_hash": document.get("identity_hash", ""),
+        }
+        if self.config.include_metadata:
+            row.update({
+                "created_at": _parse_datetime(document.get("created_at")),
+                "created_by": document.get("created_by"),
+                "updated_at": _parse_datetime(document.get("updated_at")),
+                "updated_by": document.get("updated_by"),
+            })
+        return row
+
+    def _add_term_id_columns(self, row: dict[str, Any], term_references: dict[str, Any]) -> None:
+        """A <field>_term_id column for each top-level single term reference
+        the flatten step did not already write.
+
+        A dotted path is a term inside an object field ("one.kind"); the DDL
+        stores the whole object as one JSONB column and declares no
+        "<path>_term_id" column for it, so emitting one makes the INSERT fail
+        and the row is lost. Its term_id stays available in
+        term_references_json. (A duration's "<field>.unit" is written by
+        _process_duration.)
+        """
+        for field_path, term_id in term_references.items():
+            if "." in field_path or isinstance(term_id, (list, dict)):
+                continue
+            col_name = f"{self._safe_column_name(field_path)}_term_id"
+            if col_name not in row:
+                row[col_name] = term_id
+
+    def _add_file_columns(
+        self, row: dict[str, Any], file_references: dict[str, Any], fields: _FieldMaps,
+    ) -> None:
+        """The file columns of each file reference.
+
+        Branches on the TEMPLATE's declared multiplicity (the same thing the
+        DDL branched on), not on the reference payload's shape — a lone
+        indexed ref on a multiple field arrives as a one-element list, and a
+        shape-based branch would write three columns the table doesn't have.
+        A field this template version does not declare (a ref from an older
+        data shape) keeps the shape-based columns.
+        """
+        for field_path, file_ref in file_references.items():
+            safe_field = self._safe_column_name(field_path)
+            refs = file_ref if isinstance(file_ref, list) else [file_ref]
+            if field_path in fields.multiple_file:
+                multiple = True
+            elif field_path in fields.single_file:
+                multiple = False
+            else:
+                multiple = isinstance(file_ref, list)
+            if multiple:
+                row[safe_field] = json.dumps(refs)
+            else:
+                row[f"{safe_field}_file_id"] = refs[0].get("file_id")
+                row[f"{safe_field}_filename"] = refs[0].get("filename")
+                row[f"{safe_field}_content_type"] = refs[0].get("content_type")
+
+    def _add_search_columns(
+        self, row: dict[str, Any], template: dict[str, Any], data: dict[str, Any],
+    ) -> None:
+        """<field>_search, the markdown-stripped value, for each
+        full-text-indexed string field. The schema_manager creates a
+        GENERATED tsvector column from it — the tsvector itself is not
+        written. Only top-level string fields are eligible (the validator at
+        template creation enforces type=string)."""
+        for f in template.get("fields", []):
+            if not f.get("full_text_indexed") or f.get("type") != "string":
+                continue
+            raw = data.get(f["name"])
+            search_col = f"{self._safe_column_name(f['name'])}_search"
+            row[search_col] = _strip_md(raw) if isinstance(raw, str) else None
 
     def generate_upsert_sql(
         self,
