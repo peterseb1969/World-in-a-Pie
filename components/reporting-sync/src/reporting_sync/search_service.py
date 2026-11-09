@@ -881,8 +881,9 @@ class SearchService:
         """Run a PostgreSQL FTS query against one doc_* table.
 
         Uses an OR-of-tsvectors WHERE clause so each *_tsv GIN index can
-        be hit independently. Rank is computed against the concatenation
-        for stable ordering. Snippet stitches the matching *_search
+        be hit independently. Rank is computed against the concatenation;
+        equal ranks are ordered by document, so every page of a search (each
+        re-runs the query) sees the same order. Snippet stitches the matching *_search
         columns together for ts_headline.
         """
         # OR clause: any indexed column matches.
@@ -930,7 +931,7 @@ class SearchService:
                 ) AS snippet
             FROM "{schema}"."{tname}" d, q
             WHERE ({or_clause}){status_clause}{ns_clause}
-            ORDER BY score DESC
+            ORDER BY score DESC, doc_id
             LIMIT {limit_param}
         """  # nosec B608  # catalog identifiers and code-built fragments, values bound
         rows = await conn.fetch(sql, *params)
@@ -951,7 +952,9 @@ class SearchService:
 
         Reads `status` and `document_id` from system columns — every
         doc_* table has them. updated_at is returned as NULL since
-        substring matches don't carry ranking metadata.
+        substring matches don't carry ranking metadata. Hits are ordered by
+        document: physical order changes whenever the sync rewrites a row,
+        and every page of a search re-runs the query.
         """
         if not text_cols:
             return []
@@ -977,6 +980,7 @@ class SearchService:
                 NULL::timestamp AS updated_at
             FROM "{schema}"."{tname}"
             WHERE ({or_clauses}){status_clause}{ns_clause}
+            ORDER BY doc_id
             LIMIT {limit_param}
         """  # nosec B608  # catalog identifiers and code-built fragments, values bound
         rows = await conn.fetch(sql, *params)
