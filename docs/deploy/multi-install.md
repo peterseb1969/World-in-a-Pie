@@ -61,6 +61,9 @@ done
   from there; the install is stamped with it, and edits in that clone reload in
   that stack only.
 - **Ports:** preflight refuses a port another install (or anything else) holds.
+  The loop gives `tc01` the default ports 8443/8080: on a host where a
+  `default` install still runs, remove or move it first, or start the
+  numbering one higher.
 - **Binding the clone:** `setup-backend-agent.sh` records the install in the
   clone's `.claude/wip-install` and builds `.mcp.json` from that install's key
   and HTTPS port. On a host with several installs and no binding it refuses
@@ -110,9 +113,13 @@ instead), and `nuke --purge-all` removes it once unused.
 
 ## Limits
 
-- Checked on podman with podman-compose 1.3 (wip-pi, netavark 1.14) and 1.6
-  (macOS, netavark 2.1). Docker (the `docker compose` fallback) is not checked;
-  its cross-network isolation works differently and may ignore `isolate`.
+- Two installs side by side were run on wip-pi (podman 5.4, podman-compose
+  1.3, netavark 1.14). On macOS (podman 6.1, podman-compose 1.6, netavark
+  2.1) only the network behaviour was checked, with throwaway containers:
+  per-project networks, the `wip-<svc>` alias, `isolate: strict`, a
+  published port. No two-install deployment has run on a Mac yet.
+- Docker (the `docker compose` fallback) is not checked; its cross-network
+  isolation works differently and may ignore `isolate`.
 - App projects (APP-YACs) bind to an install through their own `.env`
   (`create-app-project.sh`); a per-app choice of install among several is not
   part of this.
