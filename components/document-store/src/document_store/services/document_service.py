@@ -16,6 +16,7 @@ from wip_auth.document_identity import (
     build_referent_resolutions,
     substitute_resolved_referents,
 )
+from wip_auth.registry_client import DependencyUnavailableError
 from wip_auth.synonym_lifecycle import (
     LifecycleRefused,
     record_entry_lifecycle,
@@ -50,7 +51,7 @@ from ..models.api_models import (
     operator_path_segment,
 )
 from ..models.document import Document, DocumentMetadata, DocumentStatus, current_revision
-from .errors import DocumentStoreError, error_fields
+from .errors import DocumentStoreError, dependency_unavailable, error_fields
 from .file_storage_client import is_file_storage_enabled
 from .identity_service import IdentityService
 from .inbound_gate import InboundGate, carried_ids, placement_batch
@@ -61,7 +62,7 @@ from .reference_validator import (
     get_reference_validator,
 )
 from .registry_client import RegistryError, get_registry_client, qualified_synonym_values
-from .template_store_client import get_template_store_client
+from .template_store_client import TemplateStoreError, get_template_store_client
 from .timing_stats import TimingStats
 from .validation_service import ValidationService
 
@@ -890,20 +891,30 @@ class DocumentService:
             {"document_id": document_id}, sort=[("version", SortDirection.DESCENDING)],
         )
 
+    @staticmethod
+    async def _relationship_template(
+        template_id: str, template_version: int | None,
+    ) -> dict[str, Any] | None:
+        """The template the relationship constraints read. A store that cannot
+        answer raises DependencyUnavailableError: the constraints are never
+        skipped for an outage. A template it does not serve is None (the
+        validation that already ran reported it)."""
+        try:
+            return await get_template_store_client().get_template(
+                template_id=template_id, version=template_version,
+            )
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable("template-store", f"template {template_id!r}", e) from e
+            return None
+
     async def _relationship_refusal(
         self, template_id: str, template_version: int, validation_result: Any, namespace: str,
     ) -> tuple[str, str] | None:
         """The relationship constraints for a write to an existing document
         (PATCH, migrate), against the template version it validates under.
         Create and bulk create run the same check inline."""
-        try:
-            template = await get_template_store_client().get_template(
-                template_id=template_id, version=template_version,
-            )
-        except Exception:
-            # As on create: validation already ran against this template, so
-            # a fetch failure here skips only the extra check.
-            template = None
+        template = await self._relationship_template(template_id, template_version)
         if not template:
             return None
         return await self._validate_relationship_constraints(
@@ -1042,9 +1053,10 @@ class DocumentService:
                 namespace,
                 template_version=request.template_version,
             )
-        except RegistryUnavailableError as e:
-            # The Registry could not be asked while validating: the item is
-            # refused, with the same per-item code the bulk path reports.
+        except DependencyUnavailableError as e:
+            # The Registry, def-store or template store could not be asked
+            # while validating: the item is refused, with the same per-item
+            # code the bulk path reports.
             return None, error_fields(e)
         timing["1_validation"] = (time.perf_counter() - start) * 1000
 
@@ -1061,14 +1073,11 @@ class DocumentService:
         # extra rule that only applies when usage=relationship
         # (same namespace).
         try:
-            template = await get_template_store_client().get_template(
-                template_id=request.template_id,
-                version=request.template_version,
+            template = await self._relationship_template(
+                request.template_id, request.template_version,
             )
-        except Exception:
-            # template fetch failures fall back to skipping the extra check;
-            # standard validation_service already ran
-            template = None
+        except DependencyUnavailableError as e:
+            return None, error_fields(e)
         if template and template.get("usage") == "relationship":
             rel_error = await self._validate_relationship_constraints(
                 template, validation_result, namespace,
@@ -4962,6 +4971,13 @@ class DocumentService:
                         renames=renames,
                     )
                 )
+            except DependencyUnavailableError as exc:
+                # A service the validation needed did not answer: an outage
+                # on this item, never an internal error.
+                results.append(BulkResultItem(
+                    index=index, status="error", document_id=doc.document_id,
+                    **error_fields(exc),
+                ))
             except Exception as exc:
                 logger.exception(
                     "Unexpected error migrating document %s", doc.document_id,
@@ -5227,6 +5243,13 @@ class DocumentService:
                     document_id=item.document_id,
                     error=exc.message,
                     error_code=exc.code,
+                ))
+            except DependencyUnavailableError as exc:
+                # A service the validation needed did not answer: an outage
+                # on this item, never an internal error.
+                results.append(BulkResultItem(
+                    index=index, status="error", document_id=item.document_id,
+                    **error_fields(exc),
                 ))
             except Exception as exc:
                 logger.exception(

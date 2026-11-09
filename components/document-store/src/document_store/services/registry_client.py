@@ -18,6 +18,7 @@ import httpx
 from wip_auth.registry_client import (
     RegistryClientBase,
     RegistryError,
+    RegistryUnavailableError,
     clear_registry_transport,
     registry_unavailable_from,
     set_registry_transport,
@@ -215,6 +216,13 @@ class RegistryClient(RegistryClientBase):
         if response.status_code != 200:
             raise registry_unavailable_from("document key lookup", response)
         result = response.json()["results"][0]
+        if result.get("status") == "error":
+            # The Registry answered for the request but not for this item:
+            # it could not look the key up, which is never "no such document".
+            raise RegistryUnavailableError(
+                f"Registry could not look up a document key: {result.get('error')}",
+                "document key lookup",
+            )
         return cast(str, result["entry_id"]) if result.get("status") == "found" else None
 
     async def rekey_identity(

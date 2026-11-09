@@ -9,8 +9,9 @@ a Registry that did not answer the primary-key lookup counted as "no match"
 template store could not answer was skipped (the key then "named no target
 template's identity"). A Registry that cannot answer fails the write as
 unavailable (RegistryUnavailableError, a 503 / per-item registry_error); a
-template store that cannot answer fails the reference with template_error,
-as the document's own template does.
+template store that cannot answer refuses the write the same way
+(DependencyUnavailableError, per item dependency_unavailable); one that
+refuses to serve a target template fails the reference with template_error.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from document_store.services.registry_client import RegistryClient
 from document_store.services.template_store_client import TemplateStoreError
 from document_store.services.validation_service import ValidationService
 from wip_auth.registry_client import (
+    DependencyUnavailableError,
     RegistryUnavailableError,
     clear_registry_transport,
     set_registry_transport,
@@ -126,12 +128,22 @@ async def test_a_registry_outage_on_the_key_lookup_fails_the_write(monkeypatch, 
 
 
 @pytest.mark.asyncio
-async def test_a_template_store_that_cannot_answer_fails_the_reference(monkeypatch, resolving):
-    monkeypatch.setattr(vs, "get_template_store_client", lambda: _Templates(TemplateStoreError("down")))
+async def test_a_template_store_that_cannot_answer_refuses_the_write(monkeypatch, resolving):
+    down = TemplateStoreError("down", unavailable=True)
+    monkeypatch.setattr(vs, "get_template_store_client", lambda: _Templates(down))
+    with pytest.raises(DependencyUnavailableError) as info:
+        await ValidationService()._resolve_business_key_reference(KEY, ["THING"], "ns", None)
+    assert info.value.dependency == "template-store"
+
+
+@pytest.mark.asyncio
+async def test_a_target_template_the_store_refuses_fails_the_reference(monkeypatch, resolving):
+    refused = TemplateStoreError("broken chain", code="inheritance_unresolved")
+    monkeypatch.setattr(vs, "get_template_store_client", lambda: _Templates(refused))
     doc, error = await ValidationService()._resolve_business_key_reference(KEY, ["THING"], "ns", None)
     assert doc is None
     assert error is not None and error["code"] == "template_error"
-    assert "T1" in error["message"] and "down" in error["message"]
+    assert "T1" in error["message"] and "broken chain" in error["message"]
 
 
 async def _post(client, headers, items):

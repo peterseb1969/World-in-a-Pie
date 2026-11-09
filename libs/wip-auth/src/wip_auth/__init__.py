@@ -94,7 +94,7 @@ from .providers import (
 )
 from .query_validation import RejectUnknownQueryParamsMiddleware
 from .ratelimit import setup_rate_limiting
-from .registry_client import RegistryUnavailableError
+from .registry_client import DependencyUnavailableError, RegistryUnavailableError
 from .resolve import (
     AmbiguousEntityError,
     EntityNotFoundError,
@@ -131,6 +131,7 @@ __all__ = [
     # Providers
     "AuthProvider",
     "AuthResult",
+    "DependencyUnavailableError",
     "EntityNotFoundError",
     "HealthCache",
     # Key sync
@@ -405,6 +406,20 @@ async def registry_unavailable_handler(request, exc: RegistryUnavailableError):
     return JSONResponse(status_code=503, content=content)
 
 
+async def dependency_unavailable_handler(request, exc: DependencyUnavailableError):
+    """HTTP 503 for a service the request needed that did not answer
+    (registered by setup_auth). A Registry outage has its own handler above,
+    which Starlette prefers as the more specific class."""
+    from fastapi.responses import JSONResponse
+
+    logger.warning("%s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(status_code=503, content={
+        "detail": f"{exc}; retry shortly",
+        "error_code": "dependency_unavailable",
+        "dependency": exc.dependency,
+    })
+
+
 def setup_auth(
     app,
     config: AuthConfig | None = None,
@@ -454,6 +469,7 @@ def setup_auth(
     # The Registry not answering is a 503 in every service, wherever in a
     # request it surfaces — never the 404 or "none" of a definite answer.
     app.add_exception_handler(RegistryUnavailableError, registry_unavailable_handler)
+    app.add_exception_handler(DependencyUnavailableError, dependency_unavailable_handler)
 
     # Added last, so it is outermost: the write flag is set before the auth
     # middleware runs the handler, and resolution in any non-GET request

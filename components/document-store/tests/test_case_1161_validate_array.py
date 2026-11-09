@@ -119,26 +119,27 @@ async def test_object_items_are_validated_against_the_pinned_item_template(monke
 
 
 @pytest.mark.asyncio
-async def test_object_items_without_a_template_or_with_a_missing_one_are_not_checked(monkeypatch):
+async def test_object_items_without_a_template_are_not_checked_and_a_missing_one_is_an_error(monkeypatch):
     client = _Client(None)
     monkeypatch.setattr(vs, "get_template_store_client", lambda: client)
     result = await _run([{"a": 1}], array_item_type="object")
     assert result.errors == [] and client.asked == []
 
+    # A declared item template that is not there: the item is never left
+    # unchecked, as a nested object's template is not.
     result = await _run([{"a": 1}], array_item_type="object", array_template_ref="ADDR")
-    assert result.errors == [] and result.warnings == []
+    assert [(e["code"], e["field"]) for e in result.errors] == [("template_not_found", "f[0]")]
     assert client.asked == [("ADDR", None)]
 
 
 @pytest.mark.asyncio
-async def test_an_unreachable_item_template_is_a_warning(monkeypatch):
-    monkeypatch.setattr(vs, "get_template_store_client", lambda: _Client(TemplateStoreError("down")))
-    result = await _run([{"a": 1}, {"b": 2}], array_item_type="object", array_template_ref="ADDR")
-    assert result.errors == []
-    assert result.warnings == [
-        "Could not validate array-item template 'ADDR' for field 'f[0]'",
-        "Could not validate array-item template 'ADDR' for field 'f[1]'",
-    ]
+async def test_an_unreachable_item_template_refuses_the_write(monkeypatch):
+    from wip_auth.registry_client import DependencyUnavailableError
+
+    down = TemplateStoreError("down", unavailable=True)
+    monkeypatch.setattr(vs, "get_template_store_client", lambda: _Client(down))
+    with pytest.raises(DependencyUnavailableError):
+        await _run([{"a": 1}, {"b": 2}], array_item_type="object", array_template_ref="ADDR")
 
 
 @pytest.mark.asyncio

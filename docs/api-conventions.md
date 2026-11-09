@@ -154,6 +154,7 @@ Codes defined by `PATCH /documents`:
 | `validation_failed` | Merged document fails template validation |
 | `reference_violation` | Cross-namespace reference validation failed |
 | `registry_error` | The Registry could not be reached to check namespace isolation — the patch is refused rather than applied unchecked |
+| `dependency_unavailable` | def-store or the template store could not answer while the merged document was validated (`details.dependency` names it) — the patch is refused, never applied with the check skipped |
 | `internal_error` | Unexpected exception (logged with stack trace) |
 
 Codes defined by template-store (`POST`, `PUT` and `DELETE /templates`). Where one code covers several rules, `details.rule` names the one that failed:
@@ -192,7 +193,8 @@ Codes defined by document-store's create, delete and file writes (`PATCH` above 
 | `not_found` | The document or file named by the request does not exist | — |
 | `invalid_state` | The entity's state forbids the operation (`referenced`: a file, or a document hard delete, still referenced by documents; a document refusal lists them in `details.referrers` per namespace and template, and `force=true` deletes anyway, reporting them as `details.broken_references`) | `deletion_mode_retain`, `file_deleted`, `referenced`, `not_inactive`, `storage_disabled` |
 | `synonym_conflict` | An inline synonym is registered to another entry (`on_synonym_conflict="fail"`) | — |
-| `registry_error` | The Registry refused, or could not be reached (to check namespace isolation, or to mint a file ID) | `registry_unavailable` |
+| `registry_error` | The Registry refused, or could not be reached (to check namespace isolation, to mint a file ID, or to resolve a reference) | `registry_unavailable` |
+| `dependency_unavailable` | def-store or the template store could not answer while the document was validated (a term, terminology or template reference, the document's own, a nested, an array-item or a referenced document's template); `details.dependency` names it. Never reported as a missing reference or a warning. A request without items answers 503 with the same code | — |
 | `force_unsupported` | `force` sent on a document delete without `hard_delete` | — |
 | `invalid_request` | The request item cannot be carried out as sent (`document_id_mismatch`: a `document_id` without `version` that is not the document the identity resolves to) | `document_id_mismatch` |
 | `already_exists` | A pinned version (`document_id` + `version`) is already taken | `version_taken` |

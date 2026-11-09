@@ -89,12 +89,13 @@ class DefStoreClient:
             async with httpx.AsyncClient(timeout=self.timeout, transport=get_def_store_transport()) as client:
                 response = await client.get(url, headers=self._get_headers(), params=params)
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}") from e
+            raise DefStoreError(f"Request failed: {e!s}", unavailable=True) from e
         if response.status_code == 404:
             return None
         if response.status_code != 200:
             raise DefStoreError(
-                f"Failed to get terminology: {response.status_code} - {response.text}"
+                f"Failed to get terminology: {response.status_code} - {response.text}",
+                unavailable=True,
             )
         return cast(dict[str, Any], response.json())
 
@@ -154,7 +155,7 @@ class DefStoreClient:
                 items, namespace, base_url=self.base_url, api_key=self.api_key, timeout=self.timeout,
             )
         except TermResolutionError as e:
-            raise DefStoreError(str(e)) from e
+            raise DefStoreError(str(e), unavailable=True) from e
 
     async def get_term(self, term_id: str) -> dict[str, Any] | None:
         """
@@ -179,12 +180,13 @@ class DefStoreClient:
 
                 if response.status_code != 200:
                     raise DefStoreError(
-                        f"Failed to get term: {response.status_code} - {response.text}"
+                        f"Failed to get term: {response.status_code} - {response.text}",
+                        unavailable=True,
                     )
 
                 return cast(dict[str, Any] | None, response.json())
         except httpx.RequestError as e:
-            raise DefStoreError(f"Request failed: {e!s}") from e
+            raise DefStoreError(f"Request failed: {e!s}", unavailable=True) from e
 
     async def health_check(self) -> bool:
         """Check if the Def-Store service is healthy."""
@@ -197,8 +199,17 @@ class DefStoreClient:
 
 
 class DefStoreError(Exception):
-    """Error communicating with the Def-Store service."""
-    pass
+    """Error communicating with the Def-Store service.
+
+    ``unavailable`` is True when def-store could not be asked or answered with
+    an error status, so callers can tell an outage from an answer: one that
+    gates a write refuses it (DependencyUnavailableError) instead of reading
+    it as "not found".
+    """
+
+    def __init__(self, message: str, unavailable: bool = False) -> None:
+        super().__init__(message)
+        self.unavailable = unavailable
 
 
 # Singleton instance for convenience

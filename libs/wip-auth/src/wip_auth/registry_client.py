@@ -95,7 +95,24 @@ class AmbiguousIdentifierError(RegistryError):
         )
 
 
-class RegistryUnavailableError(Exception):
+class DependencyUnavailableError(Exception):
+    """A service the request needs did not answer: unreachable, timed out, or
+    an error status. ``dependency`` names it ("registry", "def-store",
+    "template-store").
+
+    The platform's one class for "could not be asked", as opposed to any
+    answer — not found, no access, invalid. A caller that catches it refuses
+    the request: ``setup_auth`` registers a handler that turns it into HTTP
+    503, and a bulk write reports it per item. It is never read as a miss,
+    as a warning, or as a pass.
+    """
+
+    def __init__(self, message: str, dependency: str):
+        self.dependency = dependency
+        super().__init__(message)
+
+
+class RegistryUnavailableError(DependencyUnavailableError):
     """The Registry did not answer: unreachable, timed out, or an error status.
 
     Distinct from every "the Registry answered no" outcome (not found, no
@@ -114,7 +131,18 @@ class RegistryUnavailableError(Exception):
 
     def __init__(self, message: str, operation: str | None = None):
         self.operation = operation
-        super().__init__(message)
+        super().__init__(message, "registry")
+
+
+def _raise_item_error(results: list[dict[str, Any]], operation: str, value: str) -> None:
+    """A lookup answered 200 but its item reports an error: the Registry did
+    not answer for this value, which is an outage for the caller, never "no
+    match". A ``not_found`` item is an answer and passes through."""
+    if results and results[0].get("status") == "error":
+        raise RegistryUnavailableError(
+            f"Registry could not look up {value!r} ({operation}): {results[0].get('error')}",
+            operation,
+        )
 
 
 def registry_unavailable_from(
@@ -459,6 +487,7 @@ class RegistryClientBase:
         if response.status_code != 200:
             raise registry_unavailable_from("candidate lookup", response)
         results = response.json().get("results", [])
+        _raise_item_error(results, "candidate lookup", value)
         if not results or results[0].get("status") != "found":
             return [], 0
         return list(results[0].get("candidates") or []), int(results[0].get("total") or 0)
@@ -480,6 +509,7 @@ class RegistryClientBase:
         if response.status_code != 200:
             raise registry_unavailable_from("by-id lookup", response)
         results = response.json().get("results", [])
+        _raise_item_error(results, "by-id lookup", value)
         if results and results[0].get("status") == "found":
             return cast("str | None", results[0].get("entry_id"))
         return None

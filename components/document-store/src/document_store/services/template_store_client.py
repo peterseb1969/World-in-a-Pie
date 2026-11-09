@@ -241,14 +241,15 @@ class TemplateStoreClient:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.get(url, headers=self._get_headers(), params=params)
         except httpx.RequestError as e:
-            raise TemplateStoreError(f"Request failed: {e!s}") from e
+            raise TemplateStoreError(f"Request failed: {e!s}", unavailable=True) from e
         if response.status_code == 404:
             return None
         if response.status_code == 409:
             raise _conflict_error(response)
         if response.status_code != 200:
             raise TemplateStoreError(
-                f"Failed to get template: {response.status_code} - {response.text}"
+                f"Failed to get template: {response.status_code} - {response.text}",
+                unavailable=True,
             )
         return cast(dict[str, Any] | None, response.json())
 
@@ -383,13 +384,14 @@ class TemplateStoreClient:
 
                 if response.status_code != 200:
                     raise TemplateStoreError(
-                        f"Failed to get descendants: {response.status_code} - {response.text}"
+                        f"Failed to get descendants: {response.status_code} - {response.text}",
+                        unavailable=True,
                     )
 
                 data = response.json()
                 return cast(list[dict[str, Any]], data.get("items", []))
         except httpx.RequestError as e:
-            raise TemplateStoreError(f"Request failed: {e!s}") from e
+            raise TemplateStoreError(f"Request failed: {e!s}", unavailable=True) from e
 
     async def validate_template_references(
         self,
@@ -424,12 +426,16 @@ class TemplateStoreError(Exception):
 
     ``code`` carries Template Store's own ``error_code`` when it refused for a
     reason (e.g. ``inheritance_unresolved``), so callers can tell a template
-    that cannot be served from an outage.
+    that cannot be served from an outage. ``unavailable`` is True when the
+    store could not be asked or answered with an error status: a caller that
+    gates a write refuses it (DependencyUnavailableError) instead of reading
+    it as "not found".
     """
 
-    def __init__(self, message: str, code: str | None = None) -> None:
+    def __init__(self, message: str, code: str | None = None, unavailable: bool = False) -> None:
         super().__init__(message)
         self.code = code
+        self.unavailable = unavailable
 
 
 # Singleton instance for convenience

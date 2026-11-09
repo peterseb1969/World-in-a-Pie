@@ -34,6 +34,46 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   a claim that is not a list of strings no longer crashes the permission
   check with a 500.
 
+### A document write whose def-store or template store cannot answer is refused as `dependency_unavailable`, never read as "not found" or a warning
+
+- **New per-item code `dependency_unavailable`** (`details.dependency`:
+  `def-store` or `template-store`; 503 where a request has no items, via
+  `setup_auth`). A document create, bulk create, PATCH or migrate reports it
+  when a service its validation needed could not answer: a term,
+  terminology or template reference; the document's own, a nested, an
+  array-item or a referenced document's template; a business-key target
+  template; the template the relationship constraints read. These used to
+  read as `invalid_term_reference` / "not found", a warning that let the
+  write through, a skipped endpoint check, or `internal_error` (PATCH,
+  migrate). A template-store outage on the document's own template or a
+  business-key target was `template_error`; it is now this code. What the
+  store does answer is unchanged: a template it does not have is still
+  `template_not_found`, one it refuses to serve `template_unresolvable` /
+  `template_error`.
+- **wip-auth:** `DependencyUnavailableError(message, dependency)` is the
+  platform's one class for "could not be asked"; `RegistryUnavailableError`
+  is now its Registry case (`dependency == "registry"`), so one `except`
+  catches every outage. A Registry lookup that answers 200 with an `error`
+  item (candidates, by-id, document key) now raises
+  `RegistryUnavailableError` instead of reading as "no match"; a
+  `not_found` item is still a miss.
+- **Nested and array-item templates are never skipped.** A declared
+  `template_ref` / `array_template_ref` the store does not find is now a
+  `template_not_found` error on the field (the array item was left
+  unchecked; the nested object was skipped without a warning).
+- **A referenced document's template** that is not found no longer skips
+  the `target_templates` check; it runs on the document's `template_id`.
+- **An ambiguous `target_templates` entry** is reported as
+  `ambiguous_reference` on the field instead of being dropped from the
+  allowed family (which refused a legal reference as
+  `invalid_reference_template`).
+- **Any other failure while checking a reference** is the field error
+  `reference_check_failed`, never a warning: an unchecked reference is never
+  written.
+- Unchanged: a non-identity term field whose value def-store cannot resolve
+  still degrades to a warning (PoNIF #3); identity term fields still fail
+  closed.
+
 ### Registry auth: reservations, key import, grants, attachments and the system restore say and do one thing
 
 - **Runtime keys.** A reservation is written only by the key that holds it:

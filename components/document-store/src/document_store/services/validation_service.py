@@ -15,11 +15,12 @@ from wip_auth.document_identity import (
     referent_identity_fields,
     substitute_resolved_referents,
 )
+from wip_auth.registry_client import AmbiguousIdentifierError, DependencyUnavailableError
 
 from .def_store_client import DefStoreError, get_def_store_client
+from .errors import dependency_unavailable
 from .identity_service import IdentityService
 from .inbound_gate import InboundGate, current_gate, gate_refuses, reset_gate, use_gate
-from .reference_validator import RegistryUnavailableError
 from .template_store_client import TemplateStoreError, get_template_store_client
 from .timing_stats import TimingStats
 
@@ -514,6 +515,8 @@ class ValidationService:
             return template
 
         except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable("template-store", f"template {template_id!r}", e) from e
             if e.code == "inheritance_unresolved":
                 # The template exists but its inheritance chain is broken;
                 # validating against its own fields alone would accept data
@@ -960,18 +963,12 @@ class ValidationService:
         template_ref = field.get("template_ref")
         if template_ref:
             template_ref_version = field.get("template_ref_version")
-            try:
-                client = get_template_store_client()
-                nested_template = await client.get_template_resolved(
-                    template_ref, version=template_ref_version
-                )
-                if nested_template:
-                    await self._validate_fields(
-                        value, nested_template, result, prefix=f"{field_path}."
-                    )
-            except TemplateStoreError:
-                result.add_warning(
-                    f"Could not validate nested template '{template_ref}' for field '{field_path}'"
+            nested_template = await self._sub_template(
+                template_ref, template_ref_version, field_path, result,
+            )
+            if nested_template:
+                await self._validate_fields(
+                    value, nested_template, result, prefix=f"{field_path}."
                 )
 
     async def _validate_array(
@@ -1049,10 +1046,10 @@ class ValidationService:
         """An object item: a dict, validated against the array's item template
         when it declares one.
 
-        CASE-493: the item template is read at its PINNED version, same as the
-        object axis (array_template_ref_version is mandatory on the schema). An
-        item template the template store cannot answer leaves a warning; one it
-        does not find leaves the item unchecked.
+        The item template is read at its PINNED version, same as the object
+        axis (array_template_ref_version is mandatory on the schema). One the
+        template store cannot answer refuses the write; one it does not find
+        is an error on the item — the item is never left unchecked.
         """
         if not isinstance(item, dict):
             result.add_error(
@@ -1064,17 +1061,48 @@ class ValidationService:
         template_ref = field.get("array_template_ref")
         if not template_ref:
             return
+        item_template = await self._sub_template(
+            template_ref, field.get("array_template_ref_version"), item_path, result,
+        )
+        if item_template:
+            await self._validate_fields(item, item_template, result, prefix=f"{item_path}.")
+
+    async def _sub_template(
+        self,
+        template_ref: str,
+        version: int | None,
+        field_path: str,
+        result: ValidationResult,
+    ) -> dict[str, Any] | None:
+        """The template a nested object or array item is validated against.
+
+        A template the store cannot answer refuses the write
+        (DependencyUnavailableError); one it does not find, or refuses to
+        serve, is an error on the field. Either way the value is never
+        accepted unchecked, as for the document's own template.
+        """
         try:
-            item_template = await get_template_store_client().get_template_resolved(
-                template_ref, version=field.get("array_template_ref_version")
+            sub = await get_template_store_client().get_template_resolved(
+                template_ref, version=version
             )
-            if item_template:
-                await self._validate_fields(item, item_template, result, prefix=f"{item_path}.")
-        except TemplateStoreError:
-            result.add_warning(
-                f"Could not validate array-item template "
-                f"'{template_ref}' for field '{item_path}'"
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable(
+                    "template-store", f"template {template_ref!r} for {field_path!r}", e,
+                ) from e
+            result.add_error(
+                code="template_unresolvable",
+                message=f"Template '{template_ref}' for field '{field_path}' cannot be served: {e!s}",
+                field=field_path,
             )
+            return None
+        if sub is None:
+            result.add_error(
+                code="template_not_found",
+                message=f"Template '{template_ref}' for field '{field_path}' not found",
+                field=field_path,
+            )
+        return sub
 
     # ========================================================================
     # Semantic Type Validators
@@ -1782,12 +1810,21 @@ class ValidationService:
                             "resolved": resolved,
                         })
 
-            except RegistryUnavailableError:
-                # The gate could not be checked: refuse the write rather
-                # than let the reference through unchecked.
+            except DependencyUnavailableError:
+                # The Registry, def-store or template store could not answer:
+                # refuse the write rather than let the reference through
+                # unchecked.
                 raise
             except Exception as e:
-                result.add_warning(f"Could not resolve reference for field '{field_path}': {e!s}")
+                # Any other failure leaves the reference unchecked, and an
+                # unchecked reference is never written: an error, not a
+                # warning (the isolation gate sees only resolved references).
+                logger.exception("Reference check failed for field %r", field_path)
+                result.add_error(
+                    code="reference_check_failed",
+                    message=f"Could not check the reference in field '{field_path}': {e!s}",
+                    field=field_path,
+                )
 
     async def _validate_files(
         self,
@@ -2139,50 +2176,25 @@ class ValidationService:
 
         # Always look up the template so we can include template_value in
         # the resolved dict — Phase-2 relationship validation needs it.
+        # A template store that cannot answer refuses the write: the endpoint
+        # check below must never be skipped for an outage. A template it does
+        # not find leaves only the display value unknown; the check runs on
+        # the document's template_id either way.
         doc_template: dict[str, Any] | None = None
         try:
             client = get_template_store_client()
             doc_template = await client.get_template(doc.template_id)
-        except TemplateStoreError:
-            doc_template = None
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable(
+                    "template-store", f"template of the document referenced by {field_path!r}", e,
+                ) from e
 
         # Verify template matches target_templates
-        if target_templates:
-            if doc_template is None:
-                result.add_warning(f"Could not verify template for referenced document in field '{field_path}'")
-            else:
-                if version_strategy == "pinned":
-                    # Exact template_id match
-                    if doc.template_id not in target_templates:
-                        result.add_error(
-                            code="invalid_reference_template",
-                            message=f"Referenced document uses template '{doc.template_id}', expected one of {target_templates} (pinned)",
-                            field=field_path
-                        )
-                        return None
-                else:
-                    # latest: resolve every allowed endpoint to its canonical
-                    # template_id via the Registry, then match the referenced
-                    # doc's template_id by canonical id. value-form, UUID, and
-                    # any synonym resolve identically — References-Must-Resolve
-                    # (CASE-525; docs/design/synonym-resolution-gaps.md). The old
-                    # code called get_template(template_id=entry) namespace-free
-                    # and matched by .value, which 404s on a namespace-scoped
-                    # value-form endpoint → empty family → every edge rejected
-                    # (the add_edge_type_endpoints widen stores endpoints
-                    # value-form). Resolving here closes the gap regardless of the
-                    # stored form, instead of forcing the widen to avoid synonyms.
-                    allowed_ids = await self._allowed_template_ids(target_templates, namespace)
-                    if doc.template_id not in allowed_ids:
-                        expected = doc_template.get("value") or doc.template_id
-                        # Report the DECLARED endpoints (human-readable, the form
-                        # the edge type declares) rather than resolved UUIDs.
-                        result.add_error(
-                            code="invalid_reference_template",
-                            message=f"Referenced document uses template '{expected}', expected family of {list(target_templates)}",
-                            field=field_path
-                        )
-                        return None
+        if target_templates and not await self._endpoint_allows(
+            doc, doc_template, target_templates, result, field_path, version_strategy, namespace,
+        ):
+            return None
 
         # Check if document is inactive (warning only)
         if doc.status != DocumentStatus.ACTIVE:
@@ -2197,6 +2209,64 @@ class ValidationService:
             "namespace": doc.namespace,
             "status": doc.status.value if hasattr(doc.status, "value") else doc.status,
         }
+
+    async def _endpoint_allows(
+        self,
+        doc: Any,
+        doc_template: dict[str, Any] | None,
+        target_templates: list[str],
+        result: "ValidationResult",
+        field_path: str,
+        version_strategy: str,
+        namespace: str | None,
+    ) -> bool:
+        """Is the referenced document's template one of the field's
+        target_templates? False after adding the error that says why not."""
+        if version_strategy == "pinned":
+            # Exact template_id match
+            if doc.template_id not in target_templates:
+                result.add_error(
+                    code="invalid_reference_template",
+                    message=f"Referenced document uses template '{doc.template_id}', expected one of {target_templates} (pinned)",
+                    field=field_path
+                )
+                return False
+        else:
+            # latest: resolve every allowed endpoint to its canonical
+            # template_id via the Registry, then match the referenced
+            # doc's template_id by canonical id. value-form, UUID, and
+            # any synonym resolve identically — References-Must-Resolve
+            # (CASE-525; docs/design/synonym-resolution-gaps.md). The old
+            # code called get_template(template_id=entry) namespace-free
+            # and matched by .value, which 404s on a namespace-scoped
+            # value-form endpoint → empty family → every edge rejected
+            # (the add_edge_type_endpoints widen stores endpoints
+            # value-form). Resolving here closes the gap regardless of the
+            # stored form, instead of forcing the widen to avoid synonyms.
+            try:
+                allowed_ids = await self._allowed_template_ids(target_templates, namespace)
+            except AmbiguousIdentifierError as e:
+                result.add_error(
+                    code="ambiguous_reference",
+                    message=(
+                        f"Target template '{e.value}' of field '{field_path}' names "
+                        "several templates; declare it by id or as ns:VALUE"
+                    ),
+                    field=field_path,
+                    details={"value": e.value, "candidates": e.candidates},
+                )
+                return False
+            if doc.template_id not in allowed_ids:
+                expected = (doc_template or {}).get("value") or doc.template_id
+                # Report the DECLARED endpoints (human-readable, the form
+                # the edge type declares) rather than resolved UUIDs.
+                result.add_error(
+                    code="invalid_reference_template",
+                    message=f"Referenced document uses template '{expected}', expected family of {list(target_templates)}",
+                    field=field_path
+                )
+                return False
+        return True
 
     async def _resolve_business_key_reference(
         self,
@@ -2235,8 +2305,13 @@ class ValidationService:
             )
         except TemplateStoreError as e:
             # The key's meaning depends on the target templates' identity
-            # fields; one the template store cannot answer fails the
-            # reference, as the document's own template does.
+            # fields. A template store that cannot answer refuses the write
+            # (an outage, never a miss); one that refuses to serve a target
+            # template fails the reference.
+            if e.unavailable:
+                raise dependency_unavailable(
+                    "template-store", "a target template of the business key", e,
+                ) from e
             return None, {
                 "code": "template_error",
                 "message": f"Could not read a target template of the business key: {e!s}",
@@ -2278,7 +2353,9 @@ class ValidationService:
             try:
                 template = await client.get_template(template_id)
             except TemplateStoreError as e:
-                raise TemplateStoreError(f"target template '{template_id}': {e}", code=e.code) from e
+                raise TemplateStoreError(
+                    f"target template '{template_id}': {e}", code=e.code, unavailable=e.unavailable,
+                ) from e
             if not template:
                 continue
             template_value = template.get("value") or template_id
@@ -2346,7 +2423,9 @@ class ValidationService:
         any synonym count identically (References-Must-Resolve). An entry
         that does not resolve but is UUID-shaped is already canonical:
         honoured directly, never dropped. A Registry that does not answer
-        raises RegistryUnavailableError, which RegistryError does not catch.
+        raises RegistryUnavailableError, which RegistryError does not catch;
+        an entry naming several templates raises AmbiguousIdentifierError,
+        never dropped from the family (that would refuse a legal reference).
         """
         from .registry_client import RegistryError, get_registry_client
 
@@ -2355,6 +2434,8 @@ class ValidationService:
         for entry in target_templates:
             try:
                 rid = await registry.resolve_identifier(namespace, "templates", entry)
+            except AmbiguousIdentifierError:
+                raise
             except RegistryError:
                 rid = None
             if rid:
@@ -2451,7 +2532,13 @@ class ValidationService:
                         "terminology_value": terminology_ref,
                         "matched_via": validation_result.get("matched_via")
                     }
-            except DefStoreError:
+            except DefStoreError as e:
+                # An outage refuses the write; any other refusal of this
+                # terminology is a miss here, and the next one is tried.
+                if e.unavailable:
+                    raise dependency_unavailable(
+                        "def-store", f"term {value!r} for {field_path!r}", e,
+                    ) from e
                 continue
 
         result.add_error(
@@ -2501,8 +2588,11 @@ class ValidationService:
                     "terminology_id": terminology.get("terminology_id"),
                     "terminology_value": terminology.get("value"),
                 }
-        except DefStoreError:
-            pass
+        except DefStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable(
+                    "def-store", f"terminology {value!r} for {field_path!r}", e,
+                ) from e
 
         result.add_error(
             code="invalid_terminology_reference",
@@ -2537,8 +2627,11 @@ class ValidationService:
                     "template_value": template.get("value"),
                     "version": template.get("version")
                 }
-        except TemplateStoreError:
-            pass
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable(
+                    "template-store", f"template {value!r} for {field_path!r}", e,
+                ) from e
 
         result.add_error(
             code="invalid_template_reference",

@@ -13,6 +13,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from wip_auth.registry_client import DependencyUnavailableError
+
 
 class DocumentStoreError(ValueError):
     """A document-store operation refused for a reason callers can branch on.
@@ -53,6 +55,11 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
     if isinstance(exc, RegistryUnavailableError):
         return {"error": message, "error_code": "registry_error",
                 "details": {"rule": "registry_unavailable"}}
+    if isinstance(exc, DependencyUnavailableError):
+        # def-store or template-store could not be asked: an outage, never
+        # an answer about the item.
+        return {"error": message, "error_code": "dependency_unavailable",
+                "details": {"dependency": exc.dependency}}
     if isinstance(exc, RegistryError):
         return {"error": f"Registry error: {message}", "error_code": "registry_error"}
     if isinstance(exc, HTTPException):
@@ -62,3 +69,9 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
         return {"error": message, "error_code": "invalid_request"}
     # Not a refusal of the request: a fault on the server's side.
     return {"error": message, "error_code": "internal_error"}
+
+
+def dependency_unavailable(dependency: str, what: str, exc: BaseException) -> DependencyUnavailableError:
+    """The refusal for a write that needed ``dependency`` to answer ``what``
+    and it could not: unreachable or an error status."""
+    return DependencyUnavailableError(f"{dependency} unavailable ({what}): {exc}", dependency)
