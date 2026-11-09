@@ -85,6 +85,7 @@ def test_write_tools_covers_every_write_verb_tool():
         "remove_", "start_", "cancel_", "pause_", "resume_", "import_",
         "upload_", "archive_", "deprecate_", "activate_", "deactivate_",
         "reactivate_", "revoke_", "migrate_", "restore_", "hard_",
+        "reconcile_",
     )
     result = _run_in_subprocess(
         "from wip_mcp.server import mcp, WRITE_TOOLS; "
@@ -100,6 +101,67 @@ def test_write_tools_covers_every_write_verb_tool():
     )
     assert result.returncode == 0, f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
     assert "OK:" in result.stdout
+
+
+# Every registered tool that is NOT a write, named one by one. A name prefix
+# cannot tell a write from a read (reconcile_terminology wrote terms under a
+# verb the prefix list did not know), so every tool must be classified on
+# purpose: in WRITE_TOOLS, or here. A new tool fails the test below until
+# someone decides which side it is on.
+READ_TOOLS = frozenset({
+    "check_reporting_parity", "describe_data_model", "download_backup_archive",
+    "export_report_csv", "export_table_csv", "export_terminology",
+    "get_backup_job", "get_document", "get_document_relationships",
+    "get_document_versions", "get_entry", "get_file_documents",
+    "get_file_metadata", "get_namespace_stats", "get_replay_status",
+    "get_sync_status", "get_table_view", "get_template",
+    "get_template_by_value", "get_template_dependencies",
+    "get_template_facets", "get_template_fields", "get_template_raw",
+    "get_template_versions", "get_term", "get_term_hierarchy",
+    "get_terminology", "get_terminology_by_value", "get_wip_status",
+    "list_api_keys", "list_backup_jobs", "list_documents", "list_files",
+    "list_grants", "list_namespaces", "list_report_tables",
+    "list_reporting_views", "list_templates", "list_term_relations",
+    "list_terminologies", "list_terms", "lookup_entry", "query_by_template",
+    "query_documents", "read_reporting_view", "run_report_query", "search",
+    "search_registry", "search_terms", "traverse_documents",
+    "validate_document", "validate_documents", "validate_namespace",
+    "validate_template", "validate_template_candidate", "validate_term_value",
+})
+
+
+def test_every_tool_is_classified_read_or_write():
+    """WRITE_TOOLS and READ_TOOLS partition the registered tools exactly."""
+    result = _run_in_subprocess(
+        "from wip_mcp.server import mcp, WRITE_TOOLS; "
+        f"reads = {sorted(READ_TOOLS)!r}; "
+        "reads = set(reads); "
+        "tools = {t.name for t in mcp._tool_manager.list_tools()}; "
+        "both = reads & WRITE_TOOLS; "
+        "assert not both, f'Tools listed as both read and write: {both}'; "
+        "unclassified = tools - WRITE_TOOLS - reads; "
+        "assert not unclassified, ("
+        "f'Tools in neither WRITE_TOOLS nor READ_TOOLS: {unclassified} — '"
+        "'decide whether each one writes'); "
+        "stale = reads - tools; "
+        "assert not stale, f'READ_TOOLS entries with no registered tool: {stale}'; "
+        "print(f'OK: {len(tools)} tools classified')",
+        readonly=False,
+    )
+    assert result.returncode == 0, f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
+    assert "OK:" in result.stdout
+
+
+def test_readonly_removes_reconcile_terminology():
+    """reconcile_terminology writes terms; a read-only server must not offer it."""
+    result = _run_in_subprocess(
+        "from wip_mcp.server import mcp; "
+        "names = {t.name for t in mcp._tool_manager.list_tools()}; "
+        "assert 'reconcile_terminology' not in names; "
+        "print('OK')",
+        readonly=True,
+    )
+    assert result.returncode == 0, f"STDOUT: {result.stdout}\nSTDERR: {result.stderr}"
 
 
 def test_readonly_preserves_key_read_tools():

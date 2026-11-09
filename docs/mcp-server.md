@@ -31,7 +31,7 @@ python -m wip_mcp --http           # HTTP streamable
 
 ### Read-Only Mode
 
-Set `WIP_MCP_MODE=readonly` to remove all 51 write tools. The server exposes only 57 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
+Set `WIP_MCP_MODE=readonly` to remove all 52 write tools. The server exposes only 56 read-only tools: queries, searches, exports, and reports. The AI physically cannot create, modify, or delete any entities.
 
 ```bash
 WIP_MCP_MODE=readonly python -m wip_mcp
@@ -44,16 +44,16 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 - **Shared/multi-tenant deployments** — expose WIP data to agents you don't fully trust
 - **Demo environments** — let users explore without risk of data modification
 
-**Write tools removed (51):**
+**Write tools removed (52):**
 
 | Category | Tools removed |
 |----------|--------------|
 | Terminologies | `create_terminology`, `create_terminologies_bulk`, `update_terminology`, `delete_terminology`, `restore_terminology` |
-| Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term`, `merge_terms` |
+| Terms | `create_terms`, `update_term`, `delete_term`, `deprecate_term`, `merge_terms`, `reconcile_terminology` |
 | Term Relations | `create_term_relations`, `delete_term_relations` |
 | Templates | `create_template`, `create_templates_bulk`, `create_edge_type`, `update_template`, `activate_template`, `deactivate_template`, `reactivate_template`, `add_edge_type_endpoints` |
 | Documents | `create_document`, `create_documents_bulk`, `update_document`, `delete_document`, `delete_documents_bulk`, `migrate_documents` |
-| Files | `upload_file`, `delete_file`, `hard_delete_file` |
+| Files | `upload_file`, `delete_file`, `reactivate_file`, `hard_delete_file` |
 | Import | `import_terminology`, `import_documents_csv` |
 | Reporting views | `register_reporting_view`, `delete_reporting_view` |
 | Replay | `start_replay`, `cancel_replay`, `pause_replay`, `resume_replay` |
@@ -62,7 +62,7 @@ This is a structural safety mechanism — write tools are removed from the MCP t
 | Namespace | `create_namespace`, `upsert_namespace`, `delete_namespace` |
 | Grants / API keys | `create_grant`, `revoke_grant`, `create_api_key`, `revoke_api_key` |
 
-**Read-only tools available (57):**
+**Read-only tools available (56):**
 
 Discovery, listing, get-by-ID, search, query, export, validation, hierarchy, report tables, SQL queries (`run_report_query` — enforces read-only SQL), registered views (`list_reporting_views`, `read_reporting_view`), sync status, file metadata, template fields, and document versions.
 

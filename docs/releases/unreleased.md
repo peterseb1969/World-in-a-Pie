@@ -7,6 +7,15 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### MCP server: read-only mode removes `reconcile_terminology`
+
+- `WIP_MCP_MODE=readonly` now removes `reconcile_terminology`, which
+  creates, updates and deprecates terms. A read-only server used to keep
+  offering it: 52 write tools are removed, 56 tools remain.
+- Every registered tool is now classified as a write or a read by name in
+  the test suite, so a new tool fails the tests until someone decides which
+  it is.
+
 ### ingest-gateway: every message ends in one outcome its producer can read
 
 - **The envelope is mandatory.** A message must be

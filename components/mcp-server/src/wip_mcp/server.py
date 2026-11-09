@@ -5265,6 +5265,10 @@ WRITE_TOOLS = frozenset({
     "delete_term",
     "deprecate_term",
     "merge_terms",
+    # reconcile_terminology creates, updates and deprecates terms through
+    # the same doors as the three term tools above; its dry_run default is
+    # no reason to expose it in read-only mode.
+    "reconcile_terminology",
     # Relations
     "create_term_relations",
     "delete_term_relations",
