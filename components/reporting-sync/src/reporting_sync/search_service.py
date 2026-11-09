@@ -344,6 +344,26 @@ def _paginate(
     return items[start:end], pages
 
 
+def _document_hit(row: dict[str, Any], tname: str, fts: bool) -> SearchResult:
+    """A document search hit. It reports the logical type, never the
+    physical table: a hit matched in doc_case_record__v2 is a CASE_RECORD;
+    the description still names the table it matched in, so the provenance
+    is not lost. Only FTS hits carry a score and a snippet."""
+    template_value = entity_base(tname).upper()
+    score = row.get("score") if fts else None
+    return SearchResult(
+        type="document",
+        id=row["doc_id"] or "",
+        value=template_value,
+        label=f"{template_value} document",
+        status=row.get("status") or "active",
+        description=f"Matched in {tname}",
+        updated_at=row.get("updated_at"),
+        score=float(score) if score is not None else None,
+        snippet=row.get("snippet") if fts else None,
+    )
+
+
 class SearchService:
     """Service for unified search and activity tracking."""
 
@@ -729,137 +749,122 @@ class SearchService:
 
         try:
             async with self.postgres_pool.acquire() as conn:
-                # 1. Discover doc_* tables across namespace schemas (CASE-628).
-                #    Each WIP namespace is its own schema; a search with no
-                #    namespace filter spans them all, a namespace filter narrows
-                #    to that one schema.
-                filters = [
-                    "table_type = 'BASE TABLE'",
-                    "table_schema NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')",
-                ]
-                disc_params: list[Any] = []
-                if namespace:
-                    disc_params.append(namespace)
-                    filters.append(f"table_schema = ${len(disc_params)}")
-                # The template filter is applied after the fetch, by comparing
-                # the logical entity name. An exact SQL name match cannot work
-                # post-split (the physical tables carry __vN), and a LIKE
-                # pattern would be wrong too: template values contain '_',
-                # which LIKE treats as a single-character wildcard, so
-                # 'doc_case_record__v%' also matches doc_caseXrecord__v1.
-                filters.append("table_name LIKE 'doc_%'")
-
-                tables = await conn.fetch(
-                    "SELECT table_schema, table_name FROM information_schema.tables "
-                    f"WHERE {' AND '.join(filters)} "
-                    "ORDER BY table_schema, table_name",  # nosec B608  # SQL fragments are code constants, values bound
-                    *disc_params,
-                )
-
-                if template:
-                    want = entity_base(template.lower())
-                    tables = [
-                        r for r in tables
-                        if entity_base(r["table_name"]) == want
-                    ]
-
-                if not tables:
-                    return []
-
+                tables = await self._document_search_tables(conn, namespace, template)
                 results: list[SearchResult] = []
-
                 for tbl_row in tables:
-                    if len(results) >= MAX_RESULTS_PER_TYPE:
-                        break
-                    schema = tbl_row["table_schema"]
-                    tname = tbl_row["table_name"]
                     remaining = MAX_RESULTS_PER_TYPE - len(results)
-
-                    # Discover columns once per table.
-                    all_cols_rows = await conn.fetch(
-                        """
-                        SELECT column_name, data_type
-                        FROM information_schema.columns
-                        WHERE table_schema = $1 AND table_name = $2
-                        """,
-                        schema,
-                        tname,
+                    if remaining <= 0:
+                        break
+                    results += await self._search_document_table(
+                        conn, tbl_row["table_schema"], tbl_row["table_name"], query,
+                        namespace, mode, include_inactive, snippet_format, remaining,
                     )
-                    all_cols = [
-                        (r["column_name"], r["data_type"]) for r in all_cols_rows
-                    ]
-                    if not all_cols:
-                        continue
-
-                    tsv_cols = [n for n, t in all_cols if t == "tsvector"]
-                    text_cols = [
-                        n for n, t in all_cols if t in ("text", "character varying")
-                    ]
-
-                    # Pick the path for this table.
-                    use_fts = bool(tsv_cols) and mode in ("auto", "fts")
-                    if mode == "fts" and not tsv_cols:
-                        continue  # skip — no tsvector columns to query
-
-                    # The logical type, never the physical table: a hit matched
-                    # in doc_case_record__v2 is a CASE_RECORD. `description`
-                    # below still names the table it matched in, so the
-                    # provenance is not lost.
-                    template_value = entity_base(tname).upper()
-
-                    try:
-                        if use_fts:
-                            rows = await self._fts_query(
-                                conn, schema, tname, tsv_cols, query, namespace,
-                                include_inactive, snippet_format, remaining,
-                            )
-                            for row in rows:
-                                results.append(SearchResult(
-                                    type="document",
-                                    id=row["doc_id"] or "",
-                                    value=template_value,
-                                    label=f"{template_value} document",
-                                    status=row.get("status") or "active",
-                                    description=f"Matched in {tname}",
-                                    updated_at=row.get("updated_at"),
-                                    score=float(row["score"]) if row.get("score") is not None else None,
-                                    snippet=row.get("snippet"),
-                                ))
-                        else:
-                            rows = await self._substring_query(
-                                conn, schema, tname, text_cols, query, namespace,
-                                include_inactive, remaining,
-                            )
-                            for row in rows:
-                                results.append(SearchResult(
-                                    type="document",
-                                    id=row["doc_id"] or "",
-                                    value=template_value,
-                                    label=f"{template_value} document",
-                                    status=row.get("status") or "active",
-                                    description=f"Matched in {tname}",
-                                    updated_at=row.get("updated_at"),
-                                ))
-                    except Exception as table_err:
-                        logger.warning("Search in table %s failed: %s", tname, table_err)
-                        continue
-
-                # FTS results carry scores — sort the merged set by score
-                # descending so the best matches across templates rise.
-                # Substring matches have no score; they sort after FTS hits.
-                results.sort(
-                    key=lambda r: (
-                        0 if r.score is not None else 1,
-                        -(r.score or 0.0),
-                    )
-                )
-                return results[:MAX_RESULTS_PER_TYPE]
-
         except Exception as e:
             logger.error(f"PostgreSQL document search failed: {e}")
             return await self._search_documents_rest_fallback(
                 query, namespace, status, MAX_RESULTS_PER_TYPE,
             )
+
+        # FTS results carry scores — sort the merged set by score descending
+        # so the best matches across templates rise. Substring matches have
+        # no score; they sort after FTS hits.
+        results.sort(key=lambda r: (0 if r.score is not None else 1, -(r.score or 0.0)))
+        return results[:MAX_RESULTS_PER_TYPE]
+
+    async def _document_search_tables(
+        self, conn: asyncpg.Connection, namespace: str | None, template: str | None,
+    ) -> list[Any]:
+        """The doc_* tables to search, across namespace schemas.
+
+        Each WIP namespace is its own schema; a search with no namespace
+        filter spans them all, a namespace filter narrows to that one schema.
+        The template filter is applied after the fetch, by comparing the
+        logical entity name. An exact SQL name match cannot work post-split
+        (the physical tables carry __vN), and a LIKE pattern would be wrong
+        too: template values contain '_', which LIKE treats as a
+        single-character wildcard, so 'doc_case_record__v%' also matches
+        doc_caseXrecord__v1.
+        """
+        filters = [
+            "table_type = 'BASE TABLE'",
+            "table_schema NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')",
+        ]
+        disc_params: list[Any] = []
+        if namespace:
+            disc_params.append(namespace)
+            filters.append(f"table_schema = ${len(disc_params)}")
+        filters.append("table_name LIKE 'doc_%'")
+        tables = await conn.fetch(
+            "SELECT table_schema, table_name FROM information_schema.tables "
+            f"WHERE {' AND '.join(filters)} "
+            "ORDER BY table_schema, table_name",  # nosec B608  # SQL fragments are code constants, values bound
+            *disc_params,
+        )
+        if not template:
+            return list(tables)
+        want = entity_base(template.lower())
+        return [r for r in tables if entity_base(r["table_name"]) == want]
+
+    async def _search_document_table(
+        self,
+        conn: asyncpg.Connection,
+        schema: str,
+        tname: str,
+        query: str,
+        namespace: str | None,
+        mode: str,
+        include_inactive: bool,
+        snippet_format: str,
+        limit: int,
+    ) -> list[SearchResult]:
+        """The hits in one table: FTS when the mode allows it and the table
+        has *_tsv columns, else substring (skipped in 'fts' mode). A failing
+        query skips the table; a failing column discovery propagates."""
+        columns = await self._search_columns(conn, schema, tname)
+        if columns is None:
+            return []
+        tsv_cols, text_cols = columns
+        if mode == "fts" and not tsv_cols:
+            return []
+        use_fts = bool(tsv_cols) and mode in ("auto", "fts")
+        try:
+            if use_fts:
+                rows = await self._fts_query(
+                    conn, schema, tname, tsv_cols, query, namespace,
+                    include_inactive, snippet_format, limit,
+                )
+            else:
+                rows = await self._substring_query(
+                    conn, schema, tname, text_cols, query, namespace,
+                    include_inactive, limit,
+                )
+        except Exception as table_err:
+            logger.warning("Search in table %s failed: %s", tname, table_err)
+            return []
+        return [_document_hit(row, tname, use_fts) for row in rows]
+
+    @staticmethod
+    async def _search_columns(
+        conn: asyncpg.Connection, schema: str, tname: str,
+    ) -> tuple[list[str], list[str]] | None:
+        """The table's tsvector and text columns, or None when it has no
+        columns at all."""
+        rows = await conn.fetch(
+            """
+            SELECT column_name, data_type
+            FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = $2
+            """,
+            schema,
+            tname,
+        )
+        if not rows:
+            return None
+        tsv_cols = [r["column_name"] for r in rows if r["data_type"] == "tsvector"]
+        text_cols = [
+            r["column_name"] for r in rows if r["data_type"] in ("text", "character varying")
+        ]
+        return tsv_cols, text_cols
 
     async def _fts_query(
         self,
