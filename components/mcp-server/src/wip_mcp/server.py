@@ -962,8 +962,10 @@ the submitted spelling — so every alias, case variant or synonym of one
 referent is ONE identity. Case sensitivity is the vocabulary's call: two
 case-variant TERMS stay distinct, two aliases of one term merge. The rule is
 fail-closed: a write whose identity field cannot be resolved (resolution
-service down) is REJECTED rather than hashed from the spelling; non-identity
-term fields keep their degrade-to-warning behavior. The rule holds at any depth: a dotted identity
+service down) is REJECTED rather than hashed from the spelling. Non-identity
+term fields are no exception: a term value def-store cannot check is never
+written (no validation, no storage) — the write is refused as an outage
+(error_code dependency_unavailable), never admitted with a warning. The rule holds at any depth: a dotted identity
 path into an object field (address.country) follows its leaf field's type in
 the nested template. Corollary trap: two genuinely different things aliased onto one
 term now merge into one identity — that is an alias-curation problem the

@@ -104,12 +104,13 @@ async def test_hash_feed_is_the_term_id_not_the_spelling(client: AsyncClient, au
 async def test_def_store_outage_fails_closed_for_identity_term_field(
     client: AsyncClient, auth_headers: dict, monkeypatch,
 ):
-    """A resolution outage on an identity term field rejects the write."""
+    """A resolution outage on an identity term field rejects the write — as
+    an outage (dependency_unavailable), never hashed from the spelling."""
     from document_store.services import validation_service as vs
 
     broken = AsyncMock()
     broken.validate_values_bulk = AsyncMock(
-        side_effect=DefStoreError("def-store unreachable")
+        side_effect=DefStoreError("def-store unreachable", unavailable=True)
     )
     monkeypatch.setattr(vs, "get_def_store_client", lambda: broken)
 
@@ -124,32 +125,36 @@ async def test_def_store_outage_fails_closed_for_identity_term_field(
     assert response.status_code == 200  # bulk-first: per-item status inside
     item = response.json()["results"][0]
     assert item["status"] == "error"
-    # Create-path validation failures surface as a formatted message (the
-    # machine-readable code lives on the validation error itself; see the
-    # unit test below for the identity_resolution_failed code).
-    assert "did not resolve" in (item.get("error") or ""), (
-        f"expected the fail-closed resolution error, got: {item}"
-    )
+    assert item["error_code"] == "dependency_unavailable", item
+    assert item["details"] == {"dependency": "def-store"}
 
 
 @pytest.mark.asyncio
-async def test_def_store_outage_still_warns_for_non_identity_term_field(
-    client: AsyncClient, auth_headers: dict, sample_person_data: dict, monkeypatch,
+@pytest.mark.parametrize("count", [1, 2], ids=["single_path", "bulk_path"])
+async def test_def_store_outage_refuses_a_non_identity_term_field_too(
+    client: AsyncClient, auth_headers: dict, sample_person_data: dict, monkeypatch, count: int,
 ):
-    """Non-identity term fields keep degrade-to-warning on outage."""
+    """No validation, no storage: a term value def-store could not check is
+    never written, identity field or not (it used to be admitted with a
+    warning and no term_id)."""
     from document_store.services import validation_service as vs
 
     broken = AsyncMock()
     broken.validate_values_bulk = AsyncMock(
-        side_effect=DefStoreError("def-store unreachable")
+        side_effect=DefStoreError("def-store unreachable", unavailable=True)
     )
     monkeypatch.setattr(vs, "get_def_store_client", lambda: broken)
 
     data = dict(sample_person_data)
     data["gender"] = "M"  # term field, but PERSON's identity is national_id
-    result = await create_one(client, auth_headers, "PERSON", data)
-    assert result["status"] in ("created", "updated")
-    assert any("Could not validate" in w for w in result.get("warnings") or [])
+    response = await client.post(
+        "/api/document-store/documents", headers=auth_headers,
+        json=[{"namespace": "wip", "template_id": "PERSON", "data": data}] * count,
+    )
+    assert response.status_code == 200, response.text
+    for item in response.json()["results"]:
+        assert item["status"] == "error"
+        assert item["error_code"] == "dependency_unavailable", item
 
 
 # ============================================================================

@@ -1319,9 +1319,11 @@ class ValidationService:
                     })
 
         except DefStoreError as e:
-            result.add_warning(
-                f"Could not validate duration unit for '{field_path}': {e!s}"
-            )
+            # No validation, no storage: a unit def-store could not check is
+            # never written unchecked.
+            raise dependency_unavailable(
+                "def-store", f"duration unit for {field_path!r}", e,
+            ) from e
 
     async def _validate_semantic_geo_point(
         self,
@@ -1495,8 +1497,11 @@ class ValidationService:
                         })
 
         except DefStoreError as e:
-            # If Def-Store is unavailable, add a warning but don't fail
-            result.add_warning(f"Could not validate terminology values: {e!s}")
+            # No validation, no storage: a term value def-store could not
+            # check is never written, identity field or not. The write is
+            # refused as an outage (dependency_unavailable), never admitted
+            # with a warning.
+            raise dependency_unavailable("def-store", "term values", e) from e
 
     async def _typed_leaves(
         self,

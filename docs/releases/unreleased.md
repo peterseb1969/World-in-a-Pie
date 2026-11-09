@@ -180,9 +180,13 @@ flow writes its journal before any step runs, so it is unaffected.
   transport error escaped as a 500. A single create whose auto-synonym
   registration fails is rolled back and refused with `registry_error` (it
   was a 500), as the bulk path already did.
-- Unchanged: a non-identity term field whose value def-store cannot resolve
-  still degrades to a warning (PoNIF #3); identity term fields still fail
-  closed.
+- **No validation, no storage — term fields too.** A term value def-store
+  cannot check (a term field, identity or not, or a duration's unit) is no
+  longer admitted with the warning "Could not validate terminology values"
+  and no `term_id`: the write is refused with `dependency_unavailable`. An
+  identity term field's outage was refused before too, as
+  `validation_failed` / `identity_resolution_failed`; it is now this code.
+  PoNIF #3, `docs/data-models.md` and the served PoNIF text say so.
 
 ### The bare host answers a page when no app is enabled; the root redirect is a 302; an attachment cannot reach the compose host
 

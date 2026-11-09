@@ -334,3 +334,28 @@ async def test_the_bulk_template_warm_up_survives_a_template_store_outage(monkey
 
     monkeypatch.setattr(ds, "get_template_store_client", lambda: _Store(DOWN_TPL))
     await DocumentService()._warm_templates({"T1", "T2"})  # must not raise
+
+
+# -- term values: no validation, no storage (CASE-1210) ------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_term_value_def_store_cannot_check_refuses_the_write(monkeypatch):
+    class _Defs:
+        async def validate_values_bulk(self, items, namespace=None):
+            raise DefStoreError("def-store unreachable", unavailable=True)
+
+    monkeypatch.setattr(vs, "get_def_store_client", lambda: _Defs())
+    template = {"fields": [{"name": "color", "type": "term", "terminology_ref": "COLOR"}]}
+    with pytest.raises(DependencyUnavailableError) as info:
+        await ValidationService()._validate_terms({"color": "RED"}, template, ValidationResult(), namespace="ns")
+    assert info.value.dependency == "def-store"
+
+
+@pytest.mark.asyncio
+async def test_a_duration_unit_def_store_cannot_check_refuses_the_write(monkeypatch):
+    _store(monkeypatch, defs=DefStoreError("def-store unreachable", unavailable=True))
+    with pytest.raises(DependencyUnavailableError):
+        await ValidationService()._validate_semantic_duration(
+            {"value": 5, "unit": "minutes"}, {"name": "d"}, "d", ValidationResult(),
+        )

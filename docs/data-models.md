@@ -1246,7 +1246,7 @@ The algorithm above is only half the contract — the other half is **what feeds
 
 Every alias, case variant or synonym of one referent therefore yields **one identity** — two writers naming the same term by different aliases update one document instead of forking two. Case sensitivity is decided by the vocabulary, not the hasher: if a terminology treats `Foo` and `foo` as two terms, they resolve to two IDs and stay distinct.
 
-The rule is **fail-closed**: a write whose referent identity field cannot be resolved (Def-Store or Registry unreachable) is rejected rather than hashed from the spelling — an unresolvable identity is no identity, and hashing the spelling would fork the document on a later, resolvable write. Non-identity term fields keep their degrade-to-warning behavior on resolution outages.
+The rule is **fail-closed**: a write whose referent identity field cannot be resolved (Def-Store or Registry unreachable) is rejected rather than hashed from the spelling — an unresolvable identity is no identity, and hashing the spelling would fork the document on a later, resolvable write. Non-identity term fields follow the same rule: a term value Def-Store cannot check is never written — no validation, no storage — and the write is refused as an outage (`dependency_unavailable`, `details.dependency: def-store`) instead of being admitted with a warning and no `term_id`.
 
 **Worked example (feed rule):** `app` is a term identity field on `KB_APP`; both `"ClinTrial"` and its alias `"clintrial"` resolve to term `01999999-0000-7000-8000-000000000001`:
 
