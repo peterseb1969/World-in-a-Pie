@@ -239,78 +239,122 @@ async def _import_keys(
     from .key_salt import current_salt
 
     salt = current_salt()
-    in_file: set[str] = set()
     prehashes: dict[str, bytes] = {}
     for entry in entries:
-        name = entry["name"]
-        in_file.add(name)
-        plaintext = entry.get("key")
-        prehash = api_key_prehash(plaintext, salt) if plaintext else None
-        fields = {
-            "owner": entry.get("owner", "system"),
-            "groups": list(entry.get("groups") or []),
-            "description": entry.get("description"),
-            "expires_at": _EXPIRES.validate_python(entry.get("expires_at")),
-            "enabled": entry.get("enabled", True),
-            "namespaces": entry.get("namespaces"),
-            "grants_managed": entry.get("grants") is not None,
-        }
-
-        doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
-        old_hash = doc.key_hash if doc else None
-        if doc is None:
-            key_hash = (
-                await asyncio.to_thread(hash_api_key, plaintext, salt)
-                if plaintext else entry["key_hash"]
-            )
-            doc = StoredAPIKey(
-                name=name, key_hash=key_hash, created_by=WIP_DEPLOY,
-                managed_by=WIP_DEPLOY, origin="file", **fields,
-            )
-            await doc.insert()
-            report.keys_created.append(name)
-        else:
-            changed = False
-            if doc.managed_by is None:
-                logger.critical(
-                    "API key '%s' (origin %s, created by %s) has the name of a key in the "
-                    "install's key file; the key file's key replaces it and wip-deploy "
-                    "manages it from now on. The replaced key's value stops working.",
-                    name, doc.origin, doc.created_by,
-                )
-                report.taken_over.append(f"api_key:{name}")
-                doc.managed_by = WIP_DEPLOY
-                doc.origin = "file"
-                changed = True
-            if plaintext and prehash is not None:
-                same = _verified.get(name) == (prehash, doc.key_hash) or await asyncio.to_thread(
-                    prehash_matches, prehash, doc.key_hash
-                )
-                if not same:
-                    doc.key_hash = await asyncio.to_thread(hash_api_key, plaintext, salt)
-                    changed = True
-            elif doc.key_hash != entry["key_hash"]:
-                doc.key_hash = entry["key_hash"]
-                changed = True
-            for attr, value in fields.items():
-                if getattr(doc, attr) != value:
-                    setattr(doc, attr, value)
-                    changed = True
-            if changed:
-                await doc.save()
-                if name not in report.keys_created:
-                    report.keys_updated.append(name)
+        prehash = await _import_key(entry, provider, report, salt)
         if prehash is not None:
-            _verified[name] = (prehash, doc.key_hash)
-            prehashes[name] = prehash
-        if old_hash != doc.key_hash or name in report.keys_created or name in report.keys_updated:
-            await _refresh_provider(provider, old_hash, doc)
+            prehashes[entry["name"]] = prehash
+        await _import_grants(entry["name"], _desired_grants(entry), report)
+    await _remove_undeclared_keys({entry["name"] for entry in entries}, provider, report)
+    _file_prehashes.clear()
+    _file_prehashes.update(prehashes)
 
-        desired = _desired_grants(entry)
-        await _import_grants(name, desired, report)
 
-    # Managed keys the file no longer declares go, as a revoke takes them:
-    # with their grants, and their API reservations where never used.
+def _key_fields(entry: dict[str, Any]) -> dict[str, Any]:
+    """The stored fields a key-file entry sets, other than the hash."""
+    return {
+        "owner": entry.get("owner", "system"),
+        "groups": list(entry.get("groups") or []),
+        "description": entry.get("description"),
+        "expires_at": _EXPIRES.validate_python(entry.get("expires_at")),
+        "enabled": entry.get("enabled", True),
+        "namespaces": entry.get("namespaces"),
+        "grants_managed": entry.get("grants") is not None,
+    }
+
+
+async def _import_key(
+    entry: dict[str, Any], provider: APIKeyProvider | None, report: ImportReport, salt: str,
+) -> bytes | None:
+    """Create or bring up to date the stored key of one key-file entry, and
+    refresh the provider when it changed. Returns the plaintext's prehash
+    (None for an entry given by hash)."""
+    name = entry["name"]
+    plaintext = entry.get("key")
+    prehash = api_key_prehash(plaintext, salt) if plaintext else None
+    fields = _key_fields(entry)
+
+    doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
+    old_hash = doc.key_hash if doc else None
+    if doc is None:
+        doc = await _create_file_key(entry, plaintext, salt, fields)
+        report.keys_created.append(name)
+    elif await _update_file_key(doc, entry, plaintext, prehash, salt, fields, report):
+        await doc.save()
+        if name not in report.keys_created:
+            report.keys_updated.append(name)
+    if prehash is not None:
+        _verified[name] = (prehash, doc.key_hash)
+    if old_hash != doc.key_hash or name in report.keys_created or name in report.keys_updated:
+        await _refresh_provider(provider, old_hash, doc)
+    return prehash
+
+
+async def _create_file_key(
+    entry: dict[str, Any], plaintext: str | None, salt: str, fields: dict[str, Any],
+) -> StoredAPIKey:
+    """Store a key-file entry's key, managed by the deployer: hashed from its
+    plaintext, or with the hash the file gives."""
+    key_hash = (
+        await asyncio.to_thread(hash_api_key, plaintext, salt)
+        if plaintext else entry["key_hash"]
+    )
+    doc = StoredAPIKey(
+        name=entry["name"], key_hash=key_hash, created_by=WIP_DEPLOY,
+        managed_by=WIP_DEPLOY, origin="file", **fields,
+    )
+    await doc.insert()
+    return doc
+
+
+async def _update_file_key(
+    doc: StoredAPIKey,
+    entry: dict[str, Any],
+    plaintext: str | None,
+    prehash: bytes | None,
+    salt: str,
+    fields: dict[str, Any],
+    report: ImportReport,
+) -> bool:
+    """Bring a stored key to what its key-file entry says (taking over a key
+    the file did not make); whether anything changed."""
+    name = entry["name"]
+    changed = False
+    if doc.managed_by is None:
+        logger.critical(
+            "API key '%s' (origin %s, created by %s) has the name of a key in the "
+            "install's key file; the key file's key replaces it and wip-deploy "
+            "manages it from now on. The replaced key's value stops working.",
+            name, doc.origin, doc.created_by,
+        )
+        report.taken_over.append(f"api_key:{name}")
+        doc.managed_by = WIP_DEPLOY
+        doc.origin = "file"
+        changed = True
+    if plaintext and prehash is not None:
+        same = _verified.get(name) == (prehash, doc.key_hash) or await asyncio.to_thread(
+            prehash_matches, prehash, doc.key_hash
+        )
+        if not same:
+            doc.key_hash = await asyncio.to_thread(hash_api_key, plaintext, salt)
+            changed = True
+    elif doc.key_hash != entry["key_hash"]:
+        doc.key_hash = entry["key_hash"]
+        changed = True
+    for attr, value in fields.items():
+        if getattr(doc, attr) != value:
+            setattr(doc, attr, value)
+            changed = True
+    return changed
+
+
+async def _remove_undeclared_keys(
+    in_file: set[str], provider: APIKeyProvider | None, report: ImportReport,
+) -> None:
+    """Managed keys the file no longer declares go, as a revoke takes them:
+    with their grants, and their API reservations where never used."""
+    from .reservation_store import release, reservations_of
+
     for doc in await StoredAPIKey.find(StoredAPIKey.managed_by == WIP_DEPLOY).to_list():
         if doc.name in in_file:
             continue
@@ -319,16 +363,11 @@ async def _import_keys(
         await NamespaceGrant.find(
             {"subject_type": "api_key", "subject": {"$in": [doc.name, f"apikey:{doc.name}"]}}
         ).delete()
-        from .reservation_store import release, reservations_of
-
         for r in await reservations_of(doc.name):
             if r.managed_by is None:
                 await release(r.prefix)
         _verified.pop(doc.name, None)
         report.keys_removed.append(doc.name)
-
-    _file_prehashes.clear()
-    _file_prehashes.update(prehashes)
 
 
 async def _import_grants(
