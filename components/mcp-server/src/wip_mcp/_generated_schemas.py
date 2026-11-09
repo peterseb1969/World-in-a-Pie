@@ -247,10 +247,15 @@ TOOL_SCHEMAS: dict[str, dict] = {'def-store#CreateTermRelationRequest': {'proper
                                                                               'terminology',
                                                                'default': 0},
                                                 'parent_term_id': {'type': 'string',
-                                                                   'description': 'Parent term ID '
-                                                                                  'for '
+                                                                   'description': 'Parent term for '
                                                                                   'hierarchical '
-                                                                                  'terms'},
+                                                                                  'terms: an '
+                                                                                  'active term of '
+                                                                                  'the same '
+                                                                                  'terminology, by '
+                                                                                  'id or (on this '
+                                                                                  'door) by its '
+                                                                                  'value'},
                                                 'translations': {'items': {'properties': {'language': {'type': 'string',
                                                                                                        'description': 'Language '
                                                                                                                       'code '
@@ -2697,7 +2702,7 @@ aliases (array of string): Legacy shape: plain alternative values. Normalized in
 label (string): Display label for UI. Defaults to value if not provided.
 description (string): Detailed description
 sort_order (integer, default: 0): Sort order within terminology
-parent_term_id (string): Parent term ID for hierarchical terms
+parent_term_id (string): Parent term for hierarchical terms: an active term of the same terminology, by id or (on this door) by its value
 translations (array of object): Legacy shape: per-language labels. Normalized into language-bearing names on write.
   Each item:
     language (string, REQUIRED): Language code (ISO 639-1)

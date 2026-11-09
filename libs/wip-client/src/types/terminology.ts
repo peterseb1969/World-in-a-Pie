@@ -224,10 +224,11 @@ export interface ValidateValueResponse {
   error?: string
 }
 
-/** One bearer of an ambiguous name. */
+/** One bearer of an ambiguous value or name. */
 export interface TermMatchCandidate {
   term: Term
-  matched_name: TermName
+  /** The name that matched; null when the term's own value matched. */
+  matched_name: TermName | null
 }
 
 /** One ranked hit from the term search (typeahead) surface. */

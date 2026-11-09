@@ -7,6 +7,45 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A term's parent and replacement must be active terms of its terminology; a case-insensitive terminology holds one of `Foo` and `foo` (@wip/client 0.102.0)
+
+- **`parent_term_id`** was stored as sent on create, bulk create and update —
+  a missing term, a term of another terminology or the term itself — and the
+  hierarchy then served it as an `is_a` edge to whatever it named. It must
+  now be an **active term of the same terminology**, never the term itself;
+  anything else is refused per item with `reference_violation` and
+  `details.rule` = `term_not_found`, `other_terminology`, `not_active` or
+  `self_reference`. An update checks only a parent it changes. On
+  `POST /terminologies/{id}/terms` the parent resolves within that
+  terminology (an id, or the parent's value — never colon-parsed); on
+  `PUT /terms` with the request's `terminology` scope, like `term_id`. A
+  refused bulk item gets no Registry entry.
+- **`replaced_by_term_id`** on deprecate: the same rule. A successor that
+  did not resolve used to be stored as the raw string. Reconcile no longer
+  deprecates a term without its successor while reporting the successor: if
+  the successor is not an active term when the deprecation is applied, the
+  item is `unknown_successor` and the term stays active.
+- **Case:** in a case-insensitive terminology (the default), a value that
+  differs from an existing term's value only by case is that term — the
+  single create is `already_exists`, the bulk create `skipped` with the
+  existing id — and a bulk item repeating an earlier item's value is
+  `already_exists` (`details.rule: repeated_in_request`). Before, `Foo` and
+  `foo` were both stored and validation silently matched the first.
+  Case-sensitive terminologies are unchanged.
+- **Validation of existing case variants:** where a terminology already
+  holds both, `/validate` reports `matches: 2` with every bearer in
+  `candidates` (`matched_name: null` for a value match — the field is now
+  nullable, `@wip/client` 0.102.0), so a document write on an identity field
+  is refused as ambiguous instead of hashing an arbitrary pick. Setting
+  `case_sensitive: false` on a terminology whose values differ only by case
+  is refused (`invalid_state`, rule `case_variant_values`).
+- **Terminology import:** an exported `parent_term_id` names a term id of the
+  SOURCE terminology, so importing a parented export refuses those items
+  (`term_not_found`) until export and import carry parents portably.
+- **Action:** write parents and successors that exist; give each term in a
+  bulk request a distinct value; resolve existing case-variant duplicates
+  (deprecate one with `replaced_by_term_id`, or merge them).
+
 ### A term's value cannot be changed; a bulk term create keeps only what the Registry holds (@wip/client 0.101.0)
 
 - **Value:** `PUT /api/def-store/terms` changed `value` without telling the

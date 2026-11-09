@@ -121,6 +121,15 @@ async def create_terms(
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
     if term_parent:
         await check_namespace_permission(identity, term_parent.namespace, "write")
+        # A parent is a term of this terminology: resolve it there (a value
+        # is that terminology's value, never colon-parsed; a UUID passes).
+        # Write door — the id is persisted, so the cache is bypassed. What
+        # does not resolve is refused per item by the service.
+        from wip_auth import resolve_bulk_ids
+        await resolve_bulk_ids(
+            items, "parent_term_id", "term", namespace=term_parent.namespace,
+            terminology=terminology_id, bypass_cache=True,
+        )
 
     if len(items) == 1:
         # Single item — use direct create path
@@ -433,6 +442,12 @@ async def update_terms(
         items, "term_id", "term", namespace=namespace,
         terminology=terminology, bypass_cache=True,
     )
+    # parent_term_id is persisted too; what does not resolve is refused per
+    # item by the service
+    await resolve_bulk_ids(
+        items, "parent_term_id", "term", namespace=namespace,
+        terminology=terminology, bypass_cache=True,
+    )
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
@@ -495,9 +510,8 @@ async def deprecate_terms(
         None,
         description="Terminology scoping value-form term identifiers — "
                     "applies to term_id AND replaced_by_term_id (a "
-                    "deprecation's replacement lives in the same vocabulary; "
-                    "a cross-terminology pointer must use a UUID or the "
-                    "fully qualified 'ns:terminology:value' form). When "
+                    "deprecation's replacement must be an active term of "
+                    "the same terminology). When "
                     "present, non-UUID identifiers are treated as OPAQUE "
                     "raw values (never colon-parsed). The ambiguous 2-part "
                     "'TERMINOLOGY:VALUE' shorthand is rejected.",
@@ -721,9 +735,9 @@ def _resolution_to_response(
 ) -> ValidateValueResponse:
     """Shape a service-level resolution for the API, candidates included.
 
-    matches is 1 for a value match or a single name bearer; candidates are
-    listed only when more than one term bears the name — a single hit keeps
-    the pre-ambiguity response shape.
+    matches is the number of terms bearing the matched value or name;
+    candidates are listed only when more than one term bears it — a single
+    hit keeps the unambiguous response shape.
     """
     to_resp = TerminologyService._to_term_response
     matches = 0

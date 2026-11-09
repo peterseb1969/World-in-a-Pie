@@ -138,10 +138,11 @@ class RegistryEntryNotRemovedError(Exception):
 class ValueResolution(NamedTuple):
     """Result of resolving a submitted value against a terminology.
 
-    candidates lists EVERY (term, matched name) bearing the value when the
-    match came through names — more than one entry means the name is
-    ambiguous in this vocabulary, and matched_term is merely the first
-    bearer in database order, not a principled choice.
+    candidates lists EVERY (term, matched name) bearing the value when more
+    than one term bears it — the name is None for a term whose value
+    matched. A non-empty list means the value is ambiguous in this
+    vocabulary, and matched_term is merely the first bearer in database
+    order, not a principled choice.
     """
 
     valid: bool
@@ -149,7 +150,7 @@ class ValueResolution(NamedTuple):
     matched_via: str | None
     suggestion: Term | None
     matched_name: TermName | None
-    candidates: list[tuple[Term, TermName]]
+    candidates: list[tuple[Term, TermName | None]]
 
 
 def conflict_result(
@@ -187,6 +188,30 @@ def conflict_result(
         error=str(exc),
         error_code="already_exists",
     )
+
+
+def _pointer_refusal(
+    field: str, pointer: str, own_id: str | None, target: Term | None, terminology_id: str,
+) -> DefStoreError | None:
+    """Why a term may not point at `target` through `field`
+    (parent_term_id, replaced_by_term_id), or None when it may: the target
+    is an existing, active term of the same terminology, and not the term
+    itself."""
+    if own_id is not None and pointer == own_id:
+        return DefStoreError(f"{field} cannot name the term itself", "reference_violation", rule="self_reference")
+    if target is None:
+        return DefStoreError(f"{field} '{pointer}' names no term", "reference_violation", rule="term_not_found")
+    if target.terminology_id != terminology_id:
+        return DefStoreError(
+            f"{field} '{pointer}' names a term of another terminology; it must be a term of this one",
+            "reference_violation", rule="other_terminology",
+        )
+    if target.status != "active":
+        return DefStoreError(
+            f"{field} '{pointer}' names the {target.status} term '{target.value}'; only an active term can be named",
+            "reference_violation", rule="not_active",
+        )
+    return None
 
 
 class TerminologyService:
@@ -611,6 +636,8 @@ class TerminologyService:
                 "Cannot change mutable flag on terminology with existing terms", "invalid_state", rule="has_terms"
             )
 
+        await TerminologyService._refuse_case_variant_values(terminology, request.case_sensitive)
+
         # Apply updates
         if request.value is not None:
             terminology.value = request.value
@@ -954,12 +981,10 @@ class TerminologyService:
 
         namespace = terminology.namespace
 
-        # Check value uniqueness within terminology and namespace
-        existing = await Term.find_one({
-            "namespace": namespace,
-            "terminology_id": terminology_id,
-            "value": request.value
-        })
+        # Check value uniqueness within the terminology, compared as the
+        # terminology compares values (a case-insensitive terminology holds
+        # one of `Foo` and `foo`, never both)
+        existing = (await TerminologyService._existing_by_value(terminology, [request.value])).get(request.value)
         if existing:
             raise EntityExistsError(
                 f"Term with value '{request.value}' already exists in terminology",
@@ -989,6 +1014,10 @@ class TerminologyService:
                 raise NameCollisionError(collisions)
             if collision_out is not None:
                 collision_out.extend(collisions)
+
+        await TerminologyService._require_valid_pointer(
+            terminology_id, "parent_term_id", request.parent_term_id, request.term_id,
+        )
 
         # Register with Registry to get ID (or use pre-assigned ID for restore)
         client = get_registry_client()
@@ -1180,6 +1209,7 @@ class TerminologyService:
         valid_name_types: dict[str, str],
         collisions_by_index: dict[int, list[dict[str, Any]]],
         unique_names: bool,
+        refused: dict[int, DefStoreError] | None = None,
     ) -> tuple[list[Term], list[int]]:
         """Partition a batch of term requests into inserts + result rows.
 
@@ -1192,6 +1222,8 @@ class TerminologyService:
           current behaviour pinned by the CASE-336 test bed: the
           /terms endpoint hardcodes skip_duplicates=True; the alternative
           flag combinations are reachable only via the import-export path.
+        - Refused before partition (`refused`: an invalid parent, a value
+          that repeats an earlier item of the request) → that refusal.
         - Otherwise → build a Term document and queue it for insert_many.
 
         Mutates `results` in place (the coordinator owns the list, the
@@ -1206,6 +1238,14 @@ class TerminologyService:
             zip(batch_terms, batch_registry_results, strict=False)
         ):
             global_idx = batch_start + i
+
+            refusal = (refused or {}).get(i)
+            if refusal is not None:
+                results[global_idx] = BulkResultItem(
+                    index=global_idx, status="error", value=term_req.value,
+                    error=str(refusal), error_code=refusal.code, details=refusal.details,
+                )
+                continue
 
             if reg_result.get("status") == "error":
                 results[global_idx] = BulkResultItem(
@@ -1486,19 +1526,13 @@ class TerminologyService:
         """
         terminology_id = terminology.terminology_id
 
+        # Phase A2: items refused before anything is registered
+        refused = await TerminologyService._batch_refusals(terminology, batch_terms)
+
         # Phase B: Registry call for this batch (with sub-batching)
         logger.debug(f"Registering {len(batch_terms)} terms with registry...")
-        batch_registry_results = await client.register_terms_bulk(
-            terminology_id=terminology_id,
-            terms=[
-                {"value": t.value, "entry_id": t.term_id}
-                if hasattr(t, "term_id") and t.term_id
-                else {"value": t.value}
-                for t in batch_terms
-            ],
-            created_by=actor,
-            registry_batch_size=registry_batch_size,
-            namespace=namespace,
+        batch_registry_results = await TerminologyService._register_batch(
+            client, terminology_id, batch_terms, refused, actor, registry_batch_size, namespace,
         )
         logger.debug(f"Registry registration complete for batch {batch_num}")
 
@@ -1510,19 +1544,12 @@ class TerminologyService:
         batch_values = [t.value for t in batch_terms]
 
         existing_by_id: dict[str, Term] = {}
-        existing_by_value: dict[str, Term] = {}
         if batch_ids:
             existing_terms = await Term.find(
                 {"term_id": {"$in": batch_ids}}
             ).to_list()
             existing_by_id = {t.term_id: t for t in existing_terms}
-        if batch_values:
-            value_matches = await Term.find({
-                "namespace": namespace,
-                "terminology_id": terminology_id,
-                "value": {"$in": batch_values},
-            }).to_list()
-            existing_by_value = {t.value: t for t in value_matches}
+        existing_by_value = await TerminologyService._existing_by_value(terminology, batch_values)
 
         # Phase C2: Cross-term and intra-batch name collisions (one query)
         collisions_by_index = await TerminologyService._batch_name_collisions(
@@ -1546,6 +1573,7 @@ class TerminologyService:
             valid_name_types=await NameTypeService.get_valid_name_types(),
             collisions_by_index=collisions_by_index,
             unique_names=terminology.unique_names,
+            refused=refused,
         )
 
         # Phases E-H: insert, claim value synonyms, audit, events
@@ -1620,6 +1648,136 @@ class TerminologyService:
                     index=idx, status="error", value=terms[idx].value,
                     error=error, error_code="registry_error",
                 )
+
+    @staticmethod
+    async def _refuse_case_variant_values(terminology: Terminology, case_sensitive: bool | None) -> None:
+        """Refuse making a case-sensitive terminology case-insensitive while
+        two of its terms (any status) carry values that differ only by case:
+        afterwards both would be one value, and resolution would pick one."""
+        if case_sensitive is not False or not terminology.case_sensitive:
+            return
+        values = await Term.get_motor_collection().distinct(
+            "value", {"terminology_id": terminology.terminology_id}
+        )
+        seen: dict[str, str] = {}
+        clashes: list[str] = []
+        for value in values:
+            other = seen.setdefault(value.lower(), value)
+            if other != value:
+                clashes.append(f"'{other}' / '{value}'")
+        if clashes:
+            raise DefStoreError(
+                "Cannot make the terminology case-insensitive: its terms carry values that "
+                f"differ only by case ({', '.join(clashes[:5])}"
+                f"{f', … {len(clashes) - 5} more' if len(clashes) > 5 else ''})",
+                "invalid_state", rule="case_variant_values",
+            )
+
+    @staticmethod
+    async def _register_batch(
+        client: Any,
+        terminology_id: str,
+        batch_terms: list[CreateTermRequest],
+        refused: dict[int, DefStoreError],
+        actor: str,
+        registry_batch_size: int,
+        namespace: str,
+    ) -> list[dict]:
+        """Register the batch's items that were not refused; a refused item's
+        slot is an empty result, so no Registry entry is minted for it."""
+        to_register = [i for i in range(len(batch_terms)) if i not in refused]
+        registered = await client.register_terms_bulk(
+            terminology_id=terminology_id,
+            terms=[
+                {"value": batch_terms[i].value, "entry_id": batch_terms[i].term_id}
+                if batch_terms[i].term_id
+                else {"value": batch_terms[i].value}
+                for i in to_register
+            ],
+            created_by=actor,
+            registry_batch_size=registry_batch_size,
+            namespace=namespace,
+        )
+        results: list[dict] = [{} for _ in batch_terms]
+        for i, result in zip(to_register, registered, strict=True):
+            results[i] = result
+        return results
+
+    @staticmethod
+    async def _existing_by_value(terminology: Terminology, values: list[str]) -> dict[str, Term]:
+        """Each submitted value mapped to the stored term (any status) that
+        already carries it, compared as the terminology compares values: a
+        case-insensitive terminology treats `Foo` and `foo` as one value."""
+        if not values:
+            return {}
+        find_kwargs: dict[str, Any] = (
+            {} if terminology.case_sensitive else {"collation": CASE_INSENSITIVE_COLLATION}
+        )
+        stored = await Term.find({
+            "namespace": terminology.namespace,
+            "terminology_id": terminology.terminology_id,
+            "value": {"$in": values},
+        }, **find_kwargs).to_list()
+        fold = TerminologyService._value_fold(terminology)
+        by_fold = {fold(t.value): t for t in stored}
+        return {v: by_fold[fold(v)] for v in values if fold(v) in by_fold}
+
+    @staticmethod
+    def _value_fold(terminology: Terminology) -> Any:
+        """How the terminology compares values: exactly, or case-folded the
+        way resolve_values folds them."""
+        return (lambda v: v) if terminology.case_sensitive else (lambda v: v.lower())
+
+    @staticmethod
+    async def _batch_refusals(
+        terminology: Terminology, batch_terms: list[CreateTermRequest],
+    ) -> dict[int, DefStoreError]:
+        """Items of one batch refused before anything is registered: a
+        parent_term_id that is not an active term of this terminology, and a
+        value that repeats an earlier item of the batch (compared as the
+        terminology compares values)."""
+        refused: dict[int, DefStoreError] = {}
+        parents = await TerminologyService._pointer_refusals(
+            terminology.terminology_id, "parent_term_id",
+            [(t.parent_term_id, t.term_id) for t in batch_terms],
+        )
+        fold = TerminologyService._value_fold(terminology)
+        first_at: dict[str, int] = {}
+        for i, (term_req, parent_refusal) in enumerate(zip(batch_terms, parents, strict=True)):
+            earlier = first_at.setdefault(fold(term_req.value), i)
+            if earlier != i:
+                refused[i] = DefStoreError(
+                    f"Value '{term_req.value}' repeats item {earlier} of this request "
+                    f"('{batch_terms[earlier].value}')",
+                    "already_exists", rule="repeated_in_request",
+                )
+            elif parent_refusal is not None:
+                refused[i] = parent_refusal
+        return refused
+
+    @staticmethod
+    async def _pointer_refusals(
+        terminology_id: str, field: str, pairs: list[tuple[str | None, str | None]],
+    ) -> list[DefStoreError | None]:
+        """For each (pointer, own term id), the refusal of that pointer, or
+        None when it is unset or valid. One query for the whole list."""
+        wanted = list({p for p, _ in pairs if p})
+        found = {t.term_id: t for t in await Term.find({"term_id": {"$in": wanted}}).to_list()} if wanted else {}
+        return [
+            _pointer_refusal(field, p, own, found.get(p), terminology_id) if p else None
+            for p, own in pairs
+        ]
+
+    @staticmethod
+    async def _require_valid_pointer(
+        terminology_id: str, field: str, pointer: str | None, own_id: str | None,
+    ) -> None:
+        """Raise the refusal of one term pointer; nothing when unset or valid.
+        An update passes None for a pointer it leaves as it was: only a
+        pointer a write sets is checked."""
+        (refusal,) = await TerminologyService._pointer_refusals(terminology_id, field, [(pointer, own_id)])
+        if refusal is not None:
+            raise refusal
 
     @staticmethod
     async def _add_to_term_count(terminology_id: str, delta: int, now: datetime) -> None:
@@ -1951,6 +2109,11 @@ class TerminologyService:
         _apply_clearable("label")
         _apply_clearable("description")
         _apply_clearable("sort_order", default=0)
+        await TerminologyService._require_valid_pointer(
+            term.terminology_id, "parent_term_id",
+            None if request.parent_term_id == term.parent_term_id else request.parent_term_id,
+            term.term_id,
+        )
         _apply_clearable("parent_term_id")
 
         if request.metadata is not None:
@@ -2050,6 +2213,9 @@ class TerminologyService:
         actor = get_identity_string()
 
         before = TerminologyService._lifecycle_values(term)
+        await TerminologyService._require_valid_pointer(
+            term.terminology_id, "replaced_by_term_id", request.replaced_by_term_id, term.term_id,
+        )
         term.status = "deprecated"
         term.deprecated_reason = request.reason
         term.replaced_by_term_id = request.replaced_by_term_id
@@ -2398,11 +2564,11 @@ class TerminologyService:
         Matches against the term's value or any of its names, with value
         precedence: every term's value is checked before any term's names,
         so a name on one term can never shadow another term's canonical
-        value. A value match is unambiguous by construction (values are
-        unique within a terminology). A name match collects EVERY term
-        bearing the name: the first (database order — today's pick) stays
-        the matched_term for compatibility, but the full candidate list
-        and count make the ambiguity visible instead of silently resolved.
+        value. Either match collects EVERY bearer: the first (database
+        order) is the matched_term, and the full candidate list and count
+        make an ambiguity visible instead of silently resolved. A value is
+        ambiguous only in a case-insensitive terminology holding case
+        variants written before writes compared values that way.
 
         Args:
             terminology_id: Terminology ID
@@ -2469,13 +2635,19 @@ class TerminologyService:
         resolved: dict[str, ValueResolution] = {}
         for value in unique:
             compare_value = _cmp(value)
-            # Pass 1: canonical values only
-            match = next((t for t in candidates if _cmp(t.value) == compare_value), None)
-            if match is not None:
-                resolved[value] = ValueResolution(True, match, "value", None, None, [])
+            # Pass 1: canonical values only. Writes keep one value per
+            # terminology as it compares values, but a case-insensitive
+            # terminology can hold case variants stored before that — every
+            # bearer is listed then, so the pick is visible, not silent
+            value_bearers = [t for t in candidates if _cmp(t.value) == compare_value]
+            if value_bearers:
+                resolved[value] = ValueResolution(
+                    True, value_bearers[0], "value", None, None,
+                    [(t, None) for t in value_bearers] if len(value_bearers) > 1 else [],
+                )
                 continue
             # Pass 2: names — collect every bearer, first one wins the match
-            bearers: list[tuple[Term, TermName]] = []
+            bearers: list[tuple[Term, TermName | None]] = []
             for term in candidates:
                 name = next((n for n in term.names if _cmp(n.value) == compare_value), None)
                 if name is not None:

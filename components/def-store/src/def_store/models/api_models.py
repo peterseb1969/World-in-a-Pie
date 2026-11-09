@@ -198,7 +198,8 @@ class CreateTermRequest(StrictModel):
     )
     parent_term_id: str | None = Field(
         default=None,
-        description="Parent term ID for hierarchical terms"
+        description="Parent term for hierarchical terms: an active term of the "
+                    "same terminology, by id or (on this door) by its value"
     )
     translations: list[TermTranslation] = Field(
         default_factory=list,
@@ -249,7 +250,8 @@ class UpdateTermRequest(StrictModel):
     )
     parent_term_id: str | None = Field(
         default=None,
-        description="New parent term ID"
+        description="New parent term: an active term of the same terminology, "
+                    "never the term itself"
     )
     translations: list[TermTranslation] | None = Field(
         default=None,
@@ -275,7 +277,8 @@ class DeprecateTermRequest(StrictModel):
     )
     replaced_by_term_id: str | None = Field(
         default=None,
-        description="ID of the replacement term"
+        description="The replacement term: an active term of the same "
+                    "terminology, never the term itself"
     )
     updated_by: str | None = Field(
         default=None,
@@ -435,11 +438,13 @@ class ValidateValueRequest(StrictModel):
 
 
 class TermMatchCandidate(BaseModel):
-    """One bearer of an ambiguous name."""
+    """One bearer of an ambiguous value or name."""
 
     term: TermResponse
-    matched_name: TermName = Field(
-        description="The name on this term that matched the submitted value"
+    matched_name: TermName | None = Field(
+        default=None,
+        description="The name on this term that matched the submitted value; "
+                    "null when the term's own value matched"
     )
 
 
@@ -462,14 +467,16 @@ class ValidateValueResponse(BaseModel):
     )
     matches: int = Field(
         default=0,
-        description="How many distinct terms bear the submitted value. A "
-                    "value match is 1 by construction; more than 1 means "
-                    "the name is ambiguous and matched_term is merely the "
-                    "first bearer in storage order."
+        description="How many distinct terms bear the submitted value. More "
+                    "than 1 means it is ambiguous and matched_term is merely "
+                    "the first bearer in storage order. A value match is "
+                    "ambiguous only in a case-insensitive terminology that "
+                    "holds case variants written before writes compared "
+                    "values case-insensitively."
     )
     candidates: list[TermMatchCandidate] = Field(
         default_factory=list,
-        description="Every bearer of the name, populated when matches > 1"
+        description="Every bearer of the value or name, populated when matches > 1"
     )
     suggestion: TermResponse | None = Field(
         default=None,

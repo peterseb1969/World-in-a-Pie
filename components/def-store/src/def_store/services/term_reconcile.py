@@ -357,8 +357,20 @@ class TermReconcileService:
                     "namespace": terminology.namespace,
                     "terminology_id": terminology.terminology_id,
                     "value": successor,
+                    "status": "active",
                 })
-                successor_id = successor_term.term_id if successor_term else None
+                if successor_term is None:
+                    # Validated against the snapshot, but its create or the
+                    # survivor is not there now: deprecating without the
+                    # successor would report a pointer that was never written
+                    results.append(BulkResultItem(
+                        index=idx, status="error", value=value, id=by_value[value].term_id,
+                        error=f"Successor '{successor}' for '{value}' is not an active term of the terminology; not deprecated",
+                        error_code="unknown_successor",
+                    ))
+                    counts.errors += 1
+                    continue
+                successor_id = successor_term.term_id
             try:
                 await TerminologyService.deprecate_term(
                     by_value[value].term_id,

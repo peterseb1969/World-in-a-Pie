@@ -2322,9 +2322,9 @@ async def deprecate_term(
             shorthand is rejected (422) on write doors.
         reason: Reason for deprecation (e.g., 'Merged with COUNTRY').
         replaced_by_term_id: Replacement term (optional); same accepted
-            forms as term_id. The terminology scope applies to it too —
-            a replacement in a DIFFERENT terminology must be a UUID or
-            fully qualified.
+            forms as term_id, and the terminology scope applies to it too.
+            It must be an active term of the same terminology, not the
+            term itself — anything else is refused (reference_violation).
         terminology: Terminology scoping value-form identifiers — the
             preferred way to address terms by value.
     """
