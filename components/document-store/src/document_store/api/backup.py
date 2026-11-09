@@ -581,7 +581,11 @@ async def start_restore(
     multi-GB uploads don't buffer in RAM.
     """
     effective_target = target_namespace or namespace
-    await check_namespace_permission(identity, effective_target, "admin")
+    # A fresh restore given only a namespace_map writes the map's targets,
+    # each admin-checked as the map is parsed; the URL namespace is not one
+    # of them, so it is not asked of the caller.
+    if not (mode == "fresh" and namespace_map is not None and not target_namespace):
+        await check_namespace_permission(identity, effective_target, "admin")
 
     if mode not in ("restore", "merge", "fresh"):
         raise HTTPException(
@@ -615,6 +619,7 @@ async def start_restore(
 
     prefixes, effective_target = await _authorize_restore_targets(
         mode, archive_path, identity, target_namespace, effective_target,
+        map_only=parsed_namespace_map is not None and not target_namespace,
     )
 
     options = {
@@ -767,6 +772,8 @@ async def _authorize_restore_targets(
     identity: UserIdentity,
     target_namespace: str | None,
     effective_target: str,
+    *,
+    map_only: bool = False,
 ) -> tuple[list[str], str]:
     """Admin on the namespaces the restore writes, and the target it writes
     to. Returns (the archive's prefixes, the effective target); a refusal
@@ -775,8 +782,10 @@ async def _authorize_restore_targets(
         # A fresh restore reads the archive but writes only to the target, so
         # admin there is the permission that matters — requiring it on the
         # source namespaces would demand rights over an instance the caller
-        # may have nothing to do with.
-        await check_namespace_permission(identity, effective_target, "admin")
+        # may have nothing to do with. Given only a namespace_map, its
+        # targets are what it writes, admin-checked as the map was parsed.
+        if not map_only:
+            await check_namespace_permission(identity, effective_target, "admin")
         return [], effective_target
     try:
         prefixes, effective_target = await _authorize_archive_restore(
@@ -1077,8 +1086,12 @@ async def list_jobs(
     for job in jobs:
         try:
             await _check_job_permission(identity, job, "read")
-        except HTTPException:
-            continue
+        except HTTPException as exc:
+            # A refusal hides the job; an authorization outage (503) fails
+            # the listing rather than reading as "nothing you may see".
+            if exc.status_code in (403, 404):
+                continue
+            raise
         allowed.append(job)
     return [BackupJobSnapshot.from_job(j) for j in allowed]
 
@@ -1400,9 +1413,10 @@ async def delete_job(
     # Admin on every namespace, as creating the job required.
     await _check_job_permission(identity, job, "admin")
 
-    if job.status == BackupJobStatus.RUNNING:
+    if job.status in (BackupJobStatus.PENDING, BackupJobStatus.RUNNING):
         raise HTTPException(
-            status_code=409, detail="Cannot delete a running job; wait for it to finish"
+            status_code=409,
+            detail=f"Cannot delete a {job.status.value} job; wait for it to finish",
         )
 
     await get_archive_store().delete_archive(job)

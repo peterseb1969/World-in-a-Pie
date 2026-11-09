@@ -475,6 +475,12 @@ flow writes its journal before any step runs, so it is unaffected.
   marked failed with what happened ("the run completed, but its terminal
   state could not be written …"), not "worker terminated without terminal
   event".
+- **`GET /backup/jobs` during an authorization outage answers 503** instead
+  of an empty or partial list that read as "nothing you may see".
+- **A fresh restore given only a `namespace_map` needs admin on the map's
+  targets only**, not on the URL namespace, which it never writes.
+- **A pending job cannot be deleted** (409), as a running one cannot: its
+  runner is about to read the archive the delete removes.
 
 ### A field's `default_value` is informational; it never makes a mandatory field optional
 
