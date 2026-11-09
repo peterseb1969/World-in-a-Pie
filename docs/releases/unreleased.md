@@ -7,6 +7,21 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### template-store's `/health` answers 503 when unhealthy
+
+- `/health` (and `/api/template-store/health`) answered 200 with
+  `"status": "unhealthy"` when MongoDB was down, so the image's
+  `HEALTHCHECK` (`curl -f`) and status-code-only probes saw a healthy
+  service. It answers 503 with the same body. The deployer's probes
+  (`/ready`, `/livez`) are unchanged.
+- A version event's migration verdict no longer reads a removed field
+  document-store did not count (it counts up to 50) as empty: such a verdict
+  is `eligible: null`.
+- An activation whose save fails part-way answers with what was activated,
+  what is still a draft, and an `activation_incomplete` error.
+- **Action:** a monitor that read the body of a 200 sees a 503 while MongoDB
+  is down.
+
 ### template-store does not read a Def-Store outage as an answer
 
 - **Integrity scan:** a terminology check Def-Store could not answer was

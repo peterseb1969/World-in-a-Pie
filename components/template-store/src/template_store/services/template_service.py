@@ -2505,21 +2505,39 @@ class TemplateService:
                 "via": via,
             }
         else:
-            counts = impact["field_nonempty_counts"]
-            stranded = {f: counts[f] for f in removed if counts.get(f, 0) > 0}
-            if stranded:
-                migration = {
-                    "eligible": False,
-                    "reason": f"removed fields carry live data: {stranded}",
-                    "via": via,
-                }
-            else:
-                migration = {
-                    "eligible": True,
-                    "reason": "removed fields are empty in all live documents",
-                    "via": via,
-                }
+            migration = TemplateService._removed_fields_verdict(
+                removed, impact["field_nonempty_counts"], via,
+            )
         return impact, migration
+
+    @staticmethod
+    def _removed_fields_verdict(removed: list[str], counts: dict, via: str) -> dict:
+        """Migration eligibility from the live counts of removed fields. A
+        field document-store did not count (it counts a bounded number) is
+        unknown, not empty."""
+        uncounted = [f for f in removed if f not in counts]
+        if uncounted:
+            return {
+                "eligible": None,
+                "reason": (
+                    f"{len(uncounted)} removed field(s) were not counted "
+                    f"({', '.join(uncounted[:5])}{'…' if len(uncounted) > 5 else ''}) — "
+                    "run the migrate dry-run for a per-document readiness report"
+                ),
+                "via": via,
+            }
+        stranded = {f: counts[f] for f in removed if counts.get(f, 0) > 0}
+        if stranded:
+            return {
+                "eligible": False,
+                "reason": f"removed fields carry live data: {stranded}",
+                "via": via,
+            }
+        return {
+            "eligible": True,
+            "reason": "removed fields are empty in all live documents",
+            "via": via,
+        }
 
     @staticmethod
     async def version_event_details(
@@ -3494,6 +3512,35 @@ class TemplateService:
 
 
     @staticmethod
+    def _partial_activation(
+        activation_set: list[Template], activated: list[str], failed: Template, exc: Exception,
+    ) -> Any:
+        """The answer to an activation that stopped part-way: what was
+        activated, and the drafts left, each to be activated on its own."""
+        from ..models.api_models import ActivateTemplateResponse, ActivationDetail, ValidationError
+
+        remaining = [t for t in activation_set if t.template_id not in activated]
+        return ActivateTemplateResponse(
+            activated=activated,
+            activation_details=[
+                ActivationDetail(template_id=t.template_id, value=t.value,
+                                 status="activated" if t.template_id in activated else "draft")
+                for t in activation_set
+            ],
+            total_activated=len(activated),
+            errors=[ValidationError(
+                field=f"[{failed.value}]",
+                code="activation_incomplete",
+                message=(
+                    f"Activation stopped at '{failed.value}' ({exc}). Activated: "
+                    f"{', '.join(t.value for t in activation_set if t.template_id in activated) or 'none'}. "
+                    f"Still drafts: {', '.join(t.value for t in remaining)}; activate them again."
+                ),
+            )],
+            warnings=[],
+        )
+
+    @staticmethod
     async def activate_template(
         template_id: str,
         namespace: str,
@@ -3573,13 +3620,21 @@ class TemplateService:
         # Activate all templates in the set
         actor = get_identity_string()
         now = datetime.now(UTC)
-        activated_ids = []
+        activated_ids: list[str] = []
 
+        # There are no transactions to make the set atomic: the checks above
+        # are all-or-nothing, but a save can still fail part-way. Then the
+        # answer says which members were activated and which are still
+        # drafts, rather than an error that hides the half-activated set.
         for t in activation_set:
-            t.status = "active"
-            t.updated_at = now
-            t.updated_by = actor
-            await t.save()
+            try:
+                t.status = "active"
+                t.updated_at = now
+                t.updated_by = actor
+                await t.save()
+            except Exception as e:
+                logger.exception("Activation stopped at %s", t.template_id)
+                return TemplateService._partial_activation(activation_set, activated_ids, t, e)
             activated_ids.append(t.template_id)
             # A draft version activated on a template whose other versions
             # are all inactive brings the template back.
