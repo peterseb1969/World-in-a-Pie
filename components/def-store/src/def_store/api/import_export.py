@@ -118,7 +118,6 @@ async def import_terminology(
     ),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
-    created_by: str | None = Query(None, description="User performing import"),
     batch_size: int = Query(
         1000, ge=1, le=10_000,
         description="Number of terms per MongoDB batch (default 1000)"
@@ -149,8 +148,20 @@ async def import_terminology(
     }
     ```
 
+    Every term item is checked before anything is written: a malformed one
+    refuses the import (400) with nothing created. A term carries its
+    lifecycle: `status` (active, deprecated or inactive),
+    `deprecated_reason`, and its parent and replacement by value
+    (`parent_term_value`, `replaced_by_term_value`) — the import creates
+    terms parents-first and then deprecates or deactivates them, as an
+    export with include_inactive=true describes them. An import into an
+    existing terminology adds terms only; a retired one is refused
+    (restore it first). Relations whose ends are not both terms of the
+    imported terminology are counted as `dropped`, with reasons.
+
     CSV format requires terminology_value and terminology_label in the data,
-    plus csv_content with columns: value, label, description, sort_order.
+    plus csv_content with columns: value, label, description, sort_order,
+    status. A CSV with rows but no `value` column is refused.
     The destination namespace comes from the `namespace` query parameter
     (or is derived when the key is scoped to a single namespace) — the CSV
     payload itself carries no namespace field by design.
@@ -209,7 +220,6 @@ async def import_terminology(
         options = {
             "skip_duplicates": skip_duplicates,
             "update_existing": update_existing,
-            "created_by": created_by,
             "batch_size": batch_size,
             "registry_batch_size": registry_batch_size,
         }
@@ -248,7 +258,6 @@ async def import_ontology(
     relation_batch_size: int = Query(500, ge=1, le=10_000, description="Relations per batch"),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
-    created_by: str | None = Query(None, description="User performing import"),
     identity: UserIdentity = Depends(require_api_key),
 ):
     """
@@ -260,9 +269,11 @@ async def import_ontology(
     Auto-detects the ontology prefix and metadata from the graph structure.
     For large ontologies, use the CLI script `scripts/import_obo_graph.py` instead.
     """
-    try:
-        await check_namespace_permission(identity, namespace, "write")
+    # Outside the try: a refusal (403/404) or a Registry outage (503) keeps
+    # its own status instead of turning into the 500 below.
+    await check_namespace_permission(identity, namespace, "write")
 
+    try:
         if "graphs" not in data or not data["graphs"]:
             raise ValueError("Invalid OBO Graph JSON: missing 'graphs' array")
 
@@ -278,7 +289,6 @@ async def import_ontology(
             "relation_batch_size": relation_batch_size,
             "skip_duplicates": skip_duplicates,
             "update_existing": update_existing,
-            "created_by": created_by,
         }
 
         result = await ImportExportService.import_ontology(data, options)
@@ -299,9 +309,15 @@ async def import_from_url(
     format: str = Query("json", description="Expected format: json, csv"),
     terminology_value: str | None = Query(None, description="Value for CSV import"),
     terminology_label: str | None = Query(None, description="Label for CSV import"),
+    namespace: str | None = Query(
+        None,
+        description=(
+            "Destination namespace. Required for CSV; for JSON it wins over "
+            "the fetched terminology.namespace."
+        ),
+    ),
     skip_duplicates: bool = Query(True, description="Skip existing terms"),
     update_existing: bool = Query(False, description="Update existing terms"),
-    created_by: str | None = Query(None, description="User performing import"),
     batch_size: int = Query(
         1000, ge=1, le=10_000,
         description="Number of terms per MongoDB batch (default 1000)"
@@ -322,19 +338,13 @@ async def import_from_url(
     - `batch_size`: Controls MongoDB batch size (default 1000)
     - `registry_batch_size`: Controls registry HTTP call batch size (default 100)
     """
-    # CASE-384 — URL imports don't expose the destination namespace at the
-    # API layer (it comes from the fetched payload). The service-side
-    # validation will surface 4xx if the payload is missing namespace,
-    # but we can't pre-authorise without fetching the URL ourselves —
-    # which would double the work. Conservative compromise: require the
-    # caller to be a privileged identity (admin/services group) until
-    # the service grows a "pre-flight namespace extraction" hook.
-    # Filed as a follow-up consideration in CASE-384.
+    # A URL import makes def-store fetch a URL the caller chooses, and its
+    # destination may only be known once the payload is fetched. It is
+    # therefore open to superadmins (the admin groups) only; a scoped key
+    # fetches the document itself and POSTs it to /import, where the
+    # namespace is checked before anything is read.
     from wip_auth.permissions import _is_superadmin
     if not _is_superadmin(identity):
-        # Non-admin URL imports are refused. Operators with scoped keys
-        # should fetch the URL locally, then call POST /import with the
-        # body so the namespace is visible at the API layer.
         raise HTTPException(
             status_code=403,
             detail=(
@@ -343,12 +353,13 @@ async def import_from_url(
                 "permission checking."
             ),
         )
+    if namespace:
+        await check_namespace_permission(identity, namespace, "write")
 
     try:
         options = {
             "skip_duplicates": skip_duplicates,
             "update_existing": update_existing,
-            "created_by": created_by,
             "terminology_value": terminology_value,
             "terminology_label": terminology_label,
             "batch_size": batch_size,
@@ -358,7 +369,8 @@ async def import_from_url(
         result = await ImportExportService.import_from_url(
             url=url,
             format=format,
-            options=options
+            options=options,
+            namespace=namespace,
         )
 
         return JSONResponse(content=result)

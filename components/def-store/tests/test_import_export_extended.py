@@ -133,10 +133,7 @@ class TestMutableFlagRoundTrip:
             headers=auth_headers,
         )
         assert get_resp.status_code == 200
-        term_data = get_resp.json()
-        # The import path uses CreateTerminologyRequest which has mutable field
-        # but the import service may not pass it through. Verify current behavior.
-        assert "mutable" in term_data
+        assert get_resp.json()["mutable"] is True
 
 
 # =============================================================================

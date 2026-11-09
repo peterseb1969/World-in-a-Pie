@@ -156,9 +156,27 @@ export interface TermListResponse extends PaginatedResponse<Term> {
   terminology_value: string
 }
 
+/** A term as a JSON export writes it and an import reads it. A parent
+ * and a replacement travel by value: an import mints fresh ids, so the
+ * import resolves these values inside the imported terminology. */
+export interface ExportedTerm {
+  value: string
+  label?: string
+  description?: string | null
+  sort_order?: number
+  /** The import recreates it: a deprecated or inactive term is created,
+   * then deprecated or deactivated. */
+  status?: 'active' | 'deprecated' | 'inactive'
+  names?: TermName[]
+  metadata?: Record<string, unknown>
+  parent_term_value?: string
+  deprecated_reason?: string | null
+  replaced_by_term_value?: string
+}
+
 export interface ImportTerminologyRequest {
   terminology: CreateTerminologyRequest
-  terms: CreateTermRequest[]
+  terms: Array<CreateTermRequest | ExportedTerm>
   // The wire key is `relations` (matches def-store import service:
   // `data.get("relations", [])` in import_export.py). The previous
   // `relationships?` key was a latent client-side bug — payloads sent
@@ -167,6 +185,12 @@ export interface ImportTerminologyRequest {
     source_term_value: string
     target_term_value: string
     relation_type: string
+    metadata?: Record<string, unknown>
+    /** Set by an export on a relation to a term of another terminology;
+     * the import counts such a relation as dropped. */
+    source_terminology_id?: string
+    target_terminology_id?: string
+    /** @deprecated Not read by the import. */
     target_terminology_value?: string
   }>
   options?: {
@@ -177,7 +201,7 @@ export interface ImportTerminologyRequest {
 
 export interface ExportTerminologyResponse {
   terminology: Terminology
-  terms: Term[]
+  terms: ExportedTerm[]
   export_date: string
   // Wire fields from def-store's _export_json (import_export.py): the format
   // tag is `format`, not `export_format`; `version` is the export schema

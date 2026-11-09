@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from collections import Counter
+from collections.abc import Awaitable
 from datetime import UTC, datetime
 from typing import Any, ClassVar
 
@@ -17,15 +18,184 @@ from ..models.api_models import (
     CreateTerminologyRequest,
     CreateTermRelationRequest,
     CreateTermRequest,
+    DeprecateTermRequest,
 )
-from ..models.term import Term, TermName, TermTranslation
+from ..models.term import Term, TermName
 from ..models.term_relation import TermRelation
 from ..models.terminology import Terminology, TerminologyMetadata
 from .errors import DefStoreError
+from .import_plan import (
+    IMPORTED_DEPRECATION_REASON,
+    ImportItem,
+    deprecation_order,
+    parent_levels,
+    parse_items,
+    relation_drop_reason,
+)
 from .ontology_service import OntologyService
 from .terminology_service import TerminologyService
 
 logger = logging.getLogger(__name__)
+
+# The terminology flags an export carries and an import of a new
+# terminology applies.
+_TERMINOLOGY_FLAGS = ("case_sensitive", "allow_multiple", "mutable", "unique_names")
+
+
+def _flag_differences(terminology_data: dict[str, Any], existing: Terminology) -> dict[str, Any]:
+    """The flags the file sets differently from the existing terminology
+    it extends — reported, not applied (an import never modifies one)."""
+    return {
+        flag: {"file": terminology_data[flag], "stored": getattr(existing, flag)}
+        for flag in _TERMINOLOGY_FLAGS
+        if flag in terminology_data and terminology_data[flag] != getattr(existing, flag)
+    }
+
+
+async def _term_ids_by_value(terminology_id: str, values: set[str]) -> dict[str, str]:
+    """value -> term_id for the named values of one terminology."""
+    if not values:
+        return {}
+    terms = await Term.find({"terminology_id": terminology_id, "value": {"$in": list(values)}}).to_list()
+    return {t.value: t.term_id for t in terms}
+
+
+async def _record(outcome: dict[str, Any], key: str, item: ImportItem, step: Awaitable[Any]) -> None:
+    """Run one lifecycle step of an imported term and count it, or record
+    why it failed (the term then stays active, and the result says so)."""
+    try:
+        done = await step
+    except ValueError as e:
+        outcome["errors"].append({"value": item.request.value, "error": str(e)})
+        return
+    if not done:
+        outcome["errors"].append({"value": item.request.value, "error": "the term was not found"})
+        return
+    outcome[key] += 1
+
+
+def _export_term(t: Term, include_metadata: bool, pointer_values: dict[str, str]) -> dict[str, Any]:
+    """One term of a JSON export; parent and replacement by value."""
+    term_dict: dict[str, Any] = {
+        "value": t.value,
+        "label": t.label or t.value,
+        "description": t.description,
+        "sort_order": t.sort_order,
+        "status": t.status,
+    }
+    if t.names:
+        # Required `value` always serializes; optional fields only when
+        # set, so simple vocabularies export compact
+        term_dict["names"] = [n.model_dump(exclude_none=True, exclude_defaults=True) for n in t.names]
+    if t.parent_term_id:
+        term_dict["parent_term_value"] = pointer_values.get(t.parent_term_id)
+    if include_metadata and t.metadata:
+        term_dict["metadata"] = t.metadata
+    if t.status == "deprecated":
+        term_dict["deprecated_reason"] = t.deprecated_reason
+        if t.replaced_by_term_id:
+            term_dict["replaced_by_term_value"] = pointer_values.get(t.replaced_by_term_id)
+    return term_dict
+
+
+def _terminology_summary(terminology: Terminology, status: str) -> dict[str, Any]:
+    return {
+        "terminology_id": terminology.terminology_id,
+        "value": terminology.value,
+        "label": terminology.label,
+        "status": status,
+    }
+
+
+def _terms_summary(term_results: list[BulkResultItem], total: int) -> dict[str, Any]:
+    return {
+        "results": [r.model_dump() for r in term_results],
+        "total": total,
+        "succeeded": sum(1 for r in term_results if r.status == "created"),
+        "skipped": sum(1 for r in term_results if r.status == "skipped"),
+        "failed": sum(1 for r in term_results if r.status == "error"),
+    }
+
+
+def _level_refusal(item: ImportItem, parents: dict[str, str], mutable: bool) -> BulkResultItem | None:
+    """Why an item cannot be created, or None — and then its parent value
+    is resolved to the parent's fresh id on its request."""
+    error: tuple[str, str] | None = None
+    if item.parent_value is not None and item.parent_value not in parents:
+        error = (f"parent_term_value '{item.parent_value}' names no term of this terminology", "reference_violation")
+    elif item.status == "inactive" and mutable:
+        error = (
+            "An inactive term cannot be imported into a mutable terminology: "
+            "a mutable terminology removes a deleted term instead of keeping it inactive",
+            "invalid_state",
+        )
+    if error is not None:
+        return BulkResultItem(
+            index=item.index, status="error", value=item.request.value, error=error[0], error_code=error[1],
+        )
+    if item.parent_value is not None:
+        item.request.parent_term_id = parents[item.parent_value]
+    return None
+
+
+def _deprecation(item: ImportItem, replacements: dict[str, str], outcome: dict[str, Any]) -> DeprecateTermRequest:
+    """The deprecation of an imported term: the file's reason and its
+    replacement, resolved by value in the imported terminology (a legacy
+    replaced_by_term_id passes as it is). A replacement value that names
+    no term is recorded, and the term is deprecated without one."""
+    replaced_by = item.replaced_by_id
+    if item.replaced_by_value:
+        replaced_by = replacements.get(item.replaced_by_value)
+        if replaced_by is None:
+            outcome["errors"].append({
+                "value": item.request.value,
+                "error": f"replaced_by_term_value '{item.replaced_by_value}' names no term of this "
+                         "terminology; deprecated without a replacement",
+            })
+    return DeprecateTermRequest(reason=item.reason or IMPORTED_DEPRECATION_REASON, replaced_by_term_id=replaced_by)
+
+
+async def _create_relations(
+    namespace: str, requests: list[CreateTermRelationRequest], batch_size: int,
+    counts: dict[str, int], error_samples: list[str],
+) -> None:
+    """Create the relations in batches, counting each outcome."""
+    for i in range(0, len(requests), batch_size):
+        for r in await OntologyService.create_term_relations(namespace, requests[i:i + batch_size]):
+            if r.status in ("created", "skipped"):
+                counts[r.status] += 1
+                continue
+            counts["errors"] += 1
+            if len(error_samples) < 5 and r.error:
+                error_samples.append(r.error)
+
+
+async def _pointer_values(terms: list[Term]) -> dict[str, str]:
+    """term_id -> value for every term the exported terms point at as
+    parent or replacement, whether or not it is exported itself."""
+    values = {t.term_id: t.value for t in terms}
+    wanted = {p for t in terms for p in (t.parent_term_id, t.replaced_by_term_id) if p and p not in values}
+    if wanted:
+        for t in await Term.find({"term_id": {"$in": list(wanted)}}).to_list():
+            values[t.term_id] = t.value
+    return values
+
+
+def _csv_term(row: dict[str, str]) -> dict[str, Any]:
+    """One CSV row as a term item (see import_plan.parse_item)."""
+    term: dict[str, Any] = {
+        "value": (row.get("value") or "").strip(),
+        "label": (row.get("label") or "").strip() or None,
+        "description": (row.get("description") or "").strip() or None,
+        "sort_order": int(row.get("sort_order") or 0),
+    }
+    status = (row.get("status") or "").strip()
+    if status:
+        term["status"] = status
+    if row.get("metadata"):
+        with contextlib.suppress(json.JSONDecodeError):
+            term["metadata"] = json.loads(row["metadata"])
+    return term
 
 
 def _relation_batch_size(options: dict[str, Any]) -> int:
@@ -121,10 +291,10 @@ class ImportExportService:
 
         if format == "csv":
             return ImportExportService._export_csv(terminology, terms, include_metadata)
-        else:
-            return ImportExportService._export_json(
-                terminology, terms, include_metadata, relations
-            )
+        return ImportExportService._export_json(
+            terminology, terms, include_metadata, relations,
+            pointer_values=await _pointer_values(terms),
+        )
 
     @staticmethod
     def _export_json(
@@ -132,36 +302,23 @@ class ImportExportService:
         terms: list[Term],
         include_metadata: bool,
         relations: list["TermRelation"] | None = None,
+        pointer_values: dict[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Export as JSON."""
+        """Export as JSON.
+
+        A term's parent and replacement are written by value
+        (parent_term_value, replaced_by_term_value), never by id: an import
+        mints fresh ids, so only the value names the same term there.
+        `pointer_values` maps every pointed-at term id to its value, the
+        exported terms' and any other term's alike.
+        """
+        pointer_values = pointer_values or {}
         # Build term_id → value lookup for relation denormalization
         term_id_to_value: dict[str, str] = {}
         term_data = []
         for t in terms:
             term_id_to_value[t.term_id] = t.value
-            term_dict: dict[str, Any] = {
-                "value": t.value,
-                "label": t.label or t.value,
-                "description": t.description,
-                "sort_order": t.sort_order,
-                "status": t.status,
-            }
-            if t.names:
-                # Required `value` always serializes; optional fields only
-                # when set, so simple vocabularies export compact
-                term_dict["names"] = [
-                    n.model_dump(exclude_none=True, exclude_defaults=True)
-                    for n in t.names
-                ]
-            if t.parent_term_id:
-                term_dict["parent_term_id"] = t.parent_term_id
-            if include_metadata and t.metadata:
-                term_dict["metadata"] = t.metadata
-            if t.status == "deprecated":
-                term_dict["deprecated_reason"] = t.deprecated_reason
-                term_dict["replaced_by_term_id"] = t.replaced_by_term_id
-
-            term_data.append(term_dict)
+            term_data.append(_export_term(t, include_metadata, pointer_values))
 
         result: dict[str, Any] = {
             "terminology": {
@@ -169,13 +326,12 @@ class ImportExportService:
                 "label": terminology.label,
                 "description": terminology.description,
                 "namespace": terminology.namespace,
-                "case_sensitive": terminology.case_sensitive,
-                "allow_multiple": terminology.allow_multiple,
+                **{flag: getattr(terminology, flag) for flag in _TERMINOLOGY_FLAGS},
             },
             "terms": term_data,
             "export_date": datetime.now(UTC).isoformat(),
             "format": "json",
-            "version": "2.0"
+            "version": "2.1"
         }
 
         if include_metadata:
@@ -295,6 +451,17 @@ class ImportExportService:
         """
         Import a terminology with terms.
 
+        Every term item is checked before anything is written; a malformed
+        one refuses the whole import. A new terminology takes the file's
+        flags (case_sensitive, allow_multiple, mutable, unique_names). An
+        existing one is extended, never modified: its own fields stay as
+        they are (status "exists", with any flag the file sets differently
+        listed under "differs"), and a retired one is refused — restore it
+        first. Terms come back with their lifecycle: each is created
+        active, parents before children, and a term the file marks
+        deprecated or inactive is then deprecated (keeping its reason and
+        replacement) or deactivated — reported under "lifecycle_result".
+
         Args:
             data: Import data
             format: Data format (json, csv)
@@ -302,8 +469,8 @@ class ImportExportService:
                 - skip_duplicates: Skip terms that already exist
                 - update_existing: Extend-only — existing terminology/terms are
                   left unchanged (reported "exists"/"skipped"), not modified.
-                  In-place update is a future --force feature (CASE-797).
-                - created_by: User performing import
+                  In-place update is a future --force feature.
+                - batch_size / registry_batch_size / relation_batch_size
             namespace: Destination namespace, resolved by the API layer
                 (query param / JSON body / single-namespace-key derivation)
                 and already permission-checked there. When set it wins;
@@ -313,152 +480,149 @@ class ImportExportService:
             Import results
         """
         options = options or {}
-        skip_duplicates = options.get("skip_duplicates", True)
-        update_existing = options.get("update_existing", False)
-        created_by = options.get("created_by")
-
         if format == "csv":
             return await ImportExportService._import_csv(data, options, namespace)
 
-        # JSON import
-        terminology_data = data.get("terminology")
-        if not terminology_data:
-            raise ValueError("Missing 'terminology' field in import data")
+        terminology_data = ImportExportService._terminology_block(data, namespace)
+        items = parse_items(data.get("terms", []))
+        levels = parent_levels(items)
+        target_namespace = terminology_data["namespace"]
 
-        if not terminology_data.get("value"):
-            raise ValueError("Missing 'terminology.value' field in import data")
-
-        if not terminology_data.get("label"):
-            raise ValueError("Missing 'terminology.label' field in import data")
-
-        if namespace:
-            terminology_data["namespace"] = namespace
-        target_namespace = terminology_data.get("namespace")
-        if not target_namespace:
-            # The API layer always resolves one; direct service callers must
-            # supply it too — an import without a destination namespace used
-            # to die later as a bare KeyError on the create path.
-            raise ValueError("Missing terminology namespace for import")
-
-        terms_data = data.get("terms", [])
-
-        # Check if terminology exists — scoped to the destination namespace.
-        # (namespace, value) is the terminology's identity; an unscoped
-        # value-only lookup could match a same-named terminology in ANOTHER
-        # namespace and attach the imported terms there, sidestepping the
-        # permission check that gated only the destination.
-        existing_terminology = await Terminology.find_one({
-            "value": terminology_data.get("value"),
-            "namespace": target_namespace,
-        })
-
-        if existing_terminology:
-            # An existing terminology is not modified by import — extend-only by
-            # WIP contract (CASE-797). update_existing extends the TERM set below;
-            # the terminology's own fields are left unchanged, so report it
-            # honestly as existing rather than a no-op "updated". In-place
-            # modification of an existing terminology is a future --force feature.
-            terminology_id = existing_terminology.terminology_id
-            terminology_status = "exists"
-        else:
-            # Create new terminology
-            metadata = terminology_data.get("metadata", {})
-            create_req = CreateTerminologyRequest(
-                value=terminology_data["value"],
-                label=terminology_data["label"],
-                description=terminology_data.get("description"),
-                namespace=target_namespace,
-                case_sensitive=terminology_data.get("case_sensitive", False),
-                allow_multiple=terminology_data.get("allow_multiple", False),
-                metadata=TerminologyMetadata(**metadata) if metadata else None,
-                created_by=created_by
-            )
-            terminology_response = await TerminologyService.create_terminology(
-                create_req, target_namespace
-            )
-            terminology_id = terminology_response.terminology_id
-            terminology_status = "created"
-
-        # Build CreateTermRequest objects for batch operation. Structured
-        # names are the native shape; legacy aliases/translations in the
-        # import payload still fold in via request normalization.
-        term_requests = []
-        for i, term_data in enumerate(terms_data):
-            translations = [
-                TermTranslation(**tr)
-                for tr in term_data.get("translations", [])
-            ]
-            names = [
-                TermName(**n)
-                for n in term_data.get("names", [])
-            ]
-            term_requests.append(CreateTermRequest(
-                value=term_data["value"],
-                names=names,
-                aliases=term_data.get("aliases", []),
-                label=term_data.get("label"),
-                description=term_data.get("description"),
-                sort_order=term_data.get("sort_order", i),
-                parent_term_id=term_data.get("parent_term_id"),
-                translations=translations,
-                metadata=term_data.get("metadata", {}),
-                created_by=created_by
-            ))
-
-        # Delegate to batch method for efficient bulk import
-        # Get batch size options (for large imports)
-        batch_size = options.get("batch_size", 1000)
-        registry_batch_size = options.get("registry_batch_size", 100)
-
-        term_results = await TerminologyService.create_terms_bulk(
-            terminology_id=terminology_id,
-            terms=term_requests,
-            skip_duplicates=skip_duplicates,
-            update_existing=update_existing,
-            batch_size=batch_size,
-            registry_batch_size=registry_batch_size,
-        )
-
-        created_count = sum(1 for r in term_results if r.status == "created")
-        skipped_count = sum(1 for r in term_results if r.status == "skipped")
-        error_count = sum(1 for r in term_results if r.status == "error")
-
-        # Get terminology label (from existing or from import data)
-        terminology_label = (
-            existing_terminology.label if existing_terminology
-            else terminology_data.get("label")
-        )
-
-        # Import relations if present
-        relations_data = data.get("relations", [])
-        rel_result = None
-        if relations_data:
-            rel_result = await ImportExportService._import_term_relations(
-                relations_data,
-                terminology_id=terminology_id,
-                namespace=target_namespace,
-                term_results=term_results,
-                options=options,
-            )
+        terminology, terminology_result = await ImportExportService._target_terminology(terminology_data)
+        term_results = await ImportExportService._create_term_levels(terminology, levels, options)
+        lifecycle = await ImportExportService._apply_lifecycle(terminology, items, term_results)
 
         result: dict[str, Any] = {
-            "terminology": {
-                "terminology_id": terminology_id,
-                "value": terminology_data.get("value"),
-                "label": terminology_label,
-                "status": terminology_status
-            },
-            "terms_result": {
-                "results": [r.model_dump() for r in term_results],
-                "total": len(terms_data),
-                "succeeded": created_count,
-                "skipped": skipped_count,
-                "failed": error_count
-            }
+            "terminology": terminology_result,
+            "terms_result": _terms_summary(term_results, len(items)),
         }
-        if rel_result:
-            result["relations_result"] = rel_result
+        if lifecycle is not None:
+            result["lifecycle_result"] = lifecycle
+        relations_data = data.get("relations") or []
+        if relations_data:
+            result["relations_result"] = await ImportExportService._import_term_relations(
+                relations_data,
+                terminology_id=terminology.terminology_id,
+                namespace=target_namespace,
+                options=options,
+            )
         return result
+
+    @staticmethod
+    def _terminology_block(data: Any, namespace: str | None) -> dict[str, Any]:
+        """The file's terminology block, checked, with its destination
+        namespace set (the API layer's wins)."""
+        if not isinstance(data, dict):
+            raise ValueError("Import data must be an object")
+        terminology_data = data.get("terminology")
+        if not isinstance(terminology_data, dict) or not terminology_data:
+            raise ValueError("Missing 'terminology' field in import data")
+        if not terminology_data.get("value"):
+            raise ValueError("Missing 'terminology.value' field in import data")
+        if not terminology_data.get("label"):
+            raise ValueError("Missing 'terminology.label' field in import data")
+        if namespace:
+            terminology_data["namespace"] = namespace
+        if not terminology_data.get("namespace"):
+            # The API layer always resolves one; direct service callers must
+            # supply it too.
+            raise ValueError("Missing terminology namespace for import")
+        return terminology_data
+
+    @staticmethod
+    async def _target_terminology(terminology_data: dict[str, Any]) -> tuple[Terminology, dict[str, Any]]:
+        """The terminology the import writes into, and how the result
+        reports it: an existing one (refused when retired, never modified,
+        its differing flags listed) or a new one created from the file."""
+        existing = await Terminology.find_one({
+            "value": terminology_data["value"],
+            "namespace": terminology_data["namespace"],
+        })
+        if existing is None:
+            created = await ImportExportService._create_terminology(terminology_data)
+            return created, _terminology_summary(created, "created")
+        TerminologyService._require_active(existing)
+        summary = _terminology_summary(existing, "exists")
+        differs = _flag_differences(terminology_data, existing)
+        if differs:
+            summary["differs"] = differs
+        return existing, summary
+
+    @staticmethod
+    async def _create_terminology(terminology_data: dict[str, Any]) -> Terminology:
+        """Create the imported terminology with the file's flags."""
+        metadata = terminology_data.get("metadata") or {}
+        create_req = CreateTerminologyRequest(
+            value=terminology_data["value"],
+            label=terminology_data["label"],
+            description=terminology_data.get("description"),
+            namespace=terminology_data["namespace"],
+            metadata=TerminologyMetadata(**metadata) if metadata else None,
+            **{flag: terminology_data[flag] for flag in _TERMINOLOGY_FLAGS if flag in terminology_data},
+        )
+        response = await TerminologyService.create_terminology(create_req, terminology_data["namespace"])
+        created = await Terminology.find_one({"terminology_id": response.terminology_id})
+        if created is None:
+            raise DefStoreError("The imported terminology vanished after it was created", "internal_error")
+        return created
+
+    @staticmethod
+    async def _create_term_levels(
+        terminology: Terminology, levels: list[list[ImportItem]], options: dict[str, Any],
+    ) -> list[BulkResultItem]:
+        """Create the items level by level, so each parent exists (with its
+        fresh id) before its children name it. Results come back in file
+        order, indexed by the item's place in the file."""
+        results: dict[int, BulkResultItem] = {}
+        for level in levels:
+            parents = await _term_ids_by_value(
+                terminology.terminology_id, {i.parent_value for i in level if i.parent_value},
+            )
+            to_create: list[ImportItem] = []
+            for item in level:
+                refusal = _level_refusal(item, parents, terminology.mutable)
+                if refusal is None:
+                    to_create.append(item)
+                else:
+                    results[item.index] = refusal
+            if not to_create:
+                continue
+            created = await TerminologyService.create_terms_bulk(
+                terminology_id=terminology.terminology_id,
+                terms=[i.request for i in to_create],
+                skip_duplicates=options.get("skip_duplicates", True),
+                update_existing=options.get("update_existing", False),
+                batch_size=options.get("batch_size", 1000),
+                registry_batch_size=options.get("registry_batch_size", 100),
+            )
+            for item, result in zip(to_create, created, strict=True):
+                result.index = item.index
+                results[item.index] = result
+        return [results[i] for i in sorted(results)]
+
+    @staticmethod
+    async def _apply_lifecycle(
+        terminology: Terminology, items: list[ImportItem], term_results: list[BulkResultItem],
+    ) -> dict[str, Any] | None:
+        """Deprecate, then deactivate, each term this import created that
+        the file marks deprecated or inactive. A term the import found
+        already there is left as it is (extend-only). None when the file
+        marks no created term."""
+        created = {r.value: r.id for r in term_results if r.status == "created" and r.id}
+        pending = [i for i in items if i.status != "active" and i.request.value in created]
+        if not pending:
+            return None
+        outcome: dict[str, Any] = {"deprecated": 0, "deactivated": 0, "errors": []}
+        replacements = await _term_ids_by_value(
+            terminology.terminology_id, {i.replaced_by_value for i in pending if i.replaced_by_value},
+        )
+        for item in deprecation_order(pending):
+            await _record(outcome, "deprecated", item, TerminologyService.deprecate_term(
+                created[item.request.value], _deprecation(item, replacements, outcome),
+            ))
+        for item in (i for i in pending if i.status == "inactive"):
+            await _record(outcome, "deactivated", item, TerminologyService.delete_term(created[item.request.value]))
+        return outcome
 
     @staticmethod
     async def _import_csv(
@@ -470,9 +634,11 @@ class ImportExportService:
 
         The flat CSV payload carries no namespace by design — the caller
         resolves the destination namespace (API layer: query param or
-        single-namespace-key derivation) and passes it here. Without it,
-        creating a new terminology from CSV was impossible: the rebuilt
-        JSON block had no namespace and the create path requires one.
+        single-namespace-key derivation) and passes it here. Columns:
+        value, label, description, sort_order, status, metadata. A CSV with
+        rows of which none carries a value is refused, naming the headers
+        it has; a CSV with no rows at all imports an empty terminology,
+        like JSON `terms: []`.
         """
         terminology_value = data.get("terminology_value")
         terminology_label = data.get("terminology_label", terminology_value)
@@ -481,26 +647,20 @@ class ImportExportService:
         if not terminology_value:
             raise ValueError("terminology_value is required for CSV import")
 
-        # Parse CSV
         reader = csv.DictReader(io.StringIO(csv_content))
         terms_data = []
-
+        rows = 0
         for raw in reader:
-            row = {unescape_cell(k): unescape_cell(v) for k, v in raw.items()}
-            term = {
-                "value": row.get("value", "").strip(),
-                "label": row.get("label", "").strip() or None,
-                "description": row.get("description", "").strip() or None,
-                "sort_order": int(row.get("sort_order", 0) or 0),
-            }
-            if row.get("metadata"):
-                with contextlib.suppress(json.JSONDecodeError):
-                    term["metadata"] = json.loads(row["metadata"])
-
+            rows += 1
+            term = _csv_term({unescape_cell(k): unescape_cell(v) for k, v in raw.items()})
             if term["value"]:
                 terms_data.append(term)
+        if rows and not terms_data:
+            raise ValueError(
+                f"The CSV has {rows} rows but none has a value: its columns are "
+                f"{reader.fieldnames}, and a term needs a 'value' column"
+            )
 
-        # Convert to JSON format and use JSON import
         json_data = {
             "terminology": {
                 "value": terminology_value,
@@ -515,83 +675,60 @@ class ImportExportService:
 
     @staticmethod
     async def _import_term_relations(
-        relations_data: list[dict[str, Any]],
+        relations_data: list[Any],
         terminology_id: str,
         namespace: str,
-        term_results: list[BulkResultItem],
         options: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         Import relations from export format (source_term_value/target_term_value).
 
-        Resolves term values to IDs and creates relations in batches.
+        Both ends must be terms of the imported terminology. A relation
+        that cannot be created is counted under "dropped", with its reason
+        in "dropped_samples", so created + skipped + errors + dropped is
+        always the total.
         """
         options = options or {}
-        relation_batch_size = options.get("relation_batch_size", 500)
+        relation_batch_size = _relation_batch_size(options)
+        value_to_id = {
+            t.value: t.term_id
+            for t in await Term.find({"namespace": namespace, "terminology_id": terminology_id}).to_list()
+        }
 
-        # Build value→term_id from creation results
-        value_to_id: dict[str, str] = {}
-        for r in term_results:
-            if r.id and r.value:
-                value_to_id[r.value] = r.id
+        counts = {"created": 0, "skipped": 0, "errors": 0, "dropped": 0}
+        error_samples: list[str] = []
+        dropped_samples: list[dict[str, Any]] = []
+        requests: list[CreateTermRelationRequest] = []
+        for index, rd in enumerate(relations_data):
+            reason = relation_drop_reason(rd, terminology_id, value_to_id)
+            if reason is not None:
+                counts["dropped"] += 1
+                if len(dropped_samples) < 5:
+                    dropped_samples.append({"index": index, "reason": reason})
+                continue
+            requests.append(CreateTermRelationRequest(
+                source_term_id=value_to_id[rd["source_term_value"]],
+                target_term_id=value_to_id[rd["target_term_value"]],
+                relation_type=rd["relation_type"],
+                metadata=rd.get("metadata") or {},
+            ))
 
-        # Resolve skipped terms from DB
-        if len(value_to_id) < len(term_results):
-            async for term in Term.find({
-                "namespace": namespace,
-                "terminology_id": terminology_id,
-            }):
-                value_to_id[term.value] = term.term_id
-
-        # Ensure relation types exist
-        rel_types = {r["relation_type"] for r in relations_data if r.get("relation_type")}
-        await ImportExportService._ensure_relation_types(rel_types)
-
-        # Build and batch-create relations
-        rel_created = 0
-        rel_skipped = 0
-        rel_errors = 0
-        rel_error_samples: list[str] = []
-
-        for i in range(0, len(relations_data), relation_batch_size):
-            batch = relations_data[i:i + relation_batch_size]
-            rel_requests: list[CreateTermRelationRequest] = []
-            for rd in batch:
-                src_id = value_to_id.get(rd.get("source_term_value", ""))
-                tgt_id = value_to_id.get(rd.get("target_term_value", ""))
-                if src_id and tgt_id:
-                    rel_requests.append(CreateTermRelationRequest(
-                        source_term_id=src_id,
-                        target_term_id=tgt_id,
-                        relation_type=rd["relation_type"],
-                        metadata=rd.get("metadata") or {},
-                    ))
-
-            if rel_requests:
-                results = await OntologyService.create_term_relations(namespace, rel_requests)
-                for r in results:
-                    if r.status == "created":
-                        rel_created += 1
-                    elif r.status == "skipped":
-                        rel_skipped += 1
-                    else:
-                        rel_errors += 1
-                        if len(rel_error_samples) < 5 and r.error:
-                            rel_error_samples.append(r.error)
+        await ImportExportService._ensure_relation_types({r.relation_type for r in requests})
+        await _create_relations(namespace, requests, relation_batch_size, counts, error_samples)
 
         return {
             "total": len(relations_data),
-            "created": rel_created,
-            "skipped": rel_skipped,
-            "errors": rel_errors,
-            "error_samples": rel_error_samples[:5] if rel_error_samples else [],
+            **counts,
+            "error_samples": error_samples,
+            "dropped_samples": dropped_samples,
         }
 
     @staticmethod
     async def import_from_url(
         url: str,
         format: str = "json",
-        options: dict[str, Any] | None = None
+        options: dict[str, Any] | None = None,
+        namespace: str | None = None,
     ) -> dict[str, Any]:
         """
         Import terminology from a URL.
@@ -600,6 +737,8 @@ class ImportExportService:
             url: URL to fetch data from
             format: Expected format (json, csv)
             options: Import options
+            namespace: Destination namespace (required for CSV; for JSON it
+                wins over the payload's terminology.namespace)
 
         Returns:
             Import results
@@ -620,7 +759,7 @@ class ImportExportService:
                     "terminology_label": options.get("terminology_label") if options else None,
                 }
 
-        return await ImportExportService.import_terminology(data, format, options)
+        return await ImportExportService.import_terminology(data, format, options, namespace=namespace)
 
     # =========================================================================
     # OBO GRAPH JSON IMPORT
@@ -887,7 +1026,7 @@ class ImportExportService:
             options: Import options (terminology_value, terminology_label,
                      prefix_filter, include_deprecated, max_synonyms,
                      batch_size, registry_batch_size, relation_batch_size,
-                     namespace, skip_duplicates, update_existing, created_by)
+                     namespace, skip_duplicates, update_existing)
 
         Returns:
             Import summary with terminology, term, and relation stats.
@@ -895,7 +1034,6 @@ class ImportExportService:
         t0 = time.perf_counter()
 
         namespace = options["namespace"]
-        created_by = options.get("created_by")
         batch_size = options.get("batch_size", 1000)
         registry_batch_size = options.get("registry_batch_size", 50)
         relation_batch_size = _relation_batch_size(options)
@@ -957,6 +1095,8 @@ class ImportExportService:
         })
 
         if existing:
+            # A retired terminology takes no new terms: restore it first.
+            TerminologyService._require_active(existing)
             terminology_id = existing.terminology_id
             terminology_status = "exists"
         else:
@@ -970,7 +1110,6 @@ class ImportExportService:
                     version=meta.get("version"),
                     custom={"format": "OBO Graph JSON"},
                 ),
-                created_by=created_by,
             )
             terminology_response = await TerminologyService.create_terminology(create_req, namespace)
             terminology_id = terminology_response.terminology_id
@@ -985,7 +1124,6 @@ class ImportExportService:
                 description=info["description"],
                 names=[TermName(**n) for n in info["names"]],
                 metadata=info["metadata"],
-                created_by=created_by,
             ))
 
         term_results = await TerminologyService.create_terms_bulk(

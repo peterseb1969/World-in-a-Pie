@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from wip_auth import (
     UserIdentity,
     check_namespace_permission,
+    resolve_accessible_namespaces,
     resolve_bulk_ids,
     resolve_namespace_filter,
     resolve_or_404,
@@ -122,12 +123,20 @@ async def get_terminology_by_value(
     namespace: str | None = Query(default=None, description="Namespace to search in (omit for all)"),
     identity: UserIdentity = Depends(require_api_key)
 ) -> TerminologyResponse:
-    """Get a terminology by its value (e.g., DOC_STATUS)."""
+    """Get a terminology by its value (e.g., DOC_STATUS).
+
+    Without a namespace, the value is looked up in the namespaces the
+    caller can read: a terminology elsewhere reads as not found, and an
+    ambiguity error names only readable namespaces.
+    """
+    within: list[str] | None = None
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
+    else:
+        within = await resolve_accessible_namespaces(identity)
 
     try:
-        result = await TerminologyService.get_terminology(value=value, namespace=namespace)
+        result = await TerminologyService.get_terminology(value=value, namespace=namespace, within=within)
     except AmbiguousTerminologyValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     if not result:
@@ -155,9 +164,12 @@ async def get_terminology(
     # Try as ID first, then as value
     result = await TerminologyService.get_terminology(terminology_id=terminology_id)
     if not result:
+        # The value fallback searches only readable namespaces when none is
+        # named, so its ambiguity error cannot list an unreadable one.
+        within = None if namespace else await resolve_accessible_namespaces(identity)
         try:
             result = await TerminologyService.get_terminology(
-                value=terminology_id, namespace=namespace
+                value=terminology_id, namespace=namespace, within=within
             )
         except AmbiguousTerminologyValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e

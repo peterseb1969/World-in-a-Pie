@@ -7,6 +7,42 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### A terminology export → import round trip keeps lifecycle, hierarchy and flags; a by-value read sees only readable namespaces (@wip/client 0.105.0)
+
+- **Export format 2.1.** A term's parent and replacement are exported by
+  value (`parent_term_value`, `replaced_by_term_value`) instead of by id —
+  the ids named terms of the exporting terminology and nothing in the
+  imported one. The terminology block carries `mutable` and `unique_names`.
+- **Import keeps what the export carried.** Terms are created parents-first
+  (in any file order); a term with `status: deprecated` is then deprecated
+  with its reason and replacement, one with `status: inactive` is
+  deactivated — reported under `lifecycle_result`. A new terminology takes
+  the file's `mutable` / `unique_names`; an existing one is extended only,
+  with any flag the file sets differently listed under `terminology.differs`.
+  A CSV's `status` column is honoured. The legacy `parent_term_id` is still
+  accepted and must name a term of the destination terminology.
+- **Import refuses what it cannot carry out whole (400, nothing written):**
+  a malformed term item (it used to 500 after creating the terminology), a
+  parent cycle, a CSV with rows but no `value` column, and an import into a
+  retired terminology (restore it first; the ontology import too).
+- **Relations:** one whose ends are not both terms of the imported
+  terminology is counted under `dropped`, with reasons in `dropped_samples`;
+  `created + skipped + errors + dropped == total`.
+- **`POST /import-export/import/url`** takes `namespace` (a CSV URL import
+  could never succeed without it). It stays admin-only.
+- **`created_by` is removed** from the three import doors. It never reached
+  a record — the authenticated caller is recorded — and an extra query
+  parameter is ignored, so callers still sending it are unaffected.
+- **Unscoped by-value reads** (`GET /terminologies/by-value/{value}`, the
+  value fallback of `GET /terminologies/{id}`, the term list by value,
+  `/validate`, `/validate/bulk`) search only the namespaces the caller can
+  read: a terminology elsewhere reads as not found, and an ambiguity error
+  names no namespace beyond them.
+- A `parent_term_id` / `replaced_by_term_id` naming a term of another
+  namespace is refused exactly like one naming no term.
+- `POST /import-export/import-ontology` answers a permission refusal or a
+  Registry outage with its own status (403 / 404 / 503), not 500.
+
 ### A terminology's `extensible` is removed; def-store's contracts say what the code does (@wip/client 0.104.0, WIP-Toolkit 0.26.3)
 
 - **`extensible` is gone.** It was documented as "whether users can add new

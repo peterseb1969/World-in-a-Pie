@@ -235,7 +235,9 @@ export class DefStoreService extends BaseService {
   // ---- Import/Export ----
 
   async importTerminology(data: ImportTerminologyRequest): Promise<{
-    terminology: Terminology
+    /** `differs` lists the flags the file sets differently from an
+     * existing terminology the import extends (reported, not applied). */
+    terminology: Terminology & { differs?: Record<string, { file: unknown; stored: unknown }> }
     terms_result: BulkResponse
     // The wire key is `relations_result` (import_export.py sets it only when
     // the payload carried relations), matching the platform's post-2eeb872
@@ -243,6 +245,14 @@ export class DefStoreService extends BaseService {
     // was undefined on every response that did include relation stats.
     relations_result?: {
       total: number; created: number; skipped: number; errors: number; error_samples: string[]
+      /** Relations whose ends are not both terms of the imported
+       * terminology; created + skipped + errors + dropped === total. */
+      dropped: number; dropped_samples: Array<{ index: number; reason: string }>
+    }
+    /** Present when the import created terms the file marks deprecated
+     * or inactive; a failed step leaves the term active and is listed. */
+    lifecycle_result?: {
+      deprecated: number; deactivated: number; errors: Array<{ value: string; error: string }>
     }
   }> {
     return this.post('/import-export/import', data)

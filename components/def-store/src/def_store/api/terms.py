@@ -8,6 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from wip_auth import (
     UserIdentity,
     check_namespace_permission,
+    resolve_accessible_namespaces,
     resolve_namespace_filter,
     resolve_or_404,
     resolve_term_by_fields_or_404,
@@ -257,7 +258,9 @@ async def list_terms(
     if not terminology:
         # Try by value — unscoped lookups fail loud on an ambiguous value
         try:
-            terminology = await TerminologyService.find_by_value(terminology_id, namespace)
+            terminology = await TerminologyService.find_by_value(
+                terminology_id, namespace, ns_filter.namespaces
+            )
         except AmbiguousTerminologyValueError as e:
             raise HTTPException(status_code=400, detail=str(e)) from e
         if not terminology:
@@ -800,8 +803,12 @@ async def validate_value(
         terminology = await Terminology.find_one({"terminology_id": request.terminology_id})
     else:
         try:
+            # Only the namespaces the caller can read are searched: a
+            # terminology elsewhere reads as not found, and an ambiguity
+            # error names none of the others.
             terminology = await TerminologyService.find_by_value(
-                request.terminology_value or "", None
+                request.terminology_value or "", None,
+                await resolve_accessible_namespaces(identity),
             )
         except AmbiguousTerminologyValueError as e:
             return ValidateValueResponse(
@@ -856,6 +863,9 @@ async def validate_values_bulk(
     groups: dict[str, tuple[Any, list[tuple[int, str]]]] = {}
 
     terminologies: dict[str, Any] = {}
+    # A value is searched only in the namespaces the caller can read (see
+    # validate_value); asked once, on the first value-form item.
+    readable: list[list[str] | None] = []
 
     def _invalid(item, error: str, code: str, terminology_id: str = "", terminology_value: str = ""):
         results.append(ValidateValueResponse(
@@ -880,7 +890,11 @@ async def validate_values_bulk(
             terminology = terminologies[item.terminology_id]
         elif item.terminology_value:
             try:
-                terminology = await TerminologyService.find_by_value(item.terminology_value, None)
+                if not readable:
+                    readable.append(await resolve_accessible_namespaces(identity))
+                terminology = await TerminologyService.find_by_value(
+                    item.terminology_value, None, readable[0]
+                )
             except AmbiguousTerminologyValueError as e:
                 _invalid(item, str(e), "ambiguous_terminology", terminology_value=item.terminology_value)
                 continue

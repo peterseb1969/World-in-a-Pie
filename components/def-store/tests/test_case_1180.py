@@ -24,7 +24,6 @@ from httpx import AsyncClient
 from def_store.models.term import Term
 from def_store.models.terminology import Terminology
 from def_store.services import ontology_service as onto_module
-from def_store.services.ontology_service import OntologyService
 
 API = "/api/def-store"
 

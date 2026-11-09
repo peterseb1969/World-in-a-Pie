@@ -212,7 +212,6 @@ class FixtureBuilder:
                 "namespace": self.ns_a,
                 "terminology_value": "MATRIX_ONTOLOGY",
                 "terminology_label": "Matrix Ontology (imported)",
-                "created_by": self.created_by,
             },
             json_body=data,
         )

@@ -470,7 +470,8 @@ class TerminologyService:
     async def get_terminology(
         terminology_id: str | None = None,
         value: str | None = None,
-        namespace: str | None = None
+        namespace: str | None = None,
+        within: list[str] | None = None,
     ) -> TerminologyResponse | None:
         """
         Get a terminology by ID or value.
@@ -479,6 +480,8 @@ class TerminologyService:
             terminology_id: Terminology ID
             value: Terminology value (e.g., 'DOC_STATUS')
             namespace: Namespace to search in (if None, searches globally by ID)
+            within: For a value without a namespace, the namespaces it is
+                searched in (see find_by_value); None means every namespace.
 
         Returns:
             Terminology if found, None otherwise
@@ -494,7 +497,7 @@ class TerminologyService:
                 query["namespace"] = namespace
             terminology = await Terminology.find_one(query)
         elif value:
-            terminology = await TerminologyService.find_by_value(value, namespace)
+            terminology = await TerminologyService.find_by_value(value, namespace, within)
         else:
             return None
 
@@ -503,18 +506,27 @@ class TerminologyService:
         return None
 
     @staticmethod
-    async def find_by_value(value: str, namespace: str | None) -> Terminology | None:
+    async def find_by_value(
+        value: str, namespace: str | None, within: list[str] | None = None,
+    ) -> Terminology | None:
         """Find a terminology document by its value code.
 
-        With a namespace: exact scoped match. Without one, the lookup is
-        only safe while the value is globally unique — the same value live
-        in several namespaces has no correct arbitrary pick, so that case
+        With a namespace: exact scoped match. Without one, the value is
+        searched in `within` — the namespaces the caller can read; None
+        means every namespace, for a superadmin or an internal caller. The
+        lookup is only safe while the value is unique there: the same value
+        live in several of them has no correct arbitrary pick, so that case
         raises AmbiguousTerminologyValueError instead of returning
-        whichever document the storage engine yields first.
+        whichever document the storage engine yields first. Its message
+        names only namespaces from `within`, so a door that passes the
+        caller's readable set reveals nothing beyond it.
         """
         if namespace is not None:
             return await Terminology.find_one({"value": value, "namespace": namespace})
-        matches = await Terminology.find({"value": value}).to_list()
+        query: dict[str, Any] = {"value": value}
+        if within is not None:
+            query["namespace"] = {"$in": within}
+        matches = await Terminology.find(query).to_list()
         if len(matches) > 1:
             raise AmbiguousTerminologyValueError(
                 value, sorted({m.namespace for m in matches})
@@ -1768,9 +1780,20 @@ class TerminologyService:
         terminology_id: str, field: str, pairs: list[tuple[str | None, str | None]],
     ) -> list[DefStoreError | None]:
         """For each (pointer, own term id), the refusal of that pointer, or
-        None when it is unset or valid. One query for the whole list."""
+        None when it is unset or valid. One query for the whole list.
+
+        Only terms of the terminology's own namespace are looked at: a
+        pointer to a term of another namespace is refused exactly like one
+        that names no term, so the refusal confirms nothing about a
+        namespace the caller may not be able to read."""
         wanted = list({p for p, _ in pairs if p})
-        found = {t.term_id: t for t in await Term.find({"term_id": {"$in": wanted}}).to_list()} if wanted else {}
+        found: dict[str, Term] = {}
+        if wanted:
+            home = await Terminology.find_one({"terminology_id": terminology_id})
+            query: dict[str, Any] = {"term_id": {"$in": wanted}}
+            if home is not None:
+                query["namespace"] = home.namespace
+            found = {t.term_id: t for t in await Term.find(query).to_list()}
         return [
             _pointer_refusal(field, p, own, found.get(p), terminology_id) if p else None
             for p, own in pairs
