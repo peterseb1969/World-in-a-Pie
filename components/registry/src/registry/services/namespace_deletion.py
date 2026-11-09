@@ -223,16 +223,9 @@ def _count_step(summary: dict[str, int], step: DeletionStep) -> None:
         summary["postgres_rows"] = step.deleted_count
 
 
-async def _inbound_from_templates(
-    templates: Any,
-    prefix: str,
-    our_templates: dict[str, str],
-    our_terminologies: dict[str, str],
-) -> list[InboundReference]:
-    """Templates of other namespaces pointing at templates or terminologies
-    here. Every version is checked (a document can pin any of them), and a
-    reference repeated across versions is reported once."""
-    tpl_ids, ty_ids = list(our_templates), list(our_terminologies)
+def _template_inbound_clauses(tpl_ids: list[str], ty_ids: list[str]) -> list[dict[str, Any]]:
+    """The query clauses matching a template that names any of the
+    namespace's templates or terminologies, in every slot one can be named."""
     clauses: list[dict[str, Any]] = []
     if tpl_ids:
         clauses += [{"extends": {"$in": tpl_ids}}]
@@ -247,52 +240,94 @@ async def _inbound_from_templates(
     if ty_ids:
         clauses += [{f"fields.{s}": {"$in": ty_ids}} for s in _FIELD_TERMINOLOGY_SLOTS]
         clauses += [{"fields.target_terminologies": {"$in": ty_ids}}]
+    return clauses
 
+
+# (type, source_entity, target_entity, impact) of one reference a template makes.
+_TemplateRef = tuple[str, str, str, str]
+
+
+def _field_refs(
+    value: str, field: dict, our_templates: dict[str, str], our_terminologies: dict[str, str]
+) -> list[_TemplateRef]:
+    """The references one field of a template makes to the namespace's
+    terminologies and templates."""
+    source = f"{value} (template, field: {field.get('name', '?')})"
+    refs: list[_TemplateRef] = []
+    terminology_ids = [field.get(s) for s in _FIELD_TERMINOLOGY_SLOTS]
+    terminology_ids += field.get("target_terminologies") or []
+    for tid in terminology_ids:
+        if tid in our_terminologies:
+            refs.append(("terminology_reference", source,
+                         f"{our_terminologies[tid]} (terminology)",
+                         "Term validation will fail for this field."))
+    template_ids = [field.get(s) for s in _FIELD_TEMPLATE_SLOTS]
+    template_ids += field.get("target_templates") or []
+    for tid in template_ids:
+        if tid in our_templates:
+            refs.append(("template_reference", source,
+                         f"{our_templates[tid]} (template)",
+                         "Validation of this field fails: its template is gone."))
+    return refs
+
+
+def _endpoint_refs(value: str, template: dict, our_templates: dict[str, str]) -> list[_TemplateRef]:
+    """The references an edge type's endpoint declarations make to the
+    namespace's templates."""
+    refs: list[_TemplateRef] = []
+    for role in ("source_templates", "target_templates"):
+        for entry in template.get(role) or []:
+            tid = _endpoint_id(entry)
+            if tid in our_templates:
+                refs.append(("template_reference", f"{value} (edge type, {role})",
+                             f"{our_templates[tid]} (template)",
+                             "Edge endpoint declaration names a template that is gone."))
+    return refs
+
+
+def _template_refs(
+    template: dict, our_templates: dict[str, str], our_terminologies: dict[str, str]
+) -> list[_TemplateRef]:
+    """Every reference one template makes to the namespace: its parent, its
+    fields, its edge endpoints."""
+    value = template.get("value", "?")
+    refs: list[_TemplateRef] = []
+    parent = template.get("extends")
+    if parent in our_templates:
+        refs.append(("template_extends", f"{value} (template)",
+                     f"{our_templates[parent]} (template)",
+                     "Source template loses parent schema. Field inheritance broken."))
+    for field in template.get("fields") or []:
+        refs += _field_refs(value, field, our_templates, our_terminologies)
+    refs += _endpoint_refs(value, template, our_templates)
+    return refs
+
+
+async def _inbound_from_templates(
+    templates: Any,
+    prefix: str,
+    our_templates: dict[str, str],
+    our_terminologies: dict[str, str],
+) -> list[InboundReference]:
+    """Templates of other namespaces pointing at templates or terminologies
+    here. Every version is checked (a document can pin any of them), and a
+    reference repeated across versions is reported once."""
+    clauses = _template_inbound_clauses(list(our_templates), list(our_terminologies))
     seen: dict[tuple[str, str, str, str], InboundReference] = {}
-
-    def note(kind: str, ns: str, source: str, target: str, impact: str) -> None:
-        seen.setdefault(
-            (kind, ns, source, target),
-            InboundReference(
-                type=kind, source_namespace=ns, source_entity=source,
-                target_entity=target, impact=impact,
-            ),
-        )
-
     projection = {"namespace": 1, "value": 1, "extends": 1, "fields": 1,
                   "source_templates": 1, "target_templates": 1}
     async for t in templates.find(
         {"namespace": {"$ne": prefix}, "$or": clauses}, projection
     ):
-        ns, value = t["namespace"], t.get("value", "?")
-        parent = t.get("extends")
-        if parent in our_templates:
-            note("template_extends", ns, f"{value} (template)",
-                 f"{our_templates[parent]} (template)",
-                 "Source template loses parent schema. Field inheritance broken.")
-        for field in t.get("fields") or []:
-            source = f"{value} (template, field: {field.get('name', '?')})"
-            terminology_ids = [field.get(s) for s in _FIELD_TERMINOLOGY_SLOTS]
-            terminology_ids += field.get("target_terminologies") or []
-            for tid in terminology_ids:
-                if tid in our_terminologies:
-                    note("terminology_reference", ns, source,
-                         f"{our_terminologies[tid]} (terminology)",
-                         "Term validation will fail for this field.")
-            template_ids = [field.get(s) for s in _FIELD_TEMPLATE_SLOTS]
-            template_ids += field.get("target_templates") or []
-            for tid in template_ids:
-                if tid in our_templates:
-                    note("template_reference", ns, source,
-                         f"{our_templates[tid]} (template)",
-                         "Validation of this field fails: its template is gone.")
-        for role in ("source_templates", "target_templates"):
-            for entry in t.get(role) or []:
-                tid = _endpoint_id(entry)
-                if tid in our_templates:
-                    note("template_reference", ns, f"{value} (edge type, {role})",
-                         f"{our_templates[tid]} (template)",
-                         "Edge endpoint declaration names a template that is gone.")
+        ns = t["namespace"]
+        for kind, source, target, impact in _template_refs(t, our_templates, our_terminologies):
+            seen.setdefault(
+                (kind, ns, source, target),
+                InboundReference(
+                    type=kind, source_namespace=ns, source_entity=source,
+                    target_entity=target, impact=impact,
+                ),
+            )
     return list(seen.values())
 
 
