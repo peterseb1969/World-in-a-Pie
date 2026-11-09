@@ -1,6 +1,6 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-wip://data-model sha256:6690e3cfbb07c1c4 reviewed:0a4b9110
-wip://conventions sha256:bd4259ff22991af9 reviewed:1e60af64
+wip://data-model sha256:7dcd6ecce0ba72cd reviewed:8dca5042
+wip://conventions sha256:18a0f2ca54641484 reviewed:8dca5042
 docs/WIP_PoNIFs.md sha256:5834cbc38977bdad reviewed:57e75bd9
 docs/design/ontology-support.md sha256:06666e3c8f3a3cc1 reviewed:ea985986
 docs/slash-commands/app-builder/wip-implement.md sha256:1afef1d1999621a1 reviewed:809f9059
@@ -54,7 +54,7 @@ docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca revi
 
 ## Template versions
 - `create_template` upserts on (namespace, value): identical → `unchanged`; any difference → `updated`, version N+1, diff in `details`. Read the status; only a draft onto an existing value errors.
-- `usage`, `versioned` and edge endpoint lists cannot change on a re-post (`immutable_property`).
+- `usage`, `versioned`, `reporting.table_name` and edge endpoint lists never change (`immutable_property`).
 - The old version STAYS ACTIVE. Retire it with `deactivate_template(template_id, version=N)` — `version` is required.
 - Always pass `template_version` in `create_document`; without it WIP picks "latest active", which may be the wrong one.
 - "Latest" resolution is cached for 5 s — after a template change, wait or pin the version.
@@ -68,7 +68,7 @@ docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca revi
 - Properties of the interaction itself (role, quantity) are further fields.
 - An edge lives in its source's namespace (`cross_namespace_relationship` otherwise); its target may be in another namespace the reference gates allow. Archived endpoints are rejected.
 - `versioned: false` (any template with identity fields; typically edges) = updates overwrite in place, documents stay at version 1, no history. It requires non-empty `identity_fields`; declare them explicitly, e.g. `[source_ref, target_ref]` (`create_edge_type` fills it in; `create_template` does not). A third field (e.g. `role`) allows several edges per pair. PATCH: `if_match` = `revision`, not `version`.
-- `usage` and `versioned` are immutable after creation — choose deliberately.
+- Choose `usage` and `versioned` deliberately.
 - To let new templates take part, widen with `add_edge_type_endpoints` — never delete and recreate (strands existing edges). Endpoints cannot be removed.
 - Query with `get_document_relationships` and `traverse_documents`; these work only on `usage: "relationship"` templates.
 

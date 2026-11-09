@@ -199,8 +199,8 @@ version). Per item:
   * identity-bearing or immutable differences are rejected per item instead
     of versioned: identity_fields differ → error_code=
     'identity_fields_immutable' (changing identity is a fork — declare a new
-    template value); usage / versioned / edge endpoint lists differ →
-    error_code='immutable_property'
+    template value); usage / versioned / reporting.table_name / edge
+    endpoint lists differ → error_code='immutable_property'
   * a DRAFT (status='draft') is not upserted: a draft onto an existing
     (namespace, value) fails with error_code='already_exists'
 
@@ -683,7 +683,7 @@ All-or-nothing: if any template in the chain fails validation, none activate.
 ### Reporting Configuration
 Templates can configure PostgreSQL sync behaviour:
 - sync_enabled, sync_strategy (latest_only, all_versions, disabled)
-- table_name, include_metadata
+- table_name (fixed once the template exists), include_metadata
 - flatten_arrays, max_array_elements are accepted but not implemented:
   arrays stay one JSONB column, one row per document
 

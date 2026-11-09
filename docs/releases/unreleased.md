@@ -208,8 +208,14 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   change or the view is missing. A template version's soft delete marks the
   template inactive only when no active version remains. `term_names` and
   `term_closure` are reserved view names.
-- **Template-store refuses** a dotted field name (`field_name_dotted`) and a
-  type change of an identity field (`identity_fields_immutable`).
+- **Template-store refuses** a dotted field name (`field_name_dotted`), a
+  type change of an identity field (`identity_fields_immutable`), and any
+  change of `reporting.table_name` once the template exists
+  (`immutable_property`, rule `table_name` — in place, with a new version,
+  or by setting one where the default was used): every reporting relation
+  of a template is named from it, and a change split its tables across two
+  names. A template whose versions already differ keeps the split until it
+  is re-declared under a new value.
 - **Registry refuses** the namespace prefixes `public`,
   `information_schema` and `pg_*` (the namespace's reporting schema is named
   after it, and deleting the namespace drops that schema).

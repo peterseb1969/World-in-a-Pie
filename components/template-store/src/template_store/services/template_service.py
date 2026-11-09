@@ -425,23 +425,47 @@ class TemplateService:
                 )
 
     @staticmethod
-    def _identity_type_refusal(
+    def _repost_refusal(
         index: int, item: "CreateTemplateRequest", existing: Template,
     ) -> "BulkResultItem | None":
         """The per-item error for a re-post that changes an identity field's
-        type, or None."""
+        type or the reporting table name, or None."""
         try:
             TemplateService._refuse_identity_type_change(
                 existing.value, existing.identity_fields, existing.fields or [],
                 item.fields or [],
             )
+            TemplateService._refuse_table_name_change(
+                existing.value, existing.reporting, item.reporting,
+            )
         except TemplateError as e:
             return BulkResultItem(
                 index=index, status="error", id=existing.template_id,
-                value=item.value, version=existing.version,
-                error_code="identity_fields_immutable", error=str(e),
+                value=item.value, version=existing.version, **error_fields(e),
             )
         return None
+
+    @staticmethod
+    def _refuse_table_name_change(
+        value: str, existing: Any, requested: Any,
+    ) -> None:
+        """reporting.table_name is fixed once the template exists.
+
+        Every reporting relation of a template is named from it: changing
+        it — in place or with a new version — would leave the existing
+        tables under the old name and create new ones under the new, and
+        the entity views, parity and sync could each see only one family.
+        A different name is a new template."""
+        if requested is None:
+            return
+        old = existing.table_name if existing is not None else None
+        if requested.table_name != old:
+            raise TemplateError(
+                f"reporting.table_name of '{value}' is immutable after creation "
+                f"(existing: {old!r}, requested: {requested.table_name!r}): its "
+                "reporting tables are named from it. Declare a new template value instead.",
+                "immutable_property", rule="table_name",
+            )
 
     @staticmethod
     def _refuse_undeclared_reference(f: FieldDefinition) -> None:
@@ -1822,6 +1846,9 @@ class TemplateService:
         # Reporting config is operational metadata, not document schema.
         # A change to sync_enabled, sync_strategy, etc. mutates in place
         # without a version bump — same pattern as add_edge_type_endpoints.
+        TemplateService._refuse_table_name_change(
+            original.value, original.reporting, request.reporting,
+        )
         if await TemplateService._only_reporting_changed(original, request):
             TemplateService._validate_full_text_indexed_constraints(
                 original.fields, request.reporting,
@@ -2844,7 +2871,7 @@ class TemplateService:
                 # property defaults to [], which is not a request to empty it.
                 item = TemplateService._with_omitted_kept(item, existing)
                 item = await TemplateService._with_served_identity_kept(item, existing)
-                refused = TemplateService._identity_type_refusal(i, item, existing)
+                refused = TemplateService._repost_refusal(i, item, existing)
                 if refused is not None:
                     results.append(refused)
                     continue

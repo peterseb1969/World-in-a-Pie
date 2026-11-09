@@ -288,3 +288,41 @@ async def test_validate_bulk_mixed_outcomes(client: AsyncClient, auth_headers: d
     assert statuses == ["unchanged", "updated", "created", "updated", "error"]
     assert bulk["results"][3]["details"]["added_required"] == ["must_have"]
     assert bulk["results"][4]["error_code"] == "identity_fields_immutable"
+
+
+@pytest.mark.asyncio
+async def test_the_reporting_table_name_is_fixed_after_create(client: AsyncClient, auth_headers: dict):
+    """Every reporting relation of a template is named from table_name; a
+    change would split its tables across two names. Refused on a re-post
+    and on an update (in place or with a new version); an unchanged name,
+    and other reporting changes, still go through."""
+    payload = _person_v1_payload()
+    payload["value"] = "PERSON_TBL"
+    payload["reporting"] = {"sync_enabled": True, "table_name": "people"}
+    created = (await _post(client, auth_headers, [payload]))["results"][0]
+    assert created["status"] == "created"
+
+    renamed = dict(payload, reporting={"sync_enabled": True, "table_name": "persons"})
+    item = (await _post(client, auth_headers, [renamed]))["results"][0]
+    assert (item["error_code"], item["details"]) == ("immutable_property", {"rule": "table_name"})
+
+    put = await client.put("/api/template-store/templates", headers=auth_headers, json=[
+        {"template_id": created["id"], "reporting": {"sync_enabled": True, "table_name": "persons"}},
+    ])
+    result = put.json()["results"][0]
+    assert (result["error_code"], result["details"]) == ("immutable_property", {"rule": "table_name"})
+
+    # The default name counts too: setting one later is a change.
+    plain = _person_v1_payload()
+    plain["value"] = "PERSON_TBL_DEFAULT"
+    await _post(client, auth_headers, [plain])
+    named = dict(plain, reporting={"sync_enabled": True, "table_name": "people2"})
+    item = (await _post(client, auth_headers, [named]))["results"][0]
+    assert item["error_code"] == "immutable_property"
+
+    # Same name, other reporting settings: allowed (in place).
+    same = await client.put("/api/template-store/templates", headers=auth_headers, json=[
+        {"template_id": created["id"],
+         "reporting": {"sync_enabled": True, "table_name": "people", "include_metadata": False}},
+    ])
+    assert same.json()["results"][0]["status"] in ("updated", "unchanged"), same.text

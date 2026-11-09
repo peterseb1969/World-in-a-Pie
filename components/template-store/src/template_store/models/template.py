@@ -91,7 +91,10 @@ class ReportingConfig(BaseModel):
     )
     table_name: str | None = Field(
         default=None,
-        description="Custom PostgreSQL table name (auto-generated from value if not set)"
+        description=(
+            "Custom PostgreSQL table name base (doc_<value> if not set). Fixed "
+            "once the template exists: its reporting tables are named from it"
+        )
     )
     include_metadata: bool = Field(
         default=True,

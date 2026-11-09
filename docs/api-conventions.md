@@ -167,7 +167,7 @@ Codes defined by template-store (`POST`, `PUT` and `DELETE /templates`). Where o
 | `reference_violation` | A reference in the definition does not resolve | `parent_not_found`, `pinned_version_missing`, `unresolved_reference`, `missing_parent` (an ancestor further up the pinned chain is gone), `unpinned_parent` |
 | `cross_namespace_reference` | A reference crosses into a namespace the template's namespace may not reference | — |
 | `identity_fields_immutable` | `identity_fields` differ from the existing template's | — |
-| `immutable_property` | `value`, `usage`, `versioned` or the edge endpoint lists differ | `value` |
+| `immutable_property` | `value`, `usage`, `versioned`, `reporting.table_name` or the edge endpoint lists differ | `value`, `table_name` |
 | `invalid_state` | The template's state forbids the operation | `not_draft`, `not_inactive`, `not_relationship`, `has_children`, `has_documents`, `documents_unverifiable`, `circular_inheritance`, `max_depth` (the pinned inheritance chain is deeper than 10), `deletion_mode_retain` |
 | `invalid_request` | A request parameter is missing or invalid; also any otherwise uncategorised refusal | `version_required`, `sort_order`, `namespace_required` |
 | `registry_error` | The Registry refused the item, or could not be reached to check namespace isolation (the write is refused rather than let through unchecked) | `unreachable` |
@@ -335,7 +335,7 @@ version). Per item:
 | New `(namespace, value)` | `created` | Version 1. |
 | Fully identical re-post | `unchanged` | Same `id`/`version` as existing — the idempotent bootstrap re-run, no query parameter needed. `details` carries the (empty) diff. |
 | Any difference (schema or label/description/metadata) | `updated` | `is_new_version: true`, `version: N+1`. `details` carries the structured diff (`added_optional`, `added_required`, `removed`, `changed_type`, `made_required`, `modified_existing`) **plus** `impact` (live-document counts per version and non-empty counts for dropped fields, from document-store; explicit `status: "unavailable"` if unreachable — never a silent zero) and `migration` (an eligibility verdict: additive/rename-only or dropped-but-empty → eligible; type changes, newly-required, or modified fields → app decision; pointer to the `migrate_documents` dry-run). |
-| Identity-bearing / immutable difference | `error` | `identity_fields` differ → `error_code: "identity_fields_immutable"` (changing identity is a **fork** — declare a new template value); `usage` / `versioned` / edge endpoint lists differ → `error_code: "immutable_property"`. |
+| Identity-bearing / immutable difference | `error` | `identity_fields` differ → `error_code: "identity_fields_immutable"` (changing identity is a **fork** — declare a new template value); `usage` / `versioned` / `reporting.table_name` / edge endpoint lists differ → `error_code: "immutable_property"`. |
 
 Versioning is loud, never blocking: read the per-item `status` and `details`.
 The `on_conflict` query parameter is **deprecated** — still accepted
