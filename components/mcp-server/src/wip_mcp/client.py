@@ -4,6 +4,7 @@ Wraps httpx to provide a unified interface to all WIP services.
 Handles the bulk response envelope so callers get clean results.
 """
 
+import asyncio
 import json
 import os
 from typing import Any, cast
@@ -28,6 +29,9 @@ class BulkError(Exception):
         self.details = details
         msg = f"[{error_code}] {error}" if error_code else error
         super().__init__(msg)
+
+
+HEALTH_PROBE_TIMEOUT_SECONDS = 10.0
 
 
 def _dependencies_down(body: Any) -> list[str]:
@@ -2237,11 +2241,14 @@ class WipClient:
             ("document_store", self.document_store_url, "/api/document-store/health"),
             ("reporting_sync", self.reporting_sync_url, "/api/reporting-sync/health"),
         ]
-        results = {}
         client = await self._get_client()
-        for name, base, path in services:
+
+        async def probe(base: str, path: str) -> dict[str, Any]:
             try:
-                resp = await client.get(f"{base}{path}", timeout=5.0)
+                # Longer than a service's own dependency checks (the Registry
+                # check waits up to 5 s), so a service answering slowly while
+                # a dependency is down is read, not timed out.
+                resp = await client.get(f"{base}{path}", timeout=HEALTH_PROBE_TIMEOUT_SECONDS)
                 # An unhealthy service answers 503 with the same body, which
                 # names the failing dependency — keep it.
                 details = None
@@ -2251,7 +2258,7 @@ class WipClient:
                     except ValueError:
                         details = None
                 body_status = details.get("status") if isinstance(details, dict) else None
-                results[name] = {
+                result: dict[str, Any] = {
                     # A 200 is not enough: some services answer 200 with
                     # status "unhealthy" or "degraded" in the body.
                     "healthy": resp.status_code == 200
@@ -2260,6 +2267,17 @@ class WipClient:
                     "dependencies_down": _dependencies_down(details),
                     "details": details,
                 }
+                if resp.status_code not in (200, 503):
+                    # e.g. the proxy's 502 for a stopped container
+                    result["error"] = f"HTTP {resp.status_code}"
+                return result
             except Exception as e:
-                results[name] = {"healthy": False, "error": str(e)}
+                # Some exceptions (a ReadTimeout) carry no message; the type
+                # is the reason then.
+                reason = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                return {"healthy": False, "error": reason}
+
+        # Concurrently: one slow service must not add its wait to the others'.
+        answers = await asyncio.gather(*(probe(base, path) for _, base, path in services))
+        results = {name: answer for (name, _, _), answer in zip(services, answers, strict=True)}
         return results

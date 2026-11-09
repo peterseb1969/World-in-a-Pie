@@ -344,6 +344,29 @@ async def test_check_health_marks_service_unhealthy_on_non_200() -> None:
     assert results["registry"]["healthy"] is False
     assert all(results[s]["healthy"] for s in
                ("def_store", "template_store", "document_store", "reporting_sync"))
+    assert results["registry"]["error"] == "HTTP 500"
+
+
+@pytest.mark.asyncio
+async def test_check_health_names_a_timeout_and_waits_past_service_budgets() -> None:
+    """A ReadTimeout has an empty message; the reason shown is its type. The
+    probe waits longer than a service's own 5 s dependency check, which a
+    store runs while its Registry is down."""
+    import httpx
+
+    from wip_mcp.client import HEALTH_PROBE_TIMEOUT_SECONDS
+
+    client = _make_client(registry_url="https://h:8443")
+    mock_http = AsyncMock()
+    good = MagicMock()
+    good.status_code = 200
+    good.json.return_value = {"status": "healthy"}
+    mock_http.get.side_effect = [httpx.ReadTimeout(""), good, good, good, good]
+    with patch.object(client, "_get_client", return_value=mock_http):
+        results = await client.check_health()
+    assert results["registry"] == {"healthy": False, "error": "ReadTimeout"}
+    assert HEALTH_PROBE_TIMEOUT_SECONDS > 5.0
+    assert mock_http.get.call_args.kwargs["timeout"] == HEALTH_PROBE_TIMEOUT_SECONDS
 
 
 @pytest.mark.asyncio

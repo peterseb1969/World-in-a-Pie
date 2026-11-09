@@ -92,6 +92,10 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   service answering 200 with `status: unhealthy` (reporting-sync with NATS and
   PostgreSQL down) shows as `UNHEALTHY`, and a dependency a service reports as
   disconnected is listed under it; either makes the overall line `DEGRADED`.
+  The services are probed concurrently with a 10 s timeout. With the
+  Registry down, template-store and document-store take about 5 s to answer,
+  and the old 5 s probe showed them as DOWN with no reason. A failed probe now
+  always names its reason (`HTTP 502`, `ReadTimeout`).
 - **Tool descriptions are the same in a container and a source checkout.** The
   image had neither `tools.yaml` nor PyYAML, so containers served no OpenAPI
   field lists; a source run replaced 21 tools' docstrings with thinner text.
