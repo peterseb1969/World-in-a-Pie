@@ -18,7 +18,7 @@ from reporting_sync.search_service import SearchResult, SearchService
 from .test_search_endpoint import _mock_pool_with_conn, _RecordingConn
 
 TEXT = [("document_id", "text"), ("status", "text"), ("title", "text")]
-FTS = TEXT + [("title_search", "text"), ("title_tsv", "tsvector")]
+FTS = [*TEXT, ("title_search", "text"), ("title_tsv", "tsvector")]
 
 
 class _FailingConn(_RecordingConn):
@@ -67,7 +67,7 @@ async def test_the_cap_stops_the_table_walk(monkeypatch):
     assert [(r.id, r.status) for r in results] == [("d1", "active"), ("d2", "inactive")]
     columns_read = [p[1] for s, p in conn.executed_sql if "information_schema.columns" in s]
     assert columns_read == ["doc_a__v1"]
-    limit_param = [p for s, p in conn.executed_sql if "ILIKE" in s][0][-1]
+    limit_param = next(p for s, p in conn.executed_sql if "ILIKE" in s)[-1]
     assert limit_param == 2
 
 

@@ -31,7 +31,7 @@ def _wire(conn):
     async def fetch(sql, *params):
         if "information_schema.tables" in sql:
             return [{"table_schema": s, "table_name": t, "table_type": k} for s, t, k in CATALOG]
-        schema, table = params
+        _schema, table = params
         return [{"column_name": "document_id", "data_type": "text", "is_nullable": "NO"},
                 {"column_name": f"{table}_col", "data_type": "integer", "is_nullable": "YES"}]
 

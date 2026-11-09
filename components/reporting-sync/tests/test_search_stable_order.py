@@ -5,7 +5,7 @@ the merged list, so each table's hits must come back in the same order on
 every run. Without an ORDER BY (substring path) or a tie-breaker after the
 score (FTS path), PostgreSQL returns rows in physical order, and a row the
 sync rewrites moves: paging then repeats some hits and never shows others
-(reproduced live: 68 hits paged 20 at a time came back as 63–66 distinct).
+(reproduced live: 68 hits paged 20 at a time came back as 63-66 distinct).
 """
 
 import pytest

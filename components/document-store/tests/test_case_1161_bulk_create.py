@@ -13,10 +13,10 @@ from __future__ import annotations
 
 import pytest
 from httpx import AsyncClient
-from wip_auth.registry_client import RegistryUnavailableError
 
 from document_store.services.reference_validator import ReferenceValidator
 from document_store.services.registry_client import RegistryClient, RegistryError
+from wip_auth.registry_client import RegistryUnavailableError
 
 URL = "/api/document-store/documents"
 
