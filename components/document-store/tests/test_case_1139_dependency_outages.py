@@ -184,9 +184,6 @@ class _Doc:
     version = 1
     namespace = "ns"
 
-    class status:  # noqa: N801 — mirrors DocumentStatus.ACTIVE's shape
-        value = "active"
-
 
 @pytest.fixture
 def active_doc(monkeypatch):
@@ -324,3 +321,16 @@ async def test_a_patch_meeting_an_outage_is_dependency_unavailable_not_internal(
     assert response.status_code == 200, response.text
     item = response.json()["results"][0]
     assert item["error_code"] == "dependency_unavailable", item
+
+
+
+@pytest.mark.asyncio
+async def test_the_bulk_template_warm_up_survives_a_template_store_outage(monkeypatch):
+    """Found by the live drill: the bulk path's template warm-up let the
+    outage escape as a 500. The warm-up only saves time, so it skips what it
+    cannot load; each item's validation then refuses on its own."""
+    from document_store.services import document_service as ds
+    from document_store.services.document_service import DocumentService
+
+    monkeypatch.setattr(ds, "get_template_store_client", lambda: _Store(DOWN_TPL))
+    await DocumentService()._warm_templates({"T1", "T2"})  # must not raise

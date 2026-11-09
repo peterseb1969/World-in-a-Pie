@@ -4382,7 +4382,14 @@ class DocumentService:
         if tid in warmed:
             return
         warmed.add(tid)
-        template = await client.get_template_resolved(tid)
+        try:
+            template = await client.get_template_resolved(tid)
+        except TemplateStoreError as e:
+            # The warm-up only saves time. A template it cannot load is left
+            # for each item's validation, which refuses that item on its own
+            # (dependency_unavailable) instead of failing the batch as a 500.
+            logger.warning("Template warm-up skipped %s: %s", tid, e)
+            return
         if not template:
             return
         for field in template.get("fields", []):
