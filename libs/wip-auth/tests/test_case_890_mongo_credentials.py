@@ -40,3 +40,45 @@ def test_credentials_are_accepted_by_motor(monkeypatch: pytest.MonkeyPatch) -> N
     assert creds.username == "def-store"
     assert creds.source == "admin"
     client.close()
+
+
+# ── a probe answers inside its budget ────────────────────────────────────────
+
+
+def test_client_options_bound_server_selection_and_connect(monkeypatch: pytest.MonkeyPatch) -> None:
+    from wip_auth.mongo import mongo_client_options
+
+    monkeypatch.setenv("MONGO_USER", "def-store")
+    options = mongo_client_options()
+    assert options["serverSelectionTimeoutMS"] == 2000
+    assert options["connectTimeoutMS"] == 2000
+    assert options["username"] == "def-store"
+
+
+def test_client_options_are_accepted_by_motor(monkeypatch: pytest.MonkeyPatch) -> None:
+    from wip_auth.mongo import mongo_client_options
+
+    motor = pytest.importorskip("motor.motor_asyncio")
+    monkeypatch.delenv("MONGO_USER", raising=False)
+    client = motor.AsyncIOMotorClient("mongodb://localhost:27017/", connect=False, **mongo_client_options())
+    assert client.options.server_selection_timeout == 2.0
+    assert client.options.pool_options.connect_timeout == 2.0
+
+
+@pytest.mark.asyncio
+async def test_a_ping_that_does_not_answer_fails_within_its_timeout() -> None:
+    import asyncio
+    import time
+
+    from wip_auth.mongo import mongo_ping
+
+    class Hung:
+        class admin:
+            @staticmethod
+            async def command(name: str) -> None:
+                await asyncio.sleep(60)
+
+    started = time.monotonic()
+    with pytest.raises(TimeoutError):
+        await mongo_ping(Hung(), timeout=0.05)
+    assert time.monotonic() - started < 1

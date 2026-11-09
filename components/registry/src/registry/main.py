@@ -24,7 +24,7 @@ from wip_auth import (
     setup_auth,
     setup_rate_limiting,
 )
-from wip_auth.mongo import mongo_credentials, mongo_identity
+from wip_auth.mongo import mongo_client_options, mongo_identity, mongo_ping
 
 from . import __version__
 from .api import api_router
@@ -66,7 +66,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize MongoDB connection
     print(f"Connecting to MongoDB at {settings.MONGO_URI} as {mongo_identity()}...")
-    client: AsyncIOMotorClient = AsyncIOMotorClient(settings.MONGO_URI, **mongo_credentials())
+    client: AsyncIOMotorClient = AsyncIOMotorClient(settings.MONGO_URI, **mongo_client_options())
 
     # Initialize Beanie ODM with retry — tolerates MongoDB not being ready
     # yet on fresh k8s boot, node drain, pod reschedule.
@@ -377,7 +377,7 @@ async def health_check():
     """
     try:
         # Ping MongoDB
-        await app.state.mongodb_client.admin.command('ping')
+        await mongo_ping(app.state.mongodb_client)
         return {
             "status": "healthy",
             "database": "connected",
@@ -415,7 +415,7 @@ async def ready_check():
     Returns 200 when the service is ready to accept traffic.
     """
     try:
-        await app.state.mongodb_client.admin.command('ping')
+        await mongo_ping(app.state.mongodb_client)
         return {"ready": True}
     except Exception as e:
         raise HTTPException(status_code=503, detail={"ready": False}) from e

@@ -173,16 +173,7 @@ async def run_alert_check_loop() -> None:
 
             # Get current state
             nats_ok = state.nats_client is not None and state.nats_client.is_connected
-            postgres_ok = state.postgres_pool is not None
-
-            # Quick postgres check
-            if postgres_ok:
-                try:
-                    assert state.postgres_pool is not None  # narrowed by postgres_ok check above
-                    async with state.postgres_pool.acquire() as conn:
-                        await conn.fetchval("SELECT 1")
-                except Exception:
-                    postgres_ok = False
+            postgres_ok = await _postgres_live_check()
 
             consumer_info = await get_consumer_info()
 
@@ -872,16 +863,7 @@ async def health_check(response: Response) -> HealthResponse:
     outage the service waits out.
     """
     nats_ok = state.nats_client is not None and state.nats_client.is_connected
-    postgres_ok = state.postgres_pool is not None
-
-    # Quick postgres check
-    if postgres_ok:
-        try:
-            assert state.postgres_pool is not None  # narrowed by postgres_ok check above
-            async with state.postgres_pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
-        except Exception:
-            postgres_ok = False
+    postgres_ok = await _postgres_live_check()
 
     if state.sync_status.postgres_service_roles_ok is False:
         status = "unhealthy"
@@ -959,13 +941,20 @@ async def get_sync_status(
 
 
 async def _postgres_live_check() -> bool:
-    """Probe the PostgreSQL pool with a 1-second-timeout SELECT 1."""
-    if not state.postgres_pool:
+    """Probe the PostgreSQL pool with a SELECT 1 that, connection
+    acquisition included, answers within 1 second — a pool with no free
+    connection, or a server that does not answer, fails the probe inside the
+    probe budget instead of holding it."""
+    pool = state.postgres_pool
+    if not pool:
         return False
+
+    async def select_one() -> None:
+        async with pool.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+
     try:
-        assert state.postgres_pool is not None  # narrowed by postgres_ok check above
-        async with state.postgres_pool.acquire() as conn:
-            await asyncio.wait_for(conn.fetchval("SELECT 1"), timeout=1.0)
+        await asyncio.wait_for(select_one(), timeout=1.0)
         return True
     except Exception:
         return False
@@ -1051,16 +1040,7 @@ async def get_metrics() -> MetricsResponse:
     - Error breakdown by type
     """
     nats_ok = state.nats_client is not None and state.nats_client.is_connected
-    postgres_ok = state.postgres_pool is not None
-
-    # Quick postgres check
-    if postgres_ok:
-        try:
-            assert state.postgres_pool is not None  # narrowed by postgres_ok check above
-            async with state.postgres_pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
-        except Exception:
-            postgres_ok = False
+    postgres_ok = await _postgres_live_check()
 
     consumer_info = await get_consumer_info()
 
@@ -1126,15 +1106,7 @@ async def test_alerts() -> dict[str, Any]:
     Useful for testing alert configuration without waiting for the check interval.
     """
     nats_ok = state.nats_client is not None and state.nats_client.is_connected
-    postgres_ok = state.postgres_pool is not None
-
-    if postgres_ok:
-        try:
-            assert state.postgres_pool is not None  # narrowed by postgres_ok check above
-            async with state.postgres_pool.acquire() as conn:
-                await conn.fetchval("SELECT 1")
-        except Exception:
-            postgres_ok = False
+    postgres_ok = await _postgres_live_check()
 
     consumer_info = await get_consumer_info()
     new_alerts = await metrics.check_alerts(consumer_info, nats_ok, postgres_ok)

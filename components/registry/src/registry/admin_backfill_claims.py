@@ -19,7 +19,7 @@ import os
 from beanie import init_beanie
 from motor.motor_asyncio import AsyncIOMotorClient
 
-from wip_auth.mongo import mongo_credentials, mongo_identity
+from wip_auth.mongo import mongo_client_options, mongo_identity
 
 from .models.composite_key_claim import CompositeKeyClaim
 from .models.entry import RegistryEntry
@@ -31,7 +31,7 @@ async def _main() -> None:
     mongo_uri = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
     db_name = os.getenv("DATABASE_NAME", "wip_registry")
     print(f"Connecting to MongoDB at {mongo_uri} as {mongo_identity()} (db={db_name})...")
-    client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_uri, **mongo_credentials())
+    client: AsyncIOMotorClient = AsyncIOMotorClient(mongo_uri, **mongo_client_options())
     await init_beanie(
         database=client[db_name],
         document_models=[RegistryEntry, CompositeKeyClaim],
