@@ -7,6 +7,27 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `@wip/proxy` 0.9.0 no longer forwards a client's identity: `forwardIdentity` is removed
+
+- `forwardIdentity: true` copied `X-WIP-User` / `X-WIP-Groups` from the
+  incoming request to WIP without knowing who set them. They are the
+  logged-in user's only when the request came through the deployer's edge;
+  a caller reaching the app around it (inside the container network, a pod
+  in the WIP namespace, a host-run app) could name any user and any groups,
+  and a service acts on them when the app's key is privileged — writing
+  under another user's name and choosing whose scoping applies.
+- The option is gone from `wipProxy`, the API proxy and the file proxy. A
+  request reaches WIP as the app's key, whatever identity headers the client
+  sent. A JavaScript caller still passing the option gets no forwarding;
+  TypeScript refuses it.
+- No deployed app loses anything: the only app with a privileged key (React
+  Console) never set the option, and with an ordinary app key services
+  ignored the headers anyway.
+- **Action:** re-vendor `libs/wip-proxy/wip-proxy-0.9.0.tgz` and delete
+  `forwardIdentity` from the `wipProxy({...})` call (WIP-Cooking sets it).
+  Per-user identity for a privileged app needs an identity the edge proves;
+  that is not built.
+
 ### A terminology export → import round trip keeps lifecycle, hierarchy and flags; a by-value read sees only readable namespaces (@wip/client 0.105.0)
 
 - **Export format 2.1.** A term's parent and replacement are exported by

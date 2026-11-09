@@ -2,13 +2,6 @@ import { request as httpRequest, type IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { type Request, type Response } from 'express'
 
-/**
- * Identity headers forwarded from gateway auth to WIP services. The platform
- * supplies only these two (its edge strips client-sent copies); services
- * honour them only alongside a privileged key.
- */
-export const IDENTITY_HEADERS = ['x-wip-user', 'x-wip-groups'] as const
-
 /** Upstream response headers forwarded back to the client */
 const FORWARDED_RESPONSE_HEADERS = [
   'content-type',
@@ -29,12 +22,6 @@ export interface ApiProxyOptions {
   bodyLimit?: string
   /** Additional headers to forward upstream */
   extraHeaders?: Record<string, string>
-  /**
-   * Forward X-WIP-User and X-WIP-Groups from the incoming request. WIP
-   * services act on them only when the app's key is privileged; with an
-   * ordinary app key they are ignored.
-   */
-  forwardIdentity?: boolean
   /**
    * Namespace for the documents query endpoint when the app's key spans
    * several namespaces.
@@ -218,16 +205,6 @@ export function handleApiProxy(
   const headers: Record<string, string> = {
     'X-API-Key': options.apiKey,
     ...options.extraHeaders,
-  }
-
-  // Forward gateway identity headers to WIP services
-  if (options.forwardIdentity) {
-    for (const h of IDENTITY_HEADERS) {
-      const value = req.headers[h]
-      if (typeof value === 'string') {
-        headers[h] = value
-      }
-    }
   }
 
   if (req.headers['content-type']) {

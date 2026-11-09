@@ -54,12 +54,11 @@ User  ──browser──►  App (Express)
                       ├── Has session cookie? ──► No  ──► Redirect to Dex login (PKCE flow)
                       │                           Yes ──► Inject X-WIP-User, X-WIP-Groups into request
                       │
-                      ├── @wip/proxy (forwardIdentity: true)
-                      │     Copies identity headers + API key to upstream
+                      ├── @wip/proxy
+                      │     Injects the app's API key; never forwards identity headers
                       │
                       └──► WIP Service
-                             TrustedHeaderProvider validates X-WIP-User + X-API-Key
-                             Returns UserIdentity with auth_method="gateway_oidc"
+                             Authenticates the app's key
 ```
 
 Auth is handled by the app's own Express server using `openid-client` (server-side OIDC with PKCE). No Caddy plugin, no sidecar. The app creates a session after Dex callback, then injects identity headers on every authenticated request.
@@ -75,20 +74,16 @@ Express middleware using `openid-client` for server-side OIDC:
 - Sets `X-WIP-User`, `X-WIP-Groups`, `X-WIP-Auth-Method` on authenticated requests
 - Opt-in: only active when `OIDC_ISSUER` env var is set
 
-**2. `@wip/proxy` identity forwarding (`forwardIdentity: true`)**
+**2. `@wip/proxy` does not forward identity**
 
 ```typescript
 app.use('/wip', wipProxy({
   baseUrl: WIP_BASE_URL,
   apiKey: WIP_API_KEY,           // Service-to-service auth
-  forwardIdentity: true,         // Forward X-WIP-User and X-WIP-Groups
 }))
 ```
 
-When `forwardIdentity: true`, the proxy copies three headers from the incoming request to upstream WIP services:
-- `X-WIP-User` — user email (e.g., `admin@wip.local`)
-- `X-WIP-Groups` — comma-separated groups (e.g., `wip-admins,wip-editors`)
-- `X-WIP-Auth-Method` — always `gateway_oidc`
+The proxy never copies `X-WIP-User` / `X-WIP-Groups` from the incoming request to WIP. It cannot tell who set them: they are the logged-in user's only if the request passed the deployer's edge, and a caller who reaches the app another way (inside the container network, a pod in the namespace, a host-run app) could type any user and any groups. Under a privileged key a service would act on them. WIP therefore sees every app request as the app's key. The `forwardIdentity` option that used to copy them was removed in `@wip/proxy` 0.9.0; per-user identity for a privileged app needs an identity the edge proves (e.g. signed by the auth gateway), which is not built.
 
 **3. `TrustedHeaderProvider` in wip-auth**
 
@@ -154,7 +149,7 @@ The trusted header provider requires **both** `X-WIP-User` and a valid **privile
 | Spoofing attempt | `admin@wip.local` | absent | `None` (ignored, warning logged) |
 | Spoofing attempt | `admin@wip.local` | invalid | `None` (ignored, warning logged) |
 
-Since every deployer app runs with a scoped key of its own, identity forwarding takes effect only for an app holding a privileged key, and today no such app sets `forwardIdentity`.
+`@wip/proxy` no longer forwards these headers (see component 2), so none of these rows is reached through it. The provider still serves callers that hold a privileged key themselves.
 
 ### K8s Deployment
 
@@ -188,7 +183,7 @@ On K8s, the same app-side pattern works unchanged. The front door is the same to
 | wip-auth | `__init__.py`, `providers/__init__.py` | Register provider in factory, exports |
 | wip-auth | `models.py` | Add `gateway_oidc` to `auth_method` Literal |
 | wip-auth | `tests/test_trusted_header.py` | 14 tests: valid/invalid combos, groups parsing, config integration |
-| @wip/proxy | `api-proxy.ts`, `file-proxy.ts`, `index.ts` | `forwardIdentity` option, forward 3 headers |
+| @wip/proxy | `api-proxy.ts`, `file-proxy.ts`, `index.ts` | `forwardIdentity` option (removed in 0.9.0: it forwarded caller-supplied identity unverified) |
 | Dex | `config/dex/config.yaml` | `wip-apps` static client |
 | Scaffold | `server/auth.ts` | OIDC middleware (openid-client, PKCE, express-session) |
 | Scaffold | `server/index.ts` | Wire auth middleware, `/auth/*` routes, `/api/me` |

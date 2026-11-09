@@ -55,11 +55,6 @@ export interface WipProxyOptions {
   /** Additional headers to forward upstream */
   extraHeaders?: Record<string, string>
   /**
-   * Forward X-WIP-User and X-WIP-Groups from the incoming request. WIP acts
-   * on them only when the app's key is privileged.
-   */
-  forwardIdentity?: boolean
-  /**
    * Namespace appended as `?namespace=<value>` to the documents query
    * endpoint (`POST /api/document-store/documents/query`, and only there)
    * when the caller hasn't scoped it — needed under a key spanning several
@@ -144,13 +139,11 @@ function proxyRouter(options: WipProxyOptions, withKey: WithKey): Router {
     baseUrl: options.baseUrl,
     apiKey,
     extraHeaders: options.extraHeaders,
-    forwardIdentity: options.forwardIdentity,
     defaultNamespace: options.defaultNamespace,
   })
   const fileOptions = (apiKey: string): FileProxyOptions => ({
     baseUrl: options.baseUrl,
     apiKey,
-    forwardIdentity: options.forwardIdentity,
   })
 
   // File content proxy — must be before the catch-all API routes

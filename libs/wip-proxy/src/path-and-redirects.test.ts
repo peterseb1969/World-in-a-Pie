@@ -12,8 +12,11 @@ import { wipProxy } from './index.js'
  *   the six service prefixes — or sideways into a look-alike prefix — are
  *   refused with 400 and never reach WIP.
  * - A file id is one path segment: an encoded `/` stays encoded upstream.
- * - The file proxy follows a redirect to another origin without the key or
- *   identity headers, and a malformed Location is a 502, not a crash.
+ * - The file proxy follows a redirect to another origin without the key, and
+ *   a malformed Location is a 502, not a crash.
+ * - A client's X-WIP-User / X-WIP-Groups never reach WIP, on the API path or
+ *   the file path: the proxy cannot tell who set them, and under a privileged
+ *   key a service would act on them as the logged-in user.
  * - An API redirect reaches the client with a Location it can follow: a WIP
  *   path is rewritten under the proxy's mount; anything else is dropped.
  *
@@ -31,10 +34,14 @@ async function listen(handler: Handler): Promise<{ server: Server; url: string }
   return { server, url: `http://127.0.0.1:${a.port}` }
 }
 
-function raw(base: string, path: string): Promise<{ status: number; headers: IncomingMessage['headers']; body: string }> {
+function raw(
+  base: string,
+  path: string,
+  headers: Record<string, string> = {},
+): Promise<{ status: number; headers: IncomingMessage['headers']; body: string }> {
   const { hostname, port } = new URL(base)
   return new Promise((resolve, reject) => {
-    const req = request({ hostname, port, path, method: 'GET' }, (res) => {
+    const req = request({ hostname, port, path, method: 'GET', headers }, (res) => {
       let body = ''
       res.on('data', (c) => (body += c))
       res.on('end', () => resolve({ status: res.statusCode ?? 0, headers: res.headers, body }))
@@ -50,8 +57,8 @@ describe('wipProxy upstream path and redirects', () => {
   let app: { server: Server; url: string }
   let upstreamHandler: Handler
   let otherHandler: Handler
-  const seen: { path: string; key?: string; user?: string }[] = []
-  const otherSeen: { path: string; key?: string; user?: string }[] = []
+  const seen: { path: string; key?: string; user?: string; groups?: string }[] = []
+  const otherSeen: { path: string; key?: string; user?: string; groups?: string }[] = []
 
   beforeEach(async () => {
     seen.length = 0
@@ -59,15 +66,15 @@ describe('wipProxy upstream path and redirects', () => {
     upstreamHandler = (_req, res) => res.end('ok')
     otherHandler = (_req, res) => res.end('from-other')
     upstream = await listen((req, res) => {
-      seen.push({ path: req.url ?? '', key: req.headers['x-api-key'] as string, user: req.headers['x-wip-user'] as string })
+      seen.push({ path: req.url ?? '', key: req.headers['x-api-key'] as string, user: req.headers['x-wip-user'] as string, groups: req.headers['x-wip-groups'] as string })
       upstreamHandler(req, res)
     })
     other = await listen((req, res) => {
-      otherSeen.push({ path: req.url ?? '', key: req.headers['x-api-key'] as string, user: req.headers['x-wip-user'] as string })
+      otherSeen.push({ path: req.url ?? '', key: req.headers['x-api-key'] as string, user: req.headers['x-wip-user'] as string, groups: req.headers['x-wip-groups'] as string })
       otherHandler(req, res)
     })
     const e = express()
-    e.use('/wip', wipProxy({ baseUrl: upstream.url, apiKey: 'secret-key', forwardIdentity: true }))
+    e.use('/wip', wipProxy({ baseUrl: upstream.url, apiKey: 'secret-key' }))
     e.use((_req, res) => res.status(404).send('app 404'))
     app = await listen(e)
   })
@@ -114,7 +121,27 @@ describe('wipProxy upstream path and redirects', () => {
     ])
   })
 
-  it('the file proxy follows a cross-origin redirect without the key or identity', async () => {
+  it('a client-sent identity is not forwarded, on the API path or the file path, even by an app still passing forwardIdentity', async () => {
+    // An untyped (JS, tsx) caller can still hand over the removed option.
+    const stale = { baseUrl: upstream.url, apiKey: 'secret-key', forwardIdentity: true } as Parameters<typeof wipProxy>[0]
+    const e = express()
+    e.use('/wip', wipProxy(stale))
+    const staleApp = await listen(e)
+    const forged = { 'x-wip-user': 'admin@wip.local', 'x-wip-groups': 'wip-admins' }
+    try {
+      expect((await raw(staleApp.url, '/wip/api/document-store/documents', forged)).status).toBe(200)
+      expect((await raw(staleApp.url, '/wip/files/F-1/content', forged)).status).toBe(200)
+    } finally {
+      await new Promise((r) => staleApp.server.close(r))
+    }
+
+    expect(seen).toEqual([
+      { path: '/api/document-store/documents', key: 'secret-key', user: undefined, groups: undefined },
+      { path: '/api/document-store/files/F-1/content', key: 'secret-key', user: undefined, groups: undefined },
+    ])
+  })
+
+  it('the file proxy follows a cross-origin redirect without the key', async () => {
     upstreamHandler = (_req, res) => {
       res.statusCode = 302
       res.setHeader('location', `${other.url}/bucket/blob?sig=1`)
@@ -138,8 +165,8 @@ describe('wipProxy upstream path and redirects', () => {
     expect(res.status).toBe(200)
     expect(res.body).toBe('from-other')
     expect(seen[0].key).toBe('secret-key')
-    expect(seen[0].user).toBe('alice')
-    expect(otherSeen).toEqual([{ path: '/bucket/blob?sig=1', key: undefined, user: undefined }])
+    expect(seen[0].user).toBeUndefined()
+    expect(otherSeen).toEqual([{ path: '/bucket/blob?sig=1', key: undefined, user: undefined, groups: undefined }])
   })
 
   it('the file proxy keeps the key on a same-origin redirect', async () => {

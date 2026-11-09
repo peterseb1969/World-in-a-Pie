@@ -24,7 +24,7 @@ from wip_deploy.spec.component import Component, Port, Route
 # gateway holds no API key, so no key travels with them.
 GATEWAY_IDENTITY_HEADERS: tuple[str, ...] = ("X-WIP-User", "X-WIP-Groups")
 
-# Identity headers an app may read (`@wip/proxy` forwards all three to WIP).
+# Identity headers an app may read (`@wip/proxy` forwards none of them to WIP).
 # On a protected route the proxy's copy of the gateway's answer overwrites or
 # removes the gateway's two whatever the browser sent; the rest the gateway
 # never supplies, so the renderers remove them. On an app route the gateway

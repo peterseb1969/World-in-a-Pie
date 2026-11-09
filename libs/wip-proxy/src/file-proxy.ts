@@ -1,5 +1,5 @@
 import { type Request, type Response } from 'express'
-import { IDENTITY_HEADERS, requestFnFor, streamUpstreamResponse } from './api-proxy.js'
+import { requestFnFor, streamUpstreamResponse } from './api-proxy.js'
 
 /** Redirect hops followed server-side before giving up. */
 const MAX_REDIRECTS = 5
@@ -9,8 +9,6 @@ export interface FileProxyOptions {
   baseUrl: string
   /** API key for upstream requests */
   apiKey: string
-  /** Forward X-WIP-User and X-WIP-Groups from the incoming request (see ApiProxyOptions) */
-  forwardIdentity?: boolean
 }
 
 /**
@@ -25,9 +23,9 @@ export interface FileProxyOptions {
  * downloads are O(1) in proxy memory regardless of file size. GET-only,
  * so following redirects is safe — there is no request body to replay.
  *
- * The key and identity headers go only to WIP's own origin: a hop to
- * another origin (object storage's presigned URL needs neither) is made
- * without them. A redirect whose Location cannot be parsed answers 502.
+ * The key goes only to WIP's own origin: a hop to another origin (object
+ * storage's presigned URL does not need it) is made without it. A
+ * redirect whose Location cannot be parsed answers 502.
  * The file id is one path segment — an encoded `/` in it stays encoded.
  */
 export function handleFileContent(
@@ -43,16 +41,6 @@ export function handleFileContent(
   }
 
   const headers: Record<string, string> = { 'X-API-Key': options.apiKey }
-
-  // Forward gateway identity headers to WIP services
-  if (options.forwardIdentity) {
-    for (const h of IDENTITY_HEADERS) {
-      const value = req.headers[h]
-      if (typeof value === 'string') {
-        headers[h] = value
-      }
-    }
-  }
 
   const wipOrigin = new URL(options.baseUrl).origin
 
