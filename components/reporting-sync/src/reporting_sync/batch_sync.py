@@ -14,6 +14,7 @@ import logging
 import time
 import uuid
 from collections import Counter
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -68,6 +69,24 @@ _TERM_UPDATE_COLUMNS = (
 _TERM_RELATION_UPDATE_COLUMNS = (
     "status", "source_term_value", "target_term_value", "metadata",
 )
+
+
+@dataclass
+class _BatchRun:
+    """One template's batch sync job in progress: what it syncs, and what it
+    has learned about the tables so far."""
+
+    job: BatchSyncJob
+    template: dict[str, Any]
+    config: ReportingConfig
+    latest_version: int
+    strategy: str
+    # Every template version the job has read, by version number.
+    version_templates: dict[int, dict[str, Any]] = field(default_factory=dict)
+    # The table ensured for each (namespace, template_version).
+    ns_tables: dict[tuple[str, int], str] = field(default_factory=dict)
+    touched_namespaces: set[str] = field(default_factory=set)
+    ns_versions_on_disk: dict[str, set[int]] = field(default_factory=dict)
 
 
 class BatchSyncService:
@@ -406,295 +425,7 @@ class BatchSyncService:
         job.started_at = datetime.now(UTC)
 
         try:
-            # A template from a listing is served as stored; one that extends
-            # another is re-read through Template Store's resolving route, the
-            # one resolver every service uses (pinned parent version, child's
-            # own properties kept, a broken chain refused).
-            if template.get("extends"):
-                resolved = await self._fetch_template_version(
-                    template["template_id"], int(template.get("version", 1))
-                )
-                if resolved is None:
-                    raise RuntimeError(
-                        f"Template {template.get('value')} v{template.get('version')} "
-                        "could not be read resolved from Template Store"
-                    )
-                template = resolved
-
-            config = self._get_reporting_config(template)
-
-            # Check if sync is enabled
-            if not config.sync_enabled:
-                job.status = BatchSyncStatus.COMPLETED
-                job.error_message = "Sync disabled for this template"
-                job.completed_at = datetime.now(UTC)
-                return
-
-            # Documents route to their own namespace's schema (CASE-628) AND
-            # to their pinned template version's table (per-version split) —
-            # a single template can fill several tables per namespace. Ensure
-            # lazily per (namespace, version) as pages stream in. Each
-            # document is transformed against the template version it
-            # validated against (pin-to-what-validated), never against
-            # latest — that mismatch was the NULL-conflation the split
-            # eliminates.
-            ns_tables: dict[tuple[str, int], str] = {}
-            version_templates: dict[int, dict[str, Any]] = {}
-            touched_namespaces: set[str] = set()
-
-            latest_version = int(template.get("version", 1))
-            version_templates[latest_version] = template
-
-            async def _template_for_version(version: int) -> dict[str, Any]:
-                if version in version_templates:
-                    return version_templates[version]
-                fetched = await self._fetch_template_version(
-                    template["template_id"], version
-                )
-                if fetched is None:
-                    # Pinned version unavailable — fall back to the latest
-                    # definition, loudly: better a possibly-wider table than
-                    # dropping the document.
-                    logger.warning(
-                        f"Template {job.template_value} v{version} not "
-                        f"fetchable; falling back to v{latest_version}"
-                    )
-                    version_templates[version] = template
-                    return template
-                version_templates[version] = fetched
-                return fetched
-
-            # Eagerly ensure the latest version's table even when there are
-            # zero documents: a freshly bootstrapped namespace (templates, no
-            # docs yet) must be SQL-queryable — "no rows yet" is an empty
-            # table (and view), not relation-does-not-exist. ONLY when the
-            # template belongs to the job's scope, though: a scoped run
-            # iterates the instance-wide template list, and eagerly ensuring
-            # foreign templates would stamp every namespace's empty tables
-            # into the target schema (this shipped once — ct-1000 grew 31
-            # foreign kb/probe tables). Foreign-template tables are created
-            # lazily below, only when scoped documents actually exist.
-            tpl_ns = template.get("namespace") or "wip"
-
-            # Force = drop-and-rebuild: remove the template's existing
-            # relations in the target namespace before the sync recreates
-            # them from current template shapes. Upserts cannot heal
-            # mis-shaped DDL (a table created from a same-valued foreign
-            # template rejects the namespace's own documents); only
-            # drop-and-recreate can. Guarded to templates that belong to the
-            # job's scope, mirroring the eager-ensure guard below: table
-            # names derive from the template VALUE, so a foreign same-valued
-            # template's job dropping here would race the owning template's
-            # rebuild of the identically-named tables.
-            if force and job.namespace is not None and job.namespace == tpl_ns:
-                job.dropped_relations = (
-                    await self.schema_manager.drop_relations_for_template(
-                        tpl_ns, job.template_value, config
-                    )
-                )
-
-            tpl_table = None
-            if job.namespace is None or job.namespace == tpl_ns:
-                # The eager ensure targets the latest ACTIVE version — the
-                # version a new write lands on, and the version the restore
-                # gate's structural parity demands. The template in hand may
-                # be an INACTIVE newest version (the instance-wide listing
-                # is deliberately status-free, so fully-deactivated
-                # templates' documents still sync); ensuring ITS table while
-                # parity waits for the active one's halted a restore at the
-                # 30s gate. Documents pinned to inactive versions are
-                # unaffected: their tables materialize lazily per page below.
-                eager_template: dict[str, Any] | None = template
-                eager_version = latest_version
-                # Absent status means active (the platform default) — only a
-                # template explicitly deactivated triggers the re-fetch.
-                if template.get("status", "active") != "active":
-                    fetched_active = await self._fetch_latest_active_version(
-                        job.template_value, tpl_ns
-                    )
-                    if fetched_active is None:
-                        # No active version at all — parity's active-only
-                        # listing skips this template too; nothing to ensure
-                        # eagerly, the lazy path covers its documents.
-                        eager_template = None
-                    else:
-                        eager_template = fetched_active
-                        eager_version = int(eager_template.get("version", 1))
-                        version_templates[eager_version] = eager_template
-                if eager_template is not None:
-                    # Uncached: batch sync is the repair path, and runs the
-                    # catalog checks once per job, not per document.
-                    tpl_table = await self.schema_manager.ensure_table_for_template(
-                        tpl_ns, eager_template, cached=False
-                    )
-                    if tpl_table:
-                        ns_tables[(tpl_ns, eager_version)] = tpl_table
-                        touched_namespaces.add(tpl_ns)
-
-            template_id = template["template_id"]
-            strategy = config.sync_strategy.value
-
-            # Physical version tables known per namespace: one catalog query
-            # per namespace per job, kept current with tables this job
-            # ensures. The per-document sibling cleanup below consults this
-            # instead of re-asking information_schema for every document —
-            # at restore scale that was one catalog query per document,
-            # almost always to learn there are no siblings at all.
-            ns_versions_on_disk: dict[str, set[int]] = {}
-
-            async def _versions_on_disk(ns: str) -> set[int]:
-                if ns not in ns_versions_on_disk:
-                    ns_versions_on_disk[ns] = set(
-                        (await self.schema_manager.list_version_tables(
-                            ns, job.template_value, config
-                        )).keys()
-                    )
-                return ns_versions_on_disk[ns]
-
-            # The total, for progress and the empty-template exit: one
-            # one-document offset request (a count plus a single sort).
-            # The pages themselves are fetched by cursor below.
-            fetch_started = time.monotonic()
-            _probe, total, _ = await self._fetch_documents(
-                template_id, 1, 1, namespace=job.namespace
-            )
-            job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
-            job.total_documents = total
-
-            if total == 0:
-                job.status = BatchSyncStatus.COMPLETED
-                job.completed_at = datetime.now(UTC)
-                detail = (
-                    f"(table {tpl_table} ensured empty)" if tpl_table
-                    else "(foreign template — no table created in scope)"
-                )
-                logger.info(
-                    f"No documents to sync for {job.template_value} {detail}"
-                )
-                return
-
-            logger.info(f"Starting batch sync for {job.template_value}: {total} documents")
-
-            # Process all pages, by cursor. Offset paging sorted every
-            # matching document on every page (the default order cannot use
-            # an index), so a template's sync cost grew with the square of
-            # its size; a cursor page reads one page of the
-            # ns_template_status_id_idx index. The smallest possible _id
-            # starts the walk.
-            page = 0
-            cursor: str | None = FIRST_CURSOR
-            while cursor is not None:
-                page += 1
-                fetch_started = time.monotonic()
-                documents, _, cursor = await self._fetch_documents(
-                    template_id, page, page_size, namespace=job.namespace,
-                    cursor=cursor,
-                )
-                job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
-
-                if not documents:
-                    break
-
-                job.current_page = page
-
-                # Ensure a table for each (namespace, template_version)
-                # present in this page. ensure_table_for_template uses its own
-                # pooled connection, so do it before holding a connection for
-                # the upserts.
-                for document in documents:
-                    ns = document.get("namespace") or "wip"
-                    doc_tv = int(document.get("template_version", latest_version))
-                    if (ns, doc_tv) not in ns_tables:
-                        version_template = await _template_for_version(doc_tv)
-                        ns_tables[(ns, doc_tv)] = (
-                            await self.schema_manager.ensure_table_for_template(
-                                ns, version_template, cached=False
-                            )
-                        )
-                        touched_namespaces.add(ns)
-                        # Keep the sibling-table knowledge current with the
-                        # table this job just ensured.
-                        (await _versions_on_disk(ns)).add(doc_tv)
-
-                # Process documents in this page, routing each to its
-                # (schema, version table) and transforming against the
-                # template version it validated against.
-                upsert_started = time.monotonic()
-                async with self.pool.acquire() as conn:
-                    for document in documents:
-                        try:
-                            ns = document.get("namespace") or "wip"
-                            doc_tv = int(document.get("template_version", latest_version))
-                            table_name = ns_tables[(ns, doc_tv)]
-                            version_template = await _template_for_version(doc_tv)
-                            transformer = DocumentTransformer(config)
-                            rows = transformer.transform(document, version_template)
-                            for row in rows:
-                                sql, values = transformer.generate_upsert_sql(
-                                    table_name, row, strategy
-                                )
-                                await conn.execute(sql, *values)
-                                job.rows_written += 1
-                            job.documents_synced += 1
-                        except Exception as e:
-                            logger.error(
-                                f"Error syncing document {document.get('document_id')}: {e}"
-                            )
-                            job.documents_failed += 1
-                job.upsert_ms += int((time.monotonic() - upsert_started) * 1000)
-
-                # Version-crossing upserts leave stale rows in sibling
-                # version tables under latest_only — pair the page's upserts
-                # with the sibling cleanup per document. Only when a sibling
-                # table actually exists, though: the common case (single
-                # version table, every restore) has nothing to clean, and
-                # consulting the per-job knowledge instead of the catalog
-                # keeps the check free per document. A sibling table created
-                # by a concurrent writer mid-job is outside this knowledge —
-                # that writer pairs its own upserts with its own cleanup, so
-                # nothing is orphaned by skipping here.
-                if strategy == "latest_only":
-                    sibling_started = time.monotonic()
-                    for document in documents:
-                        ns = document.get("namespace") or "wip"
-                        doc_tv = int(document.get("template_version", latest_version))
-                        doc_id = document.get("document_id")
-                        if doc_id and ((await _versions_on_disk(ns)) - {doc_tv}):
-                            await self.schema_manager.delete_from_sibling_version_tables(
-                                ns, job.template_value, config,
-                                keep_version=doc_tv, document_id=doc_id,
-                            )
-                    job.sibling_ms += int((time.monotonic() - sibling_started) * 1000)
-
-                # The document-store returns no next cursor after a short
-                # page, which ends the loop.
-
-                # Yield to the event loop between pages. The flat 100 ms
-                # sleep that used to sit here predates the per-template job
-                # concurrency caps and cost ~2.6 min of pure sleep on a
-                # 156k-document sync.
-                await asyncio.sleep(0)
-
-            # Rebuild the entity views for every namespace this job touched —
-            # the union membership may have grown with lazily created version
-            # tables. A legacy pre-split table is reported, never auto-dropped.
-            for ns in touched_namespaces:
-                warning = await self.schema_manager.ensure_views_for_template(
-                    ns, job.template_value, config
-                )
-                if warning:
-                    job.error_message = (
-                        (job.error_message + "; " if job.error_message else "") + warning
-                    )
-
-            job.status = BatchSyncStatus.COMPLETED
-            job.completed_at = datetime.now(UTC)
-
-            logger.info(
-                f"Batch sync completed for {job.template_value}: "
-                f"{job.documents_synced} synced, {job.documents_failed} failed"
-            )
-
+            await self._sync_template_documents(job, template, force, page_size)
         except asyncio.CancelledError:
             job.status = BatchSyncStatus.CANCELLED
             job.completed_at = datetime.now(UTC)
@@ -705,6 +436,326 @@ class BatchSyncService:
             job.error_message = str(e)
             job.completed_at = datetime.now(UTC)
             logger.error(f"Batch sync failed for {job.template_value}: {e}", exc_info=True)
+
+    async def _sync_template_documents(
+        self,
+        job: BatchSyncJob,
+        template: dict[str, Any],
+        force: bool,
+        page_size: int,
+    ) -> None:
+        """Sync every document of the template in the job's scope: ensure
+        its tables, upsert its documents page by page, rebuild its views."""
+        template = await self._resolved_template(template)
+        config = self._get_reporting_config(template)
+        if not config.sync_enabled:
+            job.status = BatchSyncStatus.COMPLETED
+            job.error_message = "Sync disabled for this template"
+            job.completed_at = datetime.now(UTC)
+            return
+
+        run = _BatchRun(
+            job=job, template=template, config=config,
+            latest_version=int(template.get("version", 1)),
+            strategy=config.sync_strategy.value,
+        )
+        run.version_templates[run.latest_version] = template
+        tpl_table = await self._prepare_template_tables(run, force)
+
+        # The total, for progress and the empty-template exit: one
+        # one-document offset request (a count plus a single sort).
+        # The pages themselves are fetched by cursor.
+        fetch_started = time.monotonic()
+        _probe, total, _ = await self._fetch_documents(
+            template["template_id"], 1, 1, namespace=job.namespace
+        )
+        job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
+        job.total_documents = total
+
+        if total == 0:
+            job.status = BatchSyncStatus.COMPLETED
+            job.completed_at = datetime.now(UTC)
+            detail = (
+                f"(table {tpl_table} ensured empty)" if tpl_table
+                else "(foreign template — no table created in scope)"
+            )
+            logger.info(f"No documents to sync for {job.template_value} {detail}")
+            return
+
+        logger.info(f"Starting batch sync for {job.template_value}: {total} documents")
+        await self._sync_pages(run, page_size)
+        await self._rebuild_views(run)
+
+        job.status = BatchSyncStatus.COMPLETED
+        job.completed_at = datetime.now(UTC)
+        logger.info(
+            f"Batch sync completed for {job.template_value}: "
+            f"{job.documents_synced} synced, {job.documents_failed} failed"
+        )
+
+    async def _resolved_template(self, template: dict[str, Any]) -> dict[str, Any]:
+        """The template as the job syncs it.
+
+        A template from a listing is served as stored; one that extends
+        another is re-read through Template Store's resolving route, the one
+        resolver every service uses (pinned parent version, child's own
+        properties kept, a broken chain refused).
+        """
+        if not template.get("extends"):
+            return template
+        resolved = await self._fetch_template_version(
+            template["template_id"], int(template.get("version", 1))
+        )
+        if resolved is None:
+            raise RuntimeError(
+                f"Template {template.get('value')} v{template.get('version')} "
+                "could not be read resolved from Template Store"
+            )
+        return resolved
+
+    async def _template_for_version(self, run: _BatchRun, version: int) -> dict[str, Any]:
+        """The template version a document validated against.
+
+        Documents route to their own namespace's schema AND to their pinned
+        template version's table (per-version split) — a single template can
+        fill several tables per namespace. Each document is transformed
+        against the template version it validated against
+        (pin-to-what-validated), never against latest — that mismatch was
+        the NULL-conflation the split eliminates.
+        """
+        if version in run.version_templates:
+            return run.version_templates[version]
+        fetched = await self._fetch_template_version(run.template["template_id"], version)
+        if fetched is None:
+            # Pinned version unavailable — fall back to the latest
+            # definition, loudly: better a possibly-wider table than
+            # dropping the document.
+            logger.warning(
+                f"Template {run.job.template_value} v{version} not "
+                f"fetchable; falling back to v{run.latest_version}"
+            )
+            fetched = run.template
+        run.version_templates[version] = fetched
+        return fetched
+
+    async def _versions_on_disk(self, run: _BatchRun, ns: str) -> set[int]:
+        """The namespace's physical version tables of the template.
+
+        One catalog query per namespace per job, kept current with tables
+        this job ensures. The per-document sibling cleanup consults this
+        instead of re-asking information_schema for every document — at
+        restore scale that was one catalog query per document, almost always
+        to learn there are no siblings at all.
+        """
+        if ns not in run.ns_versions_on_disk:
+            run.ns_versions_on_disk[ns] = set(
+                (await self.schema_manager.list_version_tables(
+                    ns, run.job.template_value, run.config
+                )).keys()
+            )
+        return run.ns_versions_on_disk[ns]
+
+    async def _prepare_template_tables(self, run: _BatchRun, force: bool) -> str | None:
+        """Drop the template's relations when forced, and ensure its latest
+        active version's table eagerly; the table ensured, if any.
+
+        Both only when the template belongs to the job's scope. Eagerly
+        ensuring even with zero documents: a freshly bootstrapped namespace
+        (templates, no docs yet) must be SQL-queryable — "no rows yet" is an
+        empty table (and view), not relation-does-not-exist. But a scoped run
+        iterates the instance-wide template list, and eagerly ensuring
+        foreign templates would stamp every namespace's empty tables into the
+        target schema (this shipped once — a namespace grew 31 foreign
+        tables). Foreign-template tables are created lazily, only when scoped
+        documents actually exist.
+        """
+        job = run.job
+        tpl_ns = run.template.get("namespace") or "wip"
+
+        # Force = drop-and-rebuild: remove the template's existing relations
+        # in the target namespace before the sync recreates them from current
+        # template shapes. Upserts cannot heal mis-shaped DDL (a table created
+        # from a same-valued foreign template rejects the namespace's own
+        # documents); only drop-and-recreate can. Guarded to templates that
+        # belong to the job's scope: table names derive from the template
+        # VALUE, so a foreign same-valued template's job dropping here would
+        # race the owning template's rebuild of the identically-named tables.
+        if force and job.namespace is not None and job.namespace == tpl_ns:
+            job.dropped_relations = (
+                await self.schema_manager.drop_relations_for_template(
+                    tpl_ns, job.template_value, run.config
+                )
+            )
+
+        if job.namespace is not None and job.namespace != tpl_ns:
+            return None
+        eager = await self._eager_template(run, tpl_ns)
+        if eager is None:
+            return None
+        eager_template, eager_version = eager
+        # Uncached: batch sync is the repair path, and runs the catalog
+        # checks once per job, not per document.
+        tpl_table = await self.schema_manager.ensure_table_for_template(
+            tpl_ns, eager_template, cached=False
+        )
+        if tpl_table:
+            run.ns_tables[(tpl_ns, eager_version)] = tpl_table
+            run.touched_namespaces.add(tpl_ns)
+        return tpl_table
+
+    async def _eager_template(
+        self, run: _BatchRun, tpl_ns: str,
+    ) -> tuple[dict[str, Any], int] | None:
+        """The template version to ensure eagerly, and its number: the latest
+        ACTIVE version, or None when the template has no active version.
+
+        That is the version a new write lands on, and the version the restore
+        gate's structural parity demands. The template in hand may be an
+        INACTIVE newest version (the instance-wide listing is deliberately
+        status-free, so fully-deactivated templates' documents still sync);
+        ensuring ITS table while parity waits for the active one's halted a
+        restore at the 30s gate. Documents pinned to inactive versions are
+        unaffected: their tables materialize lazily per page. Absent status
+        means active (the platform default) — only a template explicitly
+        deactivated triggers the re-fetch. With no active version at all,
+        parity's active-only listing skips this template too; nothing to
+        ensure eagerly, the lazy path covers its documents.
+        """
+        if run.template.get("status", "active") == "active":
+            return run.template, run.latest_version
+        fetched_active = await self._fetch_latest_active_version(
+            run.job.template_value, tpl_ns
+        )
+        if fetched_active is None:
+            return None
+        version = int(fetched_active.get("version", 1))
+        run.version_templates[version] = fetched_active
+        return fetched_active, version
+
+    async def _sync_pages(self, run: _BatchRun, page_size: int) -> None:
+        """Sync the documents page by page, by cursor.
+
+        Offset paging sorted every matching document on every page (the
+        default order cannot use an index), so a template's sync cost grew
+        with the square of its size; a cursor page reads one page of the
+        ns_template_status_id_idx index. The smallest possible _id starts the
+        walk, and the document-store returns no next cursor after a short
+        page, which ends it.
+        """
+        job = run.job
+        page = 0
+        cursor: str | None = FIRST_CURSOR
+        while cursor is not None:
+            page += 1
+            fetch_started = time.monotonic()
+            documents, _, cursor = await self._fetch_documents(
+                run.template["template_id"], page, page_size, namespace=job.namespace,
+                cursor=cursor,
+            )
+            job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
+            if not documents:
+                break
+            job.current_page = page
+            await self._ensure_page_tables(run, documents)
+            await self._upsert_page(run, documents)
+            if run.strategy == "latest_only":
+                await self._clean_sibling_tables(run, documents)
+            # Yield to the event loop between pages. The flat 100 ms sleep
+            # that used to sit here predates the per-template job concurrency
+            # caps and cost ~2.6 min of pure sleep on a 156k-document sync.
+            await asyncio.sleep(0)
+
+    @staticmethod
+    def _document_table_key(run: _BatchRun, document: dict[str, Any]) -> tuple[str, int]:
+        """(namespace, template_version) of a document's table."""
+        return (
+            document.get("namespace") or "wip",
+            int(document.get("template_version", run.latest_version)),
+        )
+
+    async def _ensure_page_tables(self, run: _BatchRun, documents: list[dict[str, Any]]) -> None:
+        """Ensure a table for each (namespace, template_version) present in
+        the page. ensure_table_for_template uses its own pooled connection,
+        so this runs before a connection is held for the upserts."""
+        for document in documents:
+            key = self._document_table_key(run, document)
+            if key in run.ns_tables:
+                continue
+            ns, doc_tv = key
+            version_template = await self._template_for_version(run, doc_tv)
+            run.ns_tables[key] = await self.schema_manager.ensure_table_for_template(
+                ns, version_template, cached=False
+            )
+            run.touched_namespaces.add(ns)
+            # Keep the sibling-table knowledge current with the table this
+            # job just ensured.
+            (await self._versions_on_disk(run, ns)).add(doc_tv)
+
+    async def _upsert_page(self, run: _BatchRun, documents: list[dict[str, Any]]) -> None:
+        """Upsert the page's documents, each routed to its (schema, version
+        table) and transformed against the template version it validated
+        against. A document that fails is counted and logged; the page goes
+        on."""
+        job = run.job
+        upsert_started = time.monotonic()
+        async with self.pool.acquire() as conn:
+            for document in documents:
+                try:
+                    key = self._document_table_key(run, document)
+                    table_name = run.ns_tables[key]
+                    version_template = await self._template_for_version(run, key[1])
+                    transformer = DocumentTransformer(run.config)
+                    for row in transformer.transform(document, version_template):
+                        sql, values = transformer.generate_upsert_sql(
+                            table_name, row, run.strategy
+                        )
+                        await conn.execute(sql, *values)
+                        job.rows_written += 1
+                    job.documents_synced += 1
+                except Exception as e:
+                    logger.error(
+                        f"Error syncing document {document.get('document_id')}: {e}"
+                    )
+                    job.documents_failed += 1
+        job.upsert_ms += int((time.monotonic() - upsert_started) * 1000)
+
+    async def _clean_sibling_tables(self, run: _BatchRun, documents: list[dict[str, Any]]) -> None:
+        """Remove the page's documents from their sibling version tables.
+
+        Version-crossing upserts leave stale rows in sibling version tables
+        under latest_only — the page's upserts are paired with the sibling
+        cleanup per document. Only when a sibling table actually exists,
+        though: the common case (single version table, every restore) has
+        nothing to clean, and consulting the per-job knowledge instead of the
+        catalog keeps the check free per document. A sibling table created by
+        a concurrent writer mid-job is outside this knowledge — that writer
+        pairs its own upserts with its own cleanup, so nothing is orphaned by
+        skipping here.
+        """
+        sibling_started = time.monotonic()
+        for document in documents:
+            ns, doc_tv = self._document_table_key(run, document)
+            doc_id = document.get("document_id")
+            if doc_id and ((await self._versions_on_disk(run, ns)) - {doc_tv}):
+                await self.schema_manager.delete_from_sibling_version_tables(
+                    ns, run.job.template_value, run.config,
+                    keep_version=doc_tv, document_id=doc_id,
+                )
+        run.job.sibling_ms += int((time.monotonic() - sibling_started) * 1000)
+
+    async def _rebuild_views(self, run: _BatchRun) -> None:
+        """Rebuild the entity views for every namespace the job touched — the
+        union membership may have grown with lazily created version tables.
+        A legacy pre-split table is reported on the job, never auto-dropped."""
+        job = run.job
+        for ns in run.touched_namespaces:
+            warning = await self.schema_manager.ensure_views_for_template(
+                ns, job.template_value, run.config
+            )
+            if warning:
+                job.error_message = (
+                    (job.error_message + "; " if job.error_message else "") + warning
+                )
 
     async def _sync_definitions(
         self, namespace: str | None, page_size: int
