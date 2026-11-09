@@ -154,6 +154,70 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `avg_duration_ms` are real (they were `{}` and `0`). A retried message is
   counted once, when it finishes. The service root carries the `build` block.
 
+### reporting-sync: a dependency that does not answer is never "nothing there"; rows reach reporting as the store holds them (@wip/client 0.108.0)
+
+- **`versioned: false` updates reach reporting.** Upserts compared `version`,
+  which an in-place overwrite keeps, so the row never changed. Document
+  tables gain a `_wip_revision` column (added to existing tables on their
+  next sync), document-store's events carry `revision`, and a row is
+  replaced only by a later write — for `all_versions` tables too.
+- **Batch sync:** an unreadable Document Store or template listing fails the
+  job (or answers 503 on `POST /sync/batch`) instead of completing with zero
+  documents; a `force` run asks the source before it drops anything, and
+  rebuilds the views it dropped even when there are no documents. The
+  definition syncs report `status: "completed" | "completed_with_errors" |
+  "incomplete"` (it was always `"completed"`). Each document version is
+  written with its own version's reporting config. The latest active
+  version is asked for by version. A document with several active versions
+  (merge restore keeping older ones) keeps one live row, its latest write.
+  A term brought back from deprecation loses its `deprecated_reason` /
+  `replaced_by_term_id`.
+- **`/health` answers 503 when neither NATS nor PostgreSQL is reachable**
+  (it answered 200 with `status: "unhealthy"`). A bookkeeping repair the
+  PostgreSQL login lacks rights for is a deployment fault (503), not an
+  endless startup retry.
+- **Search:** a type whose source failed answers `complete: false` and
+  `error` on its bucket instead of zero hits; a type that searched only part
+  of what exists (a table that could not be searched, the 1,000 cap, def-store's
+  per-namespace limit) says so the same way. The document search's REST
+  fallback is gone: it matched only the first 100 documents' ids, never their
+  content.
+- **Parity** checks the tables of shared templates the namespace's live
+  documents use (`template_namespace` on such rows); `ok` also needs the
+  schema, each template's entity view and bookkeeping row, and a check that
+  ran; the monitor reports `parity_check_failed` / `schema_missing` instead of
+  a gap-less "not ok", checks each repair's result, and logs a template
+  repair as triggered, not repaired.
+- **Term closure:** computed by pair (`UNION`) instead of enumerating every
+  path; a failed rebuild is retried with backoff.
+- **Alerts:** the error rate is the share of events since the previous
+  check that failed (it was a lifetime ratio); `CONNECTION_LOST` names what is
+  down now; `check_interval_seconds` is at least 1.
+- **Counts in `/tables` and `/schema`:** a table's count is bounded (5 s);
+  an entity view's is its version tables' summed instead of scanning the view;
+  other views are not counted. An uncounted relation has `row_count: null`
+  and a `row_count_note`.
+- **Schema:** integer fields are `BIGINT` (document-store accepts any int);
+  existing int4 integer columns are widened on every version table at their
+  next sync. A field named like a system column (`namespace`,
+  `file_references_json`, `_wip_revision`, and `source_ref_id` /
+  `target_ref_id` on relationship templates) gets a `data_` prefix in DDL and
+  rows alike (its table was never created). `sync_strategy: "disabled"` means
+  no sync. Offset-less datetimes are stored as UTC (they were read in the
+  session's time zone). Entity views are rebuilt when a template's columns
+  change or the view is missing. A template version's soft delete marks the
+  template inactive only when no active version remains. `term_names` and
+  `term_closure` are reserved view names.
+- **Template-store refuses** a dotted field name (`field_name_dotted`) and a
+  type change of an identity field (`identity_fields_immutable`).
+- **Registry refuses** the namespace prefixes `public`,
+  `information_schema` and `pg_*` (the namespace's reporting schema is named
+  after it, and deleting the namespace drops that schema).
+- **`@wip/client` 0.108.0:** `SearchTypeResults.complete` / `error`;
+  `ReportTable` / `ReportEntity` / `ReportTableSchema` `row_count` nullable
+  with `row_count_note`; `TemplateParity.template_namespace`;
+  `BatchEntitySyncResult.status` values; alert threshold descriptions.
+
 ### reporting-sync: lookups, search and operator routes say what they found (@wip/client 0.107.0)
 
 - **`/entity/{type}/{id}/referenced-by` checks read on the target.** It

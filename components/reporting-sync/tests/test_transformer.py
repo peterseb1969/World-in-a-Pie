@@ -460,7 +460,8 @@ class TestDocumentTransformer:
         assert "DO UPDATE SET" in sql
         assert "WHERE" in sql
         # latest_only uses version comparison for conditional update
-        assert "version < EXCLUDED.version" in sql
+        # Compared on the write counter, so an in-place overwrite lands.
+        assert 'version) < EXCLUDED."_wip_revision"' in sql
         assert values == ["doc-123", 1, "active", "John"]
 
     def test_upsert_sql_generation_all_versions(self):
@@ -478,9 +479,11 @@ class TestDocumentTransformer:
 
         assert "INSERT INTO" in sql
         # all_versions uses composite PK (document_id, version) for conflict
-        assert "ON CONFLICT (document_id, version) DO NOTHING" in sql
+        # A later write to the same (document, version) row replaces it.
+        assert "ON CONFLICT (document_id, version)" in sql
+        assert 'version) < EXCLUDED."_wip_revision"' in sql
         # Should NOT have DO UPDATE or single-column conflict
-        assert "DO UPDATE SET" not in sql
+        assert "DO UPDATE SET" in sql
         assert values == ["doc-123", 1, "active", "John"]
 
 
@@ -561,3 +564,14 @@ class TestRelationshipTemplateRow:
         row = transformer.transform(document, template)[0]
         assert "source_ref_id" not in row
         assert "target_ref_id" not in row
+
+
+def test_an_offset_less_datetime_is_read_as_utc():
+    """Bound naive, PostgreSQL would read it in the session's TimeZone, so
+    the stored instant would depend on server configuration."""
+    from datetime import UTC, datetime
+
+    from reporting_sync.transformer import _parse_datetime
+
+    assert _parse_datetime("2026-11-09T12:00:00") == datetime(2026, 11, 9, 12, tzinfo=UTC)
+    assert _parse_datetime("2026-11-09T12:00:00+02:00").utcoffset().total_seconds() == 7200

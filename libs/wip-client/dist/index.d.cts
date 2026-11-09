@@ -3481,10 +3481,16 @@ interface ReportTable {
     name: string;
     /** 'view' (entity views) or 'table' (physical / legacy pre-split). */
     kind: 'view' | 'table';
-    /** Stripped doc_* stem for document relations, null for metadata tables. */
+    /** The entity (doc_* stem, version/__entities suffix removed) for document relations, null for metadata tables. */
     template_value: string | null;
     qualified_name: string;
-    row_count: number;
+    /**
+     * A table's rows; an entity view's is its version tables' summed. Null
+     * when not counted (`row_count_note` says why: another kind of view, or a
+     * count that took too long).
+     */
+    row_count: number | null;
+    row_count_note?: string;
     /** Summary mode only. */
     column_count?: number;
     /** Detail mode (listTables with a tableName) only. */
@@ -3493,7 +3499,8 @@ interface ReportTable {
 interface ReportEntityVersion {
     version: number;
     table: string;
-    row_count: number;
+    /** Null when the count took too long. */
+    row_count: number | null;
 }
 /**
  * Entity-first grouping from `/tables` — one entry per template with its
@@ -3511,7 +3518,8 @@ interface ReportEntity {
     entities_view: string;
     legacy_table: boolean;
     versions: ReportEntityVersion[];
-    row_count: number;
+    /** Null when a version table could not be counted. */
+    row_count: number | null;
 }
 interface ReportTableSchema {
     namespace: string;
@@ -3520,7 +3528,9 @@ interface ReportTableSchema {
     table_name: string;
     qualified_name: string;
     columns: ReportTableColumn[];
-    row_count: number;
+    /** Null when not counted; `row_count_note` says why. */
+    row_count: number | null;
+    row_count_note: string | null;
 }
 interface SyncStatus {
     running: boolean;
@@ -3599,7 +3609,9 @@ interface Alert {
 interface AlertThresholds {
     queue_lag_warning: number;
     queue_lag_critical: number;
+    /** % of the events since the previous check that failed. */
     error_rate_warning: number;
+    /** % of the events since the previous check that failed. */
     error_rate_critical: number;
     stall_warning_seconds: number;
     stall_critical_seconds: number;
@@ -3653,8 +3665,15 @@ interface BatchSyncResponse {
  * full result is in the response body.
  */
 interface BatchEntitySyncResult {
-    status: 'completed' | 'failed';
-    table: 'terminologies' | 'terms' | 'term_relations';
+    /**
+     * `completed`: everything listed and written. `completed_with_errors`:
+     * some entries failed (`failed`). `incomplete`: the source listing was cut
+     * short, so the counts cover only what was read (`complete: false`).
+     */
+    status: 'completed' | 'completed_with_errors' | 'incomplete';
+    table: 'terminologies' | 'terms' | 'term_relations' | 'templates';
+    /** False when the source listing could not be read to the end. */
+    complete?: boolean;
     /** Entries fetched from the source service. */
     fetched?: number;
     /** Entries upserted into PostgreSQL. */
@@ -3717,6 +3736,11 @@ interface IntegrityCheckResult {
  */
 interface TemplateParity {
     template_value: string;
+    /**
+     * The template's own namespace when another namespace owns it (a shared
+     * template this namespace's documents use); null for its own templates.
+     */
+    template_namespace: string | null;
     sync_enabled: boolean;
     table_present: boolean;
     missing_columns: string[];
@@ -3795,6 +3819,14 @@ interface SearchTypeResults {
     page: number;
     page_size: number;
     pages: number;
+    /**
+     * False when this type's search could not look everywhere: a source failed
+     * (no items) or answered only part of what it holds. An empty, complete
+     * bucket means nothing matched.
+     */
+    complete: boolean;
+    /** Why the bucket is incomplete; null when complete. */
+    error: string | null;
 }
 /**
  * Response from `POST /api/reporting-sync/search`.

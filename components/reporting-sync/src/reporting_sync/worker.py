@@ -28,7 +28,7 @@ from .metrics import metrics
 from .models import DroppedEvent, EventType, ReportingConfig, SyncStatus
 from .schema_manager import NamespaceDeletedError, SchemaManager
 from .term_closure import TermClosureMaintainer
-from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
+from .transformer import DocumentTransformer, _parse_datetime, term_name_rows, write_counter
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +155,7 @@ class SyncWorker:
         config = self._get_reporting_config(template)
 
         # Check if sync is enabled
-        if not config.sync_enabled:
+        if not config.syncs:
             logger.debug(f"Sync disabled for template {template_value}, skipping")
             metrics.record_event_skipped(template_value, "sync_disabled")
             return True  # Not an error, just skipped
@@ -249,6 +249,7 @@ class SyncWorker:
                     namespace, template_value, config,
                     keep_version=int(doc_template_version),
                     document_id=document_id,
+                    keep_revision=write_counter(document),
                 )
                 if moved:
                     logger.info(
@@ -320,7 +321,7 @@ class SyncWorker:
         # materialise their own table lazily on their doc events.
         namespace = template.get("namespace") or "wip"
 
-        if not config.sync_enabled:
+        if not config.syncs:
             logger.info(f"Sync disabled for template {template_value}, skipping schema update")
             # Still sync template metadata even if doc sync is disabled
         else:
@@ -373,7 +374,10 @@ class SyncWorker:
                                     f'DELETE FROM {meta_table} WHERE "namespace" = $1 AND "template_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                                     namespace, template_id,
                                 )
-                        else:
+                        elif not await self._has_active_version(template, namespace):
+                            # One row per template: it goes inactive only when
+                            # the deactivated version was the last active one
+                            # (other versions stay usable, PoNIF #2).
                             await conn.execute(
                                 f"""
                                 UPDATE {meta_table}
@@ -669,6 +673,8 @@ class SyncWorker:
                             "sort_order" = EXCLUDED."sort_order",
                             "parent_term_id" = EXCLUDED."parent_term_id",
                             "status" = EXCLUDED."status",
+                            "deprecated_reason" = EXCLUDED."deprecated_reason",
+                            "replaced_by_term_id" = EXCLUDED."replaced_by_term_id",
                             "updated_at" = EXCLUDED."updated_at",
                             "updated_by" = EXCLUDED."updated_by"
                         """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
@@ -731,6 +737,24 @@ class SyncWorker:
         except Exception as e:
             logger.error(f"Error syncing term: {e}")
             raise
+
+    async def _has_active_version(self, template: dict[str, Any], namespace: str) -> bool:
+        """Whether the template still has an active version, by Template
+        Store. Raises when it cannot answer: the event is retried rather
+        than marking a template inactive on no evidence."""
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{settings.template_store_url}/api/template-store/templates",
+                params={"namespace": template.get("namespace") or namespace,
+                        "value": template.get("value"), "status": "active", "page_size": 1},
+                headers={"X-API-Key": settings.api_key},
+            )
+        if response.status_code != 200:
+            raise RuntimeError(
+                f"Template Store answered HTTP {response.status_code} for the active versions "
+                f"of {template.get('value')}"
+            )
+        return bool(response.json().get("items"))
 
     async def _process_term_relation_event(self, event_data: dict[str, Any]) -> bool:
         """

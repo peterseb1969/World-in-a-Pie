@@ -89,3 +89,17 @@ def test_write_seam_rejects_the_reserved_qualifier_name():
 
 def test_other_at_names_stay_allowed():
     TemplateService.validate_fields_for_write([_field("@context")])  # no raise
+
+
+@pytest.mark.asyncio
+async def test_a_dotted_field_name_is_refused(client: AsyncClient, auth_headers: dict):
+    """A dot separates the parts of a nested field path (address.country);
+    a field named with one would read as a nested path, and its reporting
+    column would need quoting in every hand-written query."""
+    resp = await client.post(
+        TEMPLATES, headers=auth_headers, json=[_template("DOTTED_NAME_TPL", "id", "one.kind")]
+    )
+    item = resp.json()["results"][0]
+    assert item["status"] == "error", item
+    assert item["error_code"] == "validation_failed"
+    assert item["details"] == {"rule": "field_name_dotted"}

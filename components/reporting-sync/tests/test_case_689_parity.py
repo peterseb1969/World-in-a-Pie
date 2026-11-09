@@ -89,6 +89,7 @@ def _patch_http(templates: list[dict], doc_total: int = 0):
 
     return (
         stack(("_fetch_namespace_templates", templates),
+              ("_fetch_foreign_templates", []),
               ("_expected_document_total", doc_total)),
         stack(("_expected_active_terms", 0), ("_expected_active_relations", 0)),
     )
@@ -135,6 +136,12 @@ async def test_fresh_database_structurally_green(pg_pool):
     sm = SchemaManager(pg_pool)
     fields = SchemaManager.parse_template_fields(TEMPLATE["fields"])
     await sm.create_table("parityns", "PARITY_T", 1, fields, ReportingConfig())
+    # As ensure_table_for_template does on create: the entity view too
+    # (its rebuild reads the registered views a running service keeps).
+    from reporting_sync.main import init_postgres_schema
+
+    await init_postgres_schema(pg_pool)
+    await sm.ensure_views_for_template("parityns", "PARITY_T", ReportingConfig())
 
     p_t, p_d = _patch_http([TEMPLATE], doc_total=0)
     with p_t, p_d:
@@ -261,6 +268,12 @@ async def test_documents_of_another_namespace_are_not_expected_here(pg_pool):
     sm = SchemaManager(pg_pool)
     fields = SchemaManager.parse_template_fields(TEMPLATE["fields"])
     await sm.create_table("parityns", "PARITY_T", 1, fields, ReportingConfig())
+    # As ensure_table_for_template does on create: the entity view too
+    # (its rebuild reads the registered views a running service keeps).
+    from reporting_sync.main import init_postgres_schema
+
+    await init_postgres_schema(pg_pool)
+    await sm.ensure_views_for_template("parityns", "PARITY_T", ReportingConfig())
 
     # document-store: 2 live documents of the template, both in "otherns"
     async def total(template_id, namespace):

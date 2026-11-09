@@ -162,3 +162,47 @@ async def test_limit_is_used_only_without_page_size(body, expected):
     svc._search_terms = nothing
     result = await svc.search(SearchRequest(query="x", types=["term"], **body))
     assert result.results["term"].page_size == expected
+
+
+# ---------------------------------------------------------------------------
+# A type that could not search everywhere says so (no PostgreSQL)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_failing_type_is_an_error_not_zero_hits():
+    svc = SearchService(None)
+
+    async def down(*a, **k):
+        raise search_service.UpstreamError("def-store answered HTTP 503")
+
+    async def some(*a, **k):
+        return search_service._hits(
+            [search_service.SearchResult(type="template", id="t1", value="T")],
+            "matched against the first 1000 entries only",
+        )
+
+    svc._search_terms = down
+    svc._search_templates = some
+    result = await svc.search(SearchRequest(query="x", types=["term", "template"]))
+    term, template = result.results["term"], result.results["template"]
+    assert (term.complete, term.total) == (False, 0)
+    assert "503" in term.error
+    assert (template.complete, template.total) == (False, 1)
+    assert template.error == "matched against the first 1000 entries only"
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_a_table_that_could_not_be_searched_marks_the_documents_incomplete(svc, monkeypatch):
+    real = SearchService._fts_query
+
+    async def failing(self, conn, schema, tname, *a, **k):
+        if tname.startswith("doc_note"):
+            raise RuntimeError("relation vanished")
+        return await real(self, conn, schema, tname, *a, **k)
+
+    monkeypatch.setattr(SearchService, "_fts_query", failing)
+    hits = await svc._search_documents("chicken", NS, None)
+    assert [h.id for h in hits] == ["m-1"]
+    assert "doc_note__v1" in hits.incomplete

@@ -45,6 +45,12 @@ def prefix_error(prefix: str) -> str | None:
             f"characters (it is {len(prefix)}), the longest PostgreSQL schema "
             "name the reporting layer can hold"
         )
+    if prefix in ("public", "information_schema") or prefix.startswith("pg_"):
+        return (
+            f"Invalid namespace prefix {prefix!r}: a namespace's reporting "
+            "schema is named after it, and this is a PostgreSQL system schema "
+            "(deleting the namespace would drop it)"
+        )
     return None
 
 

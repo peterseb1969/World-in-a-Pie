@@ -42,7 +42,9 @@ async def test_admin_key_gets_through():
 async def test_health_probes_need_no_key(path):
     async with _client() as client:
         resp = await client.get(path)
-    assert resp.status_code == 200
+    # Answered by the probe, not refused by auth: with no NATS and no
+    # PostgreSQL in this test, the probe itself says 503.
+    assert resp.status_code in (200, 503)
     assert resp.json()["service"]
 
 
@@ -52,4 +54,7 @@ async def test_prefixed_health_ignores_a_stale_key():
     ingress health probe into a 401."""
     async with _client({"X-API-Key": "rotated-away"}) as client:
         resp = await client.get("/api/reporting-sync/health")
-    assert resp.status_code == 200
+    # Answered by the probe, not refused by auth: with no NATS and no
+    # PostgreSQL in this test, the probe itself says 503.
+    assert resp.status_code in (200, 503)
+    assert resp.json()["service"]

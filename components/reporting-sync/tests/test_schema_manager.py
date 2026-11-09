@@ -86,7 +86,7 @@ class TestFieldTypeColumns(_Base):
     @pytest.mark.parametrize("ftype,expected_pg", [
         (FieldType.STRING, "text"),
         (FieldType.NUMBER, "numeric"),
-        (FieldType.INTEGER, "integer"),
+        (FieldType.INTEGER, "bigint"),  # document-store accepts any int
         (FieldType.BOOLEAN, "boolean"),
         (FieldType.DATE, "date"),
         (FieldType.DATETIME, "timestamp with time zone"),
@@ -268,7 +268,7 @@ class TestEvolution(_Base):
             None, identity_fields=["a"],
         )
         v2_cols = await _columns(pg_pool, "doc_t_evo__v2")
-        assert v2_cols.get("b") == "integer"
+        assert v2_cols.get("b") == "bigint"
         # v1's table is untouched by v2's shape.
         assert "b" not in await _columns(pg_pool, "doc_t_evo__v1")
 
@@ -337,7 +337,7 @@ class TestEnsureTableForTemplate(_Base):
             fields=[{"name": "name", "type": "string"}, {"name": "age", "type": "integer"}],
         ))
         cols = await _columns(pg_pool, "doc_person__v2")
-        assert cols.get("age") == "integer"
+        assert cols.get("age") == "bigint"
         assert "age" not in await _columns(pg_pool, "doc_person__v1")
 
     async def test_returns_empty_when_sync_disabled(self, sm, pg_pool):

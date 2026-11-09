@@ -655,6 +655,8 @@ For document references (reference_type: document), set target_templates to cons
 
 ### Other Field Properties
 - Use "mandatory: true" (NOT "required") for required fields
+- Field names cannot contain a dot (it separates the parts of a nested path
+  like address.country), a double quote or NUL
 - Validation: pattern (regex), min_length, max_length, minimum, maximum, enum
 - pattern is a Python regular expression that must match the WHOLE value:
   "[A-Z]{3}" accepts "ABC" and refuses "ABC-1". No ^/$ anchors are needed.

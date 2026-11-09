@@ -14,11 +14,11 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from typing import Any, ClassVar
 
 from .models import ReportingConfig, SemanticType
-from .schema_manager import SchemaManager
+from .schema_manager import REVISION_COLUMN, SchemaManager
 
 logger = logging.getLogger(__name__)
 
@@ -135,22 +135,36 @@ def term_name_rows(term: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def write_counter(document: dict[str, Any]) -> int:
+    """A document's write counter: its revision when the store sends one
+    (an in-place overwrite moves it, not the version), else its version."""
+    return int(document.get("revision") or document.get("version") or 1)
+
+
 def _parse_datetime(value: Any) -> datetime | None:
-    """Parse ISO datetime string to datetime object."""
+    """Parse ISO datetime string to an aware datetime.
+
+    Document-store accepts a datetime without an offset. Bound naive to a
+    TIMESTAMPTZ column, PostgreSQL would read it in the session's TimeZone,
+    so the stored instant would depend on server configuration; it is read
+    as UTC instead, the platform's convention for timestamps.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
+        parsed = value
+    elif isinstance(value, str):
         try:
             # Handle ISO format with timezone
             if value.endswith('Z'):
                 value = value[:-1] + '+00:00'
-            return datetime.fromisoformat(value)
+            parsed = datetime.fromisoformat(value)
         except ValueError:
             logger.warning(f"Failed to parse datetime: {value}")
             return None
-    return None
+    else:
+        return None
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 def _parse_date(value: Any) -> date | None:
@@ -241,16 +255,13 @@ def _file_references_by_field(refs: list[dict[str, Any]]) -> dict[str, Any]:
 class DocumentTransformer:
     """Transforms documents into flat row(s) for PostgreSQL."""
 
-    # System column names that data fields should not conflict with
-    SYSTEM_COLUMNS: ClassVar[set[str]] = {
-        "document_id", "namespace", "template_id",
-        "template_version", "version", "status", "identity_hash",
-        "created_at", "created_by", "updated_at", "updated_by",
-        "data_json", "term_references_json", "file_references_json",
-    }
+    # The system columns data fields must not take (the schema manager's,
+    # so DDL and rows prefix the same names); per transform, by usage.
+    SYSTEM_COLUMNS: ClassVar[frozenset[str]] = SchemaManager.SYSTEM_COLUMNS
 
     def __init__(self, config: ReportingConfig | None = None):
         self.config = config or ReportingConfig()
+        self._system: frozenset[str] = SchemaManager.SYSTEM_COLUMNS
 
     def _safe_column_name(self, name: str) -> str:
         """Return safe PostgreSQL column name.
@@ -259,7 +270,7 @@ class DocumentTransformer:
         System column names get a 'data_' prefix to avoid conflicts.
         """
         name = name.replace(".", "_")
-        if name in self.SYSTEM_COLUMNS:
+        if name in self._system:
             return f"data_{name}"
         return name
 
@@ -478,6 +489,7 @@ class DocumentTransformer:
         # template fields — they're event enrichment — so they are kept out
         # of the flatten step or the row would get columns the table lacks.
         is_relationship = template.get("usage") == "relationship"
+        self._system = SchemaManager.system_columns(template.get("usage") or "entity")
         flatten_input = data
         if is_relationship:
             flatten_input = {k: v for k, v in data.items() if k not in _RELATIONSHIP_ENRICHMENT}
@@ -529,6 +541,9 @@ class DocumentTransformer:
             "template_id": document["template_id"],
             "template_version": document.get("template_version", 1),
             "version": document.get("version", 1),
+            # The write counter upserts compare: revision when the store
+            # sends one (an in-place overwrite moves it, not the version).
+            REVISION_COLUMN: write_counter(document),
             "status": document.get("status", "active"),
             "identity_hash": document.get("identity_hash", ""),
         }
@@ -631,28 +646,30 @@ class DocumentTransformer:
         # Quote column names to handle reserved words
         quoted_columns = [f'"{col}"' for col in columns]
 
+        # A row is replaced only by a later write: a higher revision (a
+        # versioned:false overwrite keeps its version and moves its
+        # revision; a new version moves both). A row written before the
+        # revision column existed reads as its version.
+        newer = (
+            f'COALESCE({table_name}."{REVISION_COLUMN}", {table_name}.version) '
+            f'< EXCLUDED."{REVISION_COLUMN}"'
+        )
         if strategy == "latest_only":
-            # UPSERT with version check
-            update_cols = [
-                f'"{col}" = EXCLUDED."{col}"'
-                for col in columns
-                if col != "document_id"
-            ]
-            update_clause = ", ".join(update_cols)
-
-            sql = f"""
-                INSERT INTO {table_name} ({', '.join(quoted_columns)})
-                VALUES ({', '.join(placeholders)})
-                ON CONFLICT (document_id)
-                DO UPDATE SET {update_clause}
-                WHERE {table_name}.version < EXCLUDED.version
-            """  # nosec B608  # table from ensure_*, columns checked by _safe_column, values bound
+            key = "document_id"
+            keys = {"document_id"}
         else:
-            # INSERT for all_versions strategy — composite PK (document_id, version)
-            sql = f"""
-                INSERT INTO {table_name} ({', '.join(quoted_columns)})
-                VALUES ({', '.join(placeholders)})
-                ON CONFLICT (document_id, version) DO NOTHING
-            """  # nosec B608  # table from ensure_*, columns checked by _safe_column, values bound
+            # all_versions: one row per (document_id, version)
+            key = "document_id, version"
+            keys = {"document_id", "version"}
+        update_clause = ", ".join(
+            f'"{col}" = EXCLUDED."{col}"' for col in columns if col not in keys
+        )
+        sql = f"""
+            INSERT INTO {table_name} ({', '.join(quoted_columns)})
+            VALUES ({', '.join(placeholders)})
+            ON CONFLICT ({key})
+            DO UPDATE SET {update_clause}
+            WHERE {newer}
+        """  # nosec B608  # table from ensure_*, columns checked by _safe_column, values bound
 
         return sql.strip(), values

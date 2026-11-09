@@ -38,6 +38,8 @@ class MetricsCollector:
         # Event counters
         self.events_processed = 0
         self.events_failed = 0
+        # (processed, failed) at the previous alert check: the error-rate window.
+        self._rate_window: tuple[int, int] = (0, 0)
         self._last_events_count = 0
         self._last_events_time = datetime.now(UTC)
 
@@ -292,10 +294,14 @@ class MetricsCollector:
                 ),
             ))
 
-        # Error rate (simple: errors in last minute based on ratio)
-        total = self.events_processed + self.events_failed
-        if total > 0:
-            error_rate = (self.events_failed / total) * 100
+        # Error rate: the share of the events since the previous check that
+        # failed. Lifetime counters would let a long clean history hide a
+        # failure burst, and keep an old burst alerting for ever.
+        processed = self.events_processed - self._rate_window[0]
+        failed = self.events_failed - self._rate_window[1]
+        self._rate_window = (self.events_processed, self.events_failed)
+        if processed + failed > 0:
+            error_rate = (failed / (processed + failed)) * 100
             new_alerts.append(self._tiered_alert(
                 AlertType.ERROR_RATE, error_rate,
                 thresholds.error_rate_critical, thresholds.error_rate_warning,
@@ -321,14 +327,19 @@ class MetricsCollector:
         if nats_connected and postgres_connected:
             self._resolve_alert(AlertType.CONNECTION_LOST)
             return None
-        if AlertType.CONNECTION_LOST.value in self._active_alerts:
+        lost = [(c, n) for c, n, up in (
+            ("nats", "NATS", nats_connected), ("postgres", "PostgreSQL", postgres_connected),
+        ) if not up]
+        message = f"Lost connection to {' and '.join(n for _, n in lost)}"
+        details = {"connection": ",".join(c for c, _ in lost)}
+        active = self._active_alerts.get(AlertType.CONNECTION_LOST.value)
+        if active is not None:
+            # The outage goes on; it names what is down now, not what went
+            # down first.
+            active.message, active.details = message, details
             return None
-        connection, name = ("nats", "NATS") if not nats_connected else ("postgres", "PostgreSQL")
         return self._create_alert(
-            AlertType.CONNECTION_LOST,
-            AlertSeverity.CRITICAL,
-            f"Lost connection to {name}",
-            {"connection": connection},
+            AlertType.CONNECTION_LOST, AlertSeverity.CRITICAL, message, details,
         )
 
     def _tiered_alert(

@@ -736,3 +736,43 @@ def test_an_escalated_warning_is_recorded_as_resolved():
     assert warning is not None and critical is not None
     assert [a.alert_id for a in collector.get_resolved_alerts()] == [warning.alert_id]
     assert [a.alert_id for a in collector.get_active_alerts()] == [critical.alert_id]
+
+
+@pytest.mark.asyncio
+async def test_error_rate_is_over_the_events_since_the_previous_check():
+    """A long clean history does not hide a burst, and an old burst does not
+    keep alerting."""
+    from reporting_sync.models import AlertType
+
+    collector = MetricsCollector()
+    collector.events_processed = 10_000  # a clean history
+    await collector.check_alerts(None, True, True)
+    collector.events_processed += 5
+    collector.events_failed += 5  # a burst: 50% of the recent events
+    await collector.check_alerts(None, True, True)
+    assert AlertType.ERROR_RATE.value in collector._active_alerts
+    collector.events_processed += 100  # clean again
+    await collector.check_alerts(None, True, True)
+    assert AlertType.ERROR_RATE.value not in collector._active_alerts
+
+
+@pytest.mark.asyncio
+async def test_a_connection_alert_names_what_is_down_now():
+    from reporting_sync.models import AlertType
+
+    collector = MetricsCollector()
+    await collector.check_alerts(None, nats_connected=False, postgres_connected=True)
+    await collector.check_alerts(None, nats_connected=False, postgres_connected=False)
+    alert = collector._active_alerts[AlertType.CONNECTION_LOST.value]
+    assert alert.message == "Lost connection to NATS and PostgreSQL"
+    await collector.check_alerts(None, nats_connected=True, postgres_connected=False)
+    assert alert.details == {"connection": "postgres"}
+
+
+def test_alert_interval_has_a_floor():
+    from pydantic import ValidationError
+
+    from reporting_sync.models import AlertConfig
+
+    with pytest.raises(ValidationError):
+        AlertConfig(check_interval_seconds=0)

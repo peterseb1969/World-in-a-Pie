@@ -70,6 +70,34 @@ def _no_template_store_for_search_filters(monkeypatch):
     monkeypatch.setattr(search_service, "_template_table_bases", default_only)
 
 
+_REAL_HAS_ACTIVE_VERSION = None
+
+
+@pytest.fixture(autouse=True)
+def _no_active_version_left(monkeypatch):
+    """A template deactivation asks Template Store whether another version
+    is still active. No template store runs here: the answer is "none", so a
+    deactivation marks the template inactive (tests of the question itself
+    put the real method back with ``real_has_active_version``)."""
+    global _REAL_HAS_ACTIVE_VERSION
+    from reporting_sync.worker import SyncWorker
+
+    if _REAL_HAS_ACTIVE_VERSION is None:
+        _REAL_HAS_ACTIVE_VERSION = SyncWorker._has_active_version
+
+    async def none_left(self, template, namespace):
+        return False
+
+    monkeypatch.setattr(SyncWorker, "_has_active_version", none_left)
+
+
+@pytest.fixture
+def real_has_active_version(monkeypatch):
+    from reporting_sync.worker import SyncWorker
+
+    monkeypatch.setattr(SyncWorker, "_has_active_version", _REAL_HAS_ACTIVE_VERSION)
+
+
 @pytest.fixture(autouse=True)
 def _registry_permission_answers(monkeypatch):
     """Permission lookups answer each test key's declared grants, as the

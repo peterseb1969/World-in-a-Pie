@@ -486,18 +486,12 @@ async def test_fts_results_sorted_before_substring_results_in_auto_mode():
 
 
 @pytest.mark.asyncio
-async def test_no_postgres_pool_falls_back_to_rest():
+async def test_no_postgres_pool_fails_the_document_search():
+    from reporting_sync.search_service import UpstreamError
+
     svc = SearchService(postgres_pool=None)
-    # Attribute the rest fallback function so we can confirm the dispatch.
-    called = {"n": 0}
-
-    async def fake_rest_fallback(*_args, **_kwargs):
-        called["n"] += 1
-        return []
-
-    svc._search_documents_rest_fallback = fake_rest_fallback  # type: ignore[method-assign]
-    await svc._search_documents("term", None, None)
-    assert called["n"] == 1
+    with pytest.raises(UpstreamError):
+        await svc._search_documents("term", None, None)
 
 
 # =========================================================================

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from reporting_sync import search_service
-from reporting_sync.search_service import SearchResult, SearchService
+from reporting_sync.search_service import SearchService
 
 from .test_search_endpoint import _mock_pool_with_conn, _RecordingConn
 
@@ -72,11 +72,12 @@ async def test_the_cap_stops_the_table_walk(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_failure_outside_the_tables_falls_back_to_the_rest_scan():
+async def test_a_failure_outside_the_tables_fails_the_document_search():
+    """A PostgreSQL failure outside the per-table handling is a failed
+    document search, reported on the bucket: never "no matches", and no
+    longer a REST scan of the first 100 documents' ids presented as one."""
     conn = _RecordingConn()
     conn.fetch = AsyncMock(side_effect=RuntimeError("pg down"))
     svc = SearchService(_mock_pool_with_conn(conn))
-    hit = SearchResult(type="document", id="rest-1", value=None, label="x document")
-    svc._search_documents_rest_fallback = AsyncMock(return_value=[hit])
-    assert await svc._search_documents("q", "ns1", "active") == [hit]
-    svc._search_documents_rest_fallback.assert_awaited_once_with("q", "ns1", "active", 1000)
+    with pytest.raises(RuntimeError):
+        await svc._search_documents("q", "ns1", "active")

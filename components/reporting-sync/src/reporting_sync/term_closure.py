@@ -49,6 +49,8 @@ MAX_DEPTH = 50
 # Events arriving in a burst (a seed script's thousands of edge writes)
 # coalesce into one rebuild
 DEBOUNCE_SECONDS = 3.0
+# A failed rebuild is retried, the wait doubling up to this.
+RETRY_MAX_SECONDS = 300.0
 
 
 class TermClosureMaintainer:
@@ -74,20 +76,27 @@ class TermClosureMaintainer:
             )
 
     async def _debounced(self, namespace: str) -> None:
+        delay = DEBOUNCE_SECONDS
         while True:
-            await asyncio.sleep(DEBOUNCE_SECONDS)
+            await asyncio.sleep(delay)
             self._dirty.discard(namespace)
             try:
                 await self.rebuild(namespace)
+                delay = DEBOUNCE_SECONDS
             except NamespaceDeletedError:
                 # Deleted between the term event and this debounced rebuild:
                 # there is nothing left to rebuild.
                 logger.info("term_closure rebuild skipped: namespace %s was deleted", namespace)
                 return
             except Exception as e:
+                # The closure stays as the last rebuild left it (the rebuild
+                # is one transaction): try again, backing off, until it lands.
+                delay = min(delay * 2, RETRY_MAX_SECONDS)
                 logger.error(
-                    "term_closure rebuild failed for %s: %s", namespace, e
+                    "term_closure rebuild failed for %s (retrying in %.0fs): %s",
+                    namespace, delay, e,
                 )
+                self._dirty.add(namespace)
             if namespace not in self._dirty:
                 return
 
@@ -121,10 +130,14 @@ WITH RECURSIVE edges AS (
       AND "parent_term_id" IS NOT NULL
 ),
 walk AS (
+    -- UNION, not UNION ALL: a multi-parent graph reaches one ancestor by
+    -- many paths, and only (pair, depth) matters (MIN(depth) below), so
+    -- duplicates are dropped as they appear instead of enumerating every
+    -- path. MAX_DEPTH still bounds a cycle, whose laps differ by depth.
     SELECT child AS descendant, parent AS ancestor, relation_type,
            1 AS depth
     FROM edges
-    UNION ALL
+    UNION
     SELECT w.descendant, e.parent, w.relation_type, w.depth + 1
     FROM walk w
     JOIN edges e

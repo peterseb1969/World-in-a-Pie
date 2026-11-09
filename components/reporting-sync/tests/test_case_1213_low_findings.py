@@ -377,3 +377,45 @@ async def test_slot_release_survives_cancellation(monkeypatch):
         await task
     async with reads.connection(["ns_a"]):
         pass
+
+
+# ---------------------------------------------------------------------------
+# CASE-1209: integer columns are int8, and existing int4 ones are widened
+# ---------------------------------------------------------------------------
+
+
+@requires_postgres
+@pytest.mark.asyncio
+async def test_int4_integer_columns_are_widened_on_every_version_table(pg_pool):
+    from reporting_sync.main import init_postgres_schema
+
+    await init_postgres_schema(pg_pool)
+    sm = SchemaManager(pg_pool)
+
+    def tpl(version):
+        return {"template_id": "t-int", "value": "counts", "version": version,
+                "fields": [{"name": "k", "type": "string"}, {"name": "n", "type": "integer"}],
+                "identity_fields": ["k"], "reporting": {"sync_enabled": True}}
+
+    await sm.ensure_table_for_template("rs1209", tpl(1))
+    await sm.ensure_table_for_template("rs1209", tpl(2))
+    async with pg_pool.acquire() as conn:
+        # As tables created before int8: int4 columns under the entity views.
+        await conn.execute('DROP VIEW "rs1209"."doc_counts", "rs1209"."doc_counts__entities"')
+        for t in ("doc_counts__v1", "doc_counts__v2"):
+            await conn.execute(f'ALTER TABLE "rs1209"."{t}" ALTER COLUMN "n" TYPE INTEGER')
+    await sm.ensure_views_for_template("rs1209", "counts")
+    fields = sm.parse_template_fields(tpl(2)["fields"])
+    widened = await sm._widen_integer_columns("rs1209", "counts", fields, None, "entity")
+    assert len(widened) == 2
+    async with pg_pool.acquire() as conn:
+        types = await conn.fetch(
+            "SELECT table_name, data_type FROM information_schema.columns "
+            "WHERE table_schema = 'rs1209' AND column_name = 'n' ORDER BY table_name"
+        )
+        await conn.execute('INSERT INTO "rs1209"."doc_counts__v2" (document_id, namespace, template_id, '
+                           "template_version, version, status, identity_hash, created_at, k, n) "
+                           "VALUES ('d', 'rs1209', 't', 2, 1, 'active', 'h', now(), 'k', 3000000000)")
+        through_view = await conn.fetchval('SELECT n FROM "rs1209"."doc_counts" WHERE document_id = $1', "d")
+    assert {r["data_type"] for r in types} == {"bigint"}  # tables and views alike
+    assert through_view == 3_000_000_000

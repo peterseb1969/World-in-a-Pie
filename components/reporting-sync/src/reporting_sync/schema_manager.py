@@ -75,7 +75,9 @@ _ENSURED_TABLES: dict[int, tuple[asyncpg.Pool, dict[tuple[str, str, int], str]]]
 TYPE_MAPPING: dict[FieldType, str] = {
     FieldType.STRING: "TEXT",
     FieldType.NUMBER: "NUMERIC",
-    FieldType.INTEGER: "INTEGER",
+    # Document-store accepts any int: int8, not int4 (whose 2^31 limit made
+    # a stored document fail its reporting insert).
+    FieldType.INTEGER: "BIGINT",
     FieldType.BOOLEAN: "BOOLEAN",
     FieldType.DATE: "DATE",
     FieldType.DATETIME: "TIMESTAMP WITH TIME ZONE",
@@ -157,6 +159,12 @@ def _cross_version_select(
     return f'SELECT {cols} FROM "{schema}"."{table}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
 
 
+# The row's write counter: the document's revision (its in-place write
+# count under versioned:false), else its version. Upserts compare it, so an
+# in-place overwrite, which keeps the version, still lands. Named apart from
+# field names a template could plausibly use.
+REVISION_COLUMN = "_wip_revision"
+
 # Views outside a schema that read relations in it (directly, through their
 # rewrite rule): what DROP SCHEMA ... CASCADE takes with it elsewhere.
 _FOREIGN_DEPENDENT_VIEWS_SQL = """
@@ -171,6 +179,45 @@ _FOREIGN_DEPENDENT_VIEWS_SQL = """
       AND d.refclassid = 'pg_class'::regclass
       AND dn.nspname = $1 AND vn.nspname <> $1
 """
+
+
+# A row's write counter; the column may not exist yet on an old table, so
+# it is read through the row's JSON, falling back to the version.
+_WRITTEN = f"COALESCE((to_jsonb(t)->>'{REVISION_COLUMN}')::int, t.version)"
+
+
+async def _newest_write(
+    conn: asyncpg.Connection, schema: str, tables: list[str], document_id: str,
+) -> int | None:
+    """The highest write counter a document has in any of ``tables``."""
+    newest = None
+    for table in tables:
+        value = await conn.fetchval(
+            f'SELECT max({_WRITTEN}) FROM "{schema}"."{table}" t WHERE t.document_id = $1',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+            document_id,
+        )
+        if value is not None and (newest is None or value > newest):
+            newest = value
+    return newest
+
+
+async def _delete_document_rows(
+    conn: asyncpg.Connection, schema: str, tables: list[str], document_id: str,
+    up_to_revision: int | None,
+) -> int:
+    """Delete a document's rows from ``tables`` — only those written no
+    later than ``up_to_revision`` when given. Returns the rows deleted."""
+    deleted = 0
+    for table in tables:
+        sql = f'DELETE FROM "{schema}"."{table}" t WHERE t.document_id = $1'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+        args: tuple[Any, ...] = (document_id,)
+        if up_to_revision is not None:
+            sql += f" AND {_WRITTEN} <= $2"
+            args = (document_id, up_to_revision)
+        result = await conn.execute(sql, *args)
+        with contextlib.suppress(ValueError, IndexError):
+            deleted += int(result.split()[-1])
+    return deleted
 
 
 class SchemaManager:
@@ -242,12 +289,24 @@ class SchemaManager:
         return name
 
     def schema_for(self, namespace: str) -> str:
-        """The PostgreSQL schema name for a WIP namespace (validated)."""
+        """The PostgreSQL schema name for a WIP namespace (validated).
+
+        A system schema never serves as one: deleting the namespace drops
+        its schema with CASCADE, which in ``public`` would take the
+        platform's own bookkeeping with it. The Registry refuses such
+        prefixes; this refuses one created before it did.
+        """
+        if namespace in ("public", "information_schema") or namespace.startswith("pg_"):
+            raise ValueError(
+                f"Namespace {namespace!r} names a PostgreSQL system schema; "
+                "reporting cannot use it"
+            )
         return self._safe_ident(namespace)
 
     # Fixed-schema metadata tables every namespace schema carries.
     METADATA_TABLES: ClassVar[set[str]] = {
         "terminologies", "terms", "templates", "term_relations",
+        "term_names", "term_closure",
     }
 
     @classmethod
@@ -418,12 +477,24 @@ class SchemaManager:
 
         return columns
 
-    # System column names that cannot be used for data fields
-    SYSTEM_COLUMNS: ClassVar[set[str]] = {
-        "document_id", "template_id", "template_version", "version",
-        "status", "identity_hash", "created_at", "created_by",
+    # Every column a document table carries besides its fields: a field of
+    # one of these names gets a data_ prefix. One list for the DDL, the
+    # parity oracle and the transformer (system_columns()).
+    SYSTEM_COLUMNS: ClassVar[frozenset[str]] = frozenset({
+        "document_id", "namespace", "template_id", "template_version", "version",
+        REVISION_COLUMN, "status", "identity_hash", "created_at", "created_by",
         "updated_at", "updated_by", "data_json", "term_references_json",
-    }
+        "file_references_json",
+    })
+    # Relationship templates also carry their endpoints' ids.
+    RELATIONSHIP_COLUMNS: ClassVar[frozenset[str]] = frozenset({"source_ref_id", "target_ref_id"})
+
+    @classmethod
+    def system_columns(cls, usage: str = "entity") -> frozenset[str]:
+        """The system columns of a table of this template usage."""
+        if usage == "relationship":
+            return cls.SYSTEM_COLUMNS | cls.RELATIONSHIP_COLUMNS
+        return cls.SYSTEM_COLUMNS
 
     @staticmethod
     def _full_text_columns(base_col: str) -> list[tuple[str, str]]:
@@ -498,6 +569,7 @@ class SchemaManager:
                 ("template_id", "TEXT NOT NULL"),
                 ("template_version", "INTEGER NOT NULL"),
                 ("version", "INTEGER NOT NULL"),
+                (REVISION_COLUMN, "INTEGER"),
                 ("status", "VARCHAR(20) NOT NULL"),
                 ("identity_hash", "TEXT NOT NULL"),
             ])
@@ -508,6 +580,7 @@ class SchemaManager:
                 ("template_id", "TEXT NOT NULL"),
                 ("template_version", "INTEGER NOT NULL"),
                 ("version", "INTEGER NOT NULL"),
+                (REVISION_COLUMN, "INTEGER"),
                 ("status", "VARCHAR(20) NOT NULL"),
                 ("identity_hash", "TEXT NOT NULL"),
             ])
@@ -523,10 +596,11 @@ class SchemaManager:
         # Data columns from template fields
         # Prefix with "data_" if field name conflicts with system columns
         full_text_base_cols: list[str] = []
+        system = self.system_columns(usage)
         for field in fields:
             field_columns = self._generate_column_ddl(field)
             # Check if the base field name conflicts
-            needs_prefix = field.name in self.SYSTEM_COLUMNS
+            needs_prefix = field.name in system
             for col_name, col_type in field_columns:
                 if needs_prefix:
                     # Prefix all columns for this field (base and term_id)
@@ -673,8 +747,9 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         independently.
         """
         expected: set[str] = set()
+        system = self.system_columns(usage)
         for field in fields:
-            needs_prefix = field.name in self.SYSTEM_COLUMNS
+            needs_prefix = field.name in system
             for col_name, _col_type in self._generate_column_ddl(field):
                 expected.add(f"data_{col_name}" if needs_prefix else col_name)
             if field.full_text_indexed and field.type == FieldType.STRING:
@@ -832,6 +907,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                     SELECT FROM information_schema.tables
                     WHERE table_schema = $1
                     AND table_name = $2
+                    AND table_type = 'BASE TABLE'
                 )
                 """,
                 schema,
@@ -973,7 +1049,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                 not identity_fields
                 and (schema, table_name) not in self._legacy_identity_index_checked
             ):
-                idx_name = f"{table_name}_ns_active_identity_idx"
+                # Compared as stored: PostgreSQL truncates a long index name.
+                idx_name = self._stored_identifier(f"{table_name}_ns_active_identity_idx")
                 idx_exists = await conn.fetchval(
                     """
                     SELECT EXISTS (
@@ -996,6 +1073,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                         f"(template {template_value} has no identity_fields)"
                     )
                 self._legacy_identity_index_checked.add((schema, table_name))
+            migrations += await self._add_revision_column(conn, qualified, existing_columns)
             # Phase 7 — relationship templates need source_ref_id / target_ref_id
             # columns + indexes. Add them lazily when missing so legacy
             # relationship templates that pre-date Phase 7 catch up on next
@@ -1016,7 +1094,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             for field in fields:
                 field_columns = self._generate_column_ddl(field)
                 # Check if the base field name conflicts
-                needs_prefix = field.name in self.SYSTEM_COLUMNS
+                needs_prefix = field.name in self.system_columns(usage)
                 for col_name, col_type in field_columns:
                     if needs_prefix:
                         # Prefix all columns for this field (base and term_id)
@@ -1084,7 +1162,109 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                     migration_sql,
                 )
 
+        migrations += await self._widen_integer_columns(
+            namespace, template_value, fields, config, usage,
+        )
         return migrations
+
+    async def _widen_integer_columns(
+        self,
+        namespace: str,
+        template_value: str,
+        fields: list[TemplateField],
+        config: ReportingConfig | None,
+        usage: str,
+    ) -> list[str]:
+        """Widen integer-field columns created as int4 to int8, on every
+        version table of the template at once.
+
+        Integer fields used to map to INTEGER (int4). The entity views read
+        these columns, and keep a column only when its type is the same in
+        every version table, so all of them change together, with the
+        views dropped and rebuilt around it. A dependent the platform does
+        not know (a hand-made view) makes PostgreSQL refuse: logged, and
+        the columns stay as they were.
+        """
+        system = self.system_columns(usage)
+        wanted = {
+            f"data_{col}" if field.name in system else col
+            for field in fields
+            for col, col_type in self._generate_column_ddl(field)
+            if col_type == "BIGINT"
+        }
+        if not wanted:
+            return []
+        schema = self.schema_for(namespace)
+        version_tables = await self.list_version_tables(namespace, template_value, config)
+        base = self.get_table_name(template_value, config)
+        async with self.pool.acquire() as conn:
+            narrow = await conn.fetch(
+                """
+                SELECT table_name, column_name FROM information_schema.columns
+                WHERE table_schema = $1 AND table_name = ANY($2::text[])
+                  AND data_type = 'integer' AND column_name = ANY($3::text[])
+                """,
+                schema, list(version_tables.values()),
+                [self._stored_identifier(c) for c in wanted],
+            )
+            if not narrow:
+                return []
+            statements = [
+                f'ALTER TABLE "{schema}"."{r["table_name"]}" '
+                f'ALTER COLUMN "{r["column_name"]}" TYPE BIGINT'
+                for r in narrow
+            ]
+            if not await self._alter_under_dropped_views(conn, namespace, schema, base, statements):
+                return []
+        await self.ensure_views_for_template(namespace, template_value, config)
+        logger.info(f'Widened {len(statements)} integer column(s) of "{schema}"."{base}" to BIGINT')
+        return statements
+
+    async def _rebuild_views_if_stale(
+        self, namespace: str, template_value: str, config: ReportingConfig | None,
+        migrations: list[str],
+    ) -> None:
+        """The views read the tables' columns: rebuild them when a column
+        changed, or when they are missing (a rebuild that failed before is
+        retried here, not only when a table is created)."""
+        base = self.get_table_name(template_value, config)
+        schema = self.schema_for(namespace)
+        if migrations or await self.relation_kind(schema, f"{base}__entities") is None:
+            await self.ensure_views_for_template(namespace, template_value, config)
+
+    @staticmethod
+    async def _add_revision_column(
+        conn: asyncpg.Connection, qualified: str, existing_columns: set[str],
+    ) -> list[str]:
+        """The revision column came after these tables: add it where missing
+        (its rows read as their version until rewritten)."""
+        if REVISION_COLUMN in existing_columns:
+            return []
+        alter_sql = f'ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS "{REVISION_COLUMN}" INTEGER'
+        await conn.execute(alter_sql)
+        return [alter_sql]
+
+    async def _alter_under_dropped_views(
+        self, conn: asyncpg.Connection, namespace: str, schema: str, base: str,
+        statements: list[str],
+    ) -> bool:
+        """Run ALTERs on an entity's tables with its views and the
+        namespace's registered views dropped, in one transaction. False (and
+        the registered views put back) when PostgreSQL refuses — a dependent
+        view the platform does not know."""
+        try:
+            async with conn.transaction():
+                await self.drop_registered_views(namespace, conn)
+                await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{base}__entities"')
+                if await self.relation_kind(schema, base) == "view":
+                    await conn.execute(f'DROP VIEW IF EXISTS "{schema}"."{base}"')
+                for sql in statements:
+                    await conn.execute(sql)
+        except asyncpg.PostgresError as e:
+            logger.warning(f'Integer columns of "{schema}"."{base}" stay int4: {e}')
+            await self.recreate_registered_views(namespace)
+            return False
+        return True
 
     async def _drop_retired_terminology_columns(self, qualified: str) -> None:
         """Drop the `extensible` column from a terminologies table created
@@ -1442,7 +1622,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         config = ReportingConfig(**reporting_data) if reporting_data else None
 
         # Check if sync is enabled
-        if config and not config.sync_enabled:
+        if config and not config.syncs:
             logger.info(f"Sync disabled for template {template_value}, skipping table creation")
             return ""
 
@@ -1465,6 +1645,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                     f"Updated table {table_name}: {columns} column(s) added, "
                     f"{indexes} index(es) created, {len(migrations)} statement(s)"
                 )
+            await self._rebuild_views_if_stale(namespace, template_value, config, migrations)
         else:
             await self.create_table(
                 namespace, template_value, template_version, fields, config,
@@ -1575,9 +1756,11 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         are excluded — full-text search targets the physical tables.
 
         This intersection IS the identity core plus the provably-unchanged
-        columns: identity_fields are immutable across versions (template
-        identity design), so their columns always survive; anything typed
-        differently between versions drops out, keeping the union honest.
+        columns: identity_fields and their types are immutable across
+        versions (template-store refuses changing either), so their columns
+        survive; anything typed differently between versions drops out,
+        keeping the union honest. A template whose identity field changed
+        type before that rule loses the column here.
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
@@ -1882,29 +2065,40 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         config: ReportingConfig | None,
         keep_version: int,
         document_id: str,
+        keep_revision: int | None = None,
     ) -> int:
-        """Remove a document's rows from every version table EXCEPT keep_version.
+        """Keep one live row per document across the version tables: its
+        latest write.
 
         The latest_only strategy keeps one live row per document; when an
         update validates against a newer template version the row MOVES
         tables (pin-to-what-validated), so the upsert into the new table
         must be paired with a delete from the siblings or the entity views
         would show the document twice.
+
+        A document can also have several active versions at once (a merge
+        restore that keeps older versions), synced in any order. So the row
+        just written in ``keep_version``'s table (write counter
+        ``keep_revision``) removes only OLDER writes from the siblings; if a
+        sibling holds a newer one, the row just written is the one removed.
+        Without ``keep_revision`` every sibling row goes. Returns the rows
+        deleted.
         """
         version_tables = await self.list_version_tables(namespace, template_value, config)
         schema = self.schema_for(namespace)
-        deleted = 0
-        async with self.pool.acquire() as conn:
-            for version, table in version_tables.items():
-                if version == keep_version:
-                    continue
-                result = await conn.execute(
-                    f'DELETE FROM "{schema}"."{table}" WHERE document_id = $1',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
-                    document_id,
-                )
-                with contextlib.suppress(ValueError, IndexError):
-                    deleted += int(result.split()[-1])
-        return deleted
+        siblings = [t for v, t in version_tables.items() if v != keep_version]
+        if not siblings:
+            return 0
+        async with self.pool.acquire() as conn, conn.transaction():
+            if keep_revision is not None:
+                newest = await _newest_write(conn, schema, siblings, document_id)
+                if newest is not None and newest > keep_revision:
+                    # A sibling holds a newer write: the row just written goes.
+                    keep_table = version_tables.get(keep_version)
+                    return await _delete_document_rows(
+                        conn, schema, [keep_table] if keep_table else [], document_id, None,
+                    )
+            return await _delete_document_rows(conn, schema, siblings, document_id, keep_revision)
 
     async def drop_relations_for_template(
         self,

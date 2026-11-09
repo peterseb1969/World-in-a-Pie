@@ -161,7 +161,7 @@ Codes defined by template-store (`POST`, `PUT` and `DELETE /templates`). Where o
 
 | `error_code` | When | `details.rule` (examples) |
 |--------------|------|---------------------------|
-| `validation_failed` | The template definition breaks an authoring rule | `field_name_unquotable`, `template_ref_version_required`, `reference_type_required`, `relationship_shape`, `full_text_indexed`, `metadata_in_declarative_slot`, `versioned_requires_identity`, `invalid_rename`, `extends_version_required`, `invalid_status` |
+| `validation_failed` | The template definition breaks an authoring rule | `field_name_unquotable`, `field_name_dotted`, `template_ref_version_required`, `reference_type_required`, `relationship_shape`, `full_text_indexed`, `metadata_in_declarative_slot`, `versioned_requires_identity`, `invalid_rename`, `extends_version_required`, `invalid_status` |
 | `not_found` | The template (or version) named by the request does not exist | — |
 | `already_exists` | The value is already taken: a concurrent create won the race (retry as an upsert), or a restore targets a value another template owns | `restore_conflict` |
 | `reference_violation` | A reference in the definition does not resolve | `parent_not_found`, `pinned_version_missing`, `unresolved_reference`, `missing_parent` (an ancestor further up the pinned chain is gone), `unpinned_parent` |

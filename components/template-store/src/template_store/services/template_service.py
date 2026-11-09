@@ -380,6 +380,70 @@ class TemplateService:
                 )
 
     @staticmethod
+    def _refuse_unstorable_name(name: str) -> None:
+        """A field name that cannot be one: a dot is WIP's nested-path
+        separator (identity paths like address.country, term reference
+        field paths), so "a.b" would read as field b of object a, and its
+        reporting column would need quoting in every hand-written query;
+        field names become double-quoted column names, which a double
+        quote would close and a NUL truncate."""
+        if "." in name:
+            raise TemplateError(
+                f"field name {name!r} contains a dot: dots separate the "
+                "parts of a nested field path, so a field name cannot carry one",
+                "validation_failed", rule="field_name_dotted",
+            )
+        if '"' in name or "\x00" in name:
+            raise TemplateError(
+                f"field name {name!r} contains a double quote or NUL "
+                "character, which reporting cannot store as a column name",
+                "validation_failed", rule="field_name_unquotable",
+            )
+
+    @staticmethod
+    def _refuse_identity_type_change(
+        value: str, identity_fields: list[str] | None,
+        previous: list[FieldDefinition], requested: list[FieldDefinition],
+    ) -> None:
+        """An identity field keeps its type across versions.
+
+        identity_fields are immutable, but a field could keep its name and
+        change type: its values then hash differently ("001" vs 1), so a
+        document posted again forks instead of versioning — the change of
+        identity the immutability rule exists to refuse. (Reporting's
+        identity-core view also keeps only same-typed columns.)
+        """
+        before = {f.name: f.type for f in previous}
+        for f in requested:
+            if f.name in (identity_fields or []) and f.name in before and before[f.name] != f.type:
+                raise TemplateError(
+                    f"identity field '{f.name}' of '{value}' cannot change type "
+                    f"({before[f.name]} -> {f.type}): its values would hash "
+                    "differently, so documents would fork instead of versioning. "
+                    "Changing identity is a fork — create a new template.",
+                    "identity_fields_immutable",
+                )
+
+    @staticmethod
+    def _identity_type_refusal(
+        index: int, item: "CreateTemplateRequest", existing: Template,
+    ) -> "BulkResultItem | None":
+        """The per-item error for a re-post that changes an identity field's
+        type, or None."""
+        try:
+            TemplateService._refuse_identity_type_change(
+                existing.value, existing.identity_fields, existing.fields or [],
+                item.fields or [],
+            )
+        except TemplateError as e:
+            return BulkResultItem(
+                index=index, status="error", id=existing.template_id,
+                value=item.value, version=existing.version,
+                error_code="identity_fields_immutable", error=str(e),
+            )
+        return None
+
+    @staticmethod
     def _refuse_undeclared_reference(f: FieldDefinition) -> None:
         """A reference field declares what it references, and a term
         reference which terminologies it draws from: without them it
@@ -446,11 +510,7 @@ class TemplateService:
                     "synonym minted from a document's identity values",
                     "validation_failed", rule="field_name_reserved",
                 )
-            if '"' in f.name or "\x00" in f.name:
-                raise TemplateError(
-                    f"field name {f.name!r} contains a double quote or NUL "
-                    "character, which reporting cannot store as a column name", "validation_failed", rule="field_name_unquotable"
-                )
+            TemplateService._refuse_unstorable_name(f.name)
             # A nested template reference must pin an explicit version: schema
             # refs never resolve to "latest", so a parent validated against a
             # floating nested schema strands when that schema ships an
@@ -1814,6 +1874,9 @@ class TemplateService:
                 f"requested: {list(request.identity_fields)}). Changing identity "
                 f"is a fork — create a new template with a new value instead.", "identity_fields_immutable"
             )
+        TemplateService._refuse_identity_type_change(
+            original.value, original.identity_fields, original.fields or [], request.fields or [],
+        )
 
         # Calculate new version number (max version for this value + 1),
         # scoped to the namespace — (namespace, value, version) is the
@@ -2781,6 +2844,10 @@ class TemplateService:
                 # property defaults to [], which is not a request to empty it.
                 item = TemplateService._with_omitted_kept(item, existing)
                 item = await TemplateService._with_served_identity_kept(item, existing)
+                refused = TemplateService._identity_type_refusal(i, item, existing)
+                if refused is not None:
+                    results.append(refused)
+                    continue
                 verdict, diff = await TemplateService.compute_template_compatibility(
                     existing, item, namespace=item.namespace,
                 )

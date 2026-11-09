@@ -14,7 +14,9 @@ from httpx import AsyncClient
 
 from registry.models.namespace import Namespace, prefix_error
 
-BAD = ["a.b", "UPPER", "with space", "star*", "tail>", "-leading", "_leading", "", "ns/x"]
+BAD = ["a.b", "UPPER", "with space", "star*", "tail>", "-leading", "_leading", "", "ns/x",
+       # PostgreSQL system schemas: the reporting schema is named after the prefix
+       "public", "information_schema", "pg_catalog", "pg_x"]
 GOOD = ["a", "dev", "customer-abc", "kb_research", "0day", "p991-src"]
 
 

@@ -85,16 +85,13 @@ class ParityMonitorStatus(BaseModel):
 def _gaps(result: NamespaceParityResult) -> tuple[set[str], set[str]]:
     """(repairable, operator-only) gap keys of one parity result."""
     repairable: set[str] = set()
-    operator: set[str] = set()
-    if not result.bookkeeping_tables_ok:
-        operator.add("bookkeeping")
+    operator = _namespace_gaps(result)
     for t in result.templates:
-        if t.legacy_table:
-            operator.add(f"legacy_table:{t.template_value}")
-        elif t.error:
-            operator.add(f"template_check_failed:{t.template_value}")
-        elif not t.structural_ok or t.counts_match is False:
-            repairable.add(f"template:{t.template_value}")
+        kind, key = _template_gap(t)
+        if kind == "operator":
+            operator.add(key)
+        elif kind == "repairable":
+            repairable.add(key)
     for d in result.derived_tables:
         if d.issue == "check_failed":
             operator.add(f"check_failed:{d.table}")
@@ -105,6 +102,31 @@ def _gaps(result: NamespaceParityResult) -> tuple[set[str], set[str]]:
     if any(not v.present for v in result.views):
         repairable.add("views")
     return repairable, operator
+
+
+def _namespace_gaps(result: NamespaceParityResult) -> set[str]:
+    """The operator-only gaps of the namespace itself. A check that could
+    not run, or a schema that is gone, is never a gap-less "not ok"."""
+    gaps: set[str] = set()
+    if not result.bookkeeping_tables_ok:
+        gaps.add("bookkeeping")
+    if result.bookkeeping_error:
+        gaps.add("parity_check_failed")
+    if not result.schema_present and (result.templates or result.views):
+        gaps.add("schema_missing")
+    return gaps
+
+
+def _template_gap(t: Any) -> tuple[str | None, str]:
+    """("operator" | "repairable" | None, key) for one template's row. A
+    batch sync rebuilds tables, rows, entity views and the bookkeeping row."""
+    if t.legacy_table:
+        return "operator", f"legacy_table:{t.template_value}"
+    if t.error:
+        return "operator", f"template_check_failed:{t.template_value}"
+    if not t.structural_ok or t.counts_match is False or not t.derived_ok:
+        return "repairable", f"template:{t.template_value}"
+    return None, ""
 
 
 async def _list_namespaces() -> list[str]:
@@ -273,15 +295,39 @@ class ParityMonitor:
             at=datetime.now(UTC), namespace=namespace, gap=key, action=label, attempt=attempt
         )
         try:
-            await run()
-            logger.warning(
-                f"Reporting parity gap in {namespace} repaired ({label}, "
-                f"attempt {attempt}/{self.max_attempts}): {key}"
-            )
+            action.error = _repair_failure(await run())
         except Exception as e:
             action.error = str(e)
-            logger.error(f"Reporting parity repair of {namespace}/{key} failed: {e}")
+        if action.error:
+            logger.error(f"Reporting parity repair of {namespace}/{key} failed: {action.error}")
+        else:
+            # A template repair only starts a job; the next pass's check is
+            # what says whether the gap closed.
+            verb = "triggered" if key.startswith("template:") else "ran"
+            logger.warning(
+                f"Reporting parity repair {verb} in {namespace} ({label}, "
+                f"attempt {attempt}/{self.max_attempts}): {key}"
+            )
         self._actions.append(action)
+
+
+def _repair_failure(result: Any) -> str | None:
+    """Why a repair's result says it did not do its work, or None.
+
+    The sweeps answer a dict ({complete, failed, ...}); a template repair
+    answers the job it started, which may already have failed (a template
+    that could not be read).
+    """
+    if isinstance(result, dict):
+        if not result.get("complete", True):
+            return "the source listing could not be read to the end"
+        if result.get("failed"):
+            return f"{result['failed']} item(s) failed"
+        return None
+    status = getattr(result, "status", None)
+    if status is not None and str(getattr(status, "value", status)) == "failed":
+        return getattr(result, "error_message", None) or "the batch job failed"
+    return None
 
 
 async def _recreate_views(sm: SchemaManager, namespace: str) -> None:

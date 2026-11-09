@@ -21,7 +21,9 @@ failure it exists to catch:
   active totals, every active term carrying names has ``term_names`` rows,
   and ``term_closure`` holds the reflexive rows its rebuild writes (one per
   active term per relation type in use) — so a closure that was never
-  rebuilt, or is stale against its terms and relations, shows. Right after
+  rebuilt, or is stale against its term set or the relation types in use,
+  shows. A closure missing only non-reflexive edges does NOT show here; a
+  failed rebuild is retried by the maintainer until it lands. Right after
   a term or relation write the closure lags by its rebuild debounce.
 
 Honest limits, by design:
@@ -64,6 +66,9 @@ class TemplateParity(BaseModel):
     """
 
     template_value: str
+    # The template's own namespace when another namespace owns it (a shared
+    # template the checked namespace's documents use); null for its own.
+    template_namespace: str | None = None
     sync_enabled: bool = True
     table_present: bool = False
     missing_columns: list[str] = Field(default_factory=list)
@@ -80,12 +85,26 @@ class TemplateParity(BaseModel):
 
     @property
     def structural_ok(self) -> bool:
+        """An owned template needs its latest version's table. A foreign
+        template is checked only because the namespace has live documents on
+        it; their tables are made lazily per pinned version, so it needs a
+        version table, and the latest one's shape when that one exists."""
+        present = self.table_present if self.template_namespace is None else bool(
+            self.version_tables
+        )
         return (
-            self.table_present
+            present
             and not self.missing_columns
             and not self.legacy_table
             and self.error is None
         )
+
+    @property
+    def derived_ok(self) -> bool:
+        """The entity view a template's tables are queried through, and its
+        bookkeeping row. Not part of structural_ok, which a restore reads
+        between phases."""
+        return not self.version_tables or (self.view_present and self.bookkeeping_row)
 
 
 class DerivedTableParity(BaseModel):
@@ -182,6 +201,48 @@ async def _fetch_namespace_templates(namespace: str) -> list[dict[str, Any]]:
             if len(items) < 100:
                 return templates
             page += 1
+
+
+async def _fetch_foreign_templates(
+    namespace: str, owned: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """The templates of OTHER namespaces the namespace's live documents use.
+
+    Reporting tables live in the document's namespace schema, so a shared
+    template materialises tables here too; the owned listing cannot see it.
+    Document Store's template facets name them (live documents, each
+    template's own namespace). A foreign template sharing an owned one's
+    value is left out: they name the same tables, and the owned template
+    defines them. Each is read at its latest version, resolved."""
+    owned_values = {str(t.get("value", "")).lower() for t in owned}
+    owned_ids = {t.get("template_id") for t in owned}
+    async with httpx.AsyncClient() as client:
+        response = await client.get(
+            f"{settings.document_store_url}/api/document-store/documents/template-facets",
+            params={"namespace": namespace, "status": "active"},
+            headers={"X-API-Key": settings.api_key},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        foreign: list[dict[str, Any]] = []
+        for facet in response.json().get("facets", []):
+            if (
+                facet.get("template_id") in owned_ids
+                or not facet.get("document_count")
+                or str(facet.get("template_value") or "").lower() in owned_values
+            ):
+                continue
+            template = await client.get(
+                f"{settings.template_store_url}/api/template-store/templates/"
+                f"{facet['template_id']}",
+                headers={"X-API-Key": settings.api_key},
+                timeout=30.0,
+            )
+            template.raise_for_status()
+            item = template.json()
+            item["_foreign_namespace"] = item.get("namespace") or facet.get("template_namespace")
+            foreign.append(item)
+    return foreign
 
 
 async def _expected_document_total(template_id: str, namespace: str) -> int:
@@ -416,16 +477,17 @@ async def check_namespace_parity(
 
     try:
         templates = await _fetch_namespace_templates(namespace)
+        templates += await _fetch_foreign_templates(namespace, templates)
     except httpx.HTTPError as e:
         result.bookkeeping_error = (result.bookkeeping_error or "") + (
-            f" template-store unavailable: {e}"
+            f" template-store or document-store unavailable: {e}"
         )
         result.ok = False
         return result
 
     for template in templates:
         config = ReportingConfig(**(template.get("reporting") or {}))
-        if not config.sync_enabled:
+        if not config.syncs:
             result.templates_skipped_sync_disabled += 1
             continue
         row = await _template_parity(
@@ -440,14 +502,19 @@ async def check_namespace_parity(
         result.templates.append(row)
 
     await _derived_parity(pool, sm, schema, namespace, result, include_counts=include_counts)
+    result.derived_issues += sum(1 for t in result.templates if not t.derived_ok)
     result.ok = _all_clear(result)
     return result
 
 
 def _all_clear(result: NamespaceParityResult) -> bool:
-    """Usable bookkeeping, and no structural, count or derived issue."""
+    """Usable bookkeeping, and no structural, count or derived issue; and
+    the namespace's schema present wherever anything is expected in it."""
+    expects_schema = bool(result.templates) or bool(result.views)
     return (
         result.bookkeeping_tables_ok
+        and result.bookkeeping_error is None
+        and (result.schema_present or not expects_schema)
         and result.structural_issues == 0
         and result.count_mismatches == 0
         and result.derived_issues == 0
@@ -538,7 +605,10 @@ async def _template_parity(
     """One template's row. A failure is recorded on the row: one bad
     template must not hide the rest."""
     template_value = template.get("value", "")
-    row = TemplateParity(template_value=template_value)
+    row = TemplateParity(
+        template_value=template_value,
+        template_namespace=template.get("_foreign_namespace"),
+    )
     try:
         version_tables = await _template_structure(sm, row, schema, namespace, template, config)
         if bookkeeping_ok:
@@ -548,7 +618,7 @@ async def _template_parity(
                     "WHERE namespace = $1 AND template_value = $2)",
                     namespace, template_value,
                 ))
-        if include_counts and row.table_present:
+        if include_counts and (row.table_present or row.version_tables):
             await _template_counts(pool, row, schema, namespace, template, config, version_tables)
     except Exception as e:
         row.error = str(e)

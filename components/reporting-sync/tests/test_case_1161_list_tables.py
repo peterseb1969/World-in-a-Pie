@@ -35,7 +35,7 @@ def _wire(conn):
         return [{"column_name": "document_id", "data_type": "text", "is_nullable": "NO"},
                 {"column_name": f"{table}_col", "data_type": "integer", "is_nullable": "YES"}]
 
-    async def fetchval(sql):
+    async def fetchval(sql, timeout=None):
         return COUNTS[sql.split('"')[3]]
 
     conn.fetch = AsyncMock(side_effect=fetch)

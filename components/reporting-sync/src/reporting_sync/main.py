@@ -47,7 +47,7 @@ from wip_auth.security import check_production_security
 from wip_auth.startup import retry_until_done
 
 from . import __version__
-from .batch_sync import BatchSyncService
+from .batch_sync import BatchSyncService, SourceUnavailable
 from .bookkeeping import compact_migration_journal, repair_bookkeeping_location
 from .config import settings
 from .metrics import metrics
@@ -174,7 +174,9 @@ async def run_alert_check_loop() -> None:
     while True:
         try:
             config = metrics.get_alert_config()
-            await asyncio.sleep(config.check_interval_seconds)
+            # The model refuses less than 1 s; the floor guards a config
+            # set some other way from spinning the loop.
+            await asyncio.sleep(max(1, config.check_interval_seconds))
 
             if not config.enabled:
                 continue
@@ -236,7 +238,14 @@ async def connect_postgres() -> tuple[asyncpg.Pool, asyncpg.Pool]:
         **endpoint, user=settings.postgres_user, password=settings.postgres_password
     )
     try:
-        await repair_bookkeeping_location(bootstrap)
+        try:
+            await repair_bookkeeping_location(bootstrap)
+        except asyncpg.InsufficientPrivilegeError as e:
+            # A grant the bootstrap login lacks does not appear by waiting:
+            # a deployment fault, reported as one, not retried forever.
+            raise ServiceRolesError(
+                f"the PostgreSQL login cannot repair the bookkeeping tables: {e}"
+            ) from e
         try:
             await compact_migration_journal(bootstrap)
         except asyncpg.PostgresError as e:
@@ -868,7 +877,9 @@ async def health_check(response: Response) -> HealthResponse:
 
     Unusable service roles answer 503, not "degraded" 200: they are a
     deployment fault that container health must surface, not a transient
-    outage the service waits out.
+    outage the service waits out. With neither NATS nor PostgreSQL the
+    service can do nothing, and answers 503 too; with one of them it is
+    degraded (200), and the body says which.
     """
     nats_ok = state.nats_client is not None and state.nats_client.is_connected
     postgres_ok = await _postgres_live_check()
@@ -882,6 +893,7 @@ async def health_check(response: Response) -> HealthResponse:
         status = "degraded"
     else:
         status = "unhealthy"
+        response.status_code = 503
 
     return HealthResponse(
         status=status,
@@ -1269,12 +1281,22 @@ async def get_schema(
             table_name,
         )
 
-        # Get row count
-        row_count = await conn.fetchval(
-            f'SELECT COUNT(*) FROM "{schema}"."{table_name}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+        # Row count: bounded, and for the entity view the sum of its
+        # version tables (counting the view would scan them all again).
+        is_view = await sm.relation_kind(schema, table_name) == "view"
+        base_tables = {
+            r["table_name"] for r in await conn.fetch(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = $1 AND table_type = 'BASE TABLE'",
+                schema,
+            )
+        }
+        row_count, row_count_note = await _relation_count(
+            conn, schema, table_name, is_view, base_tables,
         )
 
         return {
+            "row_count_note": row_count_note,
             "namespace": namespace,
             "template_value": template_value,
             "schema": schema,
@@ -1291,6 +1313,18 @@ async def get_schema(
             ],
             "row_count": row_count,
         }
+
+
+def _definition_sync_status(result: dict[str, Any]) -> str:
+    """A definitions sync's outcome: "completed" only when it listed
+    everything and wrote every item; "incomplete" when the listing was cut
+    short (the counts cover only what was read); "completed_with_errors"
+    when items failed."""
+    if not result.get("complete", True):
+        return "incomplete"
+    if result.get("failed"):
+        return "completed_with_errors"
+    return "completed"
 
 
 @router.post("/sync/batch/terminologies", dependencies=[_PRIVILEGED])
@@ -1314,7 +1348,7 @@ async def trigger_terminology_sync(
     )
 
     return {
-        "status": "completed",
+        "status": _definition_sync_status(result),
         "table": "terminologies",
         **result,
     }
@@ -1343,7 +1377,7 @@ async def trigger_term_sync(
     )
 
     return {
-        "status": "completed",
+        "status": _definition_sync_status(result),
         "table": "terms",
         **result,
     }
@@ -1373,7 +1407,7 @@ async def trigger_term_relation_sync(
     )
 
     return {
-        "status": "completed",
+        "status": _definition_sync_status(result),
         "table": "term_relations",
         **result,
     }
@@ -1404,7 +1438,7 @@ async def trigger_template_metadata_sync(
     )
 
     return {
-        "status": "completed",
+        "status": _definition_sync_status(result),
         "table": "templates",
         **result,
     }
@@ -1489,11 +1523,14 @@ async def trigger_batch_sync_all(
             ),
         )
 
-    jobs = await state.batch_sync_service.start_batch_sync_all(
-        force=force,
-        page_size=page_size,
-        namespace=namespace,
-    )
+    try:
+        jobs = await state.batch_sync_service.start_batch_sync_all(
+            force=force,
+            page_size=page_size,
+            namespace=namespace,
+        )
+    except SourceUnavailable as e:
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     return [_batch_sync_response(job, force_requested=force) for job in jobs]
 
@@ -2192,13 +2229,18 @@ async def list_tables(
         tables: list[dict] = []
         # (schema, entity_base) → grouped entry
         entities: dict[tuple[str, str], dict] = {}
+        # Base tables per schema: a view's count is derived from them.
+        relations_by_schema = _base_tables_by_schema(raw_tables)
         for row in raw_tables:
             schema = row["table_schema"]
             tname = row["table_name"]
             if not _listed_relation(schema, tname, namespace, table_name):
                 continue
             is_view = row["table_type"] == "VIEW"
-            entry, count = await _relation_entry(conn, schema, tname, is_view, detail=bool(table_name))
+            entry, count = await _relation_entry(
+                conn, schema, tname, is_view, detail=bool(table_name),
+                relations=relations_by_schema.get(schema, set()),
+            )
             tables.append(entry)
             # Entity grouping (skipped in single-relation detail mode).
             if not table_name and tname.startswith("doc_"):
@@ -2218,6 +2260,15 @@ async def list_tables(
 
 
 _LISTED_EXACT = {"terminologies", "terms", "term_names", "term_relations", "term_closure", "templates"}
+
+
+def _base_tables_by_schema(raw_tables: list[Any]) -> dict[str, set[str]]:
+    """The base table names of each schema in a catalog listing."""
+    by_schema: dict[str, set[str]] = {}
+    for row in raw_tables:
+        if row["table_type"] == "BASE TABLE":
+            by_schema.setdefault(row["table_schema"], set()).add(row["table_name"])
+    return by_schema
 
 
 def _entity_of_relation(tname: str) -> str | None:
@@ -2241,11 +2292,54 @@ def _listed_relation(schema: str, tname: str, namespace: str | None, table_name:
     return not (table_name and tname != table_name)
 
 
+# How long one table's COUNT(*) may run in a listing; a table that takes
+# longer is reported with no count rather than holding the owner pool.
+_COUNT_TIMEOUT_MS = 5000
+
+
+async def _bounded_count(conn: Any, schema: str, tname: str) -> tuple[int | None, str | None]:
+    """A base table's row count, or (None, why) when it does not finish
+    within _COUNT_TIMEOUT_MS."""
+    try:
+        # asyncpg cancels the query on the server when the timeout passes.
+        count = await conn.fetchval(
+            f'SELECT COUNT(*) FROM "{schema}"."{tname}"',  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
+            timeout=_COUNT_TIMEOUT_MS / 1000,
+        )
+        return int(count), None
+    except (TimeoutError, asyncpg.QueryCanceledError):
+        return None, f"not counted: counting took longer than {_COUNT_TIMEOUT_MS} ms"
+
+
+async def _relation_count(
+    conn: Any, schema: str, tname: str, is_view: bool, relations: set[str],
+) -> tuple[int | None, str | None]:
+    """A relation's row count without scanning a view: an entity view
+    (``<base>`` or ``<base>__entities``, ``doc_<value>`` or a table_name
+    override) is the union of its version tables ``<base>__vN``, so its
+    count is theirs summed; any other view is not counted."""
+    if not is_view:
+        return await _bounded_count(conn, schema, tname)
+    base = tname[: -len("__entities")] if tname.endswith("__entities") else tname
+    versions = sorted(n for n in relations if re.fullmatch(rf"{re.escape(base)}__v\d+", n))
+    if not versions:
+        return None, "not counted: a view is counted only as the sum of its version tables"
+    total = 0
+    for name in versions:
+        count, why = await _bounded_count(conn, schema, name)
+        if count is None:
+            return None, why
+        total += count
+    return total, None
+
+
 async def _relation_entry(
     conn: Any, schema: str, tname: str, is_view: bool, *, detail: bool,
-) -> tuple[dict, int]:
+    relations: set[str],
+) -> tuple[dict, int | None]:
     """One relation's listing entry — its columns in detail mode, else
-    their count — and its row count."""
+    their count — and its row count (None when not counted; the entry's
+    row_count_note says why)."""
     columns = await conn.fetch(
         """
         SELECT column_name, data_type, is_nullable
@@ -2257,7 +2351,7 @@ async def _relation_entry(
         schema,
         tname,
     )
-    count = await conn.fetchval(f'SELECT COUNT(*) FROM "{schema}"."{tname}"')  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
+    count, why = await _relation_count(conn, schema, tname, is_view, relations)
     entry: dict = {
         "namespace": schema,
         "name": tname,
@@ -2268,6 +2362,8 @@ async def _relation_entry(
         "qualified_name": f'"{schema}"."{tname}"',
         "row_count": count,
     }
+    if why:
+        entry["row_count_note"] = why
     if detail:
         entry["columns"] = [
             {"name": c["column_name"], "type": c["data_type"], "nullable": c["is_nullable"] == "YES"}
@@ -2293,7 +2389,8 @@ def _entity_entry(entities: dict[tuple[str, str], dict], schema: str, base: str)
 
 
 def _group_relation(
-    entities: dict[tuple[str, str], dict], schema: str, tname: str, is_view: bool, count: int,
+    entities: dict[tuple[str, str], dict], schema: str, tname: str, is_view: bool,
+    count: int | None,
 ) -> None:
     """Place a doc_* relation under its entity: a version table adds a
     version and its rows, the __entities view and the bare view mark the
@@ -2302,7 +2399,8 @@ def _group_relation(
     if m and not is_view:
         ent = _entity_entry(entities, schema, m.group(1))
         ent["versions"].append({"version": int(m.group(2)), "table": tname, "row_count": count})
-        ent["row_count"] += count or 0
+        # One uncounted version table leaves the entity's total unknown.
+        ent["row_count"] = None if count is None or ent["row_count"] is None else ent["row_count"] + count
     elif tname.endswith("__entities") and is_view:
         _entity_entry(entities, schema, tname[: -len("__entities")])
     elif is_view:
@@ -2310,7 +2408,7 @@ def _group_relation(
     else:
         ent = _entity_entry(entities, schema, tname)
         ent["legacy_table"] = True
-        ent["row_count"] += count or 0
+        ent["row_count"] = None if count is None or ent["row_count"] is None else ent["row_count"] + count
 
 
 class ReportQuery(StrictModel):

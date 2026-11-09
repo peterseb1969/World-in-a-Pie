@@ -29,7 +29,7 @@ from .models import (
 )
 from .schema_manager import SchemaManager
 from .term_closure import TermClosureMaintainer
-from .transformer import DocumentTransformer, _parse_datetime, term_name_rows
+from .transformer import DocumentTransformer, _parse_datetime, term_name_rows, write_counter
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,8 @@ _TERMINOLOGY_UPDATE_COLUMNS = (
 )
 _TERM_UPDATE_COLUMNS = (
     "terminology_value", "value", "aliases", "label", "description",
-    "sort_order", "parent_term_id", "status", "updated_at", "updated_by",
+    "sort_order", "parent_term_id", "status", "deprecated_reason",
+    "replaced_by_term_id", "updated_at", "updated_by",
 )
 _TERM_RELATION_UPDATE_COLUMNS = (
     "status", "source_term_value", "target_term_value", "metadata",
@@ -106,6 +107,11 @@ class _TermSync:
 
     def term_namespace(self, term: dict[str, Any]) -> str:
         return term.get("namespace") or self.namespace or "wip"
+
+
+class SourceUnavailable(RuntimeError):
+    """A store the sync reads from did not answer. The job fails; nothing
+    it would have read is treated as absent."""
 
 
 # Finished jobs kept in memory for GET /sync/batch/jobs; older ones are
@@ -199,6 +205,9 @@ class BatchSyncService:
                     params={
                         "namespace": namespace, "value": template_value,
                         "status": "active", "page_size": 1,
+                        # Asked for: the listing's default order has no
+                        # version in it, so its first row is any version.
+                        "sort_by": "version", "sort_order": "desc",
                     },
                     headers={"X-API-Key": settings.api_key},
                     timeout=30.0,
@@ -213,7 +222,7 @@ class BatchSyncService:
         except Exception as e:
             logger.error(f"Error fetching active version of {template_value}: {e}")
             return None
-        # The value branch sorts version-descending: first = latest active.
+        # Sorted version-descending above: first = latest active.
         if not items:
             return None
         row = cast(dict[str, Any], items[0])
@@ -249,7 +258,11 @@ class BatchSyncService:
             return None
 
     async def _list_templates(self) -> list[dict[str, Any]]:
-        """List all templates from Template Store."""
+        """List all templates from Template Store, every page.
+
+        Raises SourceUnavailable when a page cannot be read: a partial
+        listing would start a partial set of jobs and report it as all.
+        """
         templates = []
         page = 1
         page_size = 100
@@ -264,8 +277,9 @@ class BatchSyncService:
                         timeout=30.0,
                     )
                     if response.status_code != 200:
-                        logger.error(f"Failed to list templates: {response.status_code}")
-                        break
+                        raise SourceUnavailable(
+                            f"Template Store listing page {page} answered HTTP {response.status_code}"
+                        )
 
                     data = response.json()
                     templates.extend(data.get("items", []))
@@ -273,9 +287,8 @@ class BatchSyncService:
                     if len(data.get("items", [])) < page_size:
                         break
                     page += 1
-
-        except Exception as e:
-            logger.error(f"Error listing templates: {e}")
+        except httpx.HTTPError as e:
+            raise SourceUnavailable(f"Template Store listing failed: {e}") from e
 
         return templates
 
@@ -303,6 +316,9 @@ class BatchSyncService:
 
         Returns:
             Tuple of (documents, total_count, next_cursor)
+
+        Raises SourceUnavailable when Document Store does not answer the
+        page: an unread page is not an empty one.
         """
         try:
             params: dict[str, Any] = {
@@ -329,11 +345,11 @@ class BatchSyncService:
                         data.get("total", 0),
                         data.get("next_cursor"),
                     )
-                logger.error(f"Failed to fetch documents: {response.status_code}")
-                return [], 0, None
-        except Exception as e:
-            logger.error(f"Error fetching documents: {e}")
-            return [], 0, None
+                raise SourceUnavailable(
+                    f"Document Store answered HTTP {response.status_code} for template {template_id}"
+                )
+        except httpx.HTTPError as e:
+            raise SourceUnavailable(f"Document Store unreachable: {e}") from e
 
     def _get_reporting_config(self, template: dict[str, Any]) -> ReportingConfig:
         """Extract reporting config from template."""
@@ -488,7 +504,7 @@ class BatchSyncService:
         its tables, upsert its documents page by page, rebuild its views."""
         template = await self._resolved_template(template)
         config = self._get_reporting_config(template)
-        if not config.sync_enabled:
+        if not config.syncs:
             job.status = BatchSyncStatus.COMPLETED
             job.error_message = "Sync disabled for this template"
             job.completed_at = datetime.now(UTC)
@@ -500,19 +516,25 @@ class BatchSyncService:
             strategy=config.sync_strategy.value,
         )
         run.version_templates[run.latest_version] = template
-        tpl_table = await self._prepare_template_tables(run, force)
 
         # The total, for progress and the empty-template exit: one
-        # one-document offset request (a count plus a single sort).
-        # The pages themselves are fetched by cursor.
+        # one-document offset request (a count plus a single sort). The
+        # pages themselves are fetched by cursor. Asked BEFORE any table is
+        # prepared: a force run drops the template's relations, and must
+        # never do so while the source cannot answer (SourceUnavailable
+        # fails the job with nothing dropped).
         fetch_started = time.monotonic()
         _probe, total, _ = await self._fetch_documents(
             template["template_id"], 1, 1, namespace=job.namespace
         )
         job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
         job.total_documents = total
+        tpl_table = await self._prepare_template_tables(run, force)
 
         if total == 0:
+            # A force run dropped this template's views and moved the
+            # namespace's registered views aside: put back what stands.
+            await self._rebuild_views(run)
             job.status = BatchSyncStatus.COMPLETED
             job.completed_at = datetime.now(UTC)
             detail = (
@@ -744,10 +766,14 @@ class BatchSyncService:
                     key = self._document_table_key(run, document)
                     table_name = run.ns_tables[key]
                     version_template = await self._template_for_version(run, key[1])
-                    transformer = DocumentTransformer(run.config)
+                    # The version's own reporting config: its table was
+                    # built from it (metadata columns, primary key), so its
+                    # rows and upsert must match it, not the latest's.
+                    config = self._get_reporting_config(version_template)
+                    transformer = DocumentTransformer(config)
                     for row in transformer.transform(document, version_template):
                         sql, values = transformer.generate_upsert_sql(
-                            table_name, row, run.strategy
+                            table_name, row, config.sync_strategy.value
                         )
                         await conn.execute(sql, *values)
                         job.rows_written += 1
@@ -780,6 +806,7 @@ class BatchSyncService:
                 await self.schema_manager.delete_from_sibling_version_tables(
                     ns, run.job.template_value, run.config,
                     keep_version=doc_tv, document_id=doc_id,
+                    keep_revision=write_counter(document),
                 )
         run.job.sibling_ms += int((time.monotonic() - sibling_started) * 1000)
 
@@ -875,7 +902,7 @@ class BatchSyncService:
 
             # Check if sync is enabled
             config = self._get_reporting_config(template)
-            if not config.sync_enabled:
+            if not config.syncs:
                 logger.info(f"Skipping {template_value}: sync disabled")
                 continue
 
@@ -1156,7 +1183,9 @@ class BatchSyncService:
                 try:
                     await self.closure.rebuild(ns)
                 except Exception as e:
-                    logger.error(f"term_closure rebuild failed for {ns}: {e}")
+                    # Handed to the maintainer, which retries until it lands.
+                    logger.error(f"term_closure rebuild failed for {ns}, retrying: {e}")
+                    self.closure.mark_dirty(ns)
 
         logger.info(f"Term batch sync: {run.synced} synced, {run.failed} failed")
         return {
@@ -1261,6 +1290,8 @@ class BatchSyncService:
                 "sort_order" = EXCLUDED."sort_order",
                 "parent_term_id" = EXCLUDED."parent_term_id",
                 "status" = EXCLUDED."status",
+                "deprecated_reason" = EXCLUDED."deprecated_reason",
+                "replaced_by_term_id" = EXCLUDED."replaced_by_term_id",
                 "updated_at" = EXCLUDED."updated_at",
                 "updated_by" = EXCLUDED."updated_by"
             {_only_if_changed(_TERM_UPDATE_COLUMNS)}
@@ -1466,7 +1497,9 @@ class BatchSyncService:
                 try:
                     await self.closure.rebuild(ns)
                 except Exception as e:
-                    logger.error(f"term_closure rebuild failed for {ns}: {e}")
+                    # Handed to the maintainer, which retries until it lands.
+                    logger.error(f"term_closure rebuild failed for {ns}, retrying: {e}")
+                    self.closure.mark_dirty(ns)
 
         logger.info(f"TermRelation batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed, "complete": complete}

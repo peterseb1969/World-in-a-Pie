@@ -2139,6 +2139,10 @@ class DocumentService:
             "template_value": document.template_value,
             "identity_hash": document.identity_hash,
             "version": document.version,
+            # The write counter: an in-place overwrite (versioned:false)
+            # keeps the version and moves this, so consumers that keep only
+            # newer writes compare it, not the version.
+            "revision": current_revision(document),
             "data": base_data,
             "term_references": document.term_references,
             "references": document.references,

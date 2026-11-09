@@ -73,6 +73,18 @@ class SearchTypeResults(BaseModel):
     page: int = 1
     page_size: int = 50
     pages: int = 0
+    complete: bool = Field(
+        True,
+        description=(
+            "False when this type's search could not look everywhere: a "
+            "source failed (no items) or answered only part of what it holds "
+            "(items found so far). `error` says why. An empty, complete "
+            "bucket means nothing matched."
+        ),
+    )
+    error: str | None = Field(
+        default=None, description="Why the bucket is incomplete; null when complete."
+    )
 
 
 class SearchResponse(BaseModel):
@@ -456,6 +468,18 @@ def _html_snippet(snippet: str | None) -> str | None:
     )
 
 
+class _Hits(list[SearchResult]):
+    """One type's hits, and why they may not be all of them."""
+
+    incomplete: str | None = None
+
+
+def _hits(items: list[SearchResult], incomplete: str | None = None) -> "_Hits":
+    hits = _Hits(items)
+    hits.incomplete = incomplete
+    return hits
+
+
 def _first_hit_per_document(hits: list[SearchResult]) -> list[SearchResult]:
     """The hits with every document's later rows dropped (input is sorted
     best first)."""
@@ -573,21 +597,26 @@ class SearchService:
         cross_total = 0
         for (entity_type, _), result in zip(tasks, gathered, strict=False):
             if isinstance(result, BaseException):
+                # A source that could not answer is not "no matches".
                 logger.error(f"Search failed for {entity_type}: {result}")
                 results[entity_type] = SearchTypeResults(
                     items=[], total=0, page=page, page_size=page_size, pages=0,
+                    complete=False, error=f"search failed: {result}",
                 )
                 continue
             items = result
             page_items, pages = _paginate(items, page, page_size)
             total = len(items)
             cross_total += total
+            incomplete = getattr(items, "incomplete", None)
             results[entity_type] = SearchTypeResults(
                 items=page_items,
                 total=total,
                 page=page,
                 page_size=page_size,
                 pages=pages,
+                complete=incomplete is None,
+                error=incomplete,
             )
 
         # Only asked on the path that is actually ambiguous: a template filter
@@ -643,28 +672,10 @@ class SearchService:
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 # Page through def-store until exhausted or cap hit.
-                page = 1
-                all_items: list[dict[str, Any]] = []
-                while True:
-                    params: dict[str, Any] = {"page_size": 100, "page": page}
-                    if namespace:
-                        params["namespace"] = namespace
-                    if status:
-                        params["status"] = status
-
-                    response = await client.get(
-                        f"{settings.def_store_url}/api/def-store/terminologies",
-                        params=params,
-                        headers={"X-API-Key": settings.api_key}
-                    )
-                    if response.status_code != 200:
-                        return []
-                    data = response.json()
-                    batch = data.get("items", [])
-                    all_items.extend(batch)
-                    if len(batch) < 100 or len(all_items) >= MAX_RESULTS_PER_TYPE:
-                        break
-                    page += 1
+                all_items, scanned_all = await _scan_listing(
+                    client, f"{settings.def_store_url}/api/def-store/terminologies",
+                    {}, namespace, status,
+                )
 
                 results = []
                 query_lower = query.lower()
@@ -683,10 +694,13 @@ class SearchService:
                         ))
 
                 results = self._sort_by_relevance(results, query_lower)
-                return results[:MAX_RESULTS_PER_TYPE]
-        except Exception as e:
-            logger.error(f"Terminology search failed: {e}")
-            return []
+                return _hits(
+                    results[:MAX_RESULTS_PER_TYPE],
+                    None if scanned_all else
+                    f"matched against the first {len(all_items)} entries only",
+                )
+        except httpx.HTTPError as e:
+            raise UpstreamError(f"terminology listing failed: {e}") from e
 
     async def _search_terms(
         self, query: str, namespace: str | None, status: str | None,
@@ -708,29 +722,10 @@ class SearchService:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 headers = {"X-API-Key": settings.api_key}
 
-                if namespace:
-                    namespaces = [namespace]
-                else:
-                    namespaces_set: set[str] = set()
-                    page = 1
-                    while True:
-                        term_response = await client.get(
-                            f"{settings.def_store_url}/api/def-store/terminologies",
-                            params={"status": "active", "page_size": 100, "page": page},
-                            headers=headers,
-                        )
-                        if term_response.status_code != 200:
-                            break
-                        data = term_response.json()
-                        for t in data.get("items", []):
-                            if t.get("namespace"):
-                                namespaces_set.add(t["namespace"])
-                        if page >= data.get("pages", 1):
-                            break
-                        page += 1
-                    namespaces = sorted(namespaces_set)
+                namespaces = [namespace] if namespace else await _term_namespaces(client)
 
                 results = []
+                capped: list[str] = []
                 for ns in namespaces:
                     params: dict[str, Any] = {
                         "q": query,
@@ -747,9 +742,14 @@ class SearchService:
                         headers=headers,
                     )
                     if resp.status_code != 200:
-                        continue
+                        raise UpstreamError(
+                            f"term search in {ns} answered HTTP {resp.status_code}"
+                        )
 
-                    for hit in resp.json().get("items", []):
+                    hits = resp.json().get("items", [])
+                    if len(hits) >= 100:
+                        capped.append(ns)
+                    for hit in hits:
                         term = hit.get("term", {})
                         context = f"In {term.get('terminology_value')}"
                         if hit.get("matched_via") == "alias":
@@ -764,14 +764,17 @@ class SearchService:
                             updated_at=self._parse_datetime(term.get("updated_at")),
                         ))
 
-                    if len(results) >= MAX_RESULTS_PER_TYPE:
+                    if len(results) >= MAX_RESULTS_PER_TYPE and ns != namespaces[-1]:
+                        capped.append("(namespaces not searched)")
                         break
 
                 results = self._sort_by_relevance(results, query.lower())
-                return results[:MAX_RESULTS_PER_TYPE]
-        except Exception as e:
-            logger.error(f"Term search failed: {e}")
-            return []
+                return _hits(
+                    results[:MAX_RESULTS_PER_TYPE],
+                    f"more matches than returned in: {', '.join(capped)}" if capped else None,
+                )
+        except httpx.HTTPError as e:
+            raise UpstreamError(f"term search failed: {e}") from e
 
     async def _search_templates(
         self, query: str, namespace: str | None, status: str | None,
@@ -783,30 +786,10 @@ class SearchService:
         """
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                page = 1
-                all_items: list[dict[str, Any]] = []
-                while True:
-                    params: dict[str, Any] = {
-                        "page_size": 100, "page": page, "latest_only": True,
-                    }
-                    if namespace:
-                        params["namespace"] = namespace
-                    if status:
-                        params["status"] = status
-
-                    response = await client.get(
-                        f"{settings.template_store_url}/api/template-store/templates",
-                        params=params,
-                        headers={"X-API-Key": settings.api_key}
-                    )
-                    if response.status_code != 200:
-                        return []
-                    data = response.json()
-                    batch = data.get("items", [])
-                    all_items.extend(batch)
-                    if len(batch) < 100 or len(all_items) >= MAX_RESULTS_PER_TYPE:
-                        break
-                    page += 1
+                all_items, scanned_all = await _scan_listing(
+                    client, f"{settings.template_store_url}/api/template-store/templates",
+                    {"latest_only": True}, namespace, status,
+                )
 
                 results = []
                 query_lower = query.lower()
@@ -825,10 +808,13 @@ class SearchService:
                         ))
 
                 results = self._sort_by_relevance(results, query_lower)
-                return results[:MAX_RESULTS_PER_TYPE]
-        except Exception as e:
-            logger.error(f"Template search failed: {e}")
-            return []
+                return _hits(
+                    results[:MAX_RESULTS_PER_TYPE],
+                    None if scanned_all else
+                    f"matched against the first {len(all_items)} entries only",
+                )
+        except httpx.HTTPError as e:
+            raise UpstreamError(f"template listing failed: {e}") from e
 
     async def _search_documents(
         self,
@@ -860,32 +846,34 @@ class SearchService:
         rows (all_versions tables) counts once, at its best-scoring row.
         The orchestrator slices to the requested page; per-table queries are
         capped at MAX_RESULTS_PER_TYPE so a single bad table can't blow
-        memory, and each query is bounded by SEARCH_QUERY_TIMEOUT. Falls
-        back to the REST API scan if PostgreSQL is unavailable.
+        memory, and each query is bounded by SEARCH_QUERY_TIMEOUT.
+
+        Raises UpstreamError when PostgreSQL is not there to search: the
+        document bucket then reports the failure, never "no matches". A
+        table whose query fails, or the cap, marks the hits incomplete.
         """
         if not self.postgres_pool:
-            return await self._search_documents_rest_fallback(
-                query, namespace, status, MAX_RESULTS_PER_TYPE,
-            )
+            raise UpstreamError("PostgreSQL not connected: documents cannot be searched")
 
         filters = _DocumentFilters(namespace, status, include_inactive, snippet_format)
-        try:
-            async with self.postgres_pool.acquire(timeout=SEARCH_QUERY_TIMEOUT) as conn:
-                tables = await self._document_search_tables(conn, namespace, template)
-                results: list[SearchResult] = []
-                for tbl_row in tables:
-                    remaining = MAX_RESULTS_PER_TYPE - len(results)
-                    if remaining <= 0:
-                        break
-                    results += await self._search_document_table(
-                        conn, tbl_row["table_schema"], tbl_row["table_name"], query,
-                        mode, filters, remaining,
-                    )
-        except Exception as e:
-            logger.error(f"PostgreSQL document search failed: {e}")
-            return await self._search_documents_rest_fallback(
-                query, namespace, status, MAX_RESULTS_PER_TYPE,
-            )
+        skipped: list[str] = []
+        capped = False
+        async with self.postgres_pool.acquire(timeout=SEARCH_QUERY_TIMEOUT) as conn:
+            tables = await self._document_search_tables(conn, namespace, template)
+            results: list[SearchResult] = []
+            for tbl_row in tables:
+                remaining = MAX_RESULTS_PER_TYPE - len(results)
+                if remaining <= 0:
+                    capped = True
+                    break
+                hits = await self._search_document_table(
+                    conn, tbl_row["table_schema"], tbl_row["table_name"], query,
+                    mode, filters, remaining,
+                )
+                if hits is None:
+                    skipped.append(f'{tbl_row["table_schema"]}.{tbl_row["table_name"]}')
+                    continue
+                results += hits
 
         # FTS results carry scores — sort the merged set by score descending
         # so the best matches across templates rise. Substring matches have
@@ -893,7 +881,12 @@ class SearchService:
         results.sort(key=lambda r: (0 if r.score is not None else 1, -(r.score or 0.0)))
         results = _first_hit_per_document(results)[:MAX_RESULTS_PER_TYPE]
         await _name_document_templates(results)
-        return results
+        reasons = []
+        if skipped:
+            reasons.append(f"tables that could not be searched: {', '.join(skipped)}")
+        if capped:
+            reasons.append(f"stopped at {MAX_RESULTS_PER_TYPE} hits")
+        return _hits(results, "; ".join(reasons) or None)
 
     async def _document_search_tables(
         self, conn: asyncpg.Connection, namespace: str | None, template: str | None,
@@ -926,10 +919,12 @@ class SearchService:
         mode: str,
         filters: "_DocumentFilters",
         limit: int,
-    ) -> list[SearchResult]:
+    ) -> list[SearchResult] | None:
         """The hits in one table: FTS when the mode allows it and the table
-        has *_tsv columns, else substring (skipped in 'fts' mode). A failing
-        query skips the table; a failing column discovery propagates."""
+        has *_tsv columns, else substring (skipped in 'fts' mode, which is a
+        choice, not a failure: []). A failing query answers None (the
+        caller marks the search incomplete); a failing column discovery
+        propagates."""
         columns = await self._search_columns(conn, schema, tname)
         if columns is None:
             return []
@@ -945,7 +940,7 @@ class SearchService:
                 )
         except Exception as table_err:
             logger.warning("Search in table %s failed: %s", tname, table_err)
-            return []
+            return None
         return [_document_hit(row, tname, use_fts) for row in rows]
 
     @staticmethod
@@ -1101,50 +1096,6 @@ class SearchService:
         """  # nosec B608  # catalog identifiers and code-built fragments, values bound
         rows = await conn.fetch(sql, *params, timeout=SEARCH_QUERY_TIMEOUT)
         return [dict(r) for r in rows]
-
-    async def _search_documents_rest_fallback(
-        self, query: str, namespace: str | None, status: str | None, limit: int
-    ) -> list[SearchResult]:
-        """Fallback: scan documents via REST API (limited to first 100)."""
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                params: dict[str, Any] = {"page_size": 100}
-                if namespace:
-                    params["namespace"] = namespace
-                if status:
-                    params["status"] = status
-
-                response = await client.get(
-                    f"{settings.document_store_url}/api/document-store/documents",
-                    params=params,
-                    headers={"X-API-Key": settings.api_key}
-                )
-
-                if response.status_code != 200:
-                    return []
-
-                data = response.json()
-                results = []
-                query_lower = query.lower()
-
-                for item in data.get("items", []):
-                    doc_id = item.get("document_id", "")
-                    template_value = item.get("template_value") or "unknown"
-                    if query_lower in doc_id.lower() or query_lower in template_value.lower():
-                        results.append(SearchResult(
-                            type="document",
-                            id=doc_id,
-                            value=None,
-                            label=f"{template_value} document",
-                            status=item.get("status"),
-                            description=f"v{item.get('version', 1)} • {template_value}",
-                            updated_at=self._parse_datetime(item.get("updated_at"))
-                        ))
-
-                return results[:limit]
-        except Exception as e:
-            logger.error(f"Document search REST fallback failed: {e}")
-            return []
 
     async def get_recent_activity(
         self,
@@ -1878,28 +1829,10 @@ class SearchService:
         """
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                page = 1
-                all_items: list[dict[str, Any]] = []
-                while True:
-                    params: dict[str, Any] = {"page_size": 100, "page": page}
-                    if namespace:
-                        params["namespace"] = namespace
-                    if status:
-                        params["status"] = status
-
-                    response = await client.get(
-                        f"{settings.document_store_url}/api/document-store/files",
-                        params=params,
-                        headers={"X-API-Key": settings.api_key}
-                    )
-                    if response.status_code != 200:
-                        return []
-                    data = response.json()
-                    batch = data.get("items", [])
-                    all_items.extend(batch)
-                    if len(batch) < 100 or len(all_items) >= MAX_RESULTS_PER_TYPE:
-                        break
-                    page += 1
+                all_items, scanned_all = await _scan_listing(
+                    client, f"{settings.document_store_url}/api/document-store/files",
+                    {}, namespace, status,
+                )
 
                 results = []
                 query_lower = query.lower()
@@ -1927,10 +1860,13 @@ class SearchService:
                         ))
 
                 results = self._sort_by_relevance(results, query_lower)
-                return results[:MAX_RESULTS_PER_TYPE]
-        except Exception as e:
-            logger.error(f"File search failed: {e}")
-            return []
+                return _hits(
+                    results[:MAX_RESULTS_PER_TYPE],
+                    None if scanned_all else
+                    f"matched against the first {len(all_items)} entries only",
+                )
+        except httpx.HTTPError as e:
+            raise UpstreamError(f"file listing failed: {e}") from e
 
     async def _get_recent_files(
         self, limit: int, namespace: str | None = None
@@ -2496,6 +2432,55 @@ async def _template_table_bases(template: str, namespace: str | None) -> set[str
             template, response.status_code,
         )
     return bases
+
+
+async def _term_namespaces(client: httpx.AsyncClient) -> list[str]:
+    """Every namespace holding an active terminology, from the full
+    terminology listing (all pages)."""
+    found: set[str] = set()
+    page = 1
+    while True:
+        response = await client.get(
+            f"{settings.def_store_url}/api/def-store/terminologies",
+            params={"status": "active", "page_size": 100, "page": page},
+            headers={"X-API-Key": settings.api_key},
+        )
+        if response.status_code != 200:
+            raise UpstreamError(f"terminology listing answered HTTP {response.status_code}")
+        data = response.json()
+        found.update(t["namespace"] for t in data.get("items", []) if t.get("namespace"))
+        if page >= data.get("pages", 1):
+            return sorted(found)
+        page += 1
+
+
+async def _scan_listing(
+    client: httpx.AsyncClient, url: str, params: dict[str, Any],
+    namespace: str | None, status: str | None,
+) -> tuple[list[dict[str, Any]], bool]:
+    """Page a store listing (100 per page) up to MAX_RESULTS_PER_TYPE
+    entries: (entries, whether that was all of them). A page the store does
+    not answer raises UpstreamError."""
+    params = {**params, "page_size": 100}
+    if namespace:
+        params["namespace"] = namespace
+    if status:
+        params["status"] = status
+    items: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        response = await client.get(
+            url, params={**params, "page": page}, headers={"X-API-Key": settings.api_key},
+        )
+        if response.status_code != 200:
+            raise UpstreamError(f"listing answered HTTP {response.status_code}")
+        batch = response.json().get("items", [])
+        items.extend(batch)
+        if len(batch) < 100:
+            return items, True
+        if len(items) >= MAX_RESULTS_PER_TYPE:
+            return items, False
+        page += 1
 
 
 async def _template_values(

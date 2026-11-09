@@ -110,6 +110,13 @@ class ReportingConfig(BaseModel):
     max_array_elements: int = 10
     cross_version_view: CrossVersionView | None = None
 
+    @property
+    def syncs(self) -> bool:
+        """Whether documents of this template reach reporting at all:
+        sync_enabled, and a strategy other than "disabled" (which means
+        "don't sync", not a third table shape)."""
+        return self.sync_enabled and self.sync_strategy != SyncStrategy.DISABLED
+
 
 class FieldType(StrEnum):
     """Field types from template definitions."""
@@ -403,9 +410,13 @@ class AlertThresholds(StrictModel):
     queue_lag_warning: int = Field(default=100, description="Pending messages for warning")
     queue_lag_critical: int = Field(default=1000, description="Pending messages for critical")
 
-    # Error rate alert (errors per minute)
-    error_rate_warning: float = Field(default=5.0, description="Errors/min for warning")
-    error_rate_critical: float = Field(default=20.0, description="Errors/min for critical")
+    # Error rate alert: % of the events since the previous check that failed
+    error_rate_warning: float = Field(
+        default=5.0, description="% of events failed since the previous check, for warning"
+    )
+    error_rate_critical: float = Field(
+        default=20.0, description="% of events failed since the previous check, for critical"
+    )
 
     # Processing stalled (seconds since last event)
     stall_warning_seconds: int = Field(default=300, description="Seconds for stall warning")
@@ -416,7 +427,9 @@ class AlertConfig(StrictModel):
     """Alert configuration."""
 
     enabled: bool = True
-    check_interval_seconds: int = Field(default=30, description="How often to check alerts")
+    check_interval_seconds: int = Field(
+        default=30, ge=1, description="How often to check alerts (at least 1 s)"
+    )
     thresholds: AlertThresholds = Field(default_factory=AlertThresholds)
     webhook_url: str | None = Field(default=None, description="Webhook URL for notifications")
     webhook_headers: dict[str, str] = Field(default_factory=dict)

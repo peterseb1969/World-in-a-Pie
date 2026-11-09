@@ -152,7 +152,7 @@ async def test_validate_changed_type_versions_with_diff(client: AsyncClient, aut
     payload_v2 = _person_v1_payload()
     payload_v2["value"] = "PERSON_TYPE"
     for f in payload_v2["fields"]:
-        if f["name"] == "national_id":
+        if f["name"] == "first_name":
             f["type"] = "integer"
 
     second = await _post(client, auth_headers, [payload_v2], on_conflict="validate")
@@ -161,7 +161,37 @@ async def test_validate_changed_type_versions_with_diff(client: AsyncClient, aut
     assert item["status"] == "updated"
     assert item["version"] == 2
     diffs = item["details"]["changed_type"]
-    assert any(d["name"] == "national_id" and d["new_type"] == "integer" for d in diffs)
+    assert any(d["name"] == "first_name" and d["new_type"] == "integer" for d in diffs)
+
+
+@pytest.mark.asyncio
+async def test_an_identity_field_keeps_its_type(client: AsyncClient, auth_headers: dict):
+    """An identity field that changed type would hash its values
+    differently ("123" vs 123): re-posted documents would fork instead of
+    versioning. Refused like a change of identity_fields."""
+    payload = _person_v1_payload()
+    payload["value"] = "PERSON_IDTYPE"
+    await _post(client, auth_headers, [payload])
+
+    payload_v2 = _person_v1_payload()
+    payload_v2["value"] = "PERSON_IDTYPE"
+    for f in payload_v2["fields"]:
+        if f["name"] == "national_id":
+            f["type"] = "integer"
+    second = await _post(client, auth_headers, [payload_v2])
+    item = second["results"][0]
+    assert item["status"] == "error"
+    assert item["error_code"] == "identity_fields_immutable"
+    assert "national_id" in item["error"]
+
+    # The update route refuses it too.
+    put = await client.put(
+        "/api/template-store/templates", headers=auth_headers,
+        json=[{"template_id": item["id"], "fields": payload_v2["fields"]}],
+    )
+    assert put.status_code == 200
+    result = put.json()["results"][0]
+    assert (result["status"], result["error_code"]) == ("error", "identity_fields_immutable")
 
 
 @pytest.mark.asyncio

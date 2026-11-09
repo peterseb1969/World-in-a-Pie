@@ -1,5 +1,5 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-wip://data-model sha256:97f5dff9c335686b reviewed:ad5c5e3b
+wip://data-model sha256:6690e3cfbb07c1c4 reviewed:0a4b9110
 wip://conventions sha256:bd4259ff22991af9 reviewed:1e60af64
 docs/WIP_PoNIFs.md sha256:5834cbc38977bdad reviewed:57e75bd9
 docs/design/ontology-support.md sha256:06666e3c8f3a3cc1 reviewed:ea985986
@@ -24,6 +24,7 @@ docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca revi
 - `type: array` → `array_item_type`; `array_terminology_ref` / `array_template_ref` / `array_file_config` for term / object / file items; an array of references must set `reference_type`.
 - Terms: `value` (unique within terminology), `label`, optional `description`, `names` or `aliases`.
 - `full_text_indexed: true` only on string fields with reporting sync enabled.
+- Field names: no `.`, `"` or NUL.
 
 ## Identity fields — the hash decides create vs update
 - `create_document` is an upsert: same identity hash → new version of the same document; different hash → new document.
@@ -34,7 +35,7 @@ docs/slash-commands/app-builder/wip-design-model.md sha256:88c3300b894dc3ca revi
 - Empty `identity_fields` = append-only: every create makes a new document, and `update_document` (PATCH) is rejected with `append_only`. Use it only for event logs and similar.
 - Do not add a synthetic identity field to a template that should be append-only.
 - A term- or reference-typed identity field hashes the resolved referent's canonical ID, not the spelling: aliases of one term are one identity. If it cannot be resolved the write is rejected (fail-closed); an ambiguous name on an identity field is rejected too.
-- `identity_fields` cannot change across template versions (`identity_fields_immutable`). Changing identity is a fork: declare a new template value. Get it right in Phase 2.
+- `identity_fields` and their types are fixed (`identity_fields_immutable`); new identity = new template value. Get it right in Phase 2.
 - PATCH cannot change identity fields (`identity_field_change`) — create a new document instead.
 
 ## `metadata.*` is never identity or structure

@@ -44,7 +44,8 @@ async def test_active_alerts_are_not_raised_again_nor_downgraded_and_new_ones_ar
 
     # Warning levels while the criticals are active: nothing new, still critical.
     collector.last_event_at = datetime.now(UTC) - timedelta(seconds=400)
-    collector.events_processed, collector.events_failed = 9, 1
+    # Since the previous check: 9 processed, 1 failed — 10%, warning level.
+    collector.events_processed, collector.events_failed = 10, 2
     warned = await collector.check_alerts(_consumer(500), nats_connected=True, postgres_connected=False)
     assert warned == []
     assert {a.alert_type.value: a.severity for a in collector.get_active_alerts()} == {
