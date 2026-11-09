@@ -26,6 +26,7 @@ import contextlib
 import contextvars
 import os
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from typing import Any, cast
 
 import httpx
@@ -130,11 +131,52 @@ async def resolve_term_values(
         return []
     _stats["values"] += len(items)
     batch = _batch.get()
+    plan = await _plan_term_resolution(items, namespace, batch)
+    if plan.pending:
+        keys = list(plan.pending)
+        resolved = await _resolve_keys(
+            keys, batch, base_url or _get_def_store_url(), api_key or _get_api_key(), timeout,
+        )
+        for key, result in zip(keys, resolved, strict=True):
+            for index in plan.pending[key]:
+                plan.results[index] = result
+    for index, future in plan.shared:
+        plan.results[index] = await future
+    # Each result names the terminology its value was resolved in, valid or
+    # not: the caller decides by terminology (e.g. whether the writer may
+    # reference its namespace), so a present and an absent value must carry
+    # it alike. A copy per item: resolutions are shared across a batch.
+    for index, terminology_id in enumerate(plan.terminology_ids):
+        if terminology_id is not None:
+            plan.results[index] = {**cast(dict[str, Any], plan.results[index]),
+                                   "terminology_id": terminology_id}
+    return cast(list[dict[str, Any]], plan.results)
 
-    results: list[dict[str, Any] | None] = [None] * len(items)
-    terminology_ids: list[str | None] = [None] * len(items)
-    pending: dict[tuple[str, str], list[int]] = {}
-    shared: list[tuple[int, asyncio.Future[dict[str, Any]]]] = []
+
+_TermKey = tuple[str, str]
+
+
+@dataclass
+class _TermPlan:
+    """How a request's items will be answered: results known already (an
+    unresolved terminology), each item's terminology id, the keys to ask
+    def-store for (with the items waiting on each), and items answered by a
+    resolution another caller in the batch already has in flight."""
+
+    results: list[dict[str, Any] | None]
+    terminology_ids: list[str | None]
+    pending: dict[_TermKey, list[int]] = field(default_factory=dict)
+    shared: list[tuple[int, asyncio.Future[dict[str, Any]]]] = field(default_factory=list)
+
+
+async def _plan_term_resolution(
+    items: list[dict[str, str]],
+    namespace: str | None,
+    batch: dict[_TermKey, asyncio.Future[dict[str, Any]]] | None,
+) -> _TermPlan:
+    """Resolve each distinct terminology ref once and sort the items into
+    errors, shared resolutions and keys to ask."""
+    plan = _TermPlan(results=[None] * len(items), terminology_ids=[None] * len(items))
     canonical: dict[str, str | None] = {}
     for index, item in enumerate(items):
         ref = item["terminology_ref"]
@@ -142,52 +184,47 @@ async def resolve_term_values(
             canonical[ref] = await _resolve_terminology_ref(ref, namespace)
         terminology_id = canonical[ref]
         if terminology_id is None:
-            results[index] = {"valid": False, "error": f"Terminology '{ref}' not found"}
+            plan.results[index] = {"valid": False, "error": f"Terminology '{ref}' not found"}
             continue
-        terminology_ids[index] = terminology_id
+        plan.terminology_ids[index] = terminology_id
         key = (terminology_id, item["value"])
         if batch is not None and key in batch:
             _stats["batch_reused"] += 1
-            shared.append((index, batch[key]))
+            plan.shared.append((index, batch[key]))
             continue
-        pending.setdefault(key, []).append(index)
+        plan.pending.setdefault(key, []).append(index)
+    return plan
 
-    if pending:
-        keys = list(pending)
-        owned: dict[tuple[str, str], asyncio.Future[dict[str, Any]]] = {}
-        if batch is not None:
-            loop = asyncio.get_running_loop()
-            for key in keys:
-                owned[key] = batch[key] = loop.create_future()
-        try:
-            resolved = await _resolve_remote(
-                keys, base_url or _get_def_store_url(), api_key or _get_api_key(), timeout,
-            )
-        except BaseException as e:
-            # Waiters see the same failure; later documents may retry.
-            for key, future in owned.items():
-                if batch is not None:
-                    batch.pop(key, None)
-                future.set_exception(e)
-                future.exception()  # retrieved here: no waiter is required
-            raise
-        for key, result in zip(keys, resolved, strict=True):
-            if key in owned:
-                owned[key].set_result(result)
-            for index in pending[key]:
-                results[index] = result
 
-    for index, future in shared:
-        results[index] = await future
-    # Each result names the terminology its value was resolved in, valid or
-    # not: the caller decides by terminology (e.g. whether the writer may
-    # reference its namespace), so a present and an absent value must carry
-    # it alike. A copy per item: resolutions are shared across a batch.
-    for index, terminology_id in enumerate(terminology_ids):
-        if terminology_id is not None:
-            results[index] = {**cast(dict[str, Any], results[index]),
-                              "terminology_id": terminology_id}
-    return cast(list[dict[str, Any]], results)
+async def _resolve_keys(
+    keys: list[_TermKey],
+    batch: dict[_TermKey, asyncio.Future[dict[str, Any]]] | None,
+    base_url: str,
+    api_key: str,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    """Ask def-store for the keys in one call. Inside a batch each key's
+    resolution is published as a future first, so concurrent callers wait
+    on this call instead of asking again; a failure reaches every waiter and
+    leaves the batch, so later documents may retry."""
+    owned: dict[_TermKey, asyncio.Future[dict[str, Any]]] = {}
+    if batch is not None:
+        loop = asyncio.get_running_loop()
+        for key in keys:
+            owned[key] = batch[key] = loop.create_future()
+    try:
+        resolved = await _resolve_remote(keys, base_url, api_key, timeout)
+    except BaseException as e:
+        for key, future in owned.items():
+            if batch is not None:
+                batch.pop(key, None)
+            future.set_exception(e)
+            future.exception()  # retrieved here: no waiter is required
+        raise
+    for key, result in zip(keys, resolved, strict=True):
+        if key in owned:
+            owned[key].set_result(result)
+    return resolved
 
 
 async def _resolve_terminology_ref(terminology_ref: str, namespace: str | None) -> str | None:
