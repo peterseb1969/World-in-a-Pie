@@ -217,6 +217,20 @@ async def test_orphan_cleanup_drops_only_reporting_shaped_schemas_of_unknown_nam
     await sm.ensure_terms_table("gone-terms")
     await pg_pool.execute('CREATE SCHEMA "foreign-ns"')
     await pg_pool.execute('CREATE TABLE "foreign-ns".something_else (id int)')
+    # Schemas holding no base table at all: only what reporting-sync makes
+    # counts, so a lone view, sequence or function keeps a schema.
+    await pg_pool.execute('CREATE SCHEMA "view-only"')
+    await pg_pool.execute('CREATE VIEW "view-only".v AS SELECT 1 AS one')
+    await pg_pool.execute('CREATE SCHEMA "seq-only"')
+    await pg_pool.execute('CREATE SEQUENCE "seq-only".s')
+    await pg_pool.execute('CREATE SCHEMA "fn-only"')
+    await pg_pool.execute('CREATE FUNCTION "fn-only".f() RETURNS int LANGUAGE sql AS $$ SELECT 1 $$')
+    # A registered view is reporting-sync's own.
+    await pg_pool.execute('CREATE SCHEMA "gone-views"')
+    await pg_pool.execute('CREATE VIEW "gone-views".v_reg AS SELECT 1 AS one')
+    await pg_pool.execute(
+        "INSERT INTO public._wip_views (namespace, view_name, view_sql) VALUES ('gone-views', 'v_reg', 'SELECT 1')"
+    )
 
     known = {"live-ns": "active"}
 
@@ -227,13 +241,13 @@ async def test_orphan_cleanup_drops_only_reporting_shaped_schemas_of_unknown_nam
     monkeypatch.setattr(main.state, "postgres_pool", pg_pool)
 
     preview = await main.clean_orphan_schemas(dry_run=True)
-    assert preview["orphans"] == ["gone-ns", "gone-terms"]
-    assert "foreign-ns" in preview["skipped"]
+    assert preview["orphans"] == ["gone-ns", "gone-terms", "gone-views"]
+    assert set(preview["skipped"]) == {"foreign-ns", "view-only", "seq-only", "fn-only"}
     assert preview["rows_dropped"] == {}
     assert await _schema_exists(pg_pool, "gone-ns")
 
     applied = await main.clean_orphan_schemas(dry_run=False)
-    assert set(applied["rows_dropped"]) == {"gone-ns", "gone-terms"}
+    assert set(applied["rows_dropped"]) == {"gone-ns", "gone-terms", "gone-views"}
     for schema, present in (("live-ns", True), ("gone-ns", False), ("gone-terms", False), ("foreign-ns", True)):
         assert await _schema_exists(pg_pool, schema) is present
     assert await _tombstoned(pg_pool, "gone-ns")
@@ -242,6 +256,7 @@ async def test_orphan_cleanup_drops_only_reporting_shaped_schemas_of_unknown_nam
 @requires_postgres
 @pytest.mark.asyncio
 async def test_orphan_cleanup_drops_nothing_when_the_registry_cannot_answer(pg_pool, monkeypatch):
+    await main.init_postgres_schema(pg_pool)
     await SchemaManager(pg_pool, namespace_status=_never_called()).ensure_terms_table("gone-ns")
 
     async def lookup(namespace):

@@ -126,6 +126,10 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   namespaces' views that `DROP SCHEMA … CASCADE` took with it. A
   force-rebuild of one template puts back the namespace's other registered
   views at once (it left all of them dropped until the next rebuild).
+  `POST /maintenance/orphan-schemas` drops a schema only when everything in
+  it is reporting-sync's own (doc_* tables and views, metadata tables,
+  registered views); one holding any other view, sequence, function or type
+  is skipped (a schema without base tables used to be dropped).
 - **Batch sync:** jobs of two templates sharing a value (they write the same
   tables) run one after the other; batch-all's definition sync also syncs
   template metadata and logs incomplete sweeps; at most 200 finished jobs are

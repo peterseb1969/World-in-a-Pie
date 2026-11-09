@@ -2730,6 +2730,49 @@ _NAMESPACE_METADATA_TABLES = frozenset({
     "templates", "terminologies", "terms", "term_names", "term_relations", "term_closure",
 })
 
+# Every object in each candidate schema that is not part of another object
+# (indexes, a table's row type and its sequences go with their table), with
+# the views registered for that namespace. Kinds: table, view, matview,
+# sequence, foreign table, function, type.
+_SCHEMA_CONTENTS_SQL = r"""
+    SELECT n.nspname AS schema,
+           array_remove(array_agg(o.kind), NULL) AS kinds,
+           array_remove(array_agg(o.name), NULL) AS names,
+           COALESCE((SELECT array_agg(v.view_name::text) FROM public._wip_views v
+                     WHERE v.namespace = n.nspname), '{}') AS registered_views
+    FROM pg_namespace n
+    LEFT JOIN (
+        SELECT c.relnamespace AS ns, c.relname::text AS name,
+               CASE c.relkind WHEN 'r' THEN 'table' WHEN 'p' THEN 'table'
+                    WHEN 'v' THEN 'view' WHEN 'm' THEN 'matview'
+                    WHEN 'S' THEN 'sequence' ELSE 'foreign table' END AS kind
+        FROM pg_class c
+        WHERE c.relkind IN ('r', 'p', 'v', 'm', 'S', 'f')
+          AND NOT EXISTS (SELECT 1 FROM pg_depend d
+                          WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid
+                            AND d.deptype IN ('a', 'i'))
+        UNION ALL
+        SELECT p.pronamespace, p.proname::text, 'function' FROM pg_proc p
+        UNION ALL
+        SELECT t.typnamespace, t.typname::text, 'type' FROM pg_type t
+        WHERE t.typrelid = 0 AND t.typelem = 0 AND t.typtype IN ('c', 'd', 'e', 'r', 'm')
+    ) o ON o.ns = n.oid
+    WHERE n.nspname NOT IN ('public', 'information_schema')
+      AND n.nspname NOT LIKE 'pg\_%'
+    GROUP BY n.oid, n.nspname
+    ORDER BY n.nspname
+"""
+
+
+def _created_by_reporting_sync(kind: str, name: str, registered_views: list[str]) -> bool:
+    """Whether an object in a namespace schema is one reporting-sync makes:
+    doc_* tables and views, the metadata tables, registered views."""
+    if kind == "table":
+        return name.startswith("doc_") or name in _NAMESPACE_METADATA_TABLES
+    if kind == "view":
+        return name.startswith("doc_") or name in registered_views
+    return False
+
 
 @router.post("/maintenance/orphan-schemas", dependencies=[_PRIVILEGED])
 async def clean_orphan_schemas(dry_run: bool = True):
@@ -2737,9 +2780,11 @@ async def clean_orphan_schemas(dry_run: bool = True):
 
     Events that arrived after a namespace deletion could re-create its schema
     before reporting-sync recorded deleted namespaces. A schema is an orphan
-    when the Registry has no namespace of that name and every base table in
-    it is one reporting-sync creates; a schema holding anything else is
-    reported under `skipped`, never dropped. If the Registry cannot answer for
+    when the Registry has no namespace of that name and everything in it is
+    something reporting-sync creates (doc_* tables and views, the metadata
+    tables, the namespace's registered views); a schema holding anything else
+    (another view, a sequence, a function, a type) is reported under
+    `skipped`, never dropped. If the Registry cannot answer for
     any schema, nothing is dropped. Dropping writes the namespace's tombstone,
     as a namespace deletion does.
     """
@@ -2747,19 +2792,7 @@ async def clean_orphan_schemas(dry_run: bool = True):
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     async with state.postgres_pool.acquire() as conn:
-        rows = await conn.fetch(
-            """
-            SELECT n.nspname AS schema,
-                   array_remove(array_agg(t.table_name::text), NULL) AS tables
-            FROM pg_namespace n
-            LEFT JOIN information_schema.tables t
-              ON t.table_schema = n.nspname AND t.table_type = 'BASE TABLE'
-            WHERE n.nspname NOT IN ('public', 'information_schema')
-              AND n.nspname NOT LIKE 'pg\\_%'
-            GROUP BY n.nspname
-            ORDER BY n.nspname
-            """
-        )
+        rows = await conn.fetch(_SCHEMA_CONTENTS_SQL)
 
     orphans: list[str] = []
     skipped: dict[str, str] = {}
@@ -2775,11 +2808,11 @@ async def clean_orphan_schemas(dry_run: bool = True):
         if exists:
             continue
         foreign = sorted(
-            t for t in row["tables"]
-            if not t.startswith("doc_") and t not in _NAMESPACE_METADATA_TABLES
+            f"{kind} {name}" for kind, name in zip(row["kinds"], row["names"], strict=True)
+            if not _created_by_reporting_sync(kind, name, row["registered_views"])
         )
         if foreign:
-            skipped[schema] = f"holds tables reporting-sync does not create: {', '.join(foreign)}"
+            skipped[schema] = f"holds objects reporting-sync does not create: {', '.join(foreign)}"
         else:
             orphans.append(schema)
 
