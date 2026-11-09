@@ -234,7 +234,26 @@ async def claim_keys_pending_bulk(
     one at a time, as before, it would have found the key free.
     """
     token = token or new_claim_token()
-    collection = CompositeKeyClaim.get_motor_collection()
+    docs, doc_group = _pending_claim_docs(groups, token)
+    duplicates = await _insert_claims(docs)
+    blocked: list[str | None] = [None] * len(groups)
+    for di in sorted(duplicates):
+        gi = doc_group[di]
+        if blocked[gi] is None:
+            blocked[gi] = await _claim_one_pending(_doc_key(docs[di]), token)
+
+    failed = [gi for gi, b in enumerate(blocked) if b is not None]
+    if failed:
+        await release_keys_bulk([key for gi in failed for key in groups[gi]], token)
+        await _reclaim_blocked_by_rollback(groups, blocked, failed, token)
+    return blocked
+
+
+def _pending_claim_docs(
+    groups: Sequence[Sequence[ClaimKey]], token: str,
+) -> tuple[list[dict], list[int]]:
+    """The pending-claim documents of every key with a hash, and for each
+    the index of the group it belongs to."""
     now = datetime.now(UTC)
     docs: list[dict] = []
     doc_group: list[int] = []
@@ -253,39 +272,44 @@ async def claim_keys_pending_bulk(
                 "claim_token": token,
             })
             doc_group.append(gi)
+    return docs, doc_group
 
+
+async def _insert_claims(docs: list[dict]) -> list[int]:
+    """Insert the claims unordered; the indexes of those that hit the unique
+    index. Any other write error propagates."""
+    if not docs:
+        return []
     duplicates: list[int] = []
-    if docs:
-        try:
-            await collection.insert_many(docs, ordered=False)
-        except BulkWriteError as e:
-            for error in e.details.get("writeErrors", []):
-                if error.get("code") != 11000:
-                    raise
-                duplicates.append(error["index"])
+    try:
+        await CompositeKeyClaim.get_motor_collection().insert_many(docs, ordered=False)
+    except BulkWriteError as e:
+        for error in e.details.get("writeErrors", []):
+            if error.get("code") != 11000:
+                raise
+            duplicates.append(error["index"])
+    return duplicates
 
-    blocked: list[str | None] = [None] * len(groups)
-    for di in sorted(duplicates):
-        gi = doc_group[di]
-        if blocked[gi] is not None:
-            continue
-        d = docs[di]
-        blocked[gi] = await _claim_one_pending((
-            d["namespace"], d["entity_type"], d["composite_key_hash"],
-            d["owner_entry_id"], d["kind"],
-        ), token)
 
-    failed = [gi for gi, b in enumerate(blocked) if b is not None]
-    if not failed:
-        return blocked
-    await release_keys_bulk([key for gi in failed for key in groups[gi]], token)
+def _doc_key(doc: dict) -> ClaimKey:
+    return (
+        doc["namespace"], doc["entity_type"], doc["composite_key_hash"],
+        doc["owner_entry_id"], doc["kind"],
+    )
 
+
+async def _reclaim_blocked_by_rollback(
+    groups: Sequence[Sequence[ClaimKey]], blocked: list[str | None],
+    failed: list[int], token: str,
+) -> None:
+    """Claim again, pair by pair, each released group whose only blocker was
+    another group of the batch that was itself rolled back: taken one at a
+    time, it would have found the key free. Updates ``blocked`` in place."""
     rolled_back = {key[3] for gi in failed for key in groups[gi]}
     for gi in failed:
         own = {key[3] for key in groups[gi]}
         if blocked[gi] in rolled_back - own:
             blocked[gi] = await _claim_group_one_by_one(groups[gi], token)
-    return blocked
 
 
 async def confirm_keys_bulk(keys: Sequence[ClaimKey]) -> None:
