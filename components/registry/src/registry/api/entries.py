@@ -9,7 +9,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
-import httpx
 from beanie.odm.utils.encoder import Encoder
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pymongo import UpdateOne
@@ -163,7 +162,6 @@ def build_lookup_response(
     matched_entity_type: str | None = None,
     matched_composite_key: dict | None = None,
     matched_via: str | None = None,
-    source_data: dict | None = None,
     error: str | None = None
 ) -> LookupResponse:
     """Build a standardized lookup response."""
@@ -186,7 +184,6 @@ def build_lookup_response(
         matched_via=matched_via,
         synonyms=entry.synonyms,
         source_info=entry.source_info,
-        source_data=source_data,
         error=error
     )
 
@@ -1853,12 +1850,11 @@ async def lookup_by_ids(
     """
     access = NamespaceAccess(identity)
     results: list[LookupResponse] = []
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        for i, item in enumerate(items):
-            try:
-                results.append(await _lookup_one(i, item, access, identity, client))
-            except Exception as e:
-                results.append(LookupResponse(index=i, status="error", **error_fields(e)))
+    for i, item in enumerate(items):
+        try:
+            results.append(await _lookup_one(i, item, access, identity))
+        except Exception as e:
+            results.append(LookupResponse(index=i, status="error", **error_fields(e)))
     statuses = [r.status for r in results]
     return LookupBulkResponse(
         results=results, total=len(items),
@@ -1872,7 +1868,6 @@ async def _lookup_one(
     item: LookupByIdItem,
     access: NamespaceAccess,
     identity: UserIdentity,
-    client: httpx.AsyncClient,
 ) -> LookupResponse:
     """Look one item up: by entry_id, else by the values of entries' keys."""
     invalid = invalid_entity_type_fields(item.entity_type)
@@ -1891,12 +1886,7 @@ async def _lookup_one(
     if not entry:
         return LookupResponse(index=i, status="not_found")
 
-    source_data = None
-    if item.fetch_source_data and entry.source_info and entry.source_info.endpoint_url:
-        source_data = await _fetch_source_data(client, entry.source_info.endpoint_url)
-    return build_lookup_response(
-        index=i, entry=entry, matched_via=matched_via, source_data=source_data,
-    )
+    return build_lookup_response(index=i, entry=entry, matched_via=matched_via)
 
 
 async def _lookup_by_entry_id(item: LookupByIdItem, access: NamespaceAccess) -> RegistryEntry | None:
@@ -1942,18 +1932,6 @@ async def _lookup_by_key_value(
             candidates=[_candidate(m, item.entry_id) for m in matches[:_RESOLVE_CANDIDATE_LIMIT]],
         )
     return matches[0] if matches else None
-
-
-async def _fetch_source_data(client: httpx.AsyncClient, url: str) -> Any:
-    """The JSON the entry's source endpoint answers, or a note of the
-    failure."""
-    try:
-        resp = await client.get(url)
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        return {"error": f"Failed to fetch: {e!s}"}
-
 
 
 def _candidate(entry: RegistryEntry, value: str) -> LookupCandidate:
@@ -2067,117 +2045,106 @@ async def lookup_by_keys(
     error_count = 0
     access = NamespaceAccess(identity)
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        for i, item in enumerate(items):
-            try:
-                invalid = invalid_entity_type_fields(item.entity_type)
-                if invalid:
-                    results.append(LookupResponse(index=i, status="error", **invalid))
-                    error_count += 1
-                    continue
+    for i, item in enumerate(items):
+        try:
+            invalid = invalid_entity_type_fields(item.entity_type)
+            if invalid:
+                results.append(LookupResponse(index=i, status="error", **invalid))
+                error_count += 1
+                continue
 
-                if not await access.allows(item.namespace, "read"):
-                    results.append(LookupResponse(index=i, status="not_found"))
-                    not_found_count += 1
-                    continue
+            if not await access.allows(item.namespace, "read"):
+                results.append(LookupResponse(index=i, status="not_found"))
+                not_found_count += 1
+                continue
 
-                key_hash = HashService.compute_composite_key_hash(item.composite_key)
+            key_hash = HashService.compute_composite_key_hash(item.composite_key)
 
-                if item.search_synonyms:
-                    query = {
-                        "$or": [
-                            {
-                                "namespace": item.namespace,
-                                "entity_type": item.entity_type,
-                                "primary_composite_key_hash": key_hash
-                            },
-                            {
-                                "synonyms": {
-                                    "$elemMatch": {
-                                        "namespace": item.namespace,
-                                        "entity_type": item.entity_type,
-                                        "composite_key_hash": key_hash,
-                                        "status": {"$ne": "inactive"},
-                                    }
+            if item.search_synonyms:
+                query = {
+                    "$or": [
+                        {
+                            "namespace": item.namespace,
+                            "entity_type": item.entity_type,
+                            "primary_composite_key_hash": key_hash
+                        },
+                        {
+                            "synonyms": {
+                                "$elemMatch": {
+                                    "namespace": item.namespace,
+                                    "entity_type": item.entity_type,
+                                    "composite_key_hash": key_hash,
+                                    "status": {"$ne": "inactive"},
                                 }
                             }
-                        ],
-                        "status": "active"
-                    }
-                else:
-                    query = {
-                        "namespace": item.namespace,
-                        "entity_type": item.entity_type,
-                        "primary_composite_key_hash": key_hash,
-                        "status": "active"
-                    }
+                        }
+                    ],
+                    "status": "active"
+                }
+            else:
+                query = {
+                    "namespace": item.namespace,
+                    "entity_type": item.entity_type,
+                    "primary_composite_key_hash": key_hash,
+                    "status": "active"
+                }
 
-                # CASE-427 defensive guard: fetch up to 2 matches in one query
-                # so we can detect (and loudly log) the invariant violation of a
-                # composite key resolving to more than one entry — which the
-                # claim gate + migration make impossible. No client-facing change;
-                # [0] is the deterministic pick exactly as find_one returned.
-                matches = await RegistryEntry.find(query).limit(2).to_list()
-                if len(matches) > 1:
-                    logger.error(
-                        "CASE-427 INVARIANT VIOLATION: composite key %s (%s/%s) "
-                        "resolved to multiple entries %s — uniqueness gate breached.",
-                        key_hash, item.namespace, item.entity_type,
-                        [e.entry_id for e in matches],
-                    )
-                entry = matches[0] if matches else None
+            # CASE-427 defensive guard: fetch up to 2 matches in one query
+            # so we can detect (and loudly log) the invariant violation of a
+            # composite key resolving to more than one entry — which the
+            # claim gate + migration make impossible. No client-facing change;
+            # [0] is the deterministic pick exactly as find_one returned.
+            matches = await RegistryEntry.find(query).limit(2).to_list()
+            if len(matches) > 1:
+                logger.error(
+                    "CASE-427 INVARIANT VIOLATION: composite key %s (%s/%s) "
+                    "resolved to multiple entries %s — uniqueness gate breached.",
+                    key_hash, item.namespace, item.entity_type,
+                    [e.entry_id for e in matches],
+                )
+            entry = matches[0] if matches else None
 
-                # A synonym takes its entry's namespace and type (enforced on
-                # add), so a key looked up in one namespace/type can only name
-                # an entry of that namespace/type. One stored before that rule
-                # would hand back another namespace's or type's entity: refuse
-                # it loudly rather than answer with the wrong thing.
-                if entry and (entry.namespace, entry.entity_type) != (item.namespace, item.entity_type):
-                    logger.error(
-                        "Synonym scope violation: key %s looked up as %s/%s matched "
-                        "entry %s, which is %s/%s — not returned.",
-                        key_hash, item.namespace, item.entity_type,
-                        entry.entry_id, entry.namespace, entry.entity_type,
-                    )
-                    entry = None
+            # A synonym takes its entry's namespace and type (enforced on
+            # add), so a key looked up in one namespace/type can only name
+            # an entry of that namespace/type. One stored before that rule
+            # would hand back another namespace's or type's entity: refuse
+            # it loudly rather than answer with the wrong thing.
+            if entry and (entry.namespace, entry.entity_type) != (item.namespace, item.entity_type):
+                logger.error(
+                    "Synonym scope violation: key %s looked up as %s/%s matched "
+                    "entry %s, which is %s/%s — not returned.",
+                    key_hash, item.namespace, item.entity_type,
+                    entry.entry_id, entry.namespace, entry.entity_type,
+                )
+                entry = None
 
-                if not entry or not await access.allows(entry.namespace, "read"):
-                    results.append(LookupResponse(index=i, status="not_found"))
-                    not_found_count += 1
-                    continue
+            if not entry or not await access.allows(entry.namespace, "read"):
+                results.append(LookupResponse(index=i, status="not_found"))
+                not_found_count += 1
+                continue
 
-                matched_namespace = item.namespace
-                matched_entity_type = item.entity_type
-                matched_composite_key = item.composite_key
-                if entry.primary_composite_key_hash != key_hash:
-                    for syn in entry.active_synonyms():
-                        if syn.composite_key_hash == key_hash:
-                            matched_namespace = syn.namespace
-                            matched_entity_type = syn.entity_type
-                            matched_composite_key = syn.composite_key
-                            break
+            matched_namespace = item.namespace
+            matched_entity_type = item.entity_type
+            matched_composite_key = item.composite_key
+            if entry.primary_composite_key_hash != key_hash:
+                for syn in entry.active_synonyms():
+                    if syn.composite_key_hash == key_hash:
+                        matched_namespace = syn.namespace
+                        matched_entity_type = syn.entity_type
+                        matched_composite_key = syn.composite_key
+                        break
 
-                source_data = None
-                if item.fetch_source_data and entry.source_info and entry.source_info.endpoint_url:
-                    try:
-                        resp = await client.get(entry.source_info.endpoint_url)
-                        resp.raise_for_status()
-                        source_data = resp.json()
-                    except Exception as e:
-                        source_data = {"error": f"Failed to fetch: {e!s}"}
+            results.append(build_lookup_response(
+                index=i, entry=entry,
+                matched_namespace=matched_namespace,
+                matched_entity_type=matched_entity_type,
+                matched_composite_key=matched_composite_key,
+            ))
+            found_count += 1
 
-                results.append(build_lookup_response(
-                    index=i, entry=entry,
-                    matched_namespace=matched_namespace,
-                    matched_entity_type=matched_entity_type,
-                    matched_composite_key=matched_composite_key,
-                    source_data=source_data
-                ))
-                found_count += 1
-
-            except Exception as e:
-                results.append(LookupResponse(index=i, status="error", **error_fields(e)))
-                error_count += 1
+        except Exception as e:
+            results.append(LookupResponse(index=i, status="error", **error_fields(e)))
+            error_count += 1
 
     return LookupBulkResponse(
         results=results, total=len(items),

@@ -7,6 +7,23 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### Registry lookups no longer fetch an entry's `endpoint_url` (@wip/client 0.103.0)
+
+- `POST /api/registry/entries/lookup/by-id` and `/lookup/by-key` accepted
+  `fetch_source_data: true` per item and then made the Registry `GET` the
+  entry's stored `source_info.endpoint_url` from inside the platform
+  network, returning the answer as `source_data` — or the error text, which
+  told reachable internal hosts from unreachable ones. Any key with read on
+  the namespace could trigger it. Nothing in the platform used it.
+- The option and the fetch are removed. `source_info.endpoint_url` stays,
+  as stored data a client may follow itself; `source_data` is gone from the
+  lookup response.
+- `@wip/client` 0.103.0: `RegistryLookupResponse` loses `source_data`. The
+  MCP client's `lookup_by_id` loses its `fetch_source_data` parameter.
+- **Action:** a caller still sending `fetch_source_data` gets a 422 (the
+  request models forbid unknown fields); drop it, and fetch the URL itself
+  if it needs the data.
+
 ### A term's parent and replacement must be active terms of its terminology; a case-insensitive terminology holds one of `Foo` and `foo` (@wip/client 0.102.0)
 
 - **`parent_term_id`** was stored as sent on create, bulk create and update —

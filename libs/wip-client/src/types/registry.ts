@@ -151,8 +151,8 @@ export interface RegistryLookupResponse {
   matched_composite_key: Record<string, unknown> | null
   matched_via: string | null
   synonyms: RegistrySynonym[]
+  /** Stored source details, as data: the Registry never requests endpoint_url itself. */
   source_info: RegistrySourceInfo | null
-  source_data: Record<string, unknown> | null
   /** When status is 'ambiguous': the entries the value resolves to. */
   candidates?: RegistryLookupCandidate[]
   error: string | null

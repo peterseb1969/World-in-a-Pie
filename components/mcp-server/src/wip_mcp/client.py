@@ -530,11 +530,11 @@ class WipClient:
         )
         return resp["results"][0] if resp.get("results") else resp
 
-    async def lookup_by_id(self, entry_id: str, fetch_source_data: bool = False) -> dict:
+    async def lookup_by_id(self, entry_id: str) -> dict:
         resp = await self._post(
             self.registry_url,
             "/api/registry/entries/lookup/by-id",
-            json=[{"entry_id": entry_id, "fetch_source_data": fetch_source_data}],
+            json=[{"entry_id": entry_id}],
         )
         return resp["results"][0] if resp.get("results") else resp
 

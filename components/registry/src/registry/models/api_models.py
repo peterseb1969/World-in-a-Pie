@@ -565,7 +565,6 @@ class LookupByIdItem(StrictModel):
     entry_id: str = Field(..., description="The entry ID to look up")
     namespace: str | None = Field(default=None, description="Namespace filter")
     entity_type: str | None = Field(default=None, description="Entity type filter")
-    fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
 
 
 class LookupByKeyItem(StrictModel):
@@ -575,7 +574,6 @@ class LookupByKeyItem(StrictModel):
     entity_type: str = Field(..., description="Entity type to search in")
     composite_key: dict[str, Any] = Field(..., description="Composite key to look up")
     search_synonyms: bool = Field(default=True, description="Also search in synonyms")
-    fetch_source_data: bool = Field(default=False, description="Whether to fetch from source")
 
 
 class LookupResponse(BaseModel):
@@ -599,8 +597,10 @@ class LookupResponse(BaseModel):
         description="How the match was found: entry_id or composite_key_value"
     )
 
-    source_info: SourceInfo | None = None
-    source_data: dict[str, Any] | None = None
+    source_info: SourceInfo | None = Field(
+        default=None,
+        description="The entry's stored source details, as data: the Registry never requests endpoint_url itself",
+    )
 
     candidates: list["LookupCandidate"] = Field(
         default_factory=list,
