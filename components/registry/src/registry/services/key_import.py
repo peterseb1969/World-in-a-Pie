@@ -25,8 +25,8 @@ Rules:
 - **Never remove on a bad read.** A key file that is missing, unreadable,
   does not parse, or lacks the canary key (every rendered file has it, so a
   file without it is a broken render, not an install with no keys) imports
-  nothing and removes nothing. The same holds for a missing, empty or
-  unparseable reservations file. The previous import stands until the file
+  nothing and removes nothing. The same holds for a missing or unparseable
+  reservations file (an empty one is the deployer's render of "none"). The previous import stands until the file
   is fixed.
 - **A collision: the managed record wins, loudly.** A Console or restored
   record with a name, grant or reserved prefix the file declares is taken

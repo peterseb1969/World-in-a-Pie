@@ -86,12 +86,10 @@ def load_reservations() -> dict[str, Reservation] | None:
     read (none configured, or the configured file is absent), and the caller
     keeps what it has.
 
-    A file that is present and unusable raises ReservationsUnavailable: one
-    that does not parse, and an empty one, which the deployer never renders
-    (it always writes `{"reservations": [...]}`), so an empty read is a file
-    caught mid-write. Guessing would either refuse an app its own namespace
-    or create one at settings nobody approved; `{"reservations": []}` is how
-    a file says there are none.
+    An empty file means no reservations: it is what the deployer renders for
+    an install that reserves none. A file that is present and does not parse
+    raises ReservationsUnavailable: guessing would either refuse an app its
+    own namespace or create one at settings nobody approved.
     """
     path = os.getenv(RESERVATIONS_FILE_ENV)
     if not path:
@@ -105,7 +103,7 @@ def load_reservations() -> dict[str, Reservation] | None:
     except OSError as e:
         raise ReservationsUnavailable(f"cannot read {path}: {e}") from e
     if not raw.strip():
-        raise ReservationsUnavailable(f"{path} is empty; a rendered file always holds a reservations list")
+        return {}
     try:
         parsed = _ReservationsFile.model_validate(json.loads(raw))
     except (ValueError, ValidationError) as e:

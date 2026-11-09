@@ -39,11 +39,9 @@ async def _managed(prefix: str) -> RuntimeReservation | None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad_read", ["empty", "vanished"])
-async def test_a_bad_reservations_read_removes_nothing(client, monkeypatch, tmp_path, bad_read):
-    """The deployer rewrites the file in place: a read that lands between the
-    truncate and the write sees zero bytes, and a file can vanish between the
-    change check and the read. Neither is "no reservations"."""
+async def test_a_vanished_reservations_file_removes_nothing(client, monkeypatch, tmp_path):
+    """A file can vanish between the change check and the read: that is a
+    bad read, not "no reservations"."""
     prefix = _p("res")
     path = tmp_path / "namespace-reservations.json"
     path.write_text(json.dumps({"reservations": [{"prefix": prefix, "app": "cooking"}]}))
@@ -51,13 +49,24 @@ async def test_a_bad_reservations_read_removes_nothing(client, monkeypatch, tmp_
     await key_import.run_pass()
     assert await _managed(prefix) is not None
 
-    if bad_read == "empty":
-        path.write_text("")
-    else:
-        monkeypatch.setattr(key_import.os.path, "exists", lambda _p: True)
-        path.unlink()
+    monkeypatch.setattr(key_import.os.path, "exists", lambda _p: True)
+    path.unlink()
     await key_import.run_pass()
     assert await _managed(prefix) is not None
+
+
+@pytest.mark.asyncio
+async def test_an_empty_reservations_file_means_none(client, monkeypatch, tmp_path):
+    """The deployer renders an empty file for an install that reserves no
+    namespace: the managed reservations go, and lookups answer."""
+    prefix = _p("res")
+    path = tmp_path / "namespace-reservations.json"
+    path.write_text(json.dumps({"reservations": [{"prefix": prefix, "app": "cooking"}]}))
+    monkeypatch.setenv(RESERVATIONS_FILE_ENV, str(path))
+    await key_import.run_pass()
+    path.write_text("")
+    await key_import.ensure_current()
+    assert await _managed(prefix) is None
 
 
 @pytest.mark.asyncio

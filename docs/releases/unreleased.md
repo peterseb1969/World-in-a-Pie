@@ -20,10 +20,10 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   listed, as the config key it is (`source: "config"`, `enabled: false`).
   The create response carries `origin`, `managed_by` and `shadowed_by` like
   a read does.
-- **Key import.** An empty reservations file, or one that vanishes while it
-  is read, is a bad read: the managed reservations stand (the deployer never
-  renders an empty file; `{"reservations": []}` still means none). The key
-  shadow check runs one pass at a time, whoever starts it.
+- **Key import.** A reservations file that vanishes while it is read is a
+  bad read: the managed reservations stand. (An empty file still means no
+  reservations: it is what the deployer renders for an install that reserves
+  none.) The key shadow check runs one pass at a time, whoever starts it.
 - **Grants (docs).** One definition of an orphaned grant (held orphaned in
   the archive, or made for a namespace not on this install) and of what makes
   it effective again (its namespace created, activation, re-granting); bulk
