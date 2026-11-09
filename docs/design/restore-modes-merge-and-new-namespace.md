@@ -125,9 +125,8 @@ bootstrapped namespaces and makes a merged-in record self-labeling: a
 prefixed bootstrap record inside a merged namespace announces which
 namespace's bootstrap it documents. For EXISTING namespaces that still
 carry the unprefixed value, there is no drop parameter and no platform
-special-case. The intended remediation was an operational recipe made of
-first-class operations; for versioned templates none works yet (CASE-1159).
-What the platform guarantees today:
+special-case: the remediation is the target-side converge below, made of
+first-class operations. What the platform guarantees:
 
 - **A template's status alone never refuses a merge.** A retired version
   whose schema matches the target's is the same definition; the target
@@ -139,14 +138,41 @@ What the platform guarantees today:
   version a carried template extends, and the highest version of a template
   whose versions are all inactive.
 
-**There is no working recipe yet for a versioned bootstrap template whose
-shapes drifted.** Converging both sides and migrating the source's records
-does not get the old version out of the archive: `migrate` moves only
-active documents, and on a `versioned: true` template it writes a new
-version while the superseded row stays pinned to the old one. The backup
-carries that pinned version, and pass 1 refuses it on the schema difference.
-Retiring the source's records fails the same way. Only a `versioned: false`
-template, whose writes overwrite in place, leaves no superseded pin behind.
+**The recipe: converge the target, then merge with `align_templates`.**
+Matched by `(value, version)`, the drifted template refuses the merge.
+`align_templates` alone does not get through either when the drift is the
+usual kind — one app added mandatory fields (WIP-KB's record requires
+`title` and `authored_by`; the scaffold's plain record does not): the
+archive's records carry fields the target's schema lacks, so no target
+version can take them and they are reported unplaceable. What gets through
+is one more version of the TARGET's template that can take them:
+
+1. Post the target's template again (an ordinary template update) with the
+   **archive's field definitions copied verbatim** from the archive's
+   `templates.jsonl` — every key of each field, since alignment compares
+   field definitions exactly — plus the target's own other fields, made
+   optional. Identity fields, `usage` and `versioned` must already agree;
+   if they do not, the two templates are different templates and no
+   version can join them.
+2. Dry-run the merge with `align_templates` and read `template_alignment`:
+   `unplaceable_count` must be 0. Each archive version maps onto the
+   target version whose schema is identical, else onto the latest active
+   one that can take it. A document is placed whole or not at all, so an
+   archive version still listed as unplaced (an older shape a migrated
+   record's superseded row pins) gets a converge version of its own, built
+   the same way from that version's fields.
+3. Merge for real with `align_templates`.
+4. Deactivate the converge version(s). The merged records stay pinned to
+   them (a retired version keeps resolving its documents), and the app's
+   own writes go back to resolving its usual version.
+
+Both provenance trails survive, each record with its own data; the cost is
+that the merged records are no longer self-labeling — their origin is in
+the merge job's `template_alignment` report, not on the rows. Do not run
+CASE-1101's older converge-and-migrate recipe first: `migrate` on a
+`versioned: true` template leaves the superseded row pinned to the old
+version, which then has to map too. Pinned by
+`components/document-store/tests/test_case_1159.py`.
 
 ## Mode: fresh
 
