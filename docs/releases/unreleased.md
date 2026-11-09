@@ -29,6 +29,12 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   it effective again (its namespace created, activation, re-granting); bulk
   revoke and activate document their `error` (`managed_by_deployer`) status;
   the permission resolution order lists every step.
+- **Attachments.** A name is its origin's DNS label, so it must end with a
+  letter or digit (`ab-` is refused with 422); the app edge applies the same
+  rule. An upstream on port 0 is refused (`upstream_invalid`). Docs:
+  attaching is platform-admin only, and a request with an item the request
+  schema refuses is rejected whole with 422; `policy_unavailable` is the
+  Registry's reading of the policy file, not what the edge serves.
 
 ### `@wip/proxy` 0.9.0 no longer forwards a client's identity: `forwardIdentity` is removed
 

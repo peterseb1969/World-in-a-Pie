@@ -1080,8 +1080,9 @@ they run. Without the edge:
   get carries `served` (true when it is active and an edge runs) and, when
   false, `not_served_reason`: `inactive`, `upstream_invalid` (a record
   stored before the host rule below: the edge refuses its host),
-  `no_app_edge`, or `policy_unavailable` (the attach policy file cannot be
-  used, so the edge serves nothing). `served` is not a reachability check: the Registry never
+  `no_app_edge`, or `policy_unavailable` (the Registry cannot use the attach
+  policy file; the app edge reads the file on its own, so what it serves may
+  differ). `served` is not a reachability check: the Registry never
   calls an upstream, and the edge can still refuse a record when it resolves
   it;
 - a system restore skips the archive's active attachments
@@ -1122,7 +1123,9 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
 ```
 
 - **One record per app**, keyed by `name`, owning the origin
-  `<name>.<hostname>`. The route fields match a manifest's route:
+  `<name>.<hostname>`. The name is that origin's first DNS label: lowercase
+  letters, digits and inner hyphens, 2 to 41 characters, starting with a
+  letter and ending with a letter or digit. The route fields match a manifest's route:
   `auth_required`, `allowed_groups`, `upstream_host_header`, `streaming`.
   An attachment is served at its origin's root, so there is no prefix
   setting; a record stored with `strip_prefix`,
@@ -1130,15 +1133,17 @@ curl -k -X POST https://<host>/api/registry/attachments/deactivate \
   the Registry's startup, and a system archive carrying them is refused
   (restore it on an install from before, and back that install up again). Then `upstream_tls` (`verify`, and
   an optional `ca_pem` holding the CA certificate itself), `display_name`,
-  `ui_only` and `health`. Writes are bulk upserts and always answer 200
-  with per-item results. **Never deleted:** deactivate it, and write it
+  `ui_only` and `health`. Writes are bulk upserts: a request whose body
+  validates answers 200 with per-item results; an item the request schema
+  refuses rejects the whole request with 422, and nothing is written. **Never deleted:** deactivate it, and write it
   again to revive it.
 - **A write replaces the whole record.** `auth_required` and
   `allowed_groups` are required on every write (`[]` means any logged-in
   user). A client that sends only some fields fails with 422 rather than
   silently opening the app to more users. Send the full record you read.
 - **The upstream is scheme, host and optional port only:** no path,
-  credentials, query or fragment. The router proxies every path of the
+  credentials, query or fragment, and no port 0 (omit the port for the
+  scheme's default). The router proxies every path of the
   app's origin to the same path on the upstream.
 - **The host is an IP literal or a DNS name of RFC 1123 labels:** letters,
   digits and inner hyphens, 1 to 63 characters each. An underscore (common

@@ -1,7 +1,10 @@
 """App attachments: put an app under the umbrella, list, deactivate.
 
-POST /attachments upserts by `name` (bulk-first, always 200 with per-item
-results). Writing an inactive attachment again revives it. There is no hard
+POST /attachments upserts by `name`, bulk-first: once the request body
+validates, the answer is 200 with per-item results. An item the request
+schema refuses (an unknown field, a name outside the pattern, a missing
+`auth_required` or `allowed_groups`) rejects the whole request with 422, and
+nothing is written. Writing an inactive attachment again revives it. There is no hard
 delete: POST /attachments/deactivate retires one, and its route goes away
 from the router's app edge.
 
@@ -222,10 +225,11 @@ async def deactivate_attachments(
 
 
 def _edge_state() -> EdgeState:
-    """Whether this install serves attachments, from the attach policy. A read
-    never fails on the policy: an unusable file reads as not served, which is
-    true, since the app edge then serves nothing either. The app edge itself
-    never consults this: it knows from its own policy that it runs."""
+    """Whether this install serves attachments, as the Registry reads the
+    attach policy. A read never fails on the policy: a file the Registry
+    cannot use reads as `policy_unavailable`. That is the Registry's reading
+    only: the app edge reads the file on its own and never consults this, so
+    it may still serve."""
     try:
         policy = load_policy()
     except AttachPolicyUnavailable:

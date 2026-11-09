@@ -277,8 +277,8 @@ You don't need to test these. They're stable. Just use them.
 
 ## Attached apps: under the umbrella without wip-deploy
 
-An app its own admin deploys can be **attached** instead of deployed: an
-app-admin records it in the Registry (`POST /api/registry/attachments`,
+An app its own admin deploys can be **attached** instead of deployed: a
+platform admin records it in the Registry (`POST /api/registry/attachments`,
 `docs/wip-guide.md` §6.5), and the `app-edge` component serves it at the root
 of its own origin, `https://<name>.<hostname>[:port]/`. The install must run that module: no preset includes it, so
 its operator turns it on with `wip-deploy add-module app-edge` (without it,
@@ -290,7 +290,7 @@ do differs from a deployed app in these points:
   link-local or cloud metadata addresses; those are refused.
 - **Serve at the root.** Every path on the app's origin reaches the upstream
   as the browser sent it: there is no prefix to strip or keep.
-- **Hold its own key.** It's a Console key the app-admin creates in RC,
+- **Hold its own key.** It's a Console key a platform admin creates in RC,
   widened with `reserve` for the namespaces the app creates. Read it from a
   file or env of the app's own deployment. The edge never hands the app a
   key.

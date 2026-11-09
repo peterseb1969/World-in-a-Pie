@@ -150,6 +150,11 @@ def parse_upstream(upstream: str) -> tuple[str, int]:
         raise UpstreamInvalid("upstream must not carry credentials")
     if parts.query or parts.fragment:
         raise UpstreamInvalid("upstream must not carry a query or fragment")
+    if port == 0:
+        raise UpstreamInvalid(
+            f"upstream {upstream!r} names port 0; give a port from 1 to 65535, or none "
+            "for the scheme's default"
+        )
     if parts.path not in ("", "/"):
         raise UpstreamInvalid(
             f"upstream must not carry a path ({parts.path!r}): the router proxies every "

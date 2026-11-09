@@ -31,9 +31,11 @@ from wip_auth.bulk_models import BulkResponseBase, BulkResultItemBase
 # else: no namespace scope, and not a group that may assert identities.
 EDGE_READER_GROUP = "wip-app-edge"
 
-# Lowercase letters, digits and hyphens, starting with a letter: safe as a
-# Caddyfile token and a DNS label.
-NAME_PATTERN = r"^[a-z][a-z0-9-]{1,40}$"
+# Lowercase letters, digits and inner hyphens, 2 to 41 characters, starting
+# with a letter and ending with a letter or digit: a Caddyfile token and a
+# DNS label (an app is served at https://<name>.<hostname>/). The app edge
+# applies the same pattern.
+NAME_PATTERN = r"^[a-z][a-z0-9-]{0,39}[a-z0-9]$"
 GROUP_PATTERN = r"^[A-Za-z0-9._-]+$"
 HEALTH_PATTERN = r"^/[A-Za-z0-9._~/-]*$"
 
@@ -163,7 +165,8 @@ class AttachmentRequest(AttachmentFields):
 
 # Whether this install serves attachments at all, from the attach policy:
 # "serving" (an app edge runs), "no_app_edge" (the policy says none runs), or
-# "policy_unavailable" (the file cannot be used; the edge then serves nothing).
+# "policy_unavailable" (the Registry cannot use the file; the app edge reads
+# the file on its own and may still serve).
 EdgeState = Literal["serving", "no_app_edge", "policy_unavailable"]
 NotServedReason = Literal["inactive", "upstream_invalid", "no_app_edge", "policy_unavailable"]
 
@@ -227,8 +230,8 @@ class AttachmentResponse(AttachmentFields):
         description="Why `served` is false: `inactive` (the record is deactivated), "
         "`upstream_invalid` (a record stored before today's host rule: the edge refuses "
         "its upstream host), `no_app_edge` (this install runs no app edge), or "
-        "`policy_unavailable` (the attach policy file cannot be used, so the edge serves "
-        "nothing). Null when served.",
+        "`policy_unavailable` (the Registry cannot use the attach policy file; the app "
+        "edge reads the file on its own, so what it serves may differ). Null when served.",
     )
 
     @classmethod

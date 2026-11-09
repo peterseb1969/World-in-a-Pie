@@ -63,7 +63,7 @@ SESSION_COOKIE = "wip_session"
 APP_SESSION_COOKIE = "wip_app_session"
 CADDYFILE_PATH = "/tmp/edge.Caddyfile"
 
-NAME_RE = re.compile(r"^[a-z][a-z0-9-]{1,40}$")
+NAME_RE = re.compile(r"^[a-z][a-z0-9-]{0,39}[a-z0-9]$")
 GROUP_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 PATH_RE = re.compile(r"^/[A-Za-z0-9._~/-]*$")
 _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
