@@ -496,6 +496,18 @@ flow writes its journal before any step runs, so it is unaffected.
   are named in a warning; the merge reference refusal counts every missing
   entity, not at most five per type; a dry run's definitions line shows terms
   to retire.
+- **A backup asked for files without file storage says so.** Its manifest
+  claimed `include_files` while the archive held no file contents, so a later
+  restore named every file as having lost its bytes. The manifest now records
+  what the archive carries, and the job gets a warning.
+- **A restore no longer reports its own time as the archive's export time**
+  when the manifest recorded none (namespace description and restore
+  provenance).
+- The identity-migration report's reporting hint names a real route
+  (`POST /api/reporting-sync/sync/batch/template/{template_value}`); it
+  pointed at a non-existent `POST /replay`. Job-model and engine descriptions
+  that still spoke of a toolkit worker thread, omitted `val-` jobs, or
+  described merge as same-install only are corrected.
 
 ### A field's `default_value` is informational; it never makes a mandatory field optional
 

@@ -668,7 +668,6 @@ class DirectBackupEngine:
         *,
         include_files: bool = False,
         skip_documents: bool = False,
-        latest_only: bool = False,
         include_inactive_templates: bool = False,
         tmp_dir: Path | None = None,
     ) -> None:
@@ -695,6 +694,8 @@ class DirectBackupEngine:
             f"Starting backup of {len(namespaces)} namespace(s): {', '.join(namespaces)}",
             percent=0,
         )
+
+        self._warn_if_files_unavailable(include_files)
 
         left_out: dict[str, list[tuple[str, int]]] = {}
         if not include_inactive_templates:
@@ -727,8 +728,9 @@ class DirectBackupEngine:
             writer.write_referents_file(referent_rows)
 
             manifest = await self._backup_manifest(
-                writer, namespaces, include_files=include_files,
-                latest_only=latest_only, referent_count=len(referent_rows),
+                writer, namespaces,
+                include_files=bool(include_files and self._storage),
+                referent_count=len(referent_rows),
             )
 
             self._emit("phase_finalize", "Writing archive", percent=95)
@@ -753,6 +755,16 @@ class DirectBackupEngine:
             with contextlib.suppress(Exception):
                 writer._cleanup()
             raise
+
+    def _warn_if_files_unavailable(self, include_files: bool) -> None:
+        """Files asked for with no storage to read them from: the archive
+        carries file records only, and its manifest says so."""
+        if include_files and not self._storage:
+            self._emit(
+                "warning",
+                "File storage is not enabled, so the archive carries no file "
+                "contents: file records only, and its manifest says so.",
+            )
 
     async def _announce_left_out_templates(
         self, namespaces: list[str], skip_documents: bool,
@@ -853,7 +865,6 @@ class DirectBackupEngine:
         namespaces: list[str],
         *,
         include_files: bool,
-        latest_only: bool,
         referent_count: int,
     ) -> Manifest:
         """The archive's manifest: one entry per namespace (its config,
@@ -888,7 +899,9 @@ class DirectBackupEngine:
                 "hash_version": 1,
             },
             include_files=include_files,
-            include_all_versions=not latest_only,
+            # Every version of every document is carried: the backup has no
+            # latest-only export (the API refuses latest_only).
+            include_all_versions=True,
             counts=EntityCounts(**agg),
             referents=referent_count,
         )
@@ -1138,7 +1151,9 @@ class DirectBackupEngine:
     def _pct(done: int, total: int) -> float:
         if total == 0:
             return 0.0
-        # Reserve 0-90% for entity reads, 90-95% for blobs, 95-100% for finalize
+        # Entity reads map onto 0-90%. Blob uploads report the same figure
+        # (they have no band of their own); recording referents emits 90,
+        # finalize 95 and completion 100.
         return min(round(done / total * 90, 1), 90.0)
 
 
@@ -1171,16 +1186,62 @@ def _same_document_content(archive_row: dict[str, Any], target_row: dict[str, An
 
 
 def _rehydrate_timestamps(row: dict[str, Any]) -> None:
-    """Convert top-level ``*_at`` ISO strings back to datetime, in place.
+    """Convert platform ``*_at`` ISO strings back to datetime, in place.
 
     Archive rows are JSON, so timestamp fields that were BSON dates when
-    exported come back as ISO strings. Platform timestamp fields all follow
-    the ``*_at`` naming convention and live at the row's top level; nested
+    exported come back as ISO strings. Platform timestamp fields follow the
+    ``*_at`` naming convention: at the row's top level, and on each of a
+    registry entry's ``synonyms`` (their ``created_at``). Other nested
     payloads (``data``, ``metadata``) are caller content stored as
     submitted, and are deliberately left untouched. A string that does not
     parse is left as-is — a restore must not fail over one odd value that
     was already a string in the archive.
     """
+    _rehydrate_top_level(row)
+    synonyms = row.get("synonyms")
+    if isinstance(synonyms, list):
+        for synonym in synonyms:
+            if isinstance(synonym, dict):
+                _rehydrate_top_level(synonym)
+
+
+def _release_outcome(results: list[dict[str, Any]]) -> tuple[int, list[dict[str, Any]]]:
+    """From /entries/deactivate's per-item results: how many were released,
+    and the items that were neither released nor already released."""
+    released = sum(1 for r in results if r.get("status") == "deactivated")
+    failed = [r for r in results if r.get("status") not in ("deactivated", "unchanged")]
+    return released, failed
+
+
+def _skipped_types(skip_documents: bool, skip_files: bool) -> set[str]:
+    """The entity types a restore's skip flags leave out."""
+    skipped = {"documents"} if skip_documents else set()
+    if skip_files:
+        skipped.add("files")
+    return skipped
+
+
+def _entry_of_skipped(entity_type: str, row: dict[str, Any], skipped: set[str]) -> bool:
+    """Whether the row is the Registry entry of a skipped entity type. It is
+    left out with its entities: restored, it would claim their keys with no
+    entity behind them."""
+    return entity_type == "registry_entries" and row.get("entity_type") in skipped
+
+
+def _recorded_export_time(manifest: Any) -> datetime | None:
+    """When the archive was exported, as its manifest recorded it, or None.
+
+    The manifest model fills a missing ``exported_at`` with the time it is
+    read, which would report the restore's own time as the export's.
+    """
+    fields_set = getattr(manifest, "model_fields_set", None)
+    if fields_set is not None and "exported_at" not in fields_set:
+        return None
+    exported = getattr(manifest, "exported_at", None)
+    return exported if isinstance(exported, datetime) else None
+
+
+def _rehydrate_top_level(row: dict[str, Any]) -> None:
     for key, value in row.items():
         if not key.endswith("_at") or not isinstance(value, str):
             continue
@@ -1513,11 +1574,14 @@ _PLAIN_RESTORE_ORDER = (
 
 
 class DirectRestoreEngine:
-    """Restore a namespace from an archive via direct MongoDB bulk inserts.
+    """Restore an archive's namespaces via direct MongoDB bulk writes.
 
-    ID-preserving restore into an empty namespace. Reads the archive with
-    :class:`~wip_archive.archive.ArchiveReader`, bulk-inserts into all
-    service databases.
+    Three modes, one entry point each: ``run_restore`` (ID-preserving, into
+    empty namespaces), ``run_remap`` (``fresh``: every entity re-minted, so a
+    copy can live beside its source) and ``run_merge`` (into a namespace that
+    already holds data, with clash policies). Reads the archive with
+    :class:`~wip_archive.archive.ArchiveReader` and writes every service's
+    database directly.
     """
 
     def __init__(
@@ -1598,7 +1662,8 @@ class DirectRestoreEngine:
         its target must be empty. A ``target_namespace`` that differs from the
         archive's own namespace is rejected — ID-preserving restore cannot
         re-namespace data (entities, registry entries, and composite keys all
-        embed the source namespace); re-namespacing is the planned remap mode.
+        embed the source namespace); re-namespacing is ``run_remap`` (mode
+        ``fresh``), and writing into a live namespace is ``run_merge``.
 
         With ``dry_run`` the engine runs every precondition (archive format,
         empty targets, reporting schema) and reports what it *would* restore
@@ -1651,9 +1716,7 @@ class DirectRestoreEngine:
 
             total = sum(getattr(manifest.counts, et, 0) for et in restore_order)
             processed = 0
-            skipped = {"documents"} if skip_documents else set()
-            if skip_files:
-                skipped.add("files")
+            skipped = _skipped_types(skip_documents, skip_files)
 
             # Bytes before the records that need them. Blobs are flat
             # (namespace-agnostic, globally unique file_ids), so the archive's
@@ -1876,6 +1939,21 @@ class DirectRestoreEngine:
             skip_documents=skip_documents, skip_files=skip_files,
         )
 
+    def _rows_to_restore(
+        self, reader: ArchiveReader, entity_type: str, src: str,
+        dropped: Any, repoint: Any, skipped: set[str],
+    ) -> Iterator[dict[str, Any]]:
+        """The archive's rows of one type and namespace as a plain restore
+        writes them: without MongoDB's _id, without dropped rows and the
+        Registry entries of skipped types, and repointed."""
+        for entity in reader.read_entities(entity_type, namespace=src):
+            entity.pop("_id", None)  # Strip MongoDB internal ID
+            if (dropped and _dropped_row(entity_type, entity, dropped)) or _entry_of_skipped(
+                entity_type, entity, skipped,
+            ):
+                continue
+            yield repoint.rewrite(entity_type, entity, self) if repoint is not None else entity
+
     async def _restore_entity_type(
         self,
         reader: ArchiveReader,
@@ -1909,14 +1987,7 @@ class DirectRestoreEngine:
 
         batch: list[dict[str, Any]] = []
         count = claimed = taken_by_other = 0
-        for entity in reader.read_entities(entity_type, namespace=src):
-            entity.pop("_id", None)  # Strip MongoDB internal ID
-            if dropped and _dropped_row(entity_type, entity, dropped):
-                continue
-            if entity_type == "registry_entries" and entity.get("entity_type") in skipped:
-                continue
-            if repoint is not None:
-                entity = repoint.rewrite(entity_type, entity, self)
+        for entity in self._rows_to_restore(reader, entity_type, src, dropped, repoint, skipped):
             batch.append(entity)
             if len(batch) < batch_size:
                 continue
@@ -2240,9 +2311,7 @@ class DirectRestoreEngine:
         skip_files: bool,
     ) -> list[RemapSource]:
         """Each archived namespace's rows, by type, for the remap plan."""
-        skipped = {"documents"} if skip_documents else set()
-        if skip_files:
-            skipped.add("files")
+        skipped = _skipped_types(skip_documents, skip_files)
         remap_sources: list[RemapSource] = []
         for src, target in mapping.items():
             entities_by_type: dict[str, list[dict[str, Any]]] = {}
@@ -3293,11 +3362,9 @@ class DirectRestoreEngine:
                     )
                     if resp.status_code != 200:
                         raise RestoreEngineError(f"{resp.status_code} — {resp.text}")
-                    results = resp.json().get("results", [])
-                    released += sum(1 for r in results if r.get("status") == "deactivated")
-                    failed += [
-                        r for r in results if r.get("status") not in ("deactivated", "unchanged")
-                    ]
+                    done, not_done = _release_outcome(resp.json().get("results", []))
+                    released += done
+                    failed += not_done
         except Exception as e:
             self._emit(
                 "warning",
@@ -3306,22 +3373,28 @@ class DirectRestoreEngine:
                 "keys until each store's /maintenance/reconcile-synonym-lifecycle runs",
             )
             return
-        if failed:
-            sample = ", ".join(
-                f"{r.get('registry_id')} ({r.get('status')}: {r.get('error') or ''})".strip()
-                for r in failed[:5]
-            )
-            self._emit(
-                "warning",
-                f"[{namespace}] the synonyms of {len(failed)} retired entities could not be "
-                f"released ({sample}); they still block other identities with the same keys "
-                "until each store's /maintenance/reconcile-synonym-lifecycle runs",
-            )
+        self._warn_unreleased(namespace, failed)
         if released:
             self._emit(
                 "phase_synonyms",
                 f"[{namespace}] released the synonyms of {released} retired entities",
             )
+
+    def _warn_unreleased(self, namespace: str, failed: list[dict[str, Any]]) -> None:
+        """Name the retired entities whose synonyms the Registry could not
+        release (its per-item answers inside a 200)."""
+        if not failed:
+            return
+        sample = ", ".join(
+            f"{r.get('registry_id')} ({r.get('status')}: {r.get('error') or ''})"
+            for r in failed[:5]
+        )
+        self._emit(
+            "warning",
+            f"[{namespace}] the synonyms of {len(failed)} retired entities could not be "
+            f"released ({sample}); they still block other identities with the same keys "
+            "until each store's /maintenance/reconcile-synonym-lifecycle runs",
+        )
 
     async def _add_synonyms(
         self, namespace: str, items: list[dict[str, Any]]
@@ -3516,7 +3589,7 @@ class DirectRestoreEngine:
             None,
         )
         inherited = list(getattr(entry, "provenance", None) or [])
-        exported = getattr(manifest, "exported_at", None)
+        exported = _recorded_export_time(manifest)
         record: dict[str, Any] = {
             "namespace": target,
             "restored_into": target,
@@ -3532,7 +3605,7 @@ class DirectRestoreEngine:
             "source": {
                 "namespace": source,
                 "host": getattr(manifest, "source_host", None) or None,
-                "exported_at": exported.isoformat() if isinstance(exported, datetime) else exported,
+                "exported_at": exported.isoformat() if exported else None,
                 "install": getattr(manifest, "source_install", None),
             },
             "derived_from": _derived_chain(
@@ -3608,7 +3681,7 @@ class DirectRestoreEngine:
         Written after the namespace upsert, which sets the description from
         the manifest and would otherwise overwrite it.
         """
-        exported = getattr(manifest, "exported_at", None)
+        exported = _recorded_export_time(manifest)
         host = getattr(manifest, "source_host", None) or "unknown host"
         note = (
             f"Restored {datetime.now(UTC).date().isoformat()} from an archive "
@@ -4277,11 +4350,10 @@ class DirectRestoreEngine:
         """
         entities_by_type: dict[str, list[dict[str, Any]]] = {}
         doc_groups: dict[str, list[dict[str, Any]]] | None = None
+        skipped = _skipped_types(skip_documents, skip_files)
 
         for entity_type in MERGE_ENTITY_ORDER:
-            if skip_documents and entity_type == "documents":
-                continue
-            if skip_files and entity_type == "files":
+            if entity_type in skipped:
                 continue
 
             if entity_type == "documents":
@@ -4296,17 +4368,11 @@ class DirectRestoreEngine:
                     )
                     doc_groups = {}
 
-            # A skipped entity's Registry entry is left out with it: merged,
-            # it would claim the entity's keys with no entity behind them.
-            left_out = {"documents"} if skip_documents else set()
-            if skip_files:
-                left_out.add("files")
             entities: list[dict[str, Any]] = []
             for entity in reader.read_entities(entity_type, namespace=src):
                 entity.pop("_id", None)
-                if entity_type == "registry_entries" and entity.get("entity_type") in left_out:
-                    continue
-                entities.append(entity)
+                if not _entry_of_skipped(entity_type, entity, skipped):
+                    entities.append(entity)
 
             if entity_type == "documents":
                 assert doc_groups is not None

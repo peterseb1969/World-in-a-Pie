@@ -139,3 +139,21 @@ async def test_an_archive_made_without_files_reports_no_missing_bytes():
     await engine._restore_blobs(_reader(ROWS, {}, include_files=False), "ns")
     assert storage.uploaded == {}
     assert _warnings(events) == []
+
+
+@pytest.mark.asyncio
+async def test_a_backup_without_file_storage_does_not_claim_its_files(namespace, tmp_path):
+    """Asked for files with no storage to read them from, the archive carries
+    none, and its manifest says so: a later restore would otherwise name
+    every file as having lost its bytes (CASE-1194, 1-R9)."""
+    client, ns = namespace
+    events: list = []
+    output = tmp_path / "no-storage.zip"
+    await DirectBackupEngine(client, None, events.append).run_backup(ns, output, include_files=True)
+
+    with ArchiveReader(output) as reader:
+        manifest = reader.read_manifest()
+        assert manifest.include_files is False
+        assert manifest.include_all_versions is True
+        assert reader.list_blobs() == []
+    assert any("File storage is not enabled" in w for w in _warnings(events))

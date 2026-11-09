@@ -100,8 +100,10 @@ class RehashReport:
             ],
             "collision_groups": self.collision_groups,
             "reporting_note": (
-                "Reporting is not updated by this pass — replay the affected "
-                "templates (POST /replay) so the identity_hash columns re-sync."
+                "Reporting is not updated by this pass — re-sync the affected "
+                "templates (POST /api/reporting-sync/sync/batch/template/"
+                "{template_value}?namespace=…) so the identity_hash columns "
+                "catch up."
             ),
         }
 

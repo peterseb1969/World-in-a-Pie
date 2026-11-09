@@ -17,10 +17,12 @@ is also what makes a merge dry run meaningful: the plan IS the dry run.
 Matching is deliberately two-keyed. Every entity type has a canonical **ID**
 (``document_id``, ``template_id``, …) and a **logical key** — the natural key
 that says which real-world thing it is (a terminology's ``value``, a document's
-``(template_id, identity_hash)``). Merge v1 is a same-install operation: IDs are
-preserved end to end, so the two keys must agree. Where they don't, the archive
-came from somewhere else and is wearing same-install clothes — that is the
-cross-install merge case, which needs ID re-minting and is out of scope here.
+``(template_id, identity_hash)``). IDs are preserved end to end, so within one
+install the two keys agree. An archive from another install, or a namespace
+since deleted here, may carry other ids for the same things: the engine maps
+definitions by content first (merge_definitions) and refuses an id that names
+something else here (_check_ids_are_free), but this plan still compares the
+entities in their stored form.
 
 Reads are bulk and indexed: the target is probed by batched key queries derived
 from the archive's own keys, so the cost scales with the delta being merged
@@ -193,10 +195,11 @@ def diff_entities(
 
     Audit and bookkeeping fields are excluded: two faithful copies of one
     terminology differ in ``updated_at`` and that is not a schema difference.
-    Comparison is on stored form, which is exact here because merge v1 is
-    same-install — both sides were written by the same services, so a
-    value-vs-canonical-ID mismatch (the reason template-store resolves
-    references before comparing) cannot arise.
+    Comparison is on stored form: exact for two copies one install wrote. For
+    an archive from another install, ids and the references that carry them
+    are compared as stored too, so two copies with the same content under
+    different ids (a file matched by checksum under a re-minted file_id)
+    report as a clash, not as unchanged.
     """
     skip = _NON_SCHEMA_FIELDS | set(ignore)
     diff: dict[str, dict[str, Any]] = {}

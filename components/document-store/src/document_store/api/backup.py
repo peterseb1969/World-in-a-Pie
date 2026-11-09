@@ -975,6 +975,19 @@ async def start_validation(
 # ---------------------------------------------------------------------------
 
 
+async def _materialize(
+    store: ArchiveStore, src: BackupJob, new_job_id: str, object_copied: bool,
+) -> Path:
+    """The new restore job's own archive copy. On failure nothing is left:
+    an object copy that landed before the download failed would have no job
+    record to own it, and would stay in the bucket for good."""
+    try:
+        return await store.materialize_for_restore(src, new_job_id)
+    except Exception:
+        await store.discard_materialized(new_job_id, object_copied)
+        raise
+
+
 async def _archive_retained(store: ArchiveStore, job: BackupJob) -> bool:
     """Whether the job's archive is still retained; 503 when the object
     store cannot say, so an outage never reads as "no longer retained"."""
@@ -1201,9 +1214,13 @@ async def download_archive(
     backup covers: the archive holds each one's data.
     Restore jobs serve their INPUT: it is fully on disk before the job even
     starts, so it is valid regardless of the job's outcome — a FAILED
-    restore's input is the most useful one to re-download. But it may carry
-    several namespaces' data, so admin is required on every namespace the
-    job spans, mirroring what restoring the same archive would demand.
+    restore's input is the most useful one to re-download. Admin is required
+    on every namespace the job records, which for a restore job are the
+    namespaces it writes: its own namespaces for a plain restore, the map's
+    targets for a fresh one, the target for a redirected merge. That is not
+    every namespace whose data the archive carries — a fresh or redirected
+    restore never needed rights on its sources, so its input is no more
+    exposed by downloading it than by restoring it.
     """
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
@@ -1325,13 +1342,7 @@ async def restore_from_job(
 
     new_job_id = f"rst-{uuid.uuid4().hex[:16]}"
     object_copied = src.archive_backend == BACKEND_MINIO
-    try:
-        scratch = await store.materialize_for_restore(src, new_job_id)
-    except Exception:
-        # The object copy may have landed before the download failed; no job
-        # record will ever own it, so it would stay in the bucket for good.
-        await store.discard_materialized(new_job_id, object_copied)
-        raise
+    scratch = await _materialize(store, src, new_job_id, object_copied)
 
     try:
         prefixes, effective_target = await _authorize_archive_restore(

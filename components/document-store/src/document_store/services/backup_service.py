@@ -306,9 +306,8 @@ async def start_async_job(
             progress_callback and is expected to call it at phase
             boundaries. Exceptions become FAILED status.
         on_event: Optional async hook called for every event as it is
-            persisted. Currently unused — the SSE endpoint polls the
-            persisted record instead of subscribing; kept as an
-            extension point.
+            persisted. Every job wires it: the archive store settles a job's
+            archive on its terminal event (archive_lifecycle_hook).
 
     Returns:
         The asyncio.Task that consumes the queue. The task completes when
@@ -468,7 +467,6 @@ def make_direct_backup_runner(
             Path(archive_path),
             include_files=opts.get("include_files", False),
             skip_documents=opts.get("skip_documents", False),
-            latest_only=opts.get("latest_only", False),
             include_inactive_templates=opts.get("include_inactive_templates", False),
             tmp_dir=Path(backup_dir),
         )

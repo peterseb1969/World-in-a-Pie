@@ -155,6 +155,13 @@ class TestRehydrateTimestamps:
         assert isinstance(row["updated_at"], datetime)
         assert row["document_id"] == "abc"
 
+    def test_a_registry_entrys_synonym_timestamps_are_rehydrated(self):
+        # Platform timestamps nest in one place: an entry's synonyms
+        # (CASE-1194, 1-R7).
+        row = {"entry_id": "E1", "synonyms": [{"created_at": "2026-06-25T21:51:03Z"}]}
+        _rehydrate_timestamps(row)
+        assert isinstance(row["synonyms"][0]["created_at"], datetime)
+
     def test_nested_payloads_and_non_timestamp_keys_untouched(self):
         row = {
             "data": {"expires_at": "2026-01-01T00:00:00"},

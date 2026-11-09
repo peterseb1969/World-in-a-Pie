@@ -1,9 +1,9 @@
 """BackupJob model for the Document Store service.
 
-Tracks long-running backup/restore jobs that wrap wip-toolkit in-process.
-Created when a caller POSTs to /namespaces/{ns}/backup or /namespaces/{ns}/restore;
-updated by the async/sync bridge as the toolkit emits progress events; read by
-the SSE and status endpoints.
+Tracks long-running backup, restore and validation jobs, run in-process by
+document-store's own engines. Created when a caller POSTs to
+/namespaces/{ns}/backup, /namespaces/{ns}/restore or a job's restore; updated
+as the engine emits progress events; read by the SSE and status endpoints.
 
 The MongoDB-persisted record is the durable source of truth for progress so a
 service restart or a second uvicorn worker can still report a sensible last-known
@@ -37,33 +37,33 @@ class BackupJobKind(StrEnum):
 class BackupJobStatus(StrEnum):
     """Lifecycle status for a backup/restore job."""
 
-    PENDING = "pending"      # Created, worker not yet started
-    RUNNING = "running"      # Worker running, toolkit in progress
+    PENDING = "pending"      # Created, run not yet started
+    RUNNING = "running"      # Run in progress
     COMPLETE = "complete"    # Finished successfully
     FAILED = "failed"        # Aborted with an error
 
 
 class BackupJob(BeanieDocument):
     """
-    A long-running backup or restore job.
+    A long-running backup, restore or validation job.
 
-    Jobs are created immediately on request and the actual toolkit run happens
-    in a worker thread bridged to the event loop. Progress events from the
-    toolkit are persisted here as they arrive; the SSE endpoint can replay the
-    latest known state to reconnecting clients from this document.
+    Jobs are created immediately on request; the run is an asyncio task on
+    the service's event loop. Its progress events are persisted here as they
+    arrive; the SSE endpoint can replay the latest known state to
+    reconnecting clients from this document.
 
-    Not a namespaced entity: backup jobs can span namespaces in the future
-    (e.g. multi-namespace backups), and the job_id is globally unique.
+    Not a namespaced entity: a job can span namespaces (a multi-namespace
+    backup or restore), and the job_id is globally unique.
     """
 
     # Identity
     job_id: str = Field(
         ...,
-        description="Globally unique job ID: 'bkp-' (backup) or 'rst-' (restore) prefix + 16 hex chars (UUID4-derived)"
+        description="Globally unique job ID: 'bkp-' (backup), 'rst-' (restore) or 'val-' (validation) prefix + 16 hex chars (UUID4-derived)"
     )
     kind: BackupJobKind = Field(
         ...,
-        description="backup (export) or restore (import)"
+        description="backup (export), restore (import) or validate (integrity check)"
     )
     namespace: str = Field(
         ...,
@@ -90,7 +90,7 @@ class BackupJob(BeanieDocument):
     )
     phase: str | None = Field(
         default=None,
-        description="Current phase from the toolkit's ProgressEvent (e.g. 'phase_documents')"
+        description="Current phase from the latest progress event (e.g. 'phase_documents')"
     )
     percent: float | None = Field(
         default=None,
@@ -114,7 +114,7 @@ class BackupJob(BeanieDocument):
     )
     started_at: datetime | None = Field(
         default=None,
-        description="When the worker started running the toolkit"
+        description="When the run started"
     )
     completed_at: datetime | None = Field(
         default=None,
@@ -202,10 +202,9 @@ class BackupProgressMessage(BaseModel):
 
     **Guardrail 2 (CASE-23 Phase 3)** — this type is the public contract for
     the SSE endpoint. It is deliberately **not** ``wip_archive.models.ProgressEvent``:
-    the toolkit's event type is an implementation detail that must not leak
-    to clients, so a future v1.1 rewrite that replaces the toolkit can still
-    emit the same wire format without breaking clients or the @wip/client
-    TypeScript types.
+    the archive library's event type is an implementation detail that must
+    not leak to clients, so a rewrite of the engines can still emit the same
+    wire format without breaking clients or the @wip/client TypeScript types.
 
     The fields below are the stable subset of information that SSE
     subscribers need. ``phase`` is intentionally a free-form string (Guardrail 3).
@@ -398,10 +397,12 @@ class RestoreFromJobRequest(StrictModel):
         ),
     )
     skip_documents: bool = Field(
-        False, description="Skip the documents phase entirely"
+        False,
+        description="Skip documents: neither their rows nor their Registry entries are restored",
     )
     skip_files: bool = Field(
-        False, description="Skip restoring file blobs"
+        False,
+        description="Skip files: neither their records, their blobs nor their Registry entries are restored",
     )
     batch_size: int = Field(
         500, ge=1, le=500, description="Document write batch size"
