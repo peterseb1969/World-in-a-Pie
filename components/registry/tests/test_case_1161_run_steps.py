@@ -69,3 +69,20 @@ async def test_a_failing_step_fails_the_journal(client, monkeypatch):
     stored = await DeletionJournal.get(journal.id)
     assert stored.status == "failed"
     assert [(s.status, s.error) for s in stored.steps] == [("failed", "mongo gone"), ("pending", None)]
+
+
+@pytest.mark.asyncio
+async def test_a_step_of_no_summary_kind_counts_nowhere(client, monkeypatch):
+    async def execute(self, step, namespace):
+        return 5
+
+    monkeypatch.setattr(NamespaceDeletionService, "_execute_step", execute)
+    journal = await _journal(
+        _step(1, "mongodb", status="completed", count=2),
+        _step(2, "mongodb"),
+    )
+    await NamespaceDeletionService()._run_steps(journal)
+    stored = await DeletionJournal.get(journal.id)
+    assert stored.summary == {}
+    assert [(s.status, s.deleted_count) for s in stored.steps] == [("completed", 2), ("completed", 5)]
+    assert stored.status == "completed"

@@ -212,6 +212,17 @@ def _endpoint_id(entry: Any) -> str | None:
     return entry if isinstance(entry, str) else None
 
 
+def _count_step(summary: dict[str, int], step: DeletionStep) -> None:
+    """Count a done step's deletions into the journal summary: under its
+    collection, as object-store objects, or as PostgreSQL rows."""
+    if step.collection:
+        summary[step.collection] = step.deleted_count
+    elif step.store in _FILE_STORAGE_STORES:
+        summary["minio_objects"] = step.deleted_count
+    elif step.store == "postgresql":
+        summary["postgres_rows"] = step.deleted_count
+
+
 async def _inbound_from_templates(
     templates: Any,
     prefix: str,
@@ -890,90 +901,96 @@ class NamespaceDeletionService:
             step = journal.steps[i]
             if step.status == "completed":
                 # Already done (crash recovery)
-                if step.collection:
-                    summary[step.collection] = step.deleted_count
-                elif step.store in _FILE_STORAGE_STORES:
-                    summary["minio_objects"] = step.deleted_count
-                elif step.store == "postgresql":
-                    summary["postgres_rows"] = step.deleted_count
+                _count_step(summary, step)
                 continue
-
-            # A re-run must not inherit the error of an earlier attempt.
-            step.error = None
-            if step.store == "postgresql" and await self._namespace_recreated(journal):
-                # A deferred cleanup can run long after the namespace record
-                # is gone. If the prefix was created again meanwhile, its
-                # reporting data is the NEW namespace's: never delete it on
-                # behalf of the old one.
-                step.status = "completed_with_errors"
-                step.error = (
-                    f"namespace '{journal.namespace}' exists again (re-created after "
-                    "this deletion); its reporting data was left alone to protect it"
-                )
-                step.completed_at = datetime.now(UTC)
-                await journal.save()
-                continue
-            try:
-                deleted = await self._execute_step(step, journal.namespace)
-                if step.store == "mongodb" and step.collection == "namespaces":
-                    # The namespace is gone, and its id with it: a reservation
-                    # that stays reserves a new namespace of that name.
-                    from .namespace_identity import after_namespace_deleted
-                    await after_namespace_deleted(journal.namespace)
-                # Best-effort executors (object store/PostgreSQL) record a swallowed
-                # failure on step.error instead of raising — surface it as a
-                # degraded outcome rather than a clean completion.
-                step.status = "completed_with_errors" if step.error else "completed"
-                step.deleted_count = deleted
-                step.completed_at = datetime.now(UTC)
-
-                if step.collection:
-                    summary[step.collection] = deleted
-                elif step.store in _FILE_STORAGE_STORES:
-                    summary["minio_objects"] = deleted
-                elif step.store == "postgresql":
-                    summary["postgres_rows"] = deleted
-
-                logger.info(
-                    "Step %d/%d completed: %s (%d deleted)",
-                    step.order, len(journal.steps), step.detail, deleted,
-                )
-            except _Unreachable as e:
-                # The service may just be starting: keep the step pending so
-                # the recovery loop runs it later, instead of closing the
-                # journal with the data left behind for good.
-                step.status = "pending"
-                step.error = f"{e}; will retry"
+            outcome = await self._run_step(journal, step)
+            if outcome == "deferred":
                 deferred += 1
-                await journal.save()
-                logger.warning("Step %d deferred: %s — %s", step.order, step.detail, e)
-                continue
-            except Exception as e:
-                step.status = "failed"
-                step.error = str(e)
-                journal.status = "failed"
-                await journal.save()
-                logger.error("Step %d failed: %s — %s", step.order, step.detail, e)
-                raise
-
-            # Save progress after each step
-            await journal.save()
+            elif outcome == "executed":
+                _count_step(summary, step)
 
         if deferred:
-            # Not finished: the recovery loop picks the journal up again.
-            journal.summary = summary
-            await journal.save()
-            self.start_recovery()
-            logger.warning(
-                "Namespace '%s' deletion waiting on %d deferred step(s); it stays "
-                "in progress and is retried in the background",
-                journal.namespace, deferred,
-            )
-            return
+            await self._wait_for_deferred(journal, summary, deferred)
+        else:
+            await self._close_journal(journal, summary)
 
-        # All steps executed. Roll degraded best-effort steps up into the
-        # terminal status so a journal reader sees the outcome without
-        # scanning per-step errors or service logs.
+    async def _run_step(self, journal: DeletionJournal, step: DeletionStep) -> str:
+        """Run one step not yet completed and save the journal.
+
+        Returns "executed", "deferred" (its service was unreachable: the step
+        stays pending for the recovery loop) or "kept" (reporting data of a
+        namespace created again under the prefix, left alone). A failing step
+        fails the journal and the error propagates.
+        """
+        # A re-run must not inherit the error of an earlier attempt.
+        step.error = None
+        if step.store == "postgresql" and await self._namespace_recreated(journal):
+            # A deferred cleanup can run long after the namespace record
+            # is gone. If the prefix was created again meanwhile, its
+            # reporting data is the NEW namespace's: never delete it on
+            # behalf of the old one.
+            step.status = "completed_with_errors"
+            step.error = (
+                f"namespace '{journal.namespace}' exists again (re-created after "
+                "this deletion); its reporting data was left alone to protect it"
+            )
+            step.completed_at = datetime.now(UTC)
+            await journal.save()
+            return "kept"
+        try:
+            deleted = await self._execute_step(step, journal.namespace)
+            if step.store == "mongodb" and step.collection == "namespaces":
+                # The namespace is gone, and its id with it: a reservation
+                # that stays reserves a new namespace of that name.
+                from .namespace_identity import after_namespace_deleted
+                await after_namespace_deleted(journal.namespace)
+        except _Unreachable as e:
+            # The service may just be starting: keep the step pending so
+            # the recovery loop runs it later, instead of closing the
+            # journal with the data left behind for good.
+            step.status = "pending"
+            step.error = f"{e}; will retry"
+            await journal.save()
+            logger.warning("Step %d deferred: %s — %s", step.order, step.detail, e)
+            return "deferred"
+        except Exception as e:
+            step.status = "failed"
+            step.error = str(e)
+            journal.status = "failed"
+            await journal.save()
+            logger.error("Step %d failed: %s — %s", step.order, step.detail, e)
+            raise
+        # Best-effort executors (object store/PostgreSQL) record a swallowed
+        # failure on step.error instead of raising — surface it as a
+        # degraded outcome rather than a clean completion.
+        step.status = "completed_with_errors" if step.error else "completed"
+        step.deleted_count = deleted
+        step.completed_at = datetime.now(UTC)
+        logger.info(
+            "Step %d/%d completed: %s (%d deleted)",
+            step.order, len(journal.steps), step.detail, deleted,
+        )
+        # Save progress after each step
+        await journal.save()
+        return "executed"
+
+    async def _wait_for_deferred(
+        self, journal: DeletionJournal, summary: dict[str, int], deferred: int
+    ) -> None:
+        """Not finished: the recovery loop picks the journal up again."""
+        journal.summary = summary
+        await journal.save()
+        self.start_recovery()
+        logger.warning(
+            "Namespace '%s' deletion waiting on %d deferred step(s); it stays "
+            "in progress and is retried in the background",
+            journal.namespace, deferred,
+        )
+
+    async def _close_journal(self, journal: DeletionJournal, summary: dict[str, int]) -> None:
+        """All steps executed. Roll degraded best-effort steps up into the
+        terminal status so a journal reader sees the outcome without
+        scanning per-step errors or service logs."""
         degraded = [s for s in journal.steps if s.status == "completed_with_errors"]
         journal.status = "completed_with_warnings" if degraded else "completed"
         journal.completed_at = datetime.now(UTC)
