@@ -1046,3 +1046,46 @@ class TestValidationMirrorsToParentRestore:
         )
         assert updated_parent is not None
         assert updated_parent.warnings == []
+
+
+class TestTerminalEventPersistence:
+    """A terminal event the record cannot take at once is retried, and a
+    run that finished is never recorded as one that died without a word
+    (CASE-1194, 6-R5)."""
+
+    @staticmethod
+    def _failing_terminal_writes(failures: int):
+        real = backup_service._persist_event
+        left = {"n": failures}
+
+        async def persist(job_id, event):
+            if event.phase == "complete" and left["n"] > 0:
+                left["n"] -= 1
+                raise RuntimeError("mongo blip")
+            await real(job_id, event)
+        return persist
+
+    async def test_a_transient_failure_is_retried(self, fresh_job: BackupJob, monkeypatch):
+        monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(backup_service, "_persist_event", self._failing_terminal_writes(1))
+        events = [ProgressEvent(phase="start", message="go", percent=0.0),
+                  ProgressEvent(phase="complete", message="done", percent=100.0)]
+        task = await backup_service.start_async_job(fresh_job.job_id, _scripted_runner(events))
+        await asyncio.wait_for(task, timeout=5.0)
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.status == BackupJobStatus.COMPLETE
+
+    async def test_a_lost_completion_says_the_run_completed(self, fresh_job: BackupJob, monkeypatch):
+        monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(backup_service, "_persist_event", self._failing_terminal_writes(99))
+        events = [ProgressEvent(phase="start", message="go", percent=0.0),
+                  ProgressEvent(phase="complete", message="restored 3 namespaces", percent=100.0)]
+        task = await backup_service.start_async_job(fresh_job.job_id, _scripted_runner(events))
+        await asyncio.wait_for(task, timeout=5.0)
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.status == BackupJobStatus.FAILED
+        assert "the run completed" in updated.error
+        assert "restored 3 namespaces" in updated.error
+        assert "without terminal event" not in updated.error

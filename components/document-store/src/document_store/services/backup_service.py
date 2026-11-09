@@ -244,8 +244,43 @@ def _error_fields(event: ProgressEvent) -> dict[Any, Any]:
     return fields
 
 
+# Attempts, and the pause before each retry, for writing an event to the
+# job record. A terminal event is retried: losing it turns a finished run
+# into a failed one and skips its follow-ups.
+_TERMINAL_PERSIST_DELAYS = (0.5, 1.0, 2.0)
+
+
+async def _persist_with_retry(job_id: str, event: ProgressEvent) -> bool:
+    """Write the event to the job record; True once it is written. A
+    progress event gets one attempt; a terminal one is retried."""
+    delays = _TERMINAL_PERSIST_DELAYS if event.phase in ("complete", "error") else ()
+    for delay in (*delays, None):
+        try:
+            await _persist_event(job_id, event)
+            return True
+        except Exception:
+            logger.exception("Failed to persist %s event for %s", event.phase, job_id)
+        if delay is not None:
+            await asyncio.sleep(delay)
+    return False
+
+
+def _no_terminal_state_message(unpersisted: ProgressEvent | None) -> str:
+    """Why a job is marked FAILED with no terminal state on its record."""
+    if unpersisted is None:
+        return "worker terminated without terminal event"
+    if unpersisted.phase == "complete":
+        return (
+            "the run completed, but its terminal state could not be written to "
+            "the job record, so its follow-ups (reporting sync, validation) did "
+            f"not run: {unpersisted.message}"
+        )
+    return f"the run failed, and its failure could not be written to the job record: {unpersisted.message}"
+
+
 async def _mark_failed(job_id: str, error: str) -> None:
-    """Persist a terminal FAILED state when the worker thread raises."""
+    """Persist a terminal FAILED state for a job whose run ended without
+    its record taking a terminal event."""
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
         return
@@ -311,16 +346,19 @@ async def start_async_job(
         finally:
             queue.put_nowait(_SENTINEL)
 
+    # The terminal event the run emitted but the record never took, if any.
+    unpersisted_terminal: ProgressEvent | None = None
+
     async def consume() -> None:
+        nonlocal unpersisted_terminal
         try:
             while True:
                 item = await queue.get()
                 if isinstance(item, _Sentinel):
                     return
-                try:
-                    await _persist_event(job_id, item)
-                except Exception:
-                    logger.exception("Failed to persist event for %s", job_id)
+                written = await _persist_with_retry(job_id, item)
+                if not written and item.phase in ("complete", "error"):
+                    unpersisted_terminal = item
                 if on_event is not None:
                     try:
                         await on_event(item)
@@ -329,7 +367,7 @@ async def start_async_job(
         finally:
             job = await BackupJob.find_one(BackupJob.job_id == job_id)
             if job is not None and job.status == BackupJobStatus.RUNNING:
-                await _mark_failed(job_id, "worker terminated without terminal event")
+                await _mark_failed(job_id, _no_terminal_state_message(unpersisted_terminal))
             _job_queues.pop(job_id, None)
             _job_tasks.pop(job_id, None)
 

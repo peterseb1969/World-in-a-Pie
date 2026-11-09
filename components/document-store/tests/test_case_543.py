@@ -701,3 +701,64 @@ class TestArchiveMovesDuringDownload:
         assert await store.archive_exists(job) is False
         with pytest.raises(FileNotFoundError):
             [chunk async for chunk in store.stream_archive(job)]
+
+
+# ---------------------------------------------------------------------------
+# Restore-engine review findings on the archive store (CASE-1194, 6-R2..R4)
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveStoreReviewFixes:
+    @pytest.mark.asyncio
+    async def test_an_unanswerable_store_is_503_not_410(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
+        _store, fake = _minio_store(monkeypatch)
+
+        async def broken_exists(key):
+            raise ConnectionError("garage unreachable")
+
+        fake.exists = broken_exists
+        src = await _job(archive_path="bkp-x.zip", archive_backend="minio")
+        for path in (f"/api/document-store/backup/jobs/{src.job_id}/download",
+                     f"/api/document-store/backup/jobs/{src.job_id}/restore"):
+            resp = (await client.get(path, headers=auth_headers) if path.endswith("download")
+                    else await client.post(path, headers=auth_headers, json={}))
+            assert resp.status_code == 503, (path, resp.text)
+            assert "unavailable" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_materialize_leaves_no_object_behind(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
+        _store, fake = _minio_store(monkeypatch)
+        fake.objects["bkp-src.zip"] = b"archive"
+        src = await _job(archive_path="bkp-src.zip", archive_backend="minio")
+
+        async def failing_download(key, dest_path, chunk_size=0):
+            raise OSError("disk full")
+
+        fake.download_to_file = failing_download
+        with contextlib.suppress(OSError):
+            await client.post(
+                f"/api/document-store/backup/jobs/{src.job_id}/restore",
+                headers=auth_headers, json={},
+            )
+        assert list(fake.objects) == ["bkp-src.zip"]
+
+    @pytest.mark.asyncio
+    async def test_a_local_copy_has_its_own_age(self, tmp_path):
+        import os
+        import time
+
+        src_path = scratch_path_for("bkp-old")
+        src_path.write_bytes(b"archive")
+        old = time.time() - 30 * 24 * 3600
+        os.utime(src_path, (old, old))
+        src = await _job(archive_path=str(src_path))
+
+        dest = await ArchiveStore().materialize_for_restore(src, "rst-new")
+
+        assert dest.read_bytes() == b"archive"
+        assert dest.stat().st_mtime > old + 3600
+        assert src_path.stat().st_mtime == pytest.approx(old)

@@ -98,6 +98,8 @@ from ..models.restore_provenance import (
 from ..services import backup_service
 from ..services.archive_store import (
     BACKEND_MINIO,
+    ArchiveStore,
+    ArchiveStoreUnavailable,
     archive_lifecycle_hook,
     get_archive_store,
     scratch_path_for,
@@ -964,6 +966,17 @@ async def start_validation(
 # ---------------------------------------------------------------------------
 
 
+async def _archive_retained(store: ArchiveStore, job: BackupJob) -> bool:
+    """Whether the job's archive is still retained; 503 when the object
+    store cannot say, so an outage never reads as "no longer retained"."""
+    try:
+        return await store.archive_exists(job)
+    except ArchiveStoreUnavailable as e:
+        raise HTTPException(
+            status_code=503, detail=f"Archive storage unavailable — {e}; retry shortly",
+        ) from e
+
+
 async def _check_job_permission(
     identity: UserIdentity, job: BackupJob, permission: Literal["read", "write", "admin"],
 ) -> None:
@@ -1197,7 +1210,7 @@ async def download_archive(
         raise HTTPException(status_code=500, detail="Job has no archive_path recorded")
 
     store = get_archive_store()
-    if not await store.archive_exists(job):
+    if not await _archive_retained(store, job):
         raise HTTPException(
             status_code=410,
             detail=(
@@ -1285,7 +1298,7 @@ async def restore_from_job(
         )
 
     store = get_archive_store()
-    if not src.archive_path or not await store.archive_exists(src):
+    if not src.archive_path or not await _archive_retained(store, src):
         raise HTTPException(
             status_code=410,
             detail=(
@@ -1299,7 +1312,13 @@ async def restore_from_job(
 
     new_job_id = f"rst-{uuid.uuid4().hex[:16]}"
     object_copied = src.archive_backend == BACKEND_MINIO
-    scratch = await store.materialize_for_restore(src, new_job_id)
+    try:
+        scratch = await store.materialize_for_restore(src, new_job_id)
+    except Exception:
+        # The object copy may have landed before the download failed; no job
+        # record will ever own it, so it would stay in the bucket for good.
+        await store.discard_materialized(new_job_id, object_copied)
+        raise
 
     try:
         prefixes, effective_target = await _authorize_archive_restore(

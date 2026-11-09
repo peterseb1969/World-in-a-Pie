@@ -97,6 +97,10 @@ def scratch_only_warning(what: str, reason: BaseException) -> str:
     )
 
 
+
+class ArchiveStoreUnavailable(Exception):
+    """The object store could not answer whether an archive exists."""
+
 class ArchiveStore:
     """Backend-selecting archive storage for one document-store process."""
 
@@ -126,13 +130,18 @@ class ArchiveStore:
     # ------------------------------------------------------------------
 
     async def archive_exists(self, job: BackupJob) -> bool:
+        """Whether the job's archive is still retained. Raises
+        ArchiveStoreUnavailable when the object store cannot answer: an
+        outage is not an archive that is gone."""
         if not job.archive_path:
             return False
         if job.archive_backend == BACKEND_MINIO:
             try:
                 return await self._storage().exists(job.archive_path)
-            except FileStorageError:
-                return False
+            except Exception as e:
+                raise ArchiveStoreUnavailable(
+                    f"the object store could not say whether the archive exists: {e}"
+                ) from e
         if Path(job.archive_path).is_file():
             return True
         # A caller's copy of the job can predate finalize_backup moving the
@@ -222,8 +231,7 @@ class ArchiveStore:
         either job removes that job's archive, and a shared file/object
         would be pulled out from under the survivor. The object store gets a
         server-side object copy (near-free) plus a scratch download for the
-        engine to read; local mode gets a hardlink (same bytes, independent
-        directory entry) with a plain copy as fallback.
+        engine to read; local mode gets a plain copy with its own mtime.
         """
         if src_job.archive_path is None:
             # Restores materialize from a COMPLETED backup job; a missing
@@ -240,12 +248,12 @@ class ArchiveStore:
             )
             await self._storage().download_to_file(src_job.archive_path, str(dest))
             return dest
-        src = Path(src_job.archive_path)
-        try:
-            os.link(src, dest)
-        except OSError:
-            import shutil
-            shutil.copy2(src, dest)
+        # A copy, not a hardlink: the scratch sweep goes by mtime, and a
+        # hardlink shares the source's inode and so its age. A copy of an
+        # archive older than the retention window would be swept by the next
+        # job start while this restore still reads it.
+        import shutil
+        shutil.copy(Path(src_job.archive_path), dest)
         return dest
 
     # ------------------------------------------------------------------
