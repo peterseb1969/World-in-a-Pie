@@ -2823,7 +2823,7 @@ class TerminologyService:
 
     @staticmethod
     async def _audit_lifecycle(
-        term: Term, action: str, before: dict[str, Any], actor: str | None,
+        term: Term, action: AuditAction, before: dict[str, Any], actor: str | None,
         comment: str | None = None,
     ) -> None:
         """Audit a change of a term's lifecycle state: its status,

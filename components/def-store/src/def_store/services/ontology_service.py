@@ -218,6 +218,8 @@ class OntologyService:
                     "status": "inactive",
                 })
                 if existing:
+                    # Both were found before the insert that raised.
+                    assert source_term is not None and target_term is not None
                     existing.status = "active"
                     await existing.save()
                     results.append(BulkResultItem(

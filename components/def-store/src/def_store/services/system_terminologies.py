@@ -354,10 +354,10 @@ async def ensure_system_terminologies() -> dict[str, Any]:
                 # Count what was created; a per-item error is an error of the
                 # seed (it keeps the startup retry going). "skipped" — the
                 # term already exists — is success.
-                created = sum(1 for r in results if r.status == "created")
+                terms_created = sum(1 for r in results if r.status == "created")
                 failed = [r for r in results if r.status == "error"]
-                summary["terms_created"] += created
-                print(f"  Created {created} terms for '{term_def['value']}'")
+                summary["terms_created"] += terms_created
+                print(f"  Created {terms_created} terms for '{term_def['value']}'")
                 for r in failed:
                     summary["errors"].append(
                         f"System terminology '{term_def['value']}': term "
