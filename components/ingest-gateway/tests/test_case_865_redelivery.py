@@ -57,7 +57,7 @@ def _result(retryable: bool, status_code: int | None = None) -> IngestResult:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("status,retryable", [
     (500, True), (502, True), (503, True), (408, True), (429, True),
-    (400, False), (401, False), (403, False), (404, False), (409, False), (422, False),
+    (400, False), (401, True), (403, False), (404, False), (409, False), (422, False),
 ])
 async def test_http_status_classification(http_client, status, retryable):
     http_client._client.request = AsyncMock(

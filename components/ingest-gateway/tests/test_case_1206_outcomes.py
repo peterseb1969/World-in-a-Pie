@@ -232,8 +232,38 @@ async def test_an_invalid_envelope_is_refused_under_its_correlation_id(
     result: IngestResult = mock_result_publisher.publish.await_args.args[0]
     assert (result.correlation_id, result.http_status_code) == ("c-1206", 400)
     assert "invalid envelope" in result.error
+    # Filed under the producer: without an owner nobody could read it.
+    assert result.submitted_by == "apikey:p"
     msg.ack.assert_awaited_once()
     msg.nak.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_subject_is_refused_under_its_producer(
+    mock_http_client, mock_result_publisher
+):
+    w = _worker(mock_http_client, mock_result_publisher, lambda _k: "apikey:p")
+
+    await w._process_message(_msg(subject="wip.ingest.documents.creates"))
+
+    result: IngestResult = mock_result_publisher.publish.await_args.args[0]
+    assert (result.correlation_id, result.submitted_by) == ("c-1206", "apikey:p")
+    assert "unknown ingest subject" in result.error
+
+
+@pytest.mark.asyncio
+async def test_a_refused_envelope_waits_for_its_producer_to_be_identified(
+    mock_http_client, mock_result_publisher
+):
+    """A key not known yet: the refusal waits, so it lands where the
+    producer reads it once the key is known."""
+    w = _worker(mock_http_client, mock_result_publisher, lambda _k: None)
+    msg = _msg(body={"correlation_id": "c-1206", "value": "unwrapped"})
+
+    await w._process_message(msg)
+
+    mock_result_publisher.publish.assert_not_awaited()
+    msg.nak.assert_awaited_once()
 
 
 # ── item 5: a path parameter is one encoded segment ───────────────────────

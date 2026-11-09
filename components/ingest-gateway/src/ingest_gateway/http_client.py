@@ -11,8 +11,12 @@ from .models import IngestAction, IngestResult, IngestResultStatus
 
 logger = logging.getLogger(__name__)
 
-# 4xx statuses that mean "not now" rather than "never".
-_TRANSIENT_4XX = frozenset({408, 429})
+# 4xx statuses that mean "not now" rather than "never". 401 is one: an item
+# is forwarded only after the gateway identified its key, so a target that
+# refuses the key holds an older copy of the keys than the gateway (a key
+# created a moment ago reaches each service on its own sync). A key revoked
+# meanwhile is refused for good once the deliveries run out.
+_TRANSIENT_4XX = frozenset({401, 408, 429})
 
 
 # Action to endpoint mapping

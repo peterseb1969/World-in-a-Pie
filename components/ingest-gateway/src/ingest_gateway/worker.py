@@ -21,6 +21,8 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from contextlib import suppress
+from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 from nats.aio.client import Client as NATS
@@ -123,6 +125,16 @@ def read_envelope(subject: str, raw: bytes) -> tuple[IngestAction, IngestMessage
             _correlation_id(data), None,
         )
     return action, _validated(data, action)
+
+
+@dataclass(frozen=True)
+class _Read:
+    """A message as read: its envelope, or why it was refused."""
+
+    action: IngestAction | None
+    envelope: IngestMessage | None
+    correlation_id: str | None
+    refusal: str | None
 
 
 class IngestWorker:
@@ -364,11 +376,49 @@ class IngestWorker:
         result.error = f"{result.error} (gave up after {delivery} deliveries)"
         await self._settle(msg, result, delivery=delivery, give_up=True)
 
+    @staticmethod
+    def _read(msg: Any) -> "_Read":
+        try:
+            action, envelope = read_envelope(msg.subject, msg.data)
+        except EnvelopeRefused as refused:
+            return _Read(refused.action, None, refused.correlation_id, refused.reason)
+        return _Read(action, envelope, envelope.correlation_id, None)
+
+    async def _producer(
+        self, msg: Any, api_key: str, *, delivery: int, correlation_id: str,
+        action: IngestAction | None, started: float,
+    ) -> str | None:
+        """The producer's principal, or None once the message was handed back
+        or refused because the producer is not identified.
+
+        The write is made with the producer's own key, so the target applies
+        the producer's grants; the key's principal owns the outcome, so only
+        the producer reads it back. An unidentified item is not forwarded:
+        its outcome would be filed where the producer cannot read it. A key
+        that cannot be verified now (the Registry has not confirmed the keys)
+        or is not known yet (created a moment ago) is retried, and refused
+        only once the deliveries run out.
+        """
+        submitted_by, unidentified = self._identify(api_key)
+        if unidentified is None:
+            return submitted_by
+        status, error = unidentified
+        if delivery < settings.retry_attempts:
+            await self._retry_later(
+                msg, delivery, f"Producer of correlation_id={correlation_id} not identified ({error})"
+            )
+            return None
+        await self._refuse(
+            msg, delivery=delivery, correlation_id=correlation_id, action=action,
+            error=f"{error} (gave up after {delivery} deliveries)",
+            http_status=status, submitted_by=None, started=started,
+        )
+        return None
+
     async def _process_message(self, msg: Any) -> None:
         """Process a single ingest message."""
         started = time.perf_counter()
         delivery = self._delivery_count(msg)
-        last_delivery = delivery >= settings.retry_attempts
 
         # The item was forwarded on an earlier delivery and only its outcome
         # failed to store: publish that, never write the item twice.
@@ -377,57 +427,43 @@ class IngestWorker:
             await self._settle(msg, self._unpublished[seq], delivery=delivery)
             return
 
-        envelope: IngestMessage | None = None
-        action: IngestAction | None = None
+        read = self._read(msg)
+        action, envelope, correlation_id = read.action, read.envelope, read.correlation_id
+        refuse = partial(self._refuse, msg, delivery=delivery, action=action, started=started)
         submitted_by: str | None = None
         try:
-            try:
-                action, envelope = read_envelope(msg.subject, msg.data)
-            except EnvelopeRefused as refusal:
-                await self._refuse(
-                    msg, delivery=delivery, correlation_id=refusal.correlation_id,
-                    action=refusal.action, error=refusal.reason, http_status=400,
-                    submitted_by=None, started=started,
-                )
+            if correlation_id is None:
+                # Nothing to file an outcome under, so no owner to look for.
+                await refuse(correlation_id=None, error=read.refusal or "",
+                             http_status=400, submitted_by=None)
                 return
-            correlation_id = envelope.correlation_id
 
             # Without a key the item is refused: forwarding it with a key of
             # the gateway's would turn anything that can publish to NATS into
             # an admin writer.
             api_key = (msg.headers or {}).get(INGEST_API_KEY_HEADER, "").strip()
             if not api_key:
-                await self._refuse(
-                    msg, delivery=delivery, correlation_id=correlation_id, action=action,
+                await refuse(
+                    correlation_id=correlation_id, http_status=401, submitted_by=None,
                     error=(
                         f"unauthenticated: an ingest message must carry the "
                         f"producer's WIP API key in its {INGEST_API_KEY_HEADER} header"
                     ),
-                    http_status=401, submitted_by=None, started=started,
                 )
                 return
 
-            # The write is made with the producer's own key, so the target
-            # applies the producer's grants; the key's principal owns the
-            # outcome, so only the producer reads it back. An item whose
-            # producer is not identified is not forwarded: its outcome would
-            # be filed where the producer cannot read it. A key that cannot be
-            # verified now (the Registry has not confirmed the keys) or that is
-            # not known yet (created a moment ago) is retried; refused only
-            # once the deliveries run out.
-            submitted_by, unidentified = self._identify(api_key)
-            if unidentified is not None:
-                status, error = unidentified
-                if not last_delivery:
-                    await self._retry_later(
-                        msg, delivery, f"Producer of correlation_id={correlation_id} not identified ({error})"
-                    )
-                    return
-                await self._refuse(
-                    msg, delivery=delivery, correlation_id=correlation_id, action=action,
-                    error=f"{error} (gave up after {delivery} deliveries)",
-                    http_status=status, submitted_by=None, started=started,
-                )
+            submitted_by = await self._producer(
+                msg, api_key, delivery=delivery, correlation_id=correlation_id,
+                action=action, started=started,
+            )
+            if submitted_by is None:
+                return
+
+            # A refused envelope's outcome belongs to its producer like any
+            # other: filed without an owner, nobody could read it.
+            if envelope is None or action is None:
+                await refuse(correlation_id=correlation_id, http_status=400,
+                             submitted_by=submitted_by, error=read.refusal or "invalid envelope")
                 return
 
             result = await self.http_client.forward_request(
@@ -435,20 +471,17 @@ class IngestWorker:
             )
             result.submitted_by = submitted_by
             result.duration_ms = (time.perf_counter() - started) * 1000
-
             await self._finish_forward(msg, result, delivery=delivery)
 
         except Exception as e:
             logger.error(f"Error processing message: {e}", exc_info=True)
-            if not last_delivery:
+            if delivery < settings.retry_attempts:
                 await self._retry_later(msg, delivery, "Unexpected error")
                 return
             # The server would drop it silently at max_deliver: finish it.
-            await self._refuse(
-                msg, delivery=delivery,
-                correlation_id=envelope.correlation_id if envelope else None, action=action,
+            await refuse(
+                correlation_id=correlation_id, http_status=500, submitted_by=submitted_by,
                 error=f"internal error (gave up after {delivery} deliveries): {e}",
-                http_status=500, submitted_by=submitted_by, started=started,
             )
 
     async def _process_batch(self, messages: list[Any]) -> None:

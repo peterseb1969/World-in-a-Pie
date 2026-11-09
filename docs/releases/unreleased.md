@@ -21,7 +21,10 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   restart, until the Registry confirms the keys) is retried with the usual
   backoff and not forwarded; after the last delivery it is refused with a
   401 or 503 outcome. It used to be written, with its outcome filed where
-  the producer could not read it.
+  the producer could not read it. A refusal of a message's envelope or subject is
+  filed under its identified producer too. A target's 401 is retried: the
+  gateway forwards only keys it has identified, so a target refusing one is
+  behind on its key sync (a key created a moment ago).
 - **A message is acknowledged only once its outcome is stored.** A failed
   outcome publish is retried, and the redelivery publishes the kept outcome
   without writing the item again (within one gateway process).
