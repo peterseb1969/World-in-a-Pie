@@ -4,7 +4,7 @@ docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
 docs/WIP_DevGuardrails.md sha256:0357beaebcec2918 reviewed:bb2cdf88
 libs/wip-client/README.md sha256:d05822e09876c562 reviewed:f13546dc
 libs/wip-react/README.md sha256:eba9b7ae31c577b0 reviewed:bb2cdf88
-libs/wip-proxy/README.md sha256:585feea2b45e5889 reviewed:a8c4e42f
+libs/wip-proxy/README.md sha256:5ad0a098c8754cf1 reviewed:f90232f0
 docs/wip-deployable-app-contract.md sha256:7c74283ddc4de260 reviewed:bb2cdf88
 docs/playbooks/app-builder/build-app.md sha256:4d59d990ca82e372 reviewed:43aca6a0
 docs/playbooks/app-builder/bootstrap.md sha256:4bc80d0099e12f0b reviewed:ea985986
@@ -42,7 +42,7 @@ scaffold/templates/claude-md/app.md sha256:d1d9161ab26b0295 reviewed:e106cfec
 - Browser, behind your `@wip/proxy` mount: `` `${import.meta.env.BASE_URL}wip` `` (apps are served at `/`, so that is `/wip`).
 - Node (server, scripts): absolute URL only (`WIP_BASE_URL`, e.g. `https://localhost:8443`); relative or empty throws.
 - Every other client fetch (`/api/...`, `/server-api/...`) is prefixed with `import.meta.env.BASE_URL`.
-- Per-deployment values (e.g. namespace) come from `GET <base>/api/app-config` at boot, never `VITE_*`; no API key in any `VITE_*` var.
+- Per-deployment values (e.g. namespace) come from `GET /api/app-config` at boot, never `VITE_*`; no API key in any `VITE_*` var.
 
 ## App origins (`https://<label>.<host>/`)
 - Served at the origin's root, no base path. A browser call to WIP's origin has no session there: it fails.
@@ -60,12 +60,12 @@ router.use('/wip', wipProxy({
 }))
 router.use(express.json())   // body parsers AFTER the proxy
 ```
-- The proxy streams the raw body: a parser such as `express.json()` before it drains the body and an empty one is forwarded. Mount the proxy above every parser, app-level ones included.
+- The proxy streams the raw body: a parser such as `express.json()` before it drains it and the call stalls. Mount the proxy above every parser, app-level ones included.
 - Deployed, the app's own key comes as `WIP_API_KEY`; run locally, `.env`'s `WIP_API_KEY_FILE` wins. Point it at `app-<name>-api-key` once the app is installed.
 - `onMissingKey: 'unavailable'`: no key → `/wip` answers 503 instead of the app dying on start.
+- Key set or rotated while running: `getApiKey: keyFromFile(path)` (or `() => key`) replaces `apiKey`/`apiKeyFile`.
 - Your key spans several namespaces: set `defaultNamespace` or pass `namespace`, or value-form template queries return 422.
 - File downloads: `GET <mount>/files/:fileId/content` through the proxy; storage URLs never reach the browser.
-- All routes are mounted at `/`.
 
 ## TLS in dev
 - WIP serves a self-signed cert, which Node `fetch` rejects. Put `NODE_TLS_REJECT_UNAUTHORIZED=0` in the `dev:server` script **only**, never in `start`/production.

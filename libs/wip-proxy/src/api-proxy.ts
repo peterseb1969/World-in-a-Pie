@@ -2,8 +2,12 @@ import { request as httpRequest, type IncomingMessage } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 import { type Request, type Response } from 'express'
 
-/** Identity headers forwarded from gateway auth to WIP services */
-const IDENTITY_HEADERS = ['x-wip-user', 'x-wip-groups', 'x-wip-auth-method'] as const
+/**
+ * Identity headers forwarded from gateway auth to WIP services. The platform
+ * supplies only these two (its edge strips client-sent copies); services
+ * honour them only alongside a privileged key.
+ */
+export const IDENTITY_HEADERS = ['x-wip-user', 'x-wip-groups'] as const
 
 /** Upstream response headers forwarded back to the client */
 const FORWARDED_RESPONSE_HEADERS = [
@@ -25,23 +29,27 @@ export interface ApiProxyOptions {
   bodyLimit?: string
   /** Additional headers to forward upstream */
   extraHeaders?: Record<string, string>
-  /** Forward X-WIP-User, X-WIP-Groups, X-WIP-Auth-Method from incoming request */
+  /**
+   * Forward X-WIP-User and X-WIP-Groups from the incoming request. WIP
+   * services act on them only when the app's key is privileged; with an
+   * ordinary app key they are ignored.
+   */
   forwardIdentity?: boolean
   /**
-   * Namespace to scope reads to when the app's key is multi-namespace.
+   * Namespace for the documents query endpoint when the app's key spans
+   * several namespaces.
    *
-   * wip-deploy dev renders inject the install ADMIN key (multi-namespace),
-   * which gets no automatic namespace derivation — a value-form template_id
-   * on the documents query endpoint then resolves to nothing and the query
-   * silently returns zero rows (CASE-457). When set, this appends
-   * `?namespace=<value>` to the one endpoint where it's both needed and
-   * accepted, unless the caller already scoped the request.
+   * An app key always spans at least its own namespaces plus `wip`, so it
+   * gets no automatic namespace derivation: a value-form template_id on
+   * `POST /api/document-store/documents/query` is then refused with 422, and
+   * a query without one reads every namespace the key can read. When set,
+   * this appends `?namespace=<value>` to that one endpoint, unless the caller
+   * already scoped the request.
    *
-   * Deliberately narrow: only `/api/document-store/documents/query` accepts
-   * the query param AND exhibits the silent-zero failure. Files take
-   * namespace as a form field, document writes take it in the body, and a
-   * `namespace` in the query body is `extra_forbidden` — so a blanket inject
-   * 422s those paths (learned the hard way in WIP-Song, 2026-06-12).
+   * Deliberately one endpoint, not every read: other routes take the
+   * namespace in the body or a form field, and some refuse unknown query
+   * parameters, so a blanket inject breaks them (learned the hard way in
+   * WIP-Song, 2026-06-12).
    */
   defaultNamespace?: string
 }
@@ -76,6 +84,63 @@ const WIP_API_PREFIXES = [
   '/api/ingest-gateway',
 ]
 
+/** True for a path under one of the six WIP service prefixes. */
+export function isWipApiPath(pathname: string): boolean {
+  return WIP_API_PREFIXES.some((p) => pathname === p || pathname.startsWith(`${p}/`))
+}
+
+/** baseUrl's own path (no trailing slash): '' for a bare origin. */
+function basePathOf(baseUrl: URL): string {
+  return baseUrl.pathname.replace(/\/+$/, '')
+}
+
+/**
+ * The upstream URL for a proxied request, or null when the request's path,
+ * once normalised, is not under a WIP service prefix.
+ *
+ * Express matched the route against the raw path, but a URL parser collapses
+ * dot segments — `..`, `%2e%2e`, and backslashes, which a special-scheme URL
+ * reads as slashes — so `/api/def-store/../../auth/userinfo` would leave as
+ * `/auth/userinfo`, and `/api/def-store/../def-store-evil` as a look-alike
+ * prefix. The path is therefore normalised first and checked against the
+ * prefixes on its own, and the URL is built from the normalised form.
+ */
+export function upstreamUrlFor(reqUrl: string, options: ApiProxyOptions): URL | null {
+  const normalised = new URL(`http://wip.invalid${reqUrl.startsWith('/') ? '' : '/'}${reqUrl}`)
+  if (!isWipApiPath(normalised.pathname)) return null
+  const path = applyDefaultNamespace(`${normalised.pathname}${normalised.search}`, options.defaultNamespace)
+  return new URL(`${options.baseUrl}${path}`)
+}
+
+/**
+ * Where a client should go for an upstream redirect, or undefined to drop the
+ * Location. A redirect onto a WIP API path of this WIP instance is re-issued
+ * under the proxy's mount (`/wip/api/registry/`), so the browser stays on the
+ * app's origin; anything else (another host, a non-API path) is not handed to
+ * the client — it would leave the app's origin or expose WIP's.
+ */
+export function clientLocation(
+  location: string | undefined,
+  upstreamUrl: URL,
+  baseUrl: string,
+  mountPath: string,
+): string | undefined {
+  if (!location) return undefined
+  let target: URL
+  try {
+    target = new URL(location, upstreamUrl)
+  } catch {
+    return undefined
+  }
+  const base = new URL(baseUrl)
+  if (target.origin !== base.origin) return undefined
+  const basePath = basePathOf(base)
+  if (basePath && !target.pathname.startsWith(`${basePath}/`)) return undefined
+  const path = target.pathname.slice(basePath.length)
+  if (!isWipApiPath(path)) return undefined
+  return `${mountPath}${path}${target.search}`
+}
+
 /** `node:http` or `node:https` request function for a target URL. */
 export function requestFnFor(url: URL): typeof httpRequest {
   return url.protocol === 'https:' ? httpsRequest : httpRequest
@@ -90,12 +155,14 @@ export function requestFnFor(url: URL): typeof httpRequest {
 export function streamUpstreamResponse(
   upstreamRes: IncomingMessage,
   res: Response,
+  extraHeaders: Record<string, string> = {},
 ): void {
   res.status(upstreamRes.statusCode ?? 502)
   for (const h of FORWARDED_RESPONSE_HEADERS) {
     const value = upstreamRes.headers[h]
     if (value) res.setHeader(h, value)
   }
+  for (const [h, value] of Object.entries(extraHeaders)) res.setHeader(h, value)
   // A failure after bytes have flowed cannot become a tidy error response —
   // destroying the client socket (truncated transfer) is the honest signal.
   upstreamRes.on('error', () => res.destroy())
@@ -117,8 +184,14 @@ export function streamUpstreamResponse(
  *
  * Redirects are forwarded to the client, not followed: following a 307/308
  * would require replaying a request body this handler has already streamed
- * away. WIP's APIs are served on exact paths; a client that meets a
- * redirect re-issues through the proxy and stays same-origin.
+ * away. A redirect onto a WIP API path (e.g. a service's bare prefix →
+ * its trailing-slash form) is re-issued under the proxy's mount, so the
+ * client follows it through the proxy and stays same-origin; any other
+ * Location is dropped (see `clientLocation`).
+ *
+ * The path is checked after normalisation (see `upstreamUrlFor`): a request
+ * whose dot segments would leave the WIP service prefixes is refused with
+ * 400 `wip_proxy_path_refused` and never sent.
  *
  * When mounted inside a Router via `app.use('/wip', router)`, Express
  * strips the mount prefix from `req.url`. So `req.url` is already the
@@ -133,8 +206,14 @@ export function handleApiProxy(
   options: ApiProxyOptions,
 ): void {
   // req.url has the path relative to the router mount (includes query string)
-  const upstreamPath = applyDefaultNamespace(req.url, options.defaultNamespace)
-  const url = new URL(`${options.baseUrl}${upstreamPath}`)
+  const url = upstreamUrlFor(req.url, options)
+  if (url === null) {
+    res.status(400).json({
+      error: 'wipProxy: the request path, once normalised, is not under a WIP API prefix',
+      error_code: 'wip_proxy_path_refused',
+    })
+    return
+  }
 
   const headers: Record<string, string> = {
     'X-API-Key': options.apiKey,
@@ -161,7 +240,11 @@ export function handleApiProxy(
   }
 
   const upstreamReq = requestFnFor(url)(url, { method: req.method, headers }, (upstreamRes) => {
-    streamUpstreamResponse(upstreamRes, res)
+    const status = upstreamRes.statusCode ?? 0
+    const location = status >= 300 && status < 400
+      ? clientLocation(upstreamRes.headers.location, url, options.baseUrl, req.baseUrl)
+      : undefined
+    streamUpstreamResponse(upstreamRes, res, location ? { location } : {})
   })
 
   upstreamReq.on('error', (err) => {

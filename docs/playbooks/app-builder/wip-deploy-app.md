@@ -90,8 +90,9 @@ manifest — `admin` on the namespaces in `spec.namespaces`, `read` or
 `write` on those in `spec.namespace_access`, `read` on `wip` — so it
 always spans at least two namespaces. WIP derives a namespace only for a
 key scoped to exactly one, so "omit the namespace parameter" does NOT hold:
-value-form reads with no explicit namespace can silently return **zero
-rows** instead of erroring. Scope calls explicitly —
+a value-form identifier with no explicit namespace is refused (422), and a
+read without one spans every namespace the key can read. Scope calls
+explicitly —
 `?namespace=$WIP_NAMESPACE` on proxied WIP calls, or `defaultNamespace` on
 `@wip/proxy`. Only an app declaring `privileged_key: true` (an admin
 console) gets the install's master key instead.

@@ -1,8 +1,5 @@
 import { type Request, type Response } from 'express'
-import { requestFnFor, streamUpstreamResponse } from './api-proxy.js'
-
-/** Identity headers forwarded from gateway auth to WIP services */
-const IDENTITY_HEADERS = ['x-wip-user', 'x-wip-groups', 'x-wip-auth-method'] as const
+import { IDENTITY_HEADERS, requestFnFor, streamUpstreamResponse } from './api-proxy.js'
 
 /** Redirect hops followed server-side before giving up. */
 const MAX_REDIRECTS = 5
@@ -12,7 +9,7 @@ export interface FileProxyOptions {
   baseUrl: string
   /** API key for upstream requests */
   apiKey: string
-  /** Forward X-WIP-User, X-WIP-Groups, X-WIP-Auth-Method from incoming request */
+  /** Forward X-WIP-User and X-WIP-Groups from the incoming request (see ApiProxyOptions) */
   forwardIdentity?: boolean
 }
 
@@ -27,6 +24,11 @@ export interface FileProxyOptions {
  * browser must never see them), and pipes the response through, so file
  * downloads are O(1) in proxy memory regardless of file size. GET-only,
  * so following redirects is safe — there is no request body to replay.
+ *
+ * The key and identity headers go only to WIP's own origin: a hop to
+ * another origin (object storage's presigned URL needs neither) is made
+ * without them. A redirect whose Location cannot be parsed answers 502.
+ * The file id is one path segment — an encoded `/` in it stays encoded.
  */
 export function handleFileContent(
   req: Request,
@@ -52,8 +54,11 @@ export function handleFileContent(
     }
   }
 
+  const wipOrigin = new URL(options.baseUrl).origin
+
   const fetchFrom = (url: URL, redirectsLeft: number): void => {
-    const upstreamReq = requestFnFor(url)(url, { method: 'GET', headers }, (upstreamRes) => {
+    const hopHeaders = url.origin === wipOrigin ? headers : {}
+    const upstreamReq = requestFnFor(url)(url, { method: 'GET', headers: hopHeaders }, (upstreamRes) => {
       const status = upstreamRes.statusCode ?? 0
       const location = upstreamRes.headers.location
       if (status >= 300 && status < 400 && location) {
@@ -62,7 +67,14 @@ export function handleFileContent(
           res.status(502).json({ error: 'Too many upstream redirects' })
           return
         }
-        fetchFrom(new URL(location, url), redirectsLeft - 1)
+        let next: URL
+        try {
+          next = new URL(location, url)
+        } catch {
+          res.status(502).json({ error: 'Upstream redirect has an invalid Location' })
+          return
+        }
+        fetchFrom(next, redirectsLeft - 1)
         return
       }
       streamUpstreamResponse(upstreamRes, res)
@@ -85,7 +97,7 @@ export function handleFileContent(
   }
 
   fetchFrom(
-    new URL(`${options.baseUrl}/api/document-store/files/${fileId}/content`),
+    new URL(`${options.baseUrl}/api/document-store/files/${encodeURIComponent(String(fileId))}/content`),
     MAX_REDIRECTS,
   )
 }

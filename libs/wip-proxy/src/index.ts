@@ -3,23 +3,49 @@ import { Router, type Request, type Response } from 'express'
 import { handleApiProxy, WIP_API_PREFIXES, type ApiProxyOptions } from './api-proxy.js'
 import { handleFileContent, type FileProxyOptions } from './file-proxy.js'
 
+/**
+ * Supplies the API key for an upstream request. Called on every proxied
+ * request; a null, undefined or empty result means "no key now".
+ */
+export type ApiKeyProvider = () => string | null | undefined | Promise<string | null | undefined>
+
+/**
+ * Throw from an `ApiKeyProvider` to say why there is no key: its message is
+ * shown in the 503 body and on `unavailableReason`, so it must name the
+ * source (a path, a setting), never a key. Any other error a provider throws
+ * is reported only as "the getApiKey provider failed".
+ */
+export class KeySourceError extends Error {}
+
 export interface WipProxyOptions {
   /** WIP instance base URL (e.g., 'https://localhost:8443') */
   baseUrl: string
   /**
-   * API key injected into upstream requests. Provide this OR `apiKeyFile`.
-   * When both are set, `apiKeyFile` wins.
+   * API key injected into upstream requests. Provide this, `apiKeyFile`, or
+   * `getApiKey`. When `apiKeyFile` is also set, `apiKeyFile` wins.
    */
   apiKey?: string
   /**
-   * Path to a file containing the API key — typically the live wip-deploy
-   * secrets file (`~/.wip-deploy/<deployment>/secrets/api-key`), the same
-   * source the MCP server resolves via `WIP_API_KEY_FILE`. Read once at
-   * construction, so a key rotation / target-redeploy is picked up on app
-   * restart instead of stranding a baked, stale `.env` value (CASE-495).
-   * Takes precedence over `apiKey`.
+   * Path to a file containing the API key — typically the app's own key
+   * file (`WIP_API_KEY_FILE`, e.g. a mounted Secret), never the install's
+   * master key. Read once at construction, so a rotation is picked up on app
+   * restart; for a rotation without a restart, use
+   * `getApiKey: keyFromFile(path)` instead. Takes precedence over `apiKey`.
    */
   apiKeyFile?: string
+  /**
+   * A key provider, asked on every proxied request — for a key that appears
+   * or changes while the app runs (a settings page, a Secret the kubelet
+   * refreshes in place; see `keyFromFile`). When given it is the ONLY
+   * source: `apiKey` and `apiKeyFile` are ignored (with one warning at
+   * construction), and there is no fallback to them. Its result is trimmed
+   * and checked like a static key. No key, a key with whitespace or a
+   * control character, or a provider that throws answers that request 503
+   * `wip_proxy_unavailable` naming the source, never the value — and the
+   * next request asks again, so the proxy recovers as soon as a key exists.
+   * `onMissingKey` does not apply.
+   */
+  getApiKey?: ApiKeyProvider
   /**
    * @deprecated No effect since 0.5.0: request and response bodies stream
    * through the proxy instead of being buffered, so there is no buffer for
@@ -28,18 +54,21 @@ export interface WipProxyOptions {
   bodyLimit?: string
   /** Additional headers to forward upstream */
   extraHeaders?: Record<string, string>
-  /** Forward X-WIP-User, X-WIP-Groups, X-WIP-Auth-Method from incoming request */
+  /**
+   * Forward X-WIP-User and X-WIP-Groups from the incoming request. WIP acts
+   * on them only when the app's key is privileged.
+   */
   forwardIdentity?: boolean
   /**
-   * Namespace to scope reads to under a multi-namespace (e.g. install admin)
-   * key. Appends `?namespace=<value>` to the documents query endpoint when
-   * the caller hasn't scoped it — fixes the CASE-457 silent-zero-rows trap
-   * without each app re-implementing the middleware. See `ApiProxyOptions`
-   * for why the injection is limited to that one endpoint.
+   * Namespace appended as `?namespace=<value>` to the documents query
+   * endpoint (`POST /api/document-store/documents/query`, and only there)
+   * when the caller hasn't scoped it — needed under a key spanning several
+   * namespaces, which every app key does. See `ApiProxyOptions`.
    */
   defaultNamespace?: string
   /**
-   * What happens when neither `apiKeyFile` nor `apiKey` yields a key.
+   * What happens when neither `apiKeyFile` nor `apiKey` yields a key (not
+   * used with `getApiKey`, which is asked per request).
    *
    * - `'throw'` (default): `wipProxy()` throws at construction, naming every
    *   attempted source. A misconfigured proxy fails loudly.
@@ -60,7 +89,9 @@ export interface WipProxyOptions {
  * The router `wipProxy()` returns. `unavailableReason` is null when the proxy
  * works, and the missing-key message when it was built with
  * `onMissingKey: 'unavailable'` and no key — so an app can surface it, e.g.
- * as `wip_proxy` in its `appConfigHandler` entries.
+ * as `wip_proxy` in its `appConfigHandler` entries. With `getApiKey` it
+ * reports the outcome of the most recent request's key resolution (null
+ * before the first request and whenever a key was found).
  */
 export type WipProxyRouter = Router & { readonly unavailableReason: string | null }
 
@@ -78,7 +109,7 @@ export type WipProxyRouter = Router & { readonly unavailableReason: string | nul
  * ```
  *
  * This creates:
- * - `GET|POST|PUT|DELETE /wip/api/{service}/*` — proxied to WIP with API key
+ * - `/wip/api/{service}/*`, every method — proxied to WIP with the API key
  * - `GET /wip/files/:fileId/content` — proxied file download (resolves object-storage URLs server-side)
  *
  * Both directions STREAM — proxy memory is O(1) in payload size, so large
@@ -86,9 +117,10 @@ export type WipProxyRouter = Router & { readonly unavailableReason: string | nul
  * the proxy consumes the request as a raw stream, so it must be mounted
  * BEFORE any body-parsing middleware (`express.json()`, `express.raw()`, …)
  * that would match the same paths — a parser ahead of the proxy drains the
- * body and an empty stream gets forwarded.
+ * body, and the upstream request then never completes.
  */
 export function wipProxy(options: WipProxyOptions): WipProxyRouter {
+  if (options.getApiKey) return providedKeyProxy(options, options.getApiKey)
   let apiKey: string
   try {
     apiKey = resolveApiKey(options)
@@ -96,25 +128,34 @@ export function wipProxy(options: WipProxyOptions): WipProxyRouter {
     if (options.onMissingKey !== 'unavailable') throw err
     return unavailableProxy(err instanceof Error ? err.message : String(err))
   }
-  const router = Router()
+  const router = proxyRouter(options, (req, res, handle) => handle(apiKey))
+  return Object.assign(router, { unavailableReason: null })
+}
 
-  const apiOptions: ApiProxyOptions = {
+/**
+ * Runs a proxy handler with the key for this request, or answers the request
+ * itself (503) when there is none.
+ */
+type WithKey = (req: Request, res: Response, handle: (apiKey: string) => void) => void
+
+function proxyRouter(options: WipProxyOptions, withKey: WithKey): Router {
+  const router = Router()
+  const apiOptions = (apiKey: string): ApiProxyOptions => ({
     baseUrl: options.baseUrl,
     apiKey,
     extraHeaders: options.extraHeaders,
     forwardIdentity: options.forwardIdentity,
     defaultNamespace: options.defaultNamespace,
-  }
-
-  const fileOptions: FileProxyOptions = {
+  })
+  const fileOptions = (apiKey: string): FileProxyOptions => ({
     baseUrl: options.baseUrl,
     apiKey,
     forwardIdentity: options.forwardIdentity,
-  }
+  })
 
   // File content proxy — must be before the catch-all API routes
   router.get('/files/:fileId/content', (req, res) => {
-    handleFileContent(req, res, fileOptions)
+    withKey(req, res, (apiKey) => handleFileContent(req, res, fileOptions(apiKey)))
   })
 
   // API proxy routes — one handler per service prefix. Registered as a RegExp
@@ -127,11 +168,97 @@ export function wipProxy(options: WipProxyOptions): WipProxyRouter {
   // the upstream path comes from req.url, never from the wildcard capture.
   for (const prefix of WIP_API_PREFIXES) {
     router.all(prefixPattern(prefix), (req, res) => {
-      handleApiProxy(req, res, apiOptions)
+      withKey(req, res, (apiKey) => handleApiProxy(req, res, apiOptions(apiKey)))
     })
   }
+  return router
+}
 
-  return Object.assign(router, { unavailableReason: null })
+function answerUnavailable(res: Response, reason: string): void {
+  res.status(503).json({ error: reason, error_code: 'wip_proxy_unavailable' })
+}
+
+/**
+ * A proxy whose key comes from `getApiKey`, asked per request. The request
+ * stream is not read until the key is known, so a streamed body waits in the
+ * socket. A rejection never escapes into Express (Express 4 would leave the
+ * request hanging): every outcome answers the request.
+ */
+function providedKeyProxy(options: WipProxyOptions, getApiKey: ApiKeyProvider): WipProxyRouter {
+  const ignored = [options.apiKeyFile && 'apiKeyFile', options.apiKey && 'apiKey'].filter(Boolean)
+  if (ignored.length) {
+    console.warn(
+      `wipProxy: getApiKey is set, so ${ignored.join(' and ')} ${ignored.length > 1 ? 'are' : 'is'} ignored — ` +
+      'the provider is the only key source.',
+    )
+  }
+  let lastReason: string | null = null
+  const withKey: WithKey = (_req, res, handle) => {
+    resolveProvidedKey(getApiKey).then((outcome) => {
+      if (outcome.reason !== lastReason && outcome.reason !== null) {
+        console.warn(`wipProxy: ${outcome.reason} — /wip answers 503 until it yields a key.`)
+      }
+      lastReason = outcome.reason
+      if (outcome.key === null) answerUnavailable(res, outcome.reason!)
+      else handle(outcome.key)
+    }, () => answerUnavailable(res, 'wipProxy: the getApiKey provider failed'))
+  }
+  const router = proxyRouter(options, withKey)
+  return Object.defineProperty(router, 'unavailableReason', {
+    get: () => lastReason,
+    enumerable: true,
+  }) as WipProxyRouter
+}
+
+type KeyOutcome = { key: string; reason: null } | { key: null; reason: string }
+
+async function resolveProvidedKey(getApiKey: ApiKeyProvider): Promise<KeyOutcome> {
+  let value: string | null | undefined
+  try {
+    value = await getApiKey()
+  } catch (err) {
+    const why = err instanceof KeySourceError ? `: ${err.message}` : ''
+    return { key: null, reason: `wipProxy: the getApiKey provider failed${why}` }
+  }
+  const key = typeof value === 'string' ? value.trim() : ''
+  if (!key) return { key: null, reason: 'wipProxy: the getApiKey provider returned no key' }
+  if (!isCleanKey(key)) {
+    return {
+      key: null,
+      reason: 'wipProxy: the getApiKey provider returned a key containing whitespace or a control character; WIP keys never do',
+    }
+  }
+  return { key, reason: null }
+}
+
+/**
+ * A key provider reading `path`, re-read at most once per `ttlMs` (default
+ * 15 s) — for a Secret mounted as a file, which the kubelet refreshes in
+ * place, so a rotation reaches the running app within its refresh delay plus
+ * `ttlMs`. A missing, unreadable or empty file means "no key now" and names
+ * the path in the 503; the next read after `ttlMs` tries again. The key's
+ * content never appears in any message.
+ */
+export function keyFromFile(path: string, { ttlMs = 15_000 }: { ttlMs?: number } = {}): ApiKeyProvider {
+  let cached: { at: number; key: string } | null = null
+  return () => {
+    const now = Date.now()
+    if (cached && now - cached.at < ttlMs) return cached.key
+    let key: string
+    try {
+      key = readFileSync(path, 'utf8').trim()
+    } catch (err) {
+      cached = null
+      const code = (err as NodeJS.ErrnoException).code ?? 'unreadable'
+      throw new KeySourceError(`key file '${path}' is unreadable (${code})`)
+    }
+    if (!key) {
+      cached = null
+      throw new KeySourceError(`key file '${path}' is empty`)
+    }
+    cached = { at: now, key }
+    return key
+  }
 }
 
 /**
@@ -144,9 +271,7 @@ function unavailableProxy(reason: string): WipProxyRouter {
     `wipProxy: not mounted — ${reason}. /wip answers 503 until a key is configured.`
   )
   const router = Router()
-  const unavailable = (_req: Request, res: Response) => {
-    res.status(503).json({ error: reason, error_code: 'wip_proxy_unavailable' })
-  }
+  const unavailable = (_req: Request, res: Response) => answerUnavailable(res, reason)
   router.get('/files/:fileId/content', unavailable)
   for (const prefix of WIP_API_PREFIXES) {
     router.all(prefixPattern(prefix), unavailable)
@@ -217,9 +342,13 @@ export function resolveApiKey(options: WipProxyOptions): string {
  * WIP key (those are URL-safe base64 or hex): refuse it here, at
  * construction, rather than on the first request as ERR_INVALID_CHAR or 401.
  */
-function checkedKey(key: string, source: string): string {
+function isCleanKey(key: string): boolean {
   // eslint-disable-next-line no-control-regex
-  if (/[\s\u0000-\u001f\u007f]/.test(key)) {
+  return !/[\s\u0000-\u001f\u007f]/.test(key)
+}
+
+function checkedKey(key: string, source: string): string {
+  if (!isCleanKey(key)) {
     throw new Error(
       `wipProxy: ${source} contains whitespace or a control character; WIP keys never do`,
     )

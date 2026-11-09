@@ -8,16 +8,16 @@ import type { Request, Response } from 'express'
 export type AppConfigEntries = Record<string, string | number | boolean | null | undefined>
 
 /**
- * Runtime app-config endpoint (CASE-551).
+ * Runtime app-config endpoint.
  *
  * Single source of truth for client-visible per-deployment values (namespace
  * names, feature flags, display labels). The SPA fetches this at boot instead
  * of baking `VITE_*` values into the bundle at build time — a build-time bake
  * and the server's runtime env are two independent sources that drift
- * silently (the CASE-551 footgun). `VITE_BASE_PATH` stays a build-time bake
- * by design: it is consumed at bundle-emit time and fails loudly when wrong.
+ * silently. An app is served at the root of its own origin, so there is no
+ * base path to bake.
  *
- * Mount at the contract path `GET <base>/api/app-config`:
+ * Mount at the contract path `GET /api/app-config`:
  * ```ts
  * router.get('/api/app-config', appConfigHandler({
  *   namespace: process.env.WIP_NAMESPACE || null,

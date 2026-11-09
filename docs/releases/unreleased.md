@@ -7,6 +7,45 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### `@wip/proxy` 0.8.0: requests stay inside the WIP API, the key stays with WIP, and a key can arrive or rotate without a restart
+
+- **The upstream path is checked after normalisation.** The allowlist was
+  the route match on the raw path, and the upstream URL parser then
+  collapsed dot segments, so `/wip/api/def-store/../../auth/userinfo` (or
+  `%2e%2e`, or backslashes) left the proxy as `/auth/userinfo` with the
+  app's key — any path WIP's origin serves, `/mcp` included. Such a
+  request is now refused with `400` `wip_proxy_path_refused` and never
+  sent; a dot segment that stays inside a prefix is forwarded normalised.
+- **The file proxy keeps the key on WIP's origin.** It followed redirects
+  with `X-API-Key` and the identity headers to whatever host a `Location`
+  named; a hop to another origin is now made without them. A malformed
+  `Location` answers `502` (it used to crash out of the response callback
+  and leave the request hanging). The file id is encoded as one path
+  segment, so `..%2F` in it no longer leaves `/api/document-store/files/`.
+- **An API redirect keeps a usable `Location`.** It was dropped (the
+  response headers are an allowlist), so e.g. `GET /wip/api/registry` → 307
+  had no target. A `Location` onto a WIP API path is now rewritten under
+  the proxy's mount (`/wip/api/registry/`); any other is dropped.
+- **Key provider.** `getApiKey` (asked per request) and
+  `keyFromFile(path, { ttlMs })` (re-reads a file, e.g. a Secret the
+  kubelet refreshes in place, default every 15 s): a key typed into a
+  settings page or a rotated Secret takes effect without a restart, and a
+  proxy started keyless answers 503 until a key exists, then forwards.
+  When given, `getApiKey` is the only source (`apiKey` / `apiKeyFile` are
+  ignored with a warning). Its value is trimmed and checked like a static
+  key; no key, a bad key or a throwing provider answers 503
+  `wip_proxy_unavailable` naming the source, never the value.
+  `KeySourceError` lets a provider say why. `unavailableReason` reports
+  the latest outcome. `apiKey` / `apiKeyFile` behave as before.
+- `forwardIdentity` no longer forwards `X-WIP-Auth-Method` — the platform
+  strips it and no service reads it. Docs: identity is honoured only with a
+  privileged key; `defaultNamespace` prevents a 422 (not silent zero rows);
+  every method is proxied; a body parser ahead of the proxy stalls the call;
+  `apiKeyFile` is the app's own key file.
+- **Action:** re-vendor `libs/wip-proxy/wip-proxy-0.8.0.tgz`. A client that
+  relied on a dot-segment path reaching a non-API route through `/wip` now
+  gets 400.
+
 ### template-store's `/health` answers 503 when unhealthy
 
 - `/health` (and `/api/template-store/health`) answered 200 with
