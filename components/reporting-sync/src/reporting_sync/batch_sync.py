@@ -89,6 +89,25 @@ class _BatchRun:
     ns_versions_on_disk: dict[str, set[int]] = field(default_factory=dict)
 
 
+@dataclass
+class _TermSync:
+    """A batch term sync in progress: its scope, the tables of each
+    namespace, and its counts. complete is False once a listing failed: a
+    sync that never listed cannot be told apart from an empty namespace by
+    its counts alone."""
+
+    namespace: str | None
+    # Rows route to their own namespace's schema.
+    ns_tables: dict[str, str] = field(default_factory=dict)
+    ns_names_tables: dict[str, str] = field(default_factory=dict)
+    synced: int = 0
+    failed: int = 0
+    complete: bool = True
+
+    def term_namespace(self, term: dict[str, Any]) -> str:
+        return term.get("namespace") or self.namespace or "wip"
+
+
 class BatchSyncService:
     """Service for batch syncing documents to PostgreSQL."""
 
@@ -1092,189 +1111,191 @@ class BatchSyncService:
         Iterates through all terminologies and fetches their terms.
 
         Returns:
-            Dict with sync results (synced, failed, total)
+            Dict with sync results (synced, failed, total, complete)
         """
-        # Rows route to their own namespace's schema (CASE-628).
-        ns_tables: dict[str, str] = {}
-        ns_names_tables: dict[str, str] = {}
-        synced = 0
-        failed = 0
-        # False when a listing failed: a sync that never listed cannot be
-        # told apart from an empty namespace by its counts alone.
-        complete = True
-
+        run = _TermSync(namespace=namespace)
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
-                # First, get all terminology IDs
-                terminology_ids = []
-                page = 1
-                while True:
-                    term_list_params: dict = {"page": page, "page_size": 100}
-                    if namespace:
-                        term_list_params["namespace"] = namespace
-                    resp = await client.get(
-                        f"{settings.def_store_url}/api/def-store/terminologies",
-                        params=term_list_params,
-                        headers={"X-API-Key": settings.api_key},
-                    )
-                    if resp.status_code != 200:
-                        logger.error(f"Failed to list terminologies for terms: {resp.status_code}")
-                        complete = False
-                        break
-                    data = resp.json()
-                    for t in data.get("items", []):
-                        terminology_ids.append(t["terminology_id"])
-                    if page >= data.get("pages", 1):
-                        break
-                    page += 1
-
+                terminology_ids = await self._list_terminology_ids(client, run)
                 logger.info(f"Found {len(terminology_ids)} terminologies, fetching terms...")
-
-                # Fetch terms per terminology
                 for tidx, tid in enumerate(terminology_ids):
-                    page = 1
-                    while True:
-                        resp = await client.get(
-                            f"{settings.def_store_url}/api/def-store/terminologies/{tid}/terms",
-                            params={
-                                "page": page,
-                                "page_size": page_size,
-                            },
-                            headers={"X-API-Key": settings.api_key},
-                        )
-                        if resp.status_code != 200:
-                            logger.error(f"Failed to list terms for {tid}: {resp.status_code}")
-                            complete = False
-                            break
-
-                        data = resp.json()
-                        items = data.get("items", [])
-
-                        if not items:
-                            break
-
-                        # Ensure tables per namespace present in this page.
-                        for t in items:
-                            ns = t.get("namespace") or namespace or "wip"
-                            if ns not in ns_tables:
-                                ns_tables[ns] = await self.schema_manager.ensure_terms_table(ns)
-                            if ns not in ns_names_tables:
-                                ns_names_tables[ns] = (
-                                    await self.schema_manager.ensure_term_names_table(ns)
-                                )
-
-                        async with self.pool.acquire() as conn:
-                            current_names = await self._current_name_rows(
-                                conn, items, namespace, ns_names_tables
-                            )
-                            for t in items:
-                                try:
-                                    table_name = ns_tables[t.get("namespace") or namespace or "wip"]
-                                    await conn.execute(
-                                        f"""
-                                        INSERT INTO {table_name} AS cur (
-                                            "term_id", "namespace", "terminology_id",
-                                            "terminology_value", "value", "aliases",
-                                            "label", "description", "sort_order",
-                                            "parent_term_id", "status",
-                                            "deprecated_reason", "replaced_by_term_id",
-                                            "created_at", "created_by", "updated_at", "updated_by"
-                                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
-                                        ON CONFLICT ("namespace", "term_id")
-                                        DO UPDATE SET
-                                            "terminology_value" = EXCLUDED."terminology_value",
-                                            "value" = EXCLUDED."value",
-                                            "aliases" = EXCLUDED."aliases",
-                                            "label" = EXCLUDED."label",
-                                            "description" = EXCLUDED."description",
-                                            "sort_order" = EXCLUDED."sort_order",
-                                            "parent_term_id" = EXCLUDED."parent_term_id",
-                                            "status" = EXCLUDED."status",
-                                            "updated_at" = EXCLUDED."updated_at",
-                                            "updated_by" = EXCLUDED."updated_by"
-                                        {_only_if_changed(_TERM_UPDATE_COLUMNS)}
-                                        """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
-                                        t["term_id"],
-                                        t.get("namespace", namespace),
-                                        t.get("terminology_id"),
-                                        t.get("terminology_value"),
-                                        t["value"],
-                                        json.dumps(t.get("aliases", [])),
-                                        t.get("label"),
-                                        t.get("description"),
-                                        t.get("sort_order", 0),
-                                        t.get("parent_term_id"),
-                                        t.get("status", "active"),
-                                        t.get("deprecated_reason"),
-                                        t.get("replaced_by_term_id"),
-                                        _parse_datetime(t.get("created_at")),
-                                        t.get("created_by"),
-                                        _parse_datetime(t.get("updated_at")),
-                                        t.get("updated_by"),
-                                    )
-                                    # Rewrite the term's name rows only when they
-                                    # differ from what the table holds.
-                                    t_ns = t.get("namespace") or namespace or "wip"
-                                    names_table = ns_names_tables[t_ns]
-                                    name_rows = term_name_rows(t)
-                                    incoming = Counter(
-                                        _name_row_key(t.get("terminology_id"), r)
-                                        for r in name_rows
-                                    )
-                                    if incoming == current_names.get((t_ns, t["term_id"]), Counter()):
-                                        synced += 1
-                                        continue
-                                    await conn.execute(
-                                        f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
-                                        t_ns, t["term_id"],
-                                    )
-                                    if name_rows:
-                                        await conn.executemany(
-                                            f"""
-                                            INSERT INTO {names_table} (
-                                                "namespace", "term_id", "terminology_id",
-                                                "value", "type", "language", "source", "preferred"
-                                            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                                            """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
-                                            [
-                                                (
-                                                    t_ns, t["term_id"],
-                                                    t.get("terminology_id"),
-                                                    r["value"], r["type"], r["language"],
-                                                    r["source"], r["preferred"],
-                                                )
-                                                for r in name_rows
-                                            ],
-                                        )
-                                    synced += 1
-                                except Exception as e:
-                                    logger.error(f"Error syncing term {t.get('value')}: {e}")
-                                    failed += 1
-
-                        if page >= data.get("pages", 1):
-                            break
-                        page += 1
-                        await asyncio.sleep(0.05)
-
+                    await self._sync_terminology_terms(client, run, tid, page_size)
                     if (tidx + 1) % 10 == 0:
                         logger.info(
                             f"Term sync progress: {tidx+1}/{len(terminology_ids)} terminologies, "
-                            f"{synced} terms synced"
+                            f"{run.synced} terms synced"
                         )
-
         except Exception as e:
             logger.error(f"Batch term sync error: {e}", exc_info=True)
-            complete = False
+            run.complete = False
 
-        if synced:
-            for ns in ns_tables:
+        if run.synced:
+            for ns in run.ns_tables:
                 try:
                     await self.closure.rebuild(ns)
                 except Exception as e:
                     logger.error(f"term_closure rebuild failed for {ns}: {e}")
 
-        logger.info(f"Term batch sync: {synced} synced, {failed} failed")
-        return {"synced": synced, "failed": failed, "total": synced + failed, "complete": complete}
+        logger.info(f"Term batch sync: {run.synced} synced, {run.failed} failed")
+        return {
+            "synced": run.synced, "failed": run.failed,
+            "total": run.synced + run.failed, "complete": run.complete,
+        }
+
+    async def _list_terminology_ids(self, client: httpx.AsyncClient, run: _TermSync) -> list[str]:
+        """Every terminology id in scope, page by page. A failed listing
+        marks the sync incomplete and returns what was listed."""
+        terminology_ids: list[str] = []
+        page = 1
+        while True:
+            params: dict = {"page": page, "page_size": 100}
+            if run.namespace:
+                params["namespace"] = run.namespace
+            resp = await client.get(
+                f"{settings.def_store_url}/api/def-store/terminologies",
+                params=params,
+                headers={"X-API-Key": settings.api_key},
+            )
+            if resp.status_code != 200:
+                logger.error(f"Failed to list terminologies for terms: {resp.status_code}")
+                run.complete = False
+                return terminology_ids
+            data = resp.json()
+            terminology_ids += [t["terminology_id"] for t in data.get("items", [])]
+            if page >= data.get("pages", 1):
+                return terminology_ids
+            page += 1
+
+    async def _sync_terminology_terms(
+        self, client: httpx.AsyncClient, run: _TermSync, tid: str, page_size: int,
+    ) -> None:
+        """Sync one terminology's terms, page by page. A failed listing marks
+        the sync incomplete; an empty page ends the terminology."""
+        page = 1
+        while True:
+            resp = await client.get(
+                f"{settings.def_store_url}/api/def-store/terminologies/{tid}/terms",
+                params={"page": page, "page_size": page_size},
+                headers={"X-API-Key": settings.api_key},
+            )
+            if resp.status_code != 200:
+                logger.error(f"Failed to list terms for {tid}: {resp.status_code}")
+                run.complete = False
+                return
+            data = resp.json()
+            items = data.get("items", [])
+            if not items:
+                return
+            await self._sync_term_page(run, items)
+            if page >= data.get("pages", 1):
+                return
+            page += 1
+            await asyncio.sleep(0.05)
+
+    async def _sync_term_page(self, run: _TermSync, items: list[dict[str, Any]]) -> None:
+        """Ensure the tables of each namespace on the page, then upsert each
+        term. A term that fails is counted and logged; the page goes on."""
+        for t in items:
+            ns = run.term_namespace(t)
+            if ns not in run.ns_tables:
+                run.ns_tables[ns] = await self.schema_manager.ensure_terms_table(ns)
+            if ns not in run.ns_names_tables:
+                run.ns_names_tables[ns] = await self.schema_manager.ensure_term_names_table(ns)
+
+        async with self.pool.acquire() as conn:
+            current_names = await self._current_name_rows(
+                conn, items, run.namespace, run.ns_names_tables
+            )
+            for t in items:
+                try:
+                    await self._upsert_term(conn, run, t)
+                    await self._write_term_names(conn, run, t, current_names)
+                    run.synced += 1
+                except Exception as e:
+                    logger.error(f"Error syncing term {t.get('value')}: {e}")
+                    run.failed += 1
+
+    async def _upsert_term(self, conn: Any, run: _TermSync, t: dict[str, Any]) -> None:
+        """Upsert one term's row; an unchanged row is left alone."""
+        namespace = run.namespace
+        table_name = run.ns_tables[run.term_namespace(t)]
+        await conn.execute(
+            f"""
+            INSERT INTO {table_name} AS cur (
+                "term_id", "namespace", "terminology_id",
+                "terminology_value", "value", "aliases",
+                "label", "description", "sort_order",
+                "parent_term_id", "status",
+                "deprecated_reason", "replaced_by_term_id",
+                "created_at", "created_by", "updated_at", "updated_by"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            ON CONFLICT ("namespace", "term_id")
+            DO UPDATE SET
+                "terminology_value" = EXCLUDED."terminology_value",
+                "value" = EXCLUDED."value",
+                "aliases" = EXCLUDED."aliases",
+                "label" = EXCLUDED."label",
+                "description" = EXCLUDED."description",
+                "sort_order" = EXCLUDED."sort_order",
+                "parent_term_id" = EXCLUDED."parent_term_id",
+                "status" = EXCLUDED."status",
+                "updated_at" = EXCLUDED."updated_at",
+                "updated_by" = EXCLUDED."updated_by"
+            {_only_if_changed(_TERM_UPDATE_COLUMNS)}
+            """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+            t["term_id"],
+            t.get("namespace", namespace),
+            t.get("terminology_id"),
+            t.get("terminology_value"),
+            t["value"],
+            json.dumps(t.get("aliases", [])),
+            t.get("label"),
+            t.get("description"),
+            t.get("sort_order", 0),
+            t.get("parent_term_id"),
+            t.get("status", "active"),
+            t.get("deprecated_reason"),
+            t.get("replaced_by_term_id"),
+            _parse_datetime(t.get("created_at")),
+            t.get("created_by"),
+            _parse_datetime(t.get("updated_at")),
+            t.get("updated_by"),
+        )
+
+    async def _write_term_names(
+        self, conn: Any, run: _TermSync, t: dict[str, Any],
+        current_names: dict[tuple[str, str], Counter],
+    ) -> None:
+        """Rewrite the term's name rows, only when they differ from what the
+        table holds."""
+        t_ns = run.term_namespace(t)
+        names_table = run.ns_names_tables[t_ns]
+        name_rows = term_name_rows(t)
+        incoming = Counter(_name_row_key(t.get("terminology_id"), r) for r in name_rows)
+        if incoming == current_names.get((t_ns, t["term_id"]), Counter()):
+            return
+        await conn.execute(
+            f'DELETE FROM {names_table} WHERE "namespace" = $1 AND "term_id" = $2',  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+            t_ns, t["term_id"],
+        )
+        if name_rows:
+            await conn.executemany(
+                f"""
+                INSERT INTO {names_table} (
+                    "namespace", "term_id", "terminology_id",
+                    "value", "type", "language", "source", "preferred"
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                """,  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
+                [
+                    (
+                        t_ns, t["term_id"],
+                        t.get("terminology_id"),
+                        r["value"], r["type"], r["language"],
+                        r["source"], r["preferred"],
+                    )
+                    for r in name_rows
+                ],
+            )
 
     @staticmethod
     async def _current_name_rows(
