@@ -209,7 +209,7 @@ class SyncWorker:
                                 document_id,
                             )
                 latency_ms = (time.perf_counter() - start_time) * 1000
-                metrics.record_event_processed(template_value, table_name, latency_ms)
+                metrics.record_event_processed(template_value, table_name, latency_ms, namespace)
                 logger.info(f"Hard-deleted document {document_id} from {len(targets)} version table(s)")
                 return True
 
@@ -222,7 +222,7 @@ class SyncWorker:
                         document_id,
                     )
             latency_ms = (time.perf_counter() - start_time) * 1000
-            metrics.record_event_processed(template_value, table_name, latency_ms)
+            metrics.record_event_processed(template_value, table_name, latency_ms, namespace)
             logger.info(f"Marked document {document_id} as {new_status} across {len(targets)} version table(s)")
             return True
 
@@ -257,14 +257,14 @@ class SyncWorker:
                     )
 
             latency_ms = (time.perf_counter() - start_time) * 1000
-            metrics.record_event_processed(template_value, table_name, latency_ms)
+            metrics.record_event_processed(template_value, table_name, latency_ms, namespace)
             logger.info(
                 f"Synced document {document_id} to {table_name} ({len(rows)} rows, {latency_ms:.1f}ms)"
             )
             return True
 
         except Exception as e:
-            metrics.record_event_failed(template_value, table_name, "insert_error", str(e))
+            metrics.record_event_failed(template_value, table_name, "insert_error", str(e), namespace)
             raise
 
     async def _write_rows(
@@ -909,6 +909,8 @@ class SyncWorker:
                 ("template", "template_id"),
                 ("terminology", "terminology_id"),
                 ("term", "term_id"),
+                # A relation has no id of its own; its source term names it.
+                ("term_relation", "source_term_id"),
             ):
                 obj = (event_data or {}).get(container)
                 if isinstance(obj, dict) and obj.get(id_key):

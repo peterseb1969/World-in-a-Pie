@@ -25,6 +25,8 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
 
 from reporting_sync.search_service import (
+    _MARK_START,
+    _MARK_STOP,
     SearchRequest,
     SearchResult,
     SearchService,
@@ -133,7 +135,7 @@ class _RecordingConn:
         self.columns: dict[str, list[tuple[str, str]]] = {}  # table -> [(name, type)]
         self.rows_per_query: list[list[dict]] = []
 
-    async def _dispatch(self, sql: str, *params):
+    async def _dispatch(self, sql: str, *params, timeout=None):
         self.executed_sql.append((sql, params))
         # Table discovery query (info_schema.tables). CASE-628: the query now
         # selects table_schema too and scans across namespace schemas — canned
@@ -384,8 +386,11 @@ async def test_snippet_format_html_uses_b_tags():
     svc = SearchService(_mock_pool_with_conn(conn))
     await svc._search_documents("term", None, None, snippet_format="html")
     fts_sql = next(s for s, _ in conn.executed_sql if "plainto_tsquery" in s)
-    assert "StartSel=<b>" in fts_sql
-    assert "StopSel=</b>" in fts_sql
+    # ts_headline marks the hits with placeholders; they become <b>/</b>
+    # after the document text is HTML-escaped (real-PG check:
+    # test_case_1218_search.py).
+    assert f'StartSel="{_MARK_START}"' in fts_sql
+    assert f'StopSel="{_MARK_STOP}"' in fts_sql
 
 
 @pytest.mark.asyncio
@@ -403,8 +408,8 @@ async def test_snippet_format_text_omits_b_tags():
     svc = SearchService(_mock_pool_with_conn(conn))
     await svc._search_documents("term", None, None, snippet_format="text")
     fts_sql = next(s for s, _ in conn.executed_sql if "plainto_tsquery" in s)
-    assert "StartSel=<b>" not in fts_sql
-    assert "StopSel=" not in fts_sql or "StartSel=" not in fts_sql
+    # Empty marks: ts_headline would otherwise default to <b>…</b>.
+    assert 'StartSel="",StopSel=""' in fts_sql
 
 
 # =========================================================================

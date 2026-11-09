@@ -2,13 +2,13 @@
 docs/technology-stack.md sha256:5590feb0be212b0e reviewed:bb2cdf88
 docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
 docs/WIP_DevGuardrails.md sha256:0357beaebcec2918 reviewed:bb2cdf88
-libs/wip-client/README.md sha256:d05822e09876c562 reviewed:f13546dc
+libs/wip-client/README.md sha256:51842f209b9a24e6 reviewed:c50094bb
 libs/wip-react/README.md sha256:eba9b7ae31c577b0 reviewed:bb2cdf88
 libs/wip-proxy/README.md sha256:e63cb4241bccc1e7 reviewed:4bb50871
-docs/wip-deployable-app-contract.md sha256:b04fe0c657c66f9a reviewed:30b6f546
+docs/wip-deployable-app-contract.md sha256:13eb727c53fdeac8 reviewed:c50094bb
 docs/playbooks/app-builder/build-app.md sha256:4d59d990ca82e372 reviewed:43aca6a0
 docs/playbooks/app-builder/bootstrap.md sha256:6b9cda0da7c6c00d reviewed:06668a40
-scaffold/templates/claude-md/app.md sha256:d1d9161ab26b0295 reviewed:e106cfec
+scaffold/templates/claude-md/app.md sha256:d3a547014063d535 reviewed:c50094bb
 -->
 # WIP build card — Phase 4: writing the app
 

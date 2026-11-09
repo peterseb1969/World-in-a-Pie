@@ -57,7 +57,7 @@ The same dependency list gates every read: reading a view's rows takes read on *
 
 The dependency list cannot see what a view's functions read (`query_to_xml` reads whatever its string argument names), so it is not the boundary; PostgreSQL is. A key that is not `wip-admins` / `wip-services` runs its SQL, and reads view rows, on a connection that logs in as a role able to read only that key's namespaces. Registered views are `security_invoker`: they read with their reader's privileges, not their owner's. Anything outside the key's namespaces fails with `permission denied`.
 
-An app deployed by `wip-deploy` receives the install's service key, so bootstrap registration and raw view queries work unchanged. A **namespace-scoped app key** registers contained views with namespace ADMIN and reads them through the structured rows endpoint; it still cannot run raw SQL.
+An app deployed by `wip-deploy` receives the install's service key, so bootstrap registration and raw view queries work unchanged. A **namespace-scoped app key** registers views over the namespaces it can read with namespace ADMIN, and reads them through the structured rows endpoint or raw SQL; its raw SQL runs on the scoped connection described above, so it reads only the key's namespaces. (An install without the PostgreSQL role-manager secret answers such a key's SQL and view-row reads with `503`.)
 
 ## Name resolution — write the SQL the way you query it
 

@@ -104,6 +104,8 @@ class ReportingConfig(BaseModel):
     sync_strategy: SyncStrategy = SyncStrategy.LATEST_ONLY
     table_name: str | None = None  # Auto-generated from template value if not set
     include_metadata: bool = True
+    # Accepted from template configs, not implemented: arrays are stored as
+    # JSONB columns, one row per document (see DocumentTransformer._expand_arrays).
     flatten_arrays: bool = True
     max_array_elements: int = 10
     cross_version_view: CrossVersionView | None = None
@@ -250,9 +252,8 @@ class BatchSyncJob(BaseModel):
     # instrumentation rather than one-off profiling: this path's regressions
     # were invisible until an operator timed a 13-minute sync by hand, and a
     # job that reports where its time went makes the next one a read of the
-    # job record. rows_written counts physical row upserts — with
-    # flatten_arrays a document is a row MULTIPLE, so documents_synced alone
-    # misattributes throughput.
+    # job record. rows_written counts physical row upserts (one per document
+    # version written).
     fetch_ms: int = 0
     upsert_ms: int = 0
     sibling_ms: int = 0
@@ -287,7 +288,13 @@ class PerTemplateStats(BaseModel):
     """Statistics for a specific template."""
 
     template_value: str
-    table_name: str
+    namespace: str | None = Field(
+        default=None, description="Namespace whose documents these are (null: not known)"
+    )
+    table_name: str | None = Field(
+        default=None,
+        description="Table the latest event wrote (null: no event named one)",
+    )
     documents_synced: int = 0
     documents_failed: int = 0
     last_sync_at: datetime | None = None
@@ -301,11 +308,22 @@ class ConsumerInfo(BaseModel):
     stream_name: str
     consumer_name: str
     pending_messages: int = 0
-    pending_bytes: int = 0
-    delivered_messages: int = 0
+    pending_bytes: int | None = Field(
+        default=None,
+        description="Not measured: JetStream's consumer info carries no byte count. Always null.",
+    )
+    delivered_messages: int = Field(
+        default=0,
+        description=(
+            "Messages this consumer has delivered, redeliveries included "
+            "(JetStream's consumer sequence) — a count, not a stream position."
+        ),
+    )
     ack_pending: int = 0
     redelivered: int = 0
-    last_delivered: datetime | None = None
+    last_delivered: datetime | None = Field(
+        default=None, description="When this consumer last delivered a message."
+    )
 
 
 class LatencyStats(BaseModel):

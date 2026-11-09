@@ -57,6 +57,20 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([
 
 
 @pytest.fixture(autouse=True)
+def _no_template_store_for_search_filters(monkeypatch):
+    """A search's template filter asks the template store for a
+    reporting.table_name override. No template store runs in these tests
+    (and a dev install's could answer on localhost), so the lookup answers
+    the default name only; tests of the override replace this."""
+    from reporting_sync import search_service
+
+    async def default_only(template, namespace):
+        return {search_service.entity_base(template.lower())}
+
+    monkeypatch.setattr(search_service, "_template_table_bases", default_only)
+
+
+@pytest.fixture(autouse=True)
 def _registry_permission_answers(monkeypatch):
     """Permission lookups answer each test key's declared grants, as the
     Registry does for an imported key; the Registry URL above is unroutable."""

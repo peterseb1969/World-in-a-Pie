@@ -88,11 +88,13 @@ async def test_activity_sources_send_the_namespace_upstream(upstream, fetcher, u
 
 
 @pytest.mark.asyncio
-async def test_recent_documents_scope_both_the_template_map_and_the_documents(upstream):
-    upstream.add(f"{TPL}/api/template-store/templates", {"items": []})
-    upstream.add(f"{DOC}/api/document-store/documents", {"items": []})
-    await SearchService(None)._get_recent_documents(5, "ns-a")
-    assert [r.url.params.get("namespace") for r in upstream.requests] == ["ns-a", "ns-a"]
+async def test_recent_documents_are_scoped_and_named_from_the_listing(upstream):
+    upstream.add(f"{DOC}/api/document-store/documents", {"items": [
+        {"document_id": "d-1", "template_id": "t-1", "template_value": "Visit", "version": 1},
+    ]})
+    items = await SearchService(None)._get_recent_documents(5, "ns-a")
+    assert [r.url.params.get("namespace") for r in upstream.requests] == ["ns-a"]
+    assert [i.entity_value for i in items] == ["Visit"]
 
 
 def _pool_capturing(calls: list):
@@ -111,27 +113,33 @@ def _pool_capturing(calls: list):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("namespace", ["ns-a", None])
-async def test_term_documents_scan_only_the_namespace_schema(namespace):
+async def test_term_documents_scan_only_the_namespace_schema(namespace, monkeypatch):
+    from reporting_sync import search_service
+
+    async def term(client, url):
+        return {"term_id": "term-1"}
+
+    monkeypatch.setattr(search_service, "_fetch_target", term)
     calls: list = []
     await SearchService(_pool_capturing(calls)).get_term_documents("term-1", 10, namespace)
     sql, args = calls[0]
-    assert "table_schema = $1" in sql
-    assert args == (namespace,)
+    assert "c.table_schema = $2" in sql
+    assert args == ("term_references_json", namespace)
 
 
 @pytest.mark.asyncio
 async def test_referenced_by_passes_the_namespace_to_each_kind(monkeypatch):
     svc = SearchService(None)
     seen = {}
-    for kind in ("template", "terminology", "term", "file"):
+    for kind in ("template", "terminology", "term", "document", "file"):
         async def handler(entity_id, limit, namespace=None, _kind=kind):
             seen[_kind] = namespace
             return MagicMock()
         monkeypatch.setattr(svc, f"_get_{kind}_referenced_by", handler)
 
-    for kind in ("template", "terminology", "term", "file"):
+    for kind in ("template", "terminology", "term", "document", "file"):
         await svc.get_referenced_by(kind, "id-1", 10, namespace="ns-a")
-    assert seen == dict.fromkeys(("template", "terminology", "term", "file"), "ns-a")
+    assert seen == dict.fromkeys(("template", "terminology", "term", "document", "file"), "ns-a")
 
 
 @pytest.mark.asyncio

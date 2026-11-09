@@ -10,7 +10,7 @@ sync rewrites moves: paging then repeats some hits and never shows others
 
 import pytest
 
-from reporting_sync.search_service import SearchService
+from reporting_sync.search_service import SearchService, _DocumentFilters
 
 from .conftest import requires_postgres
 
@@ -40,9 +40,10 @@ async def test_substring_hits_are_ordered_by_document(pg_pool):
     await _table(pg_pool)
     svc = SearchService(pg_pool)
     async with pg_pool.acquire() as conn:
+        columns = await svc._search_columns(conn, "ss", "doc_note__v1")
         rows = await svc._substring_query(
-            conn, "ss", "doc_note__v1", ["document_id", "status", "title"], "chicken",
-            None, False, 100,
+            conn, "ss", "doc_note__v1", columns, "chicken",
+            _DocumentFilters(None, None, False, "text"), 100,
         )
     assert [r["doc_id"] for r in rows] == ["d1", "d2", "d3", "d4", "d5"]
 
@@ -51,8 +52,10 @@ async def test_fts_ties_are_ordered_by_document(pg_pool):
     await _table(pg_pool)
     svc = SearchService(pg_pool)
     async with pg_pool.acquire() as conn:
+        columns = await svc._search_columns(conn, "ss", "doc_note__v1")
         rows = await svc._fts_query(
-            conn, "ss", "doc_note__v1", ["title_tsv"], "chicken", None, False, "text", 100,
+            conn, "ss", "doc_note__v1", columns, "chicken",
+            _DocumentFilters(None, None, False, "text"), 100,
         )
     assert len({r["score"] for r in rows}) == 1
     assert [r["doc_id"] for r in rows] == ["d1", "d2", "d3", "d4", "d5"]

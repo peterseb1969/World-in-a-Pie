@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from reporting_sync.batch_sync import BatchSyncService
+from reporting_sync.models import BatchSyncStatus
 
 # =========================================================================
 # Fixtures
@@ -809,6 +810,8 @@ class TestStartBatchSyncAll:
         )
         service.batch_sync_terminologies = AsyncMock(return_value={"synced": 0})
         service.batch_sync_terms = AsyncMock(return_value={"synced": 0})
+        service.batch_sync_term_relations = AsyncMock(return_value={"synced": 0})
+        service.batch_sync_templates = AsyncMock(return_value={"synced": 0})
 
     @pytest.mark.asyncio
     async def test_jobs_carry_namespace_scope(self, service):
@@ -835,6 +838,9 @@ class TestStartBatchSyncAll:
         assert service.batch_sync_terminologies.call_args.kwargs["namespace"] == "ct-1000"
         service.batch_sync_terms.assert_awaited_once()
         assert service.batch_sync_terms.call_args.kwargs["namespace"] == "ct-1000"
+        # The same four sweeps as the startup backfill.
+        service.batch_sync_templates.assert_awaited_once()
+        service.batch_sync_term_relations.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_retrigger_returns_existing_jobs(self, service):
@@ -946,3 +952,54 @@ class TestInitialMetadataSync:
         batch_service.batch_sync_terms.assert_awaited_once()
         # No namespace argument: the backfill must sweep ALL namespaces.
         batch_service.batch_sync_term_relations.assert_awaited_once_with()
+
+
+class TestSameValuedTemplatesShareTables:
+    """Reporting tables are named from the template value, so two templates
+    sharing a value write the same tables: their jobs both run (neither is a
+    duplicate of the other), one after the other."""
+
+    @pytest.mark.asyncio
+    async def test_the_second_job_waits_for_the_first(self, service):
+        import asyncio
+
+        release = asyncio.Event()
+        order: list[str] = []
+
+        async def sync(job, template, force, page_size):
+            order.append(f"start {template['template_id']}")
+            if template["template_id"] == "TPL-A":
+                await release.wait()
+            order.append(f"end {template['template_id']}")
+            job.status = BatchSyncStatus.COMPLETED
+
+        service._sync_template_documents = sync
+        a = await service.start_batch_sync("SHARED_VALUE", template=TEMPLATE_A)
+        b = await service.start_batch_sync("SHARED_VALUE", template=TEMPLATE_B)
+        assert a.job_id != b.job_id
+        await asyncio.sleep(0.01)
+        assert order == ["start TPL-A"]
+        assert b.status == BatchSyncStatus.PENDING
+        release.set()
+        await asyncio.gather(*service._running_tasks.values())
+        assert order == ["start TPL-A", "end TPL-A", "start TPL-B", "end TPL-B"]
+
+
+def test_finished_jobs_are_forgotten_beyond_the_cap(service, monkeypatch):
+    from datetime import UTC, datetime, timedelta
+
+    from reporting_sync import batch_sync
+    from reporting_sync.models import BatchSyncJob
+
+    monkeypatch.setattr(batch_sync, "MAX_FINISHED_JOBS", 2)
+    base = datetime(2026, 11, 9, tzinfo=UTC)
+    for i in range(4):
+        service._jobs[f"done-{i}"] = BatchSyncJob(
+            job_id=f"done-{i}", template_value="X", status=BatchSyncStatus.COMPLETED,
+            completed_at=base + timedelta(minutes=i),
+        )
+    service._jobs["running"] = BatchSyncJob(
+        job_id="running", template_value="X", status=BatchSyncStatus.RUNNING,
+    )
+    service._forget_old_finished_jobs()
+    assert sorted(service._jobs) == ["done-2", "done-3", "running"]

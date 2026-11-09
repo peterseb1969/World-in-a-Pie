@@ -570,6 +570,8 @@ class ReportingConfig(BaseModel):
         description="Custom table name (default: doc_{value})"
     )
     include_metadata: bool = Field(default=True)
+    # Accepted but not implemented: arrays stay one JSONB column, one row
+    # per document.
     flatten_arrays: bool = Field(default=True)
     max_array_elements: int = Field(default=10)
 ```
@@ -709,8 +711,7 @@ document writes fail with `invalid_rule` until the template is fixed.
   "reporting": {
     "sync_enabled": true,
     "sync_strategy": "latest_only",
-    "table_name": "doc_person",
-    "flatten_arrays": true
+    "table_name": "doc_person"
   },
   "created_at": "2024-01-15T10:00:00Z",
   "created_by": "apikey:legacy"

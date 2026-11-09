@@ -44,8 +44,9 @@ class MetricsCollector:
         # Latency tracking (sliding window)
         self._latency_samples: deque[float] = deque(maxlen=max_latency_samples)
 
-        # Per-template stats
-        self._template_stats: dict[str, PerTemplateStats] = {}
+        # Per-template stats, keyed by (namespace, template value): the same
+        # value in two namespaces is two templates with two tables.
+        self._template_stats: dict[tuple[str | None, str], PerTemplateStats] = {}
 
         # Error breakdown
         self._errors_by_type: dict[str, int] = {}
@@ -59,25 +60,36 @@ class MetricsCollector:
         self._resolved_alerts: deque[Alert] = deque(maxlen=max_alerts_history)
         self._alert_check_task: asyncio.Task | None = None
 
+    def _stats_for(
+        self, namespace: str | None, template_value: str, table_name: str | None,
+    ) -> PerTemplateStats:
+        """The stats row of one (namespace, template value). Its table_name
+        follows the latest event that named one (a new template version
+        writes a new table)."""
+        key = (namespace, template_value)
+        stats = self._template_stats.get(key)
+        if stats is None:
+            stats = self._template_stats[key] = PerTemplateStats(
+                template_value=template_value, namespace=namespace,
+                table_name=table_name,
+            )
+        elif table_name:
+            stats.table_name = table_name
+        return stats
+
     def record_event_processed(
         self,
         template_value: str,
         table_name: str,
         latency_ms: float,
+        namespace: str | None = None,
     ) -> None:
         """Record a successfully processed event."""
         self.events_processed += 1
         self.last_event_at = datetime.now(UTC)
         self._latency_samples.append(latency_ms)
 
-        # Update template stats
-        if template_value not in self._template_stats:
-            self._template_stats[template_value] = PerTemplateStats(
-                template_value=template_value,
-                table_name=table_name,
-            )
-
-        stats = self._template_stats[template_value]
+        stats = self._stats_for(namespace, template_value, table_name)
         stats.documents_synced += 1
         stats.last_sync_at = datetime.now(UTC)
 
@@ -87,6 +99,7 @@ class MetricsCollector:
         table_name: str | None,
         error_type: str,
         error_message: str,
+        namespace: str | None = None,
     ) -> None:
         """Record a failed event."""
         self.events_failed += 1
@@ -97,13 +110,7 @@ class MetricsCollector:
 
         # Update template stats if known
         if template_value:
-            if template_value not in self._template_stats:
-                self._template_stats[template_value] = PerTemplateStats(
-                    template_value=template_value,
-                    table_name=table_name or f"doc_{template_value.lower()}",
-                )
-
-            stats = self._template_stats[template_value]
+            stats = self._stats_for(namespace, template_value, table_name)
             stats.documents_failed += 1
             stats.last_error = error_message
             stats.last_error_at = datetime.now(UTC)
@@ -345,6 +352,9 @@ class MetricsCollector:
         if value >= critical_at:
             if active is not None and active.severity == AlertSeverity.CRITICAL:
                 return None
+            # An escalated warning ends here: it is recorded as resolved,
+            # not overwritten, so the history shows both alerts.
+            self._resolve_alert(alert_type)
             return self._create_alert(alert_type, AlertSeverity.CRITICAL, *critical)
         if value >= warning_at:
             if active is not None:

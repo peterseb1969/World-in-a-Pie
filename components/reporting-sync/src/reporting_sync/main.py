@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any, Literal
+from urllib.parse import quote
 
 import asyncpg
 import httpx
@@ -58,6 +59,7 @@ from .models import (
     ConsumerInfo,
     HealthResponse,
     MetricsResponse,
+    ReportingConfig,
     StrictModel,
     SyncStatus,
 )
@@ -79,6 +81,7 @@ from .search_service import (
     SearchResponse,
     SearchService,
     TermDocumentsResponse,
+    UpstreamError,
 )
 from .worker import run_sync_worker
 
@@ -135,7 +138,12 @@ state = AppState()
 
 
 async def get_consumer_info() -> ConsumerInfo | None:
-    """Get NATS consumer information including pending messages."""
+    """Get NATS consumer information including pending messages.
+
+    None means there is no answer: NATS is not connected, or the consumer
+    query failed (logged). Callers that report on it must say so rather than
+    present the absence as a clean reading.
+    """
     if not state.jetstream:
         return None
 
@@ -148,14 +156,13 @@ async def get_consumer_info() -> ConsumerInfo | None:
             stream_name=settings.nats_stream_name,
             consumer_name=settings.nats_durable_name,
             pending_messages=consumer.num_pending,
-            pending_bytes=0,  # Not directly available
-            delivered_messages=consumer.delivered.stream_seq,
+            delivered_messages=consumer.delivered.consumer_seq,
             ack_pending=consumer.num_ack_pending,
             redelivered=consumer.num_redelivered,
-            last_delivered=None,  # Would need to parse from consumer info
+            last_delivered=consumer.delivered.last_active,
         )
     except Exception as e:
-        logger.debug(f"Could not get consumer info: {e}")
+        logger.warning(f"Could not get consumer info: {e}")
         return None
 
 
@@ -881,11 +888,8 @@ async def health_check(response: Response) -> HealthResponse:
         version=__version__,
         nats_connected=nats_ok,
         postgres_connected=postgres_ok,
-        details={
-            "nats_url": settings.nats_url,
-            "postgres_host": settings.postgres_host,
-            "stream_name": settings.nats_stream_name,
-        },
+        # No connection details: this route answers without a key, and
+        # hosts and stream names are the install's internal topology.
     )
 
 
@@ -1051,8 +1055,8 @@ async def get_metrics() -> MetricsResponse:
     )
 
 
-@router.get("/metrics/consumer", dependencies=[_PRIVILEGED], response_model=ConsumerInfo | None)
-async def get_consumer_metrics() -> ConsumerInfo | None:
+@router.get("/metrics/consumer", dependencies=[_PRIVILEGED], response_model=ConsumerInfo)
+async def get_consumer_metrics() -> ConsumerInfo:
     """
     Get NATS consumer information.
 
@@ -1061,8 +1065,13 @@ async def get_consumer_metrics() -> ConsumerInfo | None:
     - Acknowledgement pending count
     - Redelivered message count
     - Delivered message count
+
+    Answers 503 when NATS is not connected or the consumer cannot be read.
     """
-    return await get_consumer_info()
+    info = await get_consumer_info()
+    if info is None:
+        raise HTTPException(status_code=503, detail="NATS consumer information is unavailable")
+    return info
 
 
 @router.get("/alerts", dependencies=[_PRIVILEGED], response_model=AlertsResponse)
@@ -1110,9 +1119,14 @@ async def test_alerts() -> dict[str, Any]:
 
     consumer_info = await get_consumer_info()
     new_alerts = await metrics.check_alerts(consumer_info, nats_ok, postgres_ok)
+    enabled = metrics.get_alert_config().enabled
 
+    # "checked" is true only when alerting ran; queue lag is checked only
+    # when the consumer could be read (consumer_checked).
     return {
-        "checked": True,
+        "checked": enabled,
+        "alerting_enabled": enabled,
+        "consumer_checked": enabled and consumer_info is not None,
         "nats_connected": nats_ok,
         "postgres_connected": postgres_ok,
         "consumer_pending": consumer_info.pending_messages if consumer_info else None,
@@ -1141,33 +1155,57 @@ async def resolve_table_name(
     rebuild), or ``absent``. ``exists`` stays: true when the bare name
     resolves to anything queryable.
 
-    (A template's optional ``reporting.table_name`` cosmetic override is not
-    reflected here yet — this returns the default ``doc_<value>`` form.)
+    A template's ``reporting.table_name`` override replaces the
+    ``doc_<value>`` base in every name returned.
     """
     await check_namespace_permission(identity, namespace, "read")
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
     sm = SchemaManager(state.postgres_pool)
+    config = await _reporting_config(namespace, template_value)
     try:
         schema = sm.schema_for(namespace)
-        table_name = sm.get_table_name(template_value)
+        table_name = sm.get_table_name(template_value, config)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
     kind = await sm.relation_kind(schema, table_name)
-    version_tables = await sm.list_version_tables(namespace, template_value)
+    version_tables = await sm.list_version_tables(namespace, template_value, config)
 
     return {
         "namespace": namespace,
         "template_value": template_value,
         "schema": schema,
         "table_name": table_name,
-        "qualified_name": sm.qualified_name(namespace, template_value),
+        "qualified_name": f'"{schema}"."{table_name}"',
         "exists": kind is not None,
         "kind": kind or "absent",
         "version_tables": {v: t for v, t in sorted(version_tables.items())},
-        "entities_view": sm.entities_view_name(template_value),
+        "entities_view": sm.entities_view_name(template_value, config),
     }
+
+
+async def _reporting_config(namespace: str, template_value: str) -> ReportingConfig | None:
+    """The reporting config of the template valued ``template_value`` in
+    ``namespace`` (its table_name override names its relations). None when
+    the template store does not know the template or it has no config;
+    503 when the template store cannot answer."""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(
+                f"{settings.template_store_url}/api/template-store/templates/by-value/"
+                f"{quote(template_value, safe='')}",
+                params={"namespace": namespace},
+                headers={"X-API-Key": settings.api_key},
+            )
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=503, detail="Template store unavailable") from e
+    if response.status_code == 404:
+        return None
+    if response.status_code != 200:
+        raise HTTPException(status_code=503, detail="Template store unavailable")
+    reporting = response.json().get("reporting")
+    return ReportingConfig(**reporting) if reporting else None
 
 
 @router.get("/schema/{template_value}")
@@ -1183,16 +1221,18 @@ async def get_schema(
     namespace's schema, and the same template_value can exist in several
     namespaces. Without ``version`` this describes the bare-name entity
     view (the default query surface); with ``version`` it describes that
-    version's physical table ``doc_<value>__v<N>``.
+    version's physical table ``doc_<value>__v<N>``. A template's
+    ``reporting.table_name`` override replaces the ``doc_<value>`` base.
     """
     await check_namespace_permission(identity, namespace, "read")
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     sm = SchemaManager(state.postgres_pool)
+    config = await _reporting_config(namespace, template_value)
     try:
         schema = sm.schema_for(namespace)
-        table_name = sm.get_table_name(template_value, version=version)
+        table_name = sm.get_table_name(template_value, config, version=version)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -1479,6 +1519,11 @@ async def get_batch_job(job_id: str) -> BatchSyncJob:
     return job
 
 
+@router.post(
+    "/sync/batch/template/{template_value}",
+    dependencies=[_PRIVILEGED],
+    response_model=BatchSyncResponse,
+)
 @router.post("/sync/batch/{template_value}", dependencies=[_PRIVILEGED], response_model=BatchSyncResponse)
 async def trigger_batch_sync(
     template_value: str,
@@ -1491,6 +1536,11 @@ async def trigger_batch_sync(
 
     This fetches all documents for the template from Document Store
     and syncs them to PostgreSQL.
+
+    ``/sync/batch/template/{template_value}`` reaches every template. The
+    older ``/sync/batch/{template_value}`` cannot reach templates valued
+    ``terminologies``, ``terms``, ``term_relations`` or ``templates``:
+    those paths are the definition syncs.
 
     Args:
         template_value: Template code to sync
@@ -1599,15 +1649,33 @@ class AggregatedIntegrityResult(BaseModel):
 
     status: str = Field(
         ...,
-        description="Overall status: healthy, warning, error, partial (if some services unreachable)"
+        description=(
+            "Overall status: partial (some services unreachable), error or "
+            "warning by the worst issue, incomplete (no issue found, but a "
+            "service's scan did not cover everything: some checks could not "
+            "run, or the limit cut the scan short), healthy only when every "
+            "service checked everything"
+        ),
     )
     checked_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     services_checked: list[str] = Field(default_factory=list)
     services_unavailable: list[str] = Field(default_factory=list)
+    services_incomplete: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Services that answered but did not check everything: their own "
+            "status was incomplete/unknown, or their scan was truncated"
+        ),
+    )
     summary: IntegritySummary = Field(default_factory=IntegritySummary)
     issues: list[IntegrityIssue] = Field(default_factory=list)
+
+
+# Upstream statuses meaning "nothing found, but not everything was checked"
+# (document-store: incomplete; template-store: unknown).
+_UPSTREAM_INCOMPLETE = ("incomplete", "unknown")
 
 
 @router.get("/health/integrity", dependencies=[_PRIVILEGED], response_model=AggregatedIntegrityResult)
@@ -1643,6 +1711,7 @@ async def aggregated_integrity_check(
     """
     services_checked = []
     services_unavailable = []
+    services_incomplete: list[str] = []
     all_issues: list[IntegrityIssue] = []
     summary = IntegritySummary()
 
@@ -1666,6 +1735,8 @@ async def aggregated_integrity_check(
 
                 # Extract summary
                 ts_summary = data.get("summary", {})
+                if data.get("status") in _UPSTREAM_INCOMPLETE or ts_summary.get("truncated"):
+                    services_incomplete.append("template-store")
                 summary.total_templates = ts_summary.get("total_templates", 0)
                 summary.templates_with_issues = ts_summary.get("templates_with_issues", 0)
                 summary.orphaned_terminology_refs = ts_summary.get("orphaned_terminology_refs", 0)
@@ -1715,6 +1786,11 @@ async def aggregated_integrity_check(
                 ds_summary = data.get("summary", {})
                 summary.total_documents = ds_summary.get("total_documents", 0)
                 summary.documents_checked = ds_summary.get("documents_checked", 0)
+                if (
+                    data.get("status") in _UPSTREAM_INCOMPLETE
+                    or summary.documents_checked < summary.total_documents
+                ):
+                    services_incomplete.append("document-store")
                 summary.documents_with_issues = ds_summary.get("documents_with_issues", 0)
                 summary.orphaned_template_refs = ds_summary.get("orphaned_template_refs", 0)
                 summary.orphaned_term_refs = ds_summary.get("orphaned_term_refs", 0)
@@ -1749,6 +1825,8 @@ async def aggregated_integrity_check(
         status = "error"
     elif has_warnings:
         status = "warning"
+    elif services_incomplete:
+        status = "incomplete"
     else:
         status = "healthy"
 
@@ -1756,6 +1834,7 @@ async def aggregated_integrity_check(
         status=status,
         services_checked=services_checked,
         services_unavailable=services_unavailable,
+        services_incomplete=services_incomplete,
         summary=summary,
         issues=all_issues,
     )
@@ -1800,7 +1879,8 @@ async def unified_search(
             - status: Filter by status (optional)
             - page: Page number (default 1)
             - page_size: Items per type (default 50, max 100)
-            - limit: DEPRECATED alias for page_size when page=1
+            - limit: DEPRECATED alias for page_size, used only when
+              page_size is not given
         namespace/status/template: optional URL query params — these
             filters previously lived ONLY on the request body, so a
             `?namespace=X` URL param was silently dropped by FastAPI and the
@@ -1886,8 +1966,10 @@ async def get_term_documents(
     term_references containing the given term_id.
 
     Args:
-        term_id: Term ID to search for (UUID or value code, e.g., 019abc42-...)
-        limit: Maximum number of documents to return (1-1000, default 100)
+        term_id: The term's canonical UUID or 'ns:terminology:value'; documents
+            are matched on the canonical ID it resolves to
+        limit: Maximum number of documents to return (1-1000, default 100);
+            ``total`` counts every referencing document
 
     Returns:
         TermDocumentsResponse with list of referencing documents
@@ -1899,9 +1981,15 @@ async def get_term_documents(
     if limit < 1 or limit > 1000:
         limit = 100
 
-    return await state.search_service.get_term_documents(
-        term_id=term_id, limit=limit, namespace=effective
-    )
+    try:
+        return await state.search_service.get_term_documents(
+            term_id=term_id, limit=limit, namespace=effective
+        )
+    except (UpstreamError, httpx.HTTPError, asyncpg.PostgresError, OSError) as e:
+        logger.error("Term documents lookup failed for %s: %s", term_id, e)
+        raise HTTPException(
+            status_code=503, detail="Cannot look up the term's documents now"
+        ) from e
 
 
 @router.get("/entity/{entity_type}/{entity_id}/references", response_model=EntityReferencesResponse)
@@ -1966,14 +2054,16 @@ async def _hide_unreadable_targets(entity: Any, readable: set[str]) -> None:
     if not ids:
         return
     try:
-        placed = await RegistryClientBase().lookup_entry_namespaces(ids, raise_on_error=True)
+        placed = await RegistryClientBase().place_entries(ids)
     except (RegistryError, httpx.HTTPError) as e:
         raise HTTPException(
             status_code=503, detail=f"Cannot check where references point: {e}",
         ) from e
     for ref in entity.references:
+        # A target the Registry places nowhere is hidden too: nothing says
+        # the caller may read it.
         target_ns = placed.get(ref.ref_id)
-        if not target_ns or target_ns == entity.namespace or target_ns in readable:
+        if target_ns is not None and (target_ns == entity.namespace or target_ns in readable):
             continue
         if ref.status == "valid":
             entity.valid_refs -= 1
@@ -2003,15 +2093,21 @@ async def get_referenced_by(
     Returns a list of entities (documents, templates) that have references
     pointing to the target entity.
 
-    - **Template**: documents using it, templates extending it, templates with template_ref
-    - **Terminology**: templates with terminology_ref
+    - **Template**: documents using it, templates extending it, templates
+      with template_ref / array_template_ref
+    - **Terminology**: templates with terminology_ref / array_terminology_ref
     - **Term**: documents with term_references
-    - **Document**: (not referenced by other entities)
+    - **Document**: relationship (edge) documents whose source_ref or target_ref is it
+
+    The target is matched by the canonical ID its store resolves, and it
+    is authorized on the namespace it lives in, like /references: a caller
+    who cannot read the target is told it is not found.
 
     Args:
         entity_type: Entity type (document, template, terminology, term)
-        entity_id: Entity ID
-        limit: Max results to return (default 100, max 500)
+        entity_id: Entity ID, or any identifier the target's store resolves
+        limit: Max results to return (default 100, max 500); ``total``
+            counts every referrer
 
     Returns:
         ReferencedByResponse with list of referencing entities
@@ -2027,12 +2123,25 @@ async def get_referenced_by(
             detail=f"Invalid entity type: {entity_type}. Must be one of: {valid_types}"
         )
 
-    return await state.search_service.get_referenced_by(
+    result = await state.search_service.get_referenced_by(
         entity_type=entity_type,
         entity_id=entity_id,
         limit=limit,
         namespace=effective,
     )
+    # The target is read with the service key and its value and label are
+    # in the response, so the caller must be able to read the namespace it
+    # lives in. A missing target and an unreadable one answer the same 404.
+    if await resolve_accessible_namespaces(identity) is not None:
+        owner = result._target_namespace
+        if owner is None:
+            if result._target_missing:
+                raise HTTPException(status_code=404, detail="Entity not found")
+            raise HTTPException(
+                status_code=503, detail="Cannot learn where the entity lives"
+            )
+        await check_namespace_permission(identity, owner, "read")
+    return result
 
 
 # =============================================================================
@@ -2108,6 +2217,15 @@ async def list_tables(
 
 
 _LISTED_EXACT = {"terminologies", "terms", "term_names", "term_relations", "term_closure", "templates"}
+
+
+def _entity_of_relation(tname: str) -> str | None:
+    """The entity a doc_* relation belongs to: doc_x, doc_x__v3 and
+    doc_x__entities all belong to x. None for other relations."""
+    if not tname.startswith("doc_"):
+        return None
+    base = tname[len("doc_"):]
+    return re.sub(r"__(v\d+|entities)$", "", base)
 _VERSION_TABLE_RE = re.compile(r"^(doc_.+)__v(\d+)$")
 
 
@@ -2143,7 +2261,9 @@ async def _relation_entry(
         "namespace": schema,
         "name": tname,
         "kind": "view" if is_view else "table",
-        "template_value": tname[len("doc_"):] if tname.startswith("doc_") else None,
+        # The entity's base name (doc_x__v3 and doc_x__entities are x), as
+        # the table names carry it: lowercased.
+        "template_value": _entity_of_relation(tname),
         "qualified_name": f'"{schema}"."{tname}"',
         "row_count": count,
     }
@@ -2210,10 +2330,40 @@ class ReportQuery(StrictModel):
 
 
 # Pattern matching dangerous SQL keywords at word boundaries
-_DANGEROUS_SQL_RE = re.compile(
+_WRITE_KEYWORDS_RE = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|GRANT|REVOKE)\b",
     re.IGNORECASE,
 )
+
+# What is not SQL text: string literals ('…' with '' escapes, E'…' with
+# backslash escapes, dollar-quoted $tag$…$tag$), quoted identifiers, and
+# comments. A write keyword inside one is data, not a statement.
+_NON_CODE_SQL_RE = re.compile(
+    r"""
+      [Ee]'(?:[^'\\]|\\.|'')*'
+    | '(?:[^']|'')*'
+    | \$(?P<tag>[A-Za-z_][A-Za-z0-9_]*)?\$.*?\$(?P=tag)?\$
+    | "(?:[^"]|"")*"
+    | --[^\n]*
+    | /\*.*?\*/
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+
+
+class _DangerousSql:
+    """The early refusal of write statements in caller SQL.
+
+    It reads the SQL's code only (literals, quoted identifiers and comments
+    blanked), so a read-only query that mentions "update" in a string is
+    not refused. It is not the boundary: caller SQL runs as a read-only
+    role (default_transaction_read_only), so a write it misses still fails.
+    """
+
+    @staticmethod
+    def search(sql: str) -> re.Match[str] | None:
+        return _WRITE_KEYWORDS_RE.search(_NON_CODE_SQL_RE.sub(" ", sql))
+
 
 
 @router.post("/query")
@@ -2233,7 +2383,7 @@ async def execute_query(
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
     # Safety: reject write/DDL statements
-    if _DANGEROUS_SQL_RE.search(body.sql):
+    if _DangerousSql.search(body.sql):
         raise HTTPException(
             status_code=400,
             detail="Only read-only queries are allowed. "
@@ -2445,7 +2595,8 @@ async def export_table_csv(
         raise HTTPException(
             status_code=400,
             detail=f"Table '{table}' is not available for export. "
-            "Only doc_* tables and metadata tables (terminologies, terms, term_relations, templates) are allowed.",
+            "Only doc_* tables and the metadata tables "
+            f"({', '.join(sorted(_EXPORT_ALLOWED_EXACT))}) are allowed.",
         )
 
     # Validate both identifiers before interpolation.
@@ -2489,7 +2640,7 @@ async def export_query_csv(
     if not state.read_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
-    if _DANGEROUS_SQL_RE.search(body.sql):
+    if _DangerousSql.search(body.sql):
         raise HTTPException(
             status_code=400,
             detail="Only read-only queries are allowed. "
@@ -2711,18 +2862,14 @@ async def register_view(
     and returns 200; a first registration returns 201.
 
     Authorization is two-tier. wip-admins / wip-services register freely.
-    A key with ADMIN on the namespace may also register here — but its
-    view must be contained: every relation the created view depends on
-    must live in this namespace's own schema. The dependency check reads
-    pg_depend on the view Postgres actually created (no SQL parsing), so
-    a schema-qualified reference to another namespace's schema, to public
-    bookkeeping, or to pg_catalog rolls the registration back with 403.
-    Views ARE the structured surface namespace keys read (the /rows
-    endpoint), so an uncontained view registered by a namespace admin
-    would be a cross-tenant read path; a privileged key registering an
-    uncontained view is a deliberate decision about what the namespace
-    exposes, and reading it with namespace read is the same trust model
-    as any other relation in the schema.
+    A key with ADMIN on the namespace may also register here, for a view
+    that draws only on this namespace and namespaces the key can read. The
+    dependency check reads pg_depend on the view Postgres actually created
+    (no SQL parsing): a dependency in a namespace schema the key cannot
+    read, in public bookkeeping, or in pg_catalog rolls the registration
+    back with 403. Reading the view's rows later takes read on every
+    namespace it draws from, whoever registered it, so a view never hands
+    a namespace's rows to a caller who could not read that namespace.
 
     The SQL runs with search_path set to this namespace's schema plus
     public, so unqualified names (``doc_<value>``, ``term_relations``, …)
@@ -2785,7 +2932,7 @@ def _validated_view(sm: SchemaManager, body: RegisterViewRequest) -> tuple[str, 
     view_sql = body.sql.strip().rstrip(";").strip()
     if not view_sql:
         raise HTTPException(status_code=400, detail="View SQL is empty")
-    if _DANGEROUS_SQL_RE.search(view_sql):
+    if _DangerousSql.search(view_sql):
         raise HTTPException(
             status_code=400,
             detail="View SQL must be a read-only SELECT. "
@@ -3094,6 +3241,14 @@ async def read_view_rows(
         raise HTTPException(
             status_code=408,
             detail=f"Query timed out after {body.timeout_seconds} seconds",
+        ) from e
+    except asyncpg.UndefinedTableError as e:
+        # Registered, but the view (or a relation it reads) does not exist
+        # right now: a rebuild dropped it and has not recreated it yet. Not
+        # the caller's error.
+        raise HTTPException(
+            status_code=503,
+            detail=f"View {view_name!r} is registered but not available now: {e}",
         ) from e
     except asyncpg.PostgresError as e:
         raise HTTPException(status_code=400, detail=f"View read failed: {e}") from e

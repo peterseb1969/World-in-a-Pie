@@ -5,15 +5,17 @@ Provides unified search across all WIP services and reverse lookups.
 """
 
 import asyncio
+import html
 import logging
 import math
 import re
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
+from urllib.parse import quote
 
 import asyncpg
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from .config import settings
 
@@ -48,10 +50,13 @@ class SearchResult(BaseModel):
         default=None,
         description=(
             "Highlighted excerpt around match (FTS only — ts_headline). "
-            "HTML by default with <b>...</b> around hits. Pass "
-            "snippet_format='text' on the request for plain text."
+            "HTML by default: the document's text HTML-escaped, with "
+            "<b>...</b> around hits. Pass snippet_format='text' on the "
+            "request for plain, unescaped text."
         ),
     )
+    # The hit's template, for naming it after the search (never served).
+    _template_id: str | None = PrivateAttr(default=None)
 
 
 class SearchTypeResults(BaseModel):
@@ -121,14 +126,18 @@ class SearchRequest(StrictModel):
     `wip://conventions` (page/page_size with max 100 per page). Each
     entity type the search visits is paginated independently; the same
     `page`/`page_size` is applied to every type. The legacy `limit`
-    parameter is accepted as a deprecation-window alias for `page_size`
-    — set either `limit` OR `page_size`, never both.
+    parameter is accepted as a deprecation-window alias for `page_size`:
+    it is used only when `page_size` is not given, and an explicit
+    `page_size` always wins.
     """
 
     query: str = Field(..., min_length=1, description="Search string")
-    types: list[str] | None = Field(
+    types: list[Literal["terminology", "term", "template", "document", "file"]] | None = Field(
         default=None,
-        description="Entity types to search: terminology, term, template, document, file"
+        description=(
+            "Entity types to search: terminology, term, template, document, "
+            "file (all when omitted). Any other value is refused (422)."
+        ),
     )
     namespace: str | None = Field(default=None, description="Filter by namespace")
     status: str | None = Field(default=None, description="Filter by status")
@@ -185,8 +194,9 @@ class SearchRequest(StrictModel):
         ge=1,
         le=100,
         description=(
-            "DEPRECATED: alias for `page_size` when `page` is 1. "
-            "Pass `page_size` instead. Will be removed in a future release."
+            "DEPRECATED: alias for `page_size`, used only when `page_size` "
+            "is not given. Pass `page_size` instead. Will be removed in a "
+            "future release."
         ),
     )
 
@@ -296,6 +306,10 @@ class ReferencedByResponse(BaseModel):
     referenced_by: list[IncomingReference] = Field(default_factory=list)
     total: int = 0
     error: str | None = None
+    # Where the target lives, for the route's read check on it, and whether
+    # its store said it does not exist. Never served.
+    _target_namespace: str | None = PrivateAttr(default=None)
+    _target_missing: bool = PrivateAttr(default=False)
 
 
 # =============================================================================
@@ -345,23 +359,134 @@ def _paginate(
 
 
 def _document_hit(row: dict[str, Any], tname: str, fts: bool) -> SearchResult:
-    """A document search hit. It reports the logical type, never the
-    physical table: a hit matched in doc_case_record__v2 is a CASE_RECORD;
-    the description still names the table it matched in, so the provenance
-    is not lost. Only FTS hits carry a score and a snippet."""
-    template_value = entity_base(tname).upper()
+    """A document search hit. Its value and label are filled in later from
+    the template store (_name_document_templates): a table's name is not
+    the template's value (case is lost, and reporting.table_name may
+    replace it). The description names the table it matched in, so the
+    provenance is not lost. Only FTS hits carry a score and a snippet."""
     score = row.get("score") if fts else None
-    return SearchResult(
+    hit = SearchResult(
         type="document",
         id=row["doc_id"] or "",
-        value=template_value,
-        label=f"{template_value} document",
+        value=None,
+        label=None,
         status=row.get("status") or "active",
         description=f"Matched in {tname}",
         updated_at=row.get("updated_at"),
         score=float(score) if score is not None else None,
         snippet=row.get("snippet") if fts else None,
     )
+    hit._template_id = row.get("template_id")
+    return hit
+
+
+# Per-query bound on the search path (catalog reads and per-table queries)
+# and on waiting for a reader connection: an interactive search must not
+# hold the small reader pool for the reader role's 300 s default.
+SEARCH_QUERY_TIMEOUT = 30.0
+
+# Columns every doc_* table carries that are not document content.
+_UNSEARCHED_COLUMNS = frozenset({
+    "document_id", "namespace", "template_id", "identity_hash", "status",
+    "created_by", "updated_by", "source_ref_id", "target_ref_id",
+})
+
+# ts_headline marks for HTML snippets: no character HTML-escaping changes,
+# so they survive the escaping of the text around them.
+_MARK_START = "⁣wip-b⁣"
+_MARK_STOP = "⁣/wip-b⁣"
+
+
+class _SearchColumns:
+    """What one table offers a document search."""
+
+    def __init__(
+        self, *, tsv: list[str], text: list[str], id_column: str | None,
+        has_updated_at: bool, has_template_id: bool,
+    ):
+        self.tsv = tsv
+        self.text = text
+        self.id_column = id_column
+        self.has_updated_at = has_updated_at
+        self.has_template_id = has_template_id
+
+
+class _DocumentFilters:
+    """The row filters and snippet format every table of one search shares."""
+
+    def __init__(
+        self, namespace: str | None, status: str | None,
+        include_inactive: bool, snippet_format: str,
+    ):
+        self.namespace = namespace
+        self.status = status
+        self.include_inactive = include_inactive
+        self.snippet_format = snippet_format
+
+    def clauses(self, params: list[Any], prefix: str) -> str:
+        """The AND-ed status and namespace conditions, binding values into
+        ``params``. An explicit status wins; without one, only active
+        documents unless include_inactive."""
+        sql = ""
+        if self.status:
+            params.append(self.status)
+            sql += f" AND {prefix}status = ${len(params)}"
+        elif not self.include_inactive:
+            sql += f" AND {prefix}status = 'active'"
+        if self.namespace:
+            params.append(self.namespace)
+            sql += f" AND {prefix}namespace = ${len(params)}"
+        return sql
+
+
+def _like_literal(text: str) -> str:
+    """``text`` with LIKE's wildcards escaped, so it matches literally."""
+    return text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _html_snippet(snippet: str | None) -> str | None:
+    """A ts_headline snippet as HTML: the document's text escaped, the
+    matched words in <b>…</b>."""
+    if snippet is None:
+        return None
+    return (
+        html.escape(snippet, quote=False)
+        .replace(_MARK_START, "<b>")
+        .replace(_MARK_STOP, "</b>")
+    )
+
+
+def _first_hit_per_document(hits: list[SearchResult]) -> list[SearchResult]:
+    """The hits with every document's later rows dropped (input is sorted
+    best first)."""
+    seen: set[str] = set()
+    kept = []
+    for hit in hits:
+        if hit.id in seen:
+            continue
+        seen.add(hit.id)
+        kept.append(hit)
+    return kept
+
+
+async def _name_document_templates(hits: list[SearchResult]) -> None:
+    """Fill each document hit's value and label with its template's value,
+    read from the template store. A template it cannot read leaves them
+    empty rather than guessed."""
+    ids = {h._template_id for h in hits if h._template_id}
+    if not ids:
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            values = await _template_values(client, ids)
+    except (UpstreamError, httpx.HTTPError) as e:
+        logger.warning("Could not name search hits' templates: %s", e)
+        return
+    for hit in hits:
+        value = values.get(hit._template_id or "")
+        if value:
+            hit.value = value
+            hit.label = f"{value} document"
 
 
 class SearchService:
@@ -414,11 +539,11 @@ class SearchService:
         namespace = request.namespace
         status = request.status
         page = request.page
-        # CASE-329 deprecation alias: when `limit` is set and `page_size`
-        # is left at default, treat `limit` as the page_size for the
-        # current page. Remove the alias in a future release.
+        # Deprecation alias: `limit` stands in for `page_size` only when
+        # the caller did not give `page_size` (an explicit page_size=50 is
+        # not "the default"). Remove the alias in a future release.
         page_size = request.page_size
-        if request.limit is not None and request.page_size == 50:
+        if request.limit is not None and "page_size" not in request.model_fields_set:
             page_size = request.limit
 
         # Run searches in parallel. Each search returns the FULL matching
@@ -501,19 +626,10 @@ class SearchService:
         """
         if not self.postgres_pool:
             return True
-        want = entity_base(template.lower())
-        filters = ["table_name LIKE 'doc_%'"]
-        params: list[Any] = []
-        if namespace:
-            params.append(namespace)
-            filters.append(f"table_schema = ${len(params)}")
+        want = await _template_table_bases(template, namespace)
         async with self.postgres_pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT table_name FROM information_schema.tables "
-                f"WHERE {' AND '.join(filters)}",  # nosec B608  # SQL fragments are code constants, values bound
-                *params,
-            )
-        return any(entity_base(r["table_name"]) == want for r in rows)
+            tables = await _document_tables(conn, namespace)
+        return any(entity_base(r["table_name"]) in want for r in tables)
 
     async def _search_terminologies(
         self, query: str, namespace: str | None, status: str | None,
@@ -730,25 +846,31 @@ class SearchService:
         Mode dispatch (per table):
           - 'fts': use tsvector + GIN if the table has any *_tsv column;
             else skip the table.
-          - 'substring': always ILIKE across text columns (legacy path).
+          - 'substring': always ILIKE across the table's data text columns
+            (legacy path). System columns (ids, namespace, status, authors)
+            are not searched: "active" would match every active row.
           - 'auto': FTS when *_tsv columns exist, substring otherwise.
 
-        Inactive filter: WHERE status='active' is the default — aligns
-        with PoNIF #1. Pass include_inactive=True to disable.
+        Status: an explicit ``status`` returns documents in that status only.
+        Without one, only active documents are returned (PoNIF #1), unless
+        include_inactive=True.
 
         Returns ALL FTS+substring hits across doc_* tables sorted by
-        score (CASE-329). The orchestrator slices to the requested page;
-        per-table queries are capped at MAX_RESULTS_PER_TYPE so a single
-        bad table can't blow memory. Falls back to the REST API scan if
-        PostgreSQL is unavailable.
+        score (CASE-329), one hit per document: a document kept in several
+        rows (all_versions tables) counts once, at its best-scoring row.
+        The orchestrator slices to the requested page; per-table queries are
+        capped at MAX_RESULTS_PER_TYPE so a single bad table can't blow
+        memory, and each query is bounded by SEARCH_QUERY_TIMEOUT. Falls
+        back to the REST API scan if PostgreSQL is unavailable.
         """
         if not self.postgres_pool:
             return await self._search_documents_rest_fallback(
                 query, namespace, status, MAX_RESULTS_PER_TYPE,
             )
 
+        filters = _DocumentFilters(namespace, status, include_inactive, snippet_format)
         try:
-            async with self.postgres_pool.acquire() as conn:
+            async with self.postgres_pool.acquire(timeout=SEARCH_QUERY_TIMEOUT) as conn:
                 tables = await self._document_search_tables(conn, namespace, template)
                 results: list[SearchResult] = []
                 for tbl_row in tables:
@@ -757,7 +879,7 @@ class SearchService:
                         break
                     results += await self._search_document_table(
                         conn, tbl_row["table_schema"], tbl_row["table_name"], query,
-                        namespace, mode, include_inactive, snippet_format, remaining,
+                        mode, filters, remaining,
                     )
         except Exception as e:
             logger.error(f"PostgreSQL document search failed: {e}")
@@ -769,41 +891,31 @@ class SearchService:
         # so the best matches across templates rise. Substring matches have
         # no score; they sort after FTS hits.
         results.sort(key=lambda r: (0 if r.score is not None else 1, -(r.score or 0.0)))
-        return results[:MAX_RESULTS_PER_TYPE]
+        results = _first_hit_per_document(results)[:MAX_RESULTS_PER_TYPE]
+        await _name_document_templates(results)
+        return results
 
     async def _document_search_tables(
         self, conn: asyncpg.Connection, namespace: str | None, template: str | None,
     ) -> list[Any]:
-        """The doc_* tables to search, across namespace schemas.
+        """The document tables to search, across namespace schemas.
 
         Each WIP namespace is its own schema; a search with no namespace
         filter spans them all, a namespace filter narrows to that one schema.
-        The template filter is applied after the fetch, by comparing the
-        logical entity name. An exact SQL name match cannot work post-split
-        (the physical tables carry __vN), and a LIKE pattern would be wrong
-        too: template values contain '_', which LIKE treats as a
-        single-character wildcard, so 'doc_case_record__v%' also matches
-        doc_caseXrecord__v1.
+        A document table is recognised by its columns, not its name, so a
+        template's reporting.table_name override is searched too. The
+        template filter is applied after the fetch, by comparing the
+        logical entity name with the template's default base name and its
+        override. An exact SQL name match cannot work post-split (the
+        physical tables carry __vN), and a LIKE pattern would be wrong too:
+        template values contain '_', which LIKE treats as a single-character
+        wildcard, so 'doc_case_record__v%' also matches doc_caseXrecord__v1.
         """
-        filters = [
-            "table_type = 'BASE TABLE'",
-            "table_schema NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')",
-        ]
-        disc_params: list[Any] = []
-        if namespace:
-            disc_params.append(namespace)
-            filters.append(f"table_schema = ${len(disc_params)}")
-        filters.append("table_name LIKE 'doc_%'")
-        tables = await conn.fetch(
-            "SELECT table_schema, table_name FROM information_schema.tables "
-            f"WHERE {' AND '.join(filters)} "
-            "ORDER BY table_schema, table_name",  # nosec B608  # SQL fragments are code constants, values bound
-            *disc_params,
-        )
+        tables = await _document_tables(conn, namespace)
         if not template:
-            return list(tables)
-        want = entity_base(template.lower())
-        return [r for r in tables if entity_base(r["table_name"]) == want]
+            return tables
+        want = await _template_table_bases(template, namespace)
+        return [r for r in tables if entity_base(r["table_name"]) in want]
 
     async def _search_document_table(
         self,
@@ -811,10 +923,8 @@ class SearchService:
         schema: str,
         tname: str,
         query: str,
-        namespace: str | None,
         mode: str,
-        include_inactive: bool,
-        snippet_format: str,
+        filters: "_DocumentFilters",
         limit: int,
     ) -> list[SearchResult]:
         """The hits in one table: FTS when the mode allows it and the table
@@ -823,20 +933,15 @@ class SearchService:
         columns = await self._search_columns(conn, schema, tname)
         if columns is None:
             return []
-        tsv_cols, text_cols = columns
-        if mode == "fts" and not tsv_cols:
+        if mode == "fts" and not columns.tsv:
             return []
-        use_fts = bool(tsv_cols) and mode in ("auto", "fts")
+        use_fts = bool(columns.tsv) and mode in ("auto", "fts")
         try:
             if use_fts:
-                rows = await self._fts_query(
-                    conn, schema, tname, tsv_cols, query, namespace,
-                    include_inactive, snippet_format, limit,
-                )
+                rows = await self._fts_query(conn, schema, tname, columns, query, filters, limit)
             else:
                 rows = await self._substring_query(
-                    conn, schema, tname, text_cols, query, namespace,
-                    include_inactive, limit,
+                    conn, schema, tname, columns, query, filters, limit,
                 )
         except Exception as table_err:
             logger.warning("Search in table %s failed: %s", tname, table_err)
@@ -846,9 +951,8 @@ class SearchService:
     @staticmethod
     async def _search_columns(
         conn: asyncpg.Connection, schema: str, tname: str,
-    ) -> tuple[list[str], list[str]] | None:
-        """The table's tsvector and text columns, or None when it has no
-        columns at all."""
+    ) -> "_SearchColumns | None":
+        """The table's searchable columns, or None when it has no columns."""
         rows = await conn.fetch(
             """
             SELECT column_name, data_type
@@ -857,25 +961,34 @@ class SearchService:
             """,
             schema,
             tname,
+            timeout=SEARCH_QUERY_TIMEOUT,
         )
         if not rows:
             return None
-        tsv_cols = [r["column_name"] for r in rows if r["data_type"] == "tsvector"]
-        text_cols = [
-            r["column_name"] for r in rows if r["data_type"] in ("text", "character varying")
-        ]
-        return tsv_cols, text_cols
+        names = {r["column_name"] for r in rows}
+        return _SearchColumns(
+            tsv=[r["column_name"] for r in rows if r["data_type"] == "tsvector"],
+            text=[
+                r["column_name"] for r in rows
+                if r["data_type"] in ("text", "character varying")
+                and r["column_name"] not in _UNSEARCHED_COLUMNS
+            ],
+            id_column=(
+                "document_id" if "document_id" in names
+                else ("entity_id" if "entity_id" in names else None)
+            ),
+            has_updated_at="updated_at" in names,
+            has_template_id="template_id" in names,
+        )
 
     async def _fts_query(
         self,
         conn: asyncpg.Connection,
         schema: str,
         tname: str,
-        tsv_cols: list[str],
+        columns: "_SearchColumns",
         query: str,
-        namespace: str | None,
-        include_inactive: bool,
-        snippet_format: str,
+        filters: "_DocumentFilters",
         limit: int,
     ) -> list[dict]:
         """Run a PostgreSQL FTS query against one doc_* table.
@@ -884,8 +997,10 @@ class SearchService:
         be hit independently. Rank is computed against the concatenation;
         equal ranks are ordered by document, so every page of a search (each
         re-runs the query) sees the same order. Snippet stitches the matching *_search
-        columns together for ts_headline.
+        columns together for ts_headline. A table without updated_at
+        (include_metadata: false) reports none.
         """
+        tsv_cols = columns.tsv
         # OR clause: any indexed column matches.
         or_clause = " OR ".join(f'"{c}" @@ q.query' for c in tsv_cols)
         # Concat of tsvectors for ts_rank.
@@ -898,30 +1013,31 @@ class SearchService:
             f"coalesce(\"{c}\", '')" for c in search_cols
         )
 
-        if snippet_format == "text":
-            headline_options = "MaxFragments=2,MaxWords=20,MinWords=5"
+        if filters.snippet_format == "text":
+            # Empty marks: ts_headline's defaults are <b> and </b>.
+            headline_options = 'StartSel="",StopSel="",MaxFragments=2,MaxWords=20,MinWords=5'
         else:
+            # Placeholder marks, turned into <b>/</b> after the document
+            # text around them is HTML-escaped (_html_snippet).
             headline_options = (
-                "StartSel=<b>,StopSel=</b>,MaxFragments=2,MaxWords=20,MinWords=5"
+                f'StartSel="{_MARK_START}",StopSel="{_MARK_STOP}",'
+                "MaxFragments=2,MaxWords=20,MinWords=5"
             )
 
-        # Status filter — inactive documents stay invisible by default.
-        status_clause = "" if include_inactive else " AND d.status = 'active'"
-        # Optional namespace filter.
         params: list[Any] = [query]
-        ns_clause = ""
-        if namespace:
-            params.append(namespace)
-            ns_clause = f" AND d.namespace = ${len(params)}"
+        where = filters.clauses(params, "d.")
         params.append(limit)
         limit_param = f"${len(params)}"
+        updated_at = "d.updated_at" if columns.has_updated_at else "NULL::timestamptz"
+        template_id = "d.template_id" if columns.has_template_id else "NULL::text"
 
         sql = f"""
             WITH q AS (SELECT plainto_tsquery('english', $1) AS query)
             SELECT
                 d.document_id AS doc_id,
                 d.status AS status,
-                d.updated_at AS updated_at,
+                {template_id} AS template_id,
+                {updated_at} AS updated_at,
                 ts_rank({rank_expr}, q.query) AS score,
                 ts_headline(
                     'english',
@@ -930,46 +1046,45 @@ class SearchService:
                     '{headline_options}'
                 ) AS snippet
             FROM "{schema}"."{tname}" d, q
-            WHERE ({or_clause}){status_clause}{ns_clause}
+            WHERE ({or_clause}){where}
             ORDER BY score DESC, doc_id
             LIMIT {limit_param}
         """  # nosec B608  # catalog identifiers and code-built fragments, values bound
-        rows = await conn.fetch(sql, *params)
-        return [dict(r) for r in rows]
+        rows = await conn.fetch(sql, *params, timeout=SEARCH_QUERY_TIMEOUT)
+        hits = [dict(r) for r in rows]
+        if filters.snippet_format != "text":
+            for hit in hits:
+                hit["snippet"] = _html_snippet(hit.get("snippet"))
+        return hits
 
     async def _substring_query(
         self,
         conn: asyncpg.Connection,
         schema: str,
         tname: str,
-        text_cols: list[str],
+        columns: "_SearchColumns",
         query: str,
-        namespace: str | None,
-        include_inactive: bool,
+        filters: "_DocumentFilters",
         limit: int,
     ) -> list[dict]:
         """Run an ILIKE substring query (legacy path, no tsvector).
 
-        Reads `status` and `document_id` from system columns — every
-        doc_* table has them. updated_at is returned as NULL since
-        substring matches don't carry ranking metadata. Hits are ordered by
+        Searches the table's data text columns only; the system columns
+        are not content (a document's id is found by reading it, not by
+        searching for it). The query text matches literally: % and _ are
+        not wildcards. updated_at is returned as NULL since substring
+        matches don't carry ranking metadata. Hits are ordered by
         document: physical order changes whenever the sync rewrites a row,
         and every page of a search re-runs the query.
         """
-        if not text_cols:
+        if not columns.text:
             return []
-        or_clauses = " OR ".join(f'"{c}" ILIKE $1' for c in text_cols)
-        id_expr = (
-            '"document_id"' if "document_id" in text_cols
-            else ('"entity_id"' if "entity_id" in text_cols else "''")
-        )
+        or_clauses = " OR ".join(f'"{c}" ILIKE $1' for c in columns.text)
+        id_expr = f'"{columns.id_column}"' if columns.id_column else "''"
+        template_id = "template_id" if columns.has_template_id else "NULL::text"
 
-        params: list[Any] = [f"%{query}%"]
-        ns_clause = ""
-        if namespace:
-            params.append(namespace)
-            ns_clause = f" AND namespace = ${len(params)}"
-        status_clause = "" if include_inactive else " AND status = 'active'"
+        params: list[Any] = [f"%{_like_literal(query)}%"]
+        where = filters.clauses(params, "")
         params.append(limit)
         limit_param = f"${len(params)}"
 
@@ -977,13 +1092,14 @@ class SearchService:
             SELECT
                 {id_expr} AS doc_id,
                 status AS status,
+                {template_id} AS template_id,
                 NULL::timestamp AS updated_at
             FROM "{schema}"."{tname}"
-            WHERE ({or_clauses}){status_clause}{ns_clause}
+            WHERE ({or_clauses}){where}
             ORDER BY doc_id
             LIMIT {limit_param}
         """  # nosec B608  # catalog identifiers and code-built fragments, values bound
-        rows = await conn.fetch(sql, *params)
+        rows = await conn.fetch(sql, *params, timeout=SEARCH_QUERY_TIMEOUT)
         return [dict(r) for r in rows]
 
     async def _search_documents_rest_fallback(
@@ -1228,20 +1344,7 @@ class SearchService:
         """Get recently modified documents."""
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
-                # First fetch templates to build template_id -> value mapping
-                # (Document list API returns template_value as null)
-                template_response = await client.get(
-                    f"{settings.template_store_url}/api/template-store/templates",
-                    params=_with_namespace({"page_size": 100}, namespace),
-                    headers={"X-API-Key": settings.api_key}
-                )
-
-                template_map: dict[str, str] = {}
-                if template_response.status_code == 200:
-                    for tpl in template_response.json().get("items", []):
-                        template_map[tpl.get("template_id")] = tpl.get("value", "")
-
-                # Fetch documents
+                # Each listed document carries its template_value.
                 response = await client.get(
                     f"{settings.document_store_url}/api/document-store/documents",
                     params=_with_namespace({"page_size": limit}, namespace),
@@ -1264,9 +1367,7 @@ class SearchService:
                         action = "created"
                         timestamp = created_at or datetime.now(UTC)
 
-                    # Get template_value from our lookup (API returns null)
-                    template_id = item.get("template_id")
-                    template_value = template_map.get(template_id, item.get("template_value") or "unknown")
+                    template_value = item.get("template_value") or "unknown"
 
                     items.append(ActivityItem(
                         type="document",
@@ -1293,95 +1394,44 @@ class SearchService:
         """
         Get documents that reference a specific term.
 
-        Uses PostgreSQL reporting database to find documents with term_references
-        containing the given term_id.
+        The term is read from def-store first, so any identifier it accepts
+        (canonical UUID, 'ns:terminology:value') finds the documents that
+        hold the term's canonical ID, which is what documents store. A term
+        def-store does not know has no documents. ``total`` counts every
+        referencing document; ``documents`` holds the first ``limit``.
+
+        Raises UpstreamError or a PostgreSQL error when an answer cannot be
+        given: an outage is not "no documents".
         """
         if not self.postgres_pool:
-            logger.warning("PostgreSQL not available for term->document lookup")
+            raise UpstreamError("PostgreSQL not connected")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            term = await _fetch_target(
+                client, f"{settings.def_store_url}/api/def-store/terms/{_seg(term_id)}"
+            )
+        if term is None:
             return TermDocumentsResponse(term_id=term_id, documents=[], total=0)
-
-        try:
-            async with self.postgres_pool.acquire() as conn:
-                # Document tables across every namespace schema (CASE-628),
-                # or only the given namespace's schema.
-                tables = await conn.fetch("""
-                    SELECT table_schema, table_name
-                    FROM information_schema.tables
-                    WHERE table_schema NOT IN
-                        ('public', 'pg_catalog', 'information_schema', 'pg_toast')
-                    AND table_name LIKE 'doc_%'
-                    AND ($1::text IS NULL OR table_schema = $1)
-                """, namespace)
-
-                documents: list[DocumentReference] = []
-
-                for table_row in tables:
-                    schema = table_row["table_schema"]
-                    table_name = table_row["table_name"]
-
-                    # Check if table has term_references_json column
-                    has_column = await conn.fetchval("""
-                        SELECT EXISTS (
-                            SELECT 1 FROM information_schema.columns
-                            WHERE table_schema = $1
-                            AND table_name = $2
-                            AND column_name = 'term_references_json'
-                        )
-                    """, schema, table_name)
-
-                    if not has_column:
-                        continue
-
-                    # Search for documents with this term_id in term_references
-                    # JSONB search: find where any value in the JSON contains the term_id
-                    rows = await conn.fetch(f"""
-                        SELECT
-                            document_id,
-                            template_id,
-                            status,
-                            created_at,
-                            term_references_json
-                        FROM "{schema}"."{table_name}"
-                        WHERE term_references_json::text LIKE $1
-                        LIMIT $2
-                    """, f'%"{term_id}"%', limit - len(documents))  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
-
-                    # Extract template_value from table name
-                    template_value = table_name[4:].upper()  # Remove 'doc_' prefix
-
-                    for row in rows:
-                        # Find which field references this term
-                        term_refs = row["term_references_json"] or {}
-                        field_path = None
-                        for field, ref in term_refs.items():
-                            if ref == term_id:
-                                field_path = field
-                                break
-                            elif isinstance(ref, list) and term_id in ref:
-                                field_path = f"{field}[]"
-                                break
-
-                        documents.append(DocumentReference(
-                            document_id=row["document_id"],
-                            template_id=row["template_id"],
-                            template_value=template_value,
-                            field_path=field_path or "unknown",
-                            status=row["status"],
-                            created_at=row["created_at"]
-                        ))
-
-                    if len(documents) >= limit:
-                        break
-
-                return TermDocumentsResponse(
-                    term_id=term_id,
-                    documents=documents[:limit],
-                    total=len(documents)
+        rows = await self._documents_referencing_term(
+            term.get("term_id") or term_id, namespace
+        )
+        page = rows[:limit]
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            values = await _template_values(client, {row["template_id"] for row in page})
+        return TermDocumentsResponse(
+            term_id=term_id,
+            documents=[
+                DocumentReference(
+                    document_id=row["document_id"],
+                    template_id=row["template_id"],
+                    template_value=values.get(row["template_id"]),
+                    field_path=row["field_path"] or "unknown",
+                    status=row["status"],
+                    created_at=row["created_at"],
                 )
-
-        except Exception as e:
-            logger.error(f"Failed to get term documents: {e}")
-            return TermDocumentsResponse(term_id=term_id, documents=[], total=0)
+                for row in page
+            ],
+            total=len(rows),
+        )
 
     async def get_entity_references(
         self,
@@ -1982,12 +2032,10 @@ class SearchService:
                 headers={"X-API-Key": settings.api_key}
             )
 
+            if file_response.status_code == 404:
+                return _target_missing("file", file_id, "File")
             if file_response.status_code != 200:
-                return ReferencedByResponse(
-                    entity_type="file",
-                    entity_id=file_id,
-                    error=f"File not found: {file_id}"
-                )
+                raise UpstreamError(f"file read answered HTTP {file_response.status_code}")
 
             file_data = file_response.json()
 
@@ -2021,13 +2069,16 @@ class SearchService:
                         reference_type="file_ref"
                     ))
 
-        return ReferencedByResponse(
-            entity_type="file",
-            entity_id=file_id,
-            entity_value=None,
-            entity_label=file_data.get("filename"),
-            referenced_by=references[:limit],
-            total=len(references)
+        return _found(
+            ReferencedByResponse(
+                entity_type="file",
+                entity_id=file_id,
+                entity_value=None,
+                entity_label=file_data.get("filename"),
+                referenced_by=references[:limit],
+                total=len(references)
+            ),
+            file_data.get("namespace"),
         )
 
     @staticmethod
@@ -2070,49 +2121,40 @@ class SearchService:
         """
         Find all entities that reference the given entity.
 
-        - Template: documents using it, templates extending it, templates with template_ref
-        - Terminology: templates with terminology_ref to it
-        - Term: documents with term_references to it
+        - Template: documents using it, templates extending it, templates
+          with a template_ref / array_template_ref to it
+        - Terminology: templates with a terminology_ref / array_terminology_ref to it
+        - Term: documents whose term references hold it
+        - Document: relationship (edge) documents whose source_ref or target_ref is it
+        - File: documents whose file fields hold it
+
+        The target is read first and matched by its canonical ID, so any
+        identifier the target's store accepts finds the same referrers. The
+        response remembers where the target lives (never served), so the
+        route can check the caller may read it.
 
         Args:
-            entity_type: document, template, terminology, term
-            entity_id: The entity ID
-            limit: Max results to return
-
-        Returns:
-            ReferencedByResponse with list of referencing entities
+            entity_type: document, template, terminology, term, file
+            entity_id: The entity's ID or any identifier its store resolves
+            limit: Max referrers to return; ``total`` counts them all
+            namespace: Only referrers in this namespace (None: all)
         """
+        finders = {
+            "template": self._get_template_referenced_by,
+            "terminology": self._get_terminology_referenced_by,
+            "term": self._get_term_referenced_by,
+            "document": self._get_document_referenced_by,
+            "file": self._get_file_referenced_by,
+        }
+        finder = finders.get(entity_type)
+        if finder is None:
+            return ReferencedByResponse(
+                entity_type=entity_type,
+                entity_id=entity_id,
+                error=f"Unknown entity type: {entity_type}"
+            )
         try:
-            if entity_type == "template":
-                return await self._get_template_referenced_by(
-                    entity_id, limit, namespace
-                )
-            elif entity_type == "terminology":
-                return await self._get_terminology_referenced_by(
-                    entity_id, limit, namespace
-                )
-            elif entity_type == "term":
-                return await self._get_term_referenced_by(
-                    entity_id, limit, namespace
-                )
-            elif entity_type == "file":
-                return await self._get_file_referenced_by(
-                    entity_id, limit, namespace
-                )
-            elif entity_type == "document":
-                # Documents don't get referenced by other entities
-                return ReferencedByResponse(
-                    entity_type="document",
-                    entity_id=entity_id,
-                    referenced_by=[],
-                    total=0
-                )
-            else:
-                return ReferencedByResponse(
-                    entity_type=entity_type,
-                    entity_id=entity_id,
-                    error=f"Unknown entity type: {entity_type}"
-                )
+            return await finder(entity_id, limit, namespace)
         except Exception as e:
             logger.error(f"Failed to get referenced-by for {entity_type}/{entity_id}: {e}")
             return ReferencedByResponse(
@@ -2124,261 +2166,458 @@ class SearchService:
     async def _get_template_referenced_by(
         self, template_id: str, limit: int, namespace: str | None = None
     ) -> ReferencedByResponse:
-        """Find entities referencing a template."""
-        references: list[IncomingReference] = []
-
+        """Documents using a template, and templates extending or embedding it."""
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # First, get the template details to know its code
-            tpl_response = await client.get(
-                f"{settings.template_store_url}/api/template-store/templates/{template_id}",
-                headers={"X-API-Key": settings.api_key}
+            tpl = await _fetch_target(
+                client, f"{settings.template_store_url}/api/template-store/templates/{_seg(template_id)}"
             )
-
-            if tpl_response.status_code != 200:
-                return ReferencedByResponse(
-                    entity_type="template",
-                    entity_id=template_id,
-                    error=f"Template not found: {template_id}"
-                )
-
-            tpl = tpl_response.json()
+            if tpl is None:
+                return _target_missing("template", template_id, "Template")
+            canonical = tpl.get("template_id") or template_id
             template_value = tpl.get("value")
 
-            # 1. Find documents using this template
-            doc_response = await client.get(
+            documents = await _get_json(
+                client,
                 f"{settings.document_store_url}/api/document-store/documents",
-                params=_with_namespace(
-                    {"template_id": template_id, "page_size": limit}, namespace
-                ),
-                headers={"X-API-Key": settings.api_key}
+                _with_namespace({"template_id": canonical, "page_size": limit}, namespace),
             )
+            doc_items = documents.get("items", [])
+            references = [
+                IncomingReference(
+                    entity_type="document",
+                    entity_id=doc.get("document_id"),
+                    entity_value=None,
+                    entity_label=f"{template_value} document",
+                    entity_status=doc.get("status"),
+                    field_path="template_id",
+                    reference_type="uses_template"
+                )
+                for doc in doc_items
+            ]
+            doc_total = documents.get("total")
+            total = doc_total if isinstance(doc_total, int) and doc_total >= 0 else len(doc_items)
 
-            if doc_response.status_code == 200:
-                docs = doc_response.json()
-                for doc in docs.get("items", []):
-                    references.append(IncomingReference(
-                        entity_type="document",
-                        entity_id=doc.get("document_id"),
-                        entity_value=None,
-                        entity_label=f"{template_value} document",
-                        entity_status=doc.get("status"),
-                        field_path="template_id",
-                        reference_type="uses_template"
-                    ))
-
-            # 2. Find templates that extend this one
-            extend_response = await client.get(
-                f"{settings.template_store_url}/api/template-store/templates",
-                params=_with_namespace(
-                    {"extends": template_id, "page_size": limit}, namespace
-                ),
-                headers={"X-API-Key": settings.api_key}
-            )
-
-            if extend_response.status_code == 200:
-                templates = extend_response.json()
-                for t in templates.get("items", []):
-                    references.append(IncomingReference(
-                        entity_type="template",
-                        entity_id=t.get("template_id"),
-                        entity_value=t.get("value"),
-                        entity_label=t.get("label"),
-                        entity_status=t.get("status"),
-                        field_path="extends",
-                        reference_type="extends"
-                    ))
-
-            # 3. Find templates with template_ref to this template
-            # template_ref and array_template_ref store canonical template_id
-            # This requires scanning all templates - do a full list and filter
-            all_tpl_response = await client.get(
-                f"{settings.template_store_url}/api/template-store/templates",
-                params=_with_namespace({"page_size": 100}, namespace),
-                headers={"X-API-Key": settings.api_key}
-            )
-
-            if all_tpl_response.status_code == 200:
-                all_templates = all_tpl_response.json()
-                for t in all_templates.get("items", []):
-                    # Check fields for template_ref matching our template_id
-                    for field in t.get("fields", []):
-                        if field.get("template_ref") == template_id:
-                            references.append(IncomingReference(
-                                entity_type="template",
-                                entity_id=t.get("template_id"),
-                                entity_value=t.get("value"),
-                                entity_label=t.get("label"),
-                                entity_status=t.get("status"),
-                                field_path=f"fields.{field.get('name')}.template_ref",
-                                reference_type="template_ref"
-                            ))
-                        if field.get("array_template_ref") == template_id:
-                            references.append(IncomingReference(
-                                entity_type="template",
-                                entity_id=t.get("template_id"),
-                                entity_value=t.get("value"),
-                                entity_label=t.get("label"),
-                                entity_status=t.get("status"),
-                                field_path=f"fields.{field.get('name')}.array_template_ref",
-                                reference_type="template_ref"
-                            ))
-
-        return ReferencedByResponse(
-            entity_type="template",
-            entity_id=template_id,
-            entity_value=template_value,
-            entity_label=tpl.get("label"),
-            referenced_by=references[:limit],
-            total=len(references)
+            templates = await _all_templates(client, namespace)
+        template_refs = _template_referrers(
+            templates,
+            lambda _t, ref: ref == canonical,
+            extends=True,
+            attrs=(("template_ref", "template_ref"), ("array_template_ref", "template_ref")),
+        )
+        total += len(template_refs)
+        references += template_refs
+        return _found(
+            ReferencedByResponse(
+                entity_type="template",
+                entity_id=template_id,
+                entity_value=template_value,
+                entity_label=tpl.get("label"),
+                referenced_by=references[:limit],
+                total=total,
+            ),
+            tpl.get("namespace"),
         )
 
     async def _get_terminology_referenced_by(
         self, terminology_id: str, limit: int, namespace: str | None = None
     ) -> ReferencedByResponse:
-        """Find templates referencing a terminology."""
-        references: list[IncomingReference] = []
-
+        """Templates whose term fields draw from a terminology."""
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Get terminology details
-            term_response = await client.get(
-                f"{settings.def_store_url}/api/def-store/terminologies/{terminology_id}",
-                headers={"X-API-Key": settings.api_key}
+            terminology = await _fetch_target(
+                client,
+                f"{settings.def_store_url}/api/def-store/terminologies/{_seg(terminology_id)}",
             )
+            if terminology is None:
+                return _target_missing("terminology", terminology_id, "Terminology")
+            templates = await _all_templates(client, namespace)
 
-            if term_response.status_code != 200:
-                return ReferencedByResponse(
-                    entity_type="terminology",
-                    entity_id=terminology_id,
-                    error=f"Terminology not found: {terminology_id}"
-                )
+        canonical = terminology.get("terminology_id") or terminology_id
+        value = terminology.get("value")
+        owner = terminology.get("namespace")
 
-            terminology = term_response.json()
-            terminology_value = terminology.get("value")
+        def names_it(template: dict[str, Any], ref: Any) -> bool:
+            # The canonical id names it anywhere; "ns:VALUE" names it
+            # explicitly; a bare value names it only from its own namespace.
+            if not isinstance(ref, str):
+                return False
+            if ref == canonical or (owner and ref == f"{owner}:{value}"):
+                return True
+            return ref == value and template.get("namespace") == owner
 
-            # Find templates with terminology_ref to this terminology
-            all_tpl_response = await client.get(
-                f"{settings.template_store_url}/api/template-store/templates",
-                params=_with_namespace({"page_size": 100}, namespace),
-                headers={"X-API-Key": settings.api_key}
-            )
-
-            if all_tpl_response.status_code == 200:
-                all_templates = all_tpl_response.json()
-                for t in all_templates.get("items", []):
-                    for field in t.get("fields", []):
-                        # Check terminology_ref (could be ID or value)
-                        term_ref = field.get("terminology_ref")
-                        if term_ref and (term_ref in (terminology_id, terminology_value)):
-                            references.append(IncomingReference(
-                                entity_type="template",
-                                entity_id=t.get("template_id"),
-                                entity_value=t.get("value"),
-                                entity_label=t.get("label"),
-                                entity_status=t.get("status"),
-                                field_path=f"fields.{field.get('name')}.terminology_ref",
-                                reference_type="terminology_ref"
-                            ))
-                        # Check array_terminology_ref
-                        array_term_ref = field.get("array_terminology_ref")
-                        if array_term_ref and (array_term_ref in (terminology_id, terminology_value)):
-                            references.append(IncomingReference(
-                                entity_type="template",
-                                entity_id=t.get("template_id"),
-                                entity_value=t.get("value"),
-                                entity_label=t.get("label"),
-                                entity_status=t.get("status"),
-                                field_path=f"fields.{field.get('name')}.array_terminology_ref",
-                                reference_type="terminology_ref"
-                            ))
-
-        return ReferencedByResponse(
-            entity_type="terminology",
-            entity_id=terminology_id,
-            entity_value=terminology_value,
-            entity_label=terminology.get("label"),
-            referenced_by=references[:limit],
-            total=len(references)
+        references = _template_referrers(
+            templates,
+            names_it,
+            extends=False,
+            attrs=(
+                ("terminology_ref", "terminology_ref"),
+                ("array_terminology_ref", "terminology_ref"),
+            ),
+        )
+        return _found(
+            ReferencedByResponse(
+                entity_type="terminology",
+                entity_id=terminology_id,
+                entity_value=value,
+                entity_label=terminology.get("label"),
+                referenced_by=references[:limit],
+                total=len(references),
+            ),
+            owner,
         )
 
     async def _get_term_referenced_by(
         self, term_id: str, limit: int, namespace: str | None = None
     ) -> ReferencedByResponse:
-        """Find documents referencing a term."""
-        references: list[IncomingReference] = []
-
+        """Documents whose term references hold a term."""
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Get term details
-            term_response = await client.get(
-                f"{settings.def_store_url}/api/def-store/terms/{term_id}",
-                headers={"X-API-Key": settings.api_key}
+            term = await _fetch_target(
+                client, f"{settings.def_store_url}/api/def-store/terms/{_seg(term_id)}"
             )
-
-            if term_response.status_code != 200:
-                return ReferencedByResponse(
-                    entity_type="term",
-                    entity_id=term_id,
-                    error=f"Term not found: {term_id}"
-                )
-
-            term = term_response.json()
-
-            # Use the existing term->documents endpoint on Document Store
-            # Or query PostgreSQL if available
-            if self.postgres_pool:
-                # Query PostgreSQL for documents with this term_id in term_references
-                try:
-                    async with self.postgres_pool.acquire() as conn:
-                        # Search across all doc_ tables for term references
-                        # This is a simplified approach - in production you'd want
-                        # to track term references in a dedicated table
-                        tables = await conn.fetch("""
-                            SELECT schemaname, tablename FROM pg_tables
-                            WHERE schemaname NOT IN
-                                ('public', 'pg_catalog', 'information_schema', 'pg_toast')
-                              AND tablename LIKE 'doc_%'
-                              AND ($1::text IS NULL OR schemaname = $1)
-                        """, namespace)
-
-                        for table in tables:
-                            schema = table["schemaname"]
-                            table_name = table["tablename"]
-                            # Check if term_references_json column exists
-                            try:
-                                rows = await conn.fetch(f"""
-                                    SELECT document_id, template_id, status
-                                    FROM "{schema}"."{table_name}"
-                                    WHERE term_references_json::text LIKE $1
-                                    LIMIT $2
-                                """, f'%"{term_id}"%', limit)  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
-
-                                for row in rows:
-                                    references.append(IncomingReference(
-                                        entity_type="document",
-                                        entity_id=row["document_id"],
-                                        entity_value=None,
-                                        entity_label=f"Document {row['document_id'][:8]}...",
-                                        entity_status=row["status"],
-                                        field_path="term_references",
-                                        reference_type="term_ref"
-                                    ))
-                            except Exception:
-                                # Table might not have term_references_json
-                                continue
-                except Exception as e:
-                    logger.warning(f"PostgreSQL query failed for term references: {e}")
-
-            # Also try the Document Store API if we don't have enough results
-            if len(references) < limit:
-                # The document store doesn't have a direct term->documents endpoint
-                # We'd need to add one or do a full scan
-                # For now, we rely on PostgreSQL or return partial results
-                pass
-
-        return ReferencedByResponse(
-            entity_type="term",
-            entity_id=term_id,
-            entity_value=term.get("value"),
-            entity_label=term.get("label"),
-            referenced_by=references[:limit],
-            total=len(references)
+        if term is None:
+            return _target_missing("term", term_id, "Term")
+        if not self.postgres_pool:
+            raise RuntimeError("PostgreSQL not connected")
+        rows = await self._documents_referencing_term(
+            term.get("term_id") or term_id, namespace
         )
+        references = [
+            IncomingReference(
+                entity_type="document",
+                entity_id=row["document_id"],
+                entity_value=None,
+                entity_label=f"Document {row['document_id'][:8]}...",
+                entity_status=row["status"],
+                field_path=row["field_path"],
+                reference_type="term_ref"
+            )
+            for row in rows[:limit]
+        ]
+        return _found(
+            ReferencedByResponse(
+                entity_type="term",
+                entity_id=term_id,
+                entity_value=term.get("value"),
+                entity_label=term.get("label"),
+                referenced_by=references,
+                total=len(rows),
+            ),
+            term.get("namespace"),
+        )
+
+    async def _get_document_referenced_by(
+        self, document_id: str, limit: int, namespace: str | None = None
+    ) -> ReferencedByResponse:
+        """Relationship documents whose source_ref or target_ref is a document.
+
+        Edge types (usage: relationship) are the platform's document-to-
+        document references; their reporting tables carry the resolved
+        endpoint ids as source_ref_id / target_ref_id.
+        """
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            doc = await _fetch_target(
+                client,
+                f"{settings.document_store_url}/api/document-store/documents/{_seg(document_id)}",
+            )
+        if doc is None:
+            return _target_missing("document", document_id, "Document")
+        if not self.postgres_pool:
+            raise RuntimeError("PostgreSQL not connected")
+        rows = await self._edges_touching(doc.get("document_id") or document_id, namespace)
+        references = [
+            IncomingReference(
+                entity_type="document",
+                entity_id=row["document_id"],
+                entity_value=None,
+                entity_label=f"Relationship {row['document_id'][:8]}...",
+                entity_status=row["status"],
+                field_path=row["field_path"],
+                reference_type="relationship"
+            )
+            for row in rows[:limit]
+        ]
+        return _found(
+            ReferencedByResponse(
+                entity_type="document",
+                entity_id=document_id,
+                referenced_by=references,
+                total=len(rows),
+            ),
+            doc.get("namespace"),
+        )
+
+    async def _documents_referencing_term(
+        self, term_id: str, namespace: str | None
+    ) -> list[dict[str, Any]]:
+        """Every document whose term references hold ``term_id`` (canonical).
+
+        One row per document, ordered by document_id: a document kept in
+        several rows (all_versions tables, one row per version) is reported
+        once, from its highest version that holds the term. field_path is
+        the first field that holds it.
+        """
+        if self.postgres_pool is None:
+            raise UpstreamError("PostgreSQL not connected")
+        async with self.postgres_pool.acquire() as conn:
+            tables = await _doc_tables_with_column(conn, "term_references_json", namespace)
+            found: dict[str, dict[str, Any]] = {}
+            for table in tables:
+                created = "created_at" if table["has_created_at"] else "NULL::timestamptz"
+                rows = await conn.fetch(
+                    f"""
+                    SELECT DISTINCT ON (document_id)
+                        document_id, template_id, status, version,
+                        {created} AS created_at,
+                        (SELECT r->>'field_path'
+                           FROM jsonb_array_elements(term_references_json) r
+                          WHERE r->>'term_id' = $1 LIMIT 1) AS field_path
+                    FROM "{table['table_schema']}"."{table['table_name']}"
+                    WHERE jsonb_typeof(term_references_json) = 'array'
+                      AND term_references_json @> jsonb_build_array(
+                            jsonb_build_object('term_id', $1::text))
+                    ORDER BY document_id, version DESC
+                    """,  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
+                    term_id,
+                )
+                for row in rows:
+                    _keep_highest_version(found, dict(row, table_name=table["table_name"]))
+        return [found[k] for k in sorted(found)]
+
+    async def _edges_touching(
+        self, document_id: str, namespace: str | None
+    ) -> list[dict[str, Any]]:
+        """Every relationship document whose source_ref_id or target_ref_id
+        is ``document_id``, one row per edge, ordered by document_id."""
+        if self.postgres_pool is None:
+            raise UpstreamError("PostgreSQL not connected")
+        async with self.postgres_pool.acquire() as conn:
+            tables = await _doc_tables_with_column(conn, "source_ref_id", namespace)
+            found: dict[str, dict[str, Any]] = {}
+            for table in tables:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT DISTINCT ON (document_id)
+                        document_id, status, version,
+                        CASE WHEN source_ref_id = $1 THEN 'source_ref'
+                             ELSE 'target_ref' END AS field_path
+                    FROM "{table['table_schema']}"."{table['table_name']}"
+                    WHERE source_ref_id = $1 OR target_ref_id = $1
+                    ORDER BY document_id, version DESC
+                    """,  # nosec B608  # identifiers read from the PostgreSQL catalog, values bound
+                    document_id,
+                )
+                for row in rows:
+                    _keep_highest_version(found, dict(row, table_name=table["table_name"]))
+        return [found[k] for k in sorted(found)]
+
+
+class UpstreamError(RuntimeError):
+    """A store answered something other than the entity or 'not found'."""
+
+
+def _seg(identifier: str) -> str:
+    """An identifier as one URL path segment."""
+    return quote(identifier, safe=":")
+
+
+async def _fetch_target(client: httpx.AsyncClient, url: str) -> dict[str, Any] | None:
+    """The entity at ``url`` read with the service key; None when the store
+    says it does not exist. Any other answer raises: an outage is not a
+    missing entity."""
+    response = await client.get(url, headers={"X-API-Key": settings.api_key})
+    if response.status_code == 404:
+        return None
+    if response.status_code != 200:
+        raise UpstreamError(f"{url} answered HTTP {response.status_code}")
+    return cast(dict[str, Any], response.json())
+
+
+async def _get_json(
+    client: httpx.AsyncClient, url: str, params: dict[str, Any]
+) -> dict[str, Any]:
+    response = await client.get(url, params=params, headers={"X-API-Key": settings.api_key})
+    if response.status_code != 200:
+        raise UpstreamError(f"{url} answered HTTP {response.status_code}")
+    return cast(dict[str, Any], response.json())
+
+
+async def _document_tables(conn: asyncpg.Connection, namespace: str | None) -> list[Any]:
+    """Every document base table (in ``namespace``'s schema, or in every
+    namespace schema): the base tables that carry the document identity
+    columns, whatever they are named."""
+    params: list[Any] = []
+    scope = ""
+    if namespace:
+        params.append(namespace)
+        scope = f" AND t.table_schema = ${len(params)}"
+    return list(await conn.fetch(
+        f"""
+        SELECT t.table_schema, t.table_name
+        FROM information_schema.tables t
+        WHERE t.table_type = 'BASE TABLE'
+          AND t.table_schema NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')
+          AND EXISTS (
+            SELECT 1 FROM pg_attribute a
+            WHERE a.attrelid = format('%I.%I', t.table_schema, t.table_name)::regclass
+              AND a.attname = 'identity_hash' AND NOT a.attisdropped
+          ){scope}
+        ORDER BY t.table_schema, t.table_name
+        """,  # nosec B608  # SQL fragments are code constants, values bound
+        *params,
+        timeout=SEARCH_QUERY_TIMEOUT,
+    ))
+
+
+async def _template_table_bases(template: str, namespace: str | None) -> set[str]:
+    """The logical table names a template's documents can live under: the
+    default doc_<value> base, and the template's reporting.table_name
+    override when the template store names one. The override is looked up
+    best-effort: when the template store cannot answer, only the default
+    name is matched, and that is logged."""
+    bases = {entity_base(template.lower())}
+    params = {"namespace": namespace} if namespace else {}
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                f"{settings.template_store_url}/api/template-store/templates/by-value/"
+                f"{quote(template, safe='')}",
+                params=params,
+                headers={"X-API-Key": settings.api_key},
+            )
+    except httpx.HTTPError as e:
+        logger.warning("Template filter %s: table_name override not looked up: %s", template, e)
+        return bases
+    if response.status_code == 200:
+        override = (response.json().get("reporting") or {}).get("table_name")
+        if override:
+            bases.add(entity_base(override.lower()))
+    elif response.status_code != 404:
+        logger.warning(
+            "Template filter %s: table_name override not looked up: HTTP %s",
+            template, response.status_code,
+        )
+    return bases
+
+
+async def _template_values(
+    client: httpx.AsyncClient, template_ids: set[str]
+) -> dict[str, str]:
+    """Each template's value, read from the template store. A template it
+    cannot find is left out: its value is unknown, not made up."""
+    values: dict[str, str] = {}
+    for template_id in sorted(template_ids):
+        tpl = await _fetch_target(
+            client, f"{settings.template_store_url}/api/template-store/templates/{_seg(template_id)}"
+        )
+        if tpl and tpl.get("value"):
+            values[template_id] = tpl["value"]
+    return values
+
+
+_TEMPLATE_PAGE = 1000
+
+
+async def _all_templates(
+    client: httpx.AsyncClient, namespace: str | None
+) -> list[dict[str, Any]]:
+    """Every template version (in ``namespace``, or everywhere), all pages."""
+    templates: list[dict[str, Any]] = []
+    page = 1
+    while True:
+        body = await _get_json(
+            client,
+            f"{settings.template_store_url}/api/template-store/templates",
+            _with_namespace({"page": page, "page_size": _TEMPLATE_PAGE}, namespace),
+        )
+        items = body.get("items", [])
+        templates += items
+        if len(items) < _TEMPLATE_PAGE:
+            return templates
+        page += 1
+
+
+def _template_referrers(
+    templates: list[dict[str, Any]],
+    names_target: Any,
+    *,
+    extends: bool,
+    attrs: tuple[tuple[str, str], ...],
+) -> list[IncomingReference]:
+    """The templates that reference a target, one entry per template and
+    referencing slot (a template's versions share one entry).
+
+    ``names_target(template, ref)`` says whether a stored reference names
+    the target; ``attrs`` pairs each field attribute to check with the
+    reference_type it reports.
+    """
+    seen: set[tuple[str, str]] = set()
+    references: list[IncomingReference] = []
+
+    def add(t: dict[str, Any], field_path: str, reference_type: str) -> None:
+        key = (str(t.get("template_id")), field_path)
+        if key in seen:
+            return
+        seen.add(key)
+        references.append(IncomingReference(
+            entity_type="template",
+            entity_id=str(t.get("template_id")),
+            entity_value=t.get("value"),
+            entity_label=t.get("label"),
+            entity_status=t.get("status"),
+            field_path=field_path,
+            reference_type=reference_type,
+        ))
+
+    for t in templates:
+        if extends and t.get("extends") and names_target(t, t.get("extends")):
+            add(t, "extends", "extends")
+        for field in t.get("fields", []):
+            for attr, reference_type in attrs:
+                if names_target(t, field.get(attr)):
+                    add(t, f"fields.{field.get('name')}.{attr}", reference_type)
+    return references
+
+
+async def _doc_tables_with_column(
+    conn: asyncpg.Connection, column: str, namespace: str | None
+) -> list[Any]:
+    """The doc_* base tables (never the entity views over them, which would
+    report each row twice) that have ``column``, with whether each has
+    created_at (include_metadata: false tables do not)."""
+    return list(await conn.fetch(
+        r"""
+        SELECT c.table_schema, c.table_name,
+               bool_or(c.column_name = 'created_at') AS has_created_at
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+          ON t.table_schema = c.table_schema AND t.table_name = c.table_name
+        WHERE t.table_type = 'BASE TABLE'
+          AND c.table_schema NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')
+          AND c.table_name LIKE 'doc\_%'
+          AND ($2::text IS NULL OR c.table_schema = $2)
+        GROUP BY c.table_schema, c.table_name
+        HAVING bool_or(c.column_name = $1)
+        ORDER BY c.table_schema, c.table_name
+        """,
+        column, namespace,
+    ))
+
+
+def _keep_highest_version(found: dict[str, dict[str, Any]], row: dict[str, Any]) -> None:
+    current = found.get(row["document_id"])
+    if current is None or row["version"] > current["version"]:
+        found[row["document_id"]] = row
+
+
+def _target_missing(entity_type: str, entity_id: str, noun: str) -> ReferencedByResponse:
+    response = ReferencedByResponse(
+        entity_type=entity_type,
+        entity_id=entity_id,
+        error=f"{noun} not found: {entity_id}",
+    )
+    response._target_missing = True
+    return response
+
+
+def _found(response: ReferencedByResponse, namespace: str | None) -> ReferencedByResponse:
+    response._target_namespace = namespace
+    return response

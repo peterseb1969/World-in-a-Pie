@@ -654,7 +654,9 @@ All-or-nothing: if any template in the chain fails validation, none activate.
 ### Reporting Configuration
 Templates can configure PostgreSQL sync behaviour:
 - sync_enabled, sync_strategy (latest_only, all_versions, disabled)
-- table_name, include_metadata, flatten_arrays, max_array_elements
+- table_name, include_metadata
+- flatten_arrays, max_array_elements are accepted but not implemented:
+  arrays stay one JSONB column, one row per document
 
 ## Documents
 A document is an instance of a template — a filled-in form.

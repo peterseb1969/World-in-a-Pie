@@ -58,8 +58,8 @@ class TestRecordEventProcessed:
 
     def test_creates_template_stats_entry(self, collector: MetricsCollector):
         collector.record_event_processed("person", "doc_person", 10.0)
-        assert "person" in collector._template_stats
-        stats = collector._template_stats["person"]
+        assert (None, "person") in collector._template_stats
+        stats = collector._template_stats[(None, "person")]
         assert stats.template_value == "person"
         assert stats.table_name == "doc_person"
         assert stats.documents_synced == 1
@@ -67,13 +67,13 @@ class TestRecordEventProcessed:
     def test_increments_existing_template_stats(self, collector: MetricsCollector):
         collector.record_event_processed("person", "doc_person", 5.0)
         collector.record_event_processed("person", "doc_person", 8.0)
-        assert collector._template_stats["person"].documents_synced == 2
+        assert collector._template_stats[(None, "person")].documents_synced == 2
 
     def test_tracks_multiple_templates_independently(self, collector: MetricsCollector):
         collector.record_event_processed("person", "doc_person", 5.0)
         collector.record_event_processed("address", "doc_address", 3.0)
-        assert collector._template_stats["person"].documents_synced == 1
-        assert collector._template_stats["address"].documents_synced == 1
+        assert collector._template_stats[(None, "person")].documents_synced == 1
+        assert collector._template_stats[(None, "address")].documents_synced == 1
 
 
 # =========================================================================
@@ -105,7 +105,7 @@ class TestRecordEventFailed:
 
     def test_updates_template_stats_on_failure(self, collector: MetricsCollector):
         collector.record_event_failed("person", "doc_person", "insert_error", "oops")
-        stats = collector._template_stats["person"]
+        stats = collector._template_stats[(None, "person")]
         assert stats.documents_failed == 1
         assert stats.last_error == "oops"
         assert stats.last_error_at is not None
@@ -711,3 +711,28 @@ class TestAlertResolution:
         assert AlertType.ERROR_RATE in alert_types
         assert AlertType.QUEUE_LAG in alert_types
         assert len(collector.get_active_alerts()) >= 3
+
+
+def test_same_value_in_two_namespaces_is_two_rows():
+    """Two namespaces' templates can share a value; their stats do not merge,
+    and a row's table follows the latest event."""
+    collector = MetricsCollector()
+    collector.record_event_processed("person", '"a"."doc_person__v1"', 1.0, "a")
+    collector.record_event_processed("person", '"b"."doc_person__v1"', 1.0, "b")
+    collector.record_event_processed("person", '"a"."doc_person__v2"', 1.0, "a")
+    rows = {(s.namespace, s.template_value): s for s in collector.get_template_stats()}
+    assert rows[("a", "person")].documents_synced == 2
+    assert rows[("a", "person")].table_name == '"a"."doc_person__v2"'
+    assert rows[("b", "person")].documents_synced == 1
+
+
+def test_an_escalated_warning_is_recorded_as_resolved():
+    from reporting_sync.models import AlertType
+
+    collector = MetricsCollector()
+    kw = {"critical": ("crit", {}), "warning": ("warn", {})}
+    warning = collector._tiered_alert(AlertType.QUEUE_LAG, 5, 10, 5, **kw)
+    critical = collector._tiered_alert(AlertType.QUEUE_LAG, 20, 10, 5, **kw)
+    assert warning is not None and critical is not None
+    assert [a.alert_id for a in collector.get_resolved_alerts()] == [warning.alert_id]
+    assert [a.alert_id for a in collector.get_active_alerts()] == [critical.alert_id]

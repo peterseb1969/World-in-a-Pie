@@ -48,6 +48,99 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `avg_duration_ms` are real (they were `{}` and `0`). A retried message is
   counted once, when it finishes. The service root carries the `build` block.
 
+### reporting-sync: lookups, search and operator routes say what they found (@wip/client 0.107.0)
+
+- **`/entity/{type}/{id}/referenced-by` checks read on the target.** It
+  returns the target's value and label, and used to authorize only the
+  referrers' namespace: a key reading `ns-a` could read the label of a term in
+  `ns-c` by omitting `namespace`. A target in a namespace the caller cannot
+  read now answers 404, like a missing one; a target whose namespace cannot be
+  learned answers 503.
+- **`/entity/{type}/{id}/references` hides every target it cannot place.** A
+  target the Registry no longer lists as active (merged away, deactivated)
+  was shown with its value and label. Placement now reads the entry whatever
+  its status; a target placed nowhere is hidden.
+- **Term → documents works.** `GET /references/term/{term_id}/documents` never
+  returned a document (it read the stored term references in the wrong
+  shape). It and `referenced-by` for terms match the term's canonical id,
+  whatever identifier the caller used (`ns:terminology:value` included), and
+  report each document once (they also read the entity views, so every
+  document came back twice). `total` counts every referrer; the list holds
+  the first `limit`. A def-store or PostgreSQL outage answers 503 instead of
+  "no documents".
+- **Documents are referenced by their relationships.** `referenced-by` for a
+  document lists the edge documents whose `source_ref` or `target_ref` is it
+  (it always answered "not referenced").
+- **Template and terminology `referenced-by`** read every template (only the
+  first 100 were scanned), count `array_template_ref` /
+  `array_terminology_ref`, match the canonical id, and list a template once
+  across its versions. A bare terminology value matches only from the
+  terminology's own namespace.
+- **Search:**
+  - `status` filters document hits (it was ignored, so `status=inactive`
+    returned active documents);
+  - templates with `include_metadata: false` are found by full-text search
+    (the query failed on the missing `updated_at`);
+  - substring search reads content columns only: `"active"` no longer matches
+    every active row, and `%` / `_` match literally;
+  - a document kept in several rows (`all_versions`) is one hit;
+  - `snippet_format: "html"` escapes the document's text and bolds only the
+    matches; `"text"` is plain text (it carried `<b>` tags);
+  - a document hit's `value` / `label` is its template's value from the
+    template store (it was rebuilt from the table name, upper-cased);
+  - tables named by a `reporting.table_name` override are searched;
+  - unknown `types` are refused (422); `limit` is used only when `page_size`
+    is not given;
+  - each search query and the wait for a reader connection are bounded
+    (30 s).
+- **`/health/integrity` is `incomplete`** (new status, and
+  `services_incomplete`) when a service could not run some checks or its scan
+  was cut short by the limit. It read `healthy`.
+- **Metrics:** `/metrics/consumer` answers 503 when the consumer cannot be
+  read (it answered 200 `null`). `ConsumerInfo.delivered_messages` is the
+  consumer's delivered count (it was a stream position), `last_delivered` is
+  filled, `pending_bytes` is null (never measured). `/alerts/test` reports
+  `alerting_enabled` and `consumer_checked`; `checked` is false while alerting
+  is disabled. Per-template stats are kept per namespace (`namespace` field)
+  and their `table_name` follows the latest table written. An escalated
+  warning is recorded as resolved.
+- **`/health` (unauthenticated)** no longer returns `details` with the NATS
+  URL, PostgreSQL host and stream name.
+- **Routes:**
+  - `POST /sync/batch/template/{template_value}` syncs any template; the old
+    path cannot reach templates valued `terms`, `terminologies`, `templates`
+    or `term_relations`. `@wip/client`'s `triggerBatchSync` uses the new path.
+  - `/schema/{template_value}` and `/table-name` honour `reporting.table_name`.
+  - `/tables` reports `template_value` for `__vN` / `__entities` relations as
+    the entity (`patient`, not `patient__v3`).
+  - Raw SQL is no longer refused for a write keyword inside a string literal,
+    quoted identifier or comment (the read-only role stays the boundary).
+  - Reading a registered view that does not exist right now answers 503, not
+    400.
+- **Names and DDL:** a version-suffixed or `__entities` name over 63 bytes is
+  refused (PostgreSQL would truncate it, and v1/v2 of a 59-byte base were the
+  same table). Long column names are compared as PostgreSQL stores them, so
+  parity no longer reports phantom drift and catch-up DDL does not re-add
+  them; catch-up `ADD COLUMN` uses `IF NOT EXISTS`.
+- **Views:** deleting a namespace removes the registrations of other
+  namespaces' views that `DROP SCHEMA … CASCADE` took with it. A
+  force-rebuild of one template puts back the namespace's other registered
+  views at once (it left all of them dropped until the next rebuild).
+- **Batch sync:** jobs of two templates sharing a value (they write the same
+  tables) run one after the other; batch-all's definition sync also syncs
+  template metadata and logs incomplete sweeps; at most 200 finished jobs are
+  kept in memory.
+- **Other:** dropped term-relation events are attributed; `_wip_views` is part
+  of the startup bookkeeping repair; scoped-read setup failures and a busy
+  pool (30 s) answer 503, not 500.
+- **`reporting.flatten_arrays` / `max_array_elements` are documented as not
+  implemented** (they never were: arrays are one JSONB column, one row per
+  document).
+- **`@wip/client` 0.107.0:** `ConsumerInfo.pending_bytes` is `number | null`;
+  `IntegrityCheckResult` gains `'incomplete'` and `services_incomplete`;
+  `PerTemplateStats` gains `namespace` and `table_name` is nullable;
+  `triggerBatchSync` uses `/sync/batch/template/{value}` (URL-encoded).
+
 ### wip-deploy: several installs on one host — containers and network are named per install and isolated
 
 - **Containers are `<install>_wip-<component>`** (`default_wip-registry`,

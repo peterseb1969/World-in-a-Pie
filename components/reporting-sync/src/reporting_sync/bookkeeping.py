@@ -1,7 +1,7 @@
 """Bookkeeping tables live in ``public``, and nowhere else.
 
-reporting-sync keeps two bookkeeping tables, ``_wip_schema_migrations`` and
-``_wip_sync_status``. They used to be created and read with unqualified
+reporting-sync keeps three bookkeeping tables, ``_wip_schema_migrations``,
+``_wip_sync_status`` and ``_wip_views``. They used to be created and read with unqualified
 names, which resolve through ``search_path`` — ``"$user", public`` by
 default. The service logs in as ``wip``, and the ``wip`` namespace's
 reporting schema is also called ``wip``. Once that schema existed, an
@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 BOOKKEEPING_TABLES: dict[str, tuple[str, ...]] = {
     "_wip_schema_migrations": ("namespace", "template_value", "template_version"),
     "_wip_sync_status": ("namespace", "template_value"),
+    # Registered views: not rebuilt by a sync, so its rows are only ever
+    # merged or moved, as the other two are; a mismatch is left aside.
+    "_wip_views": ("namespace", "view_name"),
 }
 
 # Serialises the repair across concurrent starts against one database.
@@ -94,8 +97,9 @@ async def repair_bookkeeping_location(conn: asyncpg.Connection) -> list[str]:
       current one: the old ``public`` copy is renamed aside and the current
       one moved in;
     - any other mismatch: the role-schema copy is renamed aside and left for
-      an operator. Both tables are rebuilt by a batch sync, so no data is
-      lost that a sync cannot restore.
+      an operator. The migration and sync-status tables are rebuilt by a
+      batch sync; a ``_wip_views`` copy left aside holds registrations the
+      operator re-registers from it.
 
     Idempotent: with no role-schema copy it does nothing. Returns a log line
     per action taken.

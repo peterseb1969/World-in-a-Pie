@@ -179,7 +179,9 @@ export interface ReportingConfig {
   sync_strategy: SyncStrategy
   table_name?: string
   include_metadata: boolean
+  /** Accepted but not implemented: arrays stay one JSONB column, one row per document. */
   flatten_arrays: boolean
+  /** Not implemented (see flatten_arrays). */
   max_array_elements: number
   /**
    * Opt-in cross-version view config. Stored pass-through on the template;

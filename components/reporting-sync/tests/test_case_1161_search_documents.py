@@ -28,7 +28,7 @@ class _FailingConn(_RecordingConn):
         super().__init__()
         self.failing = failing
 
-    async def _dispatch(self, sql, *params):
+    async def _dispatch(self, sql, *params, timeout=None):
         if "information_schema" not in sql and f'"{self.failing}"' in sql:
             self.executed_sql.append((sql, params))
             raise RuntimeError("relation vanished")
@@ -46,7 +46,7 @@ async def test_namespace_filter_empty_and_failing_tables():
     discovery_sql, discovery_params = conn.executed_sql[0]
     assert "table_schema = $1" in discovery_sql and discovery_params == ("ns1",)
     assert [(r.id, r.value, r.description, r.score) for r in results] == [
-        ("d-c", "C", "Matched in doc_c__v1", None),
+        ("d-c", None, "Matched in doc_c__v1", None),  # no template_id: value unknown
     ]
     queried = [s for s, _ in conn.executed_sql if "information_schema" not in s]
     assert len(queried) == 2  # doc_b's FTS query (failed) and doc_c's substring query

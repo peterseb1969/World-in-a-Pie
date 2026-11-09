@@ -184,7 +184,13 @@ export class ReportingSyncService extends BaseService {
     templateValue: string,
     options?: { force?: boolean; page_size?: number; namespace?: string },
   ): Promise<BatchSyncResponse> {
-    return this.post(`/sync/batch/${templateValue}`, undefined, { ...options })
+    // The /template/ path reaches every value, including the ones the
+    // definition syncs own (terms, terminologies, templates, term_relations).
+    return this.post(
+      `/sync/batch/template/${encodeURIComponent(templateValue)}`,
+      undefined,
+      { ...options },
+    )
   }
 
   /**

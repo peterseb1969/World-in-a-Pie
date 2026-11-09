@@ -157,6 +157,22 @@ def _cross_version_select(
     return f'SELECT {cols} FROM "{schema}"."{table}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
 
 
+# Views outside a schema that read relations in it (directly, through their
+# rewrite rule): what DROP SCHEMA ... CASCADE takes with it elsewhere.
+_FOREIGN_DEPENDENT_VIEWS_SQL = """
+    SELECT DISTINCT vn.nspname AS schema, v.relname AS view
+    FROM pg_depend d
+    JOIN pg_rewrite r ON r.oid = d.objid
+    JOIN pg_class v ON v.oid = r.ev_class
+    JOIN pg_namespace vn ON vn.oid = v.relnamespace
+    JOIN pg_class dc ON dc.oid = d.refobjid
+    JOIN pg_namespace dn ON dn.oid = dc.relnamespace
+    WHERE d.classid = 'pg_rewrite'::regclass
+      AND d.refclassid = 'pg_class'::regclass
+      AND dn.nspname = $1 AND vn.nspname <> $1
+"""
+
+
 class SchemaManager:
     """Manages PostgreSQL schema for reporting tables.
 
@@ -215,9 +231,11 @@ class SchemaManager:
         transformer from document data keys; both are otherwise
         unconstrained and are interpolated into DDL and DML inside double
         quotes. As in ``_safe_ident``, quote rather than restrict, and reject
-        the one class that quoting can't contain. There is no length check:
-        PostgreSQL truncates long column names, and rejecting them would stop
-        templates that sync today.
+        the one class that quoting can't contain. Long names are not
+        rejected (that would stop templates that sync today): PostgreSQL
+        stores them truncated to 63 bytes, so every comparison against the
+        catalog goes through ``_stored_identifier``. Two names that truncate
+        to the same column fail table creation loudly (duplicate column).
         """
         if '"' in name or "\x00" in name:
             raise ValueError(f"Unsafe SQL column name: {name!r}")
@@ -281,13 +299,15 @@ class SchemaManager:
         )
         if version is None:
             return base
-        return f"{base}__v{int(version)}"
+        # Checked again with the suffix: PostgreSQL would truncate a longer
+        # name, and the truncated forms of two versions can be the same table.
+        return self._safe_ident(f"{base}__v{int(version)}")
 
     def entities_view_name(
         self, template_value: str, config: ReportingConfig | None = None
     ) -> str:
         """The always-present identity-core view: ``<base>__entities``."""
-        return f"{self.get_table_name(template_value, config)}__entities"
+        return self._safe_ident(f"{self.get_table_name(template_value, config)}__entities")
 
     def qualified_name(
         self,
@@ -306,12 +326,7 @@ class SchemaManager:
         table = self.get_table_name(template_value, config, version)
         return f'"{schema}"."{table}"'
 
-    def _generate_column_ddl(
-        self,
-        field: TemplateField,
-        prefix: str = "",
-        config: ReportingConfig | None = None,
-    ) -> list[tuple[str, str]]:
+    def _generate_column_ddl(self, field: TemplateField) -> list[tuple[str, str]]:
         """
         Generate column definitions for a field.
 
@@ -319,12 +334,13 @@ class SchemaManager:
         For term fields, generates both value and term_id columns.
         For file fields, generates file_id, filename, and content_type columns (or JSONB for multiple).
         For semantic types, generates appropriate columns with optimized PostgreSQL types.
-        For nested objects, flattens with prefix.
+        Objects and arrays are one JSONB column each; nothing is flattened
+        into further columns or rows (the whole document is also in data_json).
         """
         columns = []
         # Every column, index and full-text name for this field derives from
         # its name, so validating it here covers all of them.
-        col_name = self._safe_column(f"{prefix}{field.name}" if prefix else field.name)
+        col_name = self._safe_column(field.name)
 
         # Check for semantic types first - they may override base type handling
         if field.semantic_type:
@@ -508,7 +524,7 @@ class SchemaManager:
         # Prefix with "data_" if field name conflicts with system columns
         full_text_base_cols: list[str] = []
         for field in fields:
-            field_columns = self._generate_column_ddl(field, config=config)
+            field_columns = self._generate_column_ddl(field)
             # Check if the base field name conflicts
             needs_prefix = field.name in self.SYSTEM_COLUMNS
             for col_name, col_type in field_columns:
@@ -659,7 +675,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         expected: set[str] = set()
         for field in fields:
             needs_prefix = field.name in self.SYSTEM_COLUMNS
-            for col_name, _col_type in self._generate_column_ddl(field, config=config):
+            for col_name, _col_type in self._generate_column_ddl(field):
                 expected.add(f"data_{col_name}" if needs_prefix else col_name)
             if field.full_text_indexed and field.type == FieldType.STRING:
                 base_col = f"data_{field.name}" if needs_prefix else field.name
@@ -667,7 +683,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                     expected.add(fts_col)
         if usage == "relationship":
             expected.update(("source_ref_id", "target_ref_id"))
-        return expected
+        # As the catalog stores them: long names are truncated to 63 bytes.
+        return {self._stored_identifier(c) for c in expected}
 
     async def ensure_schema(self, namespace: str) -> str:
         """Create the namespace's PostgreSQL schema if absent. Returns its name.
@@ -788,7 +805,21 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                     f'SELECT COUNT(*) FROM "{schema}"."{table}"'  # nosec B608  # identifiers validated by _safe_ident / ensure_*, values bound
                 )
                 total += int(count or 0)
+            # CASCADE also drops views in OTHER namespaces that read this
+            # schema. Their registrations go with them: a registration whose
+            # view is gone, and cannot be recreated, would read as registered.
+            foreign = await conn.fetch(_FOREIGN_DEPENDENT_VIEWS_SQL, schema)
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            for view in foreign:
+                status = await conn.execute(
+                    "DELETE FROM public._wip_views WHERE namespace = $1 AND view_name = $2",
+                    view["schema"], view["view"],
+                )
+                if status != "DELETE 0":
+                    logger.warning(
+                        f'Registered view "{view["schema"]}"."{view["view"]}" read '
+                        f"namespace {namespace!r} and was dropped with it"
+                    )
         self._forget_ensured(namespace)
         return total
 
@@ -972,7 +1003,7 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
             if usage == "relationship":
                 for col in ("source_ref_id", "target_ref_id"):
                     if col not in existing_columns:
-                        alter_sql = f'ALTER TABLE {qualified} ADD COLUMN "{col}" TEXT'
+                        alter_sql = f'ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS "{col}" TEXT'
                         await conn.execute(alter_sql)
                         migrations.append(alter_sql)
                         idx_sql = (
@@ -983,17 +1014,21 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                         migrations.append(idx_sql)
 
             for field in fields:
-                field_columns = self._generate_column_ddl(field, config=config)
+                field_columns = self._generate_column_ddl(field)
                 # Check if the base field name conflicts
                 needs_prefix = field.name in self.SYSTEM_COLUMNS
                 for col_name, col_type in field_columns:
                     if needs_prefix:
                         # Prefix all columns for this field (base and term_id)
                         col_name = f"data_{col_name}"
-                    if col_name not in existing_columns:
+                    if self._stored_identifier(col_name) not in existing_columns:
                         # Remove PRIMARY KEY, NOT NULL constraints for ALTER TABLE ADD COLUMN
                         clean_type = col_type.replace(" PRIMARY KEY", "").replace(" NOT NULL", "")
-                        alter_sql = f'ALTER TABLE {qualified} ADD COLUMN "{col_name}" {clean_type}'
+                        # IF NOT EXISTS: a concurrent ensure of the same table
+                        # may add it between the catalog read and this ALTER.
+                        alter_sql = (
+                            f'ALTER TABLE {qualified} ADD COLUMN IF NOT EXISTS "{col_name}" {clean_type}'
+                        )
 
                         logger.info(f"Adding column {col_name} to {table_name}")
                         await conn.execute(alter_sql)
@@ -1012,10 +1047,10 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                 ):
                     base_col = f"data_{field.name}" if needs_prefix else field.name
                     for fts_col, fts_type in self._full_text_columns(base_col):
-                        if fts_col not in existing_columns:
+                        if self._stored_identifier(fts_col) not in existing_columns:
                             alter_sql = (
                                 f'ALTER TABLE {qualified} '
-                                f'ADD COLUMN "{fts_col}" {fts_type}'
+                                f'ADD COLUMN IF NOT EXISTS "{fts_col}" {fts_type}'
                             )
                             logger.info(f"Adding FTS column {fts_col} to {table_name}")
                             await conn.execute(alter_sql)
@@ -1908,8 +1943,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
         async with self.pool.acquire() as conn, conn.transaction():
             # Known dependents first: registered views over the relations
             # being dropped would otherwise fail the no-CASCADE drops below.
-            # Their bookkeeping rows survive — they are recreated after the
-            # next rebuild (ensure_views_for_template) or at startup.
+            # All of the namespace's registered views move; their bookkeeping
+            # rows stay, and they are recreated below where they can stand.
             for reg_name in await self.drop_registered_views(namespace, conn):
                 dropped.append(f"{schema}.{reg_name}")
             if entities_kind == "view":
@@ -1926,6 +1961,11 @@ CREATE INDEX IF NOT EXISTS "{table_name}_ns_target_terminology_idx"
                 await conn.execute(f'DROP TABLE IF EXISTS "{schema}"."{table}"')
                 dropped.append(f"{schema}.{table}")
         self._forget_ensured(namespace, base)
+        # Every registered view was moved out of the way above, including
+        # the ones over other templates' relations: put back what can stand
+        # now. Views over the dropped relations come back once the rebuild
+        # recreates them (ensure_views_for_template).
+        await self.recreate_registered_views(namespace)
         if dropped:
             logger.info(
                 f'Dropped {len(dropped)} relation(s) for "{schema}"."{base}": '

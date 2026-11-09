@@ -168,8 +168,10 @@ async def test_alter_table_adds_search_tsv_and_index_when_missing(mock_pool_with
     migrations = await sm.update_table_schema("testns", "lesson", 2, fields)
 
     executed = [call.args[0] for call in conn.execute.call_args_list]
-    assert any('ADD COLUMN "body_search"' in s for s in executed)
-    assert any('ADD COLUMN "body_tsv"' in s and "GENERATED ALWAYS AS" in s for s in executed)
+    assert any('ADD COLUMN IF NOT EXISTS "body_search"' in s for s in executed)
+    assert any(
+        'ADD COLUMN IF NOT EXISTS "body_tsv"' in s and "GENERATED ALWAYS AS" in s for s in executed
+    )
     assert any(
         'CREATE INDEX IF NOT EXISTS "doc_lesson__v2_body_tsv_idx"' in s and "GIN" in s
         for s in executed
@@ -194,8 +196,8 @@ async def test_alter_table_skips_existing_fts_columns(mock_pool_with_columns):
 
     executed = [call.args[0] for call in conn.execute.call_args_list]
     # No ADD COLUMN for the FTS pair…
-    assert not any('ADD COLUMN "body_search"' in s for s in executed)
-    assert not any('ADD COLUMN "body_tsv"' in s for s in executed)
+    assert not any('"body_search"' in s and "ADD COLUMN" in s for s in executed)
+    assert not any('"body_tsv"' in s and "ADD COLUMN" in s for s in executed)
     # …but the index is still ensured (idempotent).
     assert any(
         'CREATE INDEX IF NOT EXISTS "doc_lesson__v2_body_tsv_idx"' in s

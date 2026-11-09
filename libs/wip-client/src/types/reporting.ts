@@ -128,7 +128,10 @@ export interface HealthResponse {
 
 export interface PerTemplateStats {
   template_value: string
-  table_name: string
+  /** Namespace whose documents these are (null: not known). */
+  namespace: string | null
+  /** Table the latest event wrote (null: no event named one). */
+  table_name: string | null
   documents_synced: number
   documents_failed: number
   last_sync_at: string | null
@@ -140,7 +143,9 @@ export interface ConsumerInfo {
   stream_name: string
   consumer_name: string
   pending_messages: number
-  pending_bytes: number
+  /** Not measured (JetStream reports no byte count): always null. */
+  pending_bytes: number | null
+  /** Messages this consumer has delivered, redeliveries included. */
   delivered_messages: number
   ack_pending: number
   redelivered: number
@@ -308,10 +313,13 @@ export interface IntegritySummary {
 }
 
 export interface IntegrityCheckResult {
-  status: 'healthy' | 'warning' | 'error' | 'partial'
+  /** `incomplete`: nothing found, but some service did not check everything. */
+  status: 'healthy' | 'warning' | 'error' | 'partial' | 'incomplete'
   checked_at: string
   services_checked: string[]
   services_unavailable: string[]
+  /** Services that answered but did not check everything (checks not run, scan truncated). */
+  services_incomplete: string[]
   summary: IntegritySummary
   issues: IntegrityIssue[]
 }

@@ -108,6 +108,14 @@ class _TermSync:
         return term.get("namespace") or self.namespace or "wip"
 
 
+# Finished jobs kept in memory for GET /sync/batch/jobs; older ones are
+# forgotten as new jobs start.
+MAX_FINISHED_JOBS = 200
+_FINISHED_STATUSES = (
+    BatchSyncStatus.COMPLETED, BatchSyncStatus.FAILED, BatchSyncStatus.CANCELLED,
+)
+
+
 class BatchSyncService:
     """Service for batch syncing documents to PostgreSQL."""
 
@@ -117,6 +125,8 @@ class BatchSyncService:
         self.closure = TermClosureMaintainer(postgres_pool, self.schema_manager)
         self._jobs: dict[str, BatchSyncJob] = {}
         self._running_tasks: dict[str, asyncio.Task] = {}
+        # Per template value (lowercased): see _run_batch_sync.
+        self._table_locks: dict[str, asyncio.Lock] = {}
         # Strong refs to fire-and-forget tasks (definitions pre-sync) so the
         # event loop cannot garbage-collect them mid-flight.
         self._background_tasks: set[asyncio.Task] = set()
@@ -341,6 +351,9 @@ class BatchSyncService:
         table interleave upserts (and, under latest_only, sibling-version
         deletes) from different page cursors — last-writer-wins ordering is
         undefined. Dedup is a correctness guard, not just waste avoidance.
+        A DIFFERENT template that shares the value writes the same tables
+        too; that job is not a duplicate, so it is not deduplicated but
+        serialised (_table_lock).
         """
         for job in self._jobs.values():
             if job.template_id != template_id:
@@ -414,6 +427,7 @@ class BatchSyncService:
             namespace=namespace,
             status=BatchSyncStatus.PENDING,
         )
+        self._forget_old_finished_jobs()
         self._jobs[job_id] = job
 
         if template is None:
@@ -439,12 +453,19 @@ class BatchSyncService:
         force: bool,
         page_size: int,
     ) -> None:
-        """Run the batch sync job."""
-        job.status = BatchSyncStatus.RUNNING
-        job.started_at = datetime.now(UTC)
+        """Run the batch sync job.
 
+        Reporting tables are named from the template VALUE inside the
+        documents' namespace schema, so two same-valued templates (one
+        shared into the other's namespace) write the same tables. Their jobs
+        run one after the other: the job stays pending until the value's
+        lock is free.
+        """
         try:
-            await self._sync_template_documents(job, template, force, page_size)
+            async with self._table_lock(template.get("value") or job.template_value):
+                job.status = BatchSyncStatus.RUNNING
+                job.started_at = datetime.now(UTC)
+                await self._sync_template_documents(job, template, force, page_size)
         except asyncio.CancelledError:
             job.status = BatchSyncStatus.CANCELLED
             job.completed_at = datetime.now(UTC)
@@ -679,9 +700,9 @@ class BatchSyncService:
             await self._upsert_page(run, documents)
             if run.strategy == "latest_only":
                 await self._clean_sibling_tables(run, documents)
-            # Yield to the event loop between pages. The flat 100 ms sleep
-            # that used to sit here predates the per-template job concurrency
-            # caps and cost ~2.6 min of pure sleep on a 156k-document sync.
+            # Yield to the event loop between pages. A flat 100 ms sleep
+            # used to sit here; it paced nothing (no job concurrency cap
+            # exists) and cost ~2.6 min of pure sleep on a 156k-document sync.
             await asyncio.sleep(0)
 
     @staticmethod
@@ -779,27 +800,30 @@ class BatchSyncService:
     async def _sync_definitions(
         self, namespace: str | None, page_size: int
     ) -> None:
-        """Terminology, term and term-relation sync, run as a background
-        companion of batch-all. Not a dependency of the document jobs: the
+        """Template-metadata, terminology, term and term-relation sync, run
+        as a background companion of batch-all: the same four sweeps as the
+        startup backfill. Not a dependency of the document jobs: the
         document upsert path transforms the document JSON against its
         template and never reads the definitions tables. Relations run after
         terms, so the closure rebuild that ends the relation sync sees every
-        term."""
-        logger.info("Batch syncing terminologies...")
-        term_results = await self.batch_sync_terminologies(
-            namespace=namespace, page_size=page_size
+        term. A sweep that failed items or could not list everything is
+        logged as a warning: nothing else reports it."""
+        sweeps = (
+            ("Template metadata", self.batch_sync_templates),
+            ("Terminologies", self.batch_sync_terminologies),
+            ("Terms", self.batch_sync_terms),
+            ("Term relations", self.batch_sync_term_relations),
         )
-        logger.info(f"Terminologies: {term_results}")
-        logger.info("Batch syncing terms...")
-        terms_results = await self.batch_sync_terms(
-            namespace=namespace, page_size=page_size
-        )
-        logger.info(f"Terms: {terms_results}")
-        logger.info("Batch syncing term relations...")
-        relations_results = await self.batch_sync_term_relations(
-            namespace=namespace, page_size=page_size
-        )
-        logger.info(f"Term relations: {relations_results}")
+        for label, sweep in sweeps:
+            logger.info(f"Batch syncing {label.lower()}...")
+            result = await sweep(namespace=namespace, page_size=page_size)
+            if result.get("failed") or not result.get("complete", True):
+                logger.warning(
+                    f"{label} sync incomplete: {result['failed']} failed, "
+                    f"listing complete: {result.get('complete')}"
+                )
+            else:
+                logger.info(f"{label}: {result}")
 
     async def start_batch_sync_all(
         self,
@@ -1446,6 +1470,26 @@ class BatchSyncService:
 
         logger.info(f"TermRelation batch sync: {synced} synced, {failed} failed")
         return {"synced": synced, "failed": failed, "total": synced + failed, "complete": complete}
+
+    def _table_lock(self, template_value: str) -> asyncio.Lock:
+        """The lock every batch job writing ``template_value``'s tables holds."""
+        return self._table_locks.setdefault(template_value.lower(), asyncio.Lock())
+
+    def _forget_old_finished_jobs(self) -> None:
+        """Keep at most MAX_FINISHED_JOBS finished jobs (the most recently
+        finished): job records are in memory, and a service that triggers
+        syncs routinely would otherwise grow them until an operator clears
+        them. Pending and running jobs are never dropped."""
+        finished = sorted(
+            (
+                job for job in self._jobs.values()
+                if job.status in _FINISHED_STATUSES
+            ),
+            key=lambda job: job.completed_at or job.started_at or datetime.min.replace(tzinfo=UTC),
+        )
+        for job in finished[: max(0, len(finished) - MAX_FINISHED_JOBS)]:
+            del self._jobs[job.job_id]
+            self._running_tasks.pop(job.job_id, None)
 
     def clear_completed_jobs(self) -> int:
         """Clear completed/failed/cancelled jobs from memory."""

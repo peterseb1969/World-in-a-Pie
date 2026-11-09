@@ -74,6 +74,7 @@ ROUTES = [
     ("GET", f"{P}/sync/batch/jobs", "privileged", None),
     ("GET", f"{P}/sync/batch/jobs/{{job_id}}", "privileged", None),
     ("POST", f"{P}/sync/batch/{{template_value}}", "privileged", None),
+    ("POST", f"{P}/sync/batch/template/{{template_value}}", "privileged", None),
     ("DELETE", f"{P}/sync/batch/jobs/{{job_id}}", "privileged", None),
     ("DELETE", f"{P}/sync/batch/jobs", "privileged", None),
     ("GET", f"{P}/health/integrity", "privileged", None),

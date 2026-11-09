@@ -99,13 +99,16 @@ class ReportingConfig(BaseModel):
     )
     flatten_arrays: bool = Field(
         default=True,
-        description="Flatten arrays into multiple rows (cross-product)"
+        description=(
+            "Not implemented: accepted and stored, but reporting keeps each "
+            "array in one JSONB column, one row per document"
+        ),
     )
     max_array_elements: int = Field(
         default=10,
         ge=1,
         le=100,
-        description="Maximum array elements to include when flattening"
+        description="Not implemented (see flatten_arrays)",
     )
     cross_version_view: dict[str, Any] | None = Field(
         default=None,

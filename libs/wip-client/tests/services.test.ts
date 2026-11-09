@@ -1977,6 +1977,21 @@ describe('Service classes via createWipClient', () => {
   })
 
   describe('ReportingSyncService', () => {
+    it('triggerBatchSync reaches a template valued like a definition sync', async () => {
+      // /sync/batch/terms is the term sync; a template valued "terms" is
+      // only reachable under /sync/batch/template/.
+      mockJsonResponse({ job_id: 'j1', template_value: 'terms', status: 'pending' })
+
+      await client.reporting.triggerBatchSync('terms', { namespace: 'ns-a' })
+      await client.reporting.triggerBatchSync('a/b')
+
+      expect(fetchMock.mock.calls[0][0]).toContain(
+        '/api/reporting-sync/sync/batch/template/terms?namespace=ns-a',
+      )
+      expect(fetchMock.mock.calls[1][0]).toContain('/sync/batch/template/a%2Fb')
+      expect(fetchMock.mock.calls[0][1]?.method).toBe('POST')
+    })
+
     it('registerView sends POST with the request vocabulary (name, sql)', async () => {
       mockJsonResponse(
         {

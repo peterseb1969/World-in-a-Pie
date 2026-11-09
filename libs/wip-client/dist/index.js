@@ -1602,7 +1602,11 @@ var ReportingSyncService = class extends BaseService {
    * job and re-trigger.
    */
   async triggerBatchSync(templateValue, options) {
-    return this.post(`/sync/batch/${templateValue}`, void 0, { ...options });
+    return this.post(
+      `/sync/batch/template/${encodeURIComponent(templateValue)}`,
+      void 0,
+      { ...options }
+    );
   }
   /**
    * Synchronous batch sync for the terminologies entity table.

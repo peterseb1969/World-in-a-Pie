@@ -42,8 +42,8 @@ from .schema_manager import NamespaceDeletedError
 
 logger = logging.getLogger(__name__)
 
-# One lap more than def-store's ontology traversal allows, so anything
-# reachable there is reachable here
+# The same depth def-store's ontology traversal allows (its max_depth is
+# capped at 50), so anything reachable there is reachable here
 MAX_DEPTH = 50
 
 # Events arriving in a burst (a seed script's thousands of edge writes)

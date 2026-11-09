@@ -48,3 +48,54 @@ async def test_non_200_returns_empty(httpx_mock):
     )
     client = RegistryClientBase(base_url=BASE, api_key="k")
     assert await client.lookup_entry_namespaces(["id-a"]) == {}
+
+
+# place_entries — an entry's namespace whatever its status. The bulk lookup
+# sees active entries only; a merged-away or deactivated target still lives
+# in a namespace, and a caller deciding who may see it needs that namespace.
+
+
+@pytest.mark.asyncio
+async def test_place_entries_reads_entries_the_bulk_lookup_misses(httpx_mock):
+    httpx_mock.add_response(
+        url=f"{BASE}/api/registry/entries/lookup/by-id",
+        json={"results": [
+            {"index": 0, "status": "found", "entry_id": "id-a", "namespace": "ns-a"},
+            {"index": 1, "status": "not_found"},
+            {"index": 2, "status": "not_found"},
+        ]},
+    )
+    httpx_mock.add_response(
+        url=f"{BASE}/api/registry/entries/id-merged",
+        json={"entry_id": "id-merged", "namespace": "ns-c", "status": "inactive"},
+    )
+    httpx_mock.add_response(url=f"{BASE}/api/registry/entries/id-gone", status_code=404)
+    client = RegistryClientBase(base_url=BASE, api_key="k")
+    placed = await client.place_entries(["id-a", "id-merged", "id-gone"])
+    assert placed == {"id-a": "ns-a", "id-merged": "ns-c"}
+
+
+@pytest.mark.asyncio
+async def test_place_entries_refuses_when_the_registry_cannot_answer(httpx_mock):
+    from wip_auth.registry_client import RegistryError
+
+    httpx_mock.add_response(
+        url=f"{BASE}/api/registry/entries/lookup/by-id",
+        json={"results": [{"index": 0, "status": "not_found"}]},
+    )
+    httpx_mock.add_response(url=f"{BASE}/api/registry/entries/id-x", status_code=503)
+    client = RegistryClientBase(base_url=BASE, api_key="k")
+    with pytest.raises(RegistryError):
+        await client.place_entries(["id-x"])
+
+
+@pytest.mark.asyncio
+async def test_place_entries_refuses_when_the_bulk_lookup_fails(httpx_mock):
+    from wip_auth.registry_client import RegistryError
+
+    httpx_mock.add_response(
+        url=f"{BASE}/api/registry/entries/lookup/by-id", status_code=503,
+    )
+    client = RegistryClientBase(base_url=BASE, api_key="k")
+    with pytest.raises(RegistryError):
+        await client.place_entries(["id-x"])

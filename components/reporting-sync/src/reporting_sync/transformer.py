@@ -340,14 +340,12 @@ class DocumentTransformer:
         term_references: dict[str, Any],
     ) -> list[dict[str, Any]]:
         """
-        Expand arrays into multiple rows (cross product).
+        One row per document: arrays are not expanded into rows.
 
-        If flatten_arrays is True and arrays are present, each combination
-        of array elements produces a separate row.
-
-        NOTE: Currently disabled by default because the schema_manager stores
-        arrays as JSONB columns, not as separate rows. The full data is always
-        available in data_json and term_references_json columns.
+        The reporting config's flatten_arrays / max_array_elements are
+        accepted but not implemented: the schema stores arrays as JSONB
+        columns, not as separate rows, and the full data is always available
+        in data_json and term_references_json.
         """
         # Currently we don't expand arrays because:
         # 1. Schema stores arrays as JSONB, not individual columns per element

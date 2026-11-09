@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import os
 from typing import Any, Literal, cast
+from urllib.parse import quote
 
 import httpx
 from pydantic import BaseModel
@@ -566,6 +567,38 @@ class RegistryClientBase:
                 if r.get("status") == "found" and r.get("entry_id") and r.get("namespace"):
                     namespaces[r["entry_id"]] = r["namespace"]
             return namespaces
+
+    async def place_entries(self, entry_ids: list[str]) -> dict[str, str]:
+        """Each entry's owning namespace, whatever the entry's status.
+
+        lookup_entry_namespaces sees active entries only; an entry merged
+        away, deactivated or never activated still lives in a namespace, and
+        a caller deciding who may see a target needs that namespace too. The
+        entries the bulk lookup misses are read one by one. An id absent
+        from the result has no Registry entry at all. Raises RegistryError
+        when the Registry cannot answer, so a caller can refuse instead of
+        treating "could not ask" as "nowhere".
+        """
+        placed = await self.lookup_entry_namespaces(entry_ids, raise_on_error=True)
+        missing = [eid for eid in entry_ids if eid not in placed]
+        if not missing:
+            return placed
+        async with self._make_client() as client:
+            for entry_id in missing:
+                response = await client.get(
+                    f"{self.base_url}/api/registry/entries/{quote(entry_id, safe='')}",
+                    headers=self._get_headers(),
+                )
+                if response.status_code == 404:
+                    continue
+                if response.status_code != 200:
+                    raise RegistryError(
+                        f"Registry entry read failed: HTTP {response.status_code}"
+                    )
+                namespace = response.json().get("namespace")
+                if namespace:
+                    placed[entry_id] = namespace
+        return placed
 
     async def hard_delete_entry(
         self,

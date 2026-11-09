@@ -116,18 +116,41 @@ class TestTemplateFilterDrivesTheRealSearch:
         assert self._searched(conn) == {"doc_lesson__v1"}
 
     @pytest.mark.asyncio
-    async def test_result_reports_the_logical_type_not_the_table(self):
+    async def test_result_reports_the_logical_type_not_the_table(self, monkeypatch):
+        from reporting_sync import search_service
+
+        async def values(client, ids):
+            return {"tpl-lesson": "Lesson"} if ids == {"tpl-lesson"} else {}
+
+        monkeypatch.setattr(search_service, "_template_values", values)
         _conn, svc = self._svc(
             ["doc_lesson__v2"],
             rows=[{"doc_id": "DOC-1", "status": "active", "updated_at": None,
-                   "score": 0.5, "snippet": "x"}],
+                   "template_id": "tpl-lesson", "score": 0.5, "snippet": "x"}],
         )
         results = await svc._search_documents("q", None, None)
         assert results, "expected a hit"
-        assert results[0].value == "LESSON"
-        assert results[0].label == "LESSON document"
+        # The template's own value, case and all — not one rebuilt from the
+        # table name (which reporting.table_name may also replace).
+        assert results[0].value == "Lesson"
+        assert results[0].label == "Lesson document"
         # Provenance is preserved, just not in the type field.
         assert results[0].description == "Matched in doc_lesson__v2"
+
+    async def test_an_unknown_template_is_not_guessed_from_the_table(self, monkeypatch):
+        from reporting_sync import search_service
+
+        async def none(client, ids):
+            return {}
+
+        monkeypatch.setattr(search_service, "_template_values", none)
+        _conn, svc = self._svc(
+            ["doc_lesson__v2"],
+            rows=[{"doc_id": "DOC-1", "status": "active", "updated_at": None,
+                   "template_id": "tpl-gone", "score": 0.5, "snippet": "x"}],
+        )
+        results = await svc._search_documents("q", None, None)
+        assert (results[0].value, results[0].label) == (None, None)
 
 
 class TestUnmatchedTemplateSignal:

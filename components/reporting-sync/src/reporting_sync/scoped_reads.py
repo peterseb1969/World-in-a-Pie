@@ -76,6 +76,8 @@ class ScopedReads:
     manager_password: str
     statement_timeout: str = "300s"
     max_connections: int = 5
+    # How long a read waits for one of the max_connections slots.
+    slot_timeout: float = 30.0
 
     def __post_init__(self) -> None:
         # Each scoped read opens its own connection; bound how many run at
@@ -188,20 +190,40 @@ class ScopedReads:
 
         The connection is the caller's alone and is closed afterwards, so
         whatever session state the caller's SQL sets dies with it.
+
+        Raises ScopedReadsUnavailable when the connection cannot be set up
+        (a role or grant step fails, the scope cannot log in, or every slot
+        stays busy for slot_timeout seconds). Errors from the caller's own
+        SQL are not converted.
         """
         wanted = sorted(set(schemas))
         scope = scope_role(wanted)
-        roles, grants = await self._missing(scope, wanted)
-        if roles:
-            await self._provision_roles(scope, wanted)
-        if grants:
-            await self._apply_grants(wanted)
-        async with self._slots:
-            conn = await self._connect(scope)
+        try:
+            roles, grants = await self._missing(scope, wanted)
+            if roles:
+                await self._provision_roles(scope, wanted)
+            if grants:
+                await self._apply_grants(wanted)
+        except (OSError, asyncpg.PostgresError, asyncpg.InterfaceError) as e:
+            raise ScopedReadsUnavailable(f"cannot prepare {scope}: {e}") from e
+        try:
+            await asyncio.wait_for(self._slots.acquire(), timeout=self.slot_timeout)
+        except TimeoutError as e:
+            raise ScopedReadsUnavailable(
+                f"all {self.max_connections} scoped read connections stayed busy "
+                f"for {self.slot_timeout}s"
+            ) from e
+        try:
+            try:
+                conn = await self._connect(scope)
+            except (OSError, asyncpg.PostgresError, asyncpg.InterfaceError) as e:
+                raise ScopedReadsUnavailable(f"{scope} cannot connect: {e}") from e
             try:
                 yield conn
             finally:
                 await conn.close()
+        finally:
+            self._slots.release()
 
 
 async def _execute(conn: asyncpg.Connection, template: str, *args: str) -> None:
