@@ -333,11 +333,26 @@ else
     echo "   Venv created"
 fi
 
+# WIP_SKIP_VENV_INSTALL=1: install nothing into the venv below (test tools,
+# wip_mcp, WIP-Toolkit + wip-archive). The golden test harness sets it: it
+# runs this script in a scratch clone whose .venv is a symlink to the real
+# one, and an editable install there records the scratch path in the REAL
+# venv — dangling once the scratch clone is deleted. A module that is then
+# missing is reported, not installed.
+_venv_install_allowed() {
+    if [ "${WIP_SKIP_VENV_INSTALL:-}" = "1" ]; then
+        echo "   WIP_SKIP_VENV_INSTALL=1 — not installing $1 (missing in venv)"
+        return 1
+    fi
+    return 0
+}
+
 # Idempotent test-tool install, for the same reason as wip_mcp below: a
 # pre-existing .venv skips the create branch above. Without pytest,
 # scripts/wip-test.sh fails with "pytest: command not found" well after setup
 # reported success — so a failed install here is reported, not swallowed.
-if ! "$VENV_PYTHON" -c "import pytest, ruff, mypy, build" 2>/dev/null; then
+if ! "$VENV_PYTHON" -c "import pytest, ruff, mypy, build" 2>/dev/null \
+    && _venv_install_allowed "test tools"; then
     echo "   Installing test tools (pytest, ruff, mypy, build)..."
     if "$VENV_PYTHON" -m pip install pytest ruff mypy build -q 2>&1; then
         echo "   Test tools installed"
@@ -354,7 +369,7 @@ fi
 # half-failed, leaves the "venv exists" check above satisfied while wip_mcp is
 # still missing. The stdio MCP server then dies on import; Claude Code surfaces
 # that as "not connected" with no diagnostic.
-if ! "$VENV_PYTHON" -c "import wip_mcp" 2>/dev/null; then
+if ! "$VENV_PYTHON" -c "import wip_mcp" 2>/dev/null && _venv_install_allowed wip_mcp; then
     if [ -f "$WIP_ROOT/components/mcp-server/pyproject.toml" ]; then
         echo "   Installing MCP server dependencies (wip_mcp missing in venv)..."
         if "$VENV_PYTHON" -m pip install -e "$WIP_ROOT/components/mcp-server/" -q 2>&1; then
@@ -382,7 +397,8 @@ fi
 # not on PyPI: it lives in libs/wip-archive, so both are installed in one pip
 # call that names the local path. Its declared dependency stays a plain
 # version requirement because the toolkit wheel also ships to apps.
-if ! "$VENV_PYTHON" -c "import wip_toolkit, wip_archive" 2>/dev/null; then
+if ! "$VENV_PYTHON" -c "import wip_toolkit, wip_archive" 2>/dev/null \
+    && _venv_install_allowed "WIP-Toolkit and wip-archive"; then
     if [ -f "$WIP_ROOT/WIP-Toolkit/pyproject.toml" ] && [ -f "$WIP_ROOT/libs/wip-archive/pyproject.toml" ]; then
         echo "   Installing WIP-Toolkit and wip-archive (missing in venv)..."
         if "$VENV_PYTHON" -m pip install -e "$WIP_ROOT/libs/wip-archive" -e "$WIP_ROOT/WIP-Toolkit" -q 2>&1; then

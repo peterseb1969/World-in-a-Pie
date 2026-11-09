@@ -13,8 +13,11 @@ Environment requirements (why these tests are opt-in, see conftest.py):
 - A single running wip-deploy install (podman) — both scripts detect the
   API key from live container labels; without one the backend script falls
   back nondeterministically and the app script hard-errors by design.
-- This clone on `develop` with a provisioned .venv (wip_mcp importable) —
-  backend scratch clones symlink to it so no pip install runs.
+- This clone on `develop` with a provisioned .venv — every module the
+  backend script would otherwise install importable (VENV_MODULES, checked
+  up front by conftest). Backend scratch clones symlink to it and the
+  script runs with WIP_SKIP_VENV_INSTALL=1, so nothing is installed into
+  it; every backend scenario then asserts that (assert_real_venv_untouched).
 
 Determinism notes:
 - Tier-3 scenarios pass --kb https://kb.invalid plus a throwaway key file
@@ -69,7 +72,46 @@ EXCLUDE_PARTS = {".git", "node_modules", ".venv", "__pycache__"}
 # .mcp.json / .env, and nothing reads the key.
 HOST_ISOLATION_ENV = {
     "WIP_API_KEY_FILE_OVERRIDE": str(Path.home() / ".wip-deploy/wip-local/secrets/api-key"),
+    # The backend scratch clone's .venv is the real venv behind a symlink:
+    # the script must not install into it (see setup-backend-agent.sh).
+    "WIP_SKIP_VENV_INSTALL": "1",
 }
+
+# The modules setup-backend-agent.sh installs when missing; the real venv
+# must already have them, since a golden run installs nothing.
+VENV_MODULES = ("pytest", "ruff", "mypy", "build", "wip_mcp", "wip_toolkit", "wip_archive")
+
+
+def missing_venv_modules() -> list[str]:
+    """Which of VENV_MODULES the real venv's own interpreter cannot import."""
+    python = REPO_ROOT / ".venv" / "bin" / "python"
+    missing = []
+    for module in VENV_MODULES:
+        if subprocess.run([str(python), "-c", f"import {module}"], capture_output=True).returncode:
+            missing.append(module)
+    return missing
+
+
+def assert_real_venv_untouched(scratch: Path) -> None:
+    """No package in the real venv may point into a scratch directory: an
+    editable install recorded there dangles once the directory is deleted.
+    Checks what pip recorded (direct_url.json) and every .pth path file, so
+    any install path is caught, not only the ones the script has today."""
+    site = REPO_ROOT / ".venv" / "lib"
+    scratch_paths = {str(scratch), str(scratch.resolve())}
+    offenders = []
+    for path in [*site.glob("python*/site-packages/*.dist-info/direct_url.json"),
+                 *site.glob("python*/site-packages/*.pth")]:
+        text = path.read_text(errors="replace")
+        if any(s in text for s in scratch_paths):
+            offenders.append(path.name if path.suffix == ".pth" else path.parent.name)
+    if offenders:
+        raise AssertionError(
+            "the golden run installed into the REAL venv from its scratch clone "
+            f"({', '.join(sorted(offenders))}); those installs dangle once the scratch "
+            "clone is deleted. Repair: .venv/bin/pip install --no-deps -e libs/wip-archive "
+            "-e WIP-Toolkit -e components/mcp-server"
+        )
 
 
 def _run(cmd: list[str], cwd: Path, env_extra: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -153,9 +195,10 @@ def run_backend_scenario(tmp: Path, *, tier3: bool, refresh: bool) -> dict:
         src, dst = REPO_ROOT / rel, clone / rel
         shutil.rmtree(dst, ignore_errors=True)
         shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__"))
-    # Symlink the provisioned venv: the script sees .venv/bin/python and an
-    # importable wip_mcp, so it neither creates a venv nor pip-installs
-    # (protects the REAL venv behind the symlink).
+    # Symlink the provisioned venv: the script sees .venv/bin/python, so it
+    # creates no venv, and WIP_SKIP_VENV_INSTALL (HOST_ISOLATION_ENV) keeps
+    # it from installing into the REAL venv behind the symlink — checked
+    # below, not assumed.
     (clone / ".venv").symlink_to(REPO_ROOT / ".venv")
 
     cmd = ["bash", "scripts/setup-backend-agent.sh"]
@@ -171,6 +214,8 @@ def run_backend_scenario(tmp: Path, *, tier3: bool, refresh: bool) -> dict:
                 f"backend scaffold failed (rc={last.returncode}):\n"
                 f"stdout:\n{last.stdout}\nstderr:\n{last.stderr}"
             )
+
+    assert_real_venv_untouched(tmp)
 
     roots = _norm_roots(__CLONE__=str(clone), __KB_KEY_FILE__=str(tmp / "kb-api-key"))
     snap = snapshot_tree_backend(clone, roots)

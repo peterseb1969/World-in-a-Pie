@@ -46,3 +46,12 @@ def _check_prereqs() -> None:
     # depend on a sed flavor.)
     if shutil.which("podman") is None:
         pytest.exit("WIP_GOLDEN=1 requires podman (running-install key detection)", 1)
+    from golden_lib import missing_venv_modules
+
+    missing = missing_venv_modules()
+    if missing:
+        pytest.exit(
+            "WIP_GOLDEN=1 requires a provisioned .venv; it cannot import "
+            f"{', '.join(missing)}. A golden run installs nothing into it — run "
+            "scripts/setup-backend-agent.sh from this clone first.", 1,
+        )
