@@ -13,8 +13,11 @@ Two modes:
     install.sh` to v2 where two different compose projects both used
     `wip-*` names).
 
-Both modes honor a `keep_data` / `keep_secrets` split so the data-
-destructive step is always opt-in.
+Both modes keep data and secrets unless asked: `remove_data` and
+`remove_secrets` are opt-in. On k8s that means a teardown without
+`remove_data` deletes WIP's workloads but keeps the namespace, its PVCs and
+its Secrets; only `remove_data` deletes the namespace. Every mode honours
+`dry_run`: it reports what it would remove and removes nothing.
 
 Removing data also removes the saved deployment state of every install
 whose data went. `install` treats that state as a live install and refuses
@@ -58,32 +61,43 @@ class NukeReport:
     compose_down_ran: bool = False
     # CASE-362 k8s teardown.
     k8s_namespace_removed: str | None = None
+    k8s_workloads_removed_from: str | None = None
     k8s_pvs_removed: list[str] = field(default_factory=list)
+    # What the runtime refused to remove ("container X"), so the summary
+    # reports results, not attempts.
+    failed: list[str] = field(default_factory=list)
+    # A dry run fills the fields with what WOULD be removed.
+    dry_run: bool = False
 
     def summary(self) -> str:
+        done = "would be removed" if self.dry_run else "removed"
         parts = []
         if self.compose_down_ran:
-            parts.append("compose down completed")
+            parts.append("compose down would run" if self.dry_run else "compose down completed")
         if self.k8s_namespace_removed:
-            parts.append(f"k8s namespace removed: {self.k8s_namespace_removed}")
-        if self.k8s_pvs_removed:
-            parts.append(f"{len(self.k8s_pvs_removed)} PV(s) removed")
-        if self.containers_removed:
-            parts.append(f"{len(self.containers_removed)} container(s) removed")
-        if self.pods_removed:
-            parts.append(f"{len(self.pods_removed)} pod(s) removed")
-        if self.volumes_removed:
-            parts.append(f"{len(self.volumes_removed)} volume(s) removed")
-        if self.images_removed:
-            parts.append(f"{len(self.images_removed)} image(s) removed")
-        if self.networks_removed:
-            parts.append(f"{len(self.networks_removed)} network(s) removed")
+            parts.append(f"k8s namespace {done}: {self.k8s_namespace_removed}")
+        if self.k8s_workloads_removed_from:
+            parts.append(
+                f"k8s workloads {done} from {self.k8s_workloads_removed_from} "
+                f"(namespace, PVCs and Secrets kept)"
+            )
+        counted = (
+            (self.k8s_pvs_removed, "PV(s)"),
+            (self.containers_removed, "container(s)"),
+            (self.pods_removed, "pod(s)"),
+            (self.volumes_removed, "volume(s)"),
+            (self.images_removed, "image(s)"),
+            (self.networks_removed, "network(s)"),
+            (self.secrets_dirs_removed, "secrets dir(s)"),
+            (self.state_files_removed, "saved install state(s)"),
+        )
+        for items, label in counted:
+            if items:
+                parts.append(f"{len(items)} {label} {done}")
         if self.secrets_dir_removed:
-            parts.append(f"secrets dir removed: {self.secrets_dir_removed}")
-        if self.secrets_dirs_removed:
-            parts.append(f"{len(self.secrets_dirs_removed)} secrets dir(s) removed")
-        if self.state_files_removed:
-            parts.append(f"{len(self.state_files_removed)} saved install state(s) removed")
+            parts.append(f"secrets dir {done}: {self.secrets_dir_removed}")
+        if self.failed:
+            parts.append(f"{len(self.failed)} NOT removed: {', '.join(self.failed)}")
         return "; ".join(parts) or "nothing to do"
 
 
@@ -99,6 +113,7 @@ def nuke_install_dir(
     secrets_location: Path | None = None,
     remove_secrets: bool = False,
     remove_images: bool = False,
+    dry_run: bool = False,
 ) -> NukeReport:
     """Tear down the compose project rooted at `install_dir`.
 
@@ -109,6 +124,8 @@ def nuke_install_dir(
 
     Always sweeps any `wip-*` networks left dangling after `compose
     down` (e.g. when the network was declared `external: true`).
+
+    `dry_run=True` runs nothing and returns what would be removed.
     """
     if not install_dir.exists():
         raise NukeError(f"install dir does not exist: {install_dir}")
@@ -130,8 +147,18 @@ def nuke_install_dir(
     images = _images_in_compose(compose_file) if remove_images else []
     networks = _networks_in_compose(compose_file)
 
-    report = NukeReport()
+    report = NukeReport(dry_run=dry_run)
     cmd_prefix = _detect_compose_cmd()
+
+    if dry_run:
+        report.compose_down_ran = True
+        report.images_removed = images
+        report.networks_removed = networks
+        _plan_secrets_and_state(
+            report, install_dir, remove_data=remove_data,
+            secrets_location=secrets_location, remove_secrets=remove_secrets,
+        )
+        return report
 
     cmd = [*cmd_prefix, "-f", compose_file.name, "down"]
     if remove_data:
@@ -152,12 +179,11 @@ def nuke_install_dir(
     # case is what we care about.
     report.networks_removed = _remove_networks(networks)
 
-    if remove_secrets and secrets_location is not None:
-        secrets_location = Path(secrets_location)
-        if secrets_location.exists():
-            _remove_tree(secrets_location)
-            report.secrets_dir_removed = secrets_location
-
+    _plan_secrets_and_state(
+        report, install_dir, remove_data=False,
+        secrets_location=secrets_location, remove_secrets=remove_secrets,
+    )
+    _apply_secrets_removal(report)
     if remove_data:
         report.state_files_removed = _remove_state_files(install_dir)
 
@@ -176,21 +202,25 @@ def nuke_k8s_install_dir(
     remove_data: bool = False,
     secrets_location: Path | None = None,
     remove_secrets: bool = False,
+    dry_run: bool = False,
 ) -> NukeReport:
-    """Tear down a k8s install: delete the namespace (cascades to every
-    namespaced resource — Deployments, StatefulSets, Services, ConfigMaps,
-    Secrets, Ingresses, PVCs, NetworkPolicies).
+    """Tear down a k8s install.
 
-    `remove_data=True` additionally deletes any cluster-scoped PVs that
-    were bound to PVCs in this namespace. With the cluster's reclaim
-    policy set to `Retain` (common for production storage classes like
-    rook-ceph-block), PVs survive the PVC's deletion and keep their data
-    accessible at the storage layer — `--remove-data` is the explicit
-    "yes, throw the data away too" path.
+    Without `remove_data`: delete WIP's workloads and their wiring
+    (Deployments, StatefulSets, Services, ConfigMaps, Ingresses,
+    NetworkPolicies labelled `app.kubernetes.io/part-of=wip`) and keep the
+    namespace, its PVCs and its Secrets, so `redeploy` brings the install
+    back on its data. Deleting the namespace would cascade to the PVCs, and
+    with a `Delete` reclaim policy (the usual default) the data with them.
+
+    `remove_data=True` deletes the namespace (cascading to every namespaced
+    resource, PVCs included) and then any cluster-scoped PVs that were bound
+    to PVCs in it, so `Retain`-policy PVs go too.
 
     `remove_secrets=True` removes the local file-backend secrets
-    directory at `secrets_location` (k8s-namespaced secrets are already
-    gone with the namespace).
+    directory at `secrets_location`.
+
+    `dry_run=True` runs nothing and returns what would be removed.
 
     The renderer doesn't enumerate `--remove-images` for k8s today:
     images live in the registry, not on the operator's host. Skip with
@@ -207,15 +237,33 @@ def nuke_k8s_install_dir(
             "manually via the cluster's UI."
         )
 
-    report = NukeReport()
+    report = NukeReport(dry_run=dry_run)
+
+    if not remove_data:
+        if not dry_run:
+            _k8s_delete_workloads(namespace)
+        report.k8s_workloads_removed_from = namespace
+        _plan_secrets_and_state(
+            report, install_dir, remove_data=False,
+            secrets_location=secrets_location, remove_secrets=remove_secrets,
+        )
+        if not dry_run:
+            _apply_secrets_removal(report)
+        return report
 
     # Capture PVs bound to PVCs in this namespace BEFORE deleting it —
     # once the PVCs are gone, the PV's `claimRef` still points at the
     # (now-deleted) PVC, but we'd have to scan all PVs. Doing it now
     # is cheaper and gives a clean list for `--remove-data`.
-    bound_pvs: list[str] = []
-    if remove_data:
-        bound_pvs = _list_pvs_in_namespace(namespace)
+    bound_pvs = _list_pvs_in_namespace(namespace)
+    if dry_run:
+        report.k8s_namespace_removed = namespace
+        report.k8s_pvs_removed = bound_pvs
+        _plan_secrets_and_state(
+            report, install_dir, remove_data=True,
+            secrets_location=secrets_location, remove_secrets=remove_secrets,
+        )
+        return report
 
     # Cascading delete. --ignore-not-found makes the call idempotent;
     # --wait=true blocks until the namespace is fully reclaimed (so a
@@ -238,22 +286,76 @@ def nuke_k8s_install_dir(
             f"kubectl delete namespace {namespace} failed (exit {e.returncode})"
         ) from e
 
-    if remove_data and bound_pvs:
+    if bound_pvs:
         # The namespace delete cascaded the PVC; PVs with Retain
         # reclaim policy are now in 'Released' state and still hold
         # data. Delete them explicitly.
         report.k8s_pvs_removed = _delete_pvs(bound_pvs)
 
-    if remove_secrets and secrets_location is not None:
-        secrets_location = Path(secrets_location)
-        if secrets_location.exists():
-            _remove_tree(secrets_location)
-            report.secrets_dir_removed = secrets_location
-
-    if remove_data:
-        report.state_files_removed = _remove_state_files(install_dir)
-
+    _plan_secrets_and_state(
+        report, install_dir, remove_data=True,
+        secrets_location=secrets_location, remove_secrets=remove_secrets,
+    )
+    _apply_secrets_removal(report)
+    report.state_files_removed = _remove_state_files(install_dir)
     return report
+
+
+# The kinds a data-preserving k8s teardown deletes: what the renderer
+# writes, minus PersistentVolumeClaims (the data) and Secrets (the keys and
+# TLS material a redeploy reuses).
+K8S_WORKLOAD_KINDS = (
+    "deployments.apps",
+    "statefulsets.apps",
+    "services",
+    "configmaps",
+    "ingresses.networking.k8s.io",
+    "networkpolicies.networking.k8s.io",
+)
+
+
+def _k8s_delete_workloads(namespace: str) -> None:
+    try:
+        subprocess.run(
+            [
+                *kubectl(),
+                "delete",
+                ",".join(K8S_WORKLOAD_KINDS),
+                "-n",
+                namespace,
+                "-l",
+                "app.kubernetes.io/part-of=wip",
+                "--ignore-not-found=true",
+                "--wait=true",
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        raise NukeError(
+            f"kubectl delete of WIP workloads in {namespace} failed (exit {e.returncode})"
+        ) from e
+
+
+def _plan_secrets_and_state(
+    report: NukeReport,
+    install_dir: Path,
+    *,
+    remove_data: bool,
+    secrets_location: Path | None,
+    remove_secrets: bool,
+) -> None:
+    """Record the secrets dir and saved state a teardown removes. Removes
+    the state only on a real run; the secrets dir is removed by
+    `_apply_secrets_removal`."""
+    if remove_secrets and secrets_location is not None and Path(secrets_location).exists():
+        report.secrets_dir_removed = Path(secrets_location)
+    if remove_data:
+        report.state_files_removed = _remove_state_files(install_dir, dry_run=True)
+
+
+def _apply_secrets_removal(report: NukeReport) -> None:
+    if report.secrets_dir_removed is not None:
+        _remove_tree(report.secrets_dir_removed)
 
 
 def _list_pvs_in_namespace(namespace: str) -> list[str]:
@@ -312,15 +414,17 @@ def _delete_pvs(pv_names: list[str]) -> list[str]:
 
 
 def has_k8s_install(install_root: Path) -> bool:
-    """Return True if any `~/.wip-deploy/<name>/deployment.deployer-state`
-    under `install_root` declares target=k8s. Used by --purge-all to
+    """Return True if any `~/.wip-deploy/<name>/` saved state (either
+    name in STATE_FILENAMES) under `install_root` declares target=k8s. Used by --purge-all to
     refuse on hosts with k8s installs (CASE-362)."""
     if not install_root.exists():
         return False
     import json
     for child in install_root.iterdir():
-        state = child / "deployment.deployer-state"
-        if not state.is_file():
+        state = next(
+            (child / n for n in STATE_FILENAMES if (child / n).is_file()), None
+        )
+        if state is None:
             continue
         try:
             payload = json.loads(state.read_text())
@@ -361,28 +465,25 @@ def nuke_purge_all(
     makes the next install reuse the same master key (CASE-387: the scoped
     teardown honored `--remove-secrets`, but purge-all silently dropped it).
     """
-    report = NukeReport()
+    report = NukeReport(dry_run=dry_run)
 
     containers = _podman_ls_names(["ps", "-a", "--filter", "name=wip-", "--format", "{{.Names}}"])
-    if containers:
-        if not dry_run:
-            _podman(["rm", "-f", *containers])
-        report.containers_removed = containers
+    report.containers_removed = _remove_each(
+        ["rm", "-f"], containers, "container", report, dry_run=dry_run,
+    )
 
     pods = _podman_ls_names(["pod", "ls", "--format", "{{.Name}}"])
     wip_pods = [p for p in pods if _looks_like_wip_pod(p)]
-    if wip_pods:
-        if not dry_run:
-            _podman(["pod", "rm", "-f", *wip_pods])
-        report.pods_removed = wip_pods
+    report.pods_removed = _remove_each(
+        ["pod", "rm", "-f"], wip_pods, "pod", report, dry_run=dry_run,
+    )
 
     if remove_data:
         volumes = _podman_ls_names(["volume", "ls", "--format", "{{.Name}}"])
         wip_volumes = [v for v in volumes if _looks_like_wip_volume(v)]
-        if wip_volumes:
-            if not dry_run:
-                _podman(["volume", "rm", *wip_volumes])
-            report.volumes_removed = wip_volumes
+        report.volumes_removed = _remove_each(
+            ["volume", "rm"], wip_volumes, "volume", report, dry_run=dry_run,
+        )
 
     # Networks: any `wip-*` network. Removing in-use networks fails
     # silently — handled inside _remove_networks.
@@ -449,6 +550,12 @@ def _remove_state_files(install_dir: Path, *, dry_run: bool = False) -> list[Pat
     return removed
 
 
+def _podman(args: list[str]) -> subprocess.CompletedProcess[str]:
+    if not shutil.which("podman"):
+        raise NukeError("podman is not available on PATH")
+    return subprocess.run(["podman", *args], check=False, capture_output=True, text=True)
+
+
 def _detect_compose_cmd() -> list[str]:
     if shutil.which("podman-compose"):
         return ["podman-compose", "--parallel", str(PODMAN_COMPOSE_PARALLEL)]
@@ -457,10 +564,23 @@ def _detect_compose_cmd() -> list[str]:
     raise NukeError("neither podman-compose nor docker is available on PATH")
 
 
-def _podman(args: list[str]) -> None:
-    if not shutil.which("podman"):
-        raise NukeError("podman is not available on PATH")
-    subprocess.run(["podman", *args], check=False)
+def _remove_each(
+    rm_args: list[str], names: list[str], kind: str, report: NukeReport,
+    *, dry_run: bool,
+) -> list[str]:
+    """`podman <rm_args> <name>` per name; return the names it removed and
+    record the refusals on `report.failed`. One call per name, because a
+    batched call that removes some and refuses others reports neither."""
+    if dry_run or not names:
+        return list(names)
+    removed: list[str] = []
+    for name in names:
+        r = _podman([*rm_args, name])
+        if r.returncode == 0:
+            removed.append(name)
+        else:
+            report.failed.append(f"{kind} {name}")
+    return removed
 
 
 def _podman_ls_names(args: list[str]) -> list[str]:
@@ -663,6 +783,12 @@ def _looks_like_wip_image(image: str) -> bool:
     # Strip off any registry prefix (everything up to and including the
     # last '/') and any tag (':tag').
     repo = image.rsplit(":", 1)[0]
+    # Official upstream images are listed by podman under their full name
+    # (`docker.io/library/registry:2`); WIP's own are bare, localhost/ or
+    # under the install's registry. Without this, the base name `registry`
+    # would take the upstream registry image with it.
+    if repo.startswith("docker.io/library/"):
+        return False
     base = repo.rsplit("/", 1)[-1]
     if base.startswith("wip-"):
         return True

@@ -246,7 +246,9 @@ class TestPurgeAll:
             return []
 
         def fake_podman(args):  # type: ignore[no-untyped-def]
+            import subprocess
             call_log.append(tuple(args))
+            return subprocess.CompletedProcess(args, 0, "", "")
 
         monkeypatch.setattr("wip_deploy.nuke._podman_ls_names", fake_ls_names)
         monkeypatch.setattr("wip_deploy.nuke._podman", fake_podman)
@@ -659,9 +661,11 @@ class TestNukeK8sInstallDir:
         (d / "namespace.yaml").write_text("kind: Namespace\n")
         return d
 
-    def test_basic_deletes_namespace(
+    def test_basic_keeps_namespace_pvcs_and_secrets(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Without --remove-data the namespace stays: deleting it would
+        cascade to the PVCs (the data). WIP's labelled workloads go."""
         calls: list[list[str]] = []
 
         def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
@@ -675,15 +679,62 @@ class TestNukeK8sInstallDir:
         install = self._make_install_dir(tmp_path)
         report = nuke_k8s_install_dir(install, namespace="wip-kb")
 
-        # Single kubectl invocation for the namespace delete.
-        assert any(
-            cmd[:4] == ["kubectl", "delete", "namespace", "wip-kb"]
-            for cmd in calls
-        )
-        assert report.k8s_namespace_removed == "wip-kb"
-        # No PV deletion in the default path.
+        assert not any("namespace" in cmd for cmd in calls)
+        assert len(calls) == 1
+        (cmd,) = calls
+        assert cmd[:2] == ["kubectl", "delete"]
+        kinds = cmd[2].split(",")
+        assert "persistentvolumeclaims" not in kinds and "secrets" not in kinds
+        assert "deployments.apps" in kinds and "statefulsets.apps" in kinds
+        assert cmd[cmd.index("-n") + 1] == "wip-kb"
+        assert cmd[cmd.index("-l") + 1] == "app.kubernetes.io/part-of=wip"
+        assert report.k8s_namespace_removed is None
+        assert report.k8s_workloads_removed_from == "wip-kb"
         assert report.k8s_pvs_removed == []
         assert report.compose_down_ran is False
+
+    def test_remove_data_deletes_namespace(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(cmd)
+            import subprocess
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+
+        report = nuke_k8s_install_dir(
+            self._make_install_dir(tmp_path), namespace="wip-kb", remove_data=True,
+        )
+        assert any(cmd[:4] == ["kubectl", "delete", "namespace", "wip-kb"] for cmd in calls)
+        assert report.k8s_namespace_removed == "wip-kb"
+
+    @pytest.mark.parametrize("remove_data", [False, True])
+    def test_dry_run_runs_no_delete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, remove_data: bool,
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(cmd)
+            import subprocess
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
+        install = self._make_install_dir(tmp_path)
+        (install / "deployment.deployer-state").write_text("{}")
+
+        report = nuke_k8s_install_dir(
+            install, namespace="wip-kb", remove_data=remove_data, dry_run=True,
+        )
+        assert not any("delete" in cmd for cmd in calls)
+        assert report.dry_run is True
+        assert (install / "deployment.deployer-state").exists()
+        assert "would be removed" in report.summary()
 
     def test_remove_data_deletes_pvs_bound_to_namespace(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -770,7 +821,7 @@ class TestNukeK8sInstallDir:
     ) -> None:
         def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
             import subprocess
-            if cmd[:3] == ["kubectl", "delete", "namespace"]:
+            if cmd[:2] == ["kubectl", "delete"]:
                 raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
             return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
 
@@ -778,8 +829,10 @@ class TestNukeK8sInstallDir:
         monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: f"/usr/bin/{cmd}")
 
         install = self._make_install_dir(tmp_path)
-        with pytest.raises(NukeError, match="kubectl delete namespace"):
+        with pytest.raises(NukeError, match="kubectl delete of WIP workloads"):
             nuke_k8s_install_dir(install, namespace="wip-kb")
+        with pytest.raises(NukeError, match="kubectl delete namespace"):
+            nuke_k8s_install_dir(install, namespace="wip-kb", remove_data=True)
 
 
 class TestHasK8sInstall:
@@ -974,3 +1027,104 @@ class TestRemoveDataRemovesSavedState:
 
         assert (a / "deployment.deployer-state").exists()
         assert report.state_files_removed == [a / "deployment.deployer-state"]
+
+
+
+# ────────────────────────────────────────────────────────────────────
+# CASE-1227: scoped dry run, per-item results, upstream images,
+# legacy state name
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestScopedDryRun:
+    """`nuke --dry-run` on one install ran `compose down` and deleted the
+    secrets dir and the saved spec. A dry run removes nothing."""
+
+    def test_runs_nothing_and_reports_what_would_go(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            calls.append(cmd)
+            raise AssertionError(f"dry run spawned {cmd}")
+
+        monkeypatch.setattr("wip_deploy.nuke.subprocess.run", fake_run)
+        monkeypatch.setattr("wip_deploy.nuke.shutil.which", lambda cmd: "/usr/bin/podman-compose")
+        install = tmp_path / "install"
+        install.mkdir()
+        (install / "docker-compose.yaml").write_text(
+            "services:\n  a:\n    image: localhost/registry:dev\n"
+            "networks:\n  x:\n    name: inst_wip-network\n"
+        )
+        (install / "deployment.deployer-state").write_text("{}")
+        secrets = tmp_path / "secrets"
+        secrets.mkdir()
+        (secrets / "api-key").write_text("k")
+
+        report = nuke_install_dir(
+            install, remove_data=True, remove_secrets=True,
+            secrets_location=secrets, remove_images=True, dry_run=True,
+        )
+
+        assert calls == []
+        assert (install / "deployment.deployer-state").exists()
+        assert (secrets / "api-key").exists()
+        assert report.dry_run is True
+        assert report.images_removed == ["localhost/registry:dev"]
+        assert report.networks_removed == ["inst_wip-network"]
+        assert report.secrets_dir_removed == secrets
+        assert report.state_files_removed == [install / "deployment.deployer-state"]
+        summary = report.summary()
+        assert "compose down would run" in summary
+        assert summary.count(" removed") == summary.count("would be removed")
+
+
+class TestPurgeAllReportsResults:
+    def test_a_refused_removal_is_reported_not_counted(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        import subprocess
+
+        def fake_ls_names(args):  # type: ignore[no-untyped-def]
+            return ["wip-a", "wip-b"] if args[0] == "ps" else []
+
+        def fake_podman(args):  # type: ignore[no-untyped-def]
+            code = 1 if args[-1] == "wip-b" else 0
+            return subprocess.CompletedProcess(args, code, "", "refused")
+
+        monkeypatch.setattr("wip_deploy.nuke._podman_ls_names", fake_ls_names)
+        monkeypatch.setattr("wip_deploy.nuke._podman", fake_podman)
+
+        report = nuke_purge_all(install_root=tmp_path)
+        assert report.containers_removed == ["wip-a"]
+        assert report.failed == ["container wip-b"]
+        assert "1 NOT removed: container wip-b" in report.summary()
+
+
+class TestUpstreamImagesAreNotWip:
+    @pytest.mark.parametrize(
+        "image",
+        ["docker.io/library/registry:2", "docker.io/library/caddy:2",
+         "docker.io/library/mongo:7"],
+    )
+    def test_docker_io_images_never_match(self, image: str) -> None:
+        assert _looks_like_wip_image(image) is False
+
+    @pytest.mark.parametrize(
+        "image", ["localhost/registry:dev-tc02", "registry:dev",
+                  "ghcr.io/peterseb1969/registry:20261106b"],
+    )
+    def test_wip_registry_images_still_match(self, image: str) -> None:
+        assert _looks_like_wip_image(image) is True
+
+
+def test_has_k8s_install_reads_the_legacy_state_name(tmp_path: Path) -> None:
+    import json
+
+    d = tmp_path / "old-k8s"
+    d.mkdir()
+    (d / "deployment.json").write_text(json.dumps(
+        {"deployment": {"metadata": {"name": "old-k8s"}, "spec": {"target": "k8s"}}}
+    ))
+    assert has_k8s_install(tmp_path) is True

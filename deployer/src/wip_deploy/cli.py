@@ -44,7 +44,13 @@ from wip_deploy.export_ca import (
 from wip_deploy.kube import kubectl
 from wip_deploy.module_help import modules_line, with_modules
 from wip_deploy.naming import container_name
-from wip_deploy.nuke import NukeError, nuke_install_dir, nuke_purge_all
+from wip_deploy.nuke import (
+    STATE_FILENAMES,
+    NukeError,
+    NukeReport,
+    nuke_install_dir,
+    nuke_purge_all,
+)
 from wip_deploy.presets import PRESETS
 from wip_deploy.renderers import (
     FileTree,
@@ -5136,7 +5142,9 @@ def nuke(
             help=(
                 "Remove named volumes (databases, file storage), and the "
                 "install's saved spec, so the next `install` starts fresh. "
-                "Destructive."
+                "On k8s: delete the namespace with its PVCs and the PVs bound "
+                "to them; without this flag a k8s nuke keeps the namespace, "
+                "PVCs and Secrets. Destructive."
             ),
         ),
     ] = False,
@@ -5167,8 +5175,8 @@ def nuke(
         typer.Option(
             "--secrets-location",
             help=(
-                "Override secrets directory. Default: "
-                "~/.wip-deploy/<name>/secrets/."
+                "Override secrets directory. Default: the location the "
+                "install's saved spec records, else ~/.wip-deploy/<name>/secrets/."
             ),
         ),
     ] = None,
@@ -5199,6 +5207,8 @@ def nuke(
     """Tear down a WIP install.
 
     By default, runs `compose down` in the install dir (scoped teardown).
+    On k8s, deletes WIP's workloads and keeps the namespace, its PVCs and
+    its Secrets; `--remove-data` deletes the namespace instead.
     With `--purge-all`, removes every wip-* container/pod on the host; with
     `--remove-secrets` it also clears the `secrets/` dir of every install
     under `~/.wip-deploy/` (host-wide, matching purge-all's blast radius).
@@ -5221,6 +5231,7 @@ def nuke(
       wip-deploy nuke --purge-all --remove-data --remove-secrets --yes
 
       # See what would be removed without removing it
+      wip-deploy nuke --name <install> --remove-data --dry-run
       wip-deploy nuke --purge-all --dry-run
     """
     if purge_all:
@@ -5252,8 +5263,8 @@ def nuke(
 
     name = _resolve_name(name)
     target_dir = install_dir or _default_install_dir(name)
-    target_secrets = secrets_location or (
-        _default_install_dir(name) / "secrets" if remove_secrets else None
+    target_secrets, secrets_source = _nuke_secrets_location(
+        target_dir, name, secrets_location, remove_secrets,
     )
 
     # CASE-362: detect target from the persisted deployment state. k8s
@@ -5275,20 +5286,23 @@ def nuke(
 
     typer.echo(f"Install dir:   {target_dir}")
     if saved_target == "k8s":
-        typer.echo(
-            typer.style(
-                f"  target: k8s — namespace `{saved_namespace}` will be "
-                f"deleted via kubectl (cascading delete of all namespaced "
-                f"resources including PVCs)",
-                fg=typer.colors.YELLOW,
-            )
-        )
         if remove_data:
             typer.echo(
                 typer.style(
-                    "  + --remove-data: any cluster-scoped PVs bound to "
-                    "this namespace will also be deleted (Retain-policy "
-                    "PVs would otherwise survive)",
+                    f"  target: k8s — namespace `{saved_namespace}` will be "
+                    f"deleted via kubectl (cascading delete of all namespaced "
+                    f"resources including PVCs), and any cluster-scoped PVs "
+                    f"bound to it (Retain-policy PVs would otherwise survive)",
+                    fg=typer.colors.YELLOW,
+                )
+            )
+        else:
+            typer.echo(
+                typer.style(
+                    f"  target: k8s — WIP's workloads, services, configmaps, "
+                    f"ingresses and network policies in `{saved_namespace}` "
+                    f"will be deleted; the namespace, its PVCs and its "
+                    f"Secrets are kept",
                     fg=typer.colors.YELLOW,
                 )
             )
@@ -5315,11 +5329,13 @@ def nuke(
     if remove_secrets:
         typer.echo(
             typer.style(
-                f"  + secrets dir will be removed: {target_secrets}",
+                f"  + secrets dir will be removed: {target_secrets} ({secrets_source})",
                 fg=typer.colors.YELLOW,
             )
         )
-    if not yes and not _confirm("Proceed with teardown?"):
+    if dry_run:
+        typer.echo("  + dry-run: nothing will be removed")
+    if not yes and not dry_run and not _confirm("Proceed with teardown?"):
         raise typer.Exit(0)
 
     try:
@@ -5331,6 +5347,7 @@ def nuke(
                 remove_data=remove_data,
                 secrets_location=target_secrets,
                 remove_secrets=remove_secrets,
+                dry_run=dry_run,
             )
         else:
             report = nuke_install_dir(
@@ -5339,12 +5356,40 @@ def nuke(
                 secrets_location=target_secrets,
                 remove_secrets=remove_secrets,
                 remove_images=remove_images,
+                dry_run=dry_run,
             )
     except NukeError as e:
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
         raise typer.Exit(1) from e
 
-    typer.echo(typer.style(f"✓ {report.summary()}", fg=typer.colors.GREEN))
+    _echo_nuke_result(report)
+
+
+def _nuke_secrets_location(
+    target_dir: Path, name: str, explicit: Path | None, remove_secrets: bool,
+) -> tuple[Path | None, str]:
+    """The secrets dir a scoped nuke removes, and what decided it.
+
+    An explicit --secrets-location wins; else the install's saved spec
+    (where every other verb reads it, and where an install made with
+    --install-dir recorded it); the name-derived default only when no spec
+    is readable.
+    """
+    if not remove_secrets:
+        return None, ""
+    if explicit is not None:
+        return Path(explicit), "--secrets-location"
+    saved = _try_load_previous_deployment(target_dir)
+    if saved is not None and saved.spec.secrets.location:
+        return Path(saved.spec.secrets.location), "from the install's saved spec"
+    return _default_install_dir(name) / "secrets", f"no saved spec; default for --name {name}"
+
+
+def _echo_nuke_result(report: NukeReport) -> None:
+    prefix = "dry-run: " if report.dry_run else ""
+    color = typer.colors.YELLOW if report.failed else typer.colors.GREEN
+    mark = "!" if report.failed else "✓"
+    typer.echo(typer.style(f"{mark} {prefix}{report.summary()}", fg=color))
 
 
 def _read_saved_target_and_namespace(
@@ -5355,8 +5400,11 @@ def _read_saved_target_and_namespace(
     error — caller falls through to the historical compose-default
     behaviour. (CASE-362)
     """
-    state = install_dir / "deployment.deployer-state"
-    if not state.is_file():
+    state = next(
+        (install_dir / n for n in STATE_FILENAMES if (install_dir / n).is_file()),
+        None,
+    )
+    if state is None:
         return (None, None)
     try:
         import json
@@ -5446,12 +5494,7 @@ def _nuke_purge_all(
         typer.echo(
             f"  state:      {', '.join(str(p) for p in report.state_files_removed)}"
         )
-    typer.echo(
-        typer.style(
-            f"✓ {'dry-run: ' if dry_run else ''}{report.summary()}",
-            fg=typer.colors.GREEN,
-        )
-    )
+    _echo_nuke_result(report)
 
 
 # ────────────────────────────────────────────────────────────────────

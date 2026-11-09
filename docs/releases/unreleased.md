@@ -7,6 +7,34 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### wip-deploy nuke: `--dry-run` removes nothing; a k8s nuke keeps the data unless `--remove-data`
+
+- **`nuke --dry-run` was destructive on one install.** The flag reached
+  only `--purge-all`: `nuke --name X --dry-run` asked "Proceed with
+  teardown?" and then ran `compose down` (with `--remove-data`, `down -v`
+  and the saved spec; with `--remove-secrets`, the secrets dir), or deleted
+  the k8s namespace. A dry run now runs nothing, skips the prompt, and
+  reports what it would remove.
+- **A k8s `nuke` without `--remove-data` keeps the namespace, its PVCs and
+  its Secrets.** It deleted the namespace, which takes the PVCs with it, and
+  with a `Delete` reclaim policy the data. It now deletes WIP's
+  Deployments, StatefulSets, Services, ConfigMaps, Ingresses and
+  NetworkPolicies (label `app.kubernetes.io/part-of=wip`), so `redeploy`
+  brings the install back on its data. `--remove-data` deletes the namespace
+  and the PVs bound to it, as before.
+- `--remove-secrets` removes the secrets dir the install's saved spec
+  records, not one derived from `--name` (which pointed at `default` for an
+  `--install-dir` install). The prompt says where the path came from.
+- `--purge-all` removes containers, pods and volumes one by one and reports
+  what the runtime actually removed; a refusal is listed as "NOT removed"
+  and the result line turns yellow. It no longer matches official upstream
+  images (`docker.io/library/registry:2` was force-removed as if it were
+  WIP's `registry`). Its k8s guard, and `nuke`'s target detection, read the
+  pre-rename `deployment.json` too.
+- The preflight remedies name the install: a busy port points at
+  `stop`/`nuke --name <install>`, and stray containers are removed with the
+  `podman rm -f` of their own names; `--purge-all` is labelled host-wide.
+
 ### MCP server: read-only mode removes `reconcile_terminology`
 
 - `WIP_MCP_MODE=readonly` now removes `reconcile_terminology`, which

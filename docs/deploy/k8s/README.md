@@ -211,7 +211,8 @@ Apps keep their own images. Any app the new tag alone would move is pinned to th
 wip-deploy status --name wip            # what's deployed
 wip-deploy stop   --name wip            # scale workloads to 0 (keeps objects + data)
 wip-deploy start  --name wip            # scale back up
-wip-deploy nuke   --name wip            # tear down (keeps PVCs + secrets by default)
+wip-deploy nuke   --name wip            # remove WIP's workloads; keeps the namespace, PVCs + Secrets
+wip-deploy nuke   --name wip --remove-data   # delete the namespace, its PVCs and their PVs (data gone)
 kubectl -n wip rollout undo deployment/wip-<svc>   # revert a bad image roll
 wip-deploy user add <username> --email <email> --group <group> --name wip   # another Dex login
 ```

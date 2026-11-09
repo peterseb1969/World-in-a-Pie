@@ -847,6 +847,63 @@ class TestNukePurgeAllWiring:
 
 
 # ────────────────────────────────────────────────────────────────────
+# CASE-1227: scoped nuke honours --dry-run; --remove-secrets uses the
+# install's recorded secrets location
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestScopedNukeWiring:
+    def _install(self, tmp_path: Path) -> Path:
+        d = tmp_path / "inst"
+        d.mkdir()
+        (d / "docker-compose.yaml").write_text("services: {}\n")
+        return d
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
+        from wip_deploy.nuke import NukeReport
+
+        captured: dict[str, object] = {}
+
+        def fake_nuke(install_dir: Path, **kwargs: object) -> NukeReport:
+            captured.update(kwargs)
+            return NukeReport(dry_run=bool(kwargs.get("dry_run")))
+
+        monkeypatch.setattr("wip_deploy.cli.nuke_install_dir", fake_nuke)
+        return captured
+
+    def test_dry_run_reaches_the_teardown_and_skips_the_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured = self._capture(monkeypatch)
+        # No --yes and no input: a prompt would read EOF and abort.
+        r = _invoke("nuke", "--install-dir", str(self._install(tmp_path)), "--dry-run")
+        assert r.exit_code == 0, r.output
+        assert captured["dry_run"] is True
+        assert "Proceed with teardown?" not in r.output
+        assert "dry-run:" in r.output
+
+    def test_remove_secrets_uses_the_saved_spec_location(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+
+        recorded = tmp_path / "elsewhere" / "secrets"
+        saved = SimpleNamespace(
+            spec=SimpleNamespace(secrets=SimpleNamespace(location=str(recorded)))
+        )
+        monkeypatch.setattr("wip_deploy.cli._try_load_previous_deployment", lambda d: saved)
+        captured = self._capture(monkeypatch)
+
+        r = _invoke(
+            "nuke", "--install-dir", str(self._install(tmp_path)),
+            "--remove-secrets", "--yes",
+        )
+        assert r.exit_code == 0, r.output
+        assert captured["secrets_location"] == recorded
+        assert "from the install's saved spec" in r.output
+
+
+# ────────────────────────────────────────────────────────────────────
 # CASE-364: `status` auto-detects k8s target from saved deployer-state
 # ────────────────────────────────────────────────────────────────────
 

@@ -51,9 +51,13 @@ def check_port_free(port: int, *, host: str = "0.0.0.0") -> None:  # nosec B104 
         sock.bind((host, port))
     except OSError as e:
         raise PreflightError(
-            f"port {port} is already in use on {host}. Free it (stop the "
-            f"other service, or run `wip-deploy nuke` to clean up a prior "
-            f"WIP install) and try again."
+            f"port {port} is already in use on {host}. Free it and try "
+            f"again: stop the other service, or, if another WIP install "
+            f"holds it, stop that install with `wip-deploy stop --name "
+            f"<install>` or remove it with `wip-deploy nuke --name <install>` "
+            f"(each install is a directory under ~/.wip-deploy/; a bare "
+            f"`nuke` means the install named 'default'). Or give this "
+            f"install other ports."
         ) from e
     finally:
         sock.close()
@@ -139,9 +143,12 @@ def check_no_stale_containers(install_dir: Path) -> list[PreflightWarning]:
         more = f" (and {n - 5} more)" if n > 5 else ""
         warnings.append(PreflightWarning(
             f"found {n} stray {prefix}* container(s) from a prior install: "
-            f"{sample}{more}. Run `wip-deploy nuke --purge-all` to clean "
-            f"up, or `wip-deploy install --install-dir <existing-dir>` to "
-            f"reuse the prior state."
+            f"{sample}{more}. Remove them with `podman rm -f "
+            f"{' '.join(sorted(names))}`, or reuse the prior state with "
+            f"`wip-deploy install --install-dir <existing-dir>`. (`wip-deploy "
+            f"nuke --name {install_dir.name}` cannot: there is no rendered "
+            f"compose file to tear down. `nuke --purge-all` removes every "
+            f"install on this host.)"
         ))
     return warnings
 
