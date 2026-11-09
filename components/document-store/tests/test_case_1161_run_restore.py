@@ -111,6 +111,28 @@ async def test_skip_documents_and_skip_files_restore_neither(mongo):
     assert len(await _ids(mongo, "terminologies", "terminology_id")) == ROWS
 
 
+def _rows_with_entries() -> dict[str, list[dict]]:
+    rows = _rows()
+    rows["registry_entries"] = rows["registry_entries"] + [
+        {"entry_id": "D1", "namespace": NAMESPACE, "entity_type": "documents"},
+        {"entry_id": "F1", "namespace": NAMESPACE, "entity_type": "files"},
+    ]
+    return rows
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skip", ["skip_documents", "skip_files"])
+async def test_a_skipped_entity_leaves_its_registry_entry_out(mongo, skip):
+    """An entry claims its entity's keys; restored without the entity it
+    would hold them for nothing (CASE-1194, 2-R6)."""
+    engine, _events = await _restore(mongo, _rows_with_entries(), **{skip: True})
+    entries = await _ids(mongo, "registry_entries", "entry_id")
+    left_out, kept = ("D1", "F1") if skip == "skip_documents" else ("F1", "D1")
+    assert left_out not in entries and kept in entries
+    claimed = [r["entry_id"] for call in engine._claim_inserted_entries.await_args_list for r in call.args[1]]
+    assert left_out not in claimed
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("skip", ["skip_documents", "skip_files"])
 async def test_each_skip_leaves_out_only_its_own_rows(mongo, skip):

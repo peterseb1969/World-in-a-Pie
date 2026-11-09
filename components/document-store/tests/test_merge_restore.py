@@ -296,6 +296,23 @@ class TestMergeInserts:
         assert owners == ["E-NEW", "E-OLD"]
 
     @pytest.mark.asyncio
+    async def test_a_skipped_documents_registry_entries_are_not_merged(self, mongo):
+        """skip_documents leaves out the documents' entries too: merged,
+        they would claim keys with no document behind them (CASE-1194, 3-R9)."""
+        await _seed_namespace(mongo)
+        entry = lambda eid, et: {  # noqa: E731
+            "entry_id": eid, "namespace": NAMESPACE, "entity_type": et,
+            "primary_composite_key_hash": f"hash-{eid}", "synonyms": [],
+        }
+        await _run_merge(mongo, _archive({
+            "documents": [_document(1)],
+            "registry_entries": [entry("D1", "documents"), entry("T1", "terminologies")],
+        }), skip_documents=True)
+
+        assert [e["entry_id"] for e in await _rows(mongo, "registry_entries")] == ["T1"]
+        assert [c["owner_entry_id"] for c in await _claims(mongo)] == ["T1"]
+
+    @pytest.mark.asyncio
     async def test_only_inserted_files_get_their_blobs_uploaded(self, mongo):
         # A file the target already had keeps its bytes; re-uploading them
         # would be needless work and, on a checksum match under a different

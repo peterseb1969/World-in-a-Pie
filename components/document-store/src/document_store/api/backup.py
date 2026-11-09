@@ -1265,7 +1265,7 @@ async def restore_from_job(
         older_versions=request.older_versions,
         add_missing=request.add_missing,
         extend_terminologies=request.extend_terminologies,
-        drop_stale_reporting=False,
+        drop_stale_reporting=request.drop_stale_reporting,
         align_templates=request.align_templates,
         carry_retirements=request.carry_retirements,
     )
@@ -1322,6 +1322,7 @@ async def restore_from_job(
         "skip_files": request.skip_files,
         "batch_size": request.batch_size,
         "dry_run": request.dry_run,
+        "drop_stale_reporting": request.drop_stale_reporting,
         "drop_unresolved_edges": request.drop_unresolved_edges,
         "allow_failed_verify": request.allow_failed_verify,
         "allow_missing_identity": request.allow_missing_identity,

@@ -450,6 +450,18 @@ deletion of a name since re-created), is refused with 409; a live namespace
 still is; an unreachable Registry is still 503. The Registry's own deletion
 flow writes its journal before any step runs, so it is unaffected.
 
+### Backup and restore: smaller fixes from the restore-engine review
+
+- **`skip_documents` / `skip_files` leave out the skipped entities' Registry
+  entries too.** A plain restore and a merge inserted and claimed the
+  entries of the documents and files they skipped, holding their keys with
+  nothing behind them.
+- **`drop_stale_reporting` works where its refusal sends you.** A fresh
+  restore (`mode=fresh`) accepted the flag and ignored it, so following the
+  refusal's advice gave the same refusal. It now drops the stale schema as a
+  plain restore does. `POST /backup/jobs/{job_id}/restore` takes the flag
+  too (it rejected it as an unknown field); a merge still refuses it.
+
 ### A field's `default_value` is informational; it never makes a mandatory field optional
 
 The platform has never filled an omitted field with its `default_value`: a

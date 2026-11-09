@@ -1767,7 +1767,7 @@ class DirectRestoreEngine:
             processed += await self._restore_entity_type(
                 reader, entity_type, src, tgt, entry,
                 dropped=dropped, repoint=repoint, batch_size=batch_size,
-                processed=processed, total=total,
+                processed=processed, total=total, skipped=skipped,
             )
             # Structural gate between templates and documents: the
             # reporting tables the restored templates imply must be
@@ -1888,10 +1888,14 @@ class DirectRestoreEngine:
         batch_size: int,
         processed: int,
         total: int,
+        skipped: set[str] = frozenset(),
     ) -> int:
         """Write one entity type of one namespace in batches of batch_size;
         returns the rows written. ``processed`` is the run's count before this
-        type, for the progress percentage."""
+        type, for the progress percentage. Registry entries of a skipped
+        entity type (``skipped``) are left out with their entities: an entry
+        claims its keys, and one without its entity would hold them for
+        nothing."""
         db_name, coll_name = COLLECTION_MAP[entity_type]
         collection = self._mongo[db_name][coll_name]
         expected = getattr(entry.counts, entity_type, 0) if entry else 0
@@ -1907,6 +1911,8 @@ class DirectRestoreEngine:
         for entity in reader.read_entities(entity_type, namespace=src):
             entity.pop("_id", None)  # Strip MongoDB internal ID
             if dropped and _dropped_row(entity_type, entity, dropped):
+                continue
+            if entity_type == "registry_entries" and entity.get("entity_type") in skipped:
                 continue
             if repoint is not None:
                 entity = repoint.rewrite(entity_type, entity, self)
@@ -1969,6 +1975,7 @@ class DirectRestoreEngine:
         dry_run: bool = False,
         drop_unresolved_edges: bool = False,
         allow_failed_verify: bool = False,
+        drop_stale_reporting: bool = False,
     ) -> None:
         """Restore an archive's content as brand-new entities.
 
@@ -2033,7 +2040,7 @@ class DirectRestoreEngine:
             for target in targets:
                 await self._check_namespace_empty(target)
                 await self._check_reporting_precondition(
-                    target, False, dry_run=dry_run
+                    target, drop_stale_reporting, dry_run=dry_run
                 )
 
             entries = {e.prefix: e for e in manifest.namespaces}
@@ -4275,9 +4282,16 @@ class DirectRestoreEngine:
                     )
                     doc_groups = {}
 
+            # A skipped entity's Registry entry is left out with it: merged,
+            # it would claim the entity's keys with no entity behind them.
+            left_out = {"documents"} if skip_documents else set()
+            if skip_files:
+                left_out.add("files")
             entities: list[dict[str, Any]] = []
             for entity in reader.read_entities(entity_type, namespace=src):
                 entity.pop("_id", None)
+                if entity_type == "registry_entries" and entity.get("entity_type") in left_out:
+                    continue
                 entities.append(entity)
 
             if entity_type == "documents":

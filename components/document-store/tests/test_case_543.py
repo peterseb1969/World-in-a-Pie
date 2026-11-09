@@ -483,6 +483,42 @@ class TestRestoreFromJob:
         assert resp.json()["options"]["allow_missing_identity"] is True
 
     @pytest.mark.asyncio
+    async def test_drop_stale_reporting_reaches_the_job(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """The stale-reporting refusal tells the caller to set the flag; the
+        job route now takes it, as the upload route does (CASE-1194, 5-R5)."""
+        src = await _job(namespaces=["wip"])
+        archive = scratch_path_for(src.job_id)
+        _make_v3_archive(archive, ["wip"])
+        src.archive_path = str(archive)
+        await src.save()
+
+        p1, p2 = _patched_pipeline()
+        with p1, p2:
+            resp = await client.post(
+                f"/api/document-store/backup/jobs/{src.job_id}/restore",
+                headers=auth_headers,
+                json={"drop_stale_reporting": True},
+            )
+
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["options"]["drop_stale_reporting"] is True
+
+    @pytest.mark.asyncio
+    async def test_drop_stale_reporting_is_refused_for_a_merge_from_a_job(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        src = await _job(namespaces=["wip"])
+        resp = await client.post(
+            f"/api/document-store/backup/jobs/{src.job_id}/restore",
+            headers=auth_headers,
+            json={"mode": "merge", "drop_stale_reporting": True},
+        )
+        assert resp.status_code == 400, resp.text
+        assert "drop_stale_reporting" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
     async def test_allow_missing_identity_is_refused_for_a_merge_from_a_job(
         self, client: AsyncClient, auth_headers: dict
     ):

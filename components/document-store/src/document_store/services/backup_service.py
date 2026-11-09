@@ -685,6 +685,7 @@ def make_direct_restore_runner(
                 dry_run=opts.get("dry_run", False),
                 drop_unresolved_edges=opts.get("drop_unresolved_edges", False),
                 allow_failed_verify=opts.get("allow_failed_verify", False),
+                drop_stale_reporting=opts.get("drop_stale_reporting", False),
             )
             return
         if opts.get("mode") == "merge":

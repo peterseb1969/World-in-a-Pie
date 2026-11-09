@@ -334,7 +334,8 @@ class TestRestoreRunnerModeRouting:
 
         runner = _make_runner(
             tmp_path / "a.zip",
-            {"mode": "fresh", "target_namespace": "kb-copy", "dry_run": True},
+            {"mode": "fresh", "target_namespace": "kb-copy", "dry_run": True,
+             "drop_stale_reporting": True},
         )
         with (
             patch(
@@ -353,6 +354,8 @@ class TestRestoreRunnerModeRouting:
         kwargs = engine.run_remap.call_args.kwargs
         assert kwargs["target_namespace"] == "kb-copy"
         assert kwargs["dry_run"] is True
+        # A fresh restore honours the flag its refusal advises (CASE-1194, 6-R6).
+        assert kwargs["drop_stale_reporting"] is True
 
     async def test_default_mode_runs_the_plain_restore(self, tmp_path):
         engine = MagicMock()

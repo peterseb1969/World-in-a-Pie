@@ -413,6 +413,15 @@ class RestoreFromJobRequest(StrictModel):
             "writing anything."
         ),
     )
+    drop_stale_reporting: bool = Field(
+        False,
+        description=(
+            "mode='restore' only. When the target namespace's reporting "
+            "schema already holds tables (stale data that would shadow the "
+            "restore), drop it before restoring. Without this flag such a "
+            "restore refuses."
+        ),
+    )
     drop_unresolved_edges: bool = Field(
         False,
         description=(
