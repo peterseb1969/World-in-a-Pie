@@ -283,3 +283,39 @@ async def test_restore_release_failure_is_a_warning(monkeypatch):
     assert [e.phase for e in events] == ["warning"]
     assert "reconcile-synonym-lifecycle" in events[0].message
 
+
+
+@pytest.mark.asyncio
+async def test_restore_release_item_failures_are_a_warning(monkeypatch):
+    """The Registry answers per item inside a 200; items it could not release
+    are named in a warning, not counted as nothing (CASE-1194, 3-R10)."""
+    events: list = []
+    engine = _engine(events)
+
+    async def _ids(namespace: str) -> list[str]:
+        return ["E1", "E2", "E3"]
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"results": [
+                {"registry_id": "E1", "status": "deactivated"},
+                {"registry_id": "E2", "status": "not_found"},
+                {"registry_id": "E3", "status": "error", "error": "boom"},
+            ]}
+
+    class _Client:
+        def __init__(self, **kw): ...
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return None
+        async def post(self, *a, **kw): return _Resp()
+
+    monkeypatch.setattr(engine, "_retired_entry_ids", _ids)
+    monkeypatch.setattr(httpx, "AsyncClient", _Client)
+    await engine._release_retired_synonyms("wip")
+    [warning] = [e for e in events if e.phase == "warning"]
+    assert "2 retired entities could not be released" in warning.message
+    assert "E2 (not_found" in warning.message and "E3 (error: boom)" in warning.message
+    assert any("released the synonyms of 1" in e.message for e in events)

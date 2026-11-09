@@ -800,6 +800,9 @@ class TestUpsertNamespace:
             warnings = [e for e in events if "NOT applied" in e.message]
             assert len(warnings) == 1
             assert "lab" in warnings[0].message
+            # A job warning, not a passing phase line the next event overwrites
+            # (CASE-1194, 4-R9).
+            assert warnings[0].phase == "warning"
 
     @pytest.mark.asyncio
     async def test_raises_on_non_2xx_response(self):

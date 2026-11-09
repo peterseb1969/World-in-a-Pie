@@ -97,12 +97,13 @@ _TERM_LIFECYCLE_FIELDS = frozenset({
     "status", "deprecated_reason", "replaced_by_term_id",
 })
 
-# A template's lifecycle. Retiring a version does not change what its schema
-# accepts, so a difference never refuses the merge: the target keeps its own
-# status, and the difference is reported like a cosmetic one. Unlike a term's,
-# a template's retirement does not travel — deactivating a target template is
-# an operator's decision, never a merge side effect.
-_TEMPLATE_LIFECYCLE_FIELDS = frozenset({"status"})
+# A template's or a terminology's lifecycle. Retiring a template version or a
+# terminology does not change what it accepts, so a difference never refuses
+# the merge: the target keeps its own status, and the difference is reported
+# like a cosmetic one. Unlike a term's, this retirement does not travel —
+# deactivating a target template or terminology is an operator's decision,
+# never a merge side effect.
+_DEFINITION_LIFECYCLE_FIELDS = frozenset({"status"})
 
 # Vocabulary metadata. A difference here does not make two definitions
 # incompatible — it is cosmetic, the target's wins, and it gets reported so an
@@ -404,7 +405,8 @@ class DefinitionsPlanner:
         target = with_defaults(entity_type, target)
         lifecycle = _TERM_LIFECYCLE_FIELDS if entity_type == "terms" else frozenset()
         template_lifecycle = (
-            _TEMPLATE_LIFECYCLE_FIELDS if entity_type == "templates" else frozenset()
+            _DEFINITION_LIFECYCLE_FIELDS
+            if entity_type in ("templates", "terminologies") else frozenset()
         )
         cosmetic, substantive = compare_definitions(
             entity, target, skip=lifecycle | template_lifecycle,

@@ -481,6 +481,21 @@ flow writes its journal before any step runs, so it is unaffected.
   targets only**, not on the URL namespace, which it never writes.
 - **A pending job cannot be deleted** (409), as a running one cannot: its
   runner is about to read the archive the delete removes.
+- **Merge `on_clash=newer` keeps ties apart.** A clash whose two copies were
+  updated at the same instant keeps the target's copy and is a job warning,
+  as the design says; the summary's "kept" count now means "the target's
+  copy is newer", and undecidable rows are no longer counted in it too.
+- **A terminology whose status differs between archive and target no longer
+  refuses a merge**: the target keeps its own status, as for templates.
+- **A merge appends no versions to a `versioned: false` document pinned to a
+  template in another namespace**: the template's `versioned` flag is read
+  wherever the template lives.
+- **Smaller honesty fixes:** the skipped `deletion_mode` of an existing
+  namespace is a job warning (it was a phase line the next event
+  overwrote); synonyms of retired entities the Registry could not release
+  are named in a warning; the merge reference refusal counts every missing
+  entity, not at most five per type; a dry run's definitions line shows terms
+  to retire.
 
 ### A field's `default_value` is informational; it never makes a mandatory field optional
 

@@ -766,9 +766,28 @@ class TestNewerPolicy:
         )
 
         report = next(
-            e for e in events if "not older" in (e.message or "")
+            e for e in events if "kept because the target's copy is newer" in (e.message or "")
         )
         assert "1 kept" in report.message
+
+    @pytest.mark.asyncio
+    async def test_a_tie_keeps_the_target_and_is_a_warning(self, mongo):
+        """The design: ties keep the target's copy and are job warnings, not
+        counted as "the target's copy is newer" (CASE-1194, 4-R10)."""
+        events: list[ProgressEvent] = []
+        same = datetime(2026, 7, 1, tzinfo=UTC)
+        docs = await self._merge(
+            mongo,
+            _dated(1, same, data={"n": "target"}),
+            _dated(1, same.isoformat(), data={"n": "archive"}),
+            events,
+        )
+
+        assert len(docs) == 1 and docs[0]["data"]["n"] == "target"
+        warning = next(e for e in events if e.phase == "warning")
+        assert "updated at the same time on both sides" in warning.message
+        report = next(e for e in events if "kept because" in (e.message or ""))
+        assert "0 kept" in report.message
 
     @pytest.mark.asyncio
     async def test_newer_is_accepted_as_a_policy(self, mongo):
@@ -1568,3 +1587,21 @@ class TestRemapRestore:
         engine = DirectRestoreEngine(mongo, None, lambda _e: None)
         with pytest.raises(RestoreEngineError, match="needs a target namespace"):
             await engine.run_remap(MagicMock(), "")
+
+
+@pytest.mark.asyncio
+async def test_a_template_in_another_namespace_answers_its_versioned_flag(mongo):
+    """A document pinned to a shared template in another namespace: its
+    versioned:false must be seen, or a merge appends versions to a document
+    whose lifecycle is replace-in-place (CASE-1194, 4-R7)."""
+    db_name, coll_name = COLLECTION_MAP["templates"]
+    await mongo[db_name][coll_name].insert_many([
+        {"template_id": "LOCAL", "namespace": NAMESPACE, "version": 1, "versioned": True},
+        {"template_id": "SHARED", "namespace": "wip", "version": 1, "versioned": False},
+    ])
+    try:
+        engine = DirectRestoreEngine(mongo, None, lambda _e: None)
+        flags = await engine._template_versioned_flags(NAMESPACE, ["LOCAL", "SHARED", "GONE", None])
+        assert flags == {"LOCAL": True, "SHARED": False}
+    finally:
+        await mongo[db_name][coll_name].delete_many({"template_id": {"$in": ["LOCAL", "SHARED"]}})

@@ -420,7 +420,8 @@ class _OverwriteTally:
 
     appended: int = 0
     replaced: int = 0
-    kept: int = 0
+    kept: int = 0  # the target's copy is newer
+    ties: int = 0  # both copies updated at the same time
     identical: int = 0
     undecidable: int = 0
     retired: int = 0
@@ -3278,6 +3279,7 @@ class DirectRestoreEngine:
         headers = {"X-API-Key": self._registry_api_key, "Content-Type": "application/json"}
         ids: list[str] = []
         released = 0
+        failed: list[dict[str, Any]] = []
         try:
             ids = await self._retired_entry_ids(namespace)
             if not ids:
@@ -3291,10 +3293,11 @@ class DirectRestoreEngine:
                     )
                     if resp.status_code != 200:
                         raise RestoreEngineError(f"{resp.status_code} — {resp.text}")
-                    released += sum(
-                        1 for r in resp.json().get("results", [])
-                        if r.get("status") == "deactivated"
-                    )
+                    results = resp.json().get("results", [])
+                    released += sum(1 for r in results if r.get("status") == "deactivated")
+                    failed += [
+                        r for r in results if r.get("status") not in ("deactivated", "unchanged")
+                    ]
         except Exception as e:
             self._emit(
                 "warning",
@@ -3303,6 +3306,17 @@ class DirectRestoreEngine:
                 "keys until each store's /maintenance/reconcile-synonym-lifecycle runs",
             )
             return
+        if failed:
+            sample = ", ".join(
+                f"{r.get('registry_id')} ({r.get('status')}: {r.get('error') or ''})".strip()
+                for r in failed[:5]
+            )
+            self._emit(
+                "warning",
+                f"[{namespace}] the synonyms of {len(failed)} retired entities could not be "
+                f"released ({sample}); they still block other identities with the same keys "
+                "until each store's /maintenance/reconcile-synonym-lifecycle runs",
+            )
         if released:
             self._emit(
                 "phase_synonyms",
@@ -4685,11 +4699,12 @@ class DirectRestoreEngine:
         for entity_type, counts in definitions.summary().items():
             if not any(counts.values()):
                 continue
+            retire = f", {counts['retire']} to retire" if counts.get("retire") else ""
             self._emit(
                 phase,
                 f"[{namespace}] {entity_type}: {counts['unchanged']} already "
                 f"identical, {counts['add']} to add, {counts['mapped']} mapped "
-                "to the target's IDs",
+                f"to the target's IDs{retire}",
             )
         # Never silent: an operator who loses a label or an alias list to the
         # target's copy finds out later from a UI that changed under them.
@@ -4999,19 +5014,22 @@ class DirectRestoreEngine:
         """`_check_merge_references` on ids already collected — the form a
         streamed merge uses, which gathers them chain by chain."""
         problems: list[str] = []
+        total = 0
         for entity_type, ids in wanted.items():
             unresolved = ids - arriving.get(entity_type, set())
             if not unresolved:
                 continue
             unresolved -= await self._resolvable_ids(entity_type, unresolved)
+            total += len(unresolved)
             for missing in sorted(unresolved)[:5]:
                 problems.append(f"{_MERGE_REFERENCE_NOUN[entity_type]} '{missing}'")
 
         if problems:
+            more = f" and {total - 5} more" if total > 5 else ""
             raise RestoreEngineError(
                 f"Merge into '{namespace}' refused — incoming documents "
-                f"reference {len(problems)} entit(ies) that neither the target "
-                f"holds nor this merge supplies: {', '.join(problems[:5])}. "
+                f"reference {total} entit(ies) that neither the target "
+                f"holds nor this merge supplies: {', '.join(problems[:5])}{more}. "
                 "Merging them would import references that resolve to nothing. "
                 "Include the missing entities in the archive, or merge the "
                 "namespace that holds them first."
@@ -5312,10 +5330,16 @@ class DirectRestoreEngine:
         verdict = self._archive_is_newer(latest, target_head)
         if verdict is None:
             tally.undecidable += 1
-        if not verdict:
-            tally.kept += 1
             return False
-        return True
+        if verdict:
+            return True
+        if self._as_timestamp(latest.get("updated_at")) == self._as_timestamp(
+            target_head.get("updated_at")
+        ):
+            tally.ties += 1
+        else:
+            tally.kept += 1
+        return False
 
     @staticmethod
     async def _replace_unversioned(
@@ -5387,11 +5411,18 @@ class DirectRestoreEngine:
         else:
             summary += ", older versions kept active"
         if on_clash == "newer":
-            summary += f", {tally.kept} kept because the target's copy is not older"
+            summary += f", {tally.kept} kept because the target's copy is newer"
         if tally.identical:
             summary += f", {tally.identical} left alone because the archive's copy is identical"
         self._emit("phase_documents", summary)
 
+        if tally.ties:
+            self._emit(
+                "warning",
+                f"[{namespace}] {tally.ties} document(s) were updated at the same "
+                "time on both sides, so neither copy is newer — the target's copy "
+                "was kept for those.",
+            )
         if tally.undecidable:
             self._emit(
                 "warning",
@@ -5484,18 +5515,25 @@ class DirectRestoreEngine:
         self, namespace: str, template_ids: list[str | None]
     ) -> dict[str, bool]:
         """``versioned`` per template — immutable after create, so any row of
-        a template answers for all its versions."""
+        a template answers for all its versions. A document may be pinned to a
+        template in another namespace (a shared one); a template_id is a
+        canonical id, so the ids the target namespace does not hold are looked
+        up wherever they live."""
         wanted = [t for t in template_ids if t]
         flags: dict[str, bool] = {}
         if not wanted:
             return flags
         db_name, coll_name = COLLECTION_MAP["templates"]
-        cursor = self._mongo[db_name][coll_name].find(
-            {"namespace": namespace, "template_id": {"$in": wanted}},
-            {"template_id": 1, "versioned": 1},
-        )
-        async for row in cursor:
+        templates = self._mongo[db_name][coll_name]
+        projection = {"template_id": 1, "versioned": 1}
+        async for row in templates.find(
+            {"namespace": namespace, "template_id": {"$in": wanted}}, projection,
+        ):
             flags[row.get("template_id")] = row.get("versioned", True)
+        elsewhere = [t for t in wanted if t not in flags]
+        if elsewhere:
+            async for row in templates.find({"template_id": {"$in": elsewhere}}, projection):
+                flags.setdefault(row.get("template_id"), row.get("versioned", True))
         return flags
 
     async def _check_namespace_exists(self, namespace: str) -> None:
@@ -6272,7 +6310,7 @@ class DirectRestoreEngine:
                     "requires a manual PUT with confirm_enable_deletion=true"
                 )
                 logger.warning(warning)
-                self._emit("phase_namespace", f"WARNING: {warning}")
+                self._emit("warning", warning)
                 resp = await client.put(url, json=body, params=params, headers=headers)
             if resp.status_code not in (200, 201):
                 raise RestoreEngineError(

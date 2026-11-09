@@ -284,6 +284,20 @@ class TestOptInStrategies:
 
 class TestTargetWins:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("entity_type", ["terminologies", "templates"])
+    async def test_a_differing_status_never_refuses(self, db, entity_type):
+        """Retiring a terminology or a template version does not change what
+        it accepts, so a status difference keeps the target's and never
+        refuses the merge; terminologies refused it while templates and terms
+        did not (CASE-1194, 7-R4)."""
+        make = _terminology if entity_type == "terminologies" else _template
+        await _seed(db, entity_type, [make("B-id", status="active")])
+        plan = await _planner(db).plan({entity_type: [make("A-id", status="inactive")]}, NAMESPACE)
+
+        assert plan.compatible, plan.incompatibilities
+        assert plan.to_add[entity_type] == []
+
+    @pytest.mark.asyncio
     async def test_a_differing_label_is_not_fatal_but_is_reported(self, db):
         # Silently rewriting or discarding vocabulary metadata is what an
         # operator finds out about later, from a UI that changed under them.
