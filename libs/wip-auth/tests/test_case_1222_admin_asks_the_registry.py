@@ -58,3 +58,21 @@ async def test_an_answer_cached_before_the_lock_is_dropped_when_access_changes(h
     access_changed(keys=False)  # the Registry locked "ns"
     assert await resolve_permission(ADMIN, "ns") == "none"
 
+
+
+@pytest.mark.parametrize(("legacy", "api_key", "sent"), [
+    ("legacy-key", "api-key", "legacy-key"),
+    # Blanked to switch the legacy key record off: the service still
+    # presents API_KEY, not an empty key the Registry answers 401.
+    ("", "api-key", "api-key"),
+    (None, "api-key", "api-key"),
+])
+async def test_the_service_presents_a_non_empty_key(httpx_mock, monkeypatch, legacy, api_key, sent):
+    if legacy is None:
+        monkeypatch.delenv("WIP_AUTH_LEGACY_API_KEY", raising=False)
+    else:
+        monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", legacy)
+    monkeypatch.setenv("API_KEY", api_key)
+    httpx_mock.add_response(json={"permission": "admin"})
+    assert await resolve_permission(ADMIN, "open") == "admin"
+    assert httpx_mock.get_requests()[0].headers["X-API-Key"] == sent

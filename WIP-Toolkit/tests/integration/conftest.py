@@ -335,10 +335,39 @@ def stack():
                 super().__init__(*args, **kwargs)
 
         httpx.AsyncClient = _RoutedAsyncClient
+
+        # The Registry tells the other services over NATS when access or
+        # entries change (a created namespace, a changed grant, a released
+        # synonym), and they drop their cached answers at once. The harness
+        # runs no NATS, and all four services share this process, so the
+        # announcements are delivered here directly. Without that, an
+        # administrator's cached namespace list from one test hid a namespace
+        # the next test re-created for 30 s: its terms listed as none.
+        from registry.services import event_bus as registry_event_bus
+        from wip_auth import cache_events
+
+        async def _deliver_access_changed(_bus, keys: bool) -> bool:
+            cache_events.access_changed(keys)
+            return True
+
+        async def _deliver_entries_changed(_bus, entry_ids) -> bool:
+            cache_events.forget_entries(list(entry_ids))
+            return True
+
+        original_announcers = (
+            registry_event_bus.announce_access_changed,
+            registry_event_bus.announce_entries_changed,
+        )
+        registry_event_bus.announce_access_changed = _deliver_access_changed
+        registry_event_bus.announce_entries_changed = _deliver_entries_changed
         try:
             yield IntegrationStack(portal, router, models)
         finally:
             httpx.AsyncClient = original_async_client
+            (
+                registry_event_bus.announce_access_changed,
+                registry_event_bus.announce_entries_changed,
+            ) = original_announcers
 
 
 @pytest.fixture()

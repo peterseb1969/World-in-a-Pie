@@ -61,6 +61,19 @@ def _get_registry_url() -> str:
     )
 
 
+def _service_api_key() -> str:
+    """The key this service presents to the Registry's permission doors.
+
+    WIP_AUTH_LEGACY_API_KEY first (wip-auth copies MASTER_API_KEY or API_KEY
+    into it at import when it is unset), then API_KEY. An empty value counts
+    as unset: an empty key is no credential, and reading it as one sent every
+    check with an empty X-API-Key, which the Registry answers 401 and every
+    caller then reported as the Registry being unavailable (503). Blanking
+    the variable to switch the legacy key record off must not do that.
+    """
+    return os.getenv("WIP_AUTH_LEGACY_API_KEY") or os.getenv("API_KEY", "")
+
+
 def is_superadmin(identity: UserIdentity) -> bool:
     """Whether the identity is a platform administrator (in ADMIN_GROUP).
 
@@ -177,10 +190,7 @@ async def _fetch_permission_from_registry(
     import httpx
 
     registry_url = _get_registry_url()
-    api_key = os.getenv(
-        "WIP_AUTH_LEGACY_API_KEY",
-        os.getenv("API_KEY", ""),
-    )
+    api_key = _service_api_key()
 
     params, identity_headers = _registry_question(identity, namespace)
     headers = {"X-API-Key": api_key, **identity_headers}
@@ -435,10 +445,7 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str]:
     import httpx
 
     registry_url = _get_registry_url()
-    api_key = os.getenv(
-        "WIP_AUTH_LEGACY_API_KEY",
-        os.getenv("API_KEY", ""),
-    )
+    api_key = _service_api_key()
 
     params, identity_headers = _registry_question(identity)
     headers = {"X-API-Key": api_key, **identity_headers}
