@@ -1733,8 +1733,8 @@ def verify(
 
     from wip_deploy.verify_app_keys import app_keys, check_rendered_master_key
 
-    root = _load_state_repo_root(resolved_dir) or find_repo_root()
-    discovery = discover(root)
+    root = _install_repo_root(resolved_dir) or _cwd_repo_root(exit_code=2)
+    discovery = _discover_or_exit(root)
     report.results.append(check_rendered_master_key(resolved_dir, previous, discovery.apps))
 
     if live:
@@ -1917,9 +1917,9 @@ def _refresh_dev_build_contexts(install_dir: Path, services: list[str]) -> list[
     deployment = _try_load_previous_deployment(install_dir)
     if deployment is None or deployment.spec.target != "dev":
         return []
-    repo_root = _load_state_repo_root(install_dir) or find_repo_root()
+    repo_root = _install_repo_root(install_dir) or _cwd_repo_root()
     return refresh_dev_build_contexts(
-        install_dir, repo_root, discover(repo_root).components, services,
+        install_dir, repo_root, _discover_or_exit(repo_root).components, services,
     )
 
 
@@ -2378,9 +2378,11 @@ def validate_manifest_cmd(
 
     Exit codes:
       0  Manifest passes schema + reference validation.
-      1  Validation failed (errors emitted to stderr).
+      1  Validation failed, or the resolved root holds no WIP manifests —
+         a root that discovers nothing validates every reference against
+         nothing, so it is a failure, not a pass (errors to stderr).
       2  Could not load the manifest (file missing, YAML parse error,
-         not a YAML mapping).
+         not a YAML mapping) or find a WIP repo root at all.
 
     Examples:
 
@@ -2402,10 +2404,15 @@ def validate_manifest_cmd(
 
     if repo_root is None:
         try:
-            repo_root = find_repo_root()
+            # The help promises the repo this wip-deploy was installed *from*, so
+            # the walk starts at the package, not at the operator's cwd: run from
+            # an app checkout, a cwd walk finds that repo instead, and every
+            # reference in the manifest then reads as unresolved.
+            repo_root = find_repo_root(Path(__file__).resolve().parent)
         except FileNotFoundError as e:
             typer.echo(
-                f"error: cannot resolve WIP repo root — pass --repo-root: {e}",
+                f"error: cannot resolve the WIP repo root holding this wip-deploy "
+                f"installation — pass --repo-root: {e}",
                 err=True,
             )
             raise typer.Exit(2) from None
@@ -2415,6 +2422,10 @@ def validate_manifest_cmd(
             err=True,
         )
         raise typer.Exit(2)
+
+    # A root holding no manifests checks every reference against nothing and
+    # passes; the guard every other verb uses names the real cause instead.
+    _discover_or_exit(repo_root)
 
     try:
         app_obj, errors = validate_manifest(resolved, repo_root)
@@ -2513,16 +2524,11 @@ def _load_and_discover_for_mutation(
     root = repo_root
     stamped = _load_state_repo_root(target_dir)
     if root is None:
-        if stamped is not None and stamped.is_dir():
-            root = stamped
+        root = _install_repo_root(target_dir)
     elif stamped is not None and stamped.resolve() != root.resolve():
         _note_repo_root_move(root, stamped, deployment, will_persist=will_persist)
     if root is None:
-        try:
-            root = find_repo_root()
-        except FileNotFoundError as e:
-            typer.echo(f"error: {e}", err=True)
-            raise typer.Exit(1) from e
+        root = _cwd_repo_root()
 
     discovery = _discover_or_exit(root)
 
@@ -6945,6 +6951,49 @@ def _load_state_repo_root(install_dir: Path) -> Path | None:
     return Path(raw) if isinstance(raw, str) and raw else None
 
 
+def _install_repo_root(install_dir: Path) -> Path | None:
+    """The checkout stamped into this install's state — only if it still exists.
+
+    A stamp naming a directory that is gone is *reported* and treated as
+    unknown, not returned as-is and not replaced in silence: callers fall back
+    to a cwd walk, and the verb then persists that substitute back into the
+    state, so a silent fallback permanently re-points the install at whichever
+    checkout the operator happened to be standing in. Returning None is what
+    lets a caller's `or find_repo_root()` actually fire — the raw stamp used to
+    be returned unchecked, so the fallback was unreachable and the command went
+    on to "succeed" against a root holding nothing.
+    """
+    stamped = _load_state_repo_root(install_dir)
+    if stamped is None:
+        return None
+    if stamped.is_dir():
+        return stamped
+    typer.echo(
+        f"note: the install at {install_dir} is stamped to {stamped}, which no "
+        "longer exists; falling back to the working directory for discovery. "
+        "Pass --repo-root <path> to name the checkout this install should use.",
+        err=True,
+    )
+    return None
+
+
+def _cwd_repo_root(*, exit_code: int = 1) -> Path:
+    """Walk up from the working directory for the WIP root, or stop cleanly.
+
+    `find_repo_root` raises `FileNotFoundError` when nothing looks like a WIP
+    checkout; uncaught, that reaches the operator as a Python traceback where
+    the real message is "you are not in a WIP repo, name it". The exit code
+    differs by command and is therefore explicit here: `verify` publishes
+    `2 — couldn't start`, while the mutation verbs and `status --diff` report a
+    failed operation as 1.
+    """
+    try:
+        return find_repo_root()
+    except FileNotFoundError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(exit_code) from e
+
+
 def _load_deployment(install_dir: Path) -> Deployment:
     """Load a previously-persisted Deployment, upgrading an older format
     version in memory. Refuses missing or unknown-version files with an
@@ -7437,11 +7486,7 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
     # The install's stamped checkout first, then the cwd — the same order
     # the mutation verbs use, so a diff run from another checkout still
     # compares against this install's manifests.
-    try:
-        root = _load_state_repo_root(install_dir) or find_repo_root()
-    except FileNotFoundError as e:
-        typer.echo(f"error: {e}", err=True)
-        raise typer.Exit(1) from e
+    root = _install_repo_root(install_dir) or _cwd_repo_root()
 
     discovery = _discover_or_exit(root)
 

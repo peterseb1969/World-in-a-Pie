@@ -27,6 +27,41 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `library`. `wip-deploy verify --security --live` already probed for a
   writable `wip` and is unchanged.
 
+### wip-deploy: a repo root that is wrong now stops the command
+
+- **A stale `repo_root` stamp is checked, and the substitution is announced.**
+  The stamp in `deployment.deployer-state` was returned unchecked, so the
+  `or find_repo_root()` fallback at every call site was unreachable: with the
+  stamped checkout deleted, `rebuild` discovered nothing, refreshed nothing, and
+  still printed `✓ Rebuilt` — the one edit the verb exists to pick up
+  (Dockerfile/requirements) silently did not happen. `verify`, `rebuild`,
+  `status --diff` and the mutation verbs now share one resolver that tests the
+  stamped directory, and when it is gone it prints a `note:` naming the dead
+  path before falling back to the working directory. That matters because the
+  fallback is what gets persisted: run from another checkout, a silent fallback
+  re-stamped the install to it permanently, with no output.
+- **No repo in scope is an error, not a traceback.** With no stamp and nothing
+  above the working directory that looks like a WIP checkout, `verify` and
+  `rebuild` raised `FileNotFoundError` into a Python stack trace. They now print
+  the cause and exit — `verify` with `2`, matching its documented
+  "couldn't start", the others with `1`, the code they already use for a failed
+  operation.
+- **`validate-manifest` defaults to the repo it names.** Its help says "the repo
+  containing the running wip-deploy installation"; it walked up from the working
+  directory instead, so run from an app checkout it validated the manifest
+  against that repo's (non-existent) manifests. It now starts the walk at the
+  installed package. And a root that discovers no components and no apps is a
+  failure (exit 1), not a vacuous pass — such a root checks every reference
+  against nothing.
+  **Consequence for a pipx/site-packages install:** that install carries no
+  `components/` or `deployer/` beside it (bundling them is the open CASE-826),
+  so `validate-manifest` without `--repo-root` now stops with
+  `error: cannot resolve the WIP repo root holding this wip-deploy installation
+  — pass --repo-root` and exit 2, where before it silently picked whichever
+  `.git` sat above the caller. Loud, actionable, and correct — but a new hard
+  failure for anyone relying on the accidental one. Until CASE-826 lands, pass
+  `--repo-root <path to a WIP checkout>`.
+
 ### wip-deploy: smaller CLI corrections
 
 - **`install --install-dir DIR`** keeps a new install's file secrets in
