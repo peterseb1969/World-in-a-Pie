@@ -176,6 +176,17 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
         # Switching off OIDC + gateway? Drop users too, to pass validation.
         if inputs.auth_mode == "api-key-only":
             spec_dict["auth"]["users"] = []
+    elif inputs.auth_mode == "api-key-only" and spec_dict["auth"].get("gateway"):
+        # The mode needs this half of the pair whether the operator named it or
+        # not: api-key-only runs no Dex (config_gen/dex.py skips the component
+        # outright), and the gateway exists to authenticate Dex sessions, so a
+        # gateway preset left `gateway: True` and the validator refused the
+        # spec. Same coupling --apps-only makes above, same shape the core and
+        # headless presets ship. An explicit --auth-gateway is not overridden —
+        # a deliberate contradiction still reaches the validator, which now names
+        # both flags.
+        spec_dict["auth"]["gateway"] = False
+        spec_dict["auth"]["users"] = []
 
     # Spec-declared API keys — each entry a dict (parsed from the CLI's
     # --api-key JSON); AuthSpec validates shape, name uniqueness, and

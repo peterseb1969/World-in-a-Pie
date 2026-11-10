@@ -23,6 +23,11 @@ Design constraints captured by the schema and enforced here:
   - Bundles with `expires_at` in the past are rejected at parse time.
     Catches the "I scp'd this bundle two years ago" footgun before any
     secret hits disk.
+  - `spec.external_base_url` must be a bare https://<host>[:<port>]. It is
+    printed as the `--remote-wip` value the operator copies and recorded in
+    `bootstrap.yaml`, so a trailing slash would be handed over as a command the
+    install then refuses. Checked by the same rule `network.remote_wip_url`
+    applies (CASE-1230), so the two doors cannot disagree about one shape.
   - The PEM cert is sniffed for its BEGIN/END markers only — full X.509
     validation is out of scope (operators trust the cloud side to ship
     a real cert; we just reject obvious junk).
@@ -44,6 +49,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
+
+from wip_deploy.spec.deployment import base_url_problem
 
 # Schema version we accept. v1 ships unsigned; v1.5 will add signature
 # fields but preserve this version string (signed bundles are a
@@ -146,6 +153,16 @@ def parse_bundle(source: bytes | str | Path) -> Bundle:
     generated_at = _require_datetime(metadata, "metadata.generated_at")
 
     external_base_url = _require_str(spec, "spec.external_base_url")
+    # Reject the shape here rather than tidy it later: this value is echoed as
+    # the copy-pasteable `--remote-wip` argument and written to bootstrap.yaml,
+    # so a trailing slash would leave the import succeeding and the very next
+    # command failing. `rstrip` in the print would fix only the print.
+    url_problem = base_url_problem(external_base_url)
+    if url_problem:
+        raise BundleParseError(
+            f"spec.external_base_url {url_problem}",
+            path="spec.external_base_url",
+        )
 
     api_key = _parse_api_key(_require_mapping(spec, "spec.api_key", path="spec.api_key"))
     ca_cert_pem = _parse_ca_cert(spec)

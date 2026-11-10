@@ -62,7 +62,9 @@ def _bundle_yaml(
             "generated_at": datetime.now(UTC).isoformat(),
         },
         "spec": {
-            "external_base_url": "https://wip.example/",
+            # A bare origin: `external_base_url` is echoed as the --remote-wip
+            # value, which refuses any path (CASE-1230).
+            "external_base_url": "https://wip.example",
             "api_key": {
                 "value": "opaque-secret-value",
                 "name": name,
@@ -117,7 +119,7 @@ def test_import_bundle_writes_secrets_and_bootstrap_state(
     state = yaml.safe_load(bootstrap.read_text())
     assert state["imported_from_bundle"]["name"] == "test-bundle"
     assert state["imported_from_bundle"]["api_key"]["scope"]["permissions"] == "read"
-    assert state["imported_from_bundle"]["external_base_url"] == "https://wip.example/"
+    assert state["imported_from_bundle"]["external_base_url"] == "https://wip.example"
 
 
 def test_import_bundle_emits_suggested_install_command(
@@ -133,7 +135,9 @@ def test_import_bundle_emits_suggested_install_command(
     # The suggested command threads everything the operator needs.
     assert "wip-deploy install --name laptop-rc" in result.output
     assert "--apps-only" in result.output
-    assert "--remote-wip https://wip.example/" in result.output
+    # Pinned with the next flag on the same match so a trailing slash cannot
+    # slip through as a substring of the expected value.
+    assert "--remote-wip https://wip.example --app react-console" in result.output
     assert "--app react-console" in result.output
 
 

@@ -360,7 +360,9 @@ class AuthSpec(WIPModel):
         if self.gateway and self.mode == "api-key-only":
             raise ValueError(
                 "auth.gateway=True requires auth.mode ∈ {oidc, hybrid}; "
-                "got api-key-only"
+                "got api-key-only — the gateway authenticates Dex sessions, "
+                "and api-key-only runs no Dex. Pass --no-auth-gateway, or "
+                "--auth-mode oidc|hybrid."
             )
         return self
 
@@ -412,6 +414,38 @@ def app_origins_problem(hostname: str) -> str | None:
             "sites and the app session cannot be renewed; use a name with a dot, such as "
             "wip.localhost (every *.localhost resolves to this machine)"
         )
+    return None
+
+
+def base_url_problem(url: str) -> str | None:
+    """Why `url` cannot be a base URL that service paths get appended to, or
+    None when it can.
+
+    A base URL is concatenated with `/api/<svc>/...` downstream, so a trailing
+    slash yields `//api/...` — which some servers treat as a different resource
+    than `/api/...` — and a path, query or fragment gets glued into the middle
+    of the result instead of ending the request.
+
+    One rule, two doors: `network.remote_wip_url` (an operator writing a spec)
+    and a bootstrap bundle's `spec.external_base_url` (a URL another install
+    hands us, which the deployer prints verbatim as the `--remote-wip` value to
+    copy). Both call this, so they cannot disagree about a shape the other one
+    refuses.
+    """
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return f"must use http:// or https:// scheme; got {url!r}"
+    if not parsed.hostname:
+        return f"must include a hostname; got {url!r}"
+    if parsed.path:
+        return (
+            f"must not include a path; got {url!r} "
+            "(strip the path — apps append their own /api/* paths)"
+        )
+    if parsed.query or parsed.fragment:
+        return f"must not include query or fragment; got {url!r}"
     return None
 
 
@@ -472,29 +506,9 @@ class NetworkSpec(WIPModel):
         if self.remote_wip_url is None:
             return self
 
-        from urllib.parse import urlparse
-
-        url = self.remote_wip_url
-        parsed = urlparse(url)
-        if parsed.scheme not in ("http", "https"):
-            raise ValueError(
-                f"remote_wip_url must use http:// or https:// scheme; "
-                f"got {url!r}"
-            )
-        if not parsed.hostname:
-            raise ValueError(
-                f"remote_wip_url must include a hostname; got {url!r}"
-            )
-        if parsed.path and parsed.path != "":
-            raise ValueError(
-                f"remote_wip_url must not include a path; got {url!r} "
-                f"(strip the path — apps append their own /api/* paths)"
-            )
-        if parsed.query or parsed.fragment:
-            raise ValueError(
-                f"remote_wip_url must not include query or fragment; "
-                f"got {url!r}"
-            )
+        problem = base_url_problem(self.remote_wip_url)
+        if problem:
+            raise ValueError(f"remote_wip_url {problem}")
         return self
 
 

@@ -193,6 +193,54 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   name in examples, and the design doc's `--on-timeout` / `upgrade` /
   hook-order claims (none exist as described).
 
+### wip-deploy: a Dex import keeps its groups, and `--auth-mode api-key-only` brings its gateway
+
+- **`user import` now reads the groups a Dex config carries.** The deployer writes
+  a `groups:` list on every static password it renders, so a config exported from
+  one install names each user's memberships — but the importer recognised that key
+  only in CSV files and dropped it from Dex configs, so the same file it produced
+  came back with no groups. Each user was then refused unless `--groups-file` or
+  `--group` restated what the file already said, and `--group` makes everyone a
+  member of the same set: an editor imported as a viewer, silently, with the verb
+  reporting success. Memberships in the file are now used as they stand. What
+  still overrides: a CSV groups column or a Dex entry's `groups` key wins over
+  `--groups-file`, which wins over `--group`. An entry that carries nothing
+  behaves exactly as before.
+- **`--auth-mode api-key-only` works on its own.** On `standard`, `analytics` or
+  `full` it was refused: those presets ship the auth gateway, the gateway
+  authenticates Dex sessions, and `api-key-only` runs no Dex, so the spec was
+  rejected for a pairing the flag had only half-made. The mode now clears the
+  gateway (and the Dex users that would have nothing to authenticate against)
+  itself — the same coupling `--apps-only` makes, and the shape the `core` and
+  `headless` presets ship. `--auth-mode api-key-only` alone and
+  `--auth-mode api-key-only --no-auth-gateway` now produce identical specs, so
+  shorthand and longhand are one install. An explicit `--auth-gateway` is never
+  overridden: naming it with `api-key-only` is a deliberate contradiction, and the
+  refusal now says so and names both flags instead of
+  `auth.gateway=True requires auth.mode ∈ {oidc, hybrid}; got api-key-only`.
+- **A bundle whose URL has a trailing slash is refused at import.** The bundle's
+  `external_base_url` was checked only for being a string, then echoed verbatim as
+  the `--remote-wip` value in the install command it prints — and `--remote-wip`
+  rejects any path, because apps append their own `/api/*`. So the import reported
+  success and the very next command failed. The same rule now runs at import
+  (`✗ bundle invalid: spec.external_base_url must not include a path; …`), which
+  also keeps the slash out of the `bootstrap.yaml` record the import writes. Fix
+  the bundle; the deployer deliberately does not strip the slash for you, since a
+  silently rewritten URL is a record of something nobody submitted. The rule is
+  shared with `network.remote_wip_url`, so the two doors cannot drift apart.
+- **`--no-auth-gateway`, not `--auth-gateway false`.** The flag is a boolean pair,
+  so passing it a value is refused by the parser (`Got unexpected extra
+  argument(s) (false)`) — and the `--apps-only` help told operators to pass it
+  exactly that way. Corrected there, and the gateway refusal, which previously
+  named no flag at all, now points at the form that works. `--auth-mode` also
+  documents what the mode implies.
+- **The analytics preset is described as what it is.** Its help said "standard +
+  reporting"; analytics adds no module that `standard` lacks — it is `standard`
+  minus Garage, i.e. reporting without file storage. Its hint for getting files
+  back said `--add files`, which is not a module and is refused by `add-module`;
+  the store is `--add garage`. `wip-deploy examples` and the preset's own help now
+  say both correctly.
+
 ### wip-deploy nuke: `--dry-run` removes nothing; a k8s nuke keeps the data unless `--remove-data`
 
 - **`nuke --dry-run` was destructive on one install.** The flag reached

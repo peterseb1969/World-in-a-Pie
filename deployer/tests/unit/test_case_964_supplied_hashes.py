@@ -165,13 +165,19 @@ def _dex_config(tmp_path: Path, *users: dict) -> Path:
     return path
 
 
-def _entry(username: str, *, email: str | None = None, user_id: str | None = None) -> dict:
-    return {
+def _entry(username: str, *, email: str | None = None, user_id: str | None = None,
+           groups: list[str] | str | None = None) -> dict:
+    entry = {
         "email": email or f"{username}@example.com",
         "hash": _hash(username),
         "username": username,
         "userID": user_id or f"{username}-001",
     }
+    # Omitted unless asked for: a hand-written Dex config carries none, which is
+    # the shape the existing tests here depend on.
+    if groups is not None:
+        entry["groups"] = groups
+    return entry
 
 
 class TestUserImport:

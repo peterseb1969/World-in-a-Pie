@@ -135,7 +135,7 @@ This refreshes the install's `external-ca.crt` only — the api-key and other st
 | `kind` | yes | Must be `BootstrapBundle` |
 | `metadata.name` | yes | Human-readable bundle name |
 | `metadata.generated_at` | yes | ISO 8601 timestamp (UTC) |
-| `spec.external_base_url` | yes | https:// URL, no trailing path/query |
+| `spec.external_base_url` | yes | https:// URL, no trailing path/query — rejected at import (apps append their own `/api/*`) |
 | `spec.api_key.value` | yes | Plaintext key from `POST /api-keys` |
 | `spec.api_key.name` | yes | Matches the Registry api-key's name |
 | `spec.api_key.scope.namespaces` | yes | Non-empty list of namespace prefixes |

@@ -550,7 +550,7 @@ def _apps_only_opt() -> typer.models.OptionInfo:
             "no mongodb, no router, no Dex, no auth-gateway. Use for "
             "cross-host scenarios where this install's apps talk to a "
             "remote WIP via --remote-wip. Implies --auth-mode "
-            "api-key-only and --auth-gateway false (no Dex available "
+            "api-key-only and --no-auth-gateway (no Dex available "
             "locally; /apps/* is publicly served — appropriate for a "
             "personal device). Requires at least one --app. CASE-359."
         ),
@@ -593,7 +593,14 @@ def _parse_app_sources(raw: list[str]) -> dict[str, Path]:
 
 def _auth_mode_opt() -> typer.models.OptionInfo:
     return typer.Option(
-        "--auth-mode", help="Override auth mode: oidc | api-key-only | hybrid."
+        "--auth-mode",
+        help=(
+            "Override auth mode: oidc | api-key-only | hybrid. "
+            "api-key-only also clears the gateway (the gateway authenticates "
+            "Dex sessions and this mode runs no Dex), so a gateway preset "
+            "accepts it on its own; naming --auth-gateway with it is a "
+            "conflict and is refused."
+        ),
     )
 
 
@@ -4087,6 +4094,14 @@ def _apply_with_supplied_hashes(
         raise
 
 
+def _as_group_list(value: Any) -> list[str] | None:
+    """A groups value read out of a file — a YAML list or a comma-separated
+    string — as names, or None when it carries none."""
+    items = value if isinstance(value, list) else str(value or "").split(",")
+    groups = [str(g).strip() for g in items if str(g).strip()]
+    return groups or None
+
+
 def _load_import_entries(path: Path, fmt: str) -> list[dict[str, Any]]:
     """The users in an import file, each {username, email, hash, groups,
     user_id}; groups and user_id are None when the file does not carry them.
@@ -4094,6 +4109,11 @@ def _load_import_entries(path: Path, fmt: str) -> list[dict[str, Any]]:
     `dex`: a Dex config (its `staticPasswords` list) or that list alone.
     `csv`: a header row naming `username`, `email` and `hash`, and
     optionally `groups` (comma-separated, quoted when there are several).
+
+    Both formats can carry groups. The dex-format reader matters for the
+    config this deployer renders itself — `renderers/compose_dex.py` writes a
+    `groups:` list on every static password — so a migrating operator feeding
+    an exported Dex config back must not lose the memberships with it.
     """
     import csv
 
@@ -4112,12 +4132,11 @@ def _load_import_entries(path: Path, fmt: str) -> list[dict[str, Any]]:
             )
             raise typer.Exit(2)
         for row in reader:
-            groups = (row.get("groups") or "").strip()
             entries.append({
                 "username": (row.get("username") or "").strip(),
                 "email": (row.get("email") or "").strip(),
                 "hash": (row.get("hash") or "").strip(),
-                "groups": [g.strip() for g in groups.split(",") if g.strip()] or None,
+                "groups": _as_group_list(row.get("groups")),
                 "user_id": None,
             })
         return entries
@@ -4141,7 +4160,7 @@ def _load_import_entries(path: Path, fmt: str) -> list[dict[str, Any]]:
             "username": str(item.get("username") or "").strip(),
             "email": str(item.get("email") or "").strip(),
             "hash": str(item.get("hash") or "").strip(),
-            "groups": None,
+            "groups": _as_group_list(item.get("groups")),
             "user_id": item.get("userID"),
         })
     return entries
@@ -4160,8 +4179,7 @@ def _load_groups_file(path: Path) -> dict[str, list[str]]:
         raise typer.Exit(2)
     out: dict[str, list[str]] = {}
     for username, value in data.items():
-        items = value if isinstance(value, list) else str(value or "").split(",")
-        out[str(username)] = [str(g).strip() for g in items if str(g).strip()]
+        out[str(username)] = _as_group_list(value) or []
     return out
 
 
@@ -4171,7 +4189,9 @@ def user_import(
         Path,
         typer.Argument(
             help="A Dex config (its staticPasswords) or a CSV file with "
-            "username, email, hash and optionally groups columns.",
+            "username, email and hash. Either may carry groups too — a CSV "
+            "groups column, or a groups key on each Dex entry (what this "
+            "deployer renders).",
             exists=True, dir_okay=False,
         ),
     ],
@@ -4195,7 +4215,9 @@ def user_import(
         typer.Option(
             "--groups-file",
             help="YAML mapping username -> groups (a list, or a comma-separated "
-            "string). Wins over --group; a CSV groups column wins over both.",
+            "string). Wins over --group; groups the imported file carries "
+            "itself (a CSV groups column, a Dex entry's groups key) win over "
+            "both.",
             exists=True, dir_okay=False,
         ),
     ] = None,
@@ -4216,11 +4238,14 @@ def user_import(
     """Declare existing Dex users with their bcrypt hashes, in one apply.
 
     Each user keeps their password: the hash is stored as the user's secret,
-    and no password is generated or printed. A Dex config carries no groups,
-    so they come from --groups-file or --group. A user already declared on
-    the install is reported and left as it is. Every other problem (a bad
-    hash, an email taken by another user, a user without groups) refuses the
-    whole import before anything changes.
+    and no password is generated or printed. Groups come from the file when it
+    carries them — a CSV groups column, or the groups key this deployer writes
+    on every staticPasswords entry it renders, so a config exported from one
+    install keeps its memberships when imported into another — then from
+    --groups-file, then from --group. A user already declared on the install is
+    reported and left as it is. Every other problem (a bad hash, an email taken
+    by another user, a user without groups) refuses the whole import before
+    anything changes.
     """
     if fmt not in ("auto", "dex", "csv"):
         typer.echo("error: --format must be dex, csv or auto.", err=True)
@@ -4263,8 +4288,9 @@ def user_import(
                           f"{emails[e['email']]!r}")
         groups = e["groups"] or mapped.get(username) or default_groups
         if not groups:
-            errors.append(f"{where}: no groups — give it a groups column, a "
-                          "--groups-file entry, or pass --group")
+            errors.append(f"{where}: no groups — give it a groups column (CSV) "
+                          "or a groups key (Dex config), a --groups-file "
+                          "entry, or pass --group")
             continue
         try:
             user = DexUser(
@@ -6378,7 +6404,7 @@ PRESETS — pick one, then tweak with --add NAME / --remove NAME / --app NAME
   core       minimal API-only backend
   headless   same as core, no UI surface
   standard   core + OIDC + auth-gateway (most common)
-  analytics  standard + reporting (Postgres + reporting-sync)
+  analytics  standard minus file storage (no Garage)
   full       analytics + files (Garage) + ingest (NATS streaming)
 
 TARGETS

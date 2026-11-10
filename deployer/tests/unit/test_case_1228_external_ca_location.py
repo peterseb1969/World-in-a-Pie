@@ -73,7 +73,7 @@ def _bundle_yaml(name: str = "test-bundle") -> str:
             "kind": "BootstrapBundle",
             "metadata": {"name": name, "generated_at": datetime.now(UTC).isoformat()},
             "spec": {
-                "external_base_url": "https://wip.example/",
+                "external_base_url": "https://wip.example",
                 "api_key": {
                     "value": "opaque-secret-value",
                     "name": name,

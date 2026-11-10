@@ -60,7 +60,7 @@ def _good_bundle_yaml(**overrides: object) -> str:
             "generated_at": _future(0),
         },
         "spec": {
-            "external_base_url": "https://wip.example/",
+            "external_base_url": "https://wip.example",
             "api_key": {
                 "value": "opaque-key-value",
                 "name": "test-key",
@@ -107,7 +107,7 @@ def test_parse_valid_bundle_returns_structured_data() -> None:
 
     assert isinstance(bundle, Bundle)
     assert bundle.name == "test-bundle"
-    assert bundle.external_base_url == "https://wip.example/"
+    assert bundle.external_base_url == "https://wip.example"
     assert bundle.api_key.value == "opaque-key-value"
     assert bundle.api_key.name == "test-key"
     assert bundle.api_key.scope.namespaces == ("kb",)

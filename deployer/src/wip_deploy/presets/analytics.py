@@ -1,7 +1,13 @@
-"""Analytics — Standard + reporting pipeline (Postgres, NATS, Reporting-Sync).
+"""Analytics — Standard without file storage.
 
-Use when: you need SQL queries / cross-template joins over documents.
-Does not include file storage — add `--add files` if you need it.
+Use when: you need SQL queries / cross-template joins over documents and no
+object store. Its optional services are `standard`'s (reporting-sync,
+mcp-server) less Garage — reporting-sync still brings Postgres and NATS as
+its own infrastructure here, exactly as it does in `standard`.
+
+Need file storage as well? That is what separates `standard` (and `full`)
+from this preset: use one of them, or add the store afterwards with
+`--add garage` / `wip-deploy add-module garage`.
 """
 
 from typing import Any
