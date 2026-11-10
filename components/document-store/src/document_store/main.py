@@ -488,9 +488,22 @@ async def health_check(fresh: bool = False):
     Health check endpoint.
 
     Verifies MongoDB, Registry, Template Store, and Def-Store connectivity.
-    Unhealthy (no MongoDB) answers 503 with the same body: a probe that
-    reads only the status code (the image's HEALTHCHECK, curl -f) must not
-    see 200. Orchestrators probe /ready and /livez instead.
+    `status`, though, reports this service's own storage (MongoDB) and nothing
+    else: a peer that cannot be reached is named in its own key (`registry`,
+    `template_store`, `def_store`, `file_storage`) while `status` stays
+    `healthy` and the answer stays 200. Only MongoDB failing sets `unhealthy`,
+    which answers 503 with the same body — a probe reading only the status code
+    (the image's HEALTHCHECK, curl -f) must not see 200. Orchestrators probe
+    /ready and /livez instead.
+
+    Peers stay out of `status` deliberately: services start in parallel with no
+    ordering gate, each carrying its own startup retry, so a status that
+    followed peers would have to converge along registry -> template-store ->
+    document-store and would re-serialise cold boot; /livez does no I/O because
+    restarting a process cannot restore a dependency. Read the per-dependency
+    keys for peer state — a store whose Registry is unreachable still refuses
+    writes at the request layer, so `status: healthy` means "my storage is up",
+    not "every request will succeed".
     """
     deps = await _health_cache.get(_probe_dependencies, force=fresh)
 
@@ -509,7 +522,8 @@ async def health_check(fresh: bool = False):
 
 
 async def health_check_fresh():
-    """Uncached health for callers that read the body (CASE-808)."""
+    """Uncached health for callers that read the dependency keys: a live probe,
+    not the 30s cached fan-out that root /health serves."""
     return await health_check(fresh=True)
 
 

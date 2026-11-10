@@ -8,7 +8,10 @@ route being re-pointed at the cached function.
 The response contract is asserted explicitly: this case exists precisely
 BECAUSE it must not change what /health returns. CASE-804 proposed changing
 the probe contract and was closed for it; anything that alters the body shape
-or the always-200 behaviour here has reintroduced that risk.
+or the "200 while a peer is down" behaviour here has reintroduced that risk.
+/health is not always-200 — it answers 503 when MongoDB itself is down, the
+storage half CASE-808 shipped alongside this caching — but no peer's state
+moves the status code.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -84,12 +87,14 @@ async def test_response_contract_is_unchanged(stub_dependencies):
 async def test_a_dead_dependency_still_reports_healthy_and_does_not_raise(
     stub_dependencies,
 ):
-    """The always-200 behaviour is load-bearing for parallel start.
+    """Answering 200 with a peer down is load-bearing for parallel start.
 
     Services report healthy as soon as their ASGI app serves, independent of
-    dependency state; `_depends_on_block` emits no depends_on precisely
-    because startup retry handles ordering. A /health that raised or reported
-    unhealthy on a disconnected peer would partially reserialize cold boot.
+    peer state: a disconnected Registry is named in the body, not in the status
+    code (MongoDB itself being down is the one case that answers 503).
+    `_depends_on_block` emits no depends_on precisely because startup retry
+    handles ordering. A /health that raised or reported unhealthy on a
+    disconnected peer would partially reserialize cold boot.
     """
     with patch.object(
         ds_main, "get_registry_client", return_value=AsyncMock(

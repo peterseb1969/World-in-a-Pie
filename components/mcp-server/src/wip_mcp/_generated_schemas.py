@@ -7,9 +7,9 @@ replaces the parameter TOOL_PARAMS[tool] names with TOOL_SCHEMAS[ref].
 
 Generated from:
   schemas/registry.json  version 0.4.0  sha256 1514a4a21cd4ae4f
-  schemas/def-store.json  version 0.2.0  sha256 794072001d7fb099
-  schemas/template-store.json  version 0.2.0  sha256 7b0c780002fc2067
-  schemas/document-store.json  version 0.2.0  sha256 b281e0e7a496d02f
+  schemas/def-store.json  version 0.2.0  sha256 d3f1db845e2de0c7
+  schemas/template-store.json  version 0.2.0  sha256 d0e50ddfa27da983
+  schemas/document-store.json  version 0.2.0  sha256 b2c451156e107ec8
   schemas/reporting-sync.json  version 0.1.0  sha256 b07e955adb46636c
 """
 
