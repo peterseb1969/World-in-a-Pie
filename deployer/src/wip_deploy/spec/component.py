@@ -537,10 +537,27 @@ class AppNamespace(WIPModel):
 class NamespaceAccess(WIPModel):
     """Access an app's key needs to a namespace it does not own (one another
     app owns, or a shared one). Its own namespaces (`namespaces`) get
-    `admin`; the platform's `wip` namespace gets `read` without asking."""
+    `admin`; the platform's `wip` namespace gets `read` without asking.
+
+    An explicit `wip` entry is refused at *any* permission. `read` already
+    arrives implicitly with the derived key, so declaring it is noise — and the
+    noise invites its sibling: `wip` is the exclusive home of the platform's
+    `_`-prefixed vocabularies, so a `write` grant there would let an app
+    rewrite the terminologies every other namespace's data validates against.
+    """
 
     namespace: str = Field(pattern=r"^[a-z][a-z0-9-]*$")
     permission: Literal["read", "write"] = "read"
+
+    @field_validator("namespace")
+    @classmethod
+    def not_wip(cls, v: str) -> str:
+        if v == "wip":
+            raise ValueError(
+                "the 'wip' namespace belongs to the platform; an app cannot be granted "
+                "access to it — it already gets read, and must never get write"
+            )
+        return v
 
 
 class ComponentMetadata(WIPModel):

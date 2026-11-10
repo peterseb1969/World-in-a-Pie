@@ -5011,7 +5011,9 @@ def app_namespace_add(
         typer.Option(
             "--access",
             help="read | write: let the app USE a namespace it does not own. "
-            "Without it the app owns the namespace: reserved for it, admin on it.",
+            "Without it the app owns the namespace: reserved for it, admin on it. "
+            "The platform's 'wip' namespace is not grantable — the app's key "
+            "already holds read on it, and never gets write.",
         ),
     ] = None,
     description: Annotated[

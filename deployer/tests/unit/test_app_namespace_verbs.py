@@ -173,6 +173,9 @@ def test_add_access(tmp_path: Path) -> None:
     (["add", "wip-kb", "x", "--setting", "deletion_mode=sometimes"], "deletion_mode"),
     (["add", "wip-cooking", "x"], "not enabled"),
     (["add", "wip-kb", "existing"], "already added"),
+    (["add", "wip-kb", "wip", "--access", "write"], "belongs to the platform"),
+    (["add", "wip-kb", "wip", "--access", "read"], "belongs to the platform"),
+    (["add", "wip-kb", "wip"], "belongs to the platform"),
     (["remove", "wip-kb", "never-added"], "was not added"),
 ])
 def test_verb_refusals(tmp_path: Path, args: list[str], message: str) -> None:

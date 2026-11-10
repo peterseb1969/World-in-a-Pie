@@ -7,6 +7,26 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
 
 ## Action required / behavior changes (read before upgrading)
 
+### wip-deploy: an app key can no longer be granted `wip`
+
+- **`spec.namespace_access` and `app-namespace add` refuse the platform
+  namespace at any permission.** An app's own key could be given `wip: write` —
+  from a manifest entry, or from `wip-deploy app-namespace add <app> wip
+  --access write`, which exited 0 and persisted the grant. `wip` is the
+  exclusive home of the platform's `_`-prefixed vocabularies, so such a key can
+  rewrite the terminologies every other namespace's data validates against.
+  Owning `wip` was already refused by both models that grant ownership; only the
+  *use* route lacked the guard, so this closes a gap the neighbouring models
+  already declare. `read` on `wip` is unaffected — it arrives implicitly with
+  every derived app key and never needed declaring.
+- **Action, for an install that already carries the grant:** its saved spec now
+  fails validation at the next verb (`error: <state file> failed to deserialize`,
+  exit 2) rather than re-applying the grant. Delete the `wip` entry from that
+  app's `namespace_access` in `deployment.deployer-state`, or re-install. No
+  shipped app manifest is affected — the only in-repo `namespace_access` names
+  `library`. `wip-deploy verify --security --live` already probed for a
+  writable `wip` and is unchanged.
+
 ### wip-deploy: smaller CLI corrections
 
 - **`install --install-dir DIR`** keeps a new install's file secrets in
