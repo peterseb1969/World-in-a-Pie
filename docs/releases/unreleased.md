@@ -62,6 +62,28 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   failure for anyone relying on the accidental one. Until CASE-826 lands, pass
   `--repo-root <path to a WIP checkout>`.
 
+### wip-deploy: an app source path now means the checkout it was typed at
+
+- **`add-app --app-source` resolves where it was typed.** `install` already ran its
+  `--app-source` values through `expanduser().resolve()`; `add-app` checked the path and
+  stored it as given. A relative value therefore landed in the spec and rendered as
+  `build.context: <relative>`, which compose resolves against the **compose file's**
+  directory — `~/.wip-deploy/<name>/`, not the cwd the operator was standing in — so the
+  build either failed or built the wrong tree. A quoted `~/…` was worse luck: typer leaves
+  the tilde literal, so `add-app` refused a path that plainly exists
+  (`error: --app-source path is not a directory: ~/…`). Both now behave as they do
+  everywhere else in the CLI. Existing installs keep whatever path their spec holds;
+  re-run `add-app --app-source` with the correct checkout to move one.
+- **`--app-from-registry` now beats a path registered on the machine.** `register-app`
+  back-fills a local checkout for every enabled app that did not get an explicit
+  `--app-source`. It did so even for an app the operator had deliberately opted into the
+  registry image, and because the dev renderer consults `app_sources` before the
+  registry opt-in, the flag was silently overridden and the app built from the local
+  tree. The opt-in now wins, and the substitution it refused is reported:
+  `⚠ --app-from-registry 'x': keeping the registry image — the path registered on this
+  machine (…) was not applied`. To build from that checkout instead, `unregister-app x`
+  or pass `--app-source x=…` explicitly.
+
 ### wip-deploy: smaller CLI corrections
 
 - **`install --install-dir DIR`** keeps a new install's file secrets in

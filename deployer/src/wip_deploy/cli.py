@@ -2773,6 +2773,14 @@ def add_app(
             raise typer.Exit(2)
 
     # source override only makes sense for dev target.
+    if source is not None:
+        # Resolve where it was typed, the way `install`'s parser does
+        # (`_parse_app_sources`). A path stored as given lands in the spec and
+        # later renders as `build.context: <relative>`, which compose resolves
+        # against the compose file's own directory — the install dir — not the
+        # cwd the operator typed it in. expanduser also covers a quoted '~',
+        # which typer leaves literal and the is_dir() check below would reject.
+        source = source.expanduser().resolve()
     if source is not None and deployment.spec.target != "dev":
         typer.echo(
             f"error: --app-source is only valid for target=dev "
@@ -6479,6 +6487,24 @@ def _assemble(
             # Registry entry for an app that's not enabled in this
             # install — ignore. Registry holds machine state for ALL
             # cloned apps; an install enables a subset.
+            continue
+        if reg_name in apps_from_registry:
+            # The operator explicitly asked for this app's registry image.
+            # Back-filling the machine-registered checkout here would make that
+            # opt-in unreachable, because dev_simple tests `name in app_sources`
+            # before the `apps_from_registry` branch — so the local path would
+            # silently win over a deliberate flag.
+            typer.echo(
+                typer.style(
+                    f"⚠ --app-from-registry {reg_name!r}: keeping the registry "
+                    f"image — the path registered on this machine ({reg_path}) "
+                    "was not applied. To build from that checkout instead, run "
+                    f"`wip-deploy unregister-app {reg_name}` or pass "
+                    f"`--app-source {reg_name}={reg_path}`.",
+                    fg=typer.colors.YELLOW,
+                ),
+                err=True,
+            )
             continue
         if reg_name in final_app_sources:
             if final_app_sources[reg_name] != reg_path:
