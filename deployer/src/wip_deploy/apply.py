@@ -1959,26 +1959,61 @@ def _count_k8s_workloads(tree: FileTree) -> int:
 # ────────────────────────────────────────────────────────────────────
 
 
+class LiveSecretReadUnavailable(RuntimeError):
+    """The cluster could not be asked whether the Secret exists.
+
+    Distinct from "the Secret is not there". A caller that treats the two alike
+    lets an unreachable API server, a missing RBAC grant or a malformed payload
+    read as an install with no live Secret, and the secret-drift guard then
+    compares against the host record alone — reporting the install in step with
+    a cluster nobody actually looked at.
+    """
+
+
 def read_live_secrets(ns: str) -> dict[str, str] | None:
-    """The values of the live `wip-secrets` Secret, or None when there is
-    none to read (no kubectl, no cluster access, no Secret yet).
+    """The values of the live `wip-secrets` Secret; None when the namespace
+    simply holds no such Secret yet.
+
+    Raises `LiveSecretReadUnavailable` when the answer is unknown — kubectl
+    absent, the API server unreachable or refusing, the payload undecodable —
+    because "nothing recorded" and "could not look" call for different
+    decisions downstream.
 
     Callers keep only what they need: the drift check reduces them to
     fingerprints at once, `secrets pull` writes them to the store.
     """
     if not shutil.which("kubectl"):
-        return None
+        raise LiveSecretReadUnavailable("kubectl is not on PATH")
     proc = subprocess.run(
         [*kubectl(), "get", "secret", "wip-secrets", "-n", ns, "-o", "json"],
         capture_output=True, text=True, check=False,
     )
     if proc.returncode != 0:
-        return None
+        detail = (proc.stderr or "").strip() or f"kubectl exited {proc.returncode}"
+        if _is_not_found(detail):
+            return None
+        raise LiveSecretReadUnavailable(
+            f"kubectl could not read secret wip-secrets in namespace {ns!r}: {detail}"
+        )
     try:
         data = json.loads(proc.stdout).get("data") or {}
         return {k: base64.b64decode(v).decode() for k, v in data.items()}
-    except (ValueError, UnicodeDecodeError):
-        return None
+    except (ValueError, UnicodeDecodeError) as e:
+        raise LiveSecretReadUnavailable(
+            f"the live wip-secrets payload in namespace {ns!r} could not be "
+            f"decoded: {e}"
+        ) from e
+
+
+def _is_not_found(kubectl_stderr: str) -> bool:
+    """Whether kubectl's failure is the API server saying "no such object".
+
+    Matched on the server's wording, not the exit code: kubectl exits 1 for a
+    refusal, an unreachable server and a missing object alike. A genuine miss
+    reads `Error from server (NotFound): ...` — confirmed against the live
+    cluster, where an absent namespace answers exactly that.
+    """
+    return "(NotFound)" in kubectl_stderr or "not found" in kubectl_stderr
 
 
 # ────────────────────────────────────────────────────────────────────

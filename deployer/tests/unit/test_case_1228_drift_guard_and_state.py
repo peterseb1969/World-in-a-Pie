@@ -1,4 +1,4 @@
-"""CASE-1228 — items 1, 2, 3, 5a and 5c: silent failure around one install.
+"""CASE-1228 — items 1, 2, 3, 5a, 5c and 5d: silent failure around one install.
 
 Item 1. `install` re-specifies its whole spec from CLI flags and never loads the
 saved one, so any field the operator does not repeat reverts to its flag
@@ -28,12 +28,15 @@ command for reporting differences hid a drifted secret store.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
+import wip_deploy.apply as apply_mod
 import wip_deploy.cli as cli
 from wip_deploy.cli import (
     _DEPLOYMENT_JSON_VERSION,
@@ -571,3 +574,104 @@ class TestDevTagRollIsRefused:
             cli_module._apply_and_persist_mutation = original
         assert result.exit_code == 0, result.output
         assert applied, "the roll must proceed for a registry-sourced app"
+
+
+# ────────────────────────────────────────────────────────────────────
+# Item 5d — "no Secret yet" and "could not look" are different answers
+# ────────────────────────────────────────────────────────────────────
+
+
+class _FakeProc:
+    def __init__(self, returncode: int, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+class TestLiveSecretReadDistinguishes:
+    def test_absent_secret_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The cluster's own wording for a miss, confirmed against a live
+        # namespace that holds no wip-secrets.
+        monkeypatch.setattr(shutil, "which", lambda _x: "/usr/bin/kubectl")
+        monkeypatch.setattr(
+            apply_mod.subprocess,
+            "run",
+            lambda *a, **k: _FakeProc(
+                1,
+                stderr='Error from server (NotFound): secrets "wip-secrets" not found\n',
+            ),
+        )
+        assert apply_mod.read_live_secrets("wip") is None
+
+    def test_missing_kubectl_is_not_an_absence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(shutil, "which", lambda _x: None)
+        with pytest.raises(apply_mod.LiveSecretReadUnavailable, match="not on PATH"):
+            apply_mod.read_live_secrets("wip")
+
+    def test_refusal_is_not_an_absence(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(shutil, "which", lambda _x: "/usr/bin/kubectl")
+        monkeypatch.setattr(
+            apply_mod.subprocess,
+            "run",
+            lambda *a, **k: _FakeProc(
+                1,
+                stderr='Error from server (Forbidden): cannot get resource "secrets"',
+            ),
+        )
+        with pytest.raises(apply_mod.LiveSecretReadUnavailable, match="Forbidden"):
+            apply_mod.read_live_secrets("wip")
+
+    def test_unreachable_cluster_is_not_an_absence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda _x: "/usr/bin/kubectl")
+        monkeypatch.setattr(
+            apply_mod.subprocess,
+            "run",
+            lambda *a, **k: _FakeProc(
+                1, stderr="The connection to the server 10.0.0.1:6443 was refused"
+            ),
+        )
+        with pytest.raises(apply_mod.LiveSecretReadUnavailable, match="refused"):
+            apply_mod.read_live_secrets("wip")
+
+    def test_undecodable_payload_is_not_an_absence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(shutil, "which", lambda _x: "/usr/bin/kubectl")
+        monkeypatch.setattr(
+            apply_mod.subprocess, "run", lambda *a, **k: _FakeProc(0, stdout="{not json")
+        )
+        with pytest.raises(apply_mod.LiveSecretReadUnavailable, match="could not be decoded"):
+            apply_mod.read_live_secrets("wip")
+
+    def test_a_real_secret_still_reads(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import base64
+
+        monkeypatch.setattr(shutil, "which", lambda _x: "/usr/bin/kubectl")
+        payload = json.dumps({"data": {"api-key": base64.b64encode(b"v").decode()}})
+        monkeypatch.setattr(
+            apply_mod.subprocess, "run", lambda *a, **k: _FakeProc(0, stdout=payload)
+        )
+        assert apply_mod.read_live_secrets("wip") == {"api-key": "v"}
+
+
+class TestDriftCheckStopsWhenTheClusterCannotBeAsked:
+    def test_known_digests_do_not_fall_back_to_the_host_record_silently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The defect: the guard read None from a failed call and compared
+        against the host record alone, certifying an install against a cluster it
+        never looked at."""
+        _persist(tmp_path, _deployment(target="k8s", k8s_namespace="wip-prod"))
+
+        def boom(_ns: str):
+            raise apply_mod.LiveSecretReadUnavailable(
+                "kubectl could not read secret wip-secrets in namespace 'wip-prod': refused"
+            )
+
+        monkeypatch.setattr(cli, "read_live_secrets", boom)
+        deployment, _reason = _previous_deployment_or_unreadable(tmp_path)
+        with pytest.raises(typer.Exit) as exc:
+            cli._known_secret_digests(deployment, tmp_path)
+        assert exc.value.exit_code == 2

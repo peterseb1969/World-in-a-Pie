@@ -22,6 +22,7 @@ from wip_deploy import __version__
 from wip_deploy.apply import (
     ApplyError,
     ApplyResult,
+    LiveSecretReadUnavailable,
     apply_compose,
     apply_k8s,
     changed_outside_scope,
@@ -3695,11 +3696,16 @@ def secrets_pull(
         raise typer.Exit(2)
     _select_cluster_or_exit(deployment, mutating=True)
     store = _file_secret_store(deployment)
-    live = read_live_secrets(k8s.namespace)
+    try:
+        live = read_live_secrets(k8s.namespace)
+    except LiveSecretReadUnavailable as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
     if not live:
         typer.echo(
-            f"error: could not read secret wip-secrets in namespace "
-            f"{k8s.namespace!r} (kubectl missing, no access, or no such Secret).",
+            f"error: no secret wip-secrets in namespace {k8s.namespace!r} — the "
+            "cluster was reached and answered that it has none, so there is "
+            "nothing to pull.",
             err=True,
         )
         raise typer.Exit(2)
@@ -7559,7 +7565,28 @@ def _known_secret_digests(
     known = dict(_load_state_secret_digests(install_dir))
     k8s = deployment.spec.platform.k8s
     if deployment.spec.target == "k8s" and k8s is not None:
-        live = read_live_secrets(k8s.namespace)
+        try:
+            live = read_live_secrets(k8s.namespace)
+        except LiveSecretReadUnavailable as e:
+            # Unknown, not absent. Proceeding on the host record alone would let
+            # the drift guard certify an install against a cluster it never read,
+            # which is how a rotated or missing live Secret passes as in step.
+            typer.echo(
+                f"error: {e}",
+                err=True,
+            )
+            typer.echo(
+                f"  The secret-drift check needs the live wip-secrets in "
+                f"{k8s.namespace!r} to know what this install actually runs. "
+                f"Confirm this host can read it with `kubectl auth can-i get "
+                f"secrets/wip-secrets -n {k8s.namespace}` (on the kubeconfig and "
+                f"context this install uses); or, if the cluster is deliberately "
+                f"unreachable and the store on this host is authoritative, record "
+                f"it with `wip-deploy secrets accept --name "
+                f"{deployment.metadata.name}`.",
+                err=True,
+            )
+            raise typer.Exit(2) from e
         if live:
             known.update({name: secret_digest(v) for name, v in live.items()})
     return known
