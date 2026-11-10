@@ -1,22 +1,24 @@
 """A TTL cache for the dependency half of a service's /health response.
 
-Every core service mounts one health handler at two paths with different
-jobs. The root ``/health`` is the container-lifecycle probe target
-(kubelet/podman), hit every 10s for readiness and every 30s for liveness,
-and **only its HTTP status code is ever read**. The api-prefixed
-``/api/<service>/health`` is what external callers and the MCP server's
-``check_health`` read the *body* of, and it is called occasionally by a
-human rather than on a timer.
+Every core service mounts one health handler at two paths. The deployer's
+healthchecks and k8s probes target neither: they probe ``/ready`` and
+``/livez`` (``livez`` does no I/O). The root ``/health`` is what polls it on
+a timer: the image's own HEALTHCHECK (``curl -f`` every 30s, reading only
+the status code) and peer services checking a dependency (document-store
+and reporting-sync check the stores' root ``/health``). The api-prefixed
+``/api/<service>/health`` is the diagnostic route, read for its body (the
+MCP server's status tool, a human).
 
-Re-deriving the dependency fan-out on the probe path meant a document-store
-``/health`` opened eight outbound connections eight times a minute, forever,
-to produce a body nothing parsed. This caches that work for the probe path
-only; the diagnostic path asks for a fresh value and gets one, so an operator
-never reads a stale dependency status.
+Re-deriving the dependency fan-out on every poll costs a service one
+outbound connection per dependency per call (eight for document-store,
+counting the chains its peers run in turn). This caches that work for the
+root path only; the diagnostic path asks for a fresh value and gets one, so
+an operator never reads a stale dependency status.
 
-The TTL must exceed the probe interval or the cache cannot hit at all — at a
-10s readiness period a 5s TTL expires before every probe and is pure
-overhead. The default is deliberately longer than the 30s liveness period.
+The TTL bounds how stale a polling client's view can be: an entry is fresh
+for strictly less than ``ttl`` seconds after it was produced, so a client
+polling at exactly the TTL period misses every time and one polling faster
+shares the fan-out.
 
 Deliberately not a decorator and deliberately per-instance: the state is one
 tuple, and a module-level singleton would leak values between the tests that

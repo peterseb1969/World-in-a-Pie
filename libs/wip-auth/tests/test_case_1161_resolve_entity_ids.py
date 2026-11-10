@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from wip_auth.resolve import _get_cached, clear_resolution_cache, resolve_entity_ids
+from wip_auth.resolve import _entity_key, _get_cached, clear_resolution_cache, resolve_entity_ids
 
 RESOLVE_URL = "http://localhost:8001/api/registry/entries/resolve"
 CANDIDATES_URL = "http://localhost:8001/api/registry/entries/lookup/candidates"
@@ -40,9 +40,9 @@ async def test_a_miss_without_fallback_does_not_stop_the_chunk(httpx_mock):
         ["GONE", "VIA-VALUE", "GOOD"], "template", "wip", bypass_cache=True, strict=False,
     )
     assert result == {"VIA-VALUE": U2, "GOOD": U1}
-    assert _get_cached("wip:template:GOOD") == U1
-    assert _get_cached("wip:template:VIA-VALUE") == U2
-    assert _get_cached("wip:template:GONE") is None
+    assert _get_cached(_entity_key("wip", "template", "GOOD", None)) == U1
+    assert _get_cached(_entity_key("wip", "template", "VIA-VALUE", None)) == U2
+    assert _get_cached(_entity_key("wip", "template", "GONE", None)) is None
     calls = httpx_mock.get_requests()
     assert [str(r.url) for r in calls] == [RESOLVE_URL, CANDIDATES_URL, CANDIDATES_URL]
     assert len(json.loads(calls[0].content)) == 3

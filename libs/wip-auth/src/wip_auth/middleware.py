@@ -31,6 +31,11 @@ _DEFAULT_PUBLIC_PATHS = frozenset({
 _SERVICE_ROOT = re.compile(r"/api/[^/]+/")
 
 
+def public_path_set(extra: Sequence[str] | None) -> frozenset[str]:
+    """The universal public paths plus a service's own."""
+    return _DEFAULT_PUBLIC_PATHS | frozenset(extra or ())
+
+
 def is_public_path(path: str, public_paths: frozenset[str]) -> bool:
     """True for a path the middleware serves without trying credentials."""
     return path in public_paths or _SERVICE_ROOT.fullmatch(path) is not None
@@ -74,9 +79,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         """
         super().__init__(app)
         self.providers = list(providers)
-        self.public_paths: frozenset[str] = _DEFAULT_PUBLIC_PATHS | frozenset(
-            public_paths or []
-        )
+        self.public_paths: frozenset[str] = public_path_set(public_paths)
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint

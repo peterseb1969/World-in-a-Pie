@@ -39,6 +39,17 @@ async def _vocabulary_ids(namespace: str, *, retired: bool) -> AsyncIterator[str
         yield t["term_id"]
 
 
+async def _active_vocabulary(ids: list[str]) -> list[str]:
+    """Which of these terminology and term IDs are active now."""
+    terminologies = await Terminology.get_motor_collection().distinct(
+        "terminology_id", {"terminology_id": {"$in": ids}, "status": "active"},
+    )
+    terms = await Term.get_motor_collection().distinct(
+        "term_id", {"term_id": {"$in": ids}, "status": "active"},
+    )
+    return [*terminologies, *terms]
+
+
 async def reconcile_synonym_lifecycle(
     namespace: str, dry_run: bool = True, revive: bool = False,
 ) -> LifecycleReport:
@@ -49,5 +60,6 @@ async def reconcile_synonym_lifecycle(
         get_registry_client(), namespace,
         lambda: batched(_vocabulary_ids(namespace, retired=True)),
         lambda: batched(_vocabulary_ids(namespace, retired=False)),
+        _active_vocabulary,
         dry_run=dry_run, revive=revive,
     )

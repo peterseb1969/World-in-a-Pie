@@ -1,8 +1,10 @@
 """Namespace permission resolution with caching.
 
 Services call check_namespace_permission() to enforce access control.
-Permissions are resolved by calling the Registry's /my/namespaces/{prefix}/permission
-endpoint, with results cached in-process for 30 seconds.
+Permissions are the Registry's answers, asked of its service-to-service
+endpoints /api/registry/my/check-permission (one namespace) and
+/api/registry/my/accessible-namespaces (the readable list), with definitive
+answers cached in-process for 30 seconds.
 
 Usage:
     from wip_auth.permissions import check_namespace_permission, resolve_namespace_filter
@@ -32,7 +34,8 @@ from .models import UserIdentity
 
 logger = logging.getLogger(__name__)
 
-# Thread-safe TTL caches (L1 — prevents potential race conditions)
+# TTL caches. cachetools.TTLCache holds no lock and nothing here takes one:
+# they are safe on one asyncio event loop, not across threads.
 GRANT_CACHE_TTL = 30.0  # seconds
 _grant_cache: TTLCache = TTLCache(maxsize=1024, ttl=GRANT_CACHE_TTL)
 _accessible_cache: TTLCache = TTLCache(maxsize=256, ttl=GRANT_CACHE_TTL)

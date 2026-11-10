@@ -4,7 +4,9 @@ Uses bcrypt for key hashing (GPU-resistant). Verification is deliberately
 slow — about 170 ms per check at bcrypt's default cost (12), measured on a dev
 machine — so a key is matched against the stored hashes once and the result is
 cached, and recently rejected keys are cached too.
-Legacy SHA-256 hashes are detected and verified with a deprecation warning.
+Legacy SHA-256 hashes are still verified; each key carrying one is logged
+with a deprecation warning once, when the provider first holds it (at
+construction, a key-file reload, a key sync or an added key).
 """
 
 import asyncio
@@ -189,9 +191,16 @@ class APIKeyProvider:
         self._runtime_deadline: float | None = None
         self._runtime_ttl: float | None = None
 
-        # Warn about legacy SHA-256 hashes
-        for key in self._keys:
-            if _is_sha256_hash(key.key_hash):
+        # The legacy SHA-256 hashes already warned about, so a key sync
+        # every 30 s does not repeat the warning.
+        self._warned_legacy: set[str] = set()
+        self._warn_legacy_hashes(self._keys)
+
+    def _warn_legacy_hashes(self, keys: list[APIKeyRecord]) -> None:
+        """Log each key that carries a legacy SHA-256 hash, once per hash."""
+        for key in keys:
+            if _is_sha256_hash(key.key_hash) and key.key_hash not in self._warned_legacy:
+                self._warned_legacy.add(key.key_hash)
                 logger.warning(
                     "API key '%s' uses legacy SHA-256 hash. "
                     "Re-generate with bcrypt for better security: "
@@ -209,6 +218,7 @@ class APIKeyProvider:
             with self._lock:
                 self._keys = [*self._keys, key]
                 self._rejected.clear()
+                self._warn_legacy_hashes([key])
 
     def remove_key(self, key_hash: str) -> bool:
         """Remove an API key by its hash, evicting only that key's cache entry."""
@@ -279,6 +289,7 @@ class APIKeyProvider:
             self._keys = [k for k in config_keys if k.enabled] + runtime
             self._config_names = names
             self._rebuild_caches()
+            self._warn_legacy_hashes(self._keys)
 
     def _rebuild_caches(self) -> None:
         current = {k.key_hash: k for k in self._keys}
@@ -315,6 +326,7 @@ class APIKeyProvider:
             ]
             self._keys = config_keys + runtime
             self._rebuild_caches()
+            self._warn_legacy_hashes(runtime)
 
     def expire_runtime_keys(self) -> None:
         """Mark the runtime keys unconfirmed until the next successful sync.
@@ -416,7 +428,17 @@ class APIKeyProvider:
                 if record.is_expired():
                     return None, "API key has expired"
                 with self._lock:
-                    self._verified_cache[fingerprint] = record
+                    # Cache only a match against the keys as they still are:
+                    # a reload or sync that landed while bcrypt ran may have
+                    # removed this very key and rebuilt the cache without
+                    # it, and caching it now would let it authenticate until
+                    # the next rebuild. Every change replaces the list (or
+                    # the salt), so an unchanged list is an exact test.
+                    current = self._keys is keys and self.runtime_salt == runtime_salt
+                    if current:
+                        self._verified_cache[fingerprint] = record
+                if not current:
+                    return self._validate_key(api_key)
                 return record, None
 
         # Matching no config key is true whatever the Registry says, so the
@@ -470,13 +492,19 @@ class APIKeyProvider:
         async with semaphore:
             return await asyncio.to_thread(self._validate_key, api_key)
 
-    def lookup(self, api_key: str) -> APIKeyRecord | None:
+    def lookup(
+        self, api_key: str, *, raise_unverifiable: bool = False
+    ) -> APIKeyRecord | None:
         """The registered, unexpired key matching api_key, or None — through
         the same caches as authentication. None too when the key cannot be
-        verified (runtime keys past their deadline)."""
+        verified (runtime keys past their deadline), unless
+        raise_unverifiable=True, which raises KeysUnverifiable instead for
+        a caller that must tell the two apart."""
         try:
             record, error = self._validate_key(api_key)
         except KeysUnverifiable:
+            if raise_unverifiable:
+                raise
             return None
         return None if error is not None else record
 

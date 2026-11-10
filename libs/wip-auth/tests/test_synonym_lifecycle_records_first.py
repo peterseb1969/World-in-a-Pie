@@ -184,8 +184,13 @@ async def test_an_outage_mid_pass_carries_the_applied_batches():
         if False:
             yield []
 
+    async def _none_active(ids):
+        return []
+
     with pytest.raises(SynonymLifecycleAborted) as caught:
-        await reconcile_synonym_lifecycle(DownOnSecond(), "ns", retired, active, dry_run=False)
+        await reconcile_synonym_lifecycle(
+            DownOnSecond(), "ns", retired, active, _none_active, dry_run=False,
+        )
     report = caught.value.report.to_dict()
     assert report["released"] == 2
     assert report["retired_scanned"] == 2  # the unanswered batch is not counted

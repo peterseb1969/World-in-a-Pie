@@ -225,6 +225,8 @@ class SynonymLifecycleAborted(RegistryUnavailableError):
 
 
 IdBatches = Callable[[], AsyncIterable[list[str]]]
+# Which of these entity ids are active in the store right now.
+ActiveAmong = Callable[[list[str]], Awaitable[list[str]]]
 
 
 async def _answered(
@@ -238,11 +240,59 @@ async def _answered(
         raise SynonymLifecycleAborted(report, e) from e
 
 
+def _record_reclaims(
+    report: LifecycleReport, batch: list[str], results: list[dict[str, Any]],
+) -> None:
+    """Count one reactivate_entries answer into the report."""
+    for entry_id, r in zip(batch, results, strict=False):
+        if report._failed(r, entry_id):
+            continue
+        if r.get("reclaimed"):
+            report.reclaimed += 1
+            report.items.append(LifecycleItem(entry_id, "reclaimed", r["reclaimed"]))
+        if r.get("not_reclaimed"):
+            report.not_reclaimed += 1
+            report.items.append(LifecycleItem(
+                entry_id, "not_reclaimed",
+                [n["composite_key"] for n in r["not_reclaimed"]],
+                detail="; ".join(r.get("warnings") or []),
+            ))
+        if r.get("status") == "unchanged":
+            report.unchanged += 1
+
+
+async def _reclaim_revived(
+    registry: RegistryClientBase,
+    report: LifecycleReport,
+    released: list[str],
+    active_among: ActiveAmong,
+) -> None:
+    """Give back the synonyms of entities revived while the pass ran.
+
+    A batch was classified retired before it was released; an entity
+    revived in between had its synonyms released behind the revival (the
+    store's own reactivate ran first, with nothing yet to reclaim). Reading
+    the store again AFTER the release and reclaiming what is active now
+    closes that window: a revival that lands later reclaims for itself.
+    Such an entity is counted as reclaimed, not released."""
+    revived = await active_among(released) if released else []
+    if not revived:
+        return
+    revived_set = set(revived)
+    report.released -= len(revived_set)
+    report.items = [
+        i for i in report.items if not (i.status == "released" and i.entry_id in revived_set)
+    ]
+    results = await _answered(report, registry.reactivate_entries(revived))
+    _record_reclaims(report, revived, results)
+
+
 async def reconcile_synonym_lifecycle(
     registry: RegistryClientBase,
     namespace: str,
     retired_ids: IdBatches,
     active_ids: IdBatches,
+    active_among: ActiveAmong,
     *,
     dry_run: bool = True,
     revive: bool = False,
@@ -250,6 +300,11 @@ async def reconcile_synonym_lifecycle(
     """Release the synonyms of every retired entity and, with revive=True
     (applied only — it touches every active entity), reclaim those of every
     active one. Dry-run reports what retiring would release. Idempotent.
+
+    An entity revived after its batch was listed as retired gets its
+    synonyms back in the same pass: after each applied release the store is
+    asked which of the released entities are active now (``active_among``),
+    and those are reclaimed.
 
     A Registry that stops answering part-way raises SynonymLifecycleAborted
     (a 503) carrying the report of what was already applied; its batches
@@ -259,34 +314,24 @@ async def reconcile_synonym_lifecycle(
     async for batch in retired_ids():
         results = await _answered(report, registry.deactivate_entries(batch, dry_run=dry_run))
         report.retired_scanned += len(batch)
+        released: list[str] = []
         for entry_id, r in zip(batch, results, strict=False):
             if report._failed(r, entry_id):
                 continue
             if r["status"] == "deactivated":
                 report.released += 1
                 report.items.append(LifecycleItem(entry_id, "released", r.get("released") or []))
+                released.append(entry_id)
             else:
                 report.unchanged += 1
+        if not dry_run:
+            await _reclaim_revived(registry, report, released, active_among)
 
     if revive and not dry_run:
         async for batch in active_ids():
             results = await _answered(report, registry.reactivate_entries(batch))
             report.active_scanned += len(batch)
-            for entry_id, r in zip(batch, results, strict=False):
-                if report._failed(r, entry_id):
-                    continue
-                if r.get("reclaimed"):
-                    report.reclaimed += 1
-                    report.items.append(LifecycleItem(entry_id, "reclaimed", r["reclaimed"]))
-                if r.get("not_reclaimed"):
-                    report.not_reclaimed += 1
-                    report.items.append(LifecycleItem(
-                        entry_id, "not_reclaimed",
-                        [n["composite_key"] for n in r["not_reclaimed"]],
-                        detail="; ".join(r.get("warnings") or []),
-                    ))
-                if r.get("status") == "unchanged":
-                    report.unchanged += 1
+            _record_reclaims(report, batch, results)
 
     logger.info(
         "Synonym lifecycle pass on %s (dry_run=%s, revive=%s): released=%d reclaimed=%d "

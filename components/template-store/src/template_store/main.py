@@ -291,10 +291,11 @@ async def root():
     }
 
 
-# Dependency probes are cached for the container-lifecycle probe path, which
-# is hit every 10s (readiness) and 30s (liveness) but only ever has its HTTP
-# status code read. The api-prefixed route below asks for a fresh value, so a
-# human reading the body never sees a stale dependency.
+# /health's dependency probes are cached for its timed callers — the
+# image's HEALTHCHECK and peer services checking this one — which read only
+# the status code. Orchestrators rendered by wip-deploy probe /ready and
+# /livez, not this. The api-prefixed route below asks for a fresh value, so
+# a human reading the body never sees a stale dependency.
 _health_cache: HealthCache[dict[str, str]] = HealthCache()
 
 

@@ -8,11 +8,14 @@ POST /resolve endpoint. Term identifiers are strict: the fully qualified
 in fastapi_helpers, because a value containing ':' is indistinguishable
 from it.
 
-**Every ID goes through Registry.** There is no format-based bypass.
-UUIDs are verified via ``entry_id`` lookup; synonyms are resolved via
-``composite_key`` hash lookup. A TTL cache (30 seconds, ``_CACHE_TTL``)
-minimises latency — the second time any ID is seen within it, resolution is
-a local dict lookup.
+**Every ID these functions resolve goes through Registry**, with no
+format-based bypass: UUIDs are verified via ``entry_id`` lookup, synonyms
+resolved via ``composite_key`` hash lookup. (Callers that skip resolution
+for some inputs — the API-door helpers in fastapi_helpers without a
+namespace, a terminology ref already given as a UUID — say so where they do
+it.) A TTL cache (30 seconds, ``_CACHE_TTL``) lets a READ answer a lookup it
+made within that time locally; a request that may write always asks the
+Registry, and the fresh answer refreshes the cache.
 
 Usage:
     from wip_auth.resolve import resolve_entity_id, resolve_entity_ids
@@ -45,12 +48,17 @@ _UUID_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# A cache key: a tuple of every input the answer depends on, so no two
+# questions share one (a delimiter-joined string would: "A:B" + "C" and
+# "A" + "B:C").
+CacheKey = tuple[Any, ...]
+
 # TTL cache: {cache_key: (canonical_id, expire_time)}
-_resolution_cache: dict[str, tuple[str, float]] = {}
+_resolution_cache: dict[CacheKey, tuple[str, float]] = {}
 # Reverse index: canonical id -> the cache keys that resolve to it, so the
 # Registry's word that an entity lost its names (wip_auth.cache_events) drops
 # every spelling cached for it. Kept in step with _resolution_cache.
-_keys_by_id: dict[str, set[str]] = {}
+_keys_by_id: dict[str, set[CacheKey]] = {}
 # How long a read may answer from a cached resolution. It bounds how long a
 # read can lag a namespace deleted and re-created under the same name (the
 # cached id is the deleted entity's): 30 s keeps that window short while
@@ -76,6 +84,16 @@ _write_request: contextvars.ContextVar[bool] = contextvars.ContextVar(
 def _cache_readable(bypass_cache: bool) -> bool:
     """Whether a resolution may be answered from the cache."""
     return not (bypass_cache or _write_request.get())
+
+
+def _entity_key(
+    namespace: str | None, entity_type: str, raw_id: str,
+    include_statuses: list[str] | None,
+) -> CacheKey:
+    """The cache key of one identifier's resolution. The status set is part
+    of it: a lookup widened to reserved entries (activation) must not answer
+    an active-only one, nor the other way round."""
+    return ("entity", namespace, entity_type, raw_id, tuple(sorted(include_statuses or ())))
 
 
 class WriteRequestMiddleware:
@@ -190,8 +208,8 @@ def split_qualified_value(raw_id: str) -> tuple[str | None, str]:
     purely syntactic — first colon wins, no existence check — so callers
     get deterministic resolution independent of namespace lifecycle.
 
-    Terms use a 2/3-part form instead (``TERMINOLOGY:VALUE`` /
-    ``NS:TERMINOLOGY:VALUE``) — do not use this helper for terms.
+    Terms are addressed by the 3-part ``NS:TERMINOLOGY:VALUE`` form or the
+    field form (resolve_term_by_fields) — do not use this helper for terms.
     """
     if ":" in raw_id:
         ns_prefix, value = raw_id.split(":", 1)
@@ -210,9 +228,11 @@ def _build_composite_key(
     - Bare values resolve in the caller's own namespace.
     - Cross-namespace requires explicit prefix (e.g., ``wip:STATUS``).
 
-    Term references use colon notation with 2 or 3 parts:
-    - ``TERMINOLOGY:VALUE`` — own namespace
-    - ``NS:TERMINOLOGY:VALUE`` — cross-namespace
+    Terms:
+    - ``NS:TERMINOLOGY:VALUE`` — the only colon form a caller may submit
+    - ``TERMINOLOGY:VALUE`` — parsed here (own namespace) for internal
+      callers only: every API door refuses it (fastapi_helpers), since a
+      value containing ':' is indistinguishable from it
 
     Other entity types:
     - ``VALUE`` — own namespace
@@ -290,7 +310,7 @@ def _build_resolve_payload(
     return payload
 
 
-def _get_cached(cache_key: str) -> str | None:
+def _get_cached(cache_key: CacheKey) -> str | None:
     """Get a cached resolution result if still valid."""
     entry = _resolution_cache.get(cache_key)
     if entry is None:
@@ -302,7 +322,7 @@ def _get_cached(cache_key: str) -> str | None:
     return canonical_id
 
 
-def _drop_key(cache_key: str) -> None:
+def _drop_key(cache_key: CacheKey) -> None:
     entry = _resolution_cache.pop(cache_key, None)
     if entry is None:
         return
@@ -313,7 +333,7 @@ def _drop_key(cache_key: str) -> None:
             del _keys_by_id[entry[0]]
 
 
-def _set_cached(cache_key: str, canonical_id: str) -> None:
+def _set_cached(cache_key: CacheKey, canonical_id: str) -> None:
     """Cache a resolution result."""
     _drop_key(cache_key)  # a key re-cached to another id leaves the old index
     _resolution_cache[cache_key] = (canonical_id, time.monotonic() + _CACHE_TTL)
@@ -417,8 +437,9 @@ async def resolve_entity_id(
 ) -> str:
     """Resolve any identifier to its canonical ID via Registry.
 
-    Both synonyms and canonical IDs are verified against Registry.
-    Results are cached for 5 minutes.
+    Both synonyms and canonical IDs are verified against Registry. An
+    answer is cached for 30 seconds (``_CACHE_TTL``); only a read answers
+    from the cache, a request that may write always asks the Registry.
 
     Args:
         raw_id: The identifier (canonical ID or human-readable synonym)
@@ -437,7 +458,7 @@ async def resolve_entity_id(
     Raises:
         EntityNotFoundError: If the identifier is not found in Registry
     """
-    cache_key = f"{namespace}:{entity_type}:{raw_id}"
+    cache_key = _entity_key(namespace, entity_type, raw_id, include_statuses)
     if _cache_readable(bypass_cache):
         cached = _get_cached(cache_key)
         if cached:
@@ -708,7 +729,7 @@ async def resolve_term_by_fields(
             there is no namespace to read it in.
         EntityNotFoundError: no term matches.
     """
-    cache_key = f"{namespace}:term-fields:{terminology}:{value}"
+    cache_key: CacheKey = ("term-fields", namespace, terminology, value)
     if _cache_readable(bypass_cache):
         cached = _get_cached(cache_key)
         if cached:
@@ -734,7 +755,9 @@ async def resolve_term_by_fields(
         coordinates = await terminology_coordinates_by_id(terminology)
         if coordinates is not None:
             canonical_id = await _resolve_term_at(*coordinates, value)
-        elif not candidates:
+        elif not candidates and not _looks_like_uuid(terminology):
+            # A bare value with no namespace to read it in. A UUID that
+            # names no terminology is simply not found, below.
             raise TermNamespaceRequiredError(f"{terminology}/{value}", "term")
 
     if canonical_id is None:
@@ -768,15 +791,14 @@ async def resolve_entity_ids(
         raw_ids: List of identifiers (mix of canonical and synonym)
         entity_type: Singular entity type
         namespace: Current namespace
-        strict: When True (default), the first unresolvable identifier
-            raises — the historical batch-door contract, relied on by
-            comparison sites that treat "different or missing" alike.
-            When False (the bulk WRITE doors), a per-item miss first
-            tries the by-id fallback door exactly as the single-resolve
-            path does — batch and single resolution stay semantically
-            identical — and an identifier that still misses is simply
-            ABSENT from the returned map; the caller's downstream
-            BulkResponse reports it per item.
+        strict: Either way a per-item miss first tries the by-id fallback
+            door exactly as the single-resolve path does, so batch and
+            single resolution give one answer. When True (default), an
+            identifier that still misses raises — the batch-door contract
+            comparison sites rely on, treating "different or missing"
+            alike. When False (the bulk WRITE doors), it is simply ABSENT
+            from the returned map; the caller's downstream BulkResponse
+            reports it per item.
 
     Returns:
         Dict mapping each raw_id to its canonical ID (misses absent in
@@ -785,7 +807,9 @@ async def resolve_entity_ids(
     Raises:
         EntityNotFoundError: strict mode only — an identifier not found.
     """
-    result, to_resolve = _cached_resolutions(raw_ids, entity_type, namespace, bypass_cache)
+    result, to_resolve = _cached_resolutions(
+        raw_ids, entity_type, namespace, include_statuses, bypass_cache,
+    )
     if not to_resolve:
         return result
 
@@ -802,13 +826,14 @@ async def resolve_entity_ids(
                 raw_id, resolve_result, entity_type, namespace, strict,
             )
             if canonical_id is not None:
-                _set_cached(f"{namespace}:{entity_type}:{raw_id}", canonical_id)
+                _set_cached(_entity_key(namespace, entity_type, raw_id, include_statuses), canonical_id)
                 result[raw_id] = canonical_id
     return result
 
 
 def _cached_resolutions(
-    raw_ids: list[str], entity_type: str, namespace: str, bypass_cache: bool,
+    raw_ids: list[str], entity_type: str, namespace: str,
+    include_statuses: list[str] | None, bypass_cache: bool,
 ) -> tuple[dict[str, str], list[str]]:
     """The cached answers, and the distinct identifiers left to resolve.
 
@@ -827,7 +852,7 @@ def _cached_resolutions(
             continue
         seen.add(raw_id)
         if _cache_readable(bypass_cache):
-            cached = _get_cached(f"{namespace}:{entity_type}:{raw_id}")
+            cached = _get_cached(_entity_key(namespace, entity_type, raw_id, include_statuses))
             if cached:
                 result[raw_id] = cached
                 continue
@@ -874,14 +899,15 @@ async def _settle_batch_resolution(
 ) -> str | None:
     """The canonical id one batch answer gives, or None (non-strict miss).
 
-    Strict callers get the refusal for an ambiguous key or a miss.
-    Non-strict, an ambiguous key stays unresolved, never picked; a miss
-    falls back to the by-id lookup for non-term, non-UUID identifiers, as
-    the single-resolve door does (value-form references whose synonym key
-    shapes /resolve cannot hash-match) — the batch door must not be weaker,
-    or moving a caller from per-item to batch resolution would silently
-    break exactly those references. Misses are rare; the per-miss call does
-    not reintroduce the per-item round-trip storm.
+    A miss falls back to the by-id lookup for non-term, non-UUID
+    identifiers, as the single-resolve door does (value-form references
+    whose synonym key shapes /resolve cannot hash-match), in both modes:
+    the batch door must not be weaker, or one comparator would give two
+    answers for one reference, and moving a caller from per-item to batch
+    resolution would silently break exactly those references. Misses are
+    rare; the per-miss call does not reintroduce the per-item round-trip
+    storm. Strict callers then get the refusal for an ambiguous key or a
+    miss; non-strict, an ambiguous key stays unresolved, never picked.
     """
     status = resolve_result.get("status")
     if status == "found":
@@ -891,15 +917,18 @@ async def _settle_batch_resolution(
             candidates = resolve_result.get("candidates") or []
             raise AmbiguousEntityError(raw_id, entity_type, candidates, len(candidates))
         return None
-    if strict:
+    canonical_id: str | None = None
+    if entity_type != "term" and not _looks_like_uuid(raw_id):
+        ns_prefix, value = split_qualified_value(raw_id)
+        try:
+            canonical_id = await _post_lookup_by_id(value, ns_prefix or namespace, entity_type)
+        except AmbiguousEntityError:
+            if strict:
+                raise
+            # Non-strict: an ambiguous value stays unresolved, like a miss.
+            return None
+    if canonical_id is None and strict:
         # Same reasoning as the single-resolve path: a per-item miss is a
         # real lookup failure, so it carries the namespace hint.
         raise EntityNotFoundError(raw_id, entity_type, namespace)
-    if entity_type == "term" or _looks_like_uuid(raw_id):
-        return None
-    ns_prefix, value = split_qualified_value(raw_id)
-    try:
-        return await _post_lookup_by_id(value, ns_prefix or namespace, entity_type)
-    except AmbiguousEntityError:
-        # Non-strict: an ambiguous value stays unresolved, like a miss.
-        return None
+    return canonical_id

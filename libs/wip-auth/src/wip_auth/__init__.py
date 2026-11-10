@@ -25,6 +25,8 @@ For more details, see the README.md.
 """
 
 import logging
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _package_version
 
 from .build_info import build_metadata
 from .config import (
@@ -65,10 +67,10 @@ from .identity import (
     reset_current_identity,
     set_current_identity,
 )
-from .key_file_watch import APIKeysFileWatcher, ConfigFileWatcher
+from .key_file_watch import APIKeysFileWatcher, ConfigFileWatcher, content_hash
 from .key_sync import KeySyncService
 from .liveness import install_liveness
-from .middleware import AuthMiddleware, create_auth_middleware
+from .middleware import AuthMiddleware, create_auth_middleware, public_path_set
 from .models import APIKeyRecord, AuthResult, UserIdentity
 from .openapi import declare_api_key_security
 from .permissions import (
@@ -115,7 +117,11 @@ from .term_resolution import (
     term_resolution_batch,
 )
 
-__version__ = "0.4.0"
+# The installed package's version (pyproject.toml), so the two cannot differ.
+try:
+    __version__ = _package_version("wip-auth")
+except PackageNotFoundError:  # imported from a source tree, not installed
+    __version__ = "unknown"
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +252,7 @@ def create_providers_from_config(
 
     elif config.mode == "api_key_only":
         # API key only - load keys and create provider
+        keys_applied = _file_hash(config.api_keys_file)
         keys = config.load_api_keys()
 
         api_key_provider = APIKeyProvider(
@@ -267,7 +274,7 @@ def create_providers_from_config(
             ))
 
         providers.append(api_key_provider)
-        _watch_api_keys_file(config, api_key_provider)
+        _watch_api_keys_file(config, api_key_provider, keys_applied)
 
     elif config.mode == "jwt_only":
         # JWT only - create OIDC provider
@@ -275,6 +282,7 @@ def create_providers_from_config(
             raise ValueError(
                 "JWT mode requires WIP_AUTH_JWT_ISSUER_URL or WIP_AUTH_JWT_JWKS_URI"
             )
+        policy_applied = _file_hash(config.federated_groups_file)
         oidc = OIDCProvider(
             issuer_url=config.jwt_issuer_url,
             jwks_url=config.jwt_jwks_uri,
@@ -287,10 +295,11 @@ def create_providers_from_config(
             federated_groups=_federated_policy(config),
         )
         providers.append(oidc)
-        _watch_federated_groups_file(config, oidc)
+        _watch_federated_groups_file(config, oidc, policy_applied)
 
     elif config.mode == "dual":
         # Dual mode - try trusted headers first, then JWT, then API key
+        keys_applied = _file_hash(config.api_keys_file)
         keys = config.load_api_keys()
 
         dual_key_provider: APIKeyProvider | None = APIKeyProvider(
@@ -313,6 +322,7 @@ def create_providers_from_config(
 
         # JWT is checked next because Bearer token is more explicit
         if config.jwt_issuer_url or config.jwt_jwks_uri:
+            dual_policy_applied = _file_hash(config.federated_groups_file)
             dual_oidc = OIDCProvider(
                 issuer_url=config.jwt_issuer_url,
                 jwks_url=config.jwt_jwks_uri,
@@ -325,13 +335,18 @@ def create_providers_from_config(
                 federated_groups=_federated_policy(config),
             )
             providers.append(dual_oidc)
-            _watch_federated_groups_file(config, dual_oidc)
+            _watch_federated_groups_file(config, dual_oidc, dual_policy_applied)
 
         if dual_key_provider is not None:
             providers.append(dual_key_provider)
-            _watch_api_keys_file(config, dual_key_provider)
+            _watch_api_keys_file(config, dual_key_provider, keys_applied)
 
     return providers
+
+
+def _file_hash(path: str | None) -> str | None:
+    """A watched file's content hash, taken before the state is read from it."""
+    return content_hash(path) if path else None
 
 
 def _read_federated_groups_file(path: str) -> FederatedGroupPolicy | None:
@@ -350,7 +365,9 @@ def _federated_policy(config: AuthConfig) -> FederatedGroupPolicy | None:
     return FederatedGroupPolicy.from_json(config.federated_groups)
 
 
-def _watch_federated_groups_file(config: AuthConfig, provider: OIDCProvider) -> None:
+def _watch_federated_groups_file(
+    config: AuthConfig, provider: OIDCProvider, applied: str | None,
+) -> None:
     """Apply changes to the federated group policy file without a restart.
 
     A group mapping is a routine operator change; it reaches the running
@@ -369,13 +386,16 @@ def _watch_federated_groups_file(config: AuthConfig, provider: OIDCProvider) -> 
     watcher = ConfigFileWatcher(
         path, apply,
         what="federated group policy",
+        applied=applied,
         interval_seconds=config.federated_groups_file_reload_seconds,
     )
     provider.policy_watcher = watcher
     watcher.start()
 
 
-def _watch_api_keys_file(config: AuthConfig, provider: APIKeyProvider) -> None:
+def _watch_api_keys_file(
+    config: AuthConfig, provider: APIKeyProvider, applied: str | None,
+) -> None:
     """Apply changes to WIP_AUTH_API_KEYS_FILE without a restart.
 
     The whole key configuration is re-loaded (env keys are static, so they
@@ -388,6 +408,7 @@ def _watch_api_keys_file(config: AuthConfig, provider: APIKeyProvider) -> None:
         config.api_keys_file,
         config.load_api_keys,
         provider,
+        applied=applied,
         interval_seconds=config.api_keys_file_reload_seconds,
     )
     provider.file_watcher = watcher
@@ -471,6 +492,8 @@ def setup_auth(
             providers, public_paths=public_paths,
         )
         app.add_middleware(middleware_class)
+    # The paths served without a credential, for declare_api_key_security.
+    app.state.wip_public_paths = public_path_set(public_paths)
 
     # The Registry not answering is a 503 in every service, wherever in a
     # request it surfaces — never the 404 or "none" of a definite answer.
@@ -494,8 +517,9 @@ async def setup_key_sync(
     """Set up background key sync for a non-Registry service.
 
     Finds the APIKeyProvider from the providers list (as returned by
-    setup_auth()), identifies config-file key names, and starts a
-    KeySyncService polling loop.
+    setup_auth()) and starts a KeySyncService polling loop. The sync never
+    touches config keys: the provider recognises them by its own current
+    name set, which a key-file reload keeps current.
 
     Args:
         providers: Provider list returned by setup_auth()

@@ -21,9 +21,14 @@ def declare_api_key_security(app: FastAPI) -> FastAPI:
     """Install a cached ``app.openapi`` override that declares the
     X-API-Key requirement: ``components.securitySchemes.ApiKeyAuth``
     (type apiKey, header ``X-API-Key``) plus a global ``security``
-    reference. Call once, after routers are included. Idempotent per
-    app instance (the schema is built lazily and cached, matching
-    FastAPI's own behavior)."""
+    reference. Operations on a path the auth middleware serves without a
+    credential (the probes, docs, the bare and prefixed roots, and the
+    paths given to setup_auth as ``public_paths``) declare ``security: []``
+    instead: the same test the middleware applies, so the two cannot
+    disagree. Call once, after routers are included and setup_auth has
+    run. Idempotent per app instance (the schema is built lazily and
+    cached, matching FastAPI's own behavior)."""
+    from .middleware import _DEFAULT_PUBLIC_PATHS, is_public_path
 
     def _openapi():
         if app.openapi_schema:
@@ -40,6 +45,11 @@ def declare_api_key_security(app: FastAPI) -> FastAPI:
             "ApiKeyAuth": {"type": "apiKey", "in": "header", "name": "X-API-Key"}
         }
         schema["security"] = [{"ApiKeyAuth": []}]
+        public = getattr(app.state, "wip_public_paths", _DEFAULT_PUBLIC_PATHS)
+        for path, operations in schema.get("paths", {}).items():
+            if is_public_path(path, public):
+                for operation in operations.values():
+                    operation["security"] = []
         app.openapi_schema = schema
         return schema
 

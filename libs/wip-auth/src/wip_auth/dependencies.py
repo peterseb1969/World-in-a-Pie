@@ -179,6 +179,7 @@ async def require_namespace_read(
     Raises:
         HTTPException 404 if namespace is invisible (no access).
         HTTPException 403 if insufficient permissions.
+        HTTPException 503 if the Registry could not be asked.
     """
     from .permissions import check_namespace_permission
 

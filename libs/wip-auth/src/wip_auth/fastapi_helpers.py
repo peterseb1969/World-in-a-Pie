@@ -1,7 +1,11 @@
 """FastAPI helper functions for synonym resolution at API boundaries.
 
-Every ID — canonical or synonym — is verified against Registry.
-There is no format-based bypass.
+An ID resolved here — canonical or synonym — is verified against Registry,
+with no format-based bypass, whenever there is namespace context (given,
+derived from a single-namespace key, or carried by a qualified ``NS:VALUE``).
+Without it nothing is asked of the Registry: resolve_or_404 passes the
+identifier through unverified (a UUID always, a value unless ``strict``), and
+resolve_bulk_ids leaves such an item unresolved for the store to report.
 
 Usage:
     from wip_auth.fastapi_helpers import resolve_or_404, resolve_bulk_ids
@@ -115,10 +119,12 @@ async def resolve_or_404(
 ) -> str:
     """Resolve any identifier to a canonical ID, raising HTTP 404 on failure.
 
-    Both canonical IDs and synonyms are verified against Registry.
-    If ``namespace`` is None, attempts to derive it from the caller's
-    identity (single-namespace API keys). If derivation fails, returns
-    raw_id as-is (caller must handle value-based fallback).
+    Both canonical IDs and synonyms are verified against Registry when
+    there is namespace context. If ``namespace`` is None, attempts to
+    derive it from the caller's identity (single-namespace API keys) or a
+    qualified identifier's prefix. If that fails, nothing is asked of the
+    Registry: a UUID, and (unless ``strict``) a value, is returned as-is,
+    unverified (caller must handle value-based fallback).
 
     Args:
         raw_id: The identifier to resolve (canonical ID or human-readable synonym).
@@ -356,7 +362,9 @@ async def resolve_bulk_ids(
     """Batch-resolve IDs on bulk request items, mutating in place.
 
     For each item, resolves ``getattr(item, id_field)`` from any identifier
-    to its canonical ID. All IDs are verified against Registry.
+    to its canonical ID, verified against Registry. An item with no
+    namespace (none given, none derivable, none on the item) is not
+    resolved: it is left as submitted, unverified, for the store to report.
 
     Resolution failures are logged but do not raise — the downstream
     service will handle the unresolved ID (typically returning per-item errors

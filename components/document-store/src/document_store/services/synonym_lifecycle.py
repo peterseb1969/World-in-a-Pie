@@ -36,6 +36,15 @@ async def _document_ids(namespace: str, *, retired: bool) -> AsyncIterator[str]:
         yield row["_id"]
 
 
+async def _active_documents(ids: list[str]) -> list[str]:
+    """Which of these document IDs have an active version now."""
+    from ..models.document import Document
+
+    return list(await Document.get_motor_collection().distinct(
+        "document_id", {"document_id": {"$in": ids}, "status": "active"},
+    ))
+
+
 async def reconcile_synonym_lifecycle(
     namespace: str, dry_run: bool = True, revive: bool = False,
 ) -> LifecycleReport:
@@ -45,5 +54,6 @@ async def reconcile_synonym_lifecycle(
         get_registry_client(), namespace,
         lambda: batched(_document_ids(namespace, retired=True)),
         lambda: batched(_document_ids(namespace, retired=False)),
+        _active_documents,
         dry_run=dry_run, revive=revive,
     )

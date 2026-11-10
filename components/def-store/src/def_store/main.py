@@ -327,11 +327,11 @@ async def root():
     }
 
 
-# /health's dependency probes are cached, so a client polling it (the
-# console, `wip status`, the MCP server) does not ping MongoDB and the
-# Registry on every call. Orchestrators probe /ready and /livez, not this. The
-# api-prefixed route below asks for a fresh value, so a human reading the
-# body never sees a stale dependency.
+# /health's dependency probes are cached for its timed callers — the
+# image's HEALTHCHECK and peer services checking this one — which read only
+# the status code. Orchestrators rendered by wip-deploy probe /ready and
+# /livez, not this. The api-prefixed route below asks for a fresh value, so
+# a human reading the body never sees a stale dependency.
 _health_cache: HealthCache[dict[str, str]] = HealthCache()
 
 

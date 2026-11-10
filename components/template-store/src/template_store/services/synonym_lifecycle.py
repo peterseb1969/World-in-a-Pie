@@ -36,6 +36,13 @@ async def _template_ids(namespace: str, *, retired: bool) -> AsyncIterator[str]:
         yield row["_id"]
 
 
+async def _active_templates(ids: list[str]) -> list[str]:
+    """Which of these template IDs have an active version now."""
+    return list(await Template.get_motor_collection().distinct(
+        "template_id", {"template_id": {"$in": ids}, "status": "active"},
+    ))
+
+
 async def reconcile_synonym_lifecycle(
     namespace: str, dry_run: bool = True, revive: bool = False,
 ) -> LifecycleReport:
@@ -45,5 +52,6 @@ async def reconcile_synonym_lifecycle(
         get_registry_client(), namespace,
         lambda: batched(_template_ids(namespace, retired=True)),
         lambda: batched(_template_ids(namespace, retired=False)),
+        _active_templates,
         dry_run=dry_run, revive=revive,
     )

@@ -15,7 +15,7 @@ from fastapi import Request
 
 from ..groups import PRIVILEGED_GROUPS
 from ..models import APIKeyRecord, UserIdentity
-from .api_key import APIKeyProvider, verify_api_key
+from .api_key import APIKeyProvider, KeysUnverifiable, verify_api_key
 
 logger = logging.getLogger("wip_auth.trusted_header")
 
@@ -57,9 +57,13 @@ class TrustedHeaderProvider:
         self._key_provider = key_provider
 
     def _proxy_key(self, api_key: str) -> APIKeyRecord | None:
-        """The matching, unexpired key record if it may assert identities."""
+        """The matching, unexpired key record if it may assert identities.
+
+        Raises KeysUnverifiable when the key cannot be verified now (the
+        Registry has not confirmed the runtime keys): that is an outage, not
+        a key that may not assert identities."""
         if self._key_provider is not None:
-            record = self._key_provider.lookup(api_key)
+            record = self._key_provider.lookup(api_key, raise_unverifiable=True)
         else:
             record = next(
                 (
@@ -85,7 +89,18 @@ class TrustedHeaderProvider:
         # X-WIP-User is present — require a privileged key to trust it. Any
         # other key falls through and authenticates as itself.
         api_key = request.headers.get(self.header_name.lower())
-        if not api_key or self._proxy_key(api_key) is None:
+        try:
+            proxy_key = self._proxy_key(api_key) if api_key else None
+        except KeysUnverifiable:
+            # The API-key provider answers the request 503; this only keeps
+            # an outage from reading as an attack in the log.
+            logger.warning(
+                "X-WIP-User header present, but API keys cannot be verified "
+                "right now (the Registry has not confirmed them) — ignoring "
+                "identity headers"
+            )
+            return None
+        if proxy_key is None:
             logger.warning(
                 "X-WIP-User header present without a privileged API key — "
                 "ignoring identity headers (possible spoofing attempt)"

@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from wip_auth import APIKeyProvider, AuthConfig, create_providers_from_config
-from wip_auth.key_file_watch import APIKeysFileWatcher
+from wip_auth.key_file_watch import APIKeysFileWatcher, content_hash
 from wip_auth.models import APIKeyRecord
 from wip_auth.providers.api_key import hash_api_key
 
@@ -32,7 +32,9 @@ def _setup(tmp_path: Path, keys: dict[str, str]) -> tuple[AuthConfig, APIKeyProv
     _write(path, keys)
     config = AuthConfig(mode="api_key_only", api_keys_file=str(path), api_keys_file_reload_seconds=0)
     provider = next(p for p in create_providers_from_config(config) if isinstance(p, APIKeyProvider))
-    return config, provider, APIKeysFileWatcher(path, config.load_api_keys, provider)
+    return config, provider, APIKeysFileWatcher(
+        path, config.load_api_keys, provider, applied=content_hash(path),
+    )
 
 
 def test_rotation_and_addition_apply_without_rebuilding(tmp_path: Path) -> None:
