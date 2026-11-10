@@ -68,7 +68,11 @@ def component_dir(repo: Path, component: str) -> str | None:
 
 def watch_paths(repo: Path, component: str) -> list[str]:
     """Path prefixes a run of `component` depends on. `all` (or an unknown
-    target) depends on everything, so it is the empty prefix."""
+    target) depends on everything, so it is the empty prefix. The toolkit is
+    accepted under its directory's spelling too (WIP-Toolkit), as wip-test.sh
+    accepts it, and watches the same extra paths either way."""
+    if component == "WIP-Toolkit":
+        component = "wip-toolkit"
     base = component_dir(repo, component)
     if component == "all" or base is None:
         return [""]

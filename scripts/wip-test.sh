@@ -326,13 +326,18 @@ if [[ $# -lt 1 ]]; then
     echo "Components: registry, def-store, template-store, document-store," >&2
     echo "            reporting-sync, ingest-gateway, mcp-server" >&2
     echo "Libraries:  wip-auth, wip-archive" >&2
-    echo "Tools:      deployer, agent-scripts, scaffold" >&2
+    echo "Tools:      deployer, agent-scripts, scaffold, wip-toolkit (or WIP-Toolkit)" >&2
     echo "Special:    all (run everything)" >&2
     exit 1
 fi
 
 TARGET="$1"
 shift
+# The toolkit's directory is WIP-Toolkit, but every rule in this script (its
+# MongoDB, its CI-recipe deps, the lock) is keyed wip-toolkit. Run under the
+# directory's spelling it matched none of them: no MongoDB was provisioned
+# and its integration suite skipped silently. Either spelling is accepted.
+[[ "$TARGET" == "WIP-Toolkit" ]] && TARGET="wip-toolkit"
 
 if [[ "$TARGET" == "--overlap-check" ]]; then
     if [[ $# -lt 1 ]]; then
@@ -346,7 +351,7 @@ fi
 
 PYTHON_COMPONENTS=(registry def-store template-store document-store reporting-sync ingest-gateway mcp-server auth-gateway app-edge)
 PYTHON_LIBS=(wip-auth wip-archive)
-PYTHON_TOOLS=(deployer agent-scripts scaffold)
+PYTHON_TOOLS=(deployer agent-scripts scaffold wip-toolkit)
 
 # One-time-per-component test-dep provisioning, mirroring the CI recipe
 # (.gitea/workflows/test.yaml: component requirements + registry's for
@@ -436,8 +441,12 @@ run_python_tests() {
     local dir
 
     # Check components/ first, then libs/, then top-level packages
-    # (e.g., deployer/) with the standard src/ + tests/ shape.
-    if [[ -d "$REPO_ROOT/components/$name" ]]; then
+    # (e.g., deployer/) with the standard src/ + tests/ shape. The toolkit is
+    # named explicitly: its directory's case differs from its name, which
+    # only a case-insensitive filesystem would let the lookup below find.
+    if [[ "$name" == "wip-toolkit" ]]; then
+        dir="$REPO_ROOT/WIP-Toolkit"
+    elif [[ -d "$REPO_ROOT/components/$name" ]]; then
         dir="$REPO_ROOT/components/$name"
     elif [[ -d "$REPO_ROOT/libs/$name" ]]; then
         dir="$REPO_ROOT/libs/$name"

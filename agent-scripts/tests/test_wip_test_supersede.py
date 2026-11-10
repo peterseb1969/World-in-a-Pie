@@ -87,6 +87,16 @@ class TestWatchPaths:
         mine, _ = _repos(tmp_path)
         assert upstream_overlap.watch_paths(mine, "all") == [""]
 
+    def test_the_toolkit_watches_the_same_paths_under_either_spelling(self, tmp_path):
+        # Its directory is WIP-Toolkit; its rules are keyed wip-toolkit. Under
+        # the directory's spelling it used to watch only its own directory,
+        # missing wip-archive and the four services its integration suite runs.
+        mine, _ = _repos(tmp_path)
+        (mine / "WIP-Toolkit").mkdir()
+        lower = upstream_overlap.watch_paths(mine, "wip-toolkit")
+        assert upstream_overlap.watch_paths(mine, "WIP-Toolkit") == lower
+        assert {"WIP-Toolkit", "libs/wip-archive", "components/document-store"} <= set(lower)
+
 
 class TestOverlapCheck:
     def test_nothing_came_in_is_clean(self, tmp_path):
