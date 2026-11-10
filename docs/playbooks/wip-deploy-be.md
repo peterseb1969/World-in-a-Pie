@@ -49,7 +49,12 @@ dex passwords, …), and **`deployment.deployer-state`** — the persisted spec.
 Post-mutation failures (e.g. health-wait timeout after containers were
 recreated) still persist the new spec; only pre-mutation failures (render
 error, build failure, missing binary) keep the previous state as
-last-known-good. If `status`/`add-app` ever claim a different target than
+last-known-good. A failure *inside* `compose up` is decided by evidence rather
+than position (CASE-1228 item 5b): the install's containers (name + id) are
+compared with how they stood before the wipe, so a pull that never resolved —
+which creates no container and stops none — leaves the old spec in place instead
+of recording a tag that never ran, while anything that did move the stack
+persists the new one. If `status`/`add-app` ever claim a different target than
 what's running, you're on a pre-CASE-455 state file — re-run the exact
 install command once green to heal it.
 

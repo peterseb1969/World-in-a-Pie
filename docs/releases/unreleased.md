@@ -25,6 +25,19 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `~/.wip-deploy/<name>/` used to render app containers with no CA mount and
   say nothing; to repair one, re-run `import-bundle` with that install's
   `--install-dir` and re-render it.
+- **An install that failed at the image pull no longer records a tag it never
+  ran.** Whether a failed apply still persists the new spec was decided by
+  position — anything from `compose up` onward counted as a change — but
+  `compose up` pulls first, and a pull that never resolves creates no container
+  and stops none. The persisted state then named an image the stack never ran,
+  and the stale override resurfaced the day the app moved to a registry image.
+  A failure before an up returns is now decided by evidence: this install's
+  containers (name + id, since a recreate keeps the name and moves the id) are
+  compared with how they stood before the wipe — moved → the new spec is
+  persisted as CASE-455 requires, identical → the previous state stays as the
+  truthful last-known-good, runtime unaskable → persisted, as before. k8s
+  applies are unchanged: `kubectl apply` lands objects as it walks them, so a
+  mid-apply failure genuinely is a change.
 - `install --no-wait` (and every mutating verb with it) says "applied;
   health not checked" in yellow instead of a green "✓ Install complete."
 - `remove-app` removes the app's container only after the apply succeeds

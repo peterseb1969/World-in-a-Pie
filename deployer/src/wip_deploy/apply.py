@@ -74,6 +74,13 @@ class ApplyError(Exception):
     Pre-mutation failures (render errors, missing binaries, build
     failures) keep `mutated=False` — there the old state is still the
     truthful last-known-good.
+
+    On compose, a failure before `compose up` returns is decided by
+    evidence rather than by position (CASE-1228 item 5b): the install's
+    containers are compared with how they stood before the wipe, so a pull
+    that never resolved — which creates nothing and stops nothing — is not
+    reported as a change. Where the runtime could not be asked, the blanket
+    assumption stands and the flag is True.
     """
 
     def __init__(self, message: str, *, mutated: bool = False):
@@ -171,16 +178,29 @@ def apply_compose(
     # host never is. Never on a scoped mutation (CASE-443): it would take
     # down the containers the scope promises to leave untouched.
     compose_file = install_dir / "docker-compose.yaml"
+    # This install's container identity, taken before the first step that can
+    # destroy a container — the evidence for whether the up below moved the
+    # running deployment. None when no runtime can be asked.
+    runtime_cli = _container_cli()
+    containers_before = (
+        _project_container_state(runtime_cli, deployment.metadata.name)
+        if runtime_cli is not None
+        else None
+    )
     if services_scope is None:
         _clear_for_full_up(deployment, compose_file)
 
     # CASE-455: everything from `compose up` onward changes the running
     # deployment — any ApplyError beyond this point is stamped mutated=True
     # so the CLI persists the new spec instead of keeping a stale
-    # "last-known-good" that no longer describes reality.
+    # "last-known-good" that no longer describes reality. The stamp is
+    # evidence-checked at the one step where beginning is not yet changing; see
+    # the except below (CASE-1228 item 5b).
+    up_returned = False
     try:
         if services_scope is None:
             _run_up(install_dir, compose_cmd, force_recreate=force_build)
+            up_returned = True
         elif services_scope:
             _run_up(
                 install_dir,
@@ -188,6 +208,7 @@ def apply_compose(
                 force_recreate=force_build,
                 services=services_scope,
             )
+            up_returned = True
         # else: empty scope — config-only mutation (e.g. remove-app, whose
         # container was already removed); nothing to bring up. NB: an empty
         # list must NOT reach _run_up — `up -d` with no service args is the
@@ -253,7 +274,28 @@ def apply_compose(
                 components, apps, deployment
             )
     except ApplyError as e:
+        # CASE-1228 item 5b narrows that blanket stamp where it can be wrong
+        # before anything moves: `compose up` pulls first, and a pull that never
+        # resolved creates no container and stops none. Persisting the new spec
+        # there pins an image that never ran — the stale override CASE-1228 item
+        # 5a refuses at the verb, arriving by the back door. So while no up has
+        # returned, the stamp is decided by evidence: if this install's
+        # containers are exactly what they stood as before the wipe, the running
+        # deployment did not move and the old spec is still the truthful
+        # last-known-good. Once an up has returned the blanket stamp applies (the
+        # stack really was recreated), and so it applies whenever the runtime
+        # could not be asked — an unasked question is not evidence that nothing
+        # changed.
         e.mutated = True
+        if (
+            not up_returned
+            and containers_before is not None
+            and runtime_cli is not None
+            and _project_container_state(
+                runtime_cli, deployment.metadata.name
+            ) == containers_before
+        ):
+            e.mutated = False
         raise
 
     return ApplyResult(
@@ -313,6 +355,33 @@ def _project_containers(cli: str, install: str) -> list[str] | None:
     if listing.returncode != 0:
         return None
     return [n.strip() for n in listing.stdout.splitlines() if n.strip()]
+
+
+def _project_container_state(cli: str, install: str) -> frozenset[tuple[str, str]] | None:
+    """This install's containers as ``(name, id)`` pairs; None when the runtime
+    could not be asked.
+
+    The id is what turns this into a change detector: a recreate keeps the
+    container name and moves the id, so two equal snapshots mean no container of
+    this install was created, removed or recreated in between — while a
+    name-only comparison would call a full recreate "unchanged".
+    """
+    listing = subprocess.run(
+        [cli, "ps", "-a", "--filter", f"label=com.docker.compose.project={install}",
+         "--format", "{{.Id}} {{.Names}}"],
+        capture_output=True, text=True,
+    )
+    if listing.returncode != 0:
+        return None
+    # Container names match [a-zA-Z0-9_.-], so the first space separates the two
+    # fields and nothing after it can belong to the name.
+    rows = {
+        (name, cid)
+        for line in listing.stdout.splitlines()
+        if line.strip()
+        for cid, _, name in [line.strip().partition(" ")]
+    }
+    return frozenset(rows)
 
 
 def _clear_for_full_up(deployment: Deployment, compose_file: Path) -> None:
