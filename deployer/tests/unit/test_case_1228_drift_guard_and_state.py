@@ -299,6 +299,34 @@ class TestDriftGuardCoverage:
         curr.spec.apply.timeout_seconds = 30
         assert _diff_spec_for_identity_drift(prev, curr) == []
 
+    def test_variant_reverting_stops_a_real_rerun(self, tmp_path: Path) -> None:
+        """The security-relevant shape of item 1.
+
+        `--variant prod` is what injects WIP_VARIANT=prod, and every backend
+        service's production-safety guard returns early unless it reads exactly
+        that (wip_auth/security.py, auth_gateway/config.py; the render side is
+        pinned by config_gen/test_case_615.py). A re-run that omits --variant
+        therefore does not drop a preference, it disarms the posture of the whole
+        install — which is why it has to abort rather than proceed.
+        """
+        _persist(tmp_path, _deployment(users=[], variant="prod"))
+        result = runner.invoke(
+            app,
+            [
+                "install",
+                "--name", "guard",
+                "--install-dir", str(tmp_path),
+                "--hostname", "wip.localhost",
+                "--auth-mode", "api-key-only",
+                "--no-auth-gateway",
+                "--data-dir", DATA_DIR,
+                # --variant omitted: that omission is the whole test
+            ],
+        )
+        assert result.exit_code == 2
+        assert "variant" in result.output
+        assert "prod → dev" in result.output
+
     def test_data_dir_reverting_stops_a_real_rerun(self, tmp_path: Path) -> None:
         """The production shape of item 1: a saved install with a custom data
         directory, re-run without --data-dir."""
