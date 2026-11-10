@@ -508,8 +508,9 @@ def captured_search_service():
 
     captured: dict[str, SearchRequest] = {}
 
-    async def _capture(req: SearchRequest) -> SearchResponse:
+    async def _capture(req: SearchRequest, within=None) -> SearchResponse:
         captured["request"] = req
+        captured["within"] = within
         return SearchResponse(query=req.query, results={}, total=0)
 
     svc = MagicMock()

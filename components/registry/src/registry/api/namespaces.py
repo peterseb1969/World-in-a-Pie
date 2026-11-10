@@ -35,6 +35,7 @@ from ..models.namespace import (
     set_unless_locked,
 )
 from ..services.auth import require_admin_key, require_api_key
+from ..services.event_bus import access_changed
 from ..services.id_prefixes import (
     IdPrefixError,
     claim_for_write,
@@ -87,6 +88,10 @@ async def _create_or_lost_race(ns: Namespace) -> Namespace | None:
     name share — so the race is told by re-reading the prefix, not by the
     index name. Any other duplicate key propagates (an id prefix held by
     another namespace is mapped by _id_prefix_errors).
+
+    A created namespace is announced as an access change: an administrator
+    reads every namespace but a locked one, and the services' cached lists
+    of those must take in the new one at once, not when they expire.
     """
     try:
         await ns.create()
@@ -95,6 +100,7 @@ async def _create_or_lost_race(ns: Namespace) -> Namespace | None:
         if winner is None:
             raise
         return winner
+    await access_changed(keys=False)
     return None
 
 

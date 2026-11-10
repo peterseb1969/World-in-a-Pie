@@ -37,7 +37,7 @@ class _Target:
     def __init__(self, owner, missing=False):
         self.owner, self.missing = owner, missing
 
-    async def get_referenced_by(self, entity_type, entity_id, limit, namespace):
+    async def get_referenced_by(self, entity_type, entity_id, limit, namespace, within=None):
         if self.missing:
             r = ReferencedByResponse(
                 entity_type=entity_type, entity_id=entity_id,

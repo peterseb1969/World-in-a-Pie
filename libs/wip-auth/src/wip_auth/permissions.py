@@ -328,16 +328,17 @@ async def write_refusals(
 class NamespaceFilter:
     """MongoDB namespace filter resolved from identity and optional namespace param.
 
-    Merge `query` into your MongoDB query dict. Two shapes only:
-    - {} — superadmin, no namespace restriction
-    - {"namespace": {"$in": [...]}} — scoped to specific namespaces
+    Merge `query` into your MongoDB query dict. It always has one shape,
+    {"namespace": {"$in": [...]}}, an administrator's included: there is no
+    unrestricted filter, because a namespace locked for deletion is closed to
+    everyone and must drop out of every listing.
 
     Single-namespace is {"$in": ["ns1"]} — MongoDB optimizes this identically
     to {"namespace": "ns1"}, so callers never need to special-case it.
     """
 
     query: dict = field(default_factory=dict)
-    namespaces: list[str] | None = None  # None = superadmin (all)
+    namespaces: list[str] = field(default_factory=list)
 
 
 async def resolve_namespace_filter(
@@ -355,7 +356,7 @@ async def resolve_namespace_filter(
 
     Returns a NamespaceFilter with:
       - query: dict to merge into MongoDB query
-      - namespaces: the resolved list (for logging/debugging), or None for superadmin
+      - namespaces: the resolved list (for logging/debugging)
 
     Raises:
       HTTPException 404: if explicit namespace is invisible (permission == none)
@@ -372,9 +373,6 @@ async def resolve_namespace_filter(
         )
 
     accessible = await resolve_accessible_namespaces(identity)
-    if accessible is None:
-        # Superadmin: no filter
-        return NamespaceFilter(query={}, namespaces=None)
     if not accessible:
         raise HTTPException(403, "No accessible namespaces")
     if required != "read":
@@ -397,25 +395,25 @@ async def resolve_namespace_filter(
     )
 
 
-async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | None:
-    """Resolve which namespaces an identity can access.
+async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str]:
+    """The prefixes of the namespaces an identity can read: the Registry's
+    answer, cached in-process for 30 seconds.
 
-    Returns None for superadmin (meaning: no filter needed, all namespaces).
-    Returns a list of namespace prefixes for regular users.
-    Uses a 30-second in-process cache for definitive answers.
+    Always a list, a platform administrator's included: the Registry answers
+    an administrator with every namespace except one locked for deletion,
+    which is closed to everyone. A listing that names no namespace filters
+    by this list, so a locked namespace's data drops out of it for every
+    caller. Whether a caller is an administrator is is_superadmin's
+    question, never this list's.
 
     Raises HTTP 503 if the Registry could not be asked, rather than treating
     the outage as "no namespaces" (which would read as 403 or empty results).
     """
-    if is_superadmin(identity):
-        return None
-
     cache_key = _cache_key(identity)
 
-    # Use sentinel to distinguish "not cached" from "cached None"
-    cached: list[str] | object | None = _accessible_cache.get(cache_key, _SENTINEL)
-    if cached is not _SENTINEL:
-        return cached  # type: ignore[return-value]
+    cached: list[str] | None = _accessible_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     namespaces = await _fetch_accessible_from_registry(identity)
     if namespaces is _UNAVAILABLE_LIST:
@@ -424,13 +422,12 @@ async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | N
     return namespaces
 
 
-_SENTINEL = object()
 # Returned by _fetch_accessible_from_registry when the Registry could not be
 # asked; distinct from [] (a definitive "no namespaces").
 _UNAVAILABLE_LIST: list[str] = []
 
 
-async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] | None:
+async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str]:
     """Call Registry's internal accessible-namespaces endpoint."""
     import httpx
 
@@ -457,10 +454,7 @@ async def _fetch_accessible_from_registry(identity: UserIdentity) -> list[str] |
                     resp.status_code, identity.user_id,
                 )
                 return _UNAVAILABLE_LIST
-            data = resp.json()
-            if data.get("is_superadmin"):
-                return None
-            namespaces = data.get("namespaces")
+            namespaces = resp.json().get("namespaces")
             if not isinstance(namespaces, list):
                 return _UNAVAILABLE_LIST
             return cast(list[str], namespaces)

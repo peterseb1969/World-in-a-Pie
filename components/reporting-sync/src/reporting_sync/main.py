@@ -32,6 +32,7 @@ from wip_auth import (
     declare_api_key_security,
     get_identity_string,
     install_liveness,
+    is_superadmin,
     require_api_key,
     require_groups,
     resolve_accessible_namespaces,
@@ -820,7 +821,7 @@ async def _caller_read_connection(identity: UserIdentity) -> AsyncIterator[async
             detail="Reporting SQL for namespace-scoped keys is not configured on this install",
         )
     schemas = []
-    for namespace in await resolve_accessible_namespaces(identity) or []:
+    for namespace in await resolve_accessible_namespaces(identity):
         try:
             schemas.append(SchemaManager._safe_ident(namespace))
         except ValueError:
@@ -839,27 +840,30 @@ async def _caller_read_connection(identity: UserIdentity) -> AsyncIterator[async
 
 async def _effective_namespace(
     identity: UserIdentity, requested: str | None
-) -> str | None:
-    """The single namespace a listing runs in, or None for "all namespaces".
+) -> tuple[str | None, list[str]]:
+    """The single namespace a listing runs in (None: every namespace the
+    caller can read), and the namespaces the caller can read.
 
     reporting-sync reads the stores with its own service key, so a listing
     must be scoped here or it returns every namespace's rows. The rule is
     the platform's multi-namespace-key convention:
 
     - an explicit namespace must be readable (404 when invisible);
-    - a superadmin without one keeps the all-namespaces listing;
+    - an administrator without one lists every namespace it can read: all
+      but one locked for deletion, which is closed to everyone, so a
+      reporting table is read only in the namespaces of the second value;
     - a key that can read exactly one namespace gets it implicitly;
     - a key that can read several must say which (400), and one that
       can read none is refused (403).
     """
     if requested:
         await check_namespace_permission(identity, requested, "read")
-        return requested
+        return requested, [requested]
     accessible = await resolve_accessible_namespaces(identity)
-    if accessible is None:
-        return None
+    if is_superadmin(identity):
+        return None, accessible
     if len(accessible) == 1:
-        return accessible[0]
+        return accessible[0], accessible
     if not accessible:
         raise HTTPException(status_code=403, detail="No accessible namespaces")
     raise HTTPException(
@@ -945,11 +949,12 @@ async def get_sync_status(
 
     # Any authenticated caller may poll status (@wip/client's awaitSync does),
     # but dropped events name a namespace and an entity: show a caller only
-    # the drops in namespaces it can read. None means unrestricted.
-    accessible = await resolve_accessible_namespaces(identity)
-    if accessible is None:
+    # the drops in namespaces it can read. An administrator sees every drop,
+    # a namespace being deleted included: they are the sync's own
+    # diagnostics, not the namespace's data.
+    if is_superadmin(identity):
         return state.sync_status
-    visible = set(accessible)
+    visible = set(await resolve_accessible_namespaces(identity))
     return state.sync_status.model_copy(update={
         "recent_drops": [
             d for d in state.sync_status.recent_drops if d.namespace in visible
@@ -1942,14 +1947,14 @@ async def unified_search(
 
     # Authorize the namespace the search will actually use — the URL
     # override or the body field — and scope an unqualified search.
-    effective = await _effective_namespace(identity, request.namespace)
+    effective, within = await _effective_namespace(identity, request.namespace)
     if effective != request.namespace:
         request = request.model_copy(update={"namespace": effective})
 
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
 
-    return await state.search_service.search(request)
+    return await state.search_service.search(request, within=within)
 
 
 @router.get("/activity/recent", response_model=ActivityResponse)
@@ -1975,7 +1980,9 @@ async def get_recent_activity(
     Returns:
         ActivityResponse with list of activities sorted by timestamp (newest first)
     """
-    effective = await _effective_namespace(identity, namespace)
+    # Activity is read from the stores, which answer within the readable
+    # namespaces of reporting-sync's own key.
+    effective, _ = await _effective_namespace(identity, namespace)
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
 
@@ -2012,7 +2019,7 @@ async def get_term_documents(
     Returns:
         TermDocumentsResponse with list of referencing documents
     """
-    effective = await _effective_namespace(identity, namespace)
+    effective, within = await _effective_namespace(identity, namespace)
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
 
@@ -2021,7 +2028,7 @@ async def get_term_documents(
 
     try:
         return await state.search_service.get_term_documents(
-            term_id=term_id, limit=limit, namespace=effective
+            term_id=term_id, limit=limit, namespace=effective, within=within
         )
     except (UpstreamError, httpx.HTTPError, asyncpg.PostgresError, OSError) as e:
         logger.error("Term documents lookup failed for %s: %s", term_id, e)
@@ -2065,16 +2072,18 @@ async def get_entity_references(
     )
     # The entity is fetched with the service key, so authorize on the
     # namespace it actually lives in. A caller without read on it is told
-    # the entity is not found; an entity whose namespace is unknown is only
-    # shown to unrestricted callers.
+    # the entity is not found (an administrator too, on a namespace locked
+    # for deletion); an entity whose namespace is unknown is only shown to
+    # administrators.
     if result.entity is not None:
-        accessible = await resolve_accessible_namespaces(identity)
-        if accessible is not None:
-            owner = result.entity.namespace
+        owner = result.entity.namespace
+        if owner is not None or not is_superadmin(identity):
             if owner is None:
                 raise HTTPException(status_code=404, detail="Entity not found")
             await check_namespace_permission(identity, owner, "read")
-            await _hide_unreadable_targets(result.entity, set(accessible))
+            await _hide_unreadable_targets(
+                result.entity, set(await resolve_accessible_namespaces(identity))
+            )
     return result
 
 
@@ -2150,7 +2159,7 @@ async def get_referenced_by(
     Returns:
         ReferencedByResponse with list of referencing entities
     """
-    effective = await _effective_namespace(identity, namespace)
+    effective, within = await _effective_namespace(identity, namespace)
     if not state.search_service:
         raise HTTPException(status_code=503, detail="Search service not available")
 
@@ -2166,12 +2175,16 @@ async def get_referenced_by(
         entity_id=entity_id,
         limit=limit,
         namespace=effective,
+        within=within,
     )
     # The target is read with the service key and its value and label are
     # in the response, so the caller must be able to read the namespace it
-    # lives in. A missing target and an unreadable one answer the same 404.
-    if await resolve_accessible_namespaces(identity) is not None:
-        owner = result._target_namespace
+    # lives in (an administrator too: a namespace locked for deletion is
+    # closed to everyone). A missing target and an unreadable one answer the
+    # same 404; a target whose namespace is unknown is shown to
+    # administrators only.
+    owner = result._target_namespace
+    if owner is not None or not is_superadmin(identity):
         if owner is None:
             if result._target_missing:
                 raise HTTPException(status_code=404, detail="Entity not found")
@@ -2210,7 +2223,7 @@ async def list_tables(
     Filter by ``namespace`` and/or bare ``table_name`` (any relation name;
     detail mode returns its columns).
     """
-    namespace = await _effective_namespace(identity, namespace)
+    namespace, within = await _effective_namespace(identity, namespace)
     if not state.postgres_pool:
         raise HTTPException(status_code=503, detail="PostgreSQL not connected")
 
@@ -2234,7 +2247,7 @@ async def list_tables(
         for row in raw_tables:
             schema = row["table_schema"]
             tname = row["table_name"]
-            if not _listed_relation(schema, tname, namespace, table_name):
+            if not _listed_relation(schema, tname, namespace, table_name, within):
                 continue
             is_view = row["table_type"] == "VIEW"
             entry, count = await _relation_entry(
@@ -2281,13 +2294,18 @@ def _entity_of_relation(tname: str) -> str | None:
 _VERSION_TABLE_RE = re.compile(r"^(doc_.+)__v(\d+)$")
 
 
-def _listed_relation(schema: str, tname: str, namespace: str | None, table_name: str | None) -> bool:
+def _listed_relation(
+    schema: str, tname: str, namespace: str | None, table_name: str | None,
+    within: list[str],
+) -> bool:
     """Whether the listing shows a relation: a doc_* relation or a
-    definitions table, in the requested namespace, matching the requested
-    name."""
+    definitions table, in the requested namespace (else in one the caller
+    can read), matching the requested name."""
     if not (tname.startswith("doc_") or tname in _LISTED_EXACT):
         return False
     if namespace and schema != namespace:
+        return False
+    if schema not in within:
         return False
     return not (table_name and tname != table_name)
 

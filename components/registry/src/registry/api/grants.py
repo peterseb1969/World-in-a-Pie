@@ -276,20 +276,26 @@ async def _best_grant(namespace: str, subjects: list[tuple[str, str]]) -> str:
             best = grant.permission
     return best
 
-async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str] | None:
-    """Namespaces a directly-calling identity may read, or None for superadmin.
+async def _unlocked_namespaces() -> list[str]:
+    """Every namespace an administrator reads: all but those locked for
+    deletion, which are closed to everyone."""
+    return [ns.prefix for ns in await Namespace.find({"status": {"$ne": "locked"}}).to_list()]
 
-    None means "no restriction" (superadmin) — callers should apply no
-    namespace filter. A concrete list (possibly empty) means "restrict reads
-    to exactly these prefixes." Used by the registry's own enumeration
-    endpoints to scope listings to the caller's grants, the same way the
-    stores scope their listings via wip_auth.permissions. This is the
-    in-process twin of the service-to-service ``/my/accessible-namespaces``
-    endpoint: the identity is already the direct caller here, so there is no
-    synthetic-identity reconstruction and no HTTP self-call.
+
+async def resolve_accessible_namespaces(identity: UserIdentity) -> list[str]:
+    """The prefixes of the namespaces a directly-calling identity may read.
+
+    Always a list: an administrator gets every namespace except one locked
+    for deletion, so a listing filtered by it drops a locked namespace for
+    every caller. Used by the registry's own enumeration endpoints to scope
+    listings to the caller's grants, the same way the stores scope their
+    listings via wip_auth.permissions. This is the in-process twin of the
+    service-to-service ``/my/accessible-namespaces`` endpoint: the identity
+    is already the direct caller here, so there is no synthetic-identity
+    reconstruction and no HTTP self-call.
     """
     if is_superadmin(identity):
-        return None
+        return await _unlocked_namespaces()
 
     all_ns = await Namespace.find({"status": "active"}).to_list()
     return [
@@ -337,10 +343,11 @@ class NamespaceAccess:
             >= _PERMISSION_LEVELS[required]
         )
 
-    async def readable_namespaces(self) -> list[str] | None:
-        """The namespaces this caller may read, or None for no restriction."""
+    async def readable_namespaces(self) -> list[str]:
+        """The namespaces this caller may read. A privileged caller reads
+        every namespace except one locked for deletion."""
         if self.unrestricted:
-            return None
+            return await _unlocked_namespaces()
         return await resolve_accessible_namespaces(self._identity)
 
 
@@ -726,7 +733,9 @@ async def accessible_namespaces_internal(
     """Internal endpoint for services to get a user's accessible namespaces.
 
     Returns the list of namespace prefixes the user can access, plus
-    whether they are a superadmin (meaning: access to everything).
+    whether they are a superadmin. A superadmin's list is every namespace
+    except one locked for deletion: the list, not the flag, is what a
+    listing filters by.
 
     Groups are read from X-User-Groups header (preferred) or groups query param.
 
@@ -750,7 +759,7 @@ async def accessible_namespaces_internal(
     )
 
     if is_superadmin(synthetic):
-        return {"namespaces": None, "is_superadmin": True}
+        return {"namespaces": await _unlocked_namespaces(), "is_superadmin": True}
 
     all_ns = await Namespace.find({"status": "active"}).to_list()
     accessible = []

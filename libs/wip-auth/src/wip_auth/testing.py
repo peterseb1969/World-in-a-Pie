@@ -712,7 +712,13 @@ def registry_held_grants(identity: Any) -> dict[str, str]:
     return {**{ns: "read" for ns in claims.get("namespaces") or []}, **grants}
 
 
-def answer_permissions_from_declared_grants(monkeypatch: Any) -> None:
+def answer_permissions_from_declared_grants(
+    monkeypatch: Any,
+    *,
+    admin_namespaces: collections.abc.Callable[
+        [], collections.abc.Awaitable[collections.abc.Iterable[str]]
+    ],
+) -> None:
     """Make wip_auth.permissions' Registry lookups answer from the caller's
     declared key grants, as the real Registry does for an imported key.
 
@@ -720,8 +726,11 @@ def answer_permissions_from_declared_grants(monkeypatch: Any) -> None:
     run without a Registry to ask: every permission is the Registry's answer
     (a service never resolves a key's grants itself), so the suite states
     that answer. A platform administrator gets admin, as from the Registry
-    on a namespace that is not locked; a caller with no declared grants gets
-    no access.
+    on a namespace that is not locked, and reads the namespaces
+    ``admin_namespaces`` names — the Registry's "every namespace but a
+    locked one", which a suite without a Registry states as the namespaces
+    its data lives in ("wip" is always among them, as on every install).
+    A caller with no declared grants gets no access.
     """
     from . import permissions
 
@@ -731,7 +740,13 @@ def answer_permissions_from_declared_grants(monkeypatch: Any) -> None:
         return registry_held_grants(identity).get(namespace, "none")
 
     async def accessible(identity: Any) -> list[str]:
+        if permissions.is_superadmin(identity):
+            # "wip" always exists and is never locked.
+            return sorted({"wip", *await admin_namespaces()})
         return sorted(registry_held_grants(identity))
 
     monkeypatch.setattr(permissions, "_fetch_permission_from_registry", permission)
     monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", accessible)
+    # An administrator's answer follows each test's data, so no answer an
+    # earlier test cached may stand in for it.
+    permissions.clear_permission_cache()

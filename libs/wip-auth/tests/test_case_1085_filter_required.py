@@ -92,11 +92,13 @@ async def test_read_is_unchanged(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_superadmin_has_no_filter(monkeypatch):
-    _registry(monkeypatch, {})
+async def test_superadmin_filters_by_the_registrys_list(monkeypatch):
+    # An administrator holds admin on every namespace the Registry lists for
+    # it (all but one locked for deletion), and the filter is that list.
+    _registry(monkeypatch, {"a": "admin", "b": "admin"})
     nsf = await resolve_namespace_filter(_key([], groups=["wip-admins"]), None, "write")
-    assert nsf.namespaces is None
-    assert nsf.query == {}
+    assert nsf.namespaces == ["a", "b"]
+    assert nsf.query == {"namespace": {"$in": ["a", "b"]}}
 
 
 @pytest.mark.asyncio

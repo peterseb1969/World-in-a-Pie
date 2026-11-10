@@ -124,7 +124,7 @@ async def test_term_documents_scan_only_the_namespace_schema(namespace, monkeypa
     await SearchService(_pool_capturing(calls)).get_term_documents("term-1", 10, namespace)
     sql, args = calls[0]
     assert "c.table_schema = $2" in sql
-    assert args == ("term_references_json", namespace)
+    assert args == ("term_references_json", namespace, None)
 
 
 @pytest.mark.asyncio
@@ -132,7 +132,7 @@ async def test_referenced_by_passes_the_namespace_to_each_kind(monkeypatch):
     svc = SearchService(None)
     seen = {}
     for kind in ("template", "terminology", "term", "document", "file"):
-        async def handler(entity_id, limit, namespace=None, _kind=kind):
+        async def handler(entity_id, limit, namespace=None, within=None, _kind=kind):
             seen[_kind] = namespace
             return MagicMock()
         monkeypatch.setattr(svc, f"_get_{kind}_referenced_by", handler)

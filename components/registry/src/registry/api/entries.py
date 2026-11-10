@@ -226,12 +226,12 @@ async def browse_entries(
     # than 404, preserving pagination shape while leaking nothing.
     accessible = await resolve_accessible_namespaces(identity)
     if namespace:
-        if accessible is not None and namespace not in accessible:
+        if namespace not in accessible:
             return BrowseEntriesResponse(
                 items=[], total=0, page=page, page_size=page_size, pages=0
             )
         query["namespace"] = namespace
-    elif accessible is not None:
+    else:
         query["namespace"] = {"$in": accessible}
 
     if entity_type:
@@ -311,7 +311,7 @@ async def unified_search(
     # stays cross-namespace by design; unified search does not.
     accessible = await resolve_accessible_namespaces(identity)
     if namespace:
-        if accessible is not None and namespace not in accessible:
+        if namespace not in accessible:
             return UnifiedSearchResponse(
                 query=q_stripped,
                 items=[],
@@ -320,7 +320,7 @@ async def unified_search(
                 page_size=page_size,
             )
         query["namespace"] = namespace
-    elif accessible is not None:
+    else:
         query["namespace"] = {"$in": accessible}
 
     if entity_type:

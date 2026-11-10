@@ -98,13 +98,51 @@ def real_has_active_version(monkeypatch):
     monkeypatch.setattr(SyncWorker, "_has_active_version", _REAL_HAS_ACTIVE_VERSION)
 
 
+def answer_admin_namespaces(monkeypatch, namespaces: list[str]) -> None:
+    """For a test whose PostgreSQL is a mock: the Registry answers an
+    administrator with these namespaces (every one but a locked one)."""
+    import wip_auth.permissions as permissions
+
+    answer_others = permissions._fetch_accessible_from_registry
+
+    async def accessible(identity):
+        if permissions.is_superadmin(identity):
+            return sorted(namespaces)
+        return await answer_others(identity)
+
+    monkeypatch.setattr(permissions, "_fetch_accessible_from_registry", accessible)
+
+
 @pytest.fixture(autouse=True)
 def _registry_permission_answers(monkeypatch):
     """Permission lookups answer each test key's declared grants, as the
     Registry does for an imported key; the Registry URL above is unroutable."""
     from wip_auth.testing import answer_permissions_from_declared_grants
 
-    answer_permissions_from_declared_grants(monkeypatch)
+    async def namespaces_with_data():
+        # Every namespace a test key names, and every namespace schema in
+        # PostgreSQL when the test has one.
+        from reporting_sync.main import state
+
+        found: set[str] = set()
+        for key in json.loads(os.environ.get("WIP_AUTH_API_KEYS_JSON", "[]")):
+            found.update(key.get("namespaces") or [])
+            found.update((key.get("grants") or {}).keys())
+        # Only a real pool is asked: a test that mocks one states the
+        # Registry's answer itself (answer_admin_namespaces).
+        if isinstance(state.postgres_pool, asyncpg.Pool):
+            async with state.postgres_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT schema_name FROM information_schema.schemata "
+                    "WHERE schema_name NOT IN ('public', 'information_schema') "
+                    "AND schema_name NOT LIKE 'pg\\_%'"
+                )
+            found.update(r["schema_name"] for r in rows)
+        return found
+
+    answer_permissions_from_declared_grants(
+        monkeypatch, admin_namespaces=namespaces_with_data,
+    )
 
 
 # Connection URIs for integration tests (set in CI or locally)

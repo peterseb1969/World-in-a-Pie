@@ -9,6 +9,8 @@ from httpx import ASGITransport, AsyncClient
 from reporting_sync.batch_sync import BatchSyncService
 from reporting_sync.main import app, state
 
+from .conftest import answer_admin_namespaces
+
 # =========================================================================
 # Fixtures
 # =========================================================================
@@ -28,9 +30,10 @@ def _mock_pool():
 
 
 @pytest.fixture
-def mock_state():
+def mock_state(monkeypatch):
     """Patch the global state with a mock postgres pool."""
     pool, conn = _mock_pool()
+    answer_admin_namespaces(monkeypatch, ["wip"])
     original_pool, original_read = state.postgres_pool, state.read_pool
     # Role separation is not under test here: one pool serves both.
     state.postgres_pool = state.read_pool = pool

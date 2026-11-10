@@ -27,6 +27,8 @@ from httpx import ASGITransport, AsyncClient
 from reporting_sync.batch_sync import BatchSyncService
 from reporting_sync.main import _is_allowed_table, app, state
 
+from .conftest import answer_admin_namespaces
+
 
 def _mock_pool():
     pool = MagicMock()
@@ -39,8 +41,10 @@ def _mock_pool():
 
 
 @pytest.fixture
-def mock_state():
+def mock_state(monkeypatch):
     pool, conn = _mock_pool()
+    # The schemas the mocked catalogs hold (here and in test_case_1161).
+    answer_admin_namespaces(monkeypatch, ["ns1", "ns2", "wip"])
     original_pool = state.postgres_pool
     state.postgres_pool = pool
     yield pool, conn

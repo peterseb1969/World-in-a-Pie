@@ -8,6 +8,7 @@ from pymongo.errors import OperationFailure
 from wip_auth import (
     UserIdentity,
     check_namespace_permission,
+    is_superadmin,
     resolve_accessible_namespaces,
     resolve_bulk_ids,
     resolve_namespace_filter,
@@ -326,7 +327,8 @@ async def migrate_documents(
     nsf = await resolve_namespace_filter(identity, namespace, "write")
     if namespace:
         ns = namespace
-    elif nsf.namespaces and len(nsf.namespaces) == 1:
+    elif len(nsf.namespaces) == 1 and not is_superadmin(identity):
+    # A key that can read one namespace has it implied; an administrator names it.
         ns = nsf.namespaces[0]
     else:
         raise HTTPException(
@@ -393,7 +395,7 @@ async def get_template_impact_stats(
     nsf = await resolve_namespace_filter(identity, namespace, "read")
     if namespace:
         ns = namespace
-    elif nsf.namespaces and len(nsf.namespaces) == 1:
+    elif len(nsf.namespaces) == 1 and not is_superadmin(identity):
         ns = nsf.namespaces[0]
     else:
         raise HTTPException(
@@ -443,7 +445,7 @@ async def get_template_facets(
     nsf = await resolve_namespace_filter(identity, namespace, "read")
     if namespace:
         ns = namespace
-    elif nsf.namespaces and len(nsf.namespaces) == 1:
+    elif len(nsf.namespaces) == 1 and not is_superadmin(identity):
         ns = nsf.namespaces[0]
     else:
         raise HTTPException(

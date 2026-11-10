@@ -178,15 +178,11 @@ async def get_recent_audit_log(
     identity: UserIdentity = Depends(require_api_key)
 ) -> AuditLogResponse:
     """Get recent audit log entries across all terminologies."""
-    # CASE-384 follow-up — restrict to namespaces the caller can read.
-    # Superadmin gets None (no filter). Audit logs join to TermAuditLog
-    # which stores namespace on each row.
-    accessible = await resolve_accessible_namespaces(identity)
-
-    query: dict = {}
+    # Restrict to the namespaces the caller can read (for an administrator,
+    # every namespace but one locked for deletion). Audit log rows carry
+    # their namespace.
+    query: dict = {"namespace": {"$in": await resolve_accessible_namespaces(identity)}}
     if action:
         query["action"] = action
-    if accessible is not None:
-        query["namespace"] = {"$in": accessible}
 
     return await _page(query, page, page_size)

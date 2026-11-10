@@ -25,7 +25,7 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient
 
-from registry.api.grants import resolve_accessible_namespaces
+from registry.api.grants import NamespaceAccess, resolve_accessible_namespaces
 from registry.main import app
 from registry.models.entry import RegistryEntry
 from registry.models.grant import NamespaceGrant
@@ -74,15 +74,35 @@ async def _seed_entry(namespace: str, value: str) -> None:
 
 class TestResolveAccessibleNamespaces:
     @pytest.mark.asyncio
-    async def test_superadmin_returns_none(self, client: AsyncClient):
-        """wip-admins → None means 'no filter' (see everything)."""
+    async def test_superadmin_reads_every_namespace_but_a_locked_one(self, client: AsyncClient):
+        """wip-admins → every namespace (archived included) except one
+        locked for deletion, which is closed to everyone (CASE-1226)."""
+        await Namespace(prefix="case1226-open").insert()
+        await Namespace(prefix="case1226-shelved", status="archived").insert()
+        await Namespace(prefix="case1226-locked", status="locked").insert()
         admin = UserIdentity(
             user_id="apikey:admin",
             username="admin",
             groups=["wip-admins"],
             auth_method="api_key",
         )
-        assert await resolve_accessible_namespaces(admin) is None
+        accessible = await resolve_accessible_namespaces(admin)
+        assert "case1226-open" in accessible
+        assert "case1226-shelved" in accessible
+        assert "case1226-locked" not in accessible
+
+    @pytest.mark.asyncio
+    async def test_a_service_key_searches_every_namespace_but_a_locked_one(self, client: AsyncClient):
+        """The Registry's own search doors filter privileged callers by the
+        same list (CASE-1226): wip-services is unrestricted, not unfiltered."""
+        await Namespace(prefix="case1226-svc-open").insert()
+        await Namespace(prefix="case1226-svc-locked", status="locked").insert()
+        service = UserIdentity(
+            user_id="apikey:svc", username="svc", groups=["wip-services"], auth_method="api_key",
+        )
+        readable = await NamespaceAccess(service).readable_namespaces()
+        assert "case1226-svc-open" in readable
+        assert "case1226-svc-locked" not in readable
 
     @pytest.mark.asyncio
     async def test_scoped_key_returns_only_in_scope(self, client: AsyncClient):

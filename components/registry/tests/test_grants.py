@@ -5,6 +5,7 @@ import pytest_asyncio
 from httpx import AsyncClient
 
 from registry.models.grant import NamespaceGrant
+from registry.models.namespace import Namespace
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -616,7 +617,9 @@ class TestAccessibleNamespacesInternal:
 
     @pytest.mark.asyncio
     async def test_accessible_namespaces_superadmin(self, client: AsyncClient, auth_headers: dict):
-        """Test that superadmin user gets is_superadmin=True with no namespace list."""
+        """A superadmin gets is_superadmin=True and every namespace but one
+        locked for deletion (CASE-1226): the list is what a listing filters by."""
+        await Namespace(prefix="case1226-locked", status="locked").insert()
         response = await client.get(
             "/api/registry/my/accessible-namespaces",
             params={
@@ -628,7 +631,8 @@ class TestAccessibleNamespacesInternal:
         assert response.status_code == 200
         data = response.json()
         assert data["is_superadmin"] is True
-        assert data["namespaces"] is None
+        assert "default" in data["namespaces"]
+        assert "case1226-locked" not in data["namespaces"]
 
     @pytest.mark.asyncio
     async def test_accessible_namespaces_with_grants(self, client: AsyncClient, auth_headers: dict):

@@ -91,10 +91,8 @@ async def export_all_terminologies(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Export all terminologies with their terms."""
-    # CASE-384 — restrict to namespaces the caller can read. Superadmin
-    # gets None back from resolve_accessible_namespaces and the service
-    # treats that as "no filter" (all namespaces). Non-admin scoped keys
-    # get only their own namespaces' terminologies.
+    # Restrict to the namespaces the caller can read (for an administrator,
+    # every namespace but one locked for deletion).
     accessible = await resolve_accessible_namespaces(identity)
 
     results = await ImportExportService.export_all_terminologies(

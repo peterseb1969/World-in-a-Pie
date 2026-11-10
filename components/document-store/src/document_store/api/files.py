@@ -544,9 +544,7 @@ async def get_file_documents(
         "file_references.file_id": file_id,
         "status": "active",
     }
-    readable = await resolve_accessible_namespaces(identity)
-    if readable is not None:
-        query["namespace"] = {"$in": readable}
+    query["namespace"] = {"$in": await resolve_accessible_namespaces(identity)}
 
     total = await DocumentModel.find(query).count()
     skip = (page - 1) * page_size
@@ -773,11 +771,10 @@ async def find_by_checksum(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Find files by checksum (within the caller's accessible namespaces)."""
-    # CASE-384 — restrict checksum search to namespaces the caller has
-    # access to. Superadmin gets None and the service treats that as
-    # no filter. Otherwise, only files in the caller's scoped namespaces
-    # are returned — cross-namespace checksum lookup would leak file
-    # existence to unauthorised callers.
+    # Restrict checksum search to the namespaces the caller can read (for
+    # an administrator, every namespace but one locked for deletion): a
+    # cross-namespace checksum lookup would leak file existence to
+    # unauthorised callers.
     accessible = await resolve_accessible_namespaces(identity)
     service = get_file_service()
     return await service.get_by_checksum(checksum, namespaces=accessible)

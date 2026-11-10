@@ -26,15 +26,14 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-def _within(query: dict[str, Any], readable: list[str] | None) -> dict[str, Any]:
+def _within(query: dict[str, Any], readable: list[str]) -> dict[str, Any]:
     """Narrow a search query to entries whose own namespace the caller can read.
 
     The caller's restrict_to_namespaces also matches entries through a
     synonym's namespace, so it cannot serve as the authorization filter;
-    this constrains the entry itself. None means no restriction.
+    this constrains the entry itself, for administrators too (their list
+    leaves out a namespace locked for deletion).
     """
-    if readable is None:
-        return query
     return {"$and": [query, {"namespace": {"$in": readable}}]}
 
 

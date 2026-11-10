@@ -550,13 +550,20 @@ class SearchService:
         )
         return items_sorted
 
-    async def search(self, request: SearchRequest) -> SearchResponse:
+    async def search(
+        self, request: SearchRequest, within: list[str] | None = None,
+    ) -> SearchResponse:
         """Search across all entity types with per-type pagination (CASE-329).
 
         Each entity type returns its own paginated envelope keyed by
         type ('terminology', 'term', 'template', 'document', 'file').
         Pagination follows the platform-wide convention — see
         `wip://conventions`.
+
+        ``within``: when the request names no namespace, the namespaces the
+        reporting tables are read in (the caller's readable ones). The other
+        types are read from their stores, which answer within the readable
+        namespaces of reporting-sync's own key.
         """
         query = request.query.strip()
         types = request.types or ["terminology", "term", "template", "document", "file"]
@@ -587,6 +594,7 @@ class SearchService:
                 mode=request.mode,
                 include_inactive=request.include_inactive,
                 snippet_format=request.snippet_format,
+                within=within,
             )))
         if "file" in types:
             tasks.append(("file", self._search_files(query, namespace, status)))
@@ -628,7 +636,7 @@ class SearchService:
             request.template
             and doc_results is not None
             and doc_results.total == 0
-            and not await self.template_matches_a_table(request.template, namespace)
+            and not await self.template_matches_a_table(request.template, namespace, within)
         ):
             unmatched_template = request.template
 
@@ -641,7 +649,7 @@ class SearchService:
         )
 
     async def template_matches_a_table(
-        self, template: str, namespace: str | None = None,
+        self, template: str, namespace: str | None = None, within: list[str] | None = None,
     ) -> bool:
         """Whether `template` names any reporting table, versioned or not.
 
@@ -657,7 +665,7 @@ class SearchService:
             return True
         want = await _template_table_bases(template, namespace)
         async with self.postgres_pool.acquire() as conn:
-            tables = await _document_tables(conn, namespace)
+            tables = await _document_tables(conn, namespace, within)
         return any(entity_base(r["table_name"]) in want for r in tables)
 
     async def _search_terminologies(
@@ -826,6 +834,7 @@ class SearchService:
         mode: str = "auto",
         include_inactive: bool = False,
         snippet_format: str = "html",
+        within: list[str] | None = None,
     ) -> list[SearchResult]:
         """Search documents via PostgreSQL reporting tables.
 
@@ -859,7 +868,7 @@ class SearchService:
         skipped: list[str] = []
         capped = False
         async with self.postgres_pool.acquire(timeout=SEARCH_QUERY_TIMEOUT) as conn:
-            tables = await self._document_search_tables(conn, namespace, template)
+            tables = await self._document_search_tables(conn, namespace, template, within)
             results: list[SearchResult] = []
             for tbl_row in tables:
                 remaining = MAX_RESULTS_PER_TYPE - len(results)
@@ -890,11 +899,13 @@ class SearchService:
 
     async def _document_search_tables(
         self, conn: asyncpg.Connection, namespace: str | None, template: str | None,
+        within: list[str] | None = None,
     ) -> list[Any]:
         """The document tables to search, across namespace schemas.
 
         Each WIP namespace is its own schema; a search with no namespace
-        filter spans them all, a namespace filter narrows to that one schema.
+        filter spans the schemas of ``within`` (all of them when None), a
+        namespace filter narrows to that one schema.
         A document table is recognised by its columns, not its name, so a
         template's reporting.table_name override is searched too. The
         template filter is applied after the fetch, by comparing the
@@ -904,7 +915,7 @@ class SearchService:
         template values contain '_', which LIKE treats as a single-character
         wildcard, so 'doc_case_record__v%' also matches doc_caseXrecord__v1.
         """
-        tables = await _document_tables(conn, namespace)
+        tables = await _document_tables(conn, namespace, within)
         if not template:
             return tables
         want = await _template_table_bases(template, namespace)
@@ -1341,6 +1352,7 @@ class SearchService:
         term_id: str,
         limit: int = 100,
         namespace: str | None = None,
+        within: list[str] | None = None,
     ) -> TermDocumentsResponse:
         """
         Get documents that reference a specific term.
@@ -1363,7 +1375,7 @@ class SearchService:
         if term is None:
             return TermDocumentsResponse(term_id=term_id, documents=[], total=0)
         rows = await self._documents_referencing_term(
-            term.get("term_id") or term_id, namespace
+            term.get("term_id") or term_id, namespace, within
         )
         page = rows[:limit]
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -2053,6 +2065,7 @@ class SearchService:
         entity_id: str,
         limit: int = 100,
         namespace: str | None = None,
+        within: list[str] | None = None,
     ) -> ReferencedByResponse:
         """
         Find all entities that reference the given entity.
@@ -2074,13 +2087,16 @@ class SearchService:
             entity_id: The entity's ID or any identifier its store resolves
             limit: Max referrers to return; ``total`` counts them all
             namespace: Only referrers in this namespace (None: all)
+            within: With no namespace, the namespaces the reporting tables
+                are read in (None: all); the stores answer within the
+                readable namespaces of reporting-sync's own key
         """
         finders = {
-            "template": self._get_template_referenced_by,
-            "terminology": self._get_terminology_referenced_by,
-            "term": self._get_term_referenced_by,
-            "document": self._get_document_referenced_by,
-            "file": self._get_file_referenced_by,
+            "template": lambda: self._get_template_referenced_by(entity_id, limit, namespace),
+            "terminology": lambda: self._get_terminology_referenced_by(entity_id, limit, namespace),
+            "term": lambda: self._get_term_referenced_by(entity_id, limit, namespace, within),
+            "document": lambda: self._get_document_referenced_by(entity_id, limit, namespace, within),
+            "file": lambda: self._get_file_referenced_by(entity_id, limit, namespace),
         }
         finder = finders.get(entity_type)
         if finder is None:
@@ -2090,7 +2106,7 @@ class SearchService:
                 error=f"Unknown entity type: {entity_type}"
             )
         try:
-            return await finder(entity_id, limit, namespace)
+            return await finder()
         except Exception as e:
             logger.error(f"Failed to get referenced-by for {entity_type}/{entity_id}: {e}")
             return ReferencedByResponse(
@@ -2202,7 +2218,8 @@ class SearchService:
         )
 
     async def _get_term_referenced_by(
-        self, term_id: str, limit: int, namespace: str | None = None
+        self, term_id: str, limit: int, namespace: str | None = None,
+        within: list[str] | None = None,
     ) -> ReferencedByResponse:
         """Documents whose term references hold a term."""
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -2214,7 +2231,7 @@ class SearchService:
         if not self.postgres_pool:
             raise RuntimeError("PostgreSQL not connected")
         rows = await self._documents_referencing_term(
-            term.get("term_id") or term_id, namespace
+            term.get("term_id") or term_id, namespace, within
         )
         references = [
             IncomingReference(
@@ -2241,7 +2258,8 @@ class SearchService:
         )
 
     async def _get_document_referenced_by(
-        self, document_id: str, limit: int, namespace: str | None = None
+        self, document_id: str, limit: int, namespace: str | None = None,
+        within: list[str] | None = None,
     ) -> ReferencedByResponse:
         """Relationship documents whose source_ref or target_ref is a document.
 
@@ -2258,7 +2276,9 @@ class SearchService:
             return _target_missing("document", document_id, "Document")
         if not self.postgres_pool:
             raise RuntimeError("PostgreSQL not connected")
-        rows = await self._edges_touching(doc.get("document_id") or document_id, namespace)
+        rows = await self._edges_touching(
+            doc.get("document_id") or document_id, namespace, within
+        )
         references = [
             IncomingReference(
                 entity_type="document",
@@ -2282,7 +2302,7 @@ class SearchService:
         )
 
     async def _documents_referencing_term(
-        self, term_id: str, namespace: str | None
+        self, term_id: str, namespace: str | None, within: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Every document whose term references hold ``term_id`` (canonical).
 
@@ -2294,7 +2314,9 @@ class SearchService:
         if self.postgres_pool is None:
             raise UpstreamError("PostgreSQL not connected")
         async with self.postgres_pool.acquire() as conn:
-            tables = await _doc_tables_with_column(conn, "term_references_json", namespace)
+            tables = await _doc_tables_with_column(
+                conn, "term_references_json", namespace, within
+            )
             found: dict[str, dict[str, Any]] = {}
             for table in tables:
                 created = "created_at" if table["has_created_at"] else "NULL::timestamptz"
@@ -2319,14 +2341,14 @@ class SearchService:
         return [found[k] for k in sorted(found)]
 
     async def _edges_touching(
-        self, document_id: str, namespace: str | None
+        self, document_id: str, namespace: str | None, within: list[str] | None = None,
     ) -> list[dict[str, Any]]:
         """Every relationship document whose source_ref_id or target_ref_id
         is ``document_id``, one row per edge, ordered by document_id."""
         if self.postgres_pool is None:
             raise UpstreamError("PostgreSQL not connected")
         async with self.postgres_pool.acquire() as conn:
-            tables = await _doc_tables_with_column(conn, "source_ref_id", namespace)
+            tables = await _doc_tables_with_column(conn, "source_ref_id", namespace, within)
             found: dict[str, dict[str, Any]] = {}
             for table in tables:
                 rows = await conn.fetch(
@@ -2376,15 +2398,20 @@ async def _get_json(
     return cast(dict[str, Any], response.json())
 
 
-async def _document_tables(conn: asyncpg.Connection, namespace: str | None) -> list[Any]:
-    """Every document base table (in ``namespace``'s schema, or in every
-    namespace schema): the base tables that carry the document identity
-    columns, whatever they are named."""
+async def _document_tables(
+    conn: asyncpg.Connection, namespace: str | None, within: list[str] | None = None,
+) -> list[Any]:
+    """Every document base table (in ``namespace``'s schema, else in the
+    schemas of ``within``, else in every namespace schema): the base tables
+    that carry the document identity columns, whatever they are named."""
     params: list[Any] = []
     scope = ""
     if namespace:
         params.append(namespace)
         scope = f" AND t.table_schema = ${len(params)}"
+    elif within is not None:
+        params.append(within)
+        scope = f" AND t.table_schema = ANY(${len(params)}::text[])"
     return list(await conn.fetch(
         f"""
         SELECT t.table_schema, t.table_name
@@ -2563,11 +2590,13 @@ def _template_referrers(
 
 
 async def _doc_tables_with_column(
-    conn: asyncpg.Connection, column: str, namespace: str | None
+    conn: asyncpg.Connection, column: str, namespace: str | None,
+    within: list[str] | None = None,
 ) -> list[Any]:
     """The doc_* base tables (never the entity views over them, which would
     report each row twice) that have ``column``, with whether each has
-    created_at (include_metadata: false tables do not)."""
+    created_at (include_metadata: false tables do not). In ``namespace``'s
+    schema, else in the schemas of ``within``, else in every schema."""
     return list(await conn.fetch(
         r"""
         SELECT c.table_schema, c.table_name,
@@ -2579,11 +2608,12 @@ async def _doc_tables_with_column(
           AND c.table_schema NOT IN ('public', 'pg_catalog', 'information_schema', 'pg_toast')
           AND c.table_name LIKE 'doc\_%'
           AND ($2::text IS NULL OR c.table_schema = $2)
+          AND ($3::text[] IS NULL OR c.table_schema = ANY($3::text[]))
         GROUP BY c.table_schema, c.table_name
         HAVING bool_or(c.column_name = $1)
         ORDER BY c.table_schema, c.table_name
         """,
-        column, namespace,
+        column, namespace, within,
     ))
 
 

@@ -13,6 +13,7 @@ from wip_auth import (
     check_readable,
     entity_write_refusals,
     field_unresolved_detail,
+    is_superadmin,
     miss_detail,
     resolution_miss,
     resolve_accessible_namespaces,
@@ -372,7 +373,11 @@ async def search_terms(
     # Search needs one concrete namespace: ranking spans one vocabulary
     # scope and rollup walks that namespace's relations.
     ns_filter = await resolve_namespace_filter(identity, namespace)
-    if ns_filter.namespaces is not None and len(ns_filter.namespaces) == 1:
+    # A namespace given is the one; otherwise only a key that can read one
+    # namespace has it implied, and an administrator must name it, however
+    # many namespaces exist.
+    implied = len(ns_filter.namespaces) == 1 and not is_superadmin(identity)
+    if namespace or implied:
         search_namespace = ns_filter.namespaces[0]
     else:
         raise HTTPException(

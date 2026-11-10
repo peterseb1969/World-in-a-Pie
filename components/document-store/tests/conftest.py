@@ -1050,4 +1050,15 @@ def _registry_permission_answers(monkeypatch):
     """
     from wip_auth.testing import answer_permissions_from_declared_grants
 
-    answer_permissions_from_declared_grants(monkeypatch)
+    async def namespaces_with_data():
+        from document_store.models.document import Document
+        from document_store.models.file import File
+
+        found: set[str] = set()
+        for model in (Document, File):
+            found.update(await model.get_motor_collection().distinct("namespace"))
+        return found
+
+    answer_permissions_from_declared_grants(
+        monkeypatch, admin_namespaces=namespaces_with_data,
+    )

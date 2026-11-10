@@ -262,7 +262,18 @@ def _registry_permission_answers(monkeypatch):
     names is not reachable here."""
     from wip_auth.testing import answer_permissions_from_declared_grants
 
-    answer_permissions_from_declared_grants(monkeypatch)
+    async def namespaces_with_data():
+        from def_store.models.term import Term
+        from def_store.models.terminology import Terminology
+
+        found: set[str] = set()
+        for model in (Terminology, Term):
+            found.update(await model.get_motor_collection().distinct("namespace"))
+        return found
+
+    answer_permissions_from_declared_grants(
+        monkeypatch, admin_namespaces=namespaces_with_data,
+    )
 
 
 @pytest.fixture(autouse=True)

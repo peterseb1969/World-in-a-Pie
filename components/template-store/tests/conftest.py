@@ -291,7 +291,14 @@ def _registry_permission_answers(monkeypatch):
     Registry is not reachable at the URL it names."""
     from wip_auth.testing import answer_permissions_from_declared_grants
 
-    answer_permissions_from_declared_grants(monkeypatch)
+    async def namespaces_with_data():
+        from template_store.models.template import Template
+
+        return await Template.get_motor_collection().distinct("namespace")
+
+    answer_permissions_from_declared_grants(
+        monkeypatch, admin_namespaces=namespaces_with_data,
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)

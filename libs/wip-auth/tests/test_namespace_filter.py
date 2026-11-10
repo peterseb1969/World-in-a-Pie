@@ -34,7 +34,7 @@ class TestNamespaceFilter:
     def test_default_is_empty(self):
         nf = NamespaceFilter()
         assert nf.query == {}
-        assert nf.namespaces is None
+        assert nf.namespaces == []
 
     def test_single_namespace(self):
         nf = NamespaceFilter(query={"namespace": {"$in": ["wip"]}}, namespaces=["wip"])
@@ -53,16 +53,21 @@ class TestResolveNamespaceFilter:
     """Tests for resolve_namespace_filter()."""
 
     @pytest.mark.asyncio
-    async def test_superadmin_no_namespace_returns_empty_query(self):
-        """Superadmin without namespace → no filter (all namespaces)."""
+    async def test_superadmin_no_namespace_filters_by_the_registrys_list(self):
+        """Superadmin without namespace → $in over the namespaces the
+        Registry lists for it (every one but one locked for deletion)."""
         identity = _make_identity(groups=["wip-admins"])
 
-        with patch("wip_auth.permissions.get_auth_config") as mock_config:
+        with (
+            patch("wip_auth.permissions.get_auth_config") as mock_config,
+            patch("wip_auth.permissions.resolve_accessible_namespaces", new_callable=AsyncMock) as mock_resolve,
+        ):
             mock_config.return_value.admin_groups = ["wip-admins"]
+            mock_resolve.return_value = ["wip", "test"]
             result = await resolve_namespace_filter(identity, None)
 
-        assert result.query == {}
-        assert result.namespaces is None
+        assert result.query == {"namespace": {"$in": ["wip", "test"]}}
+        assert result.namespaces == ["wip", "test"]
 
     @pytest.mark.asyncio
     async def test_scoped_identity_no_namespace_returns_in_filter(self):
@@ -141,14 +146,18 @@ class TestResolveNamespaceFilter:
         """The returned query dict can be merged into an existing query."""
         identity = _make_identity(groups=["wip-admins"])
 
-        with patch("wip_auth.permissions.get_auth_config") as mock_config:
+        with (
+            patch("wip_auth.permissions.get_auth_config") as mock_config,
+            patch("wip_auth.permissions.resolve_accessible_namespaces", new_callable=AsyncMock) as mock_resolve,
+        ):
             mock_config.return_value.admin_groups = ["wip-admins"]
+            mock_resolve.return_value = ["wip"]
             result = await resolve_namespace_filter(identity, None)
 
-        # Superadmin: merge empty dict into existing query
+        # Superadmin: the filter is the Registry's list, like anyone's
         query = {"status": "active", "template_id": "abc"}
         query.update(result.query)
-        assert query == {"status": "active", "template_id": "abc"}
+        assert query == {"status": "active", "template_id": "abc", "namespace": {"$in": ["wip"]}}
 
         # Scoped: merge $in filter
         scoped_filter = NamespaceFilter(

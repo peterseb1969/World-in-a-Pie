@@ -4,8 +4,8 @@ Provenance: CASE-1222. A service answered wip-admins "admin" itself, so a
 namespace the Registry had locked for deletion stayed open to them in every
 store. It now asks the Registry like for any caller, and drops its cached
 answers when the Registry says access changed (it does when it takes the
-lock). Listing which namespaces an administrator may read still needs no
-lookup: that is every namespace, as the Registry answers too.
+lock). Which namespaces an administrator may list is the Registry's answer
+too (CASE-1226 tests that).
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from wip_auth.models import UserIdentity
 from wip_auth.permissions import (
     check_namespace_permission,
     clear_permission_cache,
-    resolve_accessible_namespaces,
     resolve_permission,
 )
 
@@ -59,7 +58,3 @@ async def test_an_answer_cached_before_the_lock_is_dropped_when_access_changes(h
     access_changed(keys=False)  # the Registry locked "ns"
     assert await resolve_permission(ADMIN, "ns") == "none"
 
-
-async def test_an_administrator_still_lists_every_namespace_without_a_lookup(httpx_mock):
-    assert await resolve_accessible_namespaces(ADMIN) is None
-    assert httpx_mock.get_requests() == []
