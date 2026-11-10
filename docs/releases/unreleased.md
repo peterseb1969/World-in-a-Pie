@@ -19,11 +19,20 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   *use* route lacked the guard, so this closes a gap the neighbouring models
   already declare. `read` on `wip` is unaffected — it arrives implicitly with
   every derived app key and never needed declaring.
-- **Action, for an install that already carries the grant:** its saved spec now
-  fails validation at the next verb (`error: <state file> failed to deserialize`,
-  exit 2) rather than re-applying the grant. Delete the `wip` entry from that
-  app's `namespace_access` in `deployment.deployer-state`, or re-install. No
-  shipped app manifest is affected — the only in-repo `namespace_access` names
+- **Action, for an install that already carries the grant: none — it is
+  repaired at load, and says so.** `wip: write` in an app's
+  `namespace_access` in a saved `deployment.deployer-state` is dropped when the
+  spec is read, with
+  `warning: install …: app … is saved with namespace access on 'wip' (permission
+  'write'), which an app key must never hold — dropping it from the spec. The next
+  apply removes the grant from the app's key.` The next apply then makes that key's
+  grants exactly what its key file declares, and the file no longer declares `wip`.
+  Refusing the old spec outright was the obvious alternative and the worse one: the
+  validator runs on every load, so `app-namespace remove` — the verb that would undo
+  the grant — would have failed for its own reason, leaving a full re-specify as the
+  only recovery. The drop is announced rather than silent because a spec that loses
+  a grant without a word is an install reshaped behind the operator's back.
+  No shipped app manifest is affected — the only in-repo `namespace_access` names
   `library`. `wip-deploy verify --security --live` already probed for a
   writable `wip` and is unchanged.
 
@@ -53,14 +62,18 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   installed package. And a root that discovers no components and no apps is a
   failure (exit 1), not a vacuous pass — such a root checks every reference
   against nothing.
-  **Consequence for a pipx/site-packages install:** that install carries no
-  `components/` or `deployer/` beside it (bundling them is the open CASE-826),
-  so `validate-manifest` without `--repo-root` now stops with
-  `error: cannot resolve the WIP repo root holding this wip-deploy installation
-  — pass --repo-root` and exit 2, where before it silently picked whichever
-  `.git` sat above the caller. Loud, actionable, and correct — but a new hard
-  failure for anyone relying on the accidental one. Until CASE-826 lands, pass
-  `--repo-root <path to a WIP checkout>`.
+  **For a wheel or pipx install:** only an editable install puts the package
+  inside a checkout, so that walk finds nothing under `site-packages` and the
+  command falls back to walking up from the working directory, printing
+  `note: this wip-deploy installation does not live in a WIP checkout (a wheel or
+  pipx install?), so the repo root is taken from the working directory. Pass
+  --repo-root to name it.` The fallback is announced because the root it yields is
+  not the repo the help names, and it is not a rubber stamp: if that root holds no
+  WIP manifests either, the run fails (exit 1) instead of validating references
+  against nothing, and if no repo is findable at all the command exits 2 naming
+  `--repo-root`. Bundling the manifests with the package (the open CASE-826) is
+  still what makes the default correct for these installs — it is just no longer a
+  hard failure without them.
 
 ### wip-deploy: an app source path now means the checkout it was typed at
 

@@ -15,6 +15,12 @@ Four shapes were broken, all of them "it looked fine and was not":
   - `validate-manifest` walked up from cwd although its own help names "the repo
     containing the running wip-deploy installation", and a root that discovers
     no manifests passed vacuously.
+
+The item-2 fix for that last one created a fifth shape, covered at the bottom of
+this file (CASE-1230 review #3, finding 2): only an *editable* install puts the
+package inside a checkout, so starting the walk there stopped wheel and pipx
+installs even when run from a WIP repo. The package walk now falls back to the
+cwd walk — announced, because the root it lands on is not the one the help names.
 """
 
 from __future__ import annotations
@@ -182,6 +188,93 @@ def test_a_root_holding_no_manifests_is_not_a_pass(tmp_path: Path) -> None:
     )
     assert result.exit_code == 1, result.output
     assert "not a World-in-a-Pie checkout" in result.output
+
+
+# ── the package walk has a floor: wheel and pipx installs are not in a checkout ──
+
+
+def _package_is_not_in_a_checkout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail the walk that starts at the package, leave the cwd walk working.
+
+    That is exactly where a wheel or pipx install sits: `Path(__file__)` resolves
+    under site-packages, no ancestor has the WIP shape, and the walk raises there
+    even though the operator is standing in a WIP checkout.
+    """
+    import wip_deploy.cli as cli_mod
+
+    real = cli_mod.find_repo_root
+
+    def fake(start: Path | None = None) -> Path:
+        if start is not None:
+            raise FileNotFoundError("could not locate the WIP repo root above site-packages")
+        return real()
+
+    monkeypatch.setattr(cli_mod, "find_repo_root", fake)
+
+
+def test_a_site_packages_install_falls_back_to_the_cwd_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pre-fix this exited 2 with "pass --repo-root" from inside a WIP checkout."""
+    monkeypatch.delenv("WIP_REPO_ROOT", raising=False)
+    _package_is_not_in_a_checkout(monkeypatch)
+    monkeypatch.chdir(WIP_ROOT)
+
+    result = runner.invoke(app, ["validate-manifest", str(WIP_ROOT / "apps" / "dev-kb" / "wip-app.yaml")])
+
+    assert result.exit_code == 0, result.output
+    assert "note:" in result.output and "working directory" in result.output
+    assert "--repo-root" in result.output
+
+
+def test_an_editable_install_does_not_announce_a_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note is for the substitute, not for every run: from a checkout in the
+    package's own ancestry there is nothing to report."""
+    monkeypatch.delenv("WIP_REPO_ROOT", raising=False)
+    monkeypatch.chdir(_foreign_git_repo(tmp_path))
+
+    result = runner.invoke(app, ["validate-manifest", str(WIP_ROOT / "apps" / "dev-kb" / "wip-app.yaml")])
+
+    assert result.exit_code == 0, result.output
+    assert "note:" not in result.output
+
+
+def test_a_fallback_onto_a_non_wip_cwd_is_still_caught_by_the_root_guard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Falling back is not a rubber stamp: if the cwd is not a WIP repo either,
+    the discovery guard fails the run instead of validating references against
+    nothing.
+    """
+    monkeypatch.delenv("WIP_REPO_ROOT", raising=False)
+    _package_is_not_in_a_checkout(monkeypatch)
+    monkeypatch.chdir(_foreign_git_repo(tmp_path))
+
+    result = runner.invoke(app, ["validate-manifest", str(WIP_ROOT / "apps" / "dev-kb" / "wip-app.yaml")])
+
+    assert result.exit_code == 1, result.output
+    assert "not a World-in-a-Pie checkout" in result.output
+
+
+def test_when_neither_walk_finds_a_repo_the_command_stops_at_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both walks empty is still the documented `2 — could not find a repo root`."""
+    monkeypatch.delenv("WIP_REPO_ROOT", raising=False)
+    import wip_deploy.cli as cli_mod
+
+    def fake(start: Path | None = None) -> Path:
+        raise FileNotFoundError("could not locate the WIP repo root")
+
+    monkeypatch.setattr(cli_mod, "find_repo_root", fake)
+    monkeypatch.chdir(tmp_path)
+
+    result = runner.invoke(app, ["validate-manifest", str(WIP_ROOT / "apps" / "dev-kb" / "wip-app.yaml")])
+
+    assert result.exit_code == 2, result.output
+    assert "--repo-root" in result.output
 
 
 # ── a mutation verb re-stamps loudly, never quietly ───────────────

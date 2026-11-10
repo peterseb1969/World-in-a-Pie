@@ -2352,7 +2352,9 @@ def validate_manifest_cmd(
             help=(
                 "WIP repo root to discover components/apps against. "
                 "Defaults to the repo containing the running wip-deploy "
-                "installation."
+                "installation; when that install sits outside any checkout (a "
+                "wheel or pipx install), the working directory is used "
+                "instead and the substitution is announced."
             ),
         ),
     ] = None,
@@ -2409,13 +2411,20 @@ def validate_manifest_cmd(
             # an app checkout, a cwd walk finds that repo instead, and every
             # reference in the manifest then reads as unresolved.
             repo_root = find_repo_root(Path(__file__).resolve().parent)
-        except FileNotFoundError as e:
+        except FileNotFoundError:
+            # Only an editable install puts the package inside a checkout. From a
+            # wheel or pipx install the walk starts in site-packages and finds
+            # nothing, which would stop an operator standing in a WIP repo — so
+            # fall back to the cwd walk, announced: the root it yields is not the
+            # repo this command's help names, and the operator should know which
+            # repo its references were validated against.
             typer.echo(
-                f"error: cannot resolve the WIP repo root holding this wip-deploy "
-                f"installation — pass --repo-root: {e}",
+                "note: this wip-deploy installation does not live in a WIP checkout "
+                "(a wheel or pipx install?), so the repo root is taken from the "
+                "working directory. Pass --repo-root to name it.",
                 err=True,
             )
-            raise typer.Exit(2) from None
+            repo_root = _cwd_repo_root(exit_code=2)
     elif not repo_root.is_dir():
         typer.echo(
             f"error: --repo-root {repo_root} is not a directory",
@@ -6852,7 +6861,7 @@ def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload = _state_v1_to_v2(payload)
     if payload.get("wip_deploy_format_version") == 2:
         payload = _state_v2_to_v3(payload)
-    return payload
+    return _drop_wip_namespace_access(payload)
 
 
 def _state_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
@@ -6897,6 +6906,69 @@ def _state_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
         spec = {**spec, "modules": modules}
         payload = {**payload, "deployment": {**payload["deployment"], "spec": spec}}
     return {**payload, "wip_deploy_format_version": 2}
+
+
+def _drop_wip_namespace_access(payload: dict[str, Any]) -> dict[str, Any]:
+    """Take a `wip` access entry out of a saved spec, and say so.
+
+    `NamespaceAccess.not_wip` (CASE-1230 item 1) is a field validator, so it runs on
+    every load, not only on new input. An install whose spec took a `wip` grant through
+    the use route before that guard existed would stop deserialising — and the verb that
+    would undo the grant, `app-namespace remove`, loads that same spec and exits first,
+    so the install could only be recovered by re-specifying it in full. The entry is
+    therefore dropped where the envelope is read: the install loads, and the next apply
+    makes the key's grants exactly what the key file declares — which no longer
+    includes `wip`.
+
+    Loud, never silent: a saved spec that loses a grant without a word is the same
+    in-place reshaping CASE-1228 item 1 refuses.
+    """
+    try:
+        apps = payload["deployment"]["spec"]["apps"]
+    except (KeyError, TypeError):
+        # Malformed: leave it for model validation to report.
+        return payload
+    if not isinstance(apps, list):
+        return payload
+    # The install name only decorates the warning: a spec whose metadata is
+    # unreadable still loses the grant, it just cannot say which install it is.
+    metadata = payload["deployment"].get("metadata")
+    install = metadata.get("name", "?") if isinstance(metadata, dict) else "?"
+    kept_apps: list[Any] = []
+    dropped = False
+    for app in apps:
+        access = app.get("namespace_access") if isinstance(app, dict) else None
+        if not isinstance(access, list):
+            kept_apps.append(app)
+            continue
+        kept = [a for a in access if not _is_wip_access(a)]
+        if len(kept) == len(access):
+            kept_apps.append(app)
+            continue
+        dropped = True
+        for a in access:
+            if _is_wip_access(a):
+                typer.echo(
+                    f"warning: install {install!r}: app {app.get('name')!r} is saved with "
+                    f"namespace access on 'wip' (permission {a.get('permission', 'read')!r}), "
+                    "which an app key must never hold — dropping it from the spec. The next "
+                    "apply removes the grant from the app's key.",
+                    err=True,
+                )
+        kept_apps.append({**app, "namespace_access": kept})
+    if not dropped:
+        return payload
+    spec = {**payload["deployment"]["spec"], "apps": kept_apps}
+    return {**payload, "deployment": {**payload["deployment"], "spec": spec}}
+
+
+def _is_wip_access(entry: Any) -> bool:
+    """A saved `namespace_access` entry naming the platform's own namespace.
+
+    Checked structurally, not by loading the model: the point of the sweep is that the
+    model refuses this entry, so nothing that validates it can be used to find it.
+    """
+    return isinstance(entry, dict) and entry.get("namespace") == "wip"
 
 
 # File name uses a non-yaml/json extension so kubectl's recursive

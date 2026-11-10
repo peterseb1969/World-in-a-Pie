@@ -11,6 +11,13 @@ every other namespace validates against.
 
 `read` on `wip` is not something a declaration can ask for either: it arrives
 implicitly with every derived app key.
+
+The guard being a field validator means it also runs on every *load*, so a spec an
+older deployer persisted with the grant would stop deserialising — and the verb that
+would undo it, `app-namespace remove`, loads that same spec and exits first. The
+load-path sweep (review #3 on CASE-1230, finding 1) and its tests are here too,
+because they pin the two halves of one rule: new input is refused, saved input is
+dropped and announced.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ import pytest
 from pydantic import ValidationError as PydanticValidationError
 
 from wip_deploy.build import BuildInputs, build_deployment
+from wip_deploy.cli import _load_deployment, _upgrade_state_payload
 from wip_deploy.config_gen.api_keys import API_KEYS_RENDER_PATH, app_api_key
 from wip_deploy.discovery import Discovery, discover
 from wip_deploy.renderers import render_compose
@@ -107,12 +115,13 @@ def test_a_declared_access_lands_alongside_wip_read(discovery: Discovery) -> Non
 
 
 def test_a_persisted_spec_carrying_the_grant_is_refused_not_ignored() -> None:
-    """An install rendered by an older deployer cannot keep the grant silently.
+    """The model itself still refuses the entry, however it arrives.
 
-    The saved state round-trips through `Deployment.model_validate`
-    (`_load_deployment` turns a failure into `error: … failed to deserialize` +
-    exit 2), so an install whose spec already holds `wip: write` stops the next
-    verb instead of re-applying the escalation.
+    This is the declaration-level half: nothing can build an `AppRef` holding a
+    `wip` access, whether from a manifest, a flag, or a hand-written dict. What
+    happens to a spec an older deployer already *saved* is a different question —
+    refusing on load would strand the install, so `_upgrade_state_payload` drops
+    the entry instead; see the sweep tests below.
     """
     with pytest.raises(PydanticValidationError, match="belongs to the platform"):
         AppRef.model_validate({"name": "wip-kb", "namespace_access": [{"namespace": "wip"}]})
@@ -139,3 +148,166 @@ def test_rendered_key_file_carries_no_wip_grant(discovery: Discovery) -> None:
     entry = keys["app-cooking-app"]
     assert "wip" not in entry["grants"]
     assert entry["namespaces"] == ["library", "wip"]
+
+
+# ── the saved-spec sweep: an install that took the grant before the guard
+#    must load, lose the entry, and say so (CASE-1230 review #3, finding 1) ──
+
+
+def _state_with_grant(discovery: Discovery, access: list[dict[str, str]]) -> dict[str, Any]:
+    """A current-version envelope whose saved app carries `namespace_access` as
+    the pre-guard deployer would have written it."""
+    d = _deployment("compose", [_app(discovery, "greedy-app")])
+    payload: dict[str, Any] = {
+        "wip_deploy_format_version": 3,
+        "deployment": d.model_dump(mode="json"),
+    }
+    payload["deployment"]["spec"]["apps"][0]["namespace_access"] = access
+    return payload
+
+
+def test_a_saved_grant_is_dropped_at_load_and_named_in_the_warning(
+    discovery: Discovery, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = _state_with_grant(discovery, [{"namespace": "wip", "permission": "write"}])
+    out = _upgrade_state_payload(payload)
+
+    assert out["deployment"]["spec"]["apps"][0]["namespace_access"] == []
+    assert out["wip_deploy_format_version"] == 3, "the sweep is a value fix, not a format change"
+    err = capsys.readouterr().err
+    assert "greedy-app" in err and "wip" in err and "write" in err
+    assert "next apply" in err, "the warning must say when the grant actually leaves the key"
+    # Only the one entry moved: everything else in the spec round-trips untouched.
+    assert _spec_without_apps(out) == _spec_without_apps(payload)
+
+
+def _spec_without_apps(payload: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in payload["deployment"]["spec"].items() if k != "apps"}
+
+
+def test_the_sweep_does_not_edit_the_callers_payload_in_place(
+    discovery: Discovery,
+) -> None:
+    """`_upgrade_state_payload` hands back a new envelope; the dict it was given
+    stays as it was read, so a caller comparing before/after sees the truth."""
+    payload = _state_with_grant(discovery, [{"namespace": "wip", "permission": "write"}])
+    _upgrade_state_payload(payload)
+    assert payload["deployment"]["spec"]["apps"][0]["namespace_access"] == [
+        {"namespace": "wip", "permission": "write"}
+    ]
+
+
+def test_an_install_holding_the_grant_in_its_state_file_still_loads(
+    tmp_path: Path, discovery: Discovery, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The whole point of the sweep: the install is usable again.
+
+    Pre-fix this exited 2 (`failed to deserialize`) on every verb that reads the
+    state — including `app-namespace remove`, the verb that would have undone the
+    grant — leaving a full re-specify as the only recovery.
+    """
+    install = tmp_path / "install"
+    install.mkdir()
+    (install / "deployment.deployer-state").write_text(
+        json.dumps(_state_with_grant(discovery, [{"namespace": "wip", "permission": "write"}]), indent=2)
+    )
+
+    d = _load_deployment(install)
+
+    assert d.spec.apps[0].namespace_access == []
+    assert "wip" in capsys.readouterr().err
+
+
+def test_the_swept_spec_is_what_gets_written_back(
+    tmp_path: Path, discovery: Discovery, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """One load is enough to heal the install on disk.
+
+    Every verb that mutates persists the deployment it loaded, so the entry does
+    not linger for the next reader — the sweep is not just a per-run pass over a
+    file that stays broken.
+    """
+    from wip_deploy.cli import _persist_deployment
+
+    install = tmp_path / "install"
+    install.mkdir()
+    state = install / "deployment.deployer-state"
+    state.write_text(
+        json.dumps(_state_with_grant(discovery, [{"namespace": "wip", "permission": "write"}]), indent=2)
+    )
+
+    _persist_deployment(_load_deployment(install), install)
+
+    assert json.loads(state.read_text())["deployment"]["spec"]["apps"][0]["namespace_access"] == []
+    # The warning is per read, and one verb reads the envelope more than once
+    # (`_persist_deployment` inspects the predecessor it is about to overwrite),
+    # so this asserts it is there and never silent — not a line count.
+    assert capsys.readouterr().err.count("namespace access on 'wip'") >= 1
+
+
+def test_an_older_envelope_is_swept_on_the_way_up(
+    discovery: Discovery, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A version-1 state runs the whole chain and still loses the grant."""
+    payload = _state_with_grant(discovery, [{"namespace": "wip", "permission": "write"}])
+    payload["wip_deploy_format_version"] = 1
+    out = _upgrade_state_payload(payload)
+
+    assert out["wip_deploy_format_version"] == 3
+    assert out["deployment"]["spec"]["apps"][0]["namespace_access"] == []
+    assert "wip" in capsys.readouterr().err
+
+
+def test_a_state_without_the_entry_is_returned_untouched_and_silent(
+    discovery: Discovery, capsys: pytest.CaptureFixture[str]
+) -> None:
+    payload = _state_with_grant(discovery, [{"namespace": "library", "permission": "write"}])
+    assert _upgrade_state_payload(payload) == payload
+    assert capsys.readouterr().err == ""
+
+
+def test_the_sweep_matches_wip_exactly_and_keeps_the_others_in_order(
+    discovery: Discovery, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`wip-kb` and `wipp` are ordinary namespaces; the sweep takes one entry,
+    not the family, and does not reshuffle the rest."""
+    payload = _state_with_grant(discovery, [
+        {"namespace": "wip-kb", "permission": "write"},
+        {"namespace": "wip", "permission": "read"},
+        {"namespace": "wipp", "permission": "write"},
+    ])
+    out = _upgrade_state_payload(payload)
+    kept = out["deployment"]["spec"]["apps"][0]["namespace_access"]
+    assert [a["namespace"] for a in kept] == ["wip-kb", "wipp"]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"wip_deploy_format_version": 3},
+        {"wip_deploy_format_version": 3, "deployment": {}},
+        {"wip_deploy_format_version": 3, "deployment": {"spec": {}}},
+        {"wip_deploy_format_version": 3, "deployment": {"spec": {"apps": "not-a-list"}}},
+        {"wip_deploy_format_version": 3, "deployment": {"spec": {"apps": ["not-a-dict"]}}},
+    ],
+)
+def test_a_malformed_envelope_is_left_for_model_validation_to_report(
+    payload: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The sweep is a security fix, not a repair shop: it never swallows a
+    malformed spec, and never warns about an entry it could not read."""
+    assert _upgrade_state_payload(payload) == payload
+    assert capsys.readouterr().err == ""
+
+
+def test_unreadable_metadata_still_loses_the_grant(
+    discovery: Discovery, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Naming the install is decoration; the drop itself does not depend on it."""
+    payload = _state_with_grant(discovery, [{"namespace": "wip", "permission": "write"}])
+    payload["deployment"]["metadata"] = "not-a-mapping"
+    out = _upgrade_state_payload(payload)
+
+    assert out["deployment"]["spec"]["apps"][0]["namespace_access"] == []
+    err = capsys.readouterr().err
+    assert "wip" in err and "greedy-app" in err
