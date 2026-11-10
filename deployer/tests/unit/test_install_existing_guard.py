@@ -59,15 +59,27 @@ def _make_deployment(
     auth_mode: str = "api-key-only",
     apps: list[tuple[str, bool]] | None = None,
     modules: list[str] | None = None,
+    users: list | None = None,
+    data_dir: Path = Path("/tmp/wip-test-data"),
 ) -> Deployment:
-    """Minimal compose-target Deployment with overridable identity fields."""
+    """Minimal compose-target Deployment with overridable identity fields.
+
+    `users=None` keeps the model's default (the three stock Dex accounts). Pass
+    `users=[]` to mirror what `install` actually produces for an api-key-only
+    install, which provisions no Dex users — a saved spec that carries them
+    differs from the re-run in a field the identity guard now compares.
+    """
     return Deployment(
         metadata=DeploymentMetadata(name="test"),
         spec=DeploymentSpec(
             target="compose",
             apps=[AppRef(name=n, enabled=e) for n, e in (apps or [])],
             modules=ModulesSpec(optional=modules or []),
-            auth=AuthSpec(mode=auth_mode, gateway=False),
+            auth=AuthSpec(
+                mode=auth_mode,
+                gateway=False,
+                **({} if users is None else {"users": users}),
+            ),
             network=NetworkSpec(
                 hostname=hostname,
                 tls=tls,
@@ -75,9 +87,7 @@ def _make_deployment(
                 http_port=http_port,
             ),
             images=ImagesSpec(registry=registry),
-            platform=PlatformSpec(
-                compose=ComposePlatform(data_dir=Path("/tmp/wip-test-data")),
-            ),
+            platform=PlatformSpec(compose=ComposePlatform(data_dir=data_dir)),
             secrets=SecretsSpec(backend="file", location="/tmp/wip-test-secrets"),
             apply=ApplySpec(),
         ),
@@ -218,16 +228,22 @@ class TestInstallExistingGuardCLI:
         assert "needs pre-built images" not in result.output
 
     def test_identical_rerun_passes_the_guard(self, tmp_path: Path) -> None:
-        """A re-run that fully re-specifies the saved identity must not
-        abort on the guard. The invocation then proceeds into the
-        normal flow — here validation (exit 1), proving the guard
-        stayed silent."""
+        """A re-run that fully re-specifies the saved install must not abort on
+        the guard. The invocation then proceeds into the normal flow — here
+        validation (exit 1), proving the guard stayed silent.
+
+        "Identical" has to mean identical in every compared field, not just the
+        seven the guard used to list: the saved spec is built by hand, so this
+        re-run must carry --data-dir as well, and must not carry Dex users that
+        an api-key-only install never provisions.
+        """
         _persist(
             tmp_path,
             _make_deployment(
                 hostname="wip.localhost",
                 registry=None,
                 auth_mode="api-key-only",
+                users=[],
             ),
         )
         result = runner.invoke(
@@ -239,6 +255,7 @@ class TestInstallExistingGuardCLI:
                 "--hostname", "wip.localhost",
                 "--auth-mode", "api-key-only",
                 "--no-auth-gateway",
+                "--data-dir", "/tmp/wip-test-data",
                 # compose + no registry fails validation — AFTER the guard
             ],
         )

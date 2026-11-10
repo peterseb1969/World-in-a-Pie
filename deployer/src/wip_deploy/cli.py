@@ -1281,7 +1281,24 @@ def install(
     # message wins over incidental validation errors; a missing
     # --registry error used to fire first and mask exactly this
     # situation on a live production install.
-    previous = _try_load_previous_deployment(target_dir)
+    previous, previous_unreadable = _previous_deployment_or_unreadable(target_dir)
+    if previous_unreadable is not None:
+        # A state file that exists but cannot be understood is not "nothing to
+        # compare against": both guards below would be skipped, and the run
+        # would look like a routine re-install over an install whose recorded
+        # spec nobody has read. `--reconcile` is the same acknowledgement this
+        # command already demands for a dropped app or a drifted identity field,
+        # and it stays the escape hatch — a state written by a newer deployer is
+        # refreshed by this very command, so refusing outright would block the
+        # repair it recommends.
+        if not reconcile:
+            _print_unreadable_state_and_exit(name=name, reason=previous_unreadable)
+        typer.echo(
+            f"warning: {previous_unreadable} — continuing under --reconcile; "
+            "the drop and identity guards cannot run against this install's "
+            "previous spec.",
+            err=True,
+        )
     if previous is not None:
         dropped_apps, dropped_modules = _diff_spec_for_drops(previous, deployment)
         drifted = _diff_spec_for_identity_drift(previous, deployment)
@@ -6863,6 +6880,42 @@ def _load_deployment(install_dir: Path) -> Deployment:
         raise typer.Exit(2) from e
 
 
+def _previous_deployment_or_unreadable(
+    install_dir: Path,
+) -> tuple[Deployment | None, str | None]:
+    """(deployment, None) when the state reads; (None, None) when there is no
+    state at all — a first install, with nothing to compare against; and
+    (None, reason) when a file is present but cannot be understood.
+
+    The third case is not "no previous install". It means the comparisons an
+    existing install depends on cannot run, so a caller must not treat it as
+    clean: `install` weighs it as a conflict the operator has to acknowledge,
+    other verbs report it and proceed. `_load_deployment` is the strict twin for
+    verbs that cannot work without the state at all.
+    """
+    target = install_dir / _DEPLOYMENT_STATE_FILENAME
+    legacy = install_dir / "deployment.json"
+    if not target.exists() and legacy.exists():
+        target = legacy
+    if not target.exists():
+        return None, None
+    try:
+        payload = json.loads(target.read_text())
+    except (json.JSONDecodeError, OSError) as e:
+        return None, f"{target} is not readable ({type(e).__name__}: {e})"
+    payload = _upgrade_state_payload(payload)
+    version = payload.get("wip_deploy_format_version")
+    if version != _DEPLOYMENT_JSON_VERSION:
+        return None, (
+            f"{target} carries format version {version!r}; this deployer "
+            f"expects {_DEPLOYMENT_JSON_VERSION}"
+        )
+    try:
+        return Deployment.model_validate(payload["deployment"]), None
+    except Exception as e:
+        return None, f"{target} failed to deserialize ({e})"
+
+
 def _try_load_previous_deployment(install_dir: Path) -> Deployment | None:
     """Return the persisted Deployment, or None if absent / unreadable.
 
@@ -6871,24 +6924,19 @@ def _try_load_previous_deployment(install_dir: Path) -> Deployment | None:
     CASE-331 Fix B drop-warning logic: if there's nothing to compare
     against (first install, corrupt state file, schema mismatch), we
     simply skip the comparison and proceed.
+
+    A file that exists but cannot be understood is reported on stderr rather
+    than passed over quietly: silently skipping the comparison is how a re-run
+    reshaped an install while looking routine to whoever typed the command.
     """
-    target = install_dir / _DEPLOYMENT_STATE_FILENAME
-    legacy = install_dir / "deployment.json"
-    if not target.exists() and legacy.exists():
-        target = legacy
-    if not target.exists():
-        return None
-    try:
-        payload = json.loads(target.read_text())
-    except json.JSONDecodeError:
-        return None
-    payload = _upgrade_state_payload(payload)
-    if payload.get("wip_deploy_format_version") != _DEPLOYMENT_JSON_VERSION:
-        return None
-    try:
-        return Deployment.model_validate(payload["deployment"])
-    except Exception:
-        return None
+    deployment, reason = _previous_deployment_or_unreadable(install_dir)
+    if reason is not None:
+        typer.echo(
+            f"warning: {reason} — this run cannot compare against the "
+            "install's previous spec.",
+            err=True,
+        )
+    return deployment
 
 
 def _diff_spec_for_drops(
@@ -6912,10 +6960,48 @@ def _diff_spec_for_drops(
     return dropped_apps, dropped_modules
 
 
+# Spec paths the identity guard must not compare, and their subtrees.
+# `images.tag` and `images.tag_overrides` are roll intent — re-running install
+# with --tag or --image-tag means "roll the images", not "reshape the install";
+# `tag_overrides` is a mapping, so its entries are skipped with it. `apps` and
+# `modules` belong to `_diff_spec_for_drops`, which names what disappeared.
+# `apply` holds this invocation's wait/timeout knobs, which say nothing about
+# what is deployed.
+_DRIFT_SKIP_PREFIXES = (
+    "apps",
+    "modules",
+    "apply",
+    "images.tag",
+    "images.tag_overrides",
+)
+
+# Leaf names that can hold credential material. Nothing in the spec does today —
+# `auth.users[].password` is a Literal["generated","supplied"] mode, and a
+# connector's `config`/`secret_key` name where the value lives rather than
+# carrying it — but the guard's own output is the last place a credential should
+# ever surface, so the rule is by name and stays ahead of the model. The
+# comparison still sees real values; only the display is replaced, and it names
+# the field so the operator learns *what* changed even without the value.
+_SECRET_LEAF_NAMES = frozenset(
+    {
+        "value",
+        "password",
+        "token",
+        "secret",
+        "secret_key",
+        "client_secret",
+        "plaintext",
+        "config",
+    }
+)
+
+_DRIFT_ABSENT = object()
+
+
 def _diff_spec_for_identity_drift(
     previous: Deployment, current: Deployment
 ) -> list[tuple[str, str, str]]:
-    """Return (field, old, new) for identity fields that differ on a re-install.
+    """Return (field, old, new) for spec fields that differ on a re-install.
 
     `install` builds its spec from CLI flags alone — the saved spec is
     never loaded — so every field the operator does not re-specify
@@ -6927,6 +7013,12 @@ def _diff_spec_for_identity_drift(
     are deliberately NOT compared — re-running install with a new
     --tag is the routine roll intent, not drift. Apps and modules are
     covered separately by `_diff_spec_for_drops`.
+
+    The named checks below carry the labels an operator reads best. They are
+    not the whole guard: a field added to the spec later would otherwise
+    default to unguarded, which is how `variant` and the k8s namespace came
+    to be reset in silence. Everything else in the spec is compared
+    structurally, minus `_DRIFT_SKIP_*`.
     """
     prev, curr = previous.spec, current.spec
 
@@ -6941,12 +7033,114 @@ def _diff_spec_for_identity_drift(
         ("network.http_port", prev.network.http_port, curr.network.http_port),
         ("images.registry", prev.images.registry, curr.images.registry),
         ("auth.mode", prev.auth.mode, curr.auth.mode),
+        # The security posture is identity as much as the hostname is: `variant`
+        # is what arms the production guards.
+        ("variant", prev.variant, curr.variant),
     ]
-    return [
-        (field, _show(old), _show(new))
-        for field, old, new in checks
-        if old != new
+    drifted: list[tuple[str, str, str]] = [
+        (field, _show(old), _show(new)) for field, old, new in checks if old != new
     ]
+
+    prev_nodes = _drift_nodes(prev.model_dump(mode="json"), "")
+    curr_nodes = _drift_nodes(curr.model_dump(mode="json"), "")
+
+    # A list that changed length is reported once, at its parent: element-wise
+    # comparison would call every entry different after the shift and bury the
+    # change that actually happened.
+    changed_lists: list[str] = []
+    for path, old in sorted(prev_nodes.items()):
+        new = curr_nodes.get(path, _DRIFT_ABSENT)
+        if (
+            isinstance(old, list)
+            and isinstance(new, list)
+            and len(old) != len(new)
+            and not _drift_skipped(path)
+        ):
+            changed_lists.append(path)
+            drifted.append((path, _drift_show(old, path), _drift_show(new, path)))
+
+    covered = {field for field, _, _ in checks} | set(changed_lists)
+    prev_leaves = _drift_leaves(prev.model_dump(mode="json"), "")
+    curr_leaves = _drift_leaves(curr.model_dump(mode="json"), "")
+    for path in sorted(set(prev_leaves) | set(curr_leaves)):
+        if path in covered or _drift_skipped(path):
+            continue
+        if any(path.startswith(f"{parent}[") for parent in changed_lists):
+            continue
+        old = prev_leaves.get(path, _DRIFT_ABSENT)
+        new = curr_leaves.get(path, _DRIFT_ABSENT)
+        if old != new:
+            drifted.append((path, _drift_show(old, path), _drift_show(new, path)))
+
+    return drifted
+
+
+def _drift_nodes(value: object, prefix: str) -> dict[str, object]:
+    """Every node of a spec-shaped value — container and leaf — by dotted path."""
+    out: dict[str, object] = {}
+    if prefix:
+        out[prefix] = value
+    if isinstance(value, dict):
+        for key, sub in value.items():
+            out.update(_drift_nodes(sub, f"{prefix}.{key}" if prefix else key))
+    elif isinstance(value, list):
+        for i, sub in enumerate(value):
+            out.update(_drift_nodes(sub, f"{prefix}[{i}]"))
+    return out
+
+
+def _drift_leaves(value: object, prefix: str) -> dict[str, object]:
+    """Terminal nodes only — what a structural comparison can actually diff."""
+    return {
+        path: node
+        for path, node in _drift_nodes(value, prefix).items()
+        if not isinstance(node, (dict, list))
+    }
+
+
+def _drift_skipped(path: str) -> bool:
+    """Whether a spec path — or anything beneath it — sits outside the identity
+    guard by design."""
+    return any(
+        path == head or path.startswith(f"{head}.") or path.startswith(f"{head}[")
+        for head in _DRIFT_SKIP_PREFIXES
+    )
+
+
+def _drift_show(value: object, path: str) -> str:
+    """One side of a drift, as the operator sees it. Never a credential."""
+    if value is _DRIFT_ABSENT:
+        return "(not present before this run)"
+    if _drift_holds_secret(path):
+        return "(not printed — credential material)"
+    if isinstance(value, list):
+        return f"{len(value)} item(s)"
+    if isinstance(value, dict):
+        return f"{len(value)} key(s)"
+    return "(none)" if value is None else str(value)
+
+
+def _drift_holds_secret(path: str) -> bool:
+    """Whether this path is, or sits inside, a credential-bearing field.
+
+    Ancestors count, not just the leaf: a connector's `config` is a free-form
+    mapping whose entries are named by the identity provider (clientSecret,
+    bindPW, …), so the sensitive name can be several levels below the field the
+    model declares.
+    """
+    return any(name in _SECRET_LEAF_NAMES for name in _drift_path_names(path))
+
+
+def _drift_path_names(path: str) -> list[str]:
+    """The key names along a dotted path; a list index is dropped with the
+    brackets that carry it, so `auth.users[0].password` yields auth, users,
+    password."""
+    names: list[str] = []
+    for part in path.split("."):
+        base = part.split("[", 1)[0]
+        if base:
+            names.append(base)
+    return names
 
 
 def _print_existing_install_conflict_and_exit(
@@ -6994,6 +7188,36 @@ def _print_existing_install_conflict_and_exit(
     raise typer.Exit(2)
 
 
+def _print_unreadable_state_and_exit(*, name: str, reason: str) -> None:
+    """Abort message for a re-install over an existing install whose saved spec
+    cannot be read — the guard that would catch a reshape has nothing to
+    compare against, so silence here would be indistinguishable from a clean
+    run."""
+    typer.echo(
+        typer.style(
+            f"✗ install aborted: install '{name}' has a saved spec this deployer "
+            f"cannot read — {reason}.",
+            fg=typer.colors.RED,
+            bold=True,
+        ),
+        err=True,
+    )
+    typer.echo(
+        "  Without it neither the app/module-drop guard nor the identity guard can "
+        "run, so this command would apply whatever its flags say over a live "
+        "install — including flags you did not pass, which fall back to their "
+        "defaults.",
+        err=True,
+    )
+    typer.echo(
+        f"  Repair or remove the file (a backup copy of it is all that is needed to "
+        f"compare again), then re-run. If you mean to re-specify install '{name}' "
+        "from these flags as it stands, re-run with --reconcile.",
+        err=True,
+    )
+    raise typer.Exit(2)
+
+
 def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
     """Re-render manifests from the persisted Deployment, write to a
     temp dir, run `kubectl diff` against the live cluster, exit with
@@ -7020,8 +7244,16 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
 
     discovery = _discover_or_exit(root)
 
+    # Read-only: a status command must never create or extend a secret store, so
+    # persist is off (the same reason `_do_render` passes it — a preview that
+    # mints passwords leaves the operator's store holding values no install
+    # runs). `install_dir` is passed so the store is still CHECKED against what
+    # this install is known to run: without it `known` is None and the drift
+    # check never fires, which made the one command that exists to report
+    # differences hide a drifted secret store.
     secrets = _ensure_secrets_via_spec(
-        deployment, discovery.components, discovery.apps
+        deployment, discovery.components, discovery.apps,
+        persist=False, install_dir=install_dir,
     )
     tree = _render_tree(
         deployment, discovery.components, discovery.apps, secrets,
