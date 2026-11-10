@@ -1348,15 +1348,13 @@ def install(
     if deployment.spec.target in ("compose", "dev"):
         _run_preflight_or_exit(deployment, target_dir)
 
-    # Clean up legacy CASE-294 state file before apply. Earlier builds
-    # wrote `deployment.json` into the install dir; kubectl apply -R -f
-    # picks it up as a (broken) manifest. _persist_deployment writes
-    # to `deployment.deployer-state` now, but if a stale legacy file
-    # lingers from a prior install we drop it here so apply doesn't
-    # trip on it.
-    legacy_state = target_dir / "deployment.json"
-    if legacy_state.exists():
-        legacy_state.unlink()
+    # Retire any pre-CASE-294 `deployment.json` before the steps that can still
+    # fail. `kubectl apply -R -f <install_dir>` reads json/yaml sitting in the
+    # install dir, so the legacy file cannot simply stay there — but deleting it
+    # outright destroyed the only spec an old install had recorded while cluster
+    # selection, secret drift, collision refusals and render still lay ahead, and
+    # the next re-run then found no previous spec and skipped both guards.
+    _retire_legacy_state(target_dir)
 
     _record_cluster_for_install(deployment, previous)
     _select_cluster_or_exit(deployment, mutating=True)
@@ -6914,6 +6912,69 @@ def _previous_deployment_or_unreadable(
         return Deployment.model_validate(payload["deployment"]), None
     except Exception as e:
         return None, f"{target} failed to deserialize ({e})"
+
+
+def _retire_legacy_state(install_dir: Path) -> None:
+    """Move a pre-CASE-294 `deployment.json` out of kubectl's way without
+    destroying the record it carries.
+
+    It cannot stay where it is: `kubectl apply -R -f <install_dir>` reads the
+    json and yaml sitting in the install directory, and a deployer state file is
+    not a manifest. It cannot simply be deleted either — for an install whose
+    only record is this file, deletion left nothing for the drop and identity
+    guards to compare against on the next run, and cluster selection, secret
+    drift, the collision refusals and render all still lay ahead of the apply.
+
+    So a readable legacy spec is carried forward to the canonical name first and
+    only then removed; anything else is parked under an extension kubectl
+    ignores, which keeps the bytes for whoever has to reconstruct why.
+    """
+    legacy = install_dir / "deployment.json"
+    if not legacy.exists():
+        return
+    canonical = install_dir / _DEPLOYMENT_STATE_FILENAME
+    if canonical.exists():
+        # The current file already is the record; the legacy one is residue that
+        # would only make kubectl fail.
+        _park_legacy_state(legacy, note="the canonical state file already exists")
+        return
+    deployment, reason = _previous_deployment_or_unreadable(install_dir)
+    if deployment is None:
+        _park_legacy_state(legacy, note=reason or "it is not a readable spec")
+        return
+    # `_persist_deployment` is itself the migration: it writes the canonical
+    # name and unlinks the legacy file. The guard covers a caller that leaves it
+    # behind, so a successful migration can never abort the install on a
+    # FileNotFoundError for a file that is already gone.
+    _persist_deployment(deployment, install_dir)
+    if legacy.exists():
+        legacy.unlink()
+    typer.echo(
+        f"note: migrated {legacy.name} to {canonical.name}. Older deployers wrote "
+        "the spec under `deployment.json`; it stays out of the install directory "
+        "because kubectl applies that directory recursively.",
+        err=True,
+    )
+
+
+def _park_legacy_state(legacy: Path, *, note: str) -> None:
+    """Set an unusable legacy state file aside instead of deleting it.
+
+    The `.retired` suffix is what makes this safe: kubectl's recursive apply
+    reads json, yaml and yml, so a file under another extension is ignored —
+    out of the apply's way, but still on disk to be inspected.
+    """
+    parked = legacy.with_name(f"{legacy.name}.retired")
+    n = 1
+    while parked.exists():
+        n += 1
+        parked = legacy.with_name(f"{legacy.name}.retired{n}")
+    legacy.rename(parked)
+    typer.echo(
+        f"warning: {legacy.name} is not usable state ({note}) — kept unchanged as "
+        f"{parked.name}, where kubectl's recursive apply will not see it.",
+        err=True,
+    )
 
 
 def _try_load_previous_deployment(install_dir: Path) -> Deployment | None:

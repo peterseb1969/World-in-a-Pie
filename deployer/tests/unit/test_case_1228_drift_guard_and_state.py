@@ -1,4 +1,4 @@
-"""CASE-1228 — items 1, 2 and 5c: three silent failures around one install.
+"""CASE-1228 — items 1, 2, 3 and 5c: silent failure around one install.
 
 Item 1. `install` re-specifies its whole spec from CLI flags and never loads the
 saved one, so any field the operator does not repeat reverts to its flag
@@ -11,6 +11,13 @@ later is guarded by default rather than by someone remembering.
 Item 2. A state file that exists but cannot be understood made the loader return
 None, which the install flow reads as "no previous install" — skipping both
 guards and saying nothing about it.
+
+Item 3. `deployment.json` — the pre-CASE-294 state file — was unlinked early in
+install. It does have to go, because `kubectl apply -R -f <install_dir>` reads
+the json in that directory, but the removal ran before cluster selection, secret
+drift, the collision refusals and render, so an install whose only record was
+that file could be left with no record at all, and the next re-run then had
+nothing to compare against either.
 
 Item 5c. `status --diff` called the secret resolver at its default `persist=True`
 (a preview that mints passwords into the store) and passed no `install_dir`, so
@@ -33,6 +40,7 @@ from wip_deploy.cli import (
     _diff_spec_for_identity_drift,
     _drift_show,
     _previous_deployment_or_unreadable,
+    _retire_legacy_state,
     _try_load_previous_deployment,
     app,
 )
@@ -358,3 +366,95 @@ class TestStatusDiffIsReadOnly:
         # fires — so a drifted store looked clean to the diff command.
         assert calls[0].get("persist") is False
         assert calls[0].get("install_dir") == tmp_path
+
+
+# ────────────────────────────────────────────────────────────────────
+# Item 3 — retiring the legacy state file must not destroy the record
+# ────────────────────────────────────────────────────────────────────
+
+
+def _write_legacy(
+    install_dir: Path,
+    deployment: Deployment | None = None,
+    *,
+    raw: str | None = None,
+) -> Path:
+    """Put a `deployment.json` in the install dir, valid unless `raw` is given."""
+    install_dir.mkdir(parents=True, exist_ok=True)
+    legacy = install_dir / "deployment.json"
+    if raw is not None:
+        legacy.write_text(raw)
+        return legacy
+    payload = {
+        "wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION,
+        "deployment": (deployment or _deployment(users=[])).model_dump(mode="json"),
+    }
+    legacy.write_text(json.dumps(payload, indent=2, default=str) + "\n")
+    return legacy
+
+
+class TestLegacyStateRetirement:
+    def test_absent_legacy_file_is_a_no_op(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        _retire_legacy_state(tmp_path)
+        assert list(tmp_path.iterdir()) == []
+        assert capsys.readouterr().err == ""
+
+    def test_readable_legacy_is_carried_forward_before_removal(self, tmp_path: Path) -> None:
+        legacy = _write_legacy(
+            tmp_path, _deployment(users=[], hostname="old.example.com")
+        )
+        _retire_legacy_state(tmp_path)
+        assert (tmp_path / STATE).exists(), "the spec must survive, not just move"
+        assert not legacy.exists()
+        dep, reason = _previous_deployment_or_unreadable(tmp_path)
+        assert reason is None
+        assert dep.spec.network.hostname == "old.example.com"
+
+    def test_unreadable_legacy_is_parked_and_its_bytes_kept(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        legacy = _write_legacy(tmp_path, raw="{ broken beyond use")
+        _retire_legacy_state(tmp_path)
+        assert not (tmp_path / STATE).exists()
+        assert not legacy.exists()
+        parked = list(tmp_path.glob("deployment.json.retired*"))
+        assert len(parked) == 1
+        assert parked[0].read_text() == "{ broken beyond use"
+        assert "warning:" in capsys.readouterr().err
+
+    def test_parked_file_is_invisible_to_the_recursive_apply(
+        self, tmp_path: Path
+    ) -> None:
+        """kubectl -R -f reads .json/.yaml/.yml in the install dir. If the
+        parked name matched one of them, removing the old deletion would
+        reintroduce the failure the deletion existed to prevent."""
+        _write_legacy(tmp_path, raw="{ broken")
+        _retire_legacy_state(tmp_path)
+        for leftover in tmp_path.iterdir():
+            assert leftover.suffix not in (".json", ".yaml", ".yml"), leftover
+
+    def test_canonical_state_wins_over_a_conflicting_legacy(
+        self, tmp_path: Path
+    ) -> None:
+        _persist(tmp_path, _deployment(users=[], hostname="current.example.com"))
+        legacy = _write_legacy(
+            tmp_path, _deployment(users=[], hostname="ancient.example.com")
+        )
+        _retire_legacy_state(tmp_path)
+        dep, reason = _previous_deployment_or_unreadable(tmp_path)
+        assert reason is None and dep.spec.network.hostname == "current.example.com"
+        assert not legacy.exists()
+        assert list(tmp_path.glob("deployment.json.retired*"))
+
+    def test_a_second_unreadable_legacy_does_not_overwrite_the_first(
+        self, tmp_path: Path
+    ) -> None:
+        _write_legacy(tmp_path, raw="{ first")
+        _retire_legacy_state(tmp_path)
+        _write_legacy(tmp_path, raw="{ second")
+        _retire_legacy_state(tmp_path)
+        parked = list(tmp_path.glob("deployment.json.retired*"))
+        assert len(parked) == 2
+        assert {p.read_text() for p in parked} == {"{ first", "{ second"}
