@@ -98,10 +98,31 @@ from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component
 
 # CASE-373 Phase 1 — bind-mount target inside app containers for the
-# imported external CA. The host side is install-dir-relative
-# (./secrets/external-ca.crt); the container side is wip-namespaced
+# imported external CA. The host side is the install's secret store
+# (see `external_ca_host_path`); the container side is wip-namespaced
 # under /etc/ssl/certs/ to keep it next to the standard CA bundle.
 _EXTERNAL_CA_CONTAINER_PATH = "/etc/ssl/certs/external-ca.crt"
+_EXTERNAL_CA_FILENAME = "external-ca.crt"
+
+
+def external_ca_host_path(deployment: Deployment) -> str | None:
+    """Where the imported external CA sits on the host, or None when the
+    install declares no file secret store to hold one.
+
+    Absolute, taken from ``spec.secrets.location``: that is the store
+    ``import-bundle`` writes the CA into and the one ``install``/``render``
+    probe, so all three agree because they read the same field, not because
+    the layout happens to line up. A ``./secrets/`` path pointed at the same
+    file only while both held — compose runs with the install dir as its cwd,
+    and the store sat under that dir — and either flag breaks it on its own:
+    ``--secrets-location`` moves the store out from under the install dir,
+    ``--install-dir`` moves the dir away from the name-derived location.
+    """
+    location = deployment.spec.secrets.location
+    if location is None:
+        return None
+    return str(Path(location) / _EXTERNAL_CA_FILENAME)
+
 
 # ────────────────────────────────────────────────────────────────────
 # Main entry point
@@ -362,12 +383,12 @@ def _service_block(
 
     volumes = _volumes_for(owner)
     # CASE-373 Phase 1 — bind-mount the imported external CA (read-only)
-    # into app containers when the flag is set. Path is install-dir-
-    # relative because compose runs from there.
-    if is_app and deployment.spec.network.external_ca_mount:
-        volumes.append(
-            f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
-        )
+    # into app containers when the flag is set. Host side is the absolute
+    # path out of the install's secret store, so the mount survives an
+    # install dir or store location that differs from the name-derived default.
+    ca_host = external_ca_host_path(deployment)
+    if is_app and deployment.spec.network.external_ca_mount and ca_host is not None:
+        volumes.append(f"{ca_host}:{_EXTERNAL_CA_CONTAINER_PATH}:ro")
     if mounts_auth_config_dir(owner):
         volumes.append(f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro")
     # The key file's own directory, for the manifests that read it (the

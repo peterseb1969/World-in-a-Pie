@@ -104,7 +104,17 @@ Suggested install command:
     --remote-wip https://wip.example.com --app react-console
 ```
 
-Run the suggested command. Install auto-detects `secrets/external-ca.crt` and mounts it into every app container at `/etc/ssl/certs/external-ca.crt` plus injects `NODE_EXTRA_CA_CERTS` pointing at it. No `NODE_TLS_REJECT_UNAUTHORIZED=0` needed.
+Run the suggested command. Install auto-detects `external-ca.crt` in the install's secret store and mounts it into every app container at `/etc/ssl/certs/external-ca.crt` plus injects `NODE_EXTRA_CA_CERTS` pointing at it. No `NODE_TLS_REJECT_UNAUTHORIZED=0` needed.
+
+**An install outside `~/.wip-deploy/<name>/`** — one materialized with `--install-dir`, or whose store was moved with `--secrets-location` — has to be named on both sides, because the CA has to land in *that* install's own store:
+
+```bash
+wip-deploy import-bundle laptop-rc.yaml --name laptop-rc --install-dir /opt/wip
+wip-deploy install --name laptop-rc --target dev --apps-only --install-dir /opt/wip \
+  --remote-wip https://wip.example.com --app react-console
+```
+
+`import-bundle` resolves the destination exactly as `install` does: the store location recorded in the install's saved spec if it has one, else `<install-dir>/secrets`, else `~/.wip-deploy/<name>/secrets`. The suggested command above carries `--install-dir` through automatically.
 
 ## CA rotation
 
@@ -115,7 +125,7 @@ The cloud's internal CA can be rotated (security event, planned cycle, container
 wip-deploy import-bundle laptop-rc.yaml --name laptop-rc --update-ca-only
 ```
 
-This refreshes `secrets/external-ca.crt` only — the api-key and other state are untouched. CASE-380 tracks the broader detection-and-notification UX.
+This refreshes the install's `external-ca.crt` only — the api-key and other state are untouched. Pass `--install-dir` here too when the install lives outside `~/.wip-deploy/<name>/`. CASE-380 tracks the broader detection-and-notification UX.
 
 ## Schema reference
 

@@ -4,22 +4,23 @@ Three layers:
 
   1. **Spec** — `NetworkSpec.external_ca_mount` defaults False, accepts
      True, round-trips through model_dump. Set by the install verb
-     when `<install_dir>/secrets/external-ca.crt` exists (driven by a
-     prior `wip-deploy import-bundle`).
+     when `external-ca.crt` exists in the install's secret store (driven
+     by a prior `wip-deploy import-bundle`).
 
   2. **Compose renderer** — when the flag is True, app containers get
      `NODE_EXTRA_CA_CERTS=/etc/ssl/certs/external-ca.crt` plus a
-     `./secrets/external-ca.crt:/etc/ssl/certs/external-ca.crt:ro`
-     bind-mount. Backend service containers (Component instances) do
-     NOT receive these even when the flag is set — the slot is
-     app-only because backends on the same host don't need cross-host
-     trust.
+     `<secrets.location>/external-ca.crt:/etc/ssl/certs/external-ca.crt:ro`
+     bind-mount — absolute, so it points at the store whether or not the
+     store sits under the install dir. Backend service containers
+     (Component instances) do NOT receive these even when the flag is set —
+     the slot is app-only because backends on the same host don't need
+     cross-host trust.
 
   3. **Dev renderer** — same shape as compose. Same render path
      (`_service_block`-equivalent), same gate.
 
-The install-time auto-flip (cli.py: `if (target_dir / "secrets" /
-"external-ca.crt").exists(): set flag`) is exercised via a tmp-path
+The install-time auto-flip (`external_ca_host_path(deployment)` resolved
+from `spec.secrets.location`, then `.exists()`) is exercised via a tmp-path
 filesystem fixture in a separate end-to-end-ish test below.
 """
 
@@ -237,8 +238,11 @@ class TestComposeRendererInjection:
         self, deployment_with_ca: Deployment
     ) -> None:
         block = self._render(self._build_app(), deployment_with_ca, is_app=True)
+        # Host side is absolute, taken from spec.secrets.location ("/tmp/s"
+        # in this fixture) — not "./secrets/", which only reached the store
+        # while the store happened to sit under the install dir.
         assert (
-            "./secrets/external-ca.crt:/etc/ssl/certs/external-ca.crt:ro"
+            "/tmp/s/external-ca.crt:/etc/ssl/certs/external-ca.crt:ro"
             in block["volumes"]
         )
 

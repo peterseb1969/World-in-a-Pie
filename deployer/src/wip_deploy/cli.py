@@ -55,6 +55,7 @@ from wip_deploy.nuke import (
 from wip_deploy.presets import PRESETS
 from wip_deploy.renderers import (
     FileTree,
+    external_ca_host_path,
     render_compose,
     render_dev_simple,
     render_k8s,
@@ -1068,10 +1069,8 @@ def render(
     # tree matches what install would produce: an imported-bundle CA in the
     # install's secret store flips the flag and the compose gets the mount.
     # Read from the store, not the output dir, which may be anywhere.
-    secrets_location = deployment.spec.secrets.location
-    if secrets_location is not None and (
-        Path(secrets_location) / "external-ca.crt"
-    ).exists():
+    ca_host = external_ca_host_path(deployment)
+    if ca_host is not None and Path(ca_host).exists():
         deployment.spec.network.external_ca_mount = True
 
     # Read-only: a preview must never create or extend a secret store.
@@ -1334,13 +1333,18 @@ def install(
         deployment.spec.apply.timeout_seconds = wait_timeout
 
     # CASE-373 — auto-mount external CA into app containers when a bundle
-    # has seeded one. `wip-deploy import-bundle` writes
-    # `<install_dir>/secrets/external-ca.crt`; this flag triggers the
-    # compose + dev renderers to bind-mount it + inject NODE_EXTRA_CA_CERTS.
+    # has seeded one. `wip-deploy import-bundle` writes external-ca.crt
+    # into the install's secret store; this flag triggers the compose + dev
+    # renderers to bind-mount it + inject NODE_EXTRA_CA_CERTS.
     # No CLI flag — the bundle's import is the trigger. If the file is
     # removed (operator manually deleted it), this install re-renders
     # without the mount.
-    if (target_dir / "secrets" / "external-ca.crt").exists():
+    #
+    # The store location, not `<install-dir>/secrets`: that is where
+    # import-bundle writes, and `--secrets-location` can move it anywhere.
+    # Probing the install dir found the CA only while the store sat under it.
+    ca_host = external_ca_host_path(deployment)
+    if ca_host is not None and Path(ca_host).exists():
         deployment.spec.network.external_ca_mount = True
 
     # Preflight: catch port conflicts and stale containers before any work
@@ -5935,14 +5939,29 @@ def import_bundle(
         ),
     ],
     name: Annotated[str | None, _name_opt()] = None,
+    install_dir_opt: Annotated[
+        Path | None,
+        typer.Option(
+            "--install-dir",
+            help=(
+                "Install directory the bundle is being imported for. Defaults to "
+                "~/.wip-deploy/<name>/. Pass the same --install-dir the install "
+                "uses: the CA has to land in that install's own secret store, or "
+                "install never finds it and renders the app containers without the "
+                "mount. An existing install keeps the store location its saved spec "
+                "records."
+            ),
+        ),
+    ] = None,
     update_ca_only: Annotated[
         bool,
         typer.Option(
             "--update-ca-only",
             help=(
-                "Refresh ~/.wip-deploy/<name>/secrets/external-ca.crt from "
-                "the bundle and exit. Does NOT touch the api-key or other "
-                "state. Use this when the cloud install rotates its CA "
+                "Refresh the install's external-ca.crt (its secret store, "
+                "~/.wip-deploy/<name>/secrets/ unless --install-dir says "
+                "otherwise) from the bundle and exit. Does NOT touch the api-key "
+                "or other state. Use this when the cloud install rotates its CA "
                 "(see CASE-380)."
             ),
         ),
@@ -5961,6 +5980,12 @@ def import_bundle(
     import, the suggested install command is printed; the operator runs
     it themselves.
 
+    The api-key and CA go into the install's own secret store: the location
+    its saved spec records if it already exists, else `<install-dir>/secrets`,
+    else `~/.wip-deploy/<name>/secrets`. That is the same rule `install`
+    applies, so an install materialized outside `~/.wip-deploy/<name>/` must
+    be named here with `--install-dir` too.
+
     Examples:
 
       # Import a bundle file into ~/.wip-deploy/laptop-rc/
@@ -5971,6 +5996,9 @@ def import_bundle(
 
       # Refresh just the CA (after the cloud rotates its internal CA)
       wip-deploy import-bundle laptop-rc.yaml --name laptop-rc --update-ca-only
+
+      # An install materialized outside the default location
+      wip-deploy import-bundle laptop-rc.yaml --name laptop-rc --install-dir /opt/wip
     """
     from wip_deploy.import_bundle import BundleParseError, parse_bundle
 
@@ -6001,8 +6029,14 @@ def import_bundle(
             err=True,
         )
         raise typer.Exit(2)
-    install_dir = _default_install_dir(name)
-    secrets_dir = install_dir / "secrets"
+    install_dir = install_dir_opt or _default_install_dir(name)
+    # The store follows the install, not the name. `_install_secrets_location`
+    # is the very rule `install` uses to pick it (an existing install keeps the
+    # location its saved spec records, else `<install-dir>/secrets`), so the CA
+    # lands where install will probe and where the renderers mount from — the
+    # three used to agree only when the store sat at its default under the
+    # name-derived install dir.
+    secrets_dir = Path(_install_secrets_location(None, install_dir) or install_dir / "secrets")
     api_key_path = secrets_dir / "api-key"
     if not update_ca_only:
         _refuse_replacing_a_live_installs_key(install_dir, api_key_path, bundle.api_key.value)
@@ -6069,8 +6103,11 @@ def import_bundle(
     # --apps-only needs at least one --app; a bundle that suggests none
     # gets a placeholder rather than a command install would refuse.
     apps_flags = "".join(f" --app {a}" for a in bundle.suggested_apps) or " --app <app>"
+    # Carry --install-dir through: an install that lands elsewhere would probe
+    # a different store and render without the CA mount this import just seeded.
+    dir_flag = f" --install-dir {install_dir_opt}" if install_dir_opt is not None else ""
     typer.echo(
-        f"  wip-deploy install --name {name} --target dev --apps-only \\"
+        f"  wip-deploy install --name {name} --target dev --apps-only{dir_flag} \\"
     )
     typer.echo(
         f"    --remote-wip {bundle.external_base_url}{apps_flags}"

@@ -93,6 +93,7 @@ from wip_deploy.renderers.compose import (
     _environment_block,
     _healthcheck_block,
     _render_dotenv,
+    external_ca_host_path,
 )
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import (
@@ -661,12 +662,12 @@ def _dev_service_block(
         app_sources=app_sources,
     )
     # CASE-373 Phase 1 — bind-mount the imported external CA (read-only)
-    # into app containers when the flag is set. Path is install-dir-
-    # relative because compose runs from there.
-    if isinstance(owner, App) and deployment.spec.network.external_ca_mount:
-        volumes.append(
-            f"./secrets/external-ca.crt:{_EXTERNAL_CA_CONTAINER_PATH}:ro"
-        )
+    # into app containers when the flag is set. Host side is the absolute
+    # path out of the install's secret store, so the mount survives an
+    # install dir or store location that differs from the name-derived default.
+    ca_host = external_ca_host_path(deployment)
+    if isinstance(owner, App) and deployment.spec.network.external_ca_mount and ca_host is not None:
+        volumes.append(f"{ca_host}:{_EXTERNAL_CA_CONTAINER_PATH}:ro")
     if mounts_auth_config_dir(owner):
         volumes.append(f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro")
     # The key file's own directory, for the manifests that read it (the

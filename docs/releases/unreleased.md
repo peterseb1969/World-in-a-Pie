@@ -13,6 +13,18 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   `DIR/secrets` (they went to `~/.wip-deploy/<name>/secrets`, outside the
   install dir). An existing install keeps the location its saved spec
   records.
+- **The imported external CA is probed, written and mounted from the install's
+  secret store** (`spec.secrets.location`) instead of three places that agreed
+  only by coincidence. `install`/`render` no longer look in
+  `<install-dir>/secrets`, the renderers emit the absolute store path
+  (`/…/secrets/external-ca.crt:…` rather than `./secrets/external-ca.crt:…`),
+  and `import-bundle` gained `--install-dir` and resolves its destination by the
+  same rule `install` uses — so it writes api-key, CA and `bootstrap.yaml` into
+  the store the install actually reads, and carries `--install-dir` into the
+  install command it prints. An install materialized outside
+  `~/.wip-deploy/<name>/` used to render app containers with no CA mount and
+  say nothing; to repair one, re-run `import-bundle` with that install's
+  `--install-dir` and re-render it.
 - `install --no-wait` (and every mutating verb with it) says "applied;
   health not checked" in yellow instead of a green "✓ Install complete."
 - `remove-app` removes the app's container only after the apply succeeds
