@@ -399,7 +399,8 @@ async def health_check(fresh: bool = False):
 
 async def health_check_fresh():
     """Uncached health for callers that read the dependency keys: a live probe,
-    not the 30s cached fan-out that root /health serves."""
+    not the 30s cached fan-out root /health serves by default (root
+    /health?fresh=true probes live too)."""
     return await health_check(fresh=True)
 
 

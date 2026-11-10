@@ -151,7 +151,9 @@ jobs:
           pip install -r requirements.txt
           # Transport injection: component tests import registry.main in-process
           pip install -r ../registry/requirements.txt
-          pip install pytest pytest-asyncio httpx
+          # pytest-httpx: document-store's dependency-outage tests mock the
+          # template-store and def-store clients' HTTP calls (httpx_mock).
+          pip install pytest pytest-asyncio httpx pytest-httpx
 
       - name: Run tests
         working-directory: components/${{ matrix.component }}

@@ -133,6 +133,13 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await Terminology.delete_all()
     await TermAuditLog.delete_all()
     await TermRelation.delete_all()
+    # The startup migrations' completion markers. They are not a model, so
+    # delete_all above misses them: a marker one test left behind made the
+    # next test's migration skip and convert nothing. Every test starts from a
+    # database no migration has run on, which is what the migration tests set
+    # up; whether two of them shared a database depended on xdist placement,
+    # so the suite failed run serially (CI) and passed in parallel (wip-test.sh).
+    await test_db["def_store_migrations"].delete_many({})
 
     registry_app.state.mongodb_client = mongo_client
     AuthService.initialize(master_key=os.environ["MASTER_API_KEY"])

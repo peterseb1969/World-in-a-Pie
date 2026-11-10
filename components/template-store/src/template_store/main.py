@@ -336,7 +336,8 @@ async def health_check(fresh: bool = False):
 
     Verifies MongoDB, Registry, and Def-Store connectivity. `status`, though,
     reports this service's own storage (MongoDB) and nothing else: a peer that
-    cannot be reached is named in its own key (`registry`, `def_store`) while
+    cannot be reached is named in its own key (`registry`, `def_store`, and the
+    event bus in `nats`) while
     `status` stays `healthy` and the answer stays 200. Only MongoDB failing
     sets `unhealthy`, which answers 503 with the same body — a probe reading
     only the status code (the image's HEALTHCHECK, curl -f) must not see 200.
@@ -369,7 +370,8 @@ async def health_check(fresh: bool = False):
 
 async def health_check_fresh():
     """Uncached health for callers that read the dependency keys: a live probe,
-    not the 30s cached fan-out that root /health serves."""
+    not the 30s cached fan-out root /health serves by default (root
+    /health?fresh=true probes live too)."""
     return await health_check(fresh=True)
 
 
