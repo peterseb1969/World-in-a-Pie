@@ -38,6 +38,37 @@ these sections into `vX.Y.Z.md` when the release is cut, then empty this file.
   truthful last-known-good, runtime unaskable → persisted, as before. k8s
   applies are unchanged: `kubectl apply` lands objects as it walks them, so a
   mid-apply failure genuinely is a change.
+- **A cluster that could not be asked is no longer read as a cluster with no
+  Secret.** The kubectl failure check accepted the bare words `not found`, which
+  client-side errors also print — a kubeconfig whose exec credential plugin is
+  missing (EKS, AKS, kubelogin) ends with `executable <plugin> not found` and
+  never reached the API server. That read as "the namespace holds no
+  `wip-secrets`", so the secret-drift guard compared against the host record
+  alone and `secrets pull` reported an answer the cluster never gave. Only the
+  server's own `(NotFound)` marker counts now; anything else stops the verb.
+- **An unreadable `deployment.deployer-state` is kept, not overwritten.** A
+  `--reconcile` install over a state file the deployer cannot parse replaced it
+  with the new one, destroying the original bytes and the `secret_digests` they
+  carried — while the abort message it replaces tells you a backup copy is all
+  that is needed. The file is now set aside as
+  `deployment.deployer-state.retired` (an extension `kubectl apply -R` ignores)
+  and the warning names it, matching what already happened to an unusable legacy
+  `deployment.json`.
+- **`app-deploy` also refuses an app that is opted into the registry but pointed
+  at a local checkout.** The dev renderer tests `--app-source` before
+  `--app-from-registry`, so such an app is still built as
+  `<image>:dev-<install>` and the recorded tag never reached a container. The
+  refusal now names which flag is holding it at source.
+- **`--secrets-location` is resolved to an absolute path when the spec is
+  built.** A relative value used to flow through verbatim, which made the
+  external-CA bind-mount render as `store/external-ca.crt:…` — short syntax with
+  no leading `/`, `./` or `~`, which compose reads as a *named volume*: the CA
+  silently became an empty volume — and let the CA probe and the mount resolve
+  against different directories. `~` is expanded too. Absolute paths are stored
+  unchanged (symlinks are deliberately not followed).
+- **The identity-drift display labels the two sides of an absence apart.** A key
+  the new spec dropped printed `(not present before this run)` on the new side,
+  stating it backwards; it now reads `(not in this run's spec)`.
 - `install --no-wait` (and every mutating verb with it) says "applied;
   health not checked" in yellow instead of a green "✓ Install complete."
 - `remove-app` removes the app's container only after the apply succeeds

@@ -40,6 +40,8 @@ import wip_deploy.apply as apply_mod
 import wip_deploy.cli as cli
 from wip_deploy.cli import (
     _DEPLOYMENT_JSON_VERSION,
+    _DRIFT_ABSENT,
+    _DRIFT_REMOVED,
     _diff_spec_for_identity_drift,
     _drift_show,
     _previous_deployment_or_unreadable,
@@ -363,6 +365,64 @@ class TestDriftGuardCoverage:
         assert _drift_show("wip-tls", "platform.k8s.tls_secret_name") == "wip-tls"
         assert _drift_show("/srv/s", "secrets.location") == "/srv/s"
 
+    def test_each_side_of_an_absence_gets_its_own_label(self) -> None:
+        """CASE-1228 #2 finding 4. One sentinel for both sides printed
+        `old → (not present before this run)` for a key this run dropped, which
+        states the fact backwards: the key was there before and is gone now."""
+        assert _drift_show(_DRIFT_ABSENT, "network.hostname") == (
+            "(not present before this run)"
+        )
+        assert _drift_show(_DRIFT_REMOVED, "network.hostname") == (
+            "(not in this run's spec)"
+        )
+
+    def test_a_key_this_run_dropped_is_labelled_on_the_new_side(self) -> None:
+        """Through the guard itself, not only the formatter.
+
+        `images.tag_overrides` sits outside the guard by design (a tag roll is
+        routine intent, not identity drift), so this uses a dict the guard does
+        compare — `platform.dev.app_sources`, keyed by app name — and drops one of
+        its two entries on the new side."""
+
+        def dev(sources: dict[str, str]) -> Deployment:
+            return Deployment(
+                metadata=DeploymentMetadata(name="guard"),
+                spec=DeploymentSpec(
+                    target="dev",
+                    variant="dev",
+                    apps=[AppRef(name="cookbook", enabled=True)],
+                    modules=ModulesSpec(optional=[]),
+                    auth=AuthSpec(mode="api-key-only", gateway=False, users=[]),
+                    network=NetworkSpec(hostname="wip.localhost", tls="internal"),
+                    images=ImagesSpec(),
+                    platform=PlatformSpec(
+                        dev=DevPlatform(
+                            app_sources={k: Path(v) for k, v in sources.items()},
+                        ),
+                    ),
+                    secrets=SecretsSpec(backend="file", location="/tmp/wip-test-secrets"),
+                    apply=ApplySpec(),
+                ),
+            )
+
+        prev = dev(
+            {
+                "cookbook": "/home/op/checkouts/react-console",
+                "songforge": "/home/op/checkouts/songforge",
+            },
+        )
+        curr = dev({"cookbook": "/home/op/checkouts/react-console"})
+
+        drift = _diff_spec_for_identity_drift(prev, curr)
+
+        assert (
+            "platform.dev.app_sources.songforge",
+            "/home/op/checkouts/songforge",
+            "(not in this run's spec)",
+        ) in drift
+        # The side that is new-but-absent keeps its own wording, untouched.
+        assert all(new != "(not present before this run)" for _, _, new in drift)
+
 
 # ────────────────────────────────────────────────────────────────────
 # Item 5c — `status --diff` must not write, and must check what it reports on
@@ -499,11 +559,18 @@ class TestLegacyStateRetirement:
 
 
 def _persist_dev_install(
-    install_dir: Path, *, apps_from_registry: list[str] | None = None
+    install_dir: Path,
+    *,
+    apps_from_registry: list[str] | None = None,
+    app_sources: dict[str, str] | None = None,
 ) -> None:
     """A dev-target install with one enabled app, which the dev renderer
     builds locally as `<image>:dev-<install>` unless the app opted into the
-    registry."""
+    registry.
+
+    `app_sources` mirrors `--app-source NAME=PATH`; the renderer tests it
+    *before* the registry opt-in, so an app in both is still built locally
+    (CASE-1228 #2 finding 3)."""
     deployment = Deployment(
         metadata=DeploymentMetadata(name="devguard"),
         spec=DeploymentSpec(
@@ -515,7 +582,12 @@ def _persist_dev_install(
             network=NetworkSpec(hostname="wip.localhost", tls="internal"),
             images=ImagesSpec(),
             platform=PlatformSpec(
-                dev=DevPlatform(apps_from_registry=list(apps_from_registry or []))
+                dev=DevPlatform(
+                    apps_from_registry=list(apps_from_registry or []),
+                    app_sources={
+                        k: Path(v) for k, v in (app_sources or {}).items()
+                    },
+                )
             ),
             secrets=SecretsSpec(backend="file", location="/tmp/wip-test-secrets"),
             apply=ApplySpec(),
@@ -574,6 +646,30 @@ class TestDevTagRollIsRefused:
             cli_module._apply_and_persist_mutation = original
         assert result.exit_code == 0, result.output
         assert applied, "the roll must proceed for a registry-sourced app"
+
+    def test_an_app_opted_into_the_registry_but_source_overridden_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """CASE-1228 #2 finding 3. `--app-from-registry` is not what decides it:
+        the dev renderer tests `--app-source` first, so an app in both is still
+        built locally as `<image>:dev-<install>` and the override would again be
+        recorded against a container that never pulls it."""
+        _persist_dev_install(
+            tmp_path,
+            apps_from_registry=["cookbook"],
+            app_sources={"cookbook": "/home/op/checkouts/react-console"},
+        )
+
+        result = runner.invoke(
+            app,
+            ["app-deploy", "cookbook", "--tag", "sha-abc", "--install-dir", str(tmp_path)],
+        )
+
+        assert result.exit_code == 2
+        assert "--app-source points it at" in result.output
+        dep, reason = _previous_deployment_or_unreadable(tmp_path)
+        assert reason is None
+        assert "cookbook" not in dep.spec.images.tag_overrides
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -635,6 +731,35 @@ class TestLiveSecretReadDistinguishes:
         with pytest.raises(apply_mod.LiveSecretReadUnavailable, match="refused"):
             apply_mod.read_live_secrets("wip")
 
+    def test_missing_credential_plugin_is_not_an_absence(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """CASE-1228 item 5d, follow-up from response #2.
+
+        A kubeconfig whose exec credential plugin is absent (EKS, AKS, kubelogin)
+        never reached the API server, yet its stderr ends `… executable
+        no-such-auth-plugin not found`. Matching the bare words read that as "the
+        namespace holds no wip-secrets", so the drift check ran against the host
+        record alone — the exact failure this item set out to remove. The wording
+        here is kubectl's own, captured live off a throwaway kubeconfig.
+        """
+        monkeypatch.setattr(shutil, "which", lambda _x: "/usr/bin/kubectl")
+        monkeypatch.setattr(
+            apply_mod.subprocess,
+            "run",
+            lambda *a, **k: _FakeProc(
+                1,
+                stderr=(
+                    "Unable to connect to the server: getting credentials: exec: "
+                    "executable no-such-auth-plugin not found\n\n"
+                    "It looks like you are trying to use a client-go credential "
+                    "plugin that is not installed.\n"
+                ),
+            ),
+        )
+        with pytest.raises(apply_mod.LiveSecretReadUnavailable, match="not found"):
+            apply_mod.read_live_secrets("wip")
+
     def test_undecodable_payload_is_not_an_absence(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -675,3 +800,62 @@ class TestDriftCheckStopsWhenTheClusterCannotBeAsked:
         with pytest.raises(typer.Exit) as exc:
             cli._known_secret_digests(deployment, tmp_path)
         assert exc.value.exit_code == 2
+
+
+# ────────────────────────────────────────────────────────────────────
+# Item 2 follow-up (response #2, finding 2) — --reconcile must not destroy the
+# unreadable state it is told to override
+
+
+class TestUnreadableCanonicalStateIsParked:
+    """`install --reconcile` over an unreadable state warns and continues, and the
+    run then persists a new spec over that file. Its bytes — and the
+    `secret_digests` among them, which the drift check would otherwise start from
+    — are the only evidence of what the install was, and the abort message the
+    operator was given promises that "a backup copy of it is all that is needed to
+    compare again". The legacy `deployment.json` was already parked for exactly
+    this reason; the canonical file was the path nobody covered."""
+
+    def test_an_unreadable_predecessor_survives_the_overwrite(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / STATE).write_text("{ this is not json")
+
+        cli._persist_deployment(_deployment(users=[]), tmp_path)
+
+        parked = tmp_path / f"{STATE}.retired"
+        assert parked.read_text() == "{ this is not json"
+        assert "not usable state" in capsys.readouterr().err
+        # The new record is what the next run reads; the parked copy is inert.
+        assert _try_load_previous_deployment(tmp_path) is not None
+        assert parked.suffix not in (".json", ".yaml", ".yml")
+
+    def test_a_readable_predecessor_is_still_replaced_in_place(
+        self, tmp_path: Path
+    ) -> None:
+        """The happy path must not start accumulating .retired litter: only an
+        unreadable file is set aside."""
+        _persist(tmp_path, _deployment(users=[], data_dir="/tmp/wip-old-data"))
+
+        cli._persist_deployment(_deployment(users=[], data_dir=DATA_DIR), tmp_path)
+
+        assert not (tmp_path / f"{STATE}.retired").exists()
+        loaded = _try_load_previous_deployment(tmp_path)
+        assert loaded is not None
+        assert loaded.spec.platform.compose.data_dir == Path(DATA_DIR)
+
+    def test_a_first_install_parks_nothing(self, tmp_path: Path) -> None:
+        cli._persist_deployment(_deployment(users=[]), tmp_path)
+
+        assert [p.name for p in tmp_path.iterdir()] == [STATE]
+
+    def test_a_second_unreadable_predecessor_does_not_overwrite_the_first(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / STATE).write_text("{ first")
+        cli._persist_deployment(_deployment(users=[]), tmp_path)
+        (tmp_path / STATE).write_text("{ second")
+        cli._persist_deployment(_deployment(users=[]), tmp_path)
+
+        parked = sorted(p.read_text() for p in tmp_path.glob(f"{STATE}.retired*"))
+        assert parked == ["{ first", "{ second"]

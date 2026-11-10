@@ -1299,6 +1299,13 @@ def install(
             "previous spec.",
             err=True,
         )
+        typer.echo(
+            f"  It is set aside as "
+            f"{(target_dir / _DEPLOYMENT_STATE_FILENAME).name}.retired before the "
+            "new state is written, so its bytes — including the secret digests it "
+            "carried — survive to be compared against.",
+            err=True,
+        )
     if previous is not None:
         dropped_apps, dropped_modules = _diff_spec_for_drops(previous, deployment)
         drifted = _diff_spec_for_identity_drift(previous, deployment)
@@ -2962,29 +2969,55 @@ def app_deploy(
 
     dev_plat = deployment.spec.platform.dev
     registry_opted = set(dev_plat.apps_from_registry) if dev_plat is not None else set()
-    if deployment.spec.target == "dev" and app_name not in registry_opted:
-        # Dev mode means dev: for an app not explicitly opted into the registry,
-        # the renderer builds the image locally and names it
-        # `<image>:dev-<install>` (`renderers/dev_simple.py`), so a
-        # `tag_overrides` entry never reaches the container. Recording it anyway
-        # persisted an intent that could not take effect and reported it as done
-        # — and the stale override then resurfaced later, silently applying a tag
-        # the operator had not asked for at that point.
-        typer.echo(
-            f"error: app {app_name!r} is built from source in this dev install — "
-            f"--target dev renders its image as <image>:dev-{resolved_name}, so "
-            f"pointing the install at registry tag {tag!r} would be remembered and "
-            "reported without ever reaching a container.",
-            err=True,
+    source_overridden = bool(dev_plat and app_name in dev_plat.app_sources)
+    if deployment.spec.target == "dev" and (
+        app_name not in registry_opted or source_overridden
+    ):
+        # Dev mode means dev: for an app the renderer builds locally, a
+        # `tag_overrides` entry never reaches the container — dev_simple names the
+        # image `<image>:dev-<install>` (`renderers/dev_simple.py`). Recording it
+        # anyway persisted an intent that could not take effect and reported it as
+        # done — and the stale override then resurfaced later, silently applying a
+        # tag the operator had not asked for at that point.
+        #
+        # `--app-from-registry` alone does not make a roll real: the renderer's
+        # build chain tests `--app-source` BEFORE the registry opt-in, so an app
+        # that is both opted in and pointed at a local checkout is still built
+        # from source. (An app-declared `build_context` would be a third path, but
+        # `_resolve_build_context` returns None for apps and the materialized
+        # per-service contexts cover components only, so it cannot arise here.)
+        why_built = (
+            f"--app-source points it at {dev_plat.app_sources[app_name]}"
+            if source_overridden
+            else "it is not opted into the registry with --app-from-registry"
         )
         typer.echo(
-            f"  To run new code here, change the app's source: a --app-source "
-            f"checkout is bind-mounted and rebuilds in place. To have this install "
-            f"follow published registry images for {app_name}, re-install it with "
-            "--app-from-registry <name>. Tag rolls are for compose and k8s "
-            "installs, where the image comes from the registry.",
+            f"error: app {app_name!r} is built from source in this dev install "
+            f"({why_built}) — --target dev renders its image as "
+            f"<image>:dev-{resolved_name}, so pointing the install at registry tag "
+            f"{tag!r} would be remembered and reported without ever reaching a "
+            "container.",
             err=True,
         )
+        if source_overridden:
+            typer.echo(
+                f"  To have this install follow published images for {app_name}, "
+                f"re-install it without the --app-source override (keeping "
+                f"--app-from-registry {app_name}); the checkout is bind-mounted and "
+                "rebuilds in place, so that is also how new code reaches the "
+                "container. Tag rolls are for compose and k8s installs, where the "
+                "image comes from the registry.",
+                err=True,
+            )
+        else:
+            typer.echo(
+                f"  To run new code here, change the app's source: a --app-source "
+                f"checkout is bind-mounted and rebuilds in place. To have this install "
+                f"follow published registry images for {app_name}, re-install it with "
+                "--app-from-registry <name>. Tag rolls are for compose and k8s "
+                "installs, where the image comes from the registry.",
+                err=True,
+            )
         raise typer.Exit(2)
 
     deployment.spec.images.tag_overrides[app_name] = tag
@@ -6877,6 +6910,9 @@ def _persist_deployment(
         payload["repo_root"] = str(repo_root)
     if digests:
         payload["secret_digests"] = digests
+    # An unreadable predecessor is evidence, not debris: set it aside before the
+    # overwrite rather than losing it (CASE-1228 item 2, response #2 finding 2).
+    _park_unreadable_state(install_dir)
     (install_dir / _DEPLOYMENT_STATE_FILENAME).write_text(
         json.dumps(payload, indent=2, default=str) + "\n"
     )
@@ -7006,11 +7042,11 @@ def _retire_legacy_state(install_dir: Path) -> None:
     if canonical.exists():
         # The current file already is the record; the legacy one is residue that
         # would only make kubectl fail.
-        _park_legacy_state(legacy, note="the canonical state file already exists")
+        _park_unusable_state(legacy, note="the canonical state file already exists")
         return
     deployment, reason = _previous_deployment_or_unreadable(install_dir)
     if deployment is None:
-        _park_legacy_state(legacy, note=reason or "it is not a readable spec")
+        _park_unusable_state(legacy, note=reason or "it is not a readable spec")
         return
     # `_persist_deployment` is itself the migration: it writes the canonical
     # name and unlinks the legacy file. The guard covers a caller that leaves it
@@ -7027,24 +7063,50 @@ def _retire_legacy_state(install_dir: Path) -> None:
     )
 
 
-def _park_legacy_state(legacy: Path, *, note: str) -> None:
-    """Set an unusable legacy state file aside instead of deleting it.
+def _park_unusable_state(state: Path, *, note: str) -> None:
+    """Set an unusable state file aside instead of deleting or overwriting it.
 
     The `.retired` suffix is what makes this safe: kubectl's recursive apply
     reads json, yaml and yml, so a file under another extension is ignored —
     out of the apply's way, but still on disk to be inspected.
     """
-    parked = legacy.with_name(f"{legacy.name}.retired")
+    parked = state.with_name(f"{state.name}.retired")
     n = 1
     while parked.exists():
         n += 1
-        parked = legacy.with_name(f"{legacy.name}.retired{n}")
-    legacy.rename(parked)
+        parked = state.with_name(f"{state.name}.retired{n}")
+    state.rename(parked)
     typer.echo(
-        f"warning: {legacy.name} is not usable state ({note}) — kept unchanged as "
+        f"warning: {state.name} is not usable state ({note}) — kept unchanged as "
         f"{parked.name}, where kubectl's recursive apply will not see it.",
         err=True,
     )
+
+
+def _park_unreadable_state(install_dir: Path) -> None:
+    """Set the install's canonical state file aside when it exists but cannot be
+    understood, immediately before something overwrites it.
+
+    An unreadable state is the only record an older install left behind — which
+    deployer wrote it, and the secret digests it carried. Replacing it destroys
+    both, and the repair path then has nothing to compare against: the abort
+    message for this very situation tells the operator that "a backup copy of it
+    is all that is needed to compare again", so the copy has to exist. The
+    legacy `deployment.json` already gets this care from `_retire_legacy_state`;
+    the canonical file is the same kind of evidence and was simply the path
+    nobody parked.
+
+    Absent (a first install) and readable (every normal re-render) both return
+    without touching anything, so the cost on the happy path is the same read the
+    persist already performs.
+    """
+    target = install_dir / _DEPLOYMENT_STATE_FILENAME
+    if not target.exists():
+        return
+    _deployment, reason = _previous_deployment_or_unreadable(install_dir)
+    if _deployment is not None or reason is None:
+        return
+    _park_unusable_state(target, note=reason)
 
 
 def _try_load_previous_deployment(install_dir: Path) -> Deployment | None:
@@ -7127,6 +7189,10 @@ _SECRET_LEAF_NAMES = frozenset(
 )
 
 _DRIFT_ABSENT = object()
+# A path present in the saved spec and missing from this run's is a different
+# fact from one absent before this run, and reading "(not present before this
+# run)" on the new side states it backwards.
+_DRIFT_REMOVED = object()
 
 
 def _diff_spec_for_identity_drift(
@@ -7180,7 +7246,7 @@ def _diff_spec_for_identity_drift(
     # change that actually happened.
     changed_lists: list[str] = []
     for path, old in sorted(prev_nodes.items()):
-        new = curr_nodes.get(path, _DRIFT_ABSENT)
+        new = curr_nodes.get(path, _DRIFT_REMOVED)
         if (
             isinstance(old, list)
             and isinstance(new, list)
@@ -7199,7 +7265,7 @@ def _diff_spec_for_identity_drift(
         if any(path.startswith(f"{parent}[") for parent in changed_lists):
             continue
         old = prev_leaves.get(path, _DRIFT_ABSENT)
-        new = curr_leaves.get(path, _DRIFT_ABSENT)
+        new = curr_leaves.get(path, _DRIFT_REMOVED)
         if old != new:
             drifted.append((path, _drift_show(old, path), _drift_show(new, path)))
 
@@ -7242,6 +7308,8 @@ def _drift_show(value: object, path: str) -> str:
     """One side of a drift, as the operator sees it. Never a credential."""
     if value is _DRIFT_ABSENT:
         return "(not present before this run)"
+    if value is _DRIFT_REMOVED:
+        return "(not in this run's spec)"
     if _drift_holds_secret(path):
         return "(not printed — credential material)"
     if isinstance(value, list):

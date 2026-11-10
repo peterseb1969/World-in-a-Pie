@@ -293,7 +293,18 @@ def _build_secrets(inputs: BuildInputs) -> dict[str, Any]:
     block: dict[str, Any] = {"backend": backend}
 
     if inputs.secrets_location is not None:
-        block["location"] = inputs.secrets_location
+        # Make the store path absolute where it enters the spec, so every
+        # consumer — the file backend writing it, install's and render's CA probe,
+        # and the compose bind-mount — resolves the same directory. A relative
+        # value would otherwise be read against whatever cwd each site happens to
+        # have, and compose treats a short-syntax mount source with no leading
+        # `/`, `./` or `~` as a *named volume*: the CA bind-mount would silently
+        # become an empty volume instead (CASE-1228 #3 finding 2).
+        #
+        # `absolute()`, not `resolve()`: resolve() follows symlinks, which on
+        # macOS rewrites `/var/folders/…` to `/private/var/folders/…` and churns
+        # stored paths against every later comparison. `~` still needs expanding.
+        block["location"] = str(Path(inputs.secrets_location).expanduser().absolute())
     elif backend in ("file", "sops"):
         block["location"] = str(
             Path.home() / ".wip-deploy" / inputs.name / "secrets"

@@ -34,6 +34,7 @@ import yaml
 from typer.testing import CliRunner
 
 import wip_deploy.cli as cli
+from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.cli import _DEPLOYMENT_JSON_VERSION, app
 from wip_deploy.config_gen import ResolvedEnv
 from wip_deploy.renderers.compose import _service_block, external_ca_host_path
@@ -151,6 +152,77 @@ def isolated_home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     fake_home.mkdir()
     monkeypatch.setattr(Path, "home", lambda: fake_home)
     return fake_home
+
+
+# ────────────────────────────────────────────────────────────────────
+# The store path is absolute before anything consumes it
+# (CASE-1228 #3 finding 2)
+
+
+class TestStoreLocationIsAbsolute:
+    """A relative `--secrets-location` reached the spec verbatim, so the
+    bind-mount rendered as `store/external-ca.crt:…` — and compose reads a
+    short-syntax source with no leading `/`, `./` or `~` as a *named volume*: the
+    CA mount silently became an empty volume. The probe had its own version of
+    the same ambiguity, resolving against the deployer's cwd while compose
+    resolves relative to the install dir."""
+
+    def _build(self, location: str):
+        return build_deployment(
+            BuildInputs(
+                name="ca",
+                preset="standard",
+                target="compose",
+                hostname="wip.local",
+                tls="internal",
+                compose_data_dir=Path(DATA_DIR),
+                secrets_location=location,
+            ),
+        )
+
+    def test_a_relative_location_is_resolved_against_cwd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        deployment = self._build("srv/wip-secrets")
+
+        assert deployment.spec.secrets.location == str(tmp_path / "srv" / "wip-secrets")
+
+    def test_a_home_relative_location_is_expanded(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        deployment = self._build("~/vault/store")
+
+        assert deployment.spec.secrets.location == str(tmp_path / "vault" / "store")
+
+    def test_an_absolute_location_is_carried_through_unchanged(
+        self, tmp_path: Path
+    ) -> None:
+        """The common case must not churn: resolving symlinks here would rewrite
+        `/var/folders/…` to `/private/var/folders/…` and make every later
+        comparison against a stored path disagree."""
+        absolute = str(tmp_path / "secrets")
+
+        deployment = self._build(absolute)
+
+        assert deployment.spec.secrets.location == absolute
+
+    def test_the_resolved_location_reaches_the_mount(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+
+        deployment = self._build("srv/wip-secrets")
+        deployment.spec.network.external_ca_mount = True
+        volumes = _service_volumes(deployment)
+
+        assert (
+            f"{tmp_path / 'srv' / 'wip-secrets' / 'external-ca.crt'}"
+            ":/etc/ssl/certs/external-ca.crt:ro"
+        ) in volumes
 
 
 # ────────────────────────────────────────────────────────────────────

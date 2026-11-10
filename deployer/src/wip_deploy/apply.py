@@ -75,12 +75,14 @@ class ApplyError(Exception):
     failures) keep `mutated=False` — there the old state is still the
     truthful last-known-good.
 
-    On compose, a failure before `compose up` returns is decided by
-    evidence rather than by position (CASE-1228 item 5b): the install's
-    containers are compared with how they stood before the wipe, so a pull
-    that never resolved — which creates nothing and stops nothing — is not
-    reported as a change. Where the runtime could not be asked, the blanket
-    assumption stands and the flag is True.
+    On compose, a failure raised by `compose up` itself is decided by evidence
+    rather than by position (CASE-1228 item 5b): the install's containers are
+    compared with how they stood before the wipe, so a pull that never
+    resolved — which creates nothing and stops nothing — is not reported as a
+    change. Everything past the up step (a proxy reload, a post-install hook, a
+    health timeout) changes the install in ways container identity cannot see and
+    keeps the blanket stamp, as does every case where the runtime could not be
+    asked; the flag is True there.
     """
 
     def __init__(self, message: str, *, mutated: bool = False):
@@ -196,11 +198,10 @@ def apply_compose(
     # "last-known-good" that no longer describes reality. The stamp is
     # evidence-checked at the one step where beginning is not yet changing; see
     # the except below (CASE-1228 item 5b).
-    up_returned = False
+    up_step_done = False
     try:
         if services_scope is None:
             _run_up(install_dir, compose_cmd, force_recreate=force_build)
-            up_returned = True
         elif services_scope:
             _run_up(
                 install_dir,
@@ -208,11 +209,19 @@ def apply_compose(
                 force_recreate=force_build,
                 services=services_scope,
             )
-            up_returned = True
         # else: empty scope — config-only mutation (e.g. remove-app, whose
         # container was already removed); nothing to bring up. NB: an empty
         # list must NOT reach _run_up — `up -d` with no service args is the
         # full-stack up this scoping exists to prevent.
+        #
+        # Set for the empty-scope branch too, deliberately. The evidence below
+        # reads container identity, and the steps after this point change the
+        # install in ways identity cannot see: a proxy reload rewrites routing
+        # with no container touched, and post-install hooks and garage
+        # provisioning write state. Only a failure raised *by* the up is
+        # something the snapshot can speak to; everything past it keeps the
+        # blanket stamp.
+        up_step_done = True
         _check_containers_created(
             deployment.metadata.name, compose_file, services=services_scope
         )
@@ -278,17 +287,18 @@ def apply_compose(
         # before anything moves: `compose up` pulls first, and a pull that never
         # resolved creates no container and stops none. Persisting the new spec
         # there pins an image that never ran — the stale override CASE-1228 item
-        # 5a refuses at the verb, arriving by the back door. So while no up has
-        # returned, the stamp is decided by evidence: if this install's
-        # containers are exactly what they stood as before the wipe, the running
-        # deployment did not move and the old spec is still the truthful
-        # last-known-good. Once an up has returned the blanket stamp applies (the
-        # stack really was recreated), and so it applies whenever the runtime
-        # could not be asked — an unasked question is not evidence that nothing
+        # 5a refuses at the verb, arriving by the back door. So a failure raised
+        # by the up itself is decided by evidence: if this install's containers
+        # are exactly what they stood as before the wipe, the running deployment
+        # did not move and the old spec is still the truthful last-known-good.
+        # Past the up step the blanket stamp applies — a proxy reload, a
+        # post-install hook or a health timeout all change the install in ways
+        # container identity cannot see — and so it applies whenever the runtime
+        # could not be asked: an unasked question is not evidence that nothing
         # changed.
         e.mutated = True
         if (
-            not up_returned
+            not up_step_done
             and containers_before is not None
             and runtime_cli is not None
             and _project_container_state(
@@ -2077,12 +2087,24 @@ def read_live_secrets(ns: str) -> dict[str, str] | None:
 def _is_not_found(kubectl_stderr: str) -> bool:
     """Whether kubectl's failure is the API server saying "no such object".
 
-    Matched on the server's wording, not the exit code: kubectl exits 1 for a
-    refusal, an unreachable server and a missing object alike. A genuine miss
-    reads `Error from server (NotFound): ...` — confirmed against the live
-    cluster, where an absent namespace answers exactly that.
+    Matched on the server's marker, not the exit code and not the bare words.
+    The exit code cannot separate the cases — kubectl exits 1 for a refusal, an
+    unreachable server and a missing object alike — and a genuine miss reads
+    `Error from server (NotFound): ...`, confirmed against the live cluster,
+    where an absent namespace answers exactly that.
+
+    "not found" on its own is not the server talking. A kubeconfig whose exec
+    credential plugin is missing (EKS, AKS, kubelogin) ends with
+
+        Unable to connect to the server: getting credentials: exec:
+        executable <plugin> not found
+
+    which never reached the API server: that is "could not ask", and it must
+    raise LiveSecretReadUnavailable like the other unaskable cases. Reading it
+    as absence lets the drift check run against the host record alone — the
+    exact failure this function exists to prevent.
     """
-    return "(NotFound)" in kubectl_stderr or "not found" in kubectl_stderr
+    return "(NotFound)" in kubectl_stderr
 
 
 # ────────────────────────────────────────────────────────────────────
