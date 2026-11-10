@@ -2955,6 +2955,33 @@ def app_deploy(
         )
         return
 
+    dev_plat = deployment.spec.platform.dev
+    registry_opted = set(dev_plat.apps_from_registry) if dev_plat is not None else set()
+    if deployment.spec.target == "dev" and app_name not in registry_opted:
+        # Dev mode means dev: for an app not explicitly opted into the registry,
+        # the renderer builds the image locally and names it
+        # `<image>:dev-<install>` (`renderers/dev_simple.py`), so a
+        # `tag_overrides` entry never reaches the container. Recording it anyway
+        # persisted an intent that could not take effect and reported it as done
+        # — and the stale override then resurfaced later, silently applying a tag
+        # the operator had not asked for at that point.
+        typer.echo(
+            f"error: app {app_name!r} is built from source in this dev install — "
+            f"--target dev renders its image as <image>:dev-{resolved_name}, so "
+            f"pointing the install at registry tag {tag!r} would be remembered and "
+            "reported without ever reaching a container.",
+            err=True,
+        )
+        typer.echo(
+            f"  To run new code here, change the app's source: a --app-source "
+            f"checkout is bind-mounted and rebuilds in place. To have this install "
+            f"follow published registry images for {app_name}, re-install it with "
+            "--app-from-registry <name>. Tag rolls are for compose and k8s "
+            "installs, where the image comes from the registry.",
+            err=True,
+        )
+        raise typer.Exit(2)
+
     deployment.spec.images.tag_overrides[app_name] = tag
 
     _apply_and_persist_mutation(

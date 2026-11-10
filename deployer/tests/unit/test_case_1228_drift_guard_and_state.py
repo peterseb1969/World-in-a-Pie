@@ -1,4 +1,4 @@
-"""CASE-1228 — items 1, 2, 3 and 5c: silent failure around one install.
+"""CASE-1228 — items 1, 2, 3, 5a and 5c: silent failure around one install.
 
 Item 1. `install` re-specifies its whole spec from CLI flags and never loads the
 saved one, so any field the operator does not repeat reverts to its flag
@@ -46,11 +46,13 @@ from wip_deploy.cli import (
 )
 from wip_deploy.spec.deployment import (
     ApplySpec,
+    AppRef,
     AuthSpec,
     ComposePlatform,
     Deployment,
     DeploymentMetadata,
     DeploymentSpec,
+    DevPlatform,
     ImagesSpec,
     K8sPlatform,
     ModulesSpec,
@@ -486,3 +488,86 @@ class TestLegacyStateRetirement:
         parked = list(tmp_path.glob("deployment.json.retired*"))
         assert len(parked) == 2
         assert {p.read_text() for p in parked} == {"{ first", "{ second"}
+
+
+# ────────────────────────────────────────────────────────────────────
+# Item 5a — a dev tag roll cannot take effect, so it must not be claimed
+# ────────────────────────────────────────────────────────────────────
+
+
+def _persist_dev_install(
+    install_dir: Path, *, apps_from_registry: list[str] | None = None
+) -> None:
+    """A dev-target install with one enabled app, which the dev renderer
+    builds locally as `<image>:dev-<install>` unless the app opted into the
+    registry."""
+    deployment = Deployment(
+        metadata=DeploymentMetadata(name="devguard"),
+        spec=DeploymentSpec(
+            target="dev",
+            variant="dev",
+            apps=[AppRef(name="cookbook", enabled=True)],
+            modules=ModulesSpec(optional=[]),
+            auth=AuthSpec(mode="api-key-only", gateway=False, users=[]),
+            network=NetworkSpec(hostname="wip.localhost", tls="internal"),
+            images=ImagesSpec(),
+            platform=PlatformSpec(
+                dev=DevPlatform(apps_from_registry=list(apps_from_registry or []))
+            ),
+            secrets=SecretsSpec(backend="file", location="/tmp/wip-test-secrets"),
+            apply=ApplySpec(),
+        ),
+    )
+    _persist(install_dir, deployment)
+
+
+class TestDevTagRollIsRefused:
+    def test_source_built_app_cannot_be_rolled_to_a_registry_tag(
+        self, tmp_path: Path
+    ) -> None:
+        _persist_dev_install(tmp_path)
+        result = runner.invoke(
+            app,
+            ["app-deploy", "cookbook", "--tag", "sha-abc", "--install-dir", str(tmp_path)],
+        )
+        assert result.exit_code == 2
+        assert "built from source" in result.output
+        assert "--app-from-registry" in result.output
+
+    def test_the_refused_roll_leaves_no_override_recorded(
+        self, tmp_path: Path
+    ) -> None:
+        """The bug was not the missing container — it was the persisted intent,
+        which later resurfaces and applies a tag nobody asked for."""
+        _persist_dev_install(tmp_path)
+        runner.invoke(
+            app,
+            ["app-deploy", "cookbook", "--tag", "sha-abc", "--install-dir", str(tmp_path)],
+        )
+        dep, reason = _previous_deployment_or_unreadable(tmp_path)
+        assert reason is None
+        assert "cookbook" not in dep.spec.images.tag_overrides
+
+    def test_a_registry_opted_app_still_rolls(self, tmp_path: Path) -> None:
+        """--app-from-registry is the opt-in that makes the tag real; refusing
+        that too would break the documented escape hatch."""
+        _persist_dev_install(tmp_path, apps_from_registry=["cookbook"])
+        applied: list[object] = []
+        monkeypatch_marker = SimpleNamespace(applied=applied)
+
+        def fake_apply(*args, **kwargs):
+            monkeypatch_marker.applied.append(kwargs.get("services_scope"))
+
+        import wip_deploy.cli as cli_module
+
+        original = cli_module._apply_and_persist_mutation
+        cli_module._apply_and_persist_mutation = fake_apply
+        try:
+            result = runner.invoke(
+                app,
+                ["app-deploy", "cookbook", "--tag", "sha-abc", "--install-dir", str(tmp_path)],
+            )
+        finally:
+            cli_module._apply_and_persist_mutation = original
+        assert result.exit_code == 0, result.output
+        assert applied, "the roll must proceed for a registry-sourced app"
