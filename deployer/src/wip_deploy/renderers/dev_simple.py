@@ -78,6 +78,7 @@ from wip_deploy.config_gen.nats import (
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.config_gen.spec_context import federated_groups_policy
 from wip_deploy.naming import (
+    compose_project_name,
     container_name,
     dev_image_tag,
     network_block,
@@ -495,6 +496,7 @@ def _render_dev_compose_yaml(
     services["caddy"] = _caddy_service_block(deployment)
 
     top: dict[str, Any] = {
+        "name": compose_project_name(deployment.metadata.name),
         "services": services,
         "networks": network_block(deployment.metadata.name),
     }

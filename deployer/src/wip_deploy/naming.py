@@ -5,7 +5,9 @@ container runtime holds host-wide carries the install's name:
 
 - containers: ``<install>_wip-<component>`` (``default_wip-registry``);
 - the network: ``<install>_wip-network``, created with netavark's
-  ``isolate: strict``, so no other network on the host reaches it.
+  ``isolate: strict``, so no other network on the host reaches it;
+- the compose project: pinned to the install name by the top-level ``name:``
+  the renderers emit, so it does not follow the install directory's basename.
 
 The underscore cannot occur in an install name (``^[a-z][a-z0-9-]*$``), so
 two installs never produce the same name, and the scheme matches the names
@@ -33,6 +35,18 @@ NETWORK_KEY = "wip-network"
 # services by IP. "strict" also refuses traffic from non-isolated networks;
 # "true" would not.
 NETWORK_DRIVER_OPTS = {"isolate": "strict"}
+
+
+def compose_project_name(install: str) -> str:
+    """The compose project of ``install``, pinned in the rendered file.
+
+    Left unset, compose derives the project from the install directory's
+    basename, while every name this deployer keys on — containers, the network
+    and the ``com.docker.compose.project`` label its own container queries
+    filter on — is the install name. A ``--install-dir`` whose basename differs
+    from ``--name`` would then leave those filters seeing no containers at all.
+    """
+    return install
 
 
 def internal_host(component: str) -> str:

@@ -82,7 +82,12 @@ from wip_deploy.config_gen.nats import (
 )
 from wip_deploy.config_gen.router import generate_router_config
 from wip_deploy.config_gen.spec_context import federated_groups_policy
-from wip_deploy.naming import container_name, network_block, service_networks
+from wip_deploy.naming import (
+    compose_project_name,
+    container_name,
+    network_block,
+    service_networks,
+)
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import (
@@ -292,6 +297,7 @@ def _render_compose_yaml(
     services["caddy"] = _caddy_service_block(deployment)
 
     top: dict[str, Any] = {
+        "name": compose_project_name(deployment.metadata.name),
         "services": services,
         "networks": network_block(deployment.metadata.name),
     }
