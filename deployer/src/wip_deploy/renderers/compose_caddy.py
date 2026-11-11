@@ -423,9 +423,14 @@ def _write_app_site_head(out: StringIO, cfg: CaddyConfig, address: str, *, on_de
         out.write("    }\n")
     # The session handshake, silent renew, logout and userinfo are the
     # gateway's on every app origin; a login itself happens on WIP's origin.
+    # With no gateway they belong to nobody: they stay reserved from the apps,
+    # so they end here with a 404 rather than dialling a service this render
+    # never emitted, and rather than falling through to the app behind them.
     out.write(f"    @gateway path {' '.join(APP_ORIGIN_GATEWAY_PATHS)}\n")
     out.write("    handle @gateway {\n")
-    if cfg.forwarded_host:
+    if not cfg.gateway_active:
+        out.write("        respond 404\n")
+    elif cfg.forwarded_host:
         out.write(f"        reverse_proxy {cfg.gateway_service}:{cfg.gateway_port} {{\n")
         _write_forwarded(out, cfg, "            ")
         out.write("        }\n")
@@ -483,11 +488,14 @@ def _write_attached_apps_site(out: StringIO, cfg: CaddyConfig) -> None:
         out.write(f"\n:{cfg.plain_http_port} {{\n")
         out.write(f"    @gateway path {' '.join(APP_ORIGIN_GATEWAY_PATHS)}\n")
         out.write("    handle @gateway {\n")
-        out.write(f"        reverse_proxy {cfg.gateway_service}:{cfg.gateway_port} {{\n")
-        if cfg.forwarded_scheme:
-            out.write(f"            header_up X-Forwarded-Proto {cfg.forwarded_scheme}\n")
-        out.write("            header_up X-Forwarded-Host {host}\n")
-        out.write("        }\n")
+        if not cfg.gateway_active:
+            out.write("        respond 404\n")
+        else:
+            out.write(f"        reverse_proxy {cfg.gateway_service}:{cfg.gateway_port} {{\n")
+            if cfg.forwarded_scheme:
+                out.write(f"            header_up X-Forwarded-Proto {cfg.forwarded_scheme}\n")
+            out.write("            header_up X-Forwarded-Host {host}\n")
+            out.write("        }\n")
         out.write("    }\n")
         out.write("    handle {\n")
         out.write(f"        reverse_proxy {cfg.edge_backend}\n")

@@ -59,6 +59,10 @@ class CaddyConfig:
     # `auth_protected` says so (the gateway being on is part of that).
     gateway_service: str  # DNS name of the auth-gateway container
     gateway_port: int
+    # Whether this install runs the gateway at all. Required, not defaulted: a
+    # render that cannot answer this points app origins at a service it may not
+    # have emitted.
+    gateway_active: bool
     routes: list[ResolvedRoute]
     # Bare-host `/` redirect target (the first enabled app's origin), or
     # None: `/` then answers the no-app page. Resolved in the shared layer
@@ -148,6 +152,10 @@ def generate_caddy_config(
         tls_mode=net.tls,
         gateway_service=f"wip-auth-gateway.{namespace}.svc.cluster.local" if behind_ingress else "wip-auth-gateway",
         gateway_port=gateway_port,
+        # The spec says whether the install runs a gateway; the component list
+        # only reflects it after activation, and the render must answer from the
+        # intent rather than from what happened to survive filtering.
+        gateway_active=deployment.spec.auth.gateway,
         routes=routes,
         root_redirect=root_redirect,
         emit_hardening_headers=(net.tls == "letsencrypt"),

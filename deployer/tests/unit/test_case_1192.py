@@ -82,7 +82,8 @@ def _route(**kw) -> ResolvedRoute:
 def _cfg() -> CaddyConfig:
     return CaddyConfig(
         hostname="wip.local", https_port=8443, tls_mode="internal",
-        gateway_service="wip-auth-gateway", gateway_port=4180, routes=[], root_redirect=None,
+        gateway_service="wip-auth-gateway", gateway_port=4180, gateway_active=True,
+        routes=[], root_redirect=None,
     )
 
 
