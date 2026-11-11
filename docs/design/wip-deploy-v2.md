@@ -536,7 +536,7 @@ class Renderer(Protocol):
 - No compose profiles — module activation happens at render time (inactive components simply aren't emitted)
 - The edge Caddyfile serves `localhost:8443 { ... }` — external HTTPS with TLS + gateway `forward_auth` on auth-protected routes.
 - The internal, no-TLS, no-forward_auth path for container-to-container calls is **no longer a second site block in the edge Caddyfile**: it moved to a first-class `wip-router` component (`components/router/wip-component.yaml`, rendered by `config_gen/router.py`). Server-side callers such as the console's SSR proxy target `http://wip-router:8080/api/*` with their own `X-API-Key` header.
-- `depends_on` is activation-aware: inactive deps are dropped (compose rejects references to services not in the file). Active deps with a healthcheck get `condition: service_healthy`; without, `service_started`.
+- **No `depends_on` is emitted.** Startup is parallel — every service retries its own dependencies (Mongo/Postgres pool retries, NATS reconnect, cross-service HTTP background tasks), so an ordering gate only lengthened the cold boot. A manifest's `depends_on` is declarative documentation about what a service needs, and a validation input (an entry naming no discovered component is refused), not an emit instruction.
 - **No local `build:` support in compose.** The renderer requires pre-built images (registry-pulled or loaded). Local source iteration belongs in the dev renderer (step 7).
 - `apply` runs `podman-compose --env-file .env -f docker-compose.yaml up -d`, then waits for healthy (unless `--no-wait`).
 
@@ -676,13 +676,25 @@ flag sets `on_timeout`.
 
 ## Dependency ordering
 
-Each component declares `depends_on: [mongodb, registry]`.
+Each component declares `depends_on: [mongodb, registry]`. **That declaration is
+documentation and a validation input, not an emit instruction** — no renderer
+turns it into anything the runtime orders by. Startup is parallel, and each
+service retries what it actually needs: Mongo/Postgres through
+`init_beanie_with_retry` and asyncpg pool retries, NATS through nats-py's
+reconnect plus `retry_async`, cross-service HTTP through background-task
+patterns in def-store and reporting-sync. Serialising the boot on top of that
+only made cold start slower, which is why the `service_healthy` gates this
+section once promised are gone.
 
-**Compose renderer** emits `depends_on: {<dep>: {condition: service_healthy}}`.
+**Compose renderer** emits no `depends_on` at all. `validate` and
+`validate-manifest` still refuse an entry that names no discovered component, so
+the declared graph stays truthful as documentation.
 
 **K8s renderer** does not emit explicit ordering beyond startup probes; k8s scheduling + readiness gates handle it. Dependencies inform *wait* logic (a component is considered "ready for wait" only once its deps are ready), but they do not drive application order.
 
-**Dev renderer (Tilt)** uses Tilt's native resource graph: `resource(name, deps=[...])`.
+**Dev renderer** is the compose-shaped `simple` mode and emits no ordering
+either; a Tilt-based dev loop was planned and never built (`DevPlatform.mode`
+accepts only `"simple"`).
 
 **Post-install hooks** handle cases the platform can't (e.g., Registry's `initialize-wip` API call). They run after the target component reports healthy, in declaration order within a component; across components in discovery order (component directories alphabetically), then apps. `depends_on` does not order them.
 

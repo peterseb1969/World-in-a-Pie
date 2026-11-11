@@ -221,8 +221,6 @@ class TestComposeRendererInjection:
             deployment,
             empty_env,
             is_app=is_app,
-            healthcheck_owners=set(),
-            active_names=set(),
         )
 
     def test_app_gets_ca_env_when_flag_set(

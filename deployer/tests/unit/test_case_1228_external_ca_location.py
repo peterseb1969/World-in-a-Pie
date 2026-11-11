@@ -123,8 +123,6 @@ def _service_volumes(deployment: Deployment) -> list[str]:
         deployment,
         ResolvedEnv(required={}, optional={}),
         is_app=True,
-        healthcheck_owners=set(),
-        active_names=set(),
     )
     return block.get("volumes") or []
 

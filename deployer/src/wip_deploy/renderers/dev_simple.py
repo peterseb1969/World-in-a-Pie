@@ -90,7 +90,6 @@ from wip_deploy.renderers.compose import (
     _caddy_service_block,
     _collect_volumes,
     _command_for,
-    _depends_on_block,
     _environment_block,
     _healthcheck_block,
     _render_dotenv,
@@ -421,26 +420,11 @@ def _render_dev_compose_yaml(
 
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
 
-    active_names: set[str] = set()
-    healthcheck_owners: set[str] = set()
-    for c in components:
-        if is_component_active(c, deployment):
-            active_names.add(c.metadata.name)
-            if c.spec.healthcheck is not None:
-                healthcheck_owners.add(c.metadata.name)
-    for a in apps:
-        if a.metadata.name in enabled_app_names:
-            active_names.add(a.metadata.name)
-            if a.spec.healthcheck is not None:
-                healthcheck_owners.add(a.metadata.name)
-
     for c in components:
         if not is_component_active(c, deployment):
             continue
         services[c.metadata.name] = _dev_service_block(
             c, deployment, resolved_env[c.metadata.name], repo_root,
-            healthcheck_owners=healthcheck_owners,
-            active_names=active_names,
             source_mount=source_mount,
             build_context_paths=build_context_paths,
             app_sources=app_sources,
@@ -476,8 +460,6 @@ def _render_dev_compose_yaml(
             continue
         services[a.metadata.name] = _dev_service_block(
             a, deployment, resolved_env[a.metadata.name], repo_root,
-            healthcheck_owners=healthcheck_owners,
-            active_names=active_names,
             source_mount=source_mount,
             build_context_paths=build_context_paths,
             app_sources=app_sources,
@@ -517,8 +499,6 @@ def _dev_service_block(
     env: Any,  # ResolvedEnv
     repo_root: Path,
     *,
-    healthcheck_owners: set[str],
-    active_names: set[str],
     source_mount: bool,
     build_context_paths: dict[str, str],
     app_sources: dict[str, Path],
@@ -689,14 +669,6 @@ def _dev_service_block(
     hc = _healthcheck_block(owner)
     if hc is not None:
         block["healthcheck"] = hc
-
-    deps = _depends_on_block(
-        owner, deployment,
-        healthcheck_owners=healthcheck_owners,
-        active_names=active_names,
-    )
-    if deps:
-        block["depends_on"] = deps
 
     return block
 

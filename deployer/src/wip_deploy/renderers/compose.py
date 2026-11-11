@@ -18,10 +18,18 @@ Design decisions:
     the interpolation source only — no service gets it as `env_file`,
     so a container sees just the secrets its manifest declares.
   - Each component with storage gets a named volume
-    `wip-<component>-<storage>-data`.
+    `wip-<component>-<storage>` (the engine prefixes it with the compose
+    project, which the render pins to the install name).
   - Config files bound read-only from the install dir.
   - Explicit `command:` on WIP services (uvicorn) since we're running
     published images directly, not the service's own Dockerfile CMD.
+  - Never `depends_on`. Ordering is not the start path's job: every service
+    retries its own real dependencies (Mongo/Postgres via init_beanie_with_retry
+    and asyncpg pool retries, NATS via nats-py's reconnect plus retry_async,
+    cross-service HTTP through background tasks), so containers come up in
+    parallel — which cuts cold-boot time and matches k8s. A manifest's
+    `depends_on` is declarative documentation about what a service needs, not
+    an emit instruction.
 """
 
 from __future__ import annotations
@@ -244,22 +252,6 @@ def _render_compose_yaml(
 
     enabled_app_names = {a.name for a in deployment.spec.apps if a.enabled}
 
-    # Pre-compute two sets: which active owners exist (for depends_on
-    # filtering) and which of those declare a healthcheck (for
-    # service_healthy vs service_started).
-    active_names: set[str] = set()
-    healthcheck_owners: set[str] = set()
-    for c in components:
-        if is_component_active(c, deployment):
-            active_names.add(c.metadata.name)
-            if c.spec.healthcheck is not None:
-                healthcheck_owners.add(c.metadata.name)
-    for a in apps:
-        if a.metadata.name in enabled_app_names:
-            active_names.add(a.metadata.name)
-            if a.spec.healthcheck is not None:
-                healthcheck_owners.add(a.metadata.name)
-
     for c in components:
         if not is_component_active(c, deployment):
             continue
@@ -268,8 +260,6 @@ def _render_compose_yaml(
             deployment,
             resolved_env[c.metadata.name],
             is_app=False,
-            healthcheck_owners=healthcheck_owners,
-            active_names=active_names,
             workload_hash=_workload_hash(
                 c, deployment, components, apps, resolved_env, secrets
             ),
@@ -284,8 +274,6 @@ def _render_compose_yaml(
             deployment,
             resolved_env[a.metadata.name],
             is_app=True,
-            healthcheck_owners=healthcheck_owners,
-            active_names=active_names,
             workload_hash=config_hash(
                 a, deployment, resolved_env[a.metadata.name], secrets
             ),
@@ -337,8 +325,6 @@ def _service_block(
     env: ResolvedEnv,
     *,
     is_app: bool,
-    healthcheck_owners: set[str],
-    active_names: set[str],
     workload_hash: str | None = None,
 ) -> dict[str, Any]:
     block: dict[str, Any] = {
@@ -410,15 +396,6 @@ def _service_block(
     hc = _healthcheck_block(owner)
     if hc is not None:
         block["healthcheck"] = hc
-
-    deps = _depends_on_block(
-        owner,
-        deployment,
-        healthcheck_owners=healthcheck_owners,
-        active_names=active_names,
-    )
-    if deps:
-        block["depends_on"] = deps
 
     return block
 
@@ -631,29 +608,6 @@ def _resolve_check_port(owner: Component | App, explicit: str | None) -> int:
     raise ValueError(
         f"{owner.metadata.name} has an HTTP healthcheck but no ports declared"
     )
-
-
-def _depends_on_block(
-    owner: Component | App,
-    deployment: Deployment,
-    *,
-    healthcheck_owners: set[str],
-    active_names: set[str],
-) -> dict[str, Any]:
-    """Parallel-start: emit no depends_on at all.
-
-    Historically we emitted depends_on with service_healthy gates to
-    serialize startup along the dependency chain — a belt that worked
-    but produced long cold-boot times and mirrored k8s less cleanly.
-    Services now carry startup retry for every real dependency
-    (Mongo/Postgres via init_beanie_with_retry / asyncpg pool retries,
-    NATS via nats-py's built-in reconnect + explicit retry_async,
-    cross-service HTTP via background-task patterns in def-store and
-    reporting-sync). With retry in place, the ordering gate is
-    redundant — compose containers can start in parallel, which
-    matches k8s behavior and cuts cold-boot time significantly.
-    """
-    return {}
 
 
 # ────────────────────────────────────────────────────────────────────
