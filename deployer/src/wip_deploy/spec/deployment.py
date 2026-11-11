@@ -569,6 +569,17 @@ class ImagesSpec(WIPModel):
 
 
 class ComposePlatform(WIPModel):
+    """The compose target's recorded block — read by no renderer.
+
+    Storage renders as named volumes (`<install>_wip-<component>-<storage>`) in
+    the container engine's volume path, and nothing consumes either field here;
+    there is no `--platform-variant` flag at all. `data_dir` stays required
+    because every saved compose spec already carries it and these models forbid
+    unknown keys, so removing the field would make an existing install's state
+    unreadable. The CLI refuses an explicit `--data-dir` rather than accept a
+    path that reaches nothing.
+    """
+
     data_dir: Path
     platform_variant: Literal["default", "pi4", "windows"] = "default"
 

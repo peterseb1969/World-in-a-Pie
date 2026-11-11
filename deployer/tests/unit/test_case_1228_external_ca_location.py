@@ -295,7 +295,6 @@ def _install_capture(
                 "--hostname", "wip.localhost",
                 "--auth-mode", "api-key-only",
                 "--no-auth-gateway",
-                "--data-dir", DATA_DIR,
                 # compose targets need a registry to resolve short image names;
                 # nothing here pulls, the run stops at the render stub.
                 "--registry", "ghcr.io/test",

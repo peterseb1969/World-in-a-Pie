@@ -257,10 +257,19 @@ sudo chown -R "$USER:$USER" /mnt/wip-data
 sudo blkid /dev/sda1                     # copy the UUID
 echo 'UUID=<your-uuid>  /mnt/wip-data  ext4  defaults,noatime  0  2' | sudo tee -a /etc/fstab
 
-# then install with the SSD as the data dir (add --data-dir to the step 3 command):
+# then point the install's data volumes at the SSD, before installing:
+# each is named <install>_wip-<component>-<storage>, and a volume that already
+# exists is the one the render uses.
+for v in mongodb-data postgres-data nats-jetstream dex-db caddy-data caddy-config; do
+  sudo mkdir -p "/mnt/wip-data/$v" && sudo chown "$USER:$USER" "/mnt/wip-data/$v"
+  podman volume create --opt type=none --opt o=bind \
+    --opt device="/mnt/wip-data/$v"  "wip_wip-$v"
+done
+
+# then the step 3 command, unchanged — there is no --data-dir to add: no target
+# renders one, and wip-deploy refuses the flag
 wip-deploy install --preset standard --target compose --name wip \
-  --hostname wip.localhost --registry ghcr.io/peterseb1969 --tag 20260628a \
-  --data-dir /mnt/wip-data
+  --hostname wip.localhost --registry ghcr.io/peterseb1969 --tag 20260628a
 ```
 
 **macOS: Podman machine sizing** — resize to 4 GB for sustained loads:

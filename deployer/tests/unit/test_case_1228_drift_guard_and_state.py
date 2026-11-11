@@ -4,9 +4,11 @@ Item 1. `install` re-specifies its whole spec from CLI flags and never loads the
 saved one, so any field the operator does not repeat reverts to its flag
 default. The guard compared a hand-picked seven, which meant everything else —
 `variant` (what arms the production guards), the k8s namespace, the auth lists,
-`data_dir`, `secrets.location` — reset in silence. The guard now labels the
+`secrets.location` — reset in silence. The guard now labels the
 fields it names and structurally compares the rest, so a field added to the spec
-later is guarded by default rather than by someone remembering.
+later is guarded by default rather than by someone remembering. One subtree is
+excluded on purpose: `platform.compose`, which no renderer reads, so nothing it
+holds can reshape an install (CASE-1245 item 1).
 
 Item 2. A state file that exists but cannot be understood made the loader return
 None, which the install flow reads as "no previous install" — skipping both
@@ -143,7 +145,6 @@ def _install(tmp_path: Path, *extra: str) -> SimpleNamespace:
             "--hostname", "wip.localhost",
             "--auth-mode", "api-key-only",
             "--no-auth-gateway",
-            "--data-dir", DATA_DIR,
             *extra,
         ],
     )
@@ -266,14 +267,14 @@ class TestDriftGuardCoverage:
     def test_field_outside_the_named_list_is_still_guarded(self) -> None:
         """The point of the structural pass: nothing depends on someone adding
         the next field to the enumeration."""
-        drift = _diff_spec_for_identity_drift(
-            _deployment(platform_variant="pi4"), _deployment(platform_variant="default")
-        )
+        prev = _deployment()
+        curr = _deployment()
+        curr.spec.network.external_ca_mount = True
         assert (
-            "platform.compose.platform_variant",
-            "pi4",
-            "default",
-        ) in drift
+            "network.external_ca_mount",
+            "False",
+            "True",
+        ) in _diff_spec_for_identity_drift(prev, curr)
 
     def test_secrets_location_change_is_drift(self) -> None:
         drift = _diff_spec_for_identity_drift(
@@ -326,7 +327,6 @@ class TestDriftGuardCoverage:
                 "--hostname", "wip.localhost",
                 "--auth-mode", "api-key-only",
                 "--no-auth-gateway",
-                "--data-dir", DATA_DIR,
                 # --variant omitted: that omission is the whole test
             ],
         )
@@ -334,9 +334,15 @@ class TestDriftGuardCoverage:
         assert "variant" in result.output
         assert "prod → dev" in result.output
 
-    def test_data_dir_reverting_stops_a_real_rerun(self, tmp_path: Path) -> None:
-        """The production shape of item 1: a saved install with a custom data
-        directory, re-run without --data-dir."""
+    def test_an_inert_data_dir_does_not_stop_a_real_rerun(self, tmp_path: Path) -> None:
+        """The one subtree the guard lets through, and the shape that proves it.
+
+        An install saved while `--data-dir` still existed can carry a path no
+        flag can re-supply now that the flag is refused, so comparing it would
+        abort every re-run of that install over a value no renderer reads.
+        Contrast `test_variant_reverting_stops_a_real_rerun`, where the reverted
+        field does arm guards.
+        """
         _persist(tmp_path, _deployment(users=[], data_dir="/srv/wip-data"))
         result = runner.invoke(
             app,
@@ -349,8 +355,12 @@ class TestDriftGuardCoverage:
                 "--no-auth-gateway",
             ],
         )
-        assert result.exit_code == 2
-        assert "platform.compose.data_dir" in result.output
+        assert "platform.compose.data_dir" not in result.output
+
+    def test_an_inert_data_dir_is_not_drift_by_itself(self) -> None:
+        assert _diff_spec_for_identity_drift(
+            _deployment(data_dir="/srv/wip-data"), _deployment()
+        ) == []
 
     def test_credential_shaped_paths_are_never_printed(self) -> None:
         assert _drift_show("hunter2", "auth.users[0].password") == (

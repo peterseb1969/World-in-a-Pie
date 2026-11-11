@@ -164,6 +164,12 @@ class PlatformSpec(BaseModel):
     dev: DevPlatform | None = None
 
 class ComposePlatform(BaseModel):
+    # Recorded only: no renderer reads this block. Storage renders as named
+    # volumes (`<install>_wip-<component>-<storage>`), placed by the container
+    # engine, and there is no `--platform-variant` flag. `data_dir` stays
+    # required because saved specs carry it and the models forbid unknown keys;
+    # the CLI refuses an explicit `--data-dir` rather than accept a path that
+    # reaches nothing.
     data_dir: Path
     platform_variant: Literal["default", "pi4", "windows"] = "default"
 

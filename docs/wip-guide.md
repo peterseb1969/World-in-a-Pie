@@ -153,7 +153,7 @@ wip-deploy install \
 
 What you should know:
 
-- TLS is self-signed (Caddy generates and rotates the cert in `<data-dir>/caddy/`). Browsers will prompt you to accept the cert once.
+- TLS is self-signed (Caddy generates and rotates the cert in its own data volume, `<install>_wip-caddy-data` — §5.1). Browsers will prompt you to accept the cert once.
 - Random secrets are generated and stored in the secrets backend (default file backend at `~/.wip-deploy/<install-name>/secrets/`, mode `0600`, directory mode `0700`).
 - A single starter API key is created. You can promote it to per-service keys later (see §4 *Authentication*).
 
@@ -592,35 +592,72 @@ forwards the user's identity and the receiving service trusts proxy headers.
 
 ## 5. Storage and Backup
 
-### 5.1 Default layout
+### 5.1 What the data sits in: named volumes
 
-WIP creates a per-service tree under the data directory:
+Every service's data lives in a **named container volume**. The deployer does not
+create a host directory tree for it, and `~/.wip-deploy/<install>/` holds only
+rendered config (`docker-compose.yaml`, `.env`, `config/`, `secrets/`) — not data.
+An install named `wip` gets these volumes:
 
 ```
-<WIP_DATA_DIR>/
-├── mongodb/    # MongoDB data files
-├── postgres/   # PostgreSQL data files
-├── nats/       # NATS JetStream persistence
-├── garage/     # Garage object storage
-├── dex/        # Dex SQLite + state
-└── caddy/      # TLS certificates + runtime config
+wip_wip-mongodb-data      MongoDB data files
+wip_wip-postgres-data     PostgreSQL data files
+wip_wip-nats-jetstream    NATS JetStream persistence
+wip_wip-garage-meta       Garage metadata            (with garage enabled)
+wip_wip-garage-data       Garage objects             (with garage enabled)
+wip_wip-dex-db            Dex SQLite + state
+wip_wip-caddy-data        TLS certificates + runtime config
+wip_wip-caddy-config      Caddy config
 ```
 
-### 5.2 Choosing where data lives
-
-By default the data directory is `<repo-root>/data/`. Override with:
+The name is `<install>_` — the compose project, pinned to the install name by the
+rendered file's top-level `name:` — followed by the volume the component declares.
+Where that lives is the engine's business; ask it:
 
 ```bash
-# Pass to the deployer at install time
-wip-deploy install --preset standard --target compose --hostname wip-pi.local \
-  --data-dir /mnt/wip-data
+podman volume inspect wip_wip-mongodb-data --format '{{.Name}}  {{.Mountpoint}}'
 ```
 
-`WIP_DATA_DIR` is the underlying env var the deployer writes into `.env`. If you want to relocate after the install, stop services, move the tree, update `.env`, and recreate.
+A mountpoint looks like
+`<engine storage path>/volumes/wip_wip-mongodb-data/_data` — under the home of the
+user (or VM) that runs podman. Resolve it with the command above rather than
+assuming a path when you back it up or move it.
+
+### 5.2 Putting storage on another filesystem
+
+There is no data-directory option: `wip-deploy` refuses `--data-dir`, because no
+target renders it. Relocation happens one level down, at the engine — create the
+volume yourself as a bind mount of your fast disk, and the render reuses the
+volume that already exists (it declares each one with no options of its own):
+
+```bash
+sudo mkdir -p /mnt/wip-data/mongodb
+sudo chown "$USER:$USER" /mnt/wip-data/mongodb
+podman volume create --opt type=none --opt o=bind \
+  --opt device=/mnt/wip-data/mongodb  wip_wip-mongodb-data
+
+wip-deploy install --name wip ...      # otherwise the same command as before
+```
+
+Two properties to plan around:
+
+- **Create the volumes before the first apply that uses them.** The deployer
+  never moves data: a service started against a fresh volume simply sees none.
+  To move an existing install's data, stop the stack, copy the old mountpoint
+  onto the new device, create the volume, then apply.
+- **A volume you created survives `compose down -v`.** That removes the volumes
+  compose itself created, not ones it only reused (verified on podman-compose
+  1.6.0) — one more reason to keep database storage on volumes you own.
+
+The bind target's ownership has to suit the service's user inside the container —
+see §5.4.
 
 ### 5.3 Network storage (NFS / GlusterFS / Ceph)
 
-Mount the remote share at `/mnt/wip-data` (or wherever) and use `--data-dir` exactly as above. NFS works well for backup hosts and shared storage. GlusterFS and Ceph are options if you want HA across nodes; they're more involved than this guide covers — your `fstab` for NFS:
+Mount the remote share wherever you like and point the bind-mounted volumes at it,
+as in §5.2 — there is no `--data-dir` to hand it to. NFS works well for backup
+hosts and shared storage. GlusterFS and Ceph are options if you want HA across
+nodes; they're more involved than this guide covers — your `fstab` for NFS:
 
 ```
 nas.local:/exports/wip-data  /mnt/wip-data  nfs  defaults,_netdev  0  0
@@ -628,48 +665,63 @@ nas.local:/exports/wip-data  /mnt/wip-data  nfs  defaults,_netdev  0  0
 
 ### 5.4 Container user mapping (Dex)
 
-Dex runs as UID 1001 inside the container. With rootless podman, the host UID is mapped through the user namespace; the deployer handles this on a fresh install. If you set up storage manually and Dex won't start ("unable to open database file"), set ownership explicitly:
+Dex runs as UID 1001 inside the container. With rootless podman, the host UID is mapped through the user namespace; the deployer handles this on a fresh install, where Dex's state sits in the volume podman created for it. If you created that volume yourself (§5.2) and Dex won't start ("unable to open database file"), set ownership on the volume's mountpoint explicitly:
 
 ```bash
-podman unshare chown 1001:1001 <WIP_DATA_DIR>/dex
-podman restart default_wip-dex
+podman unshare chown 1001:1001 \
+  "$(podman volume inspect <install>_wip-dex-db --format '{{.Mountpoint}}')"
+podman restart <install>_wip-dex
 ```
+
+Containers carry the install name — `<install>_wip-<component>`, so `qwen_wip-dex`
+on an install named `qwen`. There is no `default_wip-dex` unless the install is
+called `default`.
 
 Do **not** use `chmod 777` to "fix" permission errors on auth data.
 
 ### 5.5 Backup
 
-The recommended quick backup is a stop-and-tar:
+For anything you intend to restore, prefer the **logical** per-namespace archive
+(§5.6): portable across instances and versions, and it needs no host access.
+What follows is the physical route — a whole-host snapshot that comes back on the
+same engine and the same platform version.
+
+Data lives in volumes (§5.1), so a physical backup exports volumes; podman
+handles the user-namespace mapping that a plain `tar` of the mountpoint would not:
 
 ```bash
 podman stop -a
-tar czf wip-backup-"$(date +%Y%m%d)".tar.gz -C "$WIP_DATA_DIR" .
-wip-deploy install --preset <your-preset> --target compose --hostname <your-host>   # restart
+podman volume ls --format '{{.Name}}' | grep "^<install>_wip-"
+podman volume export <install>_wip-mongodb-data -o mongodb.tar
+podman volume export <install>_wip-postgres-data -o postgres.tar
+# … each volume the install owns; `podman volume import VOLUME file.tar` restores
+podman-compose -f ~/.wip-deploy/<install>/docker-compose.yaml up -d
 ```
 
-Hot backups for the heavyweights:
+Hot backups for the two databases, without stopping the stack:
 
 ```bash
-# MongoDB
-podman exec default_wip-mongodb mongodump --out /data/db/backup
-cp -r "$WIP_DATA_DIR/mongodb/backup" "./mongodb-backup-$(date +%Y%m%d)"
+# MongoDB writes its dump inside its own data volume, so bring it out with
+# `podman cp` — there is no host directory it appeared in.
+podman exec <install>_wip-mongodb mongodump --out /data/db/backup
+podman cp "<install>_wip-mongodb:/data/db/backup" "./mongodb-backup-$(date +%Y%m%d)"
 
 # PostgreSQL
-podman exec default_wip-postgres pg_dump -U wip wip_reporting \
+podman exec <install>_wip-postgres pg_dump -U wip wip_reporting \
   > "wip-reporting-$(date +%Y%m%d).sql"
 ```
 
-For offsite storage, encrypt the backup:
+For offsite storage, encrypt before the archive leaves the host (§7.1):
 
 ```bash
-tar czf - "$WIP_DATA_DIR" \
+podman volume export <install>_wip-mongodb-data \
   | gpg --symmetric --cipher-algo AES256 \
   > "wip-backup-$(date +%Y%m%d).tar.gz.gpg"
 ```
 
 ### 5.6 Logical export/import — the wip-toolkit CLI
 
-The tar backups above are physical (whole data directory, same platform
+The exports above are physical (whole volumes, same engine and same platform
 version back). For **logical, per-namespace** data management — portable
 archives, namespace cloning, scripted/headless workflows — use the
 `wip-toolkit` CLI. It is a separate surface from the React Console's
@@ -1249,10 +1301,10 @@ If host-level encryption isn't possible, the alternatives are weaker but availab
 - **MongoDB Community** does not support encryption at rest. Either upgrade to Enterprise or rely on host-level encryption.
 - **PostgreSQL** has no built-in at-rest encryption. `pgcrypto` does column-level encryption inside the database, with the usual key-management trade-offs.
 
-Encrypt **backups** before they leave the host:
+Encrypt **backups** before they leave the host (the volume export of §5.1):
 
 ```bash
-tar czf - "$WIP_DATA_DIR" \
+podman volume export <install>_wip-mongodb-data \
   | gpg --symmetric --cipher-algo AES256 \
   > backup.tar.gz.gpg
 ```
@@ -1475,7 +1527,7 @@ If using SSH stdio and the connection drops:
 | 404 on `/api/<svc>/...` calls | §3.2 Caddy `handle` vs `handle_path` | Use `handle`, not `handle_path` |
 | Health probe says "200" but the service isn't really up | §3.3 Caddy 200-on-unmatched | Validate by content, not just status code |
 | Env change didn't take effect | §7.2 Key rotation | `wip-deploy redeploy --name <install>` (or `podman-compose down && podman-compose up -d`) — a `restart` keeps the old env |
-| "unable to open database file" on Dex | §5.4 Container user mapping | `podman unshare chown 1001:1001 <data-dir>/dex` |
+| "unable to open database file" on Dex | §5.4 Container user mapping | `podman unshare chown 1001:1001 "$(podman volume inspect <install>_wip-dex-db --format '{{.Mountpoint}}')"` |
 | App returns 502 calling WIP from inside its container | §6.3 gotcha 2 | Use `http://wip-caddy:8080`, not `https://wip-caddy:8443` |
 | App's static assets return 404 with MIME-type errors | §6.3 gotcha 1 | Rebuild the image with Vite's default base `/` |
 | Non-privileged API key gets 403 on every call | §4.5 Namespace scoping | Add a `namespaces` field; or put the key in `wip-admins` / `wip-services` |

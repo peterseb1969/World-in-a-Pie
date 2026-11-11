@@ -361,7 +361,14 @@ def _http_port_opt() -> typer.models.OptionInfo:
 
 def _data_dir_opt() -> typer.models.OptionInfo:
     return typer.Option(
-        "--data-dir", help="Compose data directory. Defaults to <repo-root>/data."
+        "--data-dir",
+        help=(
+            "Not implemented, and refused: no target renders this path. Compose "
+            "storage is named volumes — <install>_wip-<component>-<storage>, "
+            "under the container engine's volume path. To put one on another "
+            "filesystem, create the volume before installing "
+            "(docs/deploy/podman/README.md, host prep)."
+        ),
     )
 
 
@@ -6480,6 +6487,27 @@ def _assemble(
     Centralizes the error-to-exit-code mapping so both `validate` and
     `show-spec` share it.
     """
+    # `--data-dir` reaches nothing: no renderer reads spec.platform.compose, and
+    # compose storage is named volumes. Accepting it let `--data-dir /mnt/ssd`
+    # report a successful install with the bytes still on the default
+    # filesystem, so an explicit value is refused; the model field keeps only
+    # its recorded meaning.
+    if data_dir is not None:
+        typer.echo(
+            typer.style(
+                "✗ --data-dir is not implemented — no target renders it. Compose "
+                "storage is named volumes, <install>_wip-<component>-<storage>, "
+                "under the container engine's volume path. To place one on another "
+                "filesystem, create it before the install:\n"
+                "    podman volume create --opt type=none --opt o=bind \\\n"
+                "        --opt device=/mnt/wip-data/mongodb <install>_wip-mongodb-data\n"
+                "docs/deploy/podman/README.md names the volumes of an install.",
+                fg=typer.colors.RED,
+            ),
+            err=True,
+        )
+        raise typer.Exit(2)
+
     # Repo root + data_dir defaulting
     try:
         root = repo_root or find_repo_root()
@@ -6487,7 +6515,7 @@ def _assemble(
         typer.echo(f"error: {e}", err=True)
         raise typer.Exit(1) from e
 
-    if target == "compose" and data_dir is None:
+    if target == "compose":
         data_dir = root / "data"
 
     # CASE-313 (related): --app-source NAME=PATH implicitly enables NAME.
@@ -7334,11 +7362,14 @@ def _diff_spec_for_drops(
 # `tag_overrides` is a mapping, so its entries are skipped with it. `apps` and
 # `modules` belong to `_diff_spec_for_drops`, which names what disappeared.
 # `apply` holds this invocation's wait/timeout knobs, which say nothing about
-# what is deployed.
+# what is deployed. `platform.compose` is recorded into a spec that no renderer
+# reads (see the `--data-dir` refusal in `_assemble`), so once an install saved
+# a custom one no flag could re-supply it to match.
 _DRIFT_SKIP_PREFIXES = (
     "apps",
     "modules",
     "apply",
+    "platform.compose",
     "images.tag",
     "images.tag_overrides",
 )

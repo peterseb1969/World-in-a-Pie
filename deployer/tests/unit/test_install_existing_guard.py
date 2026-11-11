@@ -233,9 +233,11 @@ class TestInstallExistingGuardCLI:
         validation (exit 1), proving the guard stayed silent.
 
         "Identical" has to mean identical in every compared field, not just the
-        seven the guard used to list: the saved spec is built by hand, so this
-        re-run must carry --data-dir as well, and must not carry Dex users that
-        an api-key-only install never provisions.
+        seven the guard used to list: the saved spec is built by hand, so it must
+        match this re-run in each one the guard weighs — and must not carry Dex
+        users that an api-key-only install never provisions. (`platform.compose`
+        is the subtree the guard skips as inert, which is why the saved spec's
+        data_dir differing from this run's default is not a reshape.)
         """
         _persist(
             tmp_path,
@@ -255,7 +257,6 @@ class TestInstallExistingGuardCLI:
                 "--hostname", "wip.localhost",
                 "--auth-mode", "api-key-only",
                 "--no-auth-gateway",
-                "--data-dir", "/tmp/wip-test-data",
                 # compose + no registry fails validation — AFTER the guard
             ],
         )
