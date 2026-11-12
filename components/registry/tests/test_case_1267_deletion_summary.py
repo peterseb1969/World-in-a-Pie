@@ -13,7 +13,7 @@ import uuid
 import pytest
 
 from registry.models.deletion_journal import DeletionJournal
-from registry.services.namespace_deletion import _STORAGE_DELETE_BATCH, NamespaceDeletionService
+from registry.services.namespace_deletion import _STORAGE_DELETE_BATCH, NamespaceDeletionService, _Unreachable
 
 
 async def _journal_with_objects(client, monkeypatch, total: int):
@@ -56,19 +56,39 @@ async def test_every_object_batch_counts_into_the_summary(client, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_resumed_journal_counts_each_batch_once(client, monkeypatch):
-    """Resuming must not add the finished batches a second time: the summary
-    is rebuilt from every step on each run."""
+    """Resuming must not add the finished batches a second time: the summary is
+    rebuilt from every step on each run, not carried on top of the partial total
+    a deferred run persisted. Adding onto the persisted total would report 4500
+    objects for the 2500 this deletion removes.
+    """
     total = 2 * _STORAGE_DELETE_BATCH + 500
     svc, journal = await _journal_with_objects(client, monkeypatch, total)
+    # Deferring must not also start the real retry loop: that loop would race
+    # this test's own resume.
+    monkeypatch.setattr(svc, "start_recovery", lambda: None)
 
+    # Only the last batch is unreachable; the two before it still finish.
     batches = [s for s in journal.steps if s.store == "file_storage"]
-    # The first two ran in an earlier life of this journal; the last is pending.
-    for done in batches[:-1]:
-        done.status = "completed"
-        done.deleted_count = len(done.storage_keys or [])
-    await journal.save()
+    down = {batches[-1].order}
 
+    async def execute(self, step, namespace):
+        if step.order in down:
+            raise _Unreachable("object store down")
+        return len(step.storage_keys or [])
+
+    monkeypatch.setattr(NamespaceDeletionService, "_execute_step", execute)
+
+    # Run 1 waits on the last batch, having totalled the two finished ones.
     await svc._run_steps(journal)
+    waiting = await DeletionJournal.get(journal.id)
+    assert waiting.status == "in_progress"
+    assert waiting.summary["minio_objects"] == 2 * _STORAGE_DELETE_BATCH
+
+    # Run 2, as recovery runs it: the journal read fresh from storage, the
+    # store answering now.
+    down.clear()
+    await svc._run_steps(await DeletionJournal.get(journal.id))
 
     stored = await DeletionJournal.get(journal.id)
+    assert stored.status == "completed"
     assert stored.summary["minio_objects"] == total
