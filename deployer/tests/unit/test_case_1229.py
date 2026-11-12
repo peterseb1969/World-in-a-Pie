@@ -278,3 +278,63 @@ class TestStateV3ToV4:
 
     def test_the_model_has_no_on_timeout(self) -> None:
         assert "on_timeout" not in ApplySpec.model_fields
+
+
+# ────────────────────────────────────────────────────────────────────
+# Item 4: removing an app on k8s prunes it, however the scope widened
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestRemovalPrunesOnK8s:
+    """Dropping an app rewrites the front door's Caddyfile, whose digest is on
+    wip-caddy's pod template, so widening names caddy: the empty scope became
+    ["caddy"], a scoped apply that never prunes, and the app kept running."""
+
+    def _run(self, target: str, *, removes: bool, widened: list[str]) -> dict:
+        from wip_deploy.cli import _apply_and_persist_mutation
+
+        deployment = _deployment()
+        if target == "k8s":
+            from wip_deploy.spec.deployment import K8sPlatform
+
+            from ._kube import unit_cluster
+
+            spec = deployment.spec.model_dump()
+            spec.update(
+                target="k8s",
+                platform=PlatformSpec(k8s=K8sPlatform(namespace="wip", kube=unit_cluster())).model_dump(),
+            )
+            deployment = Deployment(metadata=deployment.metadata, spec=DeploymentSpec(**spec))
+        result = MagicMock(healthy=True, post_install_skipped=[], health_checked=True)
+        with (
+            patch("wip_deploy.cli._validate_or_exit"),
+            patch("wip_deploy.cli._select_cluster_or_exit"),
+            patch("wip_deploy.cli._ensure_secrets_via_spec"),
+            patch("wip_deploy.cli._refuse_runtime_reservation_collisions"),
+            patch("wip_deploy.cli._refuse_attachment_collisions"),
+            patch("wip_deploy.cli._render_tree"),
+            patch("wip_deploy.cli._k8s_render_predates_front_door", return_value=False),
+            patch("wip_deploy.cli.changed_outside_scope", return_value=widened),
+            patch("wip_deploy.cli._persist_deployment"),
+            patch("wip_deploy.cli.apply_k8s", return_value=result) as k8s,
+            patch("wip_deploy.cli.apply_compose", return_value=result) as compose,
+        ):
+            _apply_and_persist_mutation(
+                deployment, [], [], Path("/tmp/x"), "test",
+                services_scope=[], removes_workloads=removes,
+            )
+        return (k8s if target == "k8s" else compose).call_args.kwargs
+
+    def test_k8s_removal_applies_the_whole_tree_even_when_widened(self) -> None:
+        kwargs = self._run("k8s", removes=True, widened=["caddy"])
+        assert "services_scope" not in kwargs  # full tree, with prune
+
+    def test_a_config_only_k8s_verb_still_narrows_to_what_changed(self) -> None:
+        # group-map, app-namespace: nothing to delete, so the widened scope
+        # (the service that reads the changed config) is the right apply.
+        kwargs = self._run("k8s", removes=False, widened=["registry"])
+        assert kwargs["services_scope"] == ["registry"]
+
+    def test_compose_removal_keeps_its_config_only_scope(self) -> None:
+        kwargs = self._run("compose", removes=True, widened=[])
+        assert kwargs["services_scope"] == []

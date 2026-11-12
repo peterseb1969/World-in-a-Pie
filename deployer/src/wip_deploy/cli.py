@@ -2586,6 +2586,7 @@ def _apply_and_persist_mutation(
     services_scope: list[str] | None = None,
     repo_root: Path | None = None,
     regenerate: frozenset[str] = frozenset(),
+    removes_workloads: bool = False,
 ) -> None:
     """Shared post-mutation lifecycle: validate → render → apply → persist.
 
@@ -2604,9 +2605,14 @@ def _apply_and_persist_mutation(
     scope narrows the apply: "kubectl apply is already incremental" is
     not a substitute for scoping (a full-tree apply recreates unrelated
     drifted manifests — a one-app tag roll once bounced mongodb as
-    collateral), but resource DELETION on k8s happens only via the full
-    apply's prune, so the empty scope (remove-app's compose config-only
-    mode) and None both fall back to the full tree there.
+    collateral). An empty scope with nothing widened, and None, both fall
+    back to the full tree there.
+
+    `removes_workloads`: the mutation drops workloads from the render
+    (remove-app). On k8s their Deployment, Service, ConfigMap and Secret go
+    only through the full apply's prune, so such a mutation always applies
+    the whole tree there, however its scope was widened: a widened scope is a
+    scoped apply, which never prunes, and the removed app kept running.
 
     A scope is widened, never trusted blindly: services outside it whose
     rendered configuration changed (a secret they read, the router's
@@ -2649,6 +2655,9 @@ def _apply_and_persist_mutation(
             "door: applying the whole install once (with prune) instead of only "
             + ", ".join(services_scope) + "."
         )
+        services_scope = None
+
+    if removes_workloads and deployment.spec.target == "k8s":
         services_scope = None
 
     if services_scope is not None:
@@ -2941,9 +2950,11 @@ def remove_app(
         # Config-only apply: an empty scope skips `compose up` entirely (a
         # bare `up -d` would recreate the whole stack) and still reloads
         # the proxies so the dropped route disappears. The container is
-        # removed below.
+        # removed below. On k8s the app's objects go only through the full
+        # apply's prune, which removes_workloads selects.
         services_scope=[],
         repo_root=repo_root,
+        removes_workloads=True,
     )
 
     # Only once the apply succeeded (as remove-module does): a refused
