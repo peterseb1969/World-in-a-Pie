@@ -31,7 +31,7 @@
 > then follow [the dev guide](https://github.com/peterseb1969/World-in-a-Pie/blob/develop/docs/deploy/dev/README.md).
 >
 > **Already running v2.1.0?** It keeps working while the MinIO image is still on your machine. To move to Garage, follow
-> [the migration recipe](https://github.com/peterseb1969/World-in-a-Pie/blob/develop/docs/releases/unreleased.md#object-storage-garage-replaces-minio-now-the-default-minio-retired).
+> [the migration recipe](https://github.com/peterseb1969/World-in-a-Pie/blob/develop/docs/releases/unreleased/000-pre-fragments-action-required.md#object-storage-garage-replaces-minio-now-the-default-minio-retired).
 
 ---
 

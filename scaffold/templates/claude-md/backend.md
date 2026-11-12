@@ -407,6 +407,8 @@ Verify with `git remote -v` if in doubt.
 
 Full rule at `feedback_push_to_gitea.md`.
 
+**Release notes are fragments.** A change the next release note must carry adds one new file, `docs/releases/unreleased/case-<n>-<slug>.md`, with its `section` in frontmatter (format: `docs/releases/unreleased/README.md`). Never edit a shared release file and never recreate `docs/releases/unreleased.md`: one shared file made every pair of parallel lanes conflict on rebase. `scripts/release-notes.py preview` shows the assembled note; CI runs `scripts/release-notes.py check`.
+
 **Branching:** work on `develop`. `main` is the stable branch — tagged releases only. PRs go to `main` when ready.
 
 **CI:** Gitea Actions via `act_runner` on the Mac Studio. Workflow at `.gitea/workflows/test.yaml`. Run `/wip-check` locally before pushing.

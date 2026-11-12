@@ -30,6 +30,12 @@ jobs:
           . .venv/bin/activate
           python3 scripts/check-complexity-ratchet.py --base HEAD~1 --head HEAD
 
+      - name: Release-note fragments
+        run: |
+          # One file per entry under docs/releases/unreleased/; refuses a
+          # malformed fragment and a recreated shared unreleased.md.
+          python3 scripts/release-notes.py check
+
       - name: Ruff (changed files only)
         run: |
           . .venv/bin/activate
