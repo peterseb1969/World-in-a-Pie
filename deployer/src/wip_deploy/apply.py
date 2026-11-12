@@ -145,9 +145,15 @@ def apply_compose(
     install_dir = Path(install_dir)
 
     # Snapshot proxy configs before the tree overwrites them, so we can
-    # detect changes and reload only what actually changed.
+    # detect changes and reload only what actually changed. Every apply
+    # needs this but a full dev apply, which recreates every container: a
+    # proxy's rendered service is static (its Caddyfile is a bind mount), so
+    # `compose up -d` never recreates it for a routing change, scoped or not
+    # — re-running `install` to add an app would otherwise leave the new
+    # route unserved.
+    reload_changed_proxies = services_scope is not None or deployment.spec.target != "dev"
     old_proxy_content: dict[str, str | None] = {}
-    if services_scope is not None:
+    if reload_changed_proxies:
         for ctr, rel in _PROXY_CONFIG_FILES.items():
             path = install_dir / rel
             old_proxy_content[ctr] = path.read_text() if path.is_file() else None
@@ -226,10 +232,10 @@ def apply_compose(
             deployment.metadata.name, compose_file, services=services_scope
         )
 
-        # CASE-443: a scoped up never recreates the proxies (their service
-        # definitions are unchanged — only mounted files moved). Reload the
-        # ones whose rendered config actually changed.
-        if services_scope is not None:
+        # The up never recreates a proxy for a routing change (its service
+        # definition is unchanged — only the mounted file moved), so reload
+        # each one whose rendered config changed.
+        if reload_changed_proxies:
             for ctr, rel in _PROXY_CONFIG_FILES.items():
                 path = install_dir / rel
                 new_content = path.read_text() if path.is_file() else None

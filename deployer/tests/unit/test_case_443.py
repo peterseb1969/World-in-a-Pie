@@ -14,7 +14,9 @@ Contract under test, all via mocked subprocess / patched helpers:
     be the full-stack up the scoping exists to prevent.
   - `services_scope=None` keeps install semantics: full up + dev wipe.
   - Proxy reload fires only for a proxy whose mounted Caddyfile content
-    actually changed across the tree write.
+    actually changed across the tree write — on every compose apply, scoped
+    or not (a full up never recreates a proxy for a routing change), and on
+    every scoped dev apply; a full dev apply recreates the proxies instead.
   - `_reload_proxy` execs `caddy reload` and falls back to a container
     restart on failure.
   - `_wait_healthy(only=...)` intersects the expected set.
@@ -173,13 +175,42 @@ class TestProxyReload:
         )
         reload_proxy.assert_not_called()
 
-    def test_unscoped_install_never_reloads(self, tmp_path: Path) -> None:
-        # Full install recreates everything anyway; the reload path is
-        # scoped-mutation-only.
+    def test_unscoped_compose_install_reloads_a_changed_proxy(self, tmp_path: Path) -> None:
+        # A compose full up does not recreate the proxy for a routing change:
+        # its service is static and the Caddyfile is a bind mount. Re-running
+        # `install` to add an app is a full apply, and its route must go live.
+        (tmp_path / self.CADDY).parent.mkdir(parents=True)
+        (tmp_path / self.CADDY).write_text("edge-v1")
+        _, _, _, reload_proxy = _apply(
+            tmp_path,
+            deployment=_deployment(),
+            tree=_tree({self.CADDY: "edge-v2"}),
+            services_scope=None,
+        )
+        assert reload_proxy.call_args_list == [(("test-install_wip-caddy",),)]
+
+    def test_unscoped_compose_install_with_unchanged_proxies_reloads_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        (tmp_path / self.CADDY).parent.mkdir(parents=True)
+        (tmp_path / self.CADDY).write_text("edge-v1")
         _, _, _, reload_proxy = _apply(
             tmp_path,
             deployment=_deployment(),
             tree=_tree({self.CADDY: "edge-v1"}),
+            services_scope=None,
+        )
+        reload_proxy.assert_not_called()
+
+    def test_unscoped_dev_install_needs_no_reload(self, tmp_path: Path) -> None:
+        # A full dev apply removes and recreates every container of the
+        # install, so each proxy starts on the new config.
+        (tmp_path / self.CADDY).parent.mkdir(parents=True)
+        (tmp_path / self.CADDY).write_text("edge-v1")
+        _, _, _, reload_proxy = _apply(
+            tmp_path,
+            deployment=_deployment(target="dev"),
+            tree=_tree({self.CADDY: "edge-v2"}),
             services_scope=None,
         )
         reload_proxy.assert_not_called()

@@ -174,7 +174,7 @@ wip-deploy install \
   --app wip-kb --image-tag wip-kb=20260629a
 ```
 
-**Adding an app to a running install** is the same command — just re-run `install` with the extra app included. It pulls the new image and does a **full restart (fast)**, reusing all data and secrets:
+**Adding an app to a running install** is the same command — just re-run `install` with the extra app included. It pulls the new image, starts the app's container, and reloads the proxies so the new route is served; services whose rendered definition did not change keep running, and all data and secrets are reused:
 
 ```bash
 # add WIP-KB to a running "wip" that already had the React Console:
