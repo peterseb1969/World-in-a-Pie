@@ -144,7 +144,7 @@ class TestApplyK8sPostInstallGating:
         assert REGISTRY_HOOK_LABEL in result.post_install_skipped
 
     @patch("wip_deploy.apply._run_post_install_k8s")
-    @patch("wip_deploy.apply._wait_k8s_rollout", return_value=True)
+    @patch("wip_deploy.apply._wait_k8s_rollout", return_value=[])
     @patch("wip_deploy.apply._count_k8s_workloads", return_value=1)
     @patch("wip_deploy.apply._kubectl_apply_tree")
     @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/kubectl")
@@ -169,7 +169,7 @@ class TestApplyK8sPostInstallGating:
         assert result.post_install_skipped == []
 
     @patch("wip_deploy.apply._run_post_install_k8s")
-    @patch("wip_deploy.apply._wait_k8s_rollout", return_value=False)
+    @patch("wip_deploy.apply._wait_k8s_rollout", return_value=["deployment/wip-registry: timed out"])
     @patch("wip_deploy.apply._count_k8s_workloads", return_value=1)
     @patch("wip_deploy.apply._kubectl_apply_tree")
     @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/kubectl")

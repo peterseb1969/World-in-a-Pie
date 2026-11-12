@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import re
 import shutil
 import subprocess
@@ -1257,13 +1258,24 @@ def _run_post_install(
                 "exec", "-T", owner_name,
                 "sh", "-c", hook.run,
             ]
-            try:
-                subprocess.run(cmd, cwd=install_dir, check=True)
-            except subprocess.CalledProcessError as e:
-                raise ApplyError(
-                    f"post-install hook {hook.name!r} on {owner_name!r} "
-                    f"failed (exit {e.returncode})"
-                ) from e
+            _run_hook(
+                cmd, cwd=install_dir, label=f"{hook.name!r} on {owner_name!r}",
+                timeout_seconds=deployment.spec.apply.timeout_seconds,
+            )
+
+
+def _run_hook(cmd: list[str], *, cwd: Path | None, label: str, timeout_seconds: int) -> None:
+    """Run one post-install hook, bounded by the apply's timeout: a hook that
+    never returns would otherwise hold the CLI forever, the wait's budget
+    already spent on the health wait before it."""
+    try:
+        subprocess.run(cmd, cwd=cwd, check=True, timeout=timeout_seconds)
+    except subprocess.TimeoutExpired as e:
+        raise ApplyError(
+            f"post-install hook {label} did not finish within {timeout_seconds} s"
+        ) from e
+    except subprocess.CalledProcessError as e:
+        raise ApplyError(f"post-install hook {label} failed (exit {e.returncode})") from e
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -1312,13 +1324,22 @@ def _provision_garage_if_active(
         SECRET_KEY_SECRET, _refuse_generate(SECRET_KEY_SECRET)
     )
 
+    timeout_seconds = deployment.spec.apply.timeout_seconds
+
     def run(
         args: list[str], *, stdin: str | None = None, check: bool = True
     ) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            [*exec_prefix, "/garage", *args],
-            cwd=cwd, input=stdin, capture_output=True, text=True, check=check,
-        )
+        try:
+            return subprocess.run(
+                [*exec_prefix, "/garage", *args],
+                cwd=cwd, input=stdin, capture_output=True, text=True, check=check,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as e:
+            raise ApplyError(
+                f"garage provisioning (`garage {' '.join(args[:2])}`) did not "
+                f"finish within {timeout_seconds} s"
+            ) from e
 
     def api(endpoint: str, payload: str | None = None) -> Any:
         args = ["json-api", endpoint]
@@ -1499,18 +1520,23 @@ def apply_k8s(
             up_count = _count_k8s_workloads(tree)
 
         healthy = True
+        not_rolled_out: list[str] = []
         post_install_skipped: list[str] = []
         if deployment.spec.apply.wait:
-            healthy = _wait_k8s_rollout(
+            not_rolled_out = _wait_k8s_rollout(
                 install_dir=install_dir,
                 ns=ns,
                 components=components,
                 apps=apps,
                 deployment=deployment,
             )
+            healthy = not not_rolled_out
 
         if deployment.spec.apply.wait and not healthy:
-            raise ApplyError("apply timed out: not all workloads became ready")
+            raise ApplyError(
+                "rollout did not complete within "
+                f"{deployment.spec.apply.timeout_seconds} s: " + "; ".join(not_rolled_out)
+            )
 
         # Post-install hooks declare `after: healthy`; only run them once a
         # pod is confirmed Running; --no-wait (health never established) skips
@@ -1893,22 +1919,27 @@ def _wait_k8s_rollout(
     components: list[Component],
     apps: list[App],
     deployment: Deployment,
-) -> bool:
+) -> list[str]:
     """Poll every active workload via `kubectl rollout status`.
 
-    Returns True if all rollouts complete within the total timeout,
-    False on first timeout. Respects `spec.apply.timeout_seconds` as a
-    *total* budget across all workloads, not per-workload.
+    Returns what did not roll out (empty when every workload did), one
+    "<kind>/<name>: <why>" entry each, the why in kubectl's own words — a
+    refused kubectl (RBAC, a kind or workload that does not exist) is not
+    reported as a timeout. Respects `spec.apply.timeout_seconds` as a
+    *total* budget across all workloads, not per-workload; workloads the
+    budget never reached are listed as such.
     """
     workloads = _expected_workloads(components, apps, deployment)
-    if not workloads:
-        return True
-
     deadline = time.time() + deployment.spec.apply.timeout_seconds
-    for kind, name in workloads:
-        remaining = int(deadline - time.time())
+    for i, (kind, name) in enumerate(workloads):
+        # Rounded up: truncating gave the first workload of a 1 s budget 0 s,
+        # so it was never asked.
+        remaining = math.ceil(deadline - time.time())
         if remaining <= 0:
-            return False
+            return [
+                f"{k.lower()}/{n}: not checked, the wait's budget was spent"
+                for k, n in workloads[i:]
+            ]
         try:
             subprocess.run(
                 [
@@ -1921,9 +1952,10 @@ def _wait_k8s_rollout(
                 capture_output=True,
                 text=True,
             )
-        except subprocess.CalledProcessError:
-            return False
-    return True
+        except subprocess.CalledProcessError as e:
+            why = (e.stderr or e.stdout or "").strip().splitlines()
+            return [f"{kind.lower()}/{name}: {why[-1] if why else f'exit {e.returncode}'}"]
+    return []
 
 
 def _expected_workloads(
@@ -1978,19 +2010,11 @@ def _run_post_install_k8s(
     for owner_name, hooks in _post_install_owners(components, apps, deployment):
         pod = _pod_for_component(ns, owner_name)
         for hook in hooks:
-            try:
-                subprocess.run(
-                    [
-                        *kubectl(), "exec", "-n", ns, pod,
-                        "--", "sh", "-c", hook.run,
-                    ],
-                    check=True,
-                )
-            except subprocess.CalledProcessError as e:
-                raise ApplyError(
-                    f"post-install hook {hook.name!r} on {owner_name!r} "
-                    f"failed (exit {e.returncode})"
-                ) from e
+            _run_hook(
+                [*kubectl(), "exec", "-n", ns, pod, "--", "sh", "-c", hook.run],
+                cwd=None, label=f"{hook.name!r} on {owner_name!r}",
+                timeout_seconds=deployment.spec.apply.timeout_seconds,
+            )
 
 
 def _pod_for_component(ns: str, component_name: str) -> str:

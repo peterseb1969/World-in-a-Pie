@@ -174,7 +174,7 @@ class TestProvisioning:
         d = self._deployment_with_secrets(tmp_path)
         calls: list[tuple[list[str], str | None]] = []
 
-        def fake_run(argv, cwd=None, input=None, capture_output=True, text=True, check=True):
+        def fake_run(argv, cwd=None, input=None, capture_output=True, text=True, check=True, timeout=None):
             calls.append((argv, input))
             tail = argv[argv.index("/garage") + 1:]
             out, code = "{}", 0
@@ -219,7 +219,7 @@ class TestProvisioning:
         d = self._deployment_with_secrets(tmp_path)
         calls: list[list[str]] = []
 
-        def fake_run(argv, cwd=None, input=None, capture_output=True, text=True, check=True):
+        def fake_run(argv, cwd=None, input=None, capture_output=True, text=True, check=True, timeout=None):
             calls.append(argv)
             tail = argv[argv.index("/garage") + 1:]
             import subprocess as sp
@@ -252,7 +252,7 @@ class TestProvisioning:
     ) -> None:
         d = self._deployment_with_secrets(tmp_path)
 
-        def fake_run(argv, cwd=None, input=None, capture_output=True, text=True, check=True):
+        def fake_run(argv, cwd=None, input=None, capture_output=True, text=True, check=True, timeout=None):
             import subprocess as sp
             tail = argv[argv.index("/garage") + 1:]
             if tail[:2] == ["json-api", "GetClusterLayout"]:
@@ -283,7 +283,7 @@ class TestProvisioning:
         created: list[str] = []
         granted: list[str] = []
 
-        def fake_run(argv, cwd=None, input=None, capture_output=True, text=True, check=True):
+        def fake_run(argv, cwd=None, input=None, capture_output=True, text=True, check=True, timeout=None):
             import subprocess as sp
             tail = argv[argv.index("/garage") + 1:]
             out, code = "{}", 0

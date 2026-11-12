@@ -128,6 +128,15 @@ def test_an_older_registry_is_a_note(discovery: Discovery) -> None:
     assert result.errors == [] and "predates app attachments" in result.note
 
 
+@pytest.mark.parametrize("status", [401, 403, 500])
+def test_a_registry_that_refuses_or_fails_stops_the_apply(discovery: Discovery, status: int) -> None:
+    # A refused admin key or a failing Registry must not switch the check off.
+    d = _minimal_compose(apps=["wip-kb"])
+    result = check_attachment_collisions(d, discovery.apps, "k", transport=_transport(status, {}, []))
+    assert len(result.errors) == 1
+    assert f"({status})" in result.errors[0] and "app attachments" in result.errors[0]
+
+
 def test_without_an_admin_key_it_is_a_note(discovery: Discovery) -> None:
     d = _minimal_compose(apps=["wip-kb"])
     result = check_attachment_collisions(d, discovery.apps, None)

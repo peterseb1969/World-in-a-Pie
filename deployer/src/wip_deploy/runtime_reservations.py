@@ -68,6 +68,30 @@ def collisions(
     return errors
 
 
+def registry_refusal(status: int, what: str) -> str | None:
+    """The error for a Registry that is running and refuses or fails to answer
+    a pre-apply check, or None.
+
+    Not reachable, or a 404 from a Registry that predates the endpoint, leaves
+    the check to the Registry itself at its next start (a first install has no
+    Registry yet). A 401 or 403 means the install's admin key was refused, and
+    a 5xx that the Registry failed: going ahead would skip the very check that
+    keeps the apply from writing colliding entries, so the apply stops.
+    """
+    if status in (401, 403):
+        return (
+            f"the Registry refused the install's admin key ({status}) when asked for "
+            f"{what}; the apply stops rather than skip the check. Check the key in the "
+            "install's secret store."
+        )
+    if status >= 500:
+        return (
+            f"the Registry failed ({status}) when asked for {what}; the apply stops "
+            "rather than skip the check. Retry once the Registry answers."
+        )
+    return None
+
+
 def check_runtime_reservations(
     deployment: Deployment,
     apps: list[App],
@@ -107,6 +131,9 @@ def check_runtime_reservations(
         return RuntimeReservationCheck(
             note="the running Registry predates runtime reservations; not checked"
         )
+    refused = registry_refusal(resp.status_code, "its runtime reservations")
+    if refused:
+        return RuntimeReservationCheck(errors=[refused])
     if resp.status_code != 200 or not str(resp.headers.get("content-type", "")).startswith(
         "application/json"
     ):

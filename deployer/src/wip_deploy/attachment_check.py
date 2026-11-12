@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from wip_deploy.config_gen.attach_policy import app_route_names
+from wip_deploy.runtime_reservations import registry_refusal
 from wip_deploy.spec import App, Deployment
 
 
@@ -73,6 +74,9 @@ def check_attachment_collisions(
                     return AttachmentCheck(
                         note="the running Registry predates app attachments; not checked"
                     )
+                refused = registry_refusal(resp.status_code, "its app attachments")
+                if refused:
+                    return AttachmentCheck(errors=[refused])
                 if resp.status_code != 200 or not str(
                     resp.headers.get("content-type", "")
                 ).startswith("application/json"):

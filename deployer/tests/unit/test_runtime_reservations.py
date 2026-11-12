@@ -91,14 +91,27 @@ def test_an_id_prefix_collision_is_refused():
     assert "ID prefix 'CK-'" in errors[0] and "ext.terms (runtime key 'ext-key')" in errors[0]
 
 
-@pytest.mark.parametrize("status,needle", [(404, "predates"), (503, "answered 503")])
-def test_an_older_or_failing_registry_is_a_note(discovery: Discovery, status: int, needle: str):
+def test_an_older_registry_is_a_note(discovery: Discovery):
+    app = _app(discovery, "cook", [{"role": "main", "name": "cook-data", "env": "WIP_NAMESPACE"}])
+    result = check_runtime_reservations(
+        _deployment([app]), [app], "admin-key", transport=_transport(404, {}, []),
+    )
+    assert result.errors == []
+    assert "predates" in (result.note or "")
+
+
+@pytest.mark.parametrize("status,needle", [(401, "refused"), (403, "refused"), (503, "failed (503)")])
+def test_a_registry_that_refuses_or_fails_stops_the_apply(
+    discovery: Discovery, status: int, needle: str
+):
+    # A mistyped admin key, or a failing Registry, must not switch the
+    # collision check off and let the apply write colliding reservations.
     app = _app(discovery, "cook", [{"role": "main", "name": "cook-data", "env": "WIP_NAMESPACE"}])
     result = check_runtime_reservations(
         _deployment([app]), [app], "admin-key", transport=_transport(status, {}, []),
     )
-    assert result.errors == []
-    assert needle in (result.note or "")
+    assert len(result.errors) == 1 and needle in result.errors[0]
+    assert "runtime reservations" in result.errors[0]
 
 
 def test_an_unreachable_registry_is_a_note(discovery: Discovery):

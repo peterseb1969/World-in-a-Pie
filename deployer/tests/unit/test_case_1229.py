@@ -338,3 +338,66 @@ class TestRemovalPrunesOnK8s:
     def test_compose_removal_keeps_its_config_only_scope(self) -> None:
         kwargs = self._run("compose", removes=True, widened=[])
         assert kwargs["services_scope"] == []
+
+
+# ────────────────────────────────────────────────────────────────────
+# Item 5: failures name their cause; hooks have deadlines
+# ────────────────────────────────────────────────────────────────────
+
+import subprocess  # noqa: E402
+
+from wip_deploy.apply import _run_hook, _wait_k8s_rollout  # noqa: E402
+
+
+class TestRolloutFailureNamesItsCause:
+    def _wait(self, run_side_effect, timeout: int = 60) -> list[str]:
+        d = _deployment()
+        d.spec.apply.timeout_seconds = timeout
+        with (
+            patch("wip_deploy.apply._expected_workloads",
+                  return_value=[("Deployment", "wip-registry"), ("StatefulSet", "wip-mongodb")]),
+            patch("wip_deploy.apply.kubectl", return_value=["kubectl"]),
+            patch("wip_deploy.apply.subprocess.run", side_effect=run_side_effect),
+        ):
+            return _wait_k8s_rollout(install_dir=Path("/tmp/x"), ns="wip", components=[], apps=[], deployment=d)
+
+    def test_a_refused_kubectl_is_reported_in_its_own_words(self) -> None:
+        def run(cmd, *a, **k):
+            raise subprocess.CalledProcessError(
+                1, cmd, stderr='Error from server (Forbidden): deployments.apps "wip-registry" is forbidden'
+            )
+        out = self._wait(run)
+        assert out == ['deployment/wip-registry: Error from server (Forbidden): '
+                       'deployments.apps "wip-registry" is forbidden']
+
+    def test_all_rolled_out_is_empty(self) -> None:
+        assert self._wait(lambda *a, **k: MagicMock(returncode=0)) == []
+
+    def test_workloads_the_budget_never_reached_are_named(self) -> None:
+        # The clock reads 0 when the deadline is set and 100 s on afterwards.
+        clock = iter([0.0] + [100.0] * 10)
+        with patch("wip_deploy.apply.time.time", side_effect=lambda: next(clock)):
+            out = self._wait(lambda *a, **k: MagicMock(returncode=0), timeout=1)
+        assert out == [
+            "deployment/wip-registry: not checked, the wait's budget was spent",
+            "statefulset/wip-mongodb: not checked, the wait's budget was spent",
+        ]
+
+
+class TestHooksHaveDeadlines:
+    def test_a_hook_that_never_returns_fails_the_apply_by_name(self) -> None:
+        with (
+            patch("wip_deploy.apply.subprocess.run",
+                  side_effect=subprocess.TimeoutExpired(["sh"], 300)) as run,
+            pytest.raises(ApplyError, match=r"'init' on 'registry' did not finish within 300 s"),
+        ):
+            _run_hook(["sh"], cwd=None, label="'init' on 'registry'", timeout_seconds=300)
+        assert run.call_args.kwargs["timeout"] == 300
+
+    def test_a_failing_hook_still_reports_its_exit(self) -> None:
+        with (
+            patch("wip_deploy.apply.subprocess.run",
+                  side_effect=subprocess.CalledProcessError(3, ["sh"])),
+            pytest.raises(ApplyError, match=r"failed \(exit 3\)"),
+        ):
+            _run_hook(["sh"], cwd=None, label="'init' on 'registry'", timeout_seconds=300)
