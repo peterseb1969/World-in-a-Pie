@@ -208,6 +208,33 @@ def test_backend_tier3_includes_wip_case_command(tmp_path):
     assert "wip-case.md" in cmds
 
 
+_APP_TOKENS = {"APP_NAME": "x", "APP_SLUG": "x", "APP_NAMESPACE": "x", "PRESET": "standard"}
+
+
+def _claim_bearing_outputs(tmp_path: Path, *, tier3: bool) -> dict[str, str]:
+    # The CLAUDE.md render and the slash commands of both roles, keyed by role.
+    ctx = _ctx(tmp_path, tier3=tier3, tokens=dict(_APP_TOKENS))
+    out: dict[str, str] = {}
+    for role, surfaces in (("backend", backend_surfaces()), ("app", app_surfaces(dict(_APP_TOKENS)))):
+        for s in surfaces:
+            if s.name in ("claude-md", "commands"):
+                for rel, data in s.produce(ctx).items():
+                    out[f"{role}:{rel}"] = data.decode()
+    return out
+
+
+def test_case_claim_rule_reaches_only_kb_clones(tmp_path):
+    # Claiming a case is a KB operation: a clone without a KB must never be
+    # told to claim, while a KB clone gets the rule in CLAUDE.md and as a
+    # step of the /wip-case command it runs to work a case.
+    tier2 = _claim_bearing_outputs(tmp_path, tier3=False)
+    assert not [k for k, v in tier2.items() if "CLAIM acquire" in v]
+    tier3 = _claim_bearing_outputs(tmp_path, tier3=True)
+    for role in ("backend", "app"):
+        assert "CLAIM acquire" in tier3[f"{role}:CLAUDE.md"], role
+        assert "CLAIM acquire" in tier3[f"{role}:.claude/commands/wip-case.md"], role
+
+
 def test_app_playbooks_never_wipe(tmp_path):
     # A pre-existing docs/playbooks/case-workflow.md may be WIP-KB's
     # SERVED source — it must survive a refresh even if the gene pool no
