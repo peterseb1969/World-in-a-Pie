@@ -189,3 +189,92 @@ class TestNoWaitIsNotGreen:
         assert r.exit_code == 0, r.output
         assert "health not checked" in r.output
         assert "✓" not in r.output
+
+
+# ────────────────────────────────────────────────────────────────────
+# Item 2: --no-wait belongs to its own run; on_timeout is gone
+# ────────────────────────────────────────────────────────────────────
+
+import json  # noqa: E402
+
+from wip_deploy.cli import (  # noqa: E402
+    _DEPLOYMENT_JSON_VERSION,
+    _for_this_run,
+    _load_deployment,
+    _upgrade_state_payload,
+)
+from wip_deploy.spec.deployment import (  # noqa: E402
+    ApplySpec,
+    AuthSpec,
+    ComposePlatform,
+    Deployment,
+    DeploymentMetadata,
+    DeploymentSpec,
+    ImagesSpec,
+    NetworkSpec,
+    PlatformSpec,
+    SecretsSpec,
+)
+
+
+def _deployment() -> Deployment:
+    return Deployment(
+        metadata=DeploymentMetadata(name="t"),
+        spec=DeploymentSpec(
+            target="compose",
+            auth=AuthSpec(mode="api-key-only", gateway=False),
+            network=NetworkSpec(hostname="wip.local", tls="internal"),
+            images=ImagesSpec(),
+            platform=PlatformSpec(compose=ComposePlatform(data_dir=Path("/tmp/d"))),
+            secrets=SecretsSpec(backend="file", location="/tmp/s"),
+            apply=ApplySpec(timeout_seconds=600),
+        ),
+    )
+
+
+def _v3_state(apply_block: dict) -> dict:
+    payload = {"wip_deploy_format_version": 3, "deployment": _deployment().model_dump(mode="json")}
+    payload["deployment"]["spec"]["apply"] = apply_block
+    return payload
+
+
+class TestNoWaitIsThisRunOnly:
+    def test_the_saved_deployment_still_waits(self) -> None:
+        saved = _deployment()
+        applied = _for_this_run(saved, no_wait=True)
+        assert applied.spec.apply.wait is False
+        assert saved.spec.apply.wait is True
+        # The timeout is the install's own pace and travels with both.
+        assert applied.spec.apply.timeout_seconds == saved.spec.apply.timeout_seconds == 600
+
+    def test_without_the_flag_the_same_deployment_is_applied(self) -> None:
+        d = _deployment()
+        assert _for_this_run(d, no_wait=False) is d
+
+
+class TestStateV3ToV4:
+    def test_saved_fail_is_dropped_and_a_sticky_no_wait_is_cleared(self, tmp_path: Path) -> None:
+        state = _v3_state({"wait": False, "timeout_seconds": 600, "on_timeout": "fail"})
+        out = _upgrade_state_payload(state)
+        assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION == 4
+        assert out["deployment"]["spec"]["apply"] == {"wait": True, "timeout_seconds": 600}
+
+        (tmp_path / "deployment.deployer-state").write_text(json.dumps(state))
+        loaded = _load_deployment(tmp_path)
+        assert loaded.spec.apply.wait is True
+        assert loaded.spec.apply.timeout_seconds == 600
+
+    @pytest.mark.parametrize("value", ["warn", "continue"])
+    def test_a_hand_set_warn_or_continue_is_refused_by_name(
+        self, tmp_path: Path, value: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        state = _v3_state({"wait": True, "timeout_seconds": 300, "on_timeout": value})
+        (tmp_path / "deployment.deployer-state").write_text(json.dumps(state))
+        import typer
+
+        with pytest.raises(typer.Exit):
+            _load_deployment(tmp_path)
+        assert "on_timeout" in capsys.readouterr().err
+
+    def test_the_model_has_no_on_timeout(self) -> None:
+        assert "on_timeout" not in ApplySpec.model_fields

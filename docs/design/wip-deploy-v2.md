@@ -192,7 +192,6 @@ class SecretsSpec(BaseModel):
 class ApplySpec(BaseModel):
     wait: bool = True
     timeout_seconds: int = 300
-    on_timeout: Literal["fail", "warn", "continue"] = "fail"
 ```
 
 ### What is in the spec
@@ -648,11 +647,13 @@ wip-deploy dev [--mode tilt|simple]
 
 **Default:** wait, up to `spec.apply.timeout_seconds`, fail loudly on timeout.
 
-Configuration precedence (highest wins):
+Configuration:
 
-1. CLI flag (`--no-wait`, `--wait-timeout N`; there is no `--on-timeout` flag)
-2. Deployment spec (`spec.apply.wait`, `spec.apply.timeout_seconds`, `spec.apply.on_timeout`)
-3. Built-in defaults (`wait=true`, `timeout=300s`, `on_timeout="fail"`)
+- `install --wait-timeout N` sets `spec.apply.timeout_seconds`, which is saved
+  with the install: every later apply (redeploy, add-app, …) waits as long.
+- `install --no-wait` skips the wait, and the post-install hooks that need a
+  healthy target, for that one run only. It is never saved; later applies wait.
+- Built-in defaults: `wait=true`, `timeout=300s`.
 
 **What counts as healthy:**
 
@@ -661,16 +662,11 @@ Configuration precedence (highest wins):
 
 Both must be true. Post-install hooks run *after* the component is healthy; each hook's success is part of the wait.
 
-**On timeout:**
+**On timeout:** the apply fails, naming the services that did not become
+healthy. There is no warn-and-continue mode: a stuck service is a failed apply,
+and an operator who knows better re-runs with `--no-wait`.
 
-- `fail` — exit non-zero, surface which components didn't reach healthy
-- `warn` — log warning, continue (install "succeeds")
-- `continue` — today the same as `warn`; the code does not tell them apart
-
-Only `fail` is reachable without hand-editing the saved spec, since no
-flag sets `on_timeout`.
-
-**Rationale:** first-install ergonomics need wait-to-healthy — otherwise `wip-deploy install && wip-deploy status` reports breakage because the platform is still starting. CI/scripted flows benefit from `--no-wait`. Upgrade operations benefit from `--on-timeout warn` because one stuck pod shouldn't fail the whole upgrade. Neither default is right for the other context; configurability at both levels is necessary.
+**Rationale:** first-install ergonomics need wait-to-healthy — otherwise `wip-deploy install && wip-deploy status` reports breakage because the platform is still starting. CI/scripted flows benefit from `--no-wait`, which must not leak into the install's later applies.
 
 ---
 

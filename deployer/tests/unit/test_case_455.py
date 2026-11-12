@@ -51,7 +51,7 @@ from wip_deploy.spec.deployment import (
 )
 
 
-def _deployment(*, wait: bool = True, on_timeout: str = "fail") -> Deployment:
+def _deployment(*, wait: bool = True) -> Deployment:
     return Deployment(
         metadata=DeploymentMetadata(name="t"),
         spec=DeploymentSpec(
@@ -61,7 +61,7 @@ def _deployment(*, wait: bool = True, on_timeout: str = "fail") -> Deployment:
             images=ImagesSpec(),
             platform=PlatformSpec(compose=ComposePlatform(data_dir=Path("/tmp/d"))),
             secrets=SecretsSpec(backend="file", location="/tmp/s"),
-            apply=ApplySpec(wait=wait, on_timeout=on_timeout),
+            apply=ApplySpec(wait=wait),
         ),
     )
 
@@ -261,15 +261,3 @@ class TestApplyComposeMutationStamping:
             _apply()
         assert exc_info.value.mutated is False
 
-    @_DETECT
-    @_RM
-    @patch("wip_deploy.apply._container_cli", return_value=None)
-    @patch("wip_deploy.apply._run_up")
-    @patch("wip_deploy.apply._count_services", return_value=3)
-    @patch("wip_deploy.apply._wait_healthy", return_value=["default_wip-registry"])
-    @patch("wip_deploy.apply._run_post_install")
-    def test_on_timeout_warn_still_returns_result(self, *_mocks: MagicMock) -> None:
-        """warn mode: no raise, result.healthy=False — the CLI's normal
-        post-apply persist runs (unchanged behaviour)."""
-        result = _apply(deployment=_deployment(on_timeout="warn"))
-        assert result.healthy is False

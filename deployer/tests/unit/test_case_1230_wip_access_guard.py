@@ -30,7 +30,7 @@ import pytest
 from pydantic import ValidationError as PydanticValidationError
 
 from wip_deploy.build import BuildInputs, build_deployment
-from wip_deploy.cli import _load_deployment, _upgrade_state_payload
+from wip_deploy.cli import _DEPLOYMENT_JSON_VERSION, _load_deployment, _upgrade_state_payload
 from wip_deploy.config_gen.api_keys import API_KEYS_RENDER_PATH, app_api_key
 from wip_deploy.discovery import Discovery, discover
 from wip_deploy.renderers import render_compose
@@ -159,7 +159,7 @@ def _state_with_grant(discovery: Discovery, access: list[dict[str, str]]) -> dic
     the pre-guard deployer would have written it."""
     d = _deployment("compose", [_app(discovery, "greedy-app")])
     payload: dict[str, Any] = {
-        "wip_deploy_format_version": 3,
+        "wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION,
         "deployment": d.model_dump(mode="json"),
     }
     payload["deployment"]["spec"]["apps"][0]["namespace_access"] = access
@@ -173,7 +173,7 @@ def test_a_saved_grant_is_dropped_at_load_and_named_in_the_warning(
     out = _upgrade_state_payload(payload)
 
     assert out["deployment"]["spec"]["apps"][0]["namespace_access"] == []
-    assert out["wip_deploy_format_version"] == 3, "the sweep is a value fix, not a format change"
+    assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION, "the sweep is a value fix, not a format change"
     err = capsys.readouterr().err
     assert "greedy-app" in err and "wip" in err and "write" in err
     assert "next apply" in err, "the warning must say when the grant actually leaves the key"
@@ -253,7 +253,7 @@ def test_an_older_envelope_is_swept_on_the_way_up(
     payload["wip_deploy_format_version"] = 1
     out = _upgrade_state_payload(payload)
 
-    assert out["wip_deploy_format_version"] == 3
+    assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION
     assert out["deployment"]["spec"]["apps"][0]["namespace_access"] == []
     assert "wip" in capsys.readouterr().err
 
@@ -284,11 +284,11 @@ def test_the_sweep_matches_wip_exactly_and_keeps_the_others_in_order(
 @pytest.mark.parametrize(
     "payload",
     [
-        {"wip_deploy_format_version": 3},
-        {"wip_deploy_format_version": 3, "deployment": {}},
-        {"wip_deploy_format_version": 3, "deployment": {"spec": {}}},
-        {"wip_deploy_format_version": 3, "deployment": {"spec": {"apps": "not-a-list"}}},
-        {"wip_deploy_format_version": 3, "deployment": {"spec": {"apps": ["not-a-dict"]}}},
+        {"wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION},
+        {"wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION, "deployment": {}},
+        {"wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION, "deployment": {"spec": {}}},
+        {"wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION, "deployment": {"spec": {"apps": "not-a-list"}}},
+        {"wip_deploy_format_version": _DEPLOYMENT_JSON_VERSION, "deployment": {"spec": {"apps": ["not-a-dict"]}}},
     ],
 )
 def test_a_malformed_envelope_is_left_for_model_validation_to_report(

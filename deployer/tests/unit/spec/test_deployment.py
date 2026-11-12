@@ -189,11 +189,10 @@ class TestUniqueness:
 
 
 class TestDefaults:
-    def test_apply_defaults_wait_true_300s_fail(self) -> None:
+    def test_apply_defaults_wait_true_300s(self) -> None:
         apply = ApplySpec()
         assert apply.wait is True
         assert apply.timeout_seconds == 300
-        assert apply.on_timeout == "fail"
 
     def test_deployment_default_kind_and_api_version(
         self, minimal_compose_deployment: Deployment

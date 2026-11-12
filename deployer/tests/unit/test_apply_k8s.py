@@ -237,7 +237,7 @@ class TestApplyK8s:
 
     @patch("wip_deploy.apply.subprocess.run")
     @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/kubectl")
-    def test_on_timeout_fail_raises(
+    def test_rollout_timeout_raises(
         self,
         _which: MagicMock,
         mock_run: MagicMock,
@@ -256,7 +256,6 @@ class TestApplyK8s:
         d = _k8s_deployment()
         d.spec.apply.wait = True
         d.spec.apply.timeout_seconds = 1
-        d.spec.apply.on_timeout = "fail"
 
         with pytest.raises(ApplyError, match="timed out"):
             apply_k8s(

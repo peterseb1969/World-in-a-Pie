@@ -744,13 +744,14 @@ class ApplySpec(WIPModel):
     the deployment up.
 
     `wait=True` (default) polls for every component's healthcheck to
-    succeed (and for platform-level readiness) before returning. The CLI
-    can override `wait` and the timeout via `--no-wait` / `--wait-timeout N`.
-    No flag sets `on_timeout`, and `warn` and `continue` behave alike."""
+    succeed (and for platform-level readiness) before returning; a wait
+    that runs out fails the apply. `install --no-wait` skips the wait for
+    that one run and is never saved. `install --wait-timeout N` sets
+    `timeout_seconds`, which is saved: it is the install's own pace, used by
+    every later apply."""
 
     wait: bool = True
     timeout_seconds: int = Field(default=300, ge=1)
-    on_timeout: Literal["fail", "warn", "continue"] = "fail"
 
 
 # ────────────────────────────────────────────────────────────────────

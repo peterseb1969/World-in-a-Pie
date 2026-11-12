@@ -11,7 +11,7 @@ unconditional shape.
 
 The fix gates post-install on `wait AND healthy`:
 - `--no-wait` (health never established) → skip.
-- waited + timed-out + on_timeout != "fail" (warn/continue) → skip.
+- waited + timed-out → the apply raises; no hook runs.
 - waited + healthy → run (unchanged happy path).
 
 Skipped hooks are recorded on `ApplyResult.post_install_skipped` so the CLI
@@ -27,7 +27,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from wip_deploy.apply import (
+    ApplyError,
     _post_install_owners,
     _skipped_post_install_labels,
     apply_compose,
@@ -60,7 +63,7 @@ def _discovery() -> Discovery:
     return discover(REPO_ROOT)
 
 
-def _k8s_deployment(*, wait: bool, on_timeout: str = "fail") -> Deployment:
+def _k8s_deployment(*, wait: bool) -> Deployment:
     return Deployment(
         metadata=DeploymentMetadata(name="k8s-test"),
         spec=DeploymentSpec(
@@ -70,12 +73,12 @@ def _k8s_deployment(*, wait: bool, on_timeout: str = "fail") -> Deployment:
             images=ImagesSpec(registry="ghcr.io/peterseb1969", tag="v1.1.0"),
             platform=PlatformSpec(k8s=K8sPlatform(namespace="wip-test")),
             secrets=SecretsSpec(backend="file", location="/tmp/s"),
-            apply=ApplySpec(wait=wait, on_timeout=on_timeout),
+            apply=ApplySpec(wait=wait),
         ),
     )
 
 
-def _compose_deployment(*, wait: bool, on_timeout: str = "fail") -> Deployment:
+def _compose_deployment(*, wait: bool) -> Deployment:
     return Deployment(
         metadata=DeploymentMetadata(name="compose-test"),
         spec=DeploymentSpec(
@@ -85,7 +88,7 @@ def _compose_deployment(*, wait: bool, on_timeout: str = "fail") -> Deployment:
             images=ImagesSpec(),
             platform=PlatformSpec(compose=ComposePlatform(data_dir=Path("/tmp/d"))),
             secrets=SecretsSpec(backend="file", location="/tmp/s"),
-            apply=ApplySpec(wait=wait, on_timeout=on_timeout),
+            apply=ApplySpec(wait=wait),
         ),
     )
 
@@ -170,7 +173,7 @@ class TestApplyK8sPostInstallGating:
     @patch("wip_deploy.apply._count_k8s_workloads", return_value=1)
     @patch("wip_deploy.apply._kubectl_apply_tree")
     @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/kubectl")
-    def test_waited_timeout_warn_skips(
+    def test_waited_timeout_raises_and_runs_no_hook(
         self,
         _which: MagicMock,
         _apply: MagicMock,
@@ -179,18 +182,17 @@ class TestApplyK8sPostInstallGating:
         run_hooks: MagicMock,
         tmp_path: Path,
     ) -> None:
-        # warn/continue: no raise, but health was not reached — the narrower
-        # race the case's Notes flagged. Hooks must still be skipped.
-        result = apply_k8s(
-            deployment=_k8s_deployment(wait=True, on_timeout="warn"),
-            components=(disc := _discovery()).components,
-            apps=disc.apps,
-            tree=FileTree(),
-            install_dir=tmp_path,
-        )
+        # A wait that runs out always fails the apply; health was never
+        # reached, so no hook may run against the not-ready target.
+        with pytest.raises(ApplyError, match="timed out"):
+            apply_k8s(
+                deployment=_k8s_deployment(wait=True),
+                components=(disc := _discovery()).components,
+                apps=disc.apps,
+                tree=FileTree(),
+                install_dir=tmp_path,
+            )
         run_hooks.assert_not_called()
-        assert result.healthy is False
-        assert REGISTRY_HOOK_LABEL in result.post_install_skipped
 
 
 # ────────────────────────────────────────────────────────────────────

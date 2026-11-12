@@ -96,8 +96,7 @@ class ApplyResult:
     services_up: int
     healthy: bool
     # Post-install hooks declare `after: healthy`; when health was never
-    # established (--no-wait, or a timed-out rollout with on_timeout != "fail")
-    # the hooks are skipped rather than run against a not-ready target. Each
+    # established (--no-wait) the hooks are skipped rather than run against a not-ready target. Each
     # entry is a "<hook> on <owner>" label the CLI surfaces so the skip is
     # visible, not silent (CASE-426).
     post_install_skipped: list[str] = field(default_factory=list)
@@ -132,7 +131,8 @@ def apply_compose(
 ) -> ApplyResult:
     """Materialize the tree and run `podman-compose up -d`.
 
-    Honors `deployment.spec.apply` — wait/timeout/on_timeout.
+    Honors `deployment.spec.apply` — wait and timeout; a wait that runs out
+    raises ApplyError.
 
     `services_scope` (CASE-443): None — full-stack up (install semantics,
     unchanged). A list — incremental mutation: `up -d` only the named
@@ -260,19 +260,13 @@ def apply_compose(
             healthy = not not_healthy
 
         if deployment.spec.apply.wait and not healthy:
-            behavior = deployment.spec.apply.on_timeout
-            if behavior == "fail":
-                raise ApplyError(
-                    _health_timeout_message(
-                        not_healthy, deployment.spec.apply.timeout_seconds
-                    )
-                )
-            # warn/continue: caller decides what to print.
+            raise ApplyError(
+                _health_timeout_message(not_healthy, deployment.spec.apply.timeout_seconds)
+            )
 
         # Post-install hooks declare `after: healthy`; only run them once
-        # health is confirmed. --no-wait (health never established) and a
-        # timed-out warn/continue rollout both skip them — running against a
-        # not-ready container is the CASE-426 race. The skip is surfaced, not
+        # health is confirmed; --no-wait (health never established) skips
+        # them — running against a not-ready container is the CASE-426 race. The skip is surfaced, not
         # silent: see ApplyResult.post_install_skipped.
         if deployment.spec.apply.wait and healthy:
             _run_post_install(install_dir, compose_cmd, components, apps, deployment)
@@ -1435,7 +1429,7 @@ def apply_k8s(
 ) -> ApplyResult:
     """Materialize the tree and run `kubectl apply`.
 
-    Honors `deployment.spec.apply` — wait/timeout/on_timeout. Wait uses
+    Honors `deployment.spec.apply` — wait and timeout. Wait uses
     `kubectl rollout status` per Deployment/StatefulSet. Post-install
     hooks run via `kubectl exec` against a pod selected by the
     component's `app.kubernetes.io/name` label.
@@ -1510,13 +1504,11 @@ def apply_k8s(
             )
 
         if deployment.spec.apply.wait and not healthy:
-            behavior = deployment.spec.apply.on_timeout
-            if behavior == "fail":
-                raise ApplyError("apply timed out: not all workloads became ready")
+            raise ApplyError("apply timed out: not all workloads became ready")
 
         # Post-install hooks declare `after: healthy`; only run them once a
-        # pod is confirmed Running. --no-wait (health never established) and a
-        # timed-out warn/continue rollout both skip them — selecting a pod
+        # pod is confirmed Running; --no-wait (health never established) skips
+        # them — selecting a pod
         # with `--field-selector=status.phase=Running` milliseconds after
         # apply yields empty items and the install dies on the jsonpath. This
         # is the CASE-426 race. The skip is surfaced via post_install_skipped.

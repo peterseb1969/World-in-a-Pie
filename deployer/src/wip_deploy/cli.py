@@ -1170,12 +1170,18 @@ def install(
     ] = None,
     no_wait: Annotated[
         bool,
-        typer.Option("--no-wait", help="Skip waiting for healthy."),
+        typer.Option(
+            "--no-wait",
+            help="Skip waiting for healthy, and the post-install hooks that need it, "
+            "for this run only; later applies wait.",
+        ),
     ] = False,
     wait_timeout: Annotated[
         int | None,
         typer.Option(
-            "--wait-timeout", help="Override spec.apply.timeout_seconds."
+            "--wait-timeout",
+            help="Seconds to wait for healthy; saved with the install, so later "
+            "applies (redeploy, add-app, …) wait as long.",
         ),
     ] = None,
     reconcile: Annotated[
@@ -1347,9 +1353,9 @@ def install(
 
     _validate_or_exit(deployment, components, apps_list)
 
-    # Apply CLI flag overrides on top of spec.apply.
-    if no_wait:
-        deployment.spec.apply.wait = False
+    # --wait-timeout is the install's own pace and is saved with it;
+    # --no-wait belongs to this run and is applied to a copy below, so the
+    # saved spec keeps waiting on every later apply.
     if wait_timeout is not None:
         deployment.spec.apply.timeout_seconds = wait_timeout
 
@@ -1426,7 +1432,7 @@ def install(
     apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
     try:
         result = apply_fn(
-            deployment=deployment,
+            deployment=_for_this_run(deployment, no_wait=no_wait),
             components=components,
             apps=apps_list,
             tree=tree,
@@ -2692,6 +2698,18 @@ def _apply_and_persist_mutation(
 
     _echo_apply_outcome(result, action_label, action_label)
     _echo_skipped_post_install(result)
+
+
+def _for_this_run(deployment: Deployment, *, no_wait: bool) -> Deployment:
+    """The deployment one install run applies: with --no-wait, a copy that does
+    not wait. The caller saves the original, so the flag never reaches a later
+    apply (redeploy, add-app, …), which would otherwise skip both the health
+    wait and the post-install hooks."""
+    if not no_wait:
+        return deployment
+    applied = deployment.model_copy(deep=True)
+    applied.spec.apply.wait = False
+    return applied
 
 
 def _echo_apply_outcome(result: ApplyResult, done: str, what: str) -> None:
@@ -6908,7 +6926,7 @@ def _default_install_dir(name: str) -> Path:
 # Version 2: the app edge became an optional module. A version-1 file is
 # upgraded on load (`_upgrade_state_payload`) and written as version 2 by the
 # next persist, so each step runs once per install.
-_DEPLOYMENT_JSON_VERSION = 3
+_DEPLOYMENT_JSON_VERSION = 4
 
 
 def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -6919,7 +6937,33 @@ def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload = _state_v1_to_v2(payload)
     if payload.get("wip_deploy_format_version") == 2:
         payload = _state_v2_to_v3(payload)
+    if payload.get("wip_deploy_format_version") == 3:
+        payload = _state_v3_to_v4(payload)
     return _drop_wip_namespace_access(payload)
+
+
+def _state_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
+    """Version 3 saved `spec.apply.on_timeout`, and kept `install --no-wait` as
+    `spec.apply.wait: false`. A health wait that runs out now always fails the
+    apply, so the field is gone: its saved value "fail" is dropped, and any
+    other value (only a hand edit could set one) is left for the load to
+    refuse by name. `--no-wait` now belongs to its own run, and nothing else
+    ever set `wait` to false, so a saved false becomes true and later
+    applies wait again."""
+    try:
+        apply_spec = dict(payload["deployment"]["spec"]["apply"])
+    except (KeyError, TypeError):
+        return {**payload, "wip_deploy_format_version": 4}
+    if apply_spec.get("on_timeout") == "fail":
+        apply_spec.pop("on_timeout")
+    if apply_spec.get("wait") is False:
+        apply_spec["wait"] = True
+    spec = {**payload["deployment"]["spec"], "apply": apply_spec}
+    return {
+        **payload,
+        "deployment": {**payload["deployment"], "spec": spec},
+        "wip_deploy_format_version": 4,
+    }
 
 
 def _state_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:

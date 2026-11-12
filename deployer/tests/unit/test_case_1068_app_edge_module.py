@@ -217,14 +217,14 @@ def _v1(*, gateway: bool, suppress_core: bool = False, optional: list[str] | Non
 
 def test_v1_with_the_gateway_keeps_its_edge() -> None:
     out = _upgrade_state_payload(_v1(gateway=True))
-    assert out["wip_deploy_format_version"] == 3
+    assert out["wip_deploy_format_version"] == 4
     assert out["deployment"]["spec"]["modules"]["optional"] == ["mcp-server", APP_EDGE_MODULE]
 
 
 @pytest.mark.parametrize("kw", [{"gateway": False}, {"gateway": True, "suppress_core": True}])
 def test_v1_without_an_edge_gets_none(kw: dict) -> None:
     out = _upgrade_state_payload(_v1(**kw))
-    assert out["wip_deploy_format_version"] == 3
+    assert out["wip_deploy_format_version"] == 4
     assert APP_EDGE_MODULE not in out["deployment"]["spec"]["modules"]["optional"]
 
 
@@ -240,7 +240,7 @@ def test_a_v2_spec_without_the_edge_stays_without_it() -> None:
     payload = _v1(gateway=True)
     payload["wip_deploy_format_version"] = 2
     out = _upgrade_state_payload(payload)
-    assert out["wip_deploy_format_version"] == 3
+    assert out["wip_deploy_format_version"] == 4
     assert out["deployment"]["spec"]["modules"] == payload["deployment"]["spec"]["modules"]
 
 
@@ -261,7 +261,7 @@ def test_both_loaders_upgrade_and_the_next_persist_writes_the_current_version(tm
 
     _persist_deployment(loaded, tmp_path)
     saved = json.loads((tmp_path / "deployment.deployer-state").read_text())
-    assert saved["wip_deploy_format_version"] == 3
+    assert saved["wip_deploy_format_version"] == 4
     assert APP_EDGE_MODULE in saved["deployment"]["spec"]["modules"]["optional"]
 
     # The operator removes it; it stays removed on the next load.
