@@ -401,3 +401,33 @@ class TestHooksHaveDeadlines:
             pytest.raises(ApplyError, match=r"failed \(exit 3\)"),
         ):
             _run_hook(["sh"], cwd=None, label="'init' on 'registry'", timeout_seconds=300)
+
+
+# ────────────────────────────────────────────────────────────────────
+# Item 5: rotate-key reports the restarts its apply makes
+# ────────────────────────────────────────────────────────────────────
+
+from wip_deploy.cli import _rotation_restart_lines  # noqa: E402
+
+
+class TestRotationRestartLines:
+    def test_a_declared_key_nobody_reads_restarts_nothing(self) -> None:
+        lines = _rotation_restart_lines("compose", [], declared_key=True)
+        assert len(lines) == 1 and lines[0].endswith("Nothing restarts for it.")
+
+    def test_a_declared_key_a_service_reads_is_not_also_called_restart_free(self) -> None:
+        # The app-edge key is read from the environment by app-edge: its
+        # config hash moves and the apply recreates it. The output used to
+        # say so and then "Nothing restarts for it." in the same run.
+        lines = _rotation_restart_lines("compose", ["app-edge"], declared_key=True)
+        assert lines[0] == "Restarted by this apply (they read the key at start): app-edge"
+        assert not any("Nothing restarts" in line for line in lines)
+
+    def test_dev_recreates_everything(self) -> None:
+        lines = _rotation_restart_lines("dev", [], declared_key=True)
+        assert "every container of the install" in lines[0]
+        assert not any("Nothing restarts" in line for line in lines)
+
+    def test_the_master_key_lists_its_readers(self) -> None:
+        lines = _rotation_restart_lines("k8s", ["document-store", "registry"], declared_key=False)
+        assert lines == ["Restarted by this apply (they read the key at start): document-store, registry"]

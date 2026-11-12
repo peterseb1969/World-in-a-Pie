@@ -3522,6 +3522,39 @@ def _key_readers(
     return sorted(readers)
 
 
+def _rotation_restart_lines(target: str, readers: list[str], *, declared_key: bool) -> list[str]:
+    """What rotate-key reports about restarts, from what its apply does.
+
+    The rotation's apply is unscoped. On dev a full apply removes and
+    recreates every container of the install, whatever reads the key; on
+    compose and k8s only the services whose rendered definition carries a
+    hash of the key restart (`readers`). A declared key reaches everything
+    else through api-keys.json and key sync, without a restart.
+    """
+    lines: list[str] = []
+    if target == "dev":
+        lines.append(
+            "Restarted by this apply: every container of the install (a dev "
+            "install's full apply recreates them all)."
+        )
+    elif readers:
+        lines.append(
+            "Restarted by this apply (they read the key at start): " + ", ".join(readers)
+        )
+    if declared_key:
+        sync = (
+            "The Registry re-imports api-keys.json while running and every "
+            "service learns the change by key sync: the new key is accepted, "
+            "and the old one refused, within about 40 s on compose and dev "
+            "(10 s import, 30 s key sync), and within about three minutes on "
+            "k8s, where the kubelet first refreshes the mounted file."
+        )
+        if target != "dev" and not readers:
+            sync += " Nothing restarts for it."
+        lines.append(sync)
+    return lines
+
+
 @app.command("rotate-key")
 def rotate_key(
     key_name: Annotated[
@@ -3684,20 +3717,10 @@ def rotate_key(
 
     readers = _key_readers(secret_name, deployment, components, apps_list)
     typer.echo("")
-    if readers:
-        typer.echo(
-            "Restarted by this apply (they read the key at start): "
-            + ", ".join(readers)
-        )
-    if key_name is not None:
-        typer.echo(
-            "The Registry re-imports api-keys.json while running and every "
-            "service learns the change by key sync: the new key is accepted, "
-            "and the old one refused, within about 40 s on compose and dev "
-            "(10 s import, 30 s key sync), and within about three minutes on "
-            "k8s, where the kubelet first refreshes the mounted file. Nothing "
-            "restarts for it."
-        )
+    for line in _rotation_restart_lines(
+        deployment.spec.target, readers, declared_key=key_name is not None
+    ):
+        typer.echo(line)
     typer.echo(
         typer.style(
             "External holders of the OLD key (scripts, other machines, "
