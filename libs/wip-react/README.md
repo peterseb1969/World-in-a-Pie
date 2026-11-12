@@ -428,7 +428,7 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | `useUpdateNamespace()` | `{ prefix, data }` | `Namespace` | `registry.all` |
 | `useArchiveNamespace()` | `{ prefix, archivedBy? }` | `Namespace` | `registry.all` |
 | `useRestoreNamespace()` | `{ prefix, restoredBy? }` | `Namespace` | `registry.all` |
-| `useDeleteNamespace()` | `{ prefix, deletedBy? }` | `void` | `registry.all` |
+| `useDeleteNamespace()` | `{ prefix, deletedBy?, force? }` | `NamespaceDeletionResult` — `status` is `in_progress` while a step is deferred; only `completed` / `completed_with_warnings` mean done | `registry.all` |
 | `useAddSynonym()` | `AddSynonymRequest` | `{ status, registry_id?, error? }` | `registry.all` |
 | `useRemoveSynonym()` | `RemoveSynonymRequest` | `{ status, registry_id?, error? }` | `registry.all` |
 | `useMergeEntries()` | `MergeRequest` | `{ status, preferred_id?, deprecated_id?, error? }` | `registry.all` |

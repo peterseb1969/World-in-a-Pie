@@ -298,7 +298,7 @@ const imported = await client.defStore.importTerminology({
 
 // Export
 const exported = await client.defStore.exportTerminology('COUNTRY', {
-  format: 'json',              // or 'csv'
+  format: 'json',              // or 'csv', which resolves to the CSV text
   includeRelations: true,
   includeInactive: false,
   includeMetadata: true,
@@ -341,11 +341,13 @@ await client.defStore.createTermRelations([
 ], 'wip')
 
 // Traversal
+// namespace is required on all four traversal calls (the service answers 422 without it).
 const ancestors = await client.defStore.getAncestors('ALZHEIMERS_DISEASE', {
   relation_type: 'is_a',
+  namespace: 'wip',
   max_depth: 10,
 })
-const descendants = await client.defStore.getDescendants('NEUROLOGY', { max_depth: 3 })
+const descendants = await client.defStore.getDescendants('NEUROLOGY', { namespace: 'wip', max_depth: 3 })
 
 // Direct neighbors (depth 1 by definition — no max_depth).
 // relation_type defaults to is_a on the server; pass another type to
@@ -634,13 +636,16 @@ In React, use `useRehashIdentities()` from `@wip/react`.
 Files are stored in an S3-compatible object store (Garage) and tracked in MongoDB. The File-Store is part of the Document-Store service (same port 8004).
 
 ```typescript
-// Upload a file (accepts File or Blob)
+// Upload a file (accepts File or Blob) into a namespace, which is required
 const file = await client.files.uploadFile(myFile, 'report.pdf', {
   description: 'Monthly report',
   tags: ['report', 'monthly'],
   category: 'reports',
   allowed_templates: ['REPORT'],      // restrict which templates can reference this file
-})
+}, 'my-app')
+// Without metadata: uploadFile(myFile, 'report.pdf', undefined, 'my-app')
+// Every other file method takes a trailing namespace for resolving a file
+// synonym; a key that can read several namespaces must pass it.
 // file: FileEntity { file_id, filename, content_type, size_bytes, checksum, ... }
 
 // List files
@@ -705,7 +710,13 @@ await client.registry.updateNamespace('my-app', {
 })
 await client.registry.archiveNamespace('my-app')
 await client.registry.restoreNamespace('my-app')
-await client.registry.deleteNamespace('my-app', 'admin@wip.local')
+const deletion = await client.registry.deleteNamespace('my-app', 'admin@wip.local')
+// deletion.status: 'completed' | 'completed_with_warnings' | 'in_progress'.
+// in_progress means a step was deferred: it is NOT done yet.
+if (deletion.status === 'in_progress') {
+  await client.registry.resumeDeletion('my-app')        // or let the Registry's recovery loop finish it
+}
+const journal = await client.registry.getDeletionStatus('my-app')  // per-step detail (platform admins)
 
 // Initialize the default WIP namespaces (one-time setup)
 await client.registry.initializeWipNamespace()
@@ -765,7 +776,7 @@ Reporting-Sync maintains a PostgreSQL mirror of MongoDB data via NATS events. Us
 
 ```typescript
 // Health check
-const healthy = await client.reporting.healthCheck()  // returns boolean
+const healthy = await client.reporting.healthCheck()  // true only when status is 'healthy'; degraded is false
 
 // Cross-service search (queries PostgreSQL)
 const results = await client.reporting.search({
@@ -788,9 +799,12 @@ const integrity = await client.reporting.getIntegrityCheck({
 // integrity.issues: [{ type, severity, entity_id, field_path, message }]
 
 // Recent activity
+// namespace is required for a key that can read several namespaces (400 otherwise);
+// the same holds for getTermDocuments and getReferencedBy (a trailing namespace).
 const activity = await client.reporting.getRecentActivity({
   types: 'document,template',
   limit: 20,
+  namespace: 'my-app',
 })
 // activity.activities: [{ type, action, entity_id, timestamp, user, version }]
 

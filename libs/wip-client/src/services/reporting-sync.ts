@@ -1,5 +1,11 @@
 import { BaseService } from './base.js'
-import { WipError } from '../errors.js'
+import {
+  WipAuthError,
+  WipError,
+  WipNetworkError,
+  WipServerError,
+  WipValidationError,
+} from '../errors.js'
 import type {
   ActivityResponse,
   BatchEntitySyncResult,
@@ -25,6 +31,16 @@ import type {
   ViewRowsParams,
 } from '../types/reporting.js'
 
+/**
+ * Errors a sync wait outlives: the table is created by the first synced
+ * document, and a 5xx or a dropped connection may pass. An SQL mistake or a
+ * refused request will not, so it is thrown at once.
+ */
+function isTransientSyncError(err: unknown): err is WipError {
+  if (err instanceof WipNetworkError || err instanceof WipServerError) return true
+  return err instanceof WipValidationError && /does not exist/.test(err.message)
+}
+
 export class ReportingSyncService extends BaseService {
   constructor(transport: import('../http.js').FetchTransport) {
     super(transport, '/api/reporting-sync')
@@ -32,12 +48,21 @@ export class ReportingSyncService extends BaseService {
 
   // ── Health & Status ──
 
+  /**
+   * True only when reporting-sync reports `healthy`. `degraded` (PostgreSQL or
+   * NATS down) and `unhealthy` are false, as is an unreachable service. An
+   * authentication failure is thrown, not read as "down".
+   *
+   * Uses the routed `/api/reporting-sync/health` (no key needed): the bare
+   * `/health` exists only on the service's own port, so through Caddy, the
+   * router or @wip/proxy it is refused and a healthy service read as down.
+   */
   async healthCheck(): Promise<boolean> {
     try {
-      // The /health endpoint is at root, not under /api/reporting-sync/
-      await this.transport.request('GET', '/health')
-      return true
-    } catch {
+      const health = await this.get<{ status?: string }>('/health')
+      return health?.status === 'healthy'
+    } catch (err) {
+      if (err instanceof WipAuthError) throw err
       return false
     }
   }
@@ -255,49 +280,59 @@ export class ReportingSyncService extends BaseService {
   // ── Sync Awareness ──
 
   /**
-   * Wait for the reporting sync to catch up.
+   * Wait until a query over the reporting tables returns a row — the way to
+   * know that a specific write has reached PostgreSQL:
    *
-   * Simple form — waits until at least one new event is processed:
-   *   await client.reporting.awaitSync()
-   *
-   * Query form — waits until a specific row exists in PostgreSQL:
    *   await client.reporting.awaitSync({
-   *     query: "SELECT 1 FROM dnd_monster WHERE document_id = $1",
+   *     query: 'SELECT 1 FROM doc_monster WHERE document_id = $1',
    *     params: [docId],
+   *     namespace: 'dnd',
    *   })
+   *
+   * Polls until the deadline. A table not created yet, a 5xx and a network
+   * failure are retried; any other error (an SQL mistake, a refused
+   * namespace) is thrown at once. On timeout the last retried error, if any,
+   * is in the thrown error's `detail`.
+   *
+   * There is no form without a query: reporting-sync counts processed events
+   * across every namespace, so no counter can say that one write has synced.
    */
-  async awaitSync(options?: {
-    /** SQL query that should return rows when sync is complete */
-    query?: string
-    /** Parameters for the SQL query */
+  async awaitSync(options: {
+    /** SQL that returns a row once the sync is complete. */
+    query: string
+    /** Parameters for the query. */
     params?: unknown[]
-    /** Timeout in milliseconds (default: 5000) */
+    /** The namespace whose reporting schema the query reads; omittable under a single-namespace key. */
+    namespace?: string
+    /** Timeout in milliseconds (default: 5000). */
     timeout?: number
-    /** Poll interval in milliseconds (default: 200) */
+    /** Poll interval in milliseconds (default: 200). */
     interval?: number
   }): Promise<void> {
-    const timeout = options?.timeout ?? 5000
-    const interval = options?.interval ?? 200
+    const timeout = options.timeout ?? 5000
+    const interval = options.interval ?? 200
     const deadline = Date.now() + timeout
-
-    if (options?.query) {
-      // Query-based: poll until the expected row(s) appear
-      while (Date.now() < deadline) {
-        const result = await this.runQuery(options.query, options.params, { max_rows: 1 })
-        if (result.row_count > 0) return
-        await new Promise((resolve) => setTimeout(resolve, interval))
-      }
-      throw new WipError('Sync timeout: expected data not found in PostgreSQL')
-    }
-
-    // Event-count based: wait until at least one new event processes
-    const before = await this.getSyncStatus()
+    let lastError: WipError | undefined
     while (Date.now() < deadline) {
+      try {
+        const result = await this.runQuery(options.query, options.params, {
+          max_rows: 1,
+          ...(options.namespace ? { namespace: options.namespace } : {}),
+        })
+        if (result.row_count > 0) return
+      } catch (err) {
+        if (!isTransientSyncError(err)) throw err
+        lastError = err
+      }
       await new Promise((resolve) => setTimeout(resolve, interval))
-      const current = await this.getSyncStatus()
-      if (current.events_processed > before.events_processed) return
     }
-    throw new WipError('Sync timeout: no new events processed')
+    throw new WipError(
+      lastError
+        ? `Sync timeout: the query never succeeded (last error: ${lastError.message})`
+        : 'Sync timeout: expected data not found in PostgreSQL',
+      undefined,
+      lastError,
+    )
   }
 
   // ── Table Introspection ──
@@ -423,10 +458,10 @@ export class ReportingSyncService extends BaseService {
     query: string
     types?: string[]
     /**
-     * Filter by namespace. Optional — when omitted the server runs
-     * the search across all namespaces visible to the API key.
-     * Single-namespace keys derive it implicitly; multi-namespace
-     * keys see all of theirs.
+     * The namespace to search. Omittable for a single-namespace key (it is
+     * derived) and for a platform admin (every readable namespace is
+     * searched). A key that can read several namespaces, without the admin
+     * group, must name one: the service answers 400 otherwise.
      */
     namespace?: string
     status?: string
@@ -459,17 +494,23 @@ export class ReportingSyncService extends BaseService {
     return this.post('/search', params)
   }
 
+  /** `namespace` is required for a key that can read several namespaces (400 otherwise). */
   async getRecentActivity(params?: {
     types?: string
     limit?: number
+    namespace?: string
   }): Promise<ActivityResponse> {
     return this.get('/activity/recent', params)
   }
 
   // ── References ──
 
-  async getTermDocuments(termId: string, limit?: number): Promise<TermDocumentsResponse> {
-    return this.get(`/references/term/${termId}/documents`, limit ? { limit } : undefined)
+  /** `namespace` is required for a key that can read several namespaces (400 otherwise). */
+  async getTermDocuments(termId: string, limit?: number, namespace?: string): Promise<TermDocumentsResponse> {
+    return this.get(`/references/term/${termId}/documents`, {
+      ...(limit ? { limit } : {}),
+      ...(namespace ? { namespace } : {}),
+    })
   }
 
   async getEntityReferences(
@@ -483,7 +524,12 @@ export class ReportingSyncService extends BaseService {
     entityType: 'document' | 'template' | 'terminology' | 'term' | 'file',
     entityId: string,
     limit: number = 100,
+    namespace?: string,
   ): Promise<ReferencedByResponse> {
-    return this.get(`/entity/${entityType}/${entityId}/referenced-by`, { limit })
+    // `namespace` is required for a key that can read several namespaces (400 otherwise).
+    return this.get(`/entity/${entityType}/${entityId}/referenced-by`, {
+      limit,
+      ...(namespace ? { namespace } : {}),
+    })
   }
 }

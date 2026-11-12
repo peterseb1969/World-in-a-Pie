@@ -924,17 +924,17 @@ describe('useCreateNamespace', () => {
 })
 
 describe('useDeleteNamespace', () => {
-  it('calls registry.deleteNamespace with prefix and deletedBy', async () => {
+  it('calls registry.deleteNamespace with prefix, deletedBy and force', async () => {
     const mockClient = createMockClient()
     const { Wrapper } = createWrapper(mockClient)
     const { result } = renderHook(() => useDeleteNamespace(), { wrapper: Wrapper })
 
     await act(async () => {
-      result.current.mutate({ prefix: 'old-ns', deletedBy: 'admin' })
+      result.current.mutate({ prefix: 'old-ns', deletedBy: 'admin', force: true })
     })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(mockClient.registry.deleteNamespace).toHaveBeenCalledWith('old-ns', 'admin')
+    expect(mockClient.registry.deleteNamespace).toHaveBeenCalledWith('old-ns', 'admin', { force: true })
   })
 })
 

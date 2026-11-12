@@ -1,4 +1,5 @@
 import { BaseService } from './base.js'
+import { WipValidationError } from '../errors.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
 import type {
   Document,
@@ -37,6 +38,28 @@ import type {
   RestoreOptions,
   ValidateNamespaceParams,
 } from '../types/backup.js'
+
+/**
+ * PATCH and DELETE /documents take `namespace` to resolve synonym ids. POST
+ * does not: each created document names its namespace in the body, and the
+ * service refuses an undeclared query parameter.
+ */
+function nsParam(namespace?: string): Record<string, unknown> | undefined {
+  return namespace ? { namespace } : undefined
+}
+
+/**
+ * The import routes answer an unusable file (empty, unparseable, a bad column
+ * mapping, nothing to import) with 200 and a bare `{error}` body. That is a
+ * failed call, never a result.
+ */
+function refuseErrorBody<T>(body: T): T {
+  if (body && typeof body === 'object' && 'error' in body) {
+    const error = (body as { error?: unknown }).error
+    if (typeof error === 'string' && error) throw new WipValidationError(error, body)
+  }
+  return body
+}
 
 export class DocumentStoreService extends BaseService {
   constructor(transport: import('../http.js').FetchTransport) {
@@ -101,7 +124,12 @@ export class DocumentStoreService extends BaseService {
   async updateDocument(
     documentId: string,
     patch: Record<string, unknown>,
-    options?: { ifMatch?: number; metadataPatch?: Record<string, unknown> },
+    options?: {
+      ifMatch?: number
+      metadataPatch?: Record<string, unknown>
+      /** Resolves a synonym document id; required for a key that can read several namespaces. */
+      namespace?: string
+    },
   ): Promise<BulkResultItem> {
     const item: PatchDocumentRequest = { document_id: documentId, patch }
     if (options?.ifMatch !== undefined) {
@@ -110,7 +138,7 @@ export class DocumentStoreService extends BaseService {
     if (options?.metadataPatch !== undefined) {
       item.metadata_patch = options.metadataPatch
     }
-    return this.bulkWriteOne('/documents', item, 'PATCH')
+    return this.bulkWriteOne('/documents', item, 'PATCH', nsParam(options?.namespace))
   }
 
   /**
@@ -118,8 +146,8 @@ export class DocumentStoreService extends BaseService {
    * in a single round-trip. Each item is processed independently; per-item
    * failures appear in the response with a populated `error_code`.
    */
-  async updateDocuments(items: PatchDocumentRequest[]): Promise<BulkResponse> {
-    return this.bulkWrite('/documents', items, 'PATCH')
+  async updateDocuments(items: PatchDocumentRequest[], options?: { namespace?: string }): Promise<BulkResponse> {
+    return this.bulkWrite('/documents', items, 'PATCH', nsParam(options?.namespace))
   }
 
   /**
@@ -139,6 +167,8 @@ export class DocumentStoreService extends BaseService {
     hardDelete?: boolean
     version?: number
     force?: boolean
+    /** Resolves a synonym id; required for a key that can read several namespaces. */
+    namespace?: string
   }): Promise<BulkResultItem> {
     return this.bulkWriteOne('/documents', {
       id,
@@ -146,7 +176,7 @@ export class DocumentStoreService extends BaseService {
       hard_delete: options?.hardDelete,
       version: options?.version,
       force: options?.force,
-    }, 'DELETE')
+    }, 'DELETE', nsParam(options?.namespace))
   }
 
   /**
@@ -157,12 +187,14 @@ export class DocumentStoreService extends BaseService {
   async deleteDocuments(ids: string[], options?: {
     hardDelete?: boolean
     force?: boolean
+    /** Resolves synonym ids; required for a key that can read several namespaces. */
+    namespace?: string
   }): Promise<BulkResponse> {
     return this.bulkWrite('/documents', ids.map(id => ({
       id,
       hard_delete: options?.hardDelete,
       force: options?.force,
-    })), 'DELETE')
+    })), 'DELETE', nsParam(options?.namespace))
   }
 
   // NOTE: restoreDocument was removed — no /documents/{id}/restore endpoint exists in the API spec.
@@ -340,7 +372,7 @@ export class DocumentStoreService extends BaseService {
   async previewImport(file: Blob, filename: string): Promise<ImportPreviewResponse> {
     const form = new FormData()
     form.append('file', file, filename)
-    return this.postFormData('/import/preview', form)
+    return refuseErrorBody(await this.postFormData('/import/preview', form))
   }
 
   async importDocuments(
@@ -358,7 +390,7 @@ export class DocumentStoreService extends BaseService {
     if (options.skip_errors !== undefined) {
       form.append('skip_errors', String(options.skip_errors))
     }
-    return this.postFormData('/import', form)
+    return refuseErrorBody(await this.postFormData('/import', form))
   }
 
   // ---- Replay ----

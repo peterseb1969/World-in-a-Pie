@@ -1,4 +1,5 @@
 import { BaseService } from './base.js'
+import { WipBulkItemError } from '../errors.js'
 import type {
   Namespace,
   NamespaceStats,
@@ -7,6 +8,8 @@ import type {
   RegistryEntryListResponse,
   RegistryLookupResponse,
   RegistryByTermHit,
+  NamespaceDeletionResult,
+  NamespaceDeletionJournal,
   RegistryEntryFull,
   RegistryBrowseParams,
   RegistrySearchResponse,
@@ -98,8 +101,33 @@ export class RegistryService extends BaseService {
     return this.post(`/namespaces/${prefix}/restore`, null, restoredBy ? { restored_by: restoredBy } : undefined)
   }
 
-  async deleteNamespace(prefix: string, deletedBy?: string): Promise<void> {
-    return this.del(`/namespaces/${prefix}`, undefined, { confirm: true, deleted_by: deletedBy })
+  /**
+   * Delete a namespace and everything in it. The answer says whether the
+   * deletion finished: `in_progress` means a step was deferred (finish it with
+   * resumeDeletion, or let the Registry's recovery loop), and
+   * `completed_with_warnings` means a best-effort step degraded
+   * (getDeletionStatus has the per-step errors). `force` proceeds despite
+   * references from other namespaces.
+   */
+  async deleteNamespace(
+    prefix: string,
+    deletedBy?: string,
+    options?: { force?: boolean },
+  ): Promise<NamespaceDeletionResult> {
+    return this.del(`/namespaces/${prefix}`, undefined, {
+      deleted_by: deletedBy,
+      ...(options?.force ? { force: true } : {}),
+    })
+  }
+
+  /** The deletion journal of a namespace (platform admins only; 404 otherwise). */
+  async getDeletionStatus(prefix: string): Promise<NamespaceDeletionJournal> {
+    return this.get(`/namespaces/${prefix}/deletion-status`)
+  }
+
+  /** Run every step of an unfinished deletion that is not completed (409 while one runs). */
+  async resumeDeletion(prefix: string): Promise<NamespaceDeletionResult> {
+    return this.post(`/namespaces/${prefix}/resume-delete`)
   }
 
   async initializeWipNamespace(): Promise<Namespace> {
@@ -137,7 +165,15 @@ export class RegistryService extends BaseService {
     // CASE-568 follow-on: the route is /api/registry/search/by-term — under
     // the search router, NOT /entries. The old '/entries/search/by-term'
     // path 404'd on every call.
-    const resp = await this.post<{ results: Array<{ results: RegistryByTermHit[]; total_matches: number }> }>(
+    const resp = await this.post<{
+      results: Array<{
+        status?: string
+        error?: string | null
+        error_code?: string | null
+        results: RegistryByTermHit[]
+        total_matches: number
+      }>
+    }>(
       '/search/by-term',
       [{
         term,
@@ -148,6 +184,16 @@ export class RegistryService extends BaseService {
       }],
     )
     const first = resp.results[0]
+    // The Registry answers a failed search (an unknown entity type, an
+    // internal error) as a per-item error inside a 200 — never as no hits.
+    if (first?.status === 'error') {
+      throw new WipBulkItemError(
+        first.error || 'Search failed',
+        0,
+        first.status,
+        first.error_code ?? undefined,
+      )
+    }
     return { hits: first?.results ?? [], total: first?.total_matches ?? 0 }
   }
 

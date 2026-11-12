@@ -298,9 +298,11 @@ export interface TemplateFacetsParams {
 
 export interface ImportPreviewResponse {
   headers: string[]
-  rows: Record<string, unknown>[]
+  /** The first rows of the file, keyed by header. */
+  sample_rows: Record<string, unknown>[]
+  /** Every data row in the file, not only the sample. */
+  total_rows: number
   format: string
-  error?: string
 }
 
 export interface ImportDocumentsOptions {
@@ -385,7 +387,12 @@ export interface DocumentRelationshipsParams {
   direction?: 'incoming' | 'outgoing' | 'both'
   /** Comma-separated relationship template values. Default: all. */
   template?: string
-  /** Defaults to the seed document's namespace. */
+  /**
+   * Only edges stored in this namespace. Default: edges in every namespace
+   * the caller can read (an edge lives in its source's namespace, so a
+   * document's incoming edges may sit elsewhere). Edge-type filter values
+   * resolve in this namespace, or in the seed document's when omitted.
+   */
   namespace?: string
   /** Default true — exclude inactive rel docs. */
   active_only?: boolean
@@ -468,7 +475,12 @@ export interface DocumentTraverseParams {
   types?: string
   /** `outgoing` | `incoming` | `both`. Default `outgoing`. */
   direction?: 'outgoing' | 'incoming' | 'both'
-  /** Defaults to the seed document's namespace. */
+  /**
+   * Only edges stored in this namespace. Default: edges in every namespace
+   * the caller can read (an edge lives in its source's namespace, so a
+   * document's incoming edges may sit elsewhere). Edge-type filter values
+   * resolve in this namespace, or in the seed document's when omitted.
+   */
   namespace?: string
 }
 

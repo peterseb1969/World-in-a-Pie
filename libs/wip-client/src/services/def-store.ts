@@ -268,12 +268,18 @@ export class DefStoreService extends BaseService {
       languages?: string[]
     },
   ): Promise<ExportTerminologyResponse | string> {
-    return this.get(`/import-export/export/${terminologyId}`, {
-      format: options?.format ?? 'json',
-      include_inactive: options?.includeInactive,
-      include_relations: options?.includeRelations,
-      include_metadata: options?.includeMetadata,
-      languages: options?.languages,
+    const format = options?.format ?? 'json'
+    // CSV comes back as text/csv: read it as text, or the JSON parse fails
+    // and the call resolves to undefined.
+    return this.transport.request('GET', `${this.basePath}/import-export/export/${terminologyId}`, {
+      params: {
+        format,
+        include_inactive: options?.includeInactive,
+        include_relations: options?.includeRelations,
+        include_metadata: options?.includeMetadata,
+        languages: options?.languages,
+      },
+      responseType: format === 'csv' ? 'text' : 'json',
     })
   }
 
@@ -355,9 +361,10 @@ export class DefStoreService extends BaseService {
     return this.del('/ontology/term-relations', items, { namespace })
   }
 
-  async getAncestors(termId: string, params?: {
+  async getAncestors(termId: string, params: {
     relation_type?: string
-    namespace?: string
+    /** Required: the service answers 422 without it. */
+    namespace: string
     /** Scopes a value-form termId as the opaque raw value (never colon-parsed). */
     terminology?: string
     max_depth?: number
@@ -365,26 +372,29 @@ export class DefStoreService extends BaseService {
     return this.get(`/ontology/terms/${termId}/ancestors`, params)
   }
 
-  async getDescendants(termId: string, params?: {
+  async getDescendants(termId: string, params: {
     relation_type?: string
-    namespace?: string
+    /** Required: the service answers 422 without it. */
+    namespace: string
     terminology?: string
     max_depth?: number
   }): Promise<TraversalResponse> {
     return this.get(`/ontology/terms/${termId}/descendants`, params)
   }
 
-  async getParents(termId: string, params?: {
+  async getParents(termId: string, params: {
     relation_type?: string
-    namespace?: string
+    /** Required: the service answers 422 without it. */
+    namespace: string
     terminology?: string
   }): Promise<TermRelation[]> {
     return this.get(`/ontology/terms/${termId}/parents`, params)
   }
 
-  async getChildren(termId: string, params?: {
+  async getChildren(termId: string, params: {
     relation_type?: string
-    namespace?: string
+    /** Required: the service answers 422 without it. */
+    namespace: string
     terminology?: string
   }): Promise<TermRelation[]> {
     return this.get(`/ontology/terms/${termId}/children`, params)

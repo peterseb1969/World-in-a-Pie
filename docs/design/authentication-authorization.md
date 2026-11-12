@@ -454,7 +454,7 @@ Approved 2026-10-12.
 - **Registry's namespace-deletion cascade sends an empty key.** It reads `API_KEY` / `REGISTRY_API_KEY`, and its manifest sets neither. It must be fixed before reporting-sync enforces, or the cascade silently leaves rows.
 - **ingest-gateway's outbound key is the dev default on deployed installs.** It reads only `API_KEY`. This is a live bug, fixed in the same step.
 - **reporting-sync registers `/api/reporting-sync/health` on its router.** It must move to the app, or a router-level dependency would gate the probe.
-- **`@wip/client`'s `awaitSync()` polls `/status`**, so `/status` stays open to any authenticated caller, with its drop list filtered to the caller's namespaces.
+- **`@wip/client`'s `awaitSync()` polls `/status`**, so `/status` stays open to any authenticated caller, with its drop list filtered to the caller's namespaces. (Since 2026-11-13 `awaitSync` polls only `/query`: its `/status` form counted events across every namespace and could not say that one write had synced.)
 - **reporting-sync calls the stores with its own admin key**, so all namespace filtering for listings must happen inside reporting-sync.
 - **Bookkeeping tables have a `$user` shadow split.** `_wip_schema_migrations` and `_wip_sync_status` are accessed unqualified, and live rows sit in a schema named after the login role. Changing the login role would silently switch to stale copies, so the split is repaired before the role change.
 - **The bootstrap role owns the system catalogs.** Re-ownership must use targeted `ALTER … OWNER TO`, not `REASSIGN OWNED`.

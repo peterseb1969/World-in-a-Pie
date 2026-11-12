@@ -95,7 +95,7 @@ export function useIntegrityCheck(
 }
 
 export function useActivity(
-  params?: { types?: string; limit?: number },
+  params?: { types?: string; limit?: number; namespace?: string },
   options?: Omit<UseQueryOptions<ActivityResponse>, 'queryKey' | 'queryFn'>,
 ) {
   const client = useWipClient()

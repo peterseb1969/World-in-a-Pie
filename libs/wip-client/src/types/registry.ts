@@ -140,6 +140,38 @@ export interface RegistryByTermHit {
   all_synonyms: RegistrySynonym[]
 }
 
+/**
+ * The answer to DELETE /api/registry/namespaces/{prefix} and to
+ * POST .../resume-delete. A deletion is finished only when `status` is
+ * `completed` or `completed_with_warnings` (a best-effort object-store or
+ * reporting step degraded: the per-step errors are in getDeletionStatus).
+ * `in_progress` means a step was deferred — the Registry's recovery loop
+ * finishes it, or resumeDeletion does.
+ */
+export interface NamespaceDeletionResult {
+  status: 'completed' | 'completed_with_warnings' | 'in_progress' | string
+  namespace: string
+  /** Present once the deletion is complete. */
+  summary?: Record<string, unknown> | null
+  /** Present while the deletion is unfinished. */
+  steps_completed?: number
+  steps_total?: number
+}
+
+/** GET /api/registry/namespaces/{prefix}/deletion-status (platform admins only). */
+export interface NamespaceDeletionJournal {
+  namespace: string
+  status: string
+  requested_by: string | null
+  requested_note: string | null
+  requested_at: string | null
+  completed_at: string | null
+  force: boolean
+  broken_references: Record<string, unknown>[]
+  steps: Record<string, unknown>[]
+  summary: Record<string, unknown> | null
+}
+
 export interface RegistryLookupResponse {
   index: number
   status: string

@@ -207,6 +207,36 @@ describe('Service classes via createWipClient', () => {
       }
     })
 
+
+    it('exportTerminology returns CSV as text', async () => {
+      fetchMock.mockResolvedValueOnce(
+        new Response('value,label\nGB,United Kingdom\n', { status: 200, headers: { 'Content-Type': 'text/csv' } }),
+      )
+
+      const res = await client.defStore.exportTerminology('COUNTRY', { format: 'csv' })
+
+      expect(res).toBe('value,label\nGB,United Kingdom\n')
+      expect(fetchMock.mock.calls[0][0]).toContain('format=csv')
+    })
+
+    it('previewImport reads sample_rows and total_rows', async () => {
+      mockJsonResponse({ format: 'csv', headers: ['name'], sample_rows: [{ name: 'a' }], total_rows: 40 })
+
+      const res = await client.documents.previewImport(new Blob(['name\na\n']), 'x.csv')
+
+      expect(res.sample_rows).toEqual([{ name: 'a' }])
+      expect(res.total_rows).toBe(40)
+    })
+
+    it('importDocuments and previewImport throw the 200 {error} answer of an unusable file', async () => {
+      mockJsonResponse({ error: 'Empty file' })
+      await expect(client.documents.importDocuments(new Blob([]), 'x.csv', {
+        template_id: 'T', column_mapping: {}, namespace: 'ns',
+      })).rejects.toThrow('Empty file')
+
+      mockJsonResponse({ error: 'Failed to parse file: bad header' })
+      await expect(client.documents.previewImport(new Blob(['x']), 'x.csv')).rejects.toThrow('Failed to parse file')
+    })
     it('importTerminology reads relation stats from `relations_result`', async () => {
       // Recorded shape of POST /import-export/import (import_export.py) when
       // the payload carried relations: the stats key is `relations_result`.
@@ -595,6 +625,21 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('PATCH')
       const body = JSON.parse(options.body)
       expect(body).toEqual([{ document_id: 'D-001', patch: { score: 92 } }])
+    })
+
+    it('PATCH and DELETE pass a namespace for synonym ids; POST never sends one', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ results: [{ index: 0, status: 'updated', document_id: 'D-1' }] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })))
+
+      await client.documents.updateDocument('my-doc', { a: 1 }, { namespace: 'kb' })
+      await client.documents.deleteDocuments(['my-doc'], { namespace: 'kb' })
+      await client.documents.createDocument({ template_id: 'T', namespace: 'kb', data: {} } as never)
+
+      expect(fetchMock.mock.calls[0][0]).toContain('namespace=kb')
+      expect(fetchMock.mock.calls[1][0]).toContain('namespace=kb')
+      // The service refuses an undeclared query parameter on POST /documents.
+      expect(fetchMock.mock.calls[2][0]).not.toContain('namespace=')
     })
 
     it('updateDocument forwards ifMatch as if_match', async () => {
@@ -1654,7 +1699,7 @@ describe('Service classes via createWipClient', () => {
 
       const result = await client.registry.searchEntries('test', {
         namespaces: ['wip-terms'],
-        entityTypes: ['term'],
+        entityTypes: ['terms'],
         limit: 2,
       })
 
@@ -1681,6 +1726,51 @@ describe('Service classes via createWipClient', () => {
       const [, options] = fetchMock.mock.calls[0]
       const body = JSON.parse(options.body)
       expect('limit' in body[0]).toBe(false)
+    })
+
+    it('searchEntries throws a per-item error instead of reporting no hits', async () => {
+      // The Registry's answer to an unknown entity type ('term' is not one: the
+      // types are plural): a 200 whose only item is an error.
+      mockJsonResponse({
+        results: [{
+          status: 'error', error: "Invalid entity type 'term'", error_code: 'invalid_entity_type',
+          results: [], total_matches: 0,
+        }],
+      })
+
+      const err = await client.registry.searchEntries('x', { entityTypes: ['term'] }).catch((e) => e)
+
+      expect(err).toBeInstanceOf(WipBulkItemError)
+      expect(err.message).toBe("Invalid entity type 'term'")
+      expect(err.errorCode).toBe('invalid_entity_type')
+    })
+
+    it('deleteNamespace returns the deletion status and sends no undeclared confirm', async () => {
+      mockJsonResponse({ status: 'in_progress', namespace: 'old', steps_completed: 3, steps_total: 5 })
+
+      const res = await client.registry.deleteNamespace('old', 'me', { force: true })
+
+      expect(res.status).toBe('in_progress')
+      expect(res.steps_total).toBe(5)
+      const [url, options] = fetchMock.mock.calls[0]
+      expect(options.method).toBe('DELETE')
+      expect(url).toContain('/api/registry/namespaces/old')
+      expect(url).toContain('deleted_by=me')
+      expect(url).toContain('force=true')
+      expect(url).not.toContain('confirm')
+    })
+
+    it('getDeletionStatus and resumeDeletion reach their routes', async () => {
+      mockJsonResponse({ namespace: 'old', status: 'in_progress', steps: [] })
+      await client.registry.getDeletionStatus('old')
+
+      mockJsonResponse({ status: 'completed', namespace: 'old', summary: {} })
+      const resumed = await client.registry.resumeDeletion('old')
+
+      expect(fetchMock.mock.calls[0][0]).toContain('/api/registry/namespaces/old/deletion-status')
+      expect(fetchMock.mock.calls[1][0]).toContain('/api/registry/namespaces/old/resume-delete')
+      expect(fetchMock.mock.calls[1][1].method).toBe('POST')
+      expect(resumed.status).toBe('completed')
     })
 
     it('unifiedSearch sends GET with params', async () => {
@@ -1802,6 +1892,27 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('/api/document-store/files/F-001')
     })
 
+    it('uploadFile refuses a missing namespace before sending (the service requires it)', async () => {
+      await expect(
+        client.files.uploadFile(new Blob(['x']), 'x.txt', undefined, ''),
+      ).rejects.toThrow('uploadFile needs the namespace')
+      expect(fetchMock).not.toHaveBeenCalled()
+    })
+
+    it('file reads and writes pass the namespace that resolves a synonym id', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ results: [{ index: 0, status: 'deleted', id: 'F-1' }] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })))
+      await client.files.deleteFile('photo-1', 'media')
+      await client.files.reactivateFiles(['photo-1'], 'media')
+      await client.files.updateMetadata('photo-1', { description: 'd' }, 'media')
+      await client.files.getFile('photo-1', 'media')
+      await client.files.getDownloadUrl('photo-1', 60, 'media')
+
+      for (const [url] of fetchMock.mock.calls) expect(url).toContain('namespace=media')
+      expect(fetchMock.mock.calls[4][0]).toContain('expires_in=60')
+    })
+
     it('uploadFile sends POST with FormData', async () => {
       mockJsonResponse({ file_id: 'F-001', filename: 'test.pdf' })
 
@@ -1810,7 +1921,7 @@ describe('Service classes via createWipClient', () => {
         description: 'A test file',
         tags: ['test', 'pdf'],
         category: 'reports',
-      })
+      }, 'docs')
 
       const [url, options] = fetchMock.mock.calls[0]
       expect(url).toContain('/api/document-store/files')
@@ -1819,6 +1930,7 @@ describe('Service classes via createWipClient', () => {
       const formData = options.body as FormData
       expect(formData.get('file')).toBeInstanceOf(Blob)
       expect(formData.get('description')).toBe('A test file')
+      expect(formData.get('namespace')).toBe('docs')
       expect(formData.get('tags')).toBe('test,pdf')
       expect(formData.get('category')).toBe('reports')
     })
@@ -2137,14 +2249,26 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('limit=50')
     })
 
-    it('healthCheck returns true on success', async () => {
-      mockJsonResponse({ status: 'ok' })
+    it('healthCheck reads the routed /api/reporting-sync/health and is true only when healthy', async () => {
+      mockJsonResponse({ status: 'healthy' })
 
       const result = await client.reporting.healthCheck()
 
       expect(result).toBe(true)
       const [url] = fetchMock.mock.calls[0]
-      expect(url).toContain('/health')
+      expect(url).toContain('/api/reporting-sync/health')
+    })
+
+    it('healthCheck is false for a degraded service (a 200 answer)', async () => {
+      mockJsonResponse({ status: 'degraded' })
+
+      expect(await client.reporting.healthCheck()).toBe(false)
+    })
+
+    it('healthCheck throws an authentication failure instead of reading it as down', async () => {
+      mockJsonResponse({ detail: 'Invalid API key' }, 401)
+
+      await expect(client.reporting.healthCheck()).rejects.toThrow('Invalid API key')
     })
 
     it('healthCheck returns false on failure', async () => {
@@ -2313,39 +2437,61 @@ describe('Service classes via createWipClient', () => {
       expect(url).toContain('/api/reporting-sync/schema/DND_MONSTER')
     })
 
-    it('awaitSync resolves when events_processed increases', async () => {
-      // First call: getSyncStatus returns events_processed=10
-      fetchMock.mockResolvedValueOnce(
-        new Response(JSON.stringify({
-          running: true, connected_to_nats: true, connected_to_postgres: true,
-          last_event_processed: null, events_processed: 10, events_failed: 0, tables_managed: 0,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
-      )
-      // Second call (after interval): events_processed=11
-      fetchMock.mockResolvedValueOnce(
-        new Response(JSON.stringify({
-          running: true, connected_to_nats: true, connected_to_postgres: true,
-          last_event_processed: null, events_processed: 11, events_failed: 0, tables_managed: 0,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
-      )
+    it('activity and reference reads pass the namespace a multi-namespace key needs', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({ activities: [], documents: [], referencing_documents: [] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      })))
 
-      await client.reporting.awaitSync({ timeout: 2000, interval: 50 })
+      await client.reporting.getRecentActivity({ limit: 5, namespace: 'kb' })
+      await client.reporting.getTermDocuments('T-1', 10, 'kb')
+      await client.reporting.getReferencedBy('term', 'T-1', 20, 'kb')
 
-      expect(fetchMock).toHaveBeenCalledTimes(2)
+      for (const [url] of fetchMock.mock.calls) expect(url).toContain('namespace=kb')
     })
 
-    it('awaitSync throws on timeout when no events process', async () => {
-      // Always return the same events_processed count (fresh Response each call)
-      fetchMock.mockImplementation(() => Promise.resolve(
-        new Response(JSON.stringify({
-          running: true, connected_to_nats: true, connected_to_postgres: true,
-          last_event_processed: null, events_processed: 10, events_failed: 0, tables_managed: 0,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
-      ))
+    it('awaitSync passes the namespace to the query', async () => {
+      mockJsonResponse({ columns: ['id'], rows: [['D-001']], row_count: 1, truncated: false })
+
+      await client.reporting.awaitSync({ query: 'SELECT 1 FROM doc_monster', namespace: 'dnd' })
+
+      const [, init] = fetchMock.mock.calls[0]
+      expect(JSON.parse(init.body)).toMatchObject({ namespace: 'dnd', max_rows: 1 })
+    })
+
+    it('awaitSync outlives a table that does not exist yet and a 503', async () => {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        detail: 'Query error: relation "dnd.doc_monster" does not exist',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } }))
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ detail: 'PostgreSQL unavailable' }),
+        { status: 503, headers: { 'Content-Type': 'application/json' } }))
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        columns: ['id'], rows: [['D-001']], row_count: 1, truncated: false,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }))
+
+      await client.reporting.awaitSync({ query: 'SELECT 1 FROM doc_monster', timeout: 2000, interval: 10 })
+
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+    })
+
+    it('awaitSync throws an SQL mistake at once instead of waiting it out', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+        detail: 'SQL syntax error: syntax error at or near "SELEC"',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } })))
 
       await expect(
-        client.reporting.awaitSync({ timeout: 200, interval: 50 }),
-      ).rejects.toThrow('Sync timeout: no new events processed')
+        client.reporting.awaitSync({ query: 'SELEC 1', timeout: 2000, interval: 10 }),
+      ).rejects.toThrow('SQL syntax error')
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('awaitSync names the last transient error when it times out', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+        detail: 'Query error: relation "doc_monster" does not exist',
+      }), { status: 400, headers: { 'Content-Type': 'application/json' } })))
+
+      await expect(
+        client.reporting.awaitSync({ query: 'SELECT 1 FROM doc_monster', timeout: 100, interval: 20 }),
+      ).rejects.toThrow('the query never succeeded (last error: Query error: relation "doc_monster" does not exist)')
     })
 
     it('awaitSync query mode resolves when row found', async () => {

@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { UseMutationOptions } from '@tanstack/react-query'
 import type {
+  NamespaceDeletionResult,
   BulkResultItem,
   BulkResponse,
   CreateTerminologyRequest,
@@ -393,7 +394,15 @@ export function useDeleteDocument(
 // ============================================================================
 
 export function useUploadFile(
-  options?: Omit<UseMutationOptions<FileEntity, Error, { file: File | Blob; filename?: string; metadata?: FileUploadMetadata; namespace?: string }>, 'mutationFn'>,
+  options?: Omit<
+    UseMutationOptions<
+      FileEntity,
+      Error,
+      // namespace is required: the service refuses an upload without one.
+      { file: File | Blob; filename?: string; metadata?: FileUploadMetadata; namespace: string }
+    >,
+    'mutationFn'
+  >,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
@@ -590,16 +599,23 @@ export function useRestoreNamespace(
   })
 }
 
+/**
+ * Resolves with the deletion's status: `in_progress` means it is not finished
+ * (a step was deferred), so read `status` rather than treating success as done.
+ */
 export function useDeleteNamespace(
-  options?: Omit<UseMutationOptions<void, Error, { prefix: string; deletedBy?: string }>, 'mutationFn'>,
+  options?: Omit<
+    UseMutationOptions<NamespaceDeletionResult, Error, { prefix: string; deletedBy?: string; force?: boolean }>,
+    'mutationFn'
+  >,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: ({ prefix, deletedBy }: { prefix: string; deletedBy?: string }) =>
-      client.registry.deleteNamespace(prefix, deletedBy),
+    mutationFn: ({ prefix, deletedBy, force }: { prefix: string; deletedBy?: string; force?: boolean }) =>
+      client.registry.deleteNamespace(prefix, deletedBy, { force }),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
       onSuccess?.(...args)
