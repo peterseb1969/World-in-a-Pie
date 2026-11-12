@@ -213,14 +213,24 @@ def _endpoint_id(entry: Any) -> str | None:
 
 
 def _count_step(summary: dict[str, int], step: DeletionStep) -> None:
-    """Count a done step's deletions into the journal summary: under its
-    collection, as object-store objects, or as PostgreSQL rows."""
+    """Add a done step's deletions to the journal summary: under its
+    collection, as object-store objects, or as PostgreSQL rows.
+
+    A summary key can cover several steps — the stored objects are one step
+    per batch, so that a journal fits in one MongoDB document — hence each
+    step adds to the running total instead of replacing it. The total is
+    rebuilt from every step on each run, so a resumed journal counts each
+    step once.
+    """
     if step.collection:
-        summary[step.collection] = step.deleted_count
+        key = step.collection
     elif step.store in _FILE_STORAGE_STORES:
-        summary["minio_objects"] = step.deleted_count
+        key = "minio_objects"
     elif step.store == "postgresql":
-        summary["postgres_rows"] = step.deleted_count
+        key = "postgres_rows"
+    else:
+        return
+    summary[key] = summary.get(key, 0) + step.deleted_count
 
 
 def _template_inbound_clauses(tpl_ids: list[str], ty_ids: list[str]) -> list[dict[str, Any]]:

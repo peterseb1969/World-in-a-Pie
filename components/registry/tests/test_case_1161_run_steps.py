@@ -3,7 +3,8 @@
 Provenance: CASE-1161. The suite never reached these branches: on a resumed
 journal, completed object-store and PostgreSQL steps count into the summary
 under minio_objects / postgres_rows, and an executed object-store step does
-too. Also pinned: an executed step's count, a degraded step rolling the
+too — two object-store steps add up rather than the later one replacing the
+earlier. Also pinned: an executed step's count, a degraded step rolling the
 journal up to completed_with_warnings, and a failing step failing the
 journal and propagating.
 """
@@ -50,7 +51,8 @@ async def test_a_resumed_journal_counts_completed_steps_of_every_store(client, m
     await NamespaceDeletionService()._run_steps(journal)
     assert executed == [4, 5]
     stored = await DeletionJournal.get(journal.id)
-    assert stored.summary == {"entries": 10, "minio_objects": 7, "postgres_rows": 6, "grants": 3}
+    # Steps 2 and 5 are both object-store steps: their counts add up (4 + 7).
+    assert stored.summary == {"entries": 10, "minio_objects": 11, "postgres_rows": 6, "grants": 3}
     assert [s.status for s in stored.steps] == [
         "completed", "completed", "completed", "completed", "completed_with_errors",
     ]
