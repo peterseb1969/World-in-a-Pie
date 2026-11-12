@@ -89,7 +89,10 @@ class TestDataDirRefused:
     def test_help_does_not_promise_a_data_directory(self) -> None:
         result = runner.invoke(app, ["install", "--help"])
         assert result.exit_code == 0
-        block = result.output[result.output.index("--data-dir") :]
+        # Under GITHUB_ACTIONS (which Gitea's runner sets) rich colours the
+        # help and styles "--data-dir" in pieces, so match on plain text.
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+        block = plain[plain.index("--data-dir") :]
         assert "Not implemented" in block[:300]
 
 

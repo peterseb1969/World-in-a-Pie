@@ -326,7 +326,6 @@ ok "mypy: $MYPY_TOTAL errors ($(step_time $STEP_START))"
 # by ESLint/ts checks in its own repo.
 info "Step 7: vue-tsc — retired (no Vue UI in this repo)"
 echo "" > "$RAW_DIR/vue-tsc.txt"
-VUE_TSC_COUNT="n/a"
 
 # ─── Step 8: ESLint ──────────────────────────────────────────────────
 if $HAS_ESLINT; then
