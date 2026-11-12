@@ -242,9 +242,10 @@ def apply_compose(
         )
 
         healthy = True
+        not_healthy: list[str] = []
         post_install_skipped: list[str] = []
         if deployment.spec.apply.wait:
-            healthy = _wait_healthy(
+            not_healthy = _wait_healthy(
                 install_dir=install_dir,
                 compose_cmd=compose_cmd,
                 components=components,
@@ -256,11 +257,16 @@ def apply_compose(
                     else None
                 ),
             )
+            healthy = not not_healthy
 
         if deployment.spec.apply.wait and not healthy:
             behavior = deployment.spec.apply.on_timeout
             if behavior == "fail":
-                raise ApplyError("apply timed out: not all services became healthy")
+                raise ApplyError(
+                    _health_timeout_message(
+                        not_healthy, deployment.spec.apply.timeout_seconds
+                    )
+                )
             # warn/continue: caller decides what to print.
 
         # Post-install hooks declare `after: healthy`; only run them once
@@ -572,29 +578,18 @@ def rebuild_compose_services(
 
     compose_cmd = _detect_compose_cmd()
     _run_up(install_dir, compose_cmd, force_build=True, services=services)
+    _check_containers_created(
+        _compose_project(compose_file), compose_file, services=services
+    )
 
     if not wait:
         return
 
     names = _container_names_by_service(compose_file)
     expected = {names[s] for s in services if _service_has_healthcheck(compose_file, s)}
-    if not expected:
-        return
-
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        statuses = _compose_ps(install_dir, compose_cmd)
-        unhealthy = [n for n in expected if statuses.get(n) != "healthy"]
-        if not unhealthy:
-            return
-        time.sleep(2)
-
-    # Don't raise — caller decides what to do. Surface unhealthy names
-    # in the message for the CLI to print.
-    raise ApplyError(
-        "health check timed out for: "
-        + ", ".join(sorted(n for n in expected if _compose_ps(install_dir, compose_cmd).get(n) != "healthy"))
-    )
+    not_healthy = _await_healthy(install_dir, compose_cmd, expected, timeout_seconds)
+    if not_healthy:
+        raise ApplyError(_health_timeout_message(not_healthy, timeout_seconds))
 
 
 def restart_compose_services(
@@ -850,7 +845,9 @@ def up_compose_install(
     docker-compose.yaml is the source of truth (CASE-331 Fix A).
 
     Raises ApplyError if the install directory or compose file is
-    missing, or if `compose up` fails.
+    missing, if `compose up` fails or leaves a rendered service without a
+    container, or if a service with a healthcheck is not healthy within
+    ``timeout_seconds`` (unless ``wait`` is False).
     """
     install_dir = Path(install_dir)
     compose_file = install_dir / "docker-compose.yaml"
@@ -862,21 +859,32 @@ def up_compose_install(
 
     compose_cmd = _detect_compose_cmd()
     _run_up(install_dir, compose_cmd, force_build=False)
+    _check_containers_created(_compose_project(compose_file), compose_file, services=None)
 
     if not wait:
         return
 
     expected = _healthcheck_container_names_from_compose(compose_file)
-    if not expected:
-        return
+    not_healthy = _await_healthy(install_dir, compose_cmd, expected, timeout_seconds)
+    if not_healthy:
+        raise ApplyError(_health_timeout_message(not_healthy, timeout_seconds))
 
-    deadline = time.time() + timeout_seconds
-    while time.time() < deadline:
-        statuses = _compose_ps(install_dir, compose_cmd)
-        unhealthy = [n for n in expected if statuses.get(n) != "healthy"]
-        if not unhealthy:
-            return
-        time.sleep(2)
+
+def _compose_project(compose_file: Path) -> str:
+    """The compose project a rendered file belongs to: its pinned top-level
+    ``name``, else what compose itself derives when none is pinned (the
+    directory's basename, for files rendered before the name was pinned).
+
+    The verbs that act on an existing install without loading its spec key
+    their container queries on this, as compose labels the containers."""
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(compose_file.read_text())
+    except (OSError, _yaml.YAMLError) as e:
+        raise ApplyError(f"could not parse {compose_file}: {e}") from e
+    pinned = data.get("name") if isinstance(data, dict) else None
+    return str(pinned) if pinned else compose_file.parent.name
 
 
 def _healthcheck_container_names_from_compose(compose_file: Path) -> set[str]:
@@ -964,9 +972,10 @@ def _wait_healthy(
     apps: list[App],
     deployment: Deployment,
     only: set[str] | None = None,
-) -> bool:
+) -> list[str]:
     """Poll `compose ps` until every service with a healthcheck reports
-    healthy, or the timeout elapses.
+    healthy, or the timeout elapses; return the containers that did not
+    (empty when all did).
 
     `only` (CASE-443): restrict the wait to these container names — a
     scoped mutation must not fail because an unrelated, pre-existing
@@ -975,23 +984,35 @@ def _wait_healthy(
     expected = _services_with_healthchecks(components, apps, deployment)
     if only is not None:
         expected = expected & only
+    return _await_healthy(
+        install_dir, compose_cmd, expected, deployment.spec.apply.timeout_seconds
+    )
+
+
+def _await_healthy(
+    install_dir: Path, compose_cmd: list[str], expected: set[str], timeout_seconds: int
+) -> list[str]:
+    """Poll `compose ps` until every container in ``expected`` reports
+    healthy or ``timeout_seconds`` pass. Returns the containers that were
+    not healthy at the last poll, sorted — a container `ps` does not list
+    counts as not healthy."""
     if not expected:
-        return True
-
-    deadline = time.time() + deployment.spec.apply.timeout_seconds
-
-    while time.time() < deadline:
+        return []
+    deadline = time.time() + timeout_seconds
+    while True:
         statuses = _compose_ps(install_dir, compose_cmd)
-        missing = [name for name in expected if name not in statuses]
-        unhealthy = [
-            name
-            for name, state in statuses.items()
-            if name in expected and state != "healthy"
-        ]
-        if not missing and not unhealthy:
-            return True
-        time.sleep(3)
-    return False
+        not_healthy = sorted(n for n in expected if statuses.get(n) != "healthy")
+        if not not_healthy or time.time() >= deadline:
+            return not_healthy
+        time.sleep(2)
+
+
+def _health_timeout_message(not_healthy: list[str], timeout_seconds: int) -> str:
+    """The error for a health wait that ran out, naming what was not healthy."""
+    return (
+        f"health wait timed out after {timeout_seconds} s; not healthy: "
+        f"{', '.join(not_healthy)}. `wip-deploy status` and the containers' logs say why."
+    )
 
 
 def _services_with_healthchecks(

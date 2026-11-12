@@ -101,7 +101,7 @@ class TestApplyComposeMutationStamping:
     @patch("wip_deploy.apply._container_cli", return_value=None)
     @patch("wip_deploy.apply._run_up")
     @patch("wip_deploy.apply._count_services", return_value=3)
-    @patch("wip_deploy.apply._wait_healthy", return_value=False)
+    @patch("wip_deploy.apply._wait_healthy", return_value=["default_wip-registry"])
     @patch("wip_deploy.apply._run_post_install")
     def test_health_timeout_is_post_mutation(
         self, *_mocks: MagicMock, tmp_path: Path = Path("/tmp")
@@ -185,7 +185,7 @@ class TestApplyComposeMutationStamping:
     @patch("wip_deploy.apply._container_cli", return_value="podman")
     @patch("wip_deploy.apply._run_up")
     @patch("wip_deploy.apply._count_services", return_value=1)
-    @patch("wip_deploy.apply._wait_healthy", return_value=False)
+    @patch("wip_deploy.apply._wait_healthy", return_value=["default_wip-registry"])
     @patch("wip_deploy.apply._run_post_install")
     def test_config_only_scope_past_the_up_step_keeps_the_blanket_stamp(
         self, *_mocks: MagicMock,
@@ -215,7 +215,7 @@ class TestApplyComposeMutationStamping:
     @patch("wip_deploy.apply._count_services", return_value=1)
     @patch("wip_deploy.apply._run_post_install")
     @patch("wip_deploy.apply._reload_proxy")
-    @patch("wip_deploy.apply._wait_healthy", return_value=False)
+    @patch("wip_deploy.apply._wait_healthy", return_value=["default_wip-registry"])
     def test_a_proxy_reload_then_failure_is_post_mutation(
         self,
         wait_mock: MagicMock,
@@ -266,7 +266,7 @@ class TestApplyComposeMutationStamping:
     @patch("wip_deploy.apply._container_cli", return_value=None)
     @patch("wip_deploy.apply._run_up")
     @patch("wip_deploy.apply._count_services", return_value=3)
-    @patch("wip_deploy.apply._wait_healthy", return_value=False)
+    @patch("wip_deploy.apply._wait_healthy", return_value=["default_wip-registry"])
     @patch("wip_deploy.apply._run_post_install")
     def test_on_timeout_warn_still_returns_result(self, *_mocks: MagicMock) -> None:
         """warn mode: no raise, result.healthy=False — the CLI's normal

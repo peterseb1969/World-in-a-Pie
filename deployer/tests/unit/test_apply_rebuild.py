@@ -25,6 +25,14 @@ from wip_deploy.cli import app
 runner = CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _containers_present():
+    # These tests are about the commands rebuild runs; whether the up left
+    # every container in place is covered in test_case_1229.
+    with patch("wip_deploy.apply._check_containers_created"):
+        yield
+
+
 def _write_compose(install_dir: Path, services: dict[str, dict]) -> None:
     """Write a minimal docker-compose.yaml with the given services."""
     import yaml

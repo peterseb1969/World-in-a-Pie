@@ -1913,12 +1913,7 @@ def rebuild(
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
         raise typer.Exit(1) from e
 
-    rebuilt = ", ".join(services)
-    typer.echo(
-        typer.style(
-            f"✓ Rebuilt {rebuilt}", fg=typer.colors.GREEN, bold=True
-        )
-    )
+    _echo_compose_verb_outcome(f"Rebuilt {', '.join(services)}", health_checked=not no_wait)
 
 
 def _refresh_dev_build_contexts(install_dir: Path, services: list[str]) -> list[str]:
@@ -2075,13 +2070,22 @@ def up(
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
         raise typer.Exit(1) from e
 
-    typer.echo(
-        typer.style(
-            f"✓ Brought up install at {target_dir}",
-            fg=typer.colors.GREEN,
-            bold=True,
+    _echo_compose_verb_outcome(f"Brought up install at {target_dir}", health_checked=not no_wait)
+
+
+def _echo_compose_verb_outcome(done: str, *, health_checked: bool) -> None:
+    """`up`/`rebuild` outcome: green only when health was waited for and held
+    (a failed wait raised before this); --no-wait never checked it."""
+    if health_checked:
+        typer.echo(typer.style(f"✓ {done}", fg=typer.colors.GREEN, bold=True))
+    else:
+        typer.echo(
+            typer.style(
+                f"⊙ {done}; health not checked (--no-wait) — `wip-deploy status` shows it.",
+                fg=typer.colors.YELLOW,
+                bold=True,
+            )
         )
-    )
 
 
 # ────────────────────────────────────────────────────────────────────

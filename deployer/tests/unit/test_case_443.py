@@ -227,8 +227,8 @@ class TestWaitHealthyOnly:
         ):
             deployment = _deployment()
             deployment.spec.apply.wait = True
-            # Unscoped would block on wip-b; scoped to wip-a returns True.
-            assert _wait_healthy(
+            # Unscoped would block on wip-b; scoped to wip-a nothing is pending.
+            assert not _wait_healthy(
                 install_dir=tmp_path,
                 compose_cmd=["podman-compose"],
                 components=[],
@@ -244,7 +244,7 @@ class TestWaitHealthyOnly:
             "wip_deploy.apply._services_with_healthchecks",
             return_value={"wip-a"},
         ):
-            assert _wait_healthy(
+            assert not _wait_healthy(
                 install_dir=tmp_path,
                 compose_cmd=["podman-compose"],
                 components=[],

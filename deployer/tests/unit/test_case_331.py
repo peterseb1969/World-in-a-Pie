@@ -110,6 +110,8 @@ class TestUpCompose:
                 return_value="/usr/bin/podman-compose",
             ),
             patch("wip_deploy.apply.subprocess.run") as mock_run,
+            # Container presence after the up is covered in test_case_1229.
+            patch("wip_deploy.apply._check_containers_created"),
         ):
             mock_run.return_value = MagicMock(returncode=0)
             up_compose_install(install_dir=tmp_path, wait=False)

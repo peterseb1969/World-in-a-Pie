@@ -221,7 +221,7 @@ class TestApplyComposePostInstallGating:
         assert REGISTRY_HOOK_LABEL in result.post_install_skipped
 
     @patch("wip_deploy.apply._run_post_install")
-    @patch("wip_deploy.apply._wait_healthy", return_value=True)
+    @patch("wip_deploy.apply._wait_healthy", return_value=[])
     @patch("wip_deploy.apply._count_services", return_value=1)
     @patch("wip_deploy.apply._run_up")
     @patch("wip_deploy.apply._remove_install_containers")
