@@ -139,6 +139,21 @@ def _normalize(text: str, roots: dict[str, str]) -> str:
     return text
 
 
+# Vendored library files carry versions computed from git
+# (scripts/lib_artifacts.py), which move with every commit to a library. The
+# fixtures record the name with the version replaced, so they pin which
+# libraries an app gets, not which commit the capture ran at.
+_LIB_ARTIFACT = re.compile(
+    r"^(libs/(?:wip-(?:client|react|proxy)-|wip_(?:archive|toolkit)-))"
+    r"\d+\.\d+\.\d+(?:\+[0-9A-Za-z.]+)?((?:-py3-none-any)?\.(?:tgz|whl))$"
+)
+LIB_VERSION = "<VERSION>"
+
+
+def normalize_lib_artifact(rel: str) -> str:
+    return _LIB_ARTIFACT.sub(rf"\g<1>{LIB_VERSION}\g<2>", rel)
+
+
 def snapshot_tree(root: Path, roots: dict[str, str]) -> dict:
     """Collect {tree: [...], files: {...}} for a scaffolded directory."""
     tree: list[str] = []
@@ -152,7 +167,7 @@ def snapshot_tree(root: Path, roots: dict[str, str]) -> dict:
         if path.is_dir():
             continue
         rel_s = str(rel)
-        tree.append(rel_s)
+        tree.append(normalize_lib_artifact(rel_s))
         if rel_s in TEXT_SNAPSHOT_PATTERNS or any(
             rel_s == p for p in TEXT_SNAPSHOT_PATTERNS
         ):

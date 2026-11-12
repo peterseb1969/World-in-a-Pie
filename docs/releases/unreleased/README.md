@@ -39,6 +39,9 @@ fences (the section heading comes from `section`).
 - `scripts/release-notes.py cut X.Y.Z` writes `docs/releases/vX.Y.Z.md`, grouped
   by section in file-name order, deletes the fragments, and lists the packages
   they name. Curate the written note before committing it.
+- Then `scripts/lib_artifacts.py freeze` writes each library's computed version
+  (`scripts/lib_artifacts.py version`) as its new base, so the release keeps
+  the numbers apps already have. Library versions are never edited for a fix.
 
 The `000-pre-fragments-*.md` files are the old `unreleased.md`, frozen at the
 cut-over, one per section it had.

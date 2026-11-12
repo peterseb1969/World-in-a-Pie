@@ -517,20 +517,21 @@ else
     warn "Tier-2 purity: VIOLATIONS — see $RAW_DIR/tier2-purity.log ($(step_time $STEP_START))"
 fi
 
-# ─── Step 15: Vendored-tarball consistency (CASE-500) ────────────────
-info "Step 15: Vendored-tarball consistency..."
+# ─── Step 15: Library build output stays untracked ───────────────────
+info "Step 15: Library build output..."
 STEP_START=$(date +%s)
 
-# Guards that every @wip/* lib's tracked tarball matches its package.json
-# version (committed + correct internally). A bumped package.json/dist with a
-# stale/un-committed .tgz silently ships old code to apps re-vendoring it.
+# The scaffold builds the npm tarballs and wheels apps vendor, under versions
+# computed from git (scripts/lib_artifacts.py). A tracked tarball or dist/ is
+# a hand-maintained second copy that goes stale under an unchanged name.
 TARBALL_OK=true
-if "$SCRIPT_DIR/check-tarball-consistency.sh" > "$RAW_DIR/tarball-consistency.log" 2>&1; then
-    ok "Vendored tarballs: consistent ($(step_time $STEP_START))"
+TRACKED_BUILD="$(git -C "$ROOT_DIR" ls-files 'libs/*.tgz' 'libs/*/dist/*' 'WIP-Toolkit/dist/*')"
+if [ -z "$TRACKED_BUILD" ]; then
+    ok "Library build output: untracked ($(step_time $STEP_START))"
 else
     TARBALL_OK=false
-    fail "Vendored tarballs: MISMATCH — see $RAW_DIR/tarball-consistency.log ($(step_time $STEP_START))"
-    cat "$RAW_DIR/tarball-consistency.log"
+    fail "Library build output is tracked ($(step_time $STEP_START)):"
+    echo "$TRACKED_BUILD"
 fi
 
 # ─── Step 16: KB doc drift (CASE-723) ────────────────────────────────
@@ -583,7 +584,7 @@ ok "Report generated ($(step_time $STEP_START))"
 # correctness fault, not a baseline-counted dimension, so it fails the audit
 # directly rather than through quality-audit-report.py's baseline comparison.
 if $CI_MODE && [ "$TARBALL_OK" = false ]; then
-    fail "Vendored-tarball consistency failed — failing audit (--ci). See Step 15."
+    fail "Library build output is tracked — failing audit (--ci). See Step 15."
     exit 1
 fi
 

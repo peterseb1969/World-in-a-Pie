@@ -142,4 +142,4 @@ wip-deploy status
 | Reporting-sync `/health` not proxied | `/health` is on the app root, not under `/api/reporting-sync/`. Use `/api/reporting-sync/status` through Caddy. |
 | OIDC issuer mismatch | `config/dex/config.yaml` `issuer`, `.env` `WIP_AUTH_JWT_ISSUER_URL`, `.env` `VITE_OIDC_AUTHORITY` must all match. |
 | Env vars not reloaded | After `.env` changes, `podman-compose down && up -d` (not `restart`). |
-| Client library tarballs stale | Rebuild with `npm pack` if READMEs were updated. |
+| Client library versions | Versions are computed from git; at the release, `scripts/lib_artifacts.py freeze` writes each computed version as its package's base. |

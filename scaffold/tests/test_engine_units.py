@@ -864,7 +864,7 @@ def test_wheel_differing_only_in_build_backend_stamp_is_kept(tmp_path):
 
 def test_wheel_with_changed_code_under_same_version_is_fatal(tmp_path):
     _, _, ship = _ship_over(tmp_path, {"code": b"x = 1\n"}, {"code": b"x = 2\n"})
-    with pytest.raises(RuntimeError, match="without a version bump"):
+    with pytest.raises(RuntimeError, match="built from the same source"):
         ship()
 
 
@@ -872,7 +872,7 @@ def test_wheel_with_changed_metadata_under_same_version_is_fatal(tmp_path):
     _, _, ship = _ship_over(
         tmp_path, {}, {"requires": b"Requires-Dist: pydantic\nRequires-Dist: httpx\n"}
     )
-    with pytest.raises(RuntimeError, match="without a version bump"):
+    with pytest.raises(RuntimeError, match="built from the same source"):
         ship()
 
 

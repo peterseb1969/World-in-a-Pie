@@ -361,6 +361,18 @@ def query_scaffold_surfaces(app_name: str, app_slug: str, app_namespace: str) ->
     ]
 
 
+# Library versions are computed from git (scripts/lib_artifacts.py) and move
+# with every commit to a library, so a same-name, different-bytes file is not
+# a forgotten bump: the same source was built twice into different bytes.
+_SAME_VERSION_NEW_BYTES = (
+    "This version was built from the same source as the app's copy, but into "
+    "different bytes: the build toolchain differs between the two builds "
+    "(node/npm/tsup, or the Python build backend). Nothing in the app was "
+    "changed. Rebuild with the toolchain the app's copy came from, or remove "
+    "the app's copy deliberately and re-run this script."
+)
+
+
 def client_lib_surface(lib: str, tarball_path: str) -> Surface:
     """One vendored client library: validate, immutability-check, wipe stale
     versions, copy, extract README — the file-surface half of distribution.
@@ -387,7 +399,7 @@ def client_lib_surface(lib: str, tarball_path: str) -> Surface:
             if not any(n.startswith("package/dist/") and n.endswith(".js") for n in names):
                 raise RuntimeError(
                     f"{src.name} contains no compiled JS in dist/. "
-                    f"Fix: npm run build && npm pack in libs/wip-{lib}, then re-run this script."
+                    f"Fix: rebuild it with `scripts/lib_artifacts.py build`, then re-run this script."
                 )
             readme: bytes | None = None
             try:
@@ -400,10 +412,8 @@ def client_lib_surface(lib: str, tarball_path: str) -> Surface:
         if dest.is_file() and dest.read_bytes() != data:
             raise RuntimeError(
                 f"{src.name} already exists in the app with different content. "
-                f"The library's content changed without a version bump (versioned "
-                f"tarballs are immutable — the lockfile pins a content hash per "
-                f"filename). Bump the version in the lib's package.json, npm pack, "
-                f"commit the new tarball, then re-run this script."
+                f"Versioned tarballs are immutable (the lockfile pins a content hash "
+                f"per filename). {_SAME_VERSION_NEW_BYTES}"
             )
 
         out: dict[str, bytes] = {f"libs/{src.name}": data}
@@ -432,7 +442,7 @@ def lockfile_surface(stage_dir: str, tarball_paths: list[str]) -> Surface:
 
     The integrity check is why npm's result is not trusted blindly: npm can
     satisfy a `file:` spec from a stale cache entry, which happens exactly
-    when a library's content changed without a version bump (the
+    when one version name was built into two different contents (the
     immutable-tarball rule). The lockfile must record the hash of the bytes
     actually shipped, or `npm ci` fails with EINTEGRITY in the app's build."""
 
@@ -452,9 +462,7 @@ def lockfile_surface(stage_dir: str, tarball_paths: list[str]) -> Surface:
             if any(e.get("integrity") != want for e in entries):
                 raise RuntimeError(
                     f"{tb.name}: the synced lockfile's integrity does not match the shipped "
-                    f"file. The library's content changed without a version bump (versioned "
-                    f"tarballs are immutable). Bump the version in the lib's package.json, "
-                    f"npm pack, commit the new tarball, then re-run this script."
+                    f"file. Versioned tarballs are immutable. {_SAME_VERSION_NEW_BYTES}"
                 )
         out: dict[str, bytes] = {}
         for rel, data in (("package.json", (stage / "package.json").read_bytes()),
@@ -532,11 +540,9 @@ def _wheel_produce(wheel_path: str):
                 return {f"libs/{src.name}": existing}
             raise RuntimeError(
                 f"{src.name} already exists in the app with different content. "
-                f"The wheel's content changed without a version bump (versioned "
-                f"wheels are immutable — pip will not reinstall a version it "
-                f"already has, so same-name-new-bytes ships code nobody runs). "
-                f"Bump the version in the project's pyproject.toml, rebuild, "
-                f"then re-run this script."
+                f"Versioned wheels are immutable (pip will not reinstall a version "
+                f"it already has, so same-name-new-bytes ships code nobody runs). "
+                f"{_SAME_VERSION_NEW_BYTES}"
             )
         return {f"libs/{src.name}": data}
 

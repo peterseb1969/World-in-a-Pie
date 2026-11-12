@@ -232,6 +232,7 @@ def cmd_cut(root: Path, version: str) -> int:
     packages = sorted({p for f in frags for p in f.packages})
     print(f"release-notes: wrote {target.relative_to(root)} from {len(frags)} fragment(s)")
     print(f"release-notes: packages changed: {', '.join(packages) or 'none named'}")
+    print("release-notes: next, `scripts/lib_artifacts.py freeze` writes the library versions as their bases")
     return 0
 
 

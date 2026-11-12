@@ -658,226 +658,53 @@ WIP_BASE_URL="${WIP_BASE_URL:-https://localhost:8443}"
 # call further down via the --mcp-* flags.
 echo "   .mcp.json: engine surface (key source: $WIP_API_KEY_FILE)"
 
-# --- Copy client libraries ---
-
-# Validate that a tarball contains compiled output (dist/*.js), not just metadata.
-# This catches the four-time offender: npm pack run without npm run build first.
-# The prepack hook in each library's package.json should prevent this, but belt-and-suspenders.
-validate_tarball() {
-    local tarball="$1"
-    local lib_name="$2"
-    if [ -z "$tarball" ]; then return 1; fi
-    local js_count
-    js_count=$(tar -tzf "$tarball" 2>/dev/null | grep -c 'dist/.*\.js$' || true)
-    if [ "$js_count" -eq 0 ]; then
-        echo "   ERROR: $lib_name tarball contains no compiled JS in dist/"
-        echo "   Fix: cd $WIP_ROOT/libs/$lib_name && npm run build && npm pack"
-        return 1
-    fi
-    return 0
-}
-
-if $REFRESH_MODE; then
-    echo "2. Refreshing client libraries..."
-else
-    echo "5. Copying client libraries..."
-fi
-MISSING_LIBS=()
-# CASE-442 (supersedes CASE-441's `-latest.tgz` selection): distribute the
-# VERSIONED tarball named by the lib's package.json (wip-<lib>-<version>.tgz).
-# `-latest.tgz` was a mutable artifact — fixed filename, changing content — so
-# every rebuild desynced consumer package-lock.json integrity (and the npm
-# cache) from the shipped file, and `npm ci` failed with EINTEGRITY. A
-# version-named tarball is immutable by convention: a content change requires
-# a version bump, which changes the `file:` spec and forces npm to re-resolve
-# from disk. Empty result (no tarball matching the lib's current version)
-# falls through to the rebuild block below.
-lib_tarball() {
-    local lib_dir="$1" base ver
-    base=$(basename "$lib_dir")
-    ver=$(sed -n 's/^[[:space:]]*"version":[[:space:]]*"\([^"]*\)".*/\1/p' "$lib_dir/package.json" 2>/dev/null | head -1)
-    [ -n "$ver" ] && [ -f "$lib_dir/${base}-${ver}.tgz" ] && printf '%s\n' "$lib_dir/${base}-${ver}.tgz"
-}
-CLIENT_TARBALL=$(lib_tarball "$WIP_ROOT/libs/wip-client")
-REACT_TARBALL=$(lib_tarball "$WIP_ROOT/libs/wip-react")
-PROXY_TARBALL=$(lib_tarball "$WIP_ROOT/libs/wip-proxy")
-
-# Auto-build tarballs if missing or invalid
-# Fresh clones have no node_modules, so we must npm install before npm pack
-# NOTE: Only the final 'find' line goes to stdout (captured by caller).
-# All progress/error messages go to stderr so they display without polluting the return value.
-rebuild_tarball() {
-    local lib_dir="$1"
-    local lib_name="$2"
-    echo "   Building $lib_name tarball..." >&2
-    if ! (cd "$lib_dir" && npm install --quiet 2>&1 && npm pack --quiet 2>&1) >&2; then
-        echo "   Warning: failed to build $lib_name tarball" >&2
-        return 1
-    fi
-    # CASE-441: return the exact tarball `npm pack` just produced
-    # (<name>-<version>.tgz from package.json), not `find … | head -1` which
-    # returned an arbitrary (often stale) tarball from the accumulated set.
-    lib_tarball "$lib_dir"
-}
-
-if command -v npm &>/dev/null; then
-    if [ -z "$CLIENT_TARBALL" ] || ! validate_tarball "$CLIENT_TARBALL" "wip-client"; then
-        CLIENT_TARBALL=$(rebuild_tarball "$WIP_ROOT/libs/wip-client" "@wip/client")
-    fi
-    if [ -z "$REACT_TARBALL" ] || ! validate_tarball "$REACT_TARBALL" "wip-react"; then
-        REACT_TARBALL=$(rebuild_tarball "$WIP_ROOT/libs/wip-react" "@wip/react")
-    fi
-    if [ -z "$PROXY_TARBALL" ] || ! validate_tarball "$PROXY_TARBALL" "wip-proxy"; then
-        PROXY_TARBALL=$(rebuild_tarball "$WIP_ROOT/libs/wip-proxy" "@wip/proxy")
-    fi
-else
-    echo "   npm not found — cannot auto-build tarballs"
-fi
-
-# Final validation + engine handoff. The copy itself (immutability check,
-# stale-version wipe, README extraction) is the engine's lib-<name>
-# surface; this wrapper keeps the ACTIONS (rebuild above, lockfile sync
-# below) and the missing-libs bookkeeping for the closing banner. An
-# invalid tarball is blanked here so the banner names it — the engine
-# only ever receives tarballs that passed validation.
-LIB_FLAGS=""
-if [ -z "$CLIENT_TARBALL" ]; then
-    MISSING_LIBS+=("@wip/client")
-elif ! validate_tarball "$CLIENT_TARBALL" "@wip/client"; then
-    MISSING_LIBS+=("@wip/client (tarball has no dist/ — run npm run build first)")
-    CLIENT_TARBALL=""
-else
-    LIB_FLAGS="$LIB_FLAGS --lib-client $CLIENT_TARBALL"
-fi
-if [ -z "$REACT_TARBALL" ]; then
-    MISSING_LIBS+=("@wip/react")
-elif ! validate_tarball "$REACT_TARBALL" "@wip/react"; then
-    MISSING_LIBS+=("@wip/react (tarball has no dist/ — run npm run build first)")
-    REACT_TARBALL=""
-else
-    LIB_FLAGS="$LIB_FLAGS --lib-react $REACT_TARBALL"
-fi
-if [ -z "$PROXY_TARBALL" ]; then
-    MISSING_LIBS+=("@wip/proxy")
-elif ! validate_tarball "$PROXY_TARBALL" "@wip/proxy"; then
-    MISSING_LIBS+=("@wip/proxy (tarball has no dist/ — run npm run build first)")
-    PROXY_TARBALL=""
-else
-    LIB_FLAGS="$LIB_FLAGS --lib-proxy $PROXY_TARBALL"
-fi
-
-# On refresh, a library the app already uses must refresh with the others or
-# not at all: skipping it while the rest are swapped in leaves the app with a
-# mixed library set and nothing stopping the run. Stop before the engine
-# writes anything. (On create there is no prior state to break — the banner
-# at the end names what is missing.)
-if $REFRESH_MODE; then
-    for _lib in client react proxy; do
-        case "$_lib" in
-            client) _tb="$CLIENT_TARBALL" ;;
-            react) _tb="$REACT_TARBALL" ;;
-            proxy) _tb="$PROXY_TARBALL" ;;
-        esac
-        [ -n "$_tb" ] && continue
-        if compgen -G "$APP_DIR/libs/wip-$_lib-*.tgz" >/dev/null \
-            || grep -q "\"@wip/$_lib\"" "$APP_DIR/package.json" 2>/dev/null; then
-            echo "   ERROR: the app uses @wip/$_lib, but no valid tarball could be built for it."
-            echo "   Nothing in the app was changed. Fix: cd $WIP_ROOT/libs/wip-$_lib &&"
-            echo "   npm install && npm run build && npm pack, then re-run this script."
-            exit 1
-        fi
-    done
-fi
-
-# --- Copy wip-toolkit ---
+# --- Build the libraries apps vendor ---
 #
-# (CASE-286: dev-delete.py copy removed 2026-05-08. The legacy script bypassed
-# the WIP API and wrote directly to MongoDB; superseded by `mcp__wip__delete_namespace`
-# which the CLAUDE.md template already prescribes. Apps no longer get the orphan tool in
-# their tools/ directory.)
-
+# The three npm tarballs (@wip/client, @wip/react, @wip/proxy) and the two
+# wheels (wip-archive, wip-toolkit) are built fresh on every run, under
+# versions computed from git (scripts/lib_artifacts.py): a package's version
+# moves exactly when its directory changes, so one file name never names two
+# contents (npm's lockfile hash and pip's installed-version check both depend
+# on that). Nothing is selected from leftovers, and nothing is skipped: a
+# library that cannot be built stops the run before the app is touched, on
+# create and refresh alike.
 if $REFRESH_MODE; then
-    echo "3. Refreshing wip-toolkit..."
+    echo "2. Building client libraries and wheels..."
 else
-    echo "6. Copying wip-toolkit..."
+    echo "5. Building client libraries and wheels..."
 fi
 
-# Python for wheel builds — prefer WIP's venv (has `build` installed)
+# Python for the wheel builds — prefer WIP's venv (has `build` installed)
 if [ -f "$WIP_ROOT/.venv/bin/python" ]; then
     TOOLKIT_PYTHON="$WIP_ROOT/.venv/bin/python"
-elif command -v python3 &>/dev/null; then
-    TOOLKIT_PYTHON="$(command -v python3)"
-elif command -v python &>/dev/null; then
-    TOOLKIT_PYTHON="$(command -v python)"
 else
-    TOOLKIT_PYTHON=""
+    TOOLKIT_PYTHON="$(command -v python3 || true)"
 fi
-
-# wip-toolkit wheel — ALWAYS rebuilt from source, never use-if-present.
-# dist/ is untracked, so picking an existing wheel ships whatever bytes the
-# clone last built under the current filename — a pre-split 0.5.0 reached
-# apps exactly this way. Wipe first so the find below can only see the
-# fresh build (and never an older leftover version).
-if [ -n "$TOOLKIT_PYTHON" ]; then
-    echo "   Building wip-toolkit wheel (using $TOOLKIT_PYTHON)..."
-    rm -f "$WIP_ROOT/WIP-Toolkit/dist/"*.whl
-    if ! (cd "$WIP_ROOT/WIP-Toolkit" && "$TOOLKIT_PYTHON" -m build . --wheel -q 2>&1); then
-        echo "   Warning: wheel build failed — ensure 'build' is installed:"
-        echo "            $TOOLKIT_PYTHON -m pip install build"
-    fi
+if [ -z "$TOOLKIT_PYTHON" ] || ! command -v npm &>/dev/null; then
+    echo "   ERROR: building the libraries needs npm and a Python with 'build' installed."
+    echo "   Nothing in the app was changed. Install them, then re-run this script."
+    exit 1
 fi
-TOOLKIT_WHEEL=$(find "$WIP_ROOT/WIP-Toolkit/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
-
-TOOLKIT_FLAG=""
-if [ -n "$TOOLKIT_WHEEL" ]; then
-    # The copy is the engine's toolkit-wheel surface; the build above is
-    # the wrapper's action.
-    TOOLKIT_FLAG="--toolkit-wheel $TOOLKIT_WHEEL"
-else
-    echo "   Warning: wip-toolkit wheel not found. Build it with:"
-    echo "            cd $WIP_ROOT/WIP-Toolkit && $WIP_ROOT/.venv/bin/python -m build . --wheel"
+LIB_OUT="$(mktemp -d)"
+LOCK_STAGE=""
+trap 'rm -rf "$LIB_OUT" ${LOCK_STAGE:+"$LOCK_STAGE"}' EXIT
+if ! LIB_PATHS="$("$TOOLKIT_PYTHON" "$WIP_ROOT/scripts/lib_artifacts.py" build --out "$LIB_OUT")"; then
+    echo "   ERROR: a library could not be built (the error is above)."
+    echo "   Nothing in the app was changed. Fix it, then re-run this script."
+    exit 1
 fi
-
-# wip-archive wheel — the toolkit wheel's dependency (archive format +
-# remap library, not on PyPI): both wheels must land in the app's libs/
-# or `pip install libs/*.whl` cannot resolve the toolkit's requirement.
-# Same always-rebuild rule as the toolkit wheel, for the same reason.
-if [ -n "${TOOLKIT_PYTHON:-}" ]; then
-    echo "   Building wip-archive wheel (using $TOOLKIT_PYTHON)..."
-    rm -f "$WIP_ROOT/libs/wip-archive/dist/"*.whl
-    if ! (cd "$WIP_ROOT/libs/wip-archive" && "$TOOLKIT_PYTHON" -m build . --wheel -q 2>&1); then
-        echo "   Warning: wip-archive wheel build failed — ensure 'build' is installed:"
-        echo "            $TOOLKIT_PYTHON -m pip install build"
-    fi
-fi
-ARCHIVE_WHEEL=$(find "$WIP_ROOT/libs/wip-archive/dist/" -maxdepth 1 -name '*.whl' -type f 2>/dev/null | head -1 || true)
-
-ARCHIVE_FLAG=""
-if [ -n "$ARCHIVE_WHEEL" ]; then
-    ARCHIVE_FLAG="--archive-wheel $ARCHIVE_WHEEL"
-elif [ -n "$TOOLKIT_WHEEL" ]; then
-    echo "   Warning: wip-archive wheel not found — the toolkit wheel's"
-    echo "            wip-archive dependency will not resolve offline. Build it with:"
-    echo "            cd $WIP_ROOT/libs/wip-archive && $WIP_ROOT/.venv/bin/python -m build . --wheel"
-fi
-
-# On refresh, a wheel the app already vendors must refresh with everything
-# else: keeping the old one beside a new toolkit (or a new archive beside an
-# old toolkit) is a mixed set pip will not catch — the toolkit accepts any
-# wip-archive >= its floor. Stop before the engine writes anything.
-refuse_unbuilt_wheel() {
-    local whl="$1" built="$2" src="$3"
-    if [ -z "$built" ] && compgen -G "$APP_DIR/libs/$whl-*.whl" >/dev/null; then
-        echo "   ERROR: the app vendors a $whl wheel, but the wheel could not be built."
-        echo "   Nothing in the app was changed. Fix: cd $WIP_ROOT/$src &&"
-        echo "   ${TOOLKIT_PYTHON:-python3} -m build . --wheel, then re-run this script."
-        exit 1
-    fi
-}
-if $REFRESH_MODE; then
-    refuse_unbuilt_wheel wip_toolkit "$TOOLKIT_WHEEL" WIP-Toolkit
-    refuse_unbuilt_wheel wip_archive "$ARCHIVE_WHEEL" libs/wip-archive
-fi
+lib_path() { printf '%s\n' "$LIB_PATHS" | sed -n "s/^$1=//p"; }
+CLIENT_TARBALL="$(lib_path wip-client)"
+REACT_TARBALL="$(lib_path wip-react)"
+PROXY_TARBALL="$(lib_path wip-proxy)"
+TOOLKIT_WHEEL="$(lib_path wip-toolkit)"
+ARCHIVE_WHEEL="$(lib_path wip-archive)"
+for _built in "$CLIENT_TARBALL" "$REACT_TARBALL" "$PROXY_TARBALL" "$TOOLKIT_WHEEL" "$ARCHIVE_WHEEL"; do
+    echo "   Built $(basename "$_built")"
+done
+LIB_FLAGS="--lib-client $CLIENT_TARBALL --lib-react $REACT_TARBALL --lib-proxy $PROXY_TARBALL"
+TOOLKIT_FLAG="--toolkit-wheel $TOOLKIT_WHEEL"
+ARCHIVE_FLAG="--archive-wheel $ARCHIVE_WHEEL"
 
 # --- Query scaffold (--preset query only, new projects only) ---
 # Engine surfaces: a curated copy (package-lock.json and strays deliberately
@@ -980,7 +807,6 @@ if $REFRESH_MODE && [ -f "$APP_DIR/package.json" ]; then
             exit 1
         fi
         LOCK_STAGE="$(mktemp -d)"
-        trap 'rm -rf "$LOCK_STAGE"' EXIT
         mkdir "$LOCK_STAGE/libs"
         cp "$APP_DIR/package.json" "$LOCK_STAGE/"
         for f in package-lock.json .npmrc; do
@@ -1100,28 +926,6 @@ else
     echo "Done! Your app project is ready at: $APP_DIR"
 fi
 echo ""
-
-# --- Prominent warning if client libraries are missing ---
-
-if [ ${#MISSING_LIBS[@]} -gt 0 ]; then
-    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-    echo "!!                                                              !!"
-    echo "!!  CLIENT LIBRARIES MISSING — APP BUILDING WILL NOT WORK       !!"
-    echo "!!                                                              !!"
-    echo "!!  Without these libraries, Claude falls back to raw API       !!"
-    echo "!!  calls instead of using the typed client SDK.                !!"
-    echo "!!                                                              !!"
-    echo "!!  Missing: ${MISSING_LIBS[*]}"
-    echo "!!                                                              !!"
-    echo "!!  Fix: install npm, then run from the WIP directory:          !!"
-    echo "!!                                                              !!"
-    echo "!!    cd $WIP_ROOT/libs/wip-client && npm pack"
-    echo "!!    cd $WIP_ROOT/libs/wip-react && npm pack"
-    echo "!!    # Then re-run this script                                 !!"
-    echo "!!                                                              !!"
-    echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
-    echo ""
-fi
 
 # First command keyed on session STATE, not create-vs-setup (CASE-532 #1): a
 # freshly-set-up checkout has no .claude/.session-id, so /wip-wake would

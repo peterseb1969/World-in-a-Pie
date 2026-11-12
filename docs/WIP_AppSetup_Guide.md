@@ -125,7 +125,7 @@ cp "$WIP_REPO/docs/WIP_DevGuardrails.md" "$APP_DIR/docs/"
 
 The helper script copies tarballs and extracts READMEs automatically. For manual setup:
 
-- [ ] Tarballs available (rebuild with `npm pack` from WIP libs directory if READMEs have been updated)
+- [ ] Tarballs built: `scripts/lib_artifacts.py build --out <dir>` in the WIP clone (the helper script does this on every run)
 - [ ] **README files extracted** alongside the tarballs in `libs/`:
   ```bash
   tar -xzf libs/wip-client-X.Y.Z.tgz --to-stdout package/README.md > libs/wip-client-README.md

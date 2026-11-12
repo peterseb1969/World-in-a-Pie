@@ -27,10 +27,9 @@ Thumbs.db
 # Docker
 *.log
 
-# npm pack artifacts. Exception (force-added with `git add -f`): the CURRENT
-# wip-<lib>-<version>.tgz in each libs/wip-* dir — the versioned, immutable
-# lib artifact apps consume (CASE-442). On a version bump: `git rm` the old
-# tarball, `git add -f` the new one.
+# npm pack artifacts. Never tracked: the scaffold builds the library tarballs
+# and wheels apps vendor, under versions computed from git
+# (scripts/lib_artifacts.py); CI refuses tracked build output.
 *.tgz
 
 # Generated config files (created by scripts/setup.sh)

@@ -18,8 +18,8 @@ Not every change touches every layer — use judgement. But review the full list
 
 - [ ] **@wip/client** (`libs/wip-client/`) — TypeScript types, API methods if applicable
 - [ ] **@wip/react** (`libs/wip-react/`) — hooks for new mutations or queries
-- [ ] **Version bump** — bump `package.json` version for both libs after changes
-- [ ] **Rebuild tarballs** — `npm pack` in each lib, scp to consumer Pis if applicable
+- [ ] **No version edit** — library versions are computed from git (`scripts/lib_artifacts.py version`); the scaffold builds the tarballs apps vendor
+- [ ] **Release-note fragment** — name the package in `packages:` when apps must act on the change
 
 ## UI
 
