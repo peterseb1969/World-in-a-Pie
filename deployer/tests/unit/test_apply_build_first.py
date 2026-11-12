@@ -57,10 +57,11 @@ def _deployment(target: str) -> Deployment:
 
 
 def _apply(tmp_path: Path, target: str, *, scope: list[str] | None = None,
-           build_error: Exception | None = None) -> tuple[MagicMock, Exception | None]:
+           build_error: Exception | None = None,
+           compose: str = "services: {}\n") -> tuple[MagicMock, Exception | None]:
     calls = MagicMock()
     tree = FileTree()
-    tree.add("docker-compose.yaml", "services: {}\n")
+    tree.add("docker-compose.yaml", compose)
     raised: Exception | None = None
     with (
         patch("wip_deploy.apply._detect_compose_cmd", return_value=PODMAN),
@@ -101,10 +102,24 @@ class TestOrder:
         calls.wipe.assert_not_called()
         calls.up.assert_not_called()
 
+    _COMPOSE = (
+        "services:\n"
+        "  registry: {build: {context: ./build/registry}, image: wip-registry}\n"
+        "  dex: {image: ghcr.io/dexidp/dex}\n"
+    )
+
     def test_scoped_dev_apply_builds_only_the_scope(self, tmp_path: Path) -> None:
-        calls, _ = _apply(tmp_path, "dev", scope=["dex"])
-        assert calls.build.call_args.kwargs == {"services": ["dex"]}
+        calls, _ = _apply(tmp_path, "dev", scope=["registry", "dex"], compose=self._COMPOSE)
+        # dex is image-only: nothing to build, so it is not named.
+        assert calls.build.call_args.kwargs == {"services": ["registry"]}
         calls.wipe.assert_not_called()
+
+    def test_a_scope_of_image_only_services_builds_nothing(self, tmp_path: Path) -> None:
+        # e.g. `user add` on a dev OIDC install scopes to ["dex"]. An empty
+        # list must not reach `build`: with no names it builds everything.
+        calls, _ = _apply(tmp_path, "dev", scope=["dex"], compose=self._COMPOSE)
+        calls.build.assert_not_called()
+        assert calls.up.call_args.kwargs["services"] == ["dex"]
 
     def test_empty_scope_builds_nothing(self, tmp_path: Path) -> None:
         calls, _ = _apply(tmp_path, "dev", scope=[])

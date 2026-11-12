@@ -173,8 +173,20 @@ def apply_compose(
     # Dockerfile, a dropped connection to the container engine) must leave
     # the running stack as it was — after the wipe below it would leave no
     # containers at all. The up then only recreates onto the fresh images.
-    if force_build and services_scope != []:
-        _run_build(install_dir, compose_cmd, services=services_scope)
+    # A scoped build names only the scoped services that have a build
+    # section: an image-only one (dex, mongodb, …) has nothing to build, and
+    # whether the engine tolerates being asked is its own business. Nothing
+    # left to build skips the step — `build` with no names builds everything.
+    build_scope = (
+        None
+        if services_scope is None
+        else [
+            s for s in services_scope
+            if _service_has_build(install_dir / "docker-compose.yaml", s)
+        ]
+    )
+    if force_build and build_scope != []:
+        _run_build(install_dir, compose_cmd, services=build_scope)
 
     # Before a full up, this install's containers that the render does not
     # name are removed: containers of a removed service, and those still
@@ -939,6 +951,25 @@ def _services_in_compose(compose_file: Path) -> set[str]:
     if not isinstance(services, dict):
         return set()
     return {str(k) for k in services}
+
+
+def _service_has_build(compose_file: Path, service: str) -> bool:
+    """Return True if the named service declares a build section."""
+    return _service_block(compose_file, service).get("build") is not None
+
+
+def _service_block(compose_file: Path, service: str) -> dict[str, Any]:
+    """The named service's block in a rendered compose file; {} when the file
+    or the service cannot be read."""
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(compose_file.read_text())
+    except (OSError, _yaml.YAMLError):
+        return {}
+    services = data.get("services") if isinstance(data, dict) else None
+    block = services.get(service) if isinstance(services, dict) else None
+    return block if isinstance(block, dict) else {}
 
 
 def _service_has_healthcheck(compose_file: Path, service: str) -> bool:
