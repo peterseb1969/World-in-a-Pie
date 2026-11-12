@@ -122,7 +122,7 @@ Rules describe what to do. These describe why applying them is harder than it so
 
 **B. A passing test is only as strong as the code path it exercises.** Before trusting any "works" claim — yours or another agent's — ask what exact code path the test ran. Match test shape to claim shape.
 
-**C. When building on another agent's hypothesis, treat it as hypothesis.** Confident phrasing from a disciplined agent still carries unverified premises. Cross-agent trust chains are how one agent's unchecked claim becomes another agent's "named class" or architectural principle. Do not promote another agent's claim without testing the underlying premise yourself.
+**C. When building on another agent's hypothesis, treat it as hypothesis.** Confident phrasing from a disciplined agent still carries unverified premises. Cross-agent trust chains are how one agent's unchecked claim becomes another agent's "named class" or architectural principle. Do not promote another agent's claim without testing the underlying premise yourself. The same holds for its caveats: an inherited "couldn't verify this live" caveat is a claim about the environment when it was written, not now — check it before you repeat it.
 
 **D. Fabrications can exist in old code too.** Not every fabrication is fresh. Code can carry historical fabrications — misnamed env vars, cross-convention gaps, never-tested defaults — that only surface when someone depends on them. Before adding code to support a name that "should already work," check whether the name was invented historically and never verified.
 
