@@ -426,7 +426,10 @@ it within a few seconds where the install runs NATS, otherwise at its next
 key sync (up to 30 s); until then it answers 401 "Invalid API key (… may not
 have reached this service yet …)". Retry such a 401 shortly rather than
 recreating the key. A revoked key, and a changed grant, take effect on the
-same timescale.
+same timescale. A grant's expiry is not announced: the Registry stops honouring
+the grant the moment it expires, the other services within 30 s, when what
+they cached of it runs out. A grant's expires_at is UTC (a value without an
+offset is read as UTC), and one already past is refused.
 
 ## Ontology Relations
 Terms can be connected via typed relations to model hierarchies and

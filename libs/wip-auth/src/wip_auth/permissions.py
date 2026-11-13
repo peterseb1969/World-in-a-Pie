@@ -38,6 +38,10 @@ logger = logging.getLogger(__name__)
 
 # TTL caches. cachetools.TTLCache holds no lock and nothing here takes one:
 # they are safe on one asyncio event loop, not across threads.
+# A grant change the Registry announces (create, revoke, activate) drops
+# what is cached for it at once; a grant's expiry is not announced, so a
+# cached answer can outlive the expiry by up to this TTL. That is accepted:
+# it is the window every grant change has on an install without NATS.
 GRANT_CACHE_TTL = 30.0  # seconds
 _grant_cache: TTLCache = TTLCache(maxsize=1024, ttl=GRANT_CACHE_TTL)
 _accessible_cache: TTLCache = TTLCache(maxsize=256, ttl=GRANT_CACHE_TTL)

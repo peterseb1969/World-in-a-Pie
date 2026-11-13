@@ -25,6 +25,7 @@ from ..models.grant import (
     GrantRevokeBulkResponse,
     MyNamespaceResponse,
     NamespaceGrant,
+    expiry_passed,
 )
 from ..models.namespace import Namespace
 from ..models.reservation import RuntimeReservation
@@ -277,6 +278,7 @@ async def _best_grant(namespace: str, subjects: list[tuple[str, str]]) -> str:
             best = grant.permission
     return best
 
+
 async def _unlocked_namespaces() -> list[str]:
     """Every namespace an administrator reads: all but those locked for
     deletion, which are closed to everyone."""
@@ -382,6 +384,30 @@ async def list_grants(
     return [_grant_to_response(g) for g in grants]
 
 
+def _canonical_subject(item: GrantCreate) -> str:
+    """The subject a grant is stored under. An api_key subject is the bare
+    key name: a user_id-form spelling ("apikey:<name>") is normalised so one
+    logical grant has one stored record however the operator wrote it."""
+    if item.subject_type == "api_key":
+        return item.subject.removeprefix("apikey:")
+    return item.subject
+
+
+def _expired_on_arrival(i: int, item: GrantCreate) -> dict | None:
+    """The refusal of a grant whose expiry has already passed, or None. Such
+    a grant gives nothing; storing it and answering "created" would hide the
+    mistake until access fails."""
+    if item.expires_at is None or not expiry_passed(item.expires_at):
+        return None
+    return {
+        "index": i, "status": "error", "subject": item.subject,
+        "error": f"expires_at {item.expires_at.isoformat()} has already passed "
+                 "(an expiry without an offset is read as UTC)",
+        "error_code": "validation_failed",
+        "details": {"rule": "expired", "field": "expires_at"},
+    }
+
+
 @router.post(
     "/{prefix}/grants",
     response_model=GrantBulkResponse,
@@ -405,13 +431,12 @@ async def create_grants(
 
     results = []
     for i, item in enumerate(items):
+        refusal = _expired_on_arrival(i, item)
+        if refusal is not None:
+            results.append(refusal)
+            continue
         try:
-            # CASE-450: canonical api_key subject is the bare key name —
-            # normalize a user_id-form spelling so one logical grant has
-            # one stored record regardless of how the operator wrote it.
-            subject = item.subject
-            if item.subject_type == "api_key":
-                subject = subject.removeprefix("apikey:")
+            subject = _canonical_subject(item)
             # Upsert: update permission if grant already exists
             existing = await NamespaceGrant.find_one({
                 "namespace": prefix,

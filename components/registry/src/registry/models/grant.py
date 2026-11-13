@@ -13,6 +13,23 @@ from pymongo import IndexModel
 
 from wip_auth.bulk_models import BulkResponseBase, BulkResultItemBase
 
+EXPIRES_AT_DESCRIPTION = (
+    "When the grant stops giving access, in UTC; a value without an offset is "
+    "read as UTC. None = never."
+)
+
+
+def expiry_passed(expires_at: datetime | None) -> bool:
+    """Whether a grant expiry has passed. An expiry is UTC: MongoDB hands
+    datetimes back without a timezone, and a request may send one without an
+    offset, so a naive value is read as UTC (comparing it with an aware now
+    would raise TypeError)."""
+    if expires_at is None:
+        return False
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=UTC)
+    return datetime.now(UTC) > expires_at
+
 
 class NamespaceGrant(Document):
     """A permission grant for a subject on a namespace."""
@@ -35,9 +52,7 @@ class NamespaceGrant(Document):
     granted_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
-    expires_at: datetime | None = Field(
-        default=None, description="Optional expiration (None = never)"
-    )
+    expires_at: datetime | None = Field(default=None, description=EXPIRES_AT_DESCRIPTION)
     managed_by: Literal["wip-deploy"] | None = Field(
         default=None,
         description="'wip-deploy': imported from a key's grants in the install's key file",
@@ -75,15 +90,7 @@ class NamespaceGrant(Document):
     )
 
     def is_expired(self) -> bool:
-        if self.expires_at is None:
-            return False
-        # MongoDB hands datetimes back without a timezone; a stored expiry is
-        # UTC, so a naive one is read as such (comparing it with an aware
-        # now raises TypeError).
-        expires_at = self.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
-        return datetime.now(UTC) > expires_at
+        return expiry_passed(self.expires_at)
 
     class Settings:
         name = "namespace_grants"
@@ -108,7 +115,11 @@ class GrantCreate(BaseModel):
     subject: str
     subject_type: Literal["user", "api_key", "group"] = "user"
     permission: Literal["read", "write", "admin"] = "read"
-    expires_at: datetime | None = None
+    expires_at: datetime | None = Field(
+        default=None,
+        description=EXPIRES_AT_DESCRIPTION + " An expiry already past is refused "
+        "(error_code validation_failed, details.rule expired).",
+    )
 
 
 class GrantRevoke(BaseModel):
@@ -179,7 +190,7 @@ class GrantResponse(BaseModel):
     permission: str
     granted_by: str
     granted_at: datetime
-    expires_at: datetime | None = None
+    expires_at: datetime | None = Field(default=None, description=EXPIRES_AT_DESCRIPTION)
     managed_by: Literal["wip-deploy"] | None = Field(
         default=None,
         description="'wip-deploy' for a grant imported from the install's key file; "
