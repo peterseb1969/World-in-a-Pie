@@ -1,5 +1,5 @@
 ---
-section: fixed
+section: fixes
 cases: [1286]
 ---
 
