@@ -233,6 +233,13 @@ def test_case_claim_rule_reaches_only_kb_clones(tmp_path):
     for role in ("backend", "app"):
         assert "CLAIM acquire" in tier3[f"{role}:CLAUDE.md"], role
         assert "CLAIM acquire" in tier3[f"{role}:.claude/commands/wip-case.md"], role
+        # A held claim is not the only way an acquire fails: the step tells a
+        # holder's refusal from a transport failure or a refused key, and the
+        # CLAUDE.md rule says the same.
+        command = tier3[f"{role}:.claude/commands/wip-case.md"]
+        assert "exit 2 is a transport failure" in command, role
+        assert "names a holder" in command, role
+        assert "names a holder" in tier3[f"{role}:CLAUDE.md"], role
 
 
 def test_app_playbooks_never_wipe(tmp_path):

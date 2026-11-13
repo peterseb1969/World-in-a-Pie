@@ -21,7 +21,9 @@ which talks only to the KB **gateway** (never the document-store backend).
 
 ## Prerequisites
 
-A session ID (see YAC Reporting in CLAUDE.md).
+A session ID in `.claude/.session-id` (minted by `/wip-setup` or `/wip-wake`; see YAC Reporting in CLAUDE.md).
+
+**Attribution is filled by the client — do not type it.** `kb-write.py` fills `filed_by` / `authored_by` on a `CASE_RECORD` and `author` on a `CASE_RESPONSE` from `.claude/.session-id`. Leave those keys out of the frontmatter. A value you do type must be a session ID, or the write is refused; an unexpanded `$(cat …)` once reached the KB as the literal attribution of a case.
 
 ## The served KB client (one-time, self-refreshing)
 
@@ -53,6 +55,13 @@ synonym, scoped `CASE-<n>#<seq>` for responses, and persists edges. Status-trans
 *validity* is enforced here in the playbook (compose only a legal transition); the
 gateway is pure persistence.
 
+**A patch names exactly one document.** `--patch … --match k=v` changes the one
+document its `--match` fields name together; `--match` repeats, and every field is
+sent. A match that several documents satisfy is refused with 409 (`ambiguous_match`),
+never applied to whichever came first. `case_number` alone names a `CASE_RECORD`; a
+response needs both fields (`--match case_number=<n> --match response_seq=<seq>`), or
+its `document_id`.
+
 Legal transitions: `open → {responded, closed, implemented}`,
 `responded → {closed, implemented}`, and the reopen path
 `closed → open` / `implemented → open` — so "terminal" means "resting
@@ -71,12 +80,10 @@ thread intact instead of a duplicate filing.
    ```markdown
    ---
    title: <short case title>
-   authored_by: <your session ID>
-   filed_by: <your session ID>
    doc_status: published
    status: open
-   type: <bug | question | request | platform-gap>
-   severity: <blocks-me | annoying | fyi>
+   type: <bug | gap | docs | design | process | chore | question>
+   severity: <security | blocks-me | wrong-result | degraded | annoying | cosmetic | fyi>
    component: <wip-client | document-store | registry | scaffold | mcp-server | wip-react | wip-proxy | wip-auth | reporting-sync | other>
    app: <your app name, or "backend">
    topics: [<pick 1–4 from KB_TOPIC>]
@@ -97,10 +104,47 @@ thread intact instead of a duplicate filing.
    <verbatim, only if Peter gave a comment with /wip-case file; else omit.>
    ```
 
+   **On `type` and `severity`** — both are drawn from vocabularies (`CASE_TYPE`,
+   `CASE_SEVERITY`), and a value outside them is REJECTED. Pick the type by the
+   work the case asks for:
+
+   | type | when |
+   |---|---|
+   | `bug` | something does the wrong thing |
+   | `gap` | something needed does not exist yet (capability, endpoint, feature) |
+   | `docs` | documentation is wrong, missing or obsolete |
+   | `design` | a decision is needed before anyone builds |
+   | `process` | how the agents work: rules, drift, coordination |
+   | `chore` | clean-up, audit or investigation that changes no behaviour |
+   | `question` | needs an answer, not a change |
+
+   Pick the severity by what happens if nothing is done, worst first:
+
+   | severity | when |
+   |---|---|
+   | `security` | data or access reachable by someone who should not have it, a leaked secret, an auth gap |
+   | `blocks-me` | work stops; no workaround |
+   | `wrong-result` | wrong or lost data, a silent failure — it looks fine and is not |
+   | `degraded` | works, but slowly, unreliably, or only with a workaround |
+   | `annoying` | friction or extra effort; nothing is actually wrong |
+   | `cosmetic` | wording, layout, appearance |
+   | `fyi` | no action expected |
+
+   A silent failure is `wrong-result`, not `annoying`: being unnoticed makes it
+   worse, not milder. Older spellings (`request`, `platform-gap`, `minor`, …) are
+   accepted as aliases of the term they meant; write the current value.
+
    **On `topics`** — the subject-matter tags the KB's Topic facet navigates by,
-   drawn from the `KB_TOPIC` vocabulary (browse it as the Topic facet in KB
-   search; the hierarchy rolls up, so tagging a leaf also surfaces the case
-   under its parent). Pick 1–4 that describe what the case is *about*, which is
+   drawn from the `KB_TOPIC` vocabulary. **List it before you write:**
+
+   ```bash
+   kbc case-fetch.py topics          # the whole vocabulary, indented as its hierarchy
+   ```
+
+   The field is validated and an unknown value is REJECTED, so read the list
+   rather than inventing a tag — the vocabulary is smaller than the concepts you
+   might name for it. The hierarchy rolls up, so tagging a leaf also surfaces the
+   case under its parent. Pick 1–4 that describe what the case is *about*, which is
    not the same as which component it was filed against: a case about identity
    hashing filed on `document-store` wants `identity-hashing`, and that is
    exactly the tag no facet can infer for you.
@@ -145,12 +189,44 @@ kbc case-fetch.py case <n> --view responses   # the response thread only
 kbc case-fetch.py case <n> --response latest  # just the latest response
 kbc case-fetch.py case <n> --response <seq>   # a specific response (404 if absent)
 kbc case-fetch.py case <n> --format json      # raw gateway payload
+kbc case-fetch.py case CASE-<n>#<seq>         # a response by its handle (= --response <seq>)
 ```
+
+`<n>` may be written as the KB prints it: `1179` and `CASE-1179` (any case, or
+`#1179`) name the same case. The same holds wherever a write takes a case number:
+`case_number:` in frontmatter, `--match case_number=CASE-1179`, and an edge's target
+key (`--edge RESPONDS_TO:CASE_RECORD:CASE-1179`).
 
 Prints the case body followed by its responses (CASE_RESPONSE docs, seq-ordered,
 active-only) — one gateway read, no separate fetch. Backed by
 `GET /cases/:n?view=both|case|responses[&response=latest|<seq>]`. If the case (or an
 explicit `--response <seq>`) isn't found, tell Peter and stop.
+
+---
+
+## Claims — say you are working on a case before you start
+
+A claim records that you are working on a case for one kind of work (`respond`,
+`implement`, `fix`, `review`), so other agents (the review queue included) see it
+and do not start the same work. `case <n>` shows the case's claims first
+(`> **claimed:** …`), and `list` has a **Claimed** column: **check before starting**.
+
+```bash
+kbc kb-write.py CLAIM acquire <n> <kind>   # before starting; refused (exit 1) if someone holds it
+kbc kb-write.py CLAIM renew   <n> <kind>   # extend the lease on long work
+kbc kb-write.py CLAIM park    <n> <kind> --note "waiting on the decision in CASE-<m>"
+kbc kb-write.py CLAIM release <n> <kind>   # when done, failed or abandoned
+```
+
+- The holder is your session (`.claude/.session-id`); a task runner passes `--holder <task-id>`.
+- A refused acquire names who holds the case. Do not work around it: ask them, or wait.
+- An **active** claim has a lease (60 minutes unless the kind's `CLAIM_RULE` says
+  otherwise). Renew on long work; an unrenewed lease runs out and the case is free.
+- A **parked** claim has no lease: use it when you stop to wait for a decision, so
+  the case stays yours. `acquire` again to resume it.
+- Each kind's `CLAIM_RULE` (a config document) sets how many may hold it at once and
+  which kinds exclude each other. Without one: one holder, no exclusions.
+- Release when you are done. A posted response does not release a claim by itself.
 
 ---
 
@@ -163,17 +239,82 @@ explicit `--response <seq>`) isn't found, tell Peter and stop.
    one if warranted, and say why.
 3. If the proposed fix IS right, say so and show the analysis.
    (CASE-50 was implemented blindly and broke; CASE-36 was analysed properly. Be CASE-36.)
+4. Take the whole view — the responder decides whether the case asks for the right thing:
+   - **Is the scope right?** Grep for the same defect beyond the cited lines; check
+     whether part of it is already fixed.
+   - **Does the fix fit the repo?** Release notes, design docs, how sibling code does it.
+     A fix that contradicts a recorded convention is wrong, however small.
+   - **Does it apply beyond the request?** Name every extra site with `file:line`. Do
+     not widen on a hunch.
+5. **Stay proportionate.** Anything bigger than the case asked for — a rewrite or
+   redesign, more sites or another component, a different approach, a change to a shared
+   contract or to stored data — is not the recommendation. Give the fix as filed (or say
+   why it is wrong), and put the bigger change as a question for the project owner, with
+   the evidence, the options and their cost.
+
+**Claim it first** (see Claims above): `kbc kb-write.py CLAIM acquire <n> respond`. A
+refused acquire means someone else is responding: stop. Release when the response is
+posted, or when you give up.
+
+**The response body** — every respond, attended or unattended, has this shape:
+
+```markdown
+**Bottom line:** <verdict in one sentence> · **Root cause:** <one sentence> · **Recommendation:** <implement as filed | implement with the correction below | needs a live check first | question for the project owner | cannot form a confident finding>
+
+## Files in scope
+
+- `path/from/repo/root.ts` — change
+- `another/file.py`, `its/test.py` — change, **shared contract** (served schema)
+- `file/only/read.ts` — read
+
+## Scope
+
+<as filed | widened | narrowed | different fix — and the evidence: the grep, the
+convention, the file:line of every site beyond the request>
+
+## Analysis
+
+<root cause from the source, file:line per claim; whether the filer's fix is right>
+
+## Verified vs not
+
+<what you read directly, versus inferred or not checkable>
+
+## Questions
+
+<optional: a change bigger than the case asked for, put to the project owner with
+evidence, options and cost — instead of recommending it>
+```
+
+- **Length:** about 600 words, 1,000 at most. Go longer only with a stated reason
+  (several independent findings). Don't restate the case.
+- **Files in scope** comes right after the bottom line. One bullet per line: backticked
+  repo-relative paths, then a dash and `change` or `read`, then any note. Say so when a
+  change touches a shared contract (an API model, a served schema, a template). A file
+  in another repo is named with that repo, as prose, not as a bullet.
+- `kb-write.py` copies the list into the response's `files_change` / `files_read` fields,
+  which is what a scheduler reads to decide whether two cases can be worked in parallel.
+  It warns (it does not refuse) when a respond has no such section, or a bullet in it
+  that it cannot read.
+- **Scope** is a judgement, not a file list: whether the case asks for the right thing.
+  Files in scope lists what the recommended fix touches, for the scheduler; a widened
+  scope that is only a question lists no files there.
+- **Questions** is optional. When it holds the main point, the recommendation is
+  *question for the project owner*, and nothing is implemented until the owner answers.
 
 Then, two writes — the response doc + the status transition:
 
 ```bash
 # 1) the response (compose response.md: body markdown; frontmatter sets the fields)
-#    response.md frontmatter: case_number: <n> / response_kind: respond / author: <id> / doc_status: published
+#    response.md frontmatter: case_number: <n> / response_kind: respond / doc_status: published
 kbc kb-write.py CASE_RESPONSE response.md --edge RESPONDS_TO:CASE_RECORD:<n>
 # -> created CASE-<n>#<seq>  edges: RESPONDS_TO→<n>=linked
 
 # 2) drive open → responded (only if currently open)
 kbc kb-write.py CASE_RECORD --patch status=responded --match case_number=<n>
+
+# 3) let the case go
+kbc kb-write.py CLAIM release <n> respond
 ```
 
 Confirm the case number + new status to Peter.
@@ -187,7 +328,7 @@ A comment is a CASE_RESPONSE with `response_kind: comment` and **no** status cha
 
 ```bash
 kbc kb-write.py CASE_RESPONSE comment.md --edge RESPONDS_TO:CASE_RECORD:<n>
-# comment.md frontmatter: case_number: <n> / response_kind: comment / author: <id> / doc_status: published
+# comment.md frontmatter: case_number: <n> / response_kind: comment / doc_status: published
 ```
 
 ---
@@ -199,7 +340,7 @@ Compose the resolution rationale, then response + transition:
 
 ```bash
 kbc kb-write.py CASE_RESPONSE close.md --edge RESPONDS_TO:CASE_RECORD:<n>
-#   close.md frontmatter: case_number: <n> / response_kind: close / author: <id> / doc_status: published
+#   close.md frontmatter: case_number: <n> / response_kind: close / doc_status: published
 kbc kb-write.py CASE_RECORD --patch status=closed --match case_number=<n>
 ```
 
@@ -210,20 +351,33 @@ Terminal. Tell Peter it's closed and why.
 ## `/wip-case implement <n>`
 
 The "do the work" command. Read the case (`case-fetch.py case <n>`); if it has no
-proposed fix, tell Peter to `/wip-case respond` first and stop.
+proposed fix, tell Peter to `/wip-case respond` first and stop. Claim it before you
+start (`kbc kb-write.py CLAIM acquire <n> implement`) and release it once the case is
+implemented, or when you stop without finishing (`park` it instead when you stop to
+wait for a decision).
 
 1. **Verify the proposed fix before touching code** — does the analysis convince you?
    Has the target code changed since the response? Side effects on other callers/tests?
    If anything is wrong, respond with your findings instead of implementing a fix you
-   don't trust.
+   don't trust. Stay in the response's scope: when a finding challenges your
+   instructions (the fix contradicts a convention, the same defect sits elsewhere), stop
+   and say so rather than widening the change yourself.
 2. **Apply each change**; if quoted "current text" no longer matches, flag and skip it.
 3. **Show the diff** (`git diff`) and let Peter review before committing.
-4. **Record + close:**
+4. **Push, then record + close.** The implement response is where a reader finds the
+   fix, so write it only after the push, and cite each commit hash as it is on the
+   remote (`git log --format='%h %s' <remote>/develop`). If the push was rejected and
+   you rebased, every hash changed. `kb-write.py` refuses an implement response that
+   cites a commit present in your clone but on no remote branch; a hash it cannot find
+   at all, or no hash, only draws a warning. Run it from the repository the commits
+   live in, or pass `--hash-repo PATH`. `--no-hash-check` skips the check for a fix
+   that is not a pushed commit.
 
    ```bash
    kbc kb-write.py CASE_RESPONSE implement.md --edge RESPONDS_TO:CASE_RECORD:<n>
-   #   implement.md frontmatter: case_number: <n> / response_kind: implement / author: <id> / doc_status: published
+   #   implement.md frontmatter: case_number: <n> / response_kind: implement / doc_status: published
    kbc kb-write.py CASE_RECORD --patch status=implemented --match case_number=<n>
+   kbc kb-write.py CLAIM release <n> implement
    ```
 
 Terminal. Tell Peter what was applied and that the case is implemented.
@@ -240,7 +394,7 @@ strands the next reader.
 
 ```bash
 kbc kb-write.py CASE_RESPONSE reopen.md --edge RESPONDS_TO:CASE_RECORD:<n>
-#   reopen.md frontmatter: case_number: <n> / response_kind: comment / author: <id> / doc_status: published
+#   reopen.md frontmatter: case_number: <n> / response_kind: comment / doc_status: published
 #   body: why this is coming back (what regressed / which premise fell)
 kbc kb-write.py CASE_RECORD --patch status=open --match case_number=<n>
 ```
@@ -302,6 +456,9 @@ kbc case-fetch.py search "restore" --mode substring --limit 50
 #   --mode   auto (default) | fts | substring — auto falls back to substring when
 #            FTS finds nothing
 #   --limit  max hits (default 25, cap 100); output flags when it truncated
+#   --namespace  search another knowledge base (default: the configured one); the
+#                library is always included
+#   --project    only documents tagged with this project (any alias of its KB_APP term)
 #   --format table|json
 ```
 
@@ -396,3 +553,58 @@ FLAG_RECORD's identity is `[flag_type, flagged_document]`.) Re-flagging the
 same doc in the UI upserts that identity back to `published`, which re-arms
 the trigger after a failed run. `--doc-status dispatched` / `all` list
 consumed / every flag.
+
+---
+
+## Projects and knowledge bases (DECISION-1)
+
+A **project** is a `KB_APP` term inside a knowledge base. Its documents are the ones
+whose `app` field names it: cases, decisions, lessons, firesides, sessions, memories,
+mirrored documents. Any alias of the term works wherever a project is named. An optional
+`PROJECT` profile document carries its scope, repository ids and a tooling archive.
+
+```bash
+kbc case-fetch.py brief                       # the configured project's context in one read
+kbc case-fetch.py brief <project> --tooling DIR   # another project; also save its archive (never unpacked)
+kbc case-fetch.py search "<terms>" --project <project>
+kbc case-fetch.py read CASE_RECORD --filter app=<project>
+```
+
+- **Read the brief at session start** in a project's repository. It lists open cases and
+  the newest decisions, lessons, firesides, sessions, memories and documents as handles
+  and titles; each is one read away. Untagged documents are not listed, so an empty
+  section means "nothing tagged", not "nothing exists".
+- **Tagging is automatic** when `.claude/kb.json` has `"project": "<project>"`: every
+  write of a type with an `app` field is tagged with it unless the document names its
+  own `app` (an explicit value wins). Without the key, set `app:` in the frontmatter.
+- **A new project needs its `KB_APP` term first.** An administrator adds it on the
+  app's Settings → Vocabulary page; writing an unknown project is rejected.
+- **Profile:** `kbc kb-write.py PROJECT --json '{"app": …, "title": …, "body": "<scope>",
+  "repo_ids": […], "authored_by": …, "doc_status": "published"}'`. Its identity is `app`,
+  so writing again updates the same profile.
+- **Tooling archive:** `kbc kb-write.py PROJECT --tooling ./tooling.zip --match app=<project>`
+  attaches a `.zip`, `.tar.gz` or `.tgz` (up to 100 MB) to an existing profile, or add
+  `--tooling PATH` to the profile write itself. Without `--match` it uses the configured
+  project. A new archive replaces the old one, which stays in WIP unreferenced. It runs
+  with your key, so WIP's write permission on the knowledge base decides who may.
+
+A **knowledge base** is a namespace seeded with the full KB model, with its own
+documents, numbering, vocabularies and relationships; links cannot cross between
+knowledge bases. Making one takes two steps:
+
+1. An operator reserves the namespace for the KB app. For a KB deployed by
+   wip-deploy, on the install's host: `wip-deploy app-namespace add wip-kb <name>
+   --name <install>` (every later apply keeps it). For an attached KB: widen the KB's
+   API key with `reserve` on the namespace in the Console.
+2. `kbc kb-namespace.py create <name>`, run with a key holding **admin on the main
+   knowledge base** (`kb`), creates and seeds it. The KB seeds with its own key, so it
+   can always see what it created. Run before step 1, it is refused (409
+   `not_reserved`, naming step 1) and nothing is created; a key with only write is
+   refused with 403.
+
+Never copy another key into the app's key file to widen it; the next apply
+re-issues that file, and two keys sharing one value resolve inconsistently.
+
+`"namespace": "<name>"` in `.claude/kb.json` points the whole
+client at it; `search`, `read`, `brief` and `topics` also take `--namespace` for a
+single command.
