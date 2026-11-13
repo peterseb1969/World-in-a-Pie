@@ -164,7 +164,7 @@ class DexUser(WIPModel):
 
 def _default_dex_users() -> list[DexUser]:
     return [
-        DexUser(email="admin@wip.local", username="admin", groups=["wip-admins"]),
+        DexUser(email="admin@wip.local", username="admin", groups=[ADMIN_GROUP]),
         DexUser(email="editor@wip.local", username="editor", groups=["wip-editors"]),
         DexUser(email="viewer@wip.local", username="viewer", groups=["wip-viewers"]),
     ]
@@ -197,11 +197,14 @@ class SpecAPIKey(WIPModel):
 
     name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
     namespaces: list[str] = Field(min_length=1)
-    """Read scope — the key sees exactly these namespaces."""
-    grants: dict[str, Literal["read", "write", "admin"]] = Field(
-        default_factory=dict
-    )
-    """Write grants per namespace; keys must be within `namespaces`."""
+    """The namespaces the key may act in. With `grants` declared it reads each
+    of them; without, it holds only what the API grants it."""
+    grants: dict[str, Literal["read", "write", "admin"]] | None = None
+    """Grants per namespace, within `namespaces`. Declared (`{}` included),
+    the key file owns the key's grants: read on each of `namespaces`, these
+    at their level, and the API can neither change them nor add others.
+    None (not declared) leaves the key's grants to the API: the file grants
+    nothing, and the Registry keeps what the API sets."""
     owner: str = "system"
     groups: list[str] = Field(default_factory=list)
 
@@ -211,7 +214,7 @@ class SpecAPIKey(WIPModel):
 
     @model_validator(mode="after")
     def grants_within_namespaces(self) -> SpecAPIKey:
-        outside = sorted(set(self.grants) - set(self.namespaces))
+        outside = sorted(set(self.grants or {}) - set(self.namespaces))
         if outside:
             raise ValueError(
                 f"api key {self.name!r}: grants on namespaces outside its "
@@ -224,8 +227,11 @@ class SpecAPIKey(WIPModel):
 # keys ever hold them: a login federated through a connector can neither
 # bring them from its identity provider nor be mapped to them. The same set
 # as wip_auth.groups.PRIVILEGED_GROUPS, copied because wip-deploy does not
-# depend on wip-auth; a deployer test pins the two together.
-RESERVED_GROUPS = ("wip-admins", "wip-services")
+# depend on wip-auth; a deployer test pins the two together. Code that means
+# the admin group names ADMIN_GROUP rather than spelling it.
+ADMIN_GROUP = "wip-admins"
+SERVICES_GROUP = "wip-services"
+RESERVED_GROUPS = (ADMIN_GROUP, SERVICES_GROUP)
 
 # Dex's static-password connector. Its users are the install's local users.
 LOCAL_CONNECTOR_ID = "local"

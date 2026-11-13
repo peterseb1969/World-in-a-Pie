@@ -177,10 +177,9 @@ class ArchiveScope(BaseModel):
     holds a non-empty list of namespaces, every one in scope, and is in no
     stack-wide group; an attachment only when named.
 
-    A key in a stack-wide group (wip-admins, wip-services, or a configured
-    admin group) reaches every namespace whatever its own list says: the
-    Registry grants such a key admin, or trusts it as a service, before its
-    namespace list is consulted. So it is never inside a scope, and a scoped
+    A key in a stack-wide group (wip-admins, wip-services) reaches every
+    namespace whatever its own list says: the Registry grants such a key
+    admin, or trusts it as a service, before its namespace list is consulted. So it is never inside a scope, and a scoped
     restore neither writes, replaces nor removes one.
 
     A restore of a scoped archive changes nothing outside it: the archive's

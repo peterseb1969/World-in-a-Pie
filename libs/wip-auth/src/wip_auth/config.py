@@ -381,17 +381,21 @@ def _warn_unscoped(keys: list[APIKeyRecord], logger: logging.Logger) -> None:
 
 
 def _warn_declared_grants(keys: list[APIKeyRecord], logger: logging.Logger) -> None:
-    """Warn, at load time, about each key that declares grants: a service
-    does not read them. Every permission is the Registry's answer, and the
-    Registry takes a key's grants from its own key file, so a key it never
-    imported has none there, whatever this config says."""
+    """Warn, at load time, about each key that declares grants: this
+    loader does not apply them. Every permission is the Registry's answer,
+    and the Registry takes a key's grants only from the key file it imports
+    (in the Registry that can be the very file loaded here, on an install
+    rendered before the key file moved, so the warning does not claim the
+    grants go unread). A key the Registry has not imported has none there,
+    whatever this config says."""
     for key in keys:
         if key.grants:
             logger.warning(
-                "API key '%s' declares grants (%s); this service does not "
-                "read them. Permissions come from the Registry, which takes "
-                "a key's grants from its own key file — a key the Registry "
-                "has not imported has no grants, whatever this config says.",
+                "API key '%s' declares grants (%s) in this service's key "
+                "config, which does not apply them. Permissions come from the "
+                "Registry, which takes a key's grants only from the key file "
+                "it imports — a key the Registry has not imported has no "
+                "grants, whatever this config says.",
                 key.name,
                 ", ".join(f"{ns}={perm}" for ns, perm in sorted(key.grants.items())),
             )

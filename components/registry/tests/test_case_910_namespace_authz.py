@@ -274,8 +274,9 @@ async def test_search_sees_only_readable_namespaces(
 
 @pytest.mark.asyncio
 async def test_config_declared_grants_resolve_locally(client: AsyncClient):
-    """A spec-declared key carries its grants in its own definition; the
-    Registry must answer what wip-auth answers everywhere else."""
+    """A key the Registry loads as a wip-auth config key carries its grants
+    in its own definition, and the Registry answers from that declaration
+    (no service resolves grants locally; every one asks the Registry)."""
     identity = UserIdentity(
         user_id="apikey:spec-key",
         username="spec-key",

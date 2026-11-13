@@ -79,7 +79,9 @@ CANARY_NAMESPACE = "wip-canary-unassigned"
 # refusal, so a running install's authorization is checked, not assumed.
 # It is added to every install so the probe can run anywhere; its
 # secret lives beside the master key in the same store.
-CANARY_KEY = SpecAPIKey(name=CANARY_KEY_NAME, namespaces=[CANARY_NAMESPACE])
+# Its grants are declared empty so the file owns them: the API cannot grant
+# it anything.
+CANARY_KEY = SpecAPIKey(name=CANARY_KEY_NAME, namespaces=[CANARY_NAMESPACE], grants={})
 
 
 # An app's own key is named after the app, so `rotate-key app-<name>` names it.
@@ -132,6 +134,7 @@ APP_EDGE_GROUP = "wip-app-edge"
 APP_EDGE_KEY = SpecAPIKey(
     name=APP_EDGE_KEY_NAME,
     namespaces=[CANARY_NAMESPACE],
+    grants={},
     groups=[APP_EDGE_GROUP],
     owner="system:app-edge",
 )
@@ -246,40 +249,60 @@ def mounts_auth_config_dir(owner: Component | App) -> bool:
     )
 
 
+def _key_description(k: SpecAPIKey) -> str:
+    """The key file's human description of a rendered key."""
+    if k.name == CANARY_KEY_NAME:
+        return (
+            "Canary — authenticates, authorized for nothing; used by "
+            "wip-deploy verify --security --live"
+        )
+    if k.owner.startswith("app:"):
+        return (
+            f"App key for {k.owner.removeprefix('app:')} — derived from "
+            "its manifest (spec.namespaces, spec.namespace_access)"
+        )
+    if k.owner.startswith("system:"):
+        return (
+            f"System key for {k.owner.removeprefix('system:')} — "
+            "provisioned by wip-deploy, not declared in the spec"
+        )
+    if k.grants is None:
+        return (
+            "Spec-declared key (wip-deploy auth.api_keys) — the Registry "
+            "imports it; it declares no grants, so they stay under the API"
+        )
+    return (
+        "Spec-declared key (wip-deploy auth.api_keys) — the Registry "
+        "imports its scope and grants from the key file"
+    )
+
+
 def generate_api_keys_json(
     deployment: Deployment, secrets: ResolvedSecrets, apps: list[App] | None = None
 ) -> str:
-    """The WIP_AUTH_API_KEYS_FILE document. Every install has one: the
-    canary is always in it.
+    """The install's key file (WIP_REGISTRY_KEY_FILE), which the Registry
+    imports. Every install has one: the canary is always in it.
+
+    A key whose grants are not declared (None) is rendered without
+    `grants`, which leaves its grants to the API; a declared dict, empty
+    included, is rendered as is and owned by the file.
 
     Deterministic for a fixed spec + secret values: plaintext `key`
-    entries (hashed by wip-auth on load) keep renders byte-stable —
+    entries (hashed by the Registry on import) keep renders byte-stable —
     rendering bcrypt hashes instead would produce a fresh hash every
     render and false drift in `status --diff`.
     """
     entries = []
     for k in effective_api_keys(deployment, apps):
-        entries.append(
-            {
-                "name": k.name,
-                "key": secrets.get(k.secret_name),
-                "owner": k.owner,
-                "groups": k.groups,
-                "namespaces": k.namespaces,
-                "grants": k.grants,
-                "description": (
-                    "Canary — authenticates, authorized for nothing; used by "
-                    "wip-deploy verify --security --live"
-                    if k.name == CANARY_KEY_NAME
-                    else f"App key for {k.owner.removeprefix('app:')} — derived from "
-                    "its manifest (spec.namespaces, spec.namespace_access)"
-                    if k.owner.startswith("app:")
-                    else f"System key for {k.owner.removeprefix('system:')} — "
-                    "provisioned by wip-deploy, not declared in the spec"
-                    if k.owner.startswith("system:")
-                    else "Spec-declared key (wip-deploy auth.api_keys) — "
-                    "the Registry imports its scope and grants from the key file"
-                ),
-            }
-        )
+        entry: dict[str, object] = {
+            "name": k.name,
+            "key": secrets.get(k.secret_name),
+            "owner": k.owner,
+            "groups": k.groups,
+            "namespaces": k.namespaces,
+        }
+        if k.grants is not None:
+            entry["grants"] = k.grants
+        entry["description"] = _key_description(k)
+        entries.append(entry)
     return json.dumps({"keys": entries}, indent=2) + "\n"

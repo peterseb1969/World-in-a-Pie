@@ -78,6 +78,7 @@ from wip_deploy.spec.activation import is_component_active
 from wip_deploy.spec.app import App
 from wip_deploy.spec.component import Component, NamespaceAccess, NamespaceSettings
 from wip_deploy.spec.deployment import (
+    ADMIN_GROUP,
     APP_EDGE_MODULE,
     AddedNamespace,
     AppRef,
@@ -3970,7 +3971,7 @@ def _parse_groups(value: str) -> list[str]:
 
 
 def _admin_count(users: list[DexUser]) -> int:
-    return sum(1 for u in users if "wip-admins" in u.groups)
+    return sum(1 for u in users if ADMIN_GROUP in u.groups)
 
 
 def _user_verb_scope(
@@ -4483,7 +4484,7 @@ def user_remove(
             err=True,
         )
         raise typer.Exit(2)
-    if "wip-admins" in match.groups and _admin_count(users) == 1:
+    if ADMIN_GROUP in match.groups and _admin_count(users) == 1:
         typer.echo(
             f"error: {username!r} is the last wip-admins user — removing it "
             "would lock the install out of administration. Add another "
@@ -4569,8 +4570,8 @@ def user_set_groups(
         )
         raise typer.Exit(2)
     if (
-        "wip-admins" in match.groups
-        and "wip-admins" not in groups
+        ADMIN_GROUP in match.groups
+        and ADMIN_GROUP not in groups
         and _admin_count(users) == 1
     ):
         typer.echo(

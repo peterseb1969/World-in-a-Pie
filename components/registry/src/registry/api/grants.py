@@ -185,7 +185,8 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
     when it is revoked. A key imported from the install's key file has its
     declared grants imported as grants, so steps 4-5 answer for it; step 3
     is reached only by a Registry that also loads keys as wip-auth config
-    keys (an install rendered before WIP_REGISTRY_KEY_FILE existed).
+    keys (an install rendered before WIP_REGISTRY_KEY_FILE existed, or
+    WIP_AUTH_API_KEYS_JSON / WIP_AUTH_API_KEYS_FILE set by hand).
     """
     # Locked namespaces are inaccessible to everyone
     ns = await Namespace.find_one({"prefix": namespace})
@@ -216,9 +217,11 @@ async def _resolve_permission(identity: UserIdentity, namespace: str) -> str:
 def _config_key_permission(identity: UserIdentity, namespace: str) -> str | None:
     """A key the Registry loads as a wip-auth config key and that declares
     grants: the declared grant, else read on a namespace in the key's scope,
-    else none. Its imported twin stays dormant while the config key exists
-    (key_import.is_dormant), so without this its grants would answer
-    nothing. None for any other caller."""
+    else none. The declaration answers before any grant row: it decides
+    before the key file's first import has written the same grants as rows,
+    for a key the Registry never imports (a hand-written config), and on a
+    namespace the declaration leaves out, where a grant set through the API
+    would otherwise count. None for any other caller."""
     config_grants = (identity.raw_claims or {}).get("grants")
     if identity.auth_method != "api_key" or not isinstance(config_grants, dict):
         return None

@@ -88,7 +88,9 @@ def require_groups(
         if not has_access:
             raise HTTPException(
                 status_code=403,
-                detail=f"Required groups: {groups}",
+                # Sorted: callers pass sets (PRIVILEGED_GROUPS), whose
+                # iteration order varies between processes.
+                detail=f"Required groups: {sorted(groups)}",
             )
 
         return identity

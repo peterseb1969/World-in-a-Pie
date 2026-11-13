@@ -52,6 +52,7 @@ disagree with the Registry about who is privileged.
 import ast
 import collections.abc
 import inspect
+import re
 import typing
 import uuid
 from collections.abc import Mapping
@@ -373,14 +374,33 @@ def _docstring_nodes(tree: ast.AST) -> set[int]:
     return found
 
 
+def _group_key(value: str) -> str:
+    """A group name as a near-miss check compares it: trimmed, lower case,
+    underscores as hyphens, one trailing "s" dropped."""
+    key = value.strip().lower().replace("_", "-")
+    return key[:-1] if key.endswith("s") else key
+
+
+def _names_a_group(value: str, privileged: frozenset[str]) -> bool:
+    """Whether a string constant is a platform group name, a near miss of
+    one ("wip-admin", "wip_admins", "WIP-Admins", "wip-admins "), or a
+    comma/semicolon-separated list with such a member ("staff,wip-admins").
+    A near miss is the copy that drifts silently: it compares unequal to
+    the real name, so the check it guards never fires."""
+    keys = {_group_key(g) for g in privileged}
+    members = re.split(r"[,;]", value) if re.search(r"[,;]", value) else [value]
+    return any(m.strip() in privileged or _group_key(m) in keys for m in members)
+
+
 def collect_privileged_group_literals(package_dir: str | Path) -> tuple[list[str], int]:
     """Return (offenders, examined_count) over the Python sources under
     ``package_dir``.
 
-    An offender is a string constant that IS a platform group name
-    (``wip_auth.groups.PRIVILEGED_GROUPS``), outside a docstring:
-    ``"wip-admins"`` in code. Prose that merely mentions a group (an error
-    message, a comment, a docstring) is not one. Offenders are
+    An offender is a string constant outside a docstring that names a
+    platform group (``wip_auth.groups.PRIVILEGED_GROUPS``): the name itself
+    (``"wip-admins"`` in code), a near miss of it, or a separated list with
+    such a member (see ``_names_a_group``). Prose that merely mentions a
+    group (an error message, a comment, a docstring) is not one. Offenders are
     ``"relative/path.py:line"`` strings; examined_count is how many source
     files the walk read — zero means the path is wrong, never that the
     service is clean.
@@ -397,7 +417,8 @@ def collect_privileged_group_literals(package_dir: str | Path) -> tuple[list[str
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Constant)
-                and node.value in PRIVILEGED_GROUPS
+                and isinstance(node.value, str)
+                and _names_a_group(node.value, PRIVILEGED_GROUPS)
                 and id(node) not in docstrings
             ):
                 offenders.append(f"{path.relative_to(root)}:{node.lineno}")

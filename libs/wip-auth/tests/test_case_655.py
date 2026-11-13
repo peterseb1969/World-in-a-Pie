@@ -10,8 +10,8 @@ Pinned here:
 
   - APIKeyRecord parses `grants` (config.py's _parse_key_dict path).
   - The api-key provider surfaces grants in raw_claims (the Registry's own
-    resolution reads them), and loading a key that declares them warns that
-    the service does not read them (CASE-1220).
+    resolution reads them). The warning a load logs for such a key is pinned
+    in test_case_1220_declared_grants.py, not here.
   - resolve_permission and resolve_accessible_namespaces ask the Registry
     for a key that declares grants, exactly as for one that does not.
 """

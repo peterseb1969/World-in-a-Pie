@@ -27,7 +27,8 @@ def test_a_key_declaring_grants_is_warned_about(caplog):
     ])
     assert "agent" in [k.name for k in keys]  # warned, still loaded
     assert "API key 'agent' declares grants (kb=write, library=read)" in caplog.text
-    assert "does not read them" in caplog.text
+    assert "which does not apply them" in caplog.text
+    assert "does not read them" not in caplog.text
 
 
 def test_a_key_without_grants_is_not(caplog):

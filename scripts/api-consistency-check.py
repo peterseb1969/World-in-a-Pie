@@ -137,6 +137,7 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     "resolve_namespace_filter",
     "resolve_accessible_namespaces",
     "_is_superadmin",
+    "is_superadmin",                # wip_auth.groups: the public platform-admin check
     # Local helper wrappers that delegate to the canonical helpers.
     # When a new wrapper lands, add the name here so the AST walker
     # treats the wrapper-call as a valid gate without needing to

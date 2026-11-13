@@ -72,3 +72,24 @@ def test_gate_catches_a_literal_and_ignores_prose(tmp_path):
 def test_gate_fails_on_an_empty_walk(tmp_path):
     with pytest.raises(AssertionError, match="ZERO"):
         assert_no_privileged_group_literals(tmp_path / "missing")
+
+
+@pytest.mark.parametrize("literal", [
+    "wip-admin", "wip_admins", "WIP-Admins", "wip-admins ", "wip-service",
+    "staff,wip-admins", "wip-users; wip_services",
+])
+def test_gate_catches_a_near_miss_and_a_list_member(tmp_path, literal):
+    """A misspelled copy compares unequal to the real name, so the check it
+    guards never fires: the drift the gate exists for."""
+    (tmp_path / "bad.py").write_text(f"GROUP = {literal!r}\n")
+    offenders, _ = collect_privileged_group_literals(tmp_path)
+    assert offenders == ["bad.py:1"]
+
+
+@pytest.mark.parametrize("literal", [
+    "wip-users", "wip-editors", "wip-deploy", "wip-app-edge",
+    "requires wip-admins membership", "a, b",
+])
+def test_gate_leaves_other_names_and_prose(tmp_path, literal):
+    (tmp_path / "ok.py").write_text(f"VALUE = {literal!r}\n")
+    assert collect_privileged_group_literals(tmp_path)[0] == []
