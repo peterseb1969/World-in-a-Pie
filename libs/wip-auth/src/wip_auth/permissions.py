@@ -20,6 +20,7 @@ Usage:
         # ... use query for MongoDB
 """
 
+import json
 import logging
 import os
 from collections.abc import Mapping
@@ -125,12 +126,15 @@ def _registry_question(
     if identity.username:
         params["username"] = identity.username
     # Groups and key scope travel as headers, keeping group names out of
-    # access logs. The scope lets the Registry's synthetic identity see the
-    # same scoping the calling service does; without it every api key would
-    # look unscoped and a non-privileged key would get "none".
+    # access logs. Groups go as a JSON array: a group name may contain a
+    # comma, and a comma-joined list split again by the Registry would read
+    # a group named "staff,wip-admins" as wip-admins. ASCII-escaped, so any
+    # name fits in a header. The scope lets the Registry's synthetic identity
+    # see the same scoping the calling service does; without it every api key
+    # would look unscoped and a non-privileged key would get "none".
     headers: dict[str, str] = {}
     if identity.groups:
-        headers["X-User-Groups"] = ",".join(identity.groups)
+        headers["X-User-Groups"] = json.dumps(list(identity.groups))
     scope = _key_scope(identity)
     if scope is not None:
         headers["X-Key-Namespaces"] = ",".join(scope)

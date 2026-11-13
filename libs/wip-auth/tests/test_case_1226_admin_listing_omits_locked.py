@@ -31,6 +31,9 @@ ADMIN = UserIdentity(
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("WIP_AUTH_REGISTRY_URL", "http://registry.test")
+    # The key the permission lookup authenticates with: set here, so the
+    # file passes alone and never depends on another test leaving it set.
+    monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "test-service-key")
     clear_permission_cache()
     yield
     clear_permission_cache()
@@ -41,7 +44,7 @@ async def test_an_administrators_list_is_the_registrys(httpx_mock):
     assert await resolve_accessible_namespaces(ADMIN) == ["wip", "app"]
     request = httpx_mock.get_requests()[0]
     assert request.url.path == "/api/registry/my/accessible-namespaces"
-    assert request.headers["X-User-Groups"] == "wip-admins"
+    assert request.headers["X-User-Groups"] == '["wip-admins"]'
 
 
 async def test_an_administrators_unscoped_filter_leaves_out_what_the_registry_left_out(httpx_mock):

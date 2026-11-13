@@ -25,6 +25,9 @@ from wip_auth.permissions import (
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("WIP_AUTH_REGISTRY_URL", "http://registry.test")
+    # The key the permission lookup authenticates with: set here, so the
+    # file passes alone and never depends on another test leaving it set.
+    monkeypatch.setenv("WIP_AUTH_LEGACY_API_KEY", "test-service-key")
     clear_permission_cache()
     yield
     clear_permission_cache()
@@ -40,7 +43,7 @@ async def test_an_administrator_is_asked_of_the_registry(httpx_mock):
     assert await resolve_permission(ADMIN, "open") == "admin"
     request = httpx_mock.get_requests()[0]
     assert request.url.path == "/api/registry/my/check-permission"
-    assert request.headers["X-User-Groups"] == "wip-admins"
+    assert request.headers["X-User-Groups"] == '["wip-admins"]'
 
 
 async def test_a_locked_namespace_is_closed_to_an_administrator(httpx_mock):

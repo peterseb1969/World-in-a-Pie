@@ -533,9 +533,8 @@ class TestCheckPermissionInternal:
                 "namespace": "default",
                 "user_id": "bob-id",
                 "email": "bob@example.com",
-                "groups": "engineering,design",
             },
-            headers=auth_headers,
+            headers={**auth_headers, "X-User-Groups": '["engineering", "design"]'},
         )
         assert response.status_code == 200
         assert response.json()["permission"] == "read"
@@ -549,9 +548,8 @@ class TestCheckPermissionInternal:
                 "namespace": "default",
                 "user_id": "superadmin-id",
                 "email": "admin@example.com",
-                "groups": "wip-admins",
             },
-            headers=auth_headers,
+            headers={**auth_headers, "X-User-Groups": '["wip-admins"]'},
         )
         assert response.status_code == 200
         assert response.json()["permission"] == "admin"
@@ -570,8 +568,8 @@ class TestCheckPermissionInternal:
             headers=auth_headers,
         )
 
-        # Check permission using X-User-Groups header instead of query param
-        headers = {**auth_headers, "X-User-Groups": "reviewers,viewers"}
+        # The groups travel as a JSON array in the X-User-Groups header
+        headers = {**auth_headers, "X-User-Groups": '["reviewers", "viewers"]'}
         response = await client.get(
             "/api/registry/my/check-permission",
             params={
@@ -603,9 +601,8 @@ class TestCheckPermissionInternal:
                 "namespace": "default",
                 "user_id": "multi-id",
                 "email": "multi@example.com",
-                "groups": "power-users",
             },
-            headers=auth_headers,
+            headers={**auth_headers, "X-User-Groups": '["power-users"]'},
         )
         assert response.status_code == 200
         # write > read, so write should win
@@ -624,9 +621,8 @@ class TestAccessibleNamespacesInternal:
             "/api/registry/my/accessible-namespaces",
             params={
                 "user_id": "admin-id",
-                "groups": "wip-admins",
             },
-            headers=auth_headers,
+            headers={**auth_headers, "X-User-Groups": '["wip-admins"]'},
         )
         assert response.status_code == 200
         data = response.json()

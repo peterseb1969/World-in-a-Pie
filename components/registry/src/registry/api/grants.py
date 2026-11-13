@@ -3,6 +3,7 @@
 Provides grant CRUD (bulk-first) and user-facing permission queries.
 """
 
+import json
 import logging
 import math
 from datetime import UTC, datetime
@@ -667,6 +668,27 @@ async def my_namespace_permission(
     return {"namespace": prefix, "permission": perm}
 
 
+def _forwarded_groups(request: Request) -> list[str]:
+    """The groups a calling service forwards for the identity it asks about.
+
+    X-User-Groups carries a JSON array of strings. A group name may hold any
+    character, a comma included: a list joined with commas and split again
+    would read a group named "staff,wip-admins" as wip-admins, so the header
+    is never split. An absent header means no groups; anything but an array
+    of strings is refused (400) rather than read as no groups.
+    """
+    raw = request.headers.get("X-User-Groups")
+    if raw is None:
+        return []
+    try:
+        groups = json.loads(raw)
+    except ValueError:
+        groups = None
+    if not isinstance(groups, list) or not all(isinstance(g, str) for g in groups):
+        raise HTTPException(400, "X-User-Groups must be a JSON array of strings")
+    return groups
+
+
 @my_router.get(
     "/check-permission",
     summary="Check permission for a given identity (internal, service-to-service)",
@@ -677,7 +699,6 @@ async def check_permission_internal(
     user_id: str,
     email: str | None = None,
     username: str | None = None,
-    groups: str | None = None,
     auth_method: AuthMethod = "jwt",
     identity: UserIdentity = Depends(require_api_key),
 ):
@@ -686,8 +707,8 @@ async def check_permission_internal(
     Services call this to resolve a user's permission on a namespace
     without that user being the direct caller.
 
-    Groups are read from the X-User-Groups header (preferred) or the
-    groups query parameter (legacy, deprecated).
+    The user's groups travel in the X-User-Groups header as a JSON array of
+    strings (kept out of access logs, and never split on commas).
 
     Only callable by privileged API keys (wip-admins or wip-services group).
     """
@@ -695,10 +716,7 @@ async def check_permission_internal(
     if not any(g in PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
-    # Prefer groups from header (M2 — avoid leaking in logs/caches)
-    header_groups = request.headers.get("X-User-Groups")
-    groups_str = header_groups or groups
-    group_list = groups_str.split(",") if groups_str else []
+    group_list = _forwarded_groups(request)
     # CASE-351 — the calling service forwards the api-key's namespace
     # scope so _resolve_permission's api_key branch can see the same
     # scoping the calling service does. Absent header = unscoped key
@@ -726,7 +744,6 @@ async def accessible_namespaces_internal(
     user_id: str,
     email: str | None = None,
     username: str | None = None,
-    groups: str | None = None,
     auth_method: AuthMethod = "jwt",
     identity: UserIdentity = Depends(require_api_key),
 ):
@@ -737,7 +754,7 @@ async def accessible_namespaces_internal(
     except one locked for deletion: the list, not the flag, is what a
     listing filters by.
 
-    Groups are read from X-User-Groups header (preferred) or groups query param.
+    The user's groups travel in the X-User-Groups header, as for check-permission.
 
     Only callable by privileged API keys (wip-admins or wip-services group).
     """
@@ -745,9 +762,7 @@ async def accessible_namespaces_internal(
     if not any(g in PRIVILEGED_GROUPS for g in caller.groups):
         raise HTTPException(403, "Only service accounts can call this endpoint")
 
-    header_groups = request.headers.get("X-User-Groups")
-    groups_str = header_groups or groups
-    group_list = groups_str.split(",") if groups_str else []
+    group_list = _forwarded_groups(request)
     # CASE-351 — see check_permission_internal for the rationale.
     synthetic = _build_synthetic_identity(
         user_id=user_id,
