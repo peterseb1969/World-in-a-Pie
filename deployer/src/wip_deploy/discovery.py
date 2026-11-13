@@ -95,6 +95,19 @@ def discover(repo_root: Path) -> Discovery:
         else:
             result.apps.append(app)
 
+    # Everything downstream keys by name, so a second manifest of one name
+    # would silently replace the first (the later directory winning).
+    for kind, items, pattern in (
+        ("component", result.components, "components/*/wip-component.yaml"),
+        ("app", result.apps, "apps/*/wip-app.yaml"),
+    ):
+        names = [i.metadata.name for i in items]
+        for name in sorted({n for n in names if names.count(n) > 1}):
+            result.errors.append(DiscoveryError(
+                repo_root / pattern,
+                f"two {kind} manifests are named {name!r}; one would silently "
+                "replace the other",
+            ))
     return result
 
 

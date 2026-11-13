@@ -178,7 +178,10 @@ def _dex_clients(
         out.append(
             _client_entry(
                 client_id=c.spec.oidc_client.client_id,
-                name=c.metadata.description.splitlines()[0].strip() or c.metadata.name,
+                name=next(
+                    (line.strip() for line in c.metadata.description.splitlines() if line.strip()),
+                    c.metadata.name,
+                ),
                 redirect_paths=c.spec.oidc_client.redirect_paths,
                 issuer_base=issuer_base,
             )

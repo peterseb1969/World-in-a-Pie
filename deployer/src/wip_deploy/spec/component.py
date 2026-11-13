@@ -466,8 +466,10 @@ class ImageRef(WIPModel):
     their own upstream version here. Full precedence:
     `config_gen/images.py`.
 
-    `build_context=None` means pre-built image only. `build_context=Path(...)`
-    enables a local source build on the **dev** target only — the dev renderer
+    `build_context=None` means pre-built image only. `build_context: .` (the
+    only value accepted: the context is always the component's own directory,
+    so another value would be silently ignored) enables a local source build
+    on the **dev** target only — the dev renderer
     (`renderers/dev_simple.py`) materializes the context and builds incrementally.
     **compose** never local-builds (`renderers/compose.py:_build_block` returns
     None by design — pre-built / registry-pull only); **k8s** pulls too
@@ -480,6 +482,16 @@ class ImageRef(WIPModel):
     tag: str | None = None
     build_context: Path | None = None
     build_args: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("build_context")
+    @classmethod
+    def _build_context_is_the_component_dir(cls, value: Path | None) -> Path | None:
+        if value is not None and value != Path("."):
+            raise ValueError(
+                f"build_context {str(value)!r}: the build context is always the "
+                "component's own directory; write `build_context: .`"
+            )
+        return value
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -648,6 +660,18 @@ class Component(WIPModel):
     @classmethod
     def _normalize_kind(cls, v: object) -> object:
         return v
+
+    @model_validator(mode="after")
+    def activation_only_on_infrastructure(self) -> Component:
+        """Only an infrastructure component's activation is consulted: core is
+        always active and an optional one is active when listed. Declared on
+        either, it would be silently ignored."""
+        if self.spec.activation is not None and self.metadata.category != "infrastructure":
+            raise ValueError(
+                f"component {self.metadata.name!r}: activation is read only for "
+                f"category infrastructure, and this one is {self.metadata.category!r}"
+            )
+        return self
 
     @model_validator(mode="after")
     def no_namespaces(self) -> Component:

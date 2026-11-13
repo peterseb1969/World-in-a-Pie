@@ -475,7 +475,7 @@ class ImagesSpec(WIPModel):
         cleaned = value.strip()
         if "://" in cleaned:
             cleaned = cleaned.split("://", 1)[1]
-        cleaned = cleaned.rstrip("/")
+        cleaned = "".join(cleaned.rstrip("/").split())
         if cleaned != value:
             raise ValueError(
                 f"registry {value!r} is not an image prefix — images are "

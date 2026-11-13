@@ -185,6 +185,33 @@ def _validate_env_from_component_resolvable(
     return errs
 
 
+def _validate_required_env_targets_active(
+    deployment: Deployment, components: list[Component], apps: list[App]
+) -> list[ValidationError]:
+    """A REQUIRED env var of an active owner must reference an active
+    component or enabled app: the design assigns this to validation, and left
+    to env resolution it surfaced as a traceback (an optional var whose
+    target is inactive is simply left unset)."""
+    enabled = {r.name for r in deployment.spec.apps if r.enabled}
+    active = {c.metadata.name for c in components if is_component_active(c, deployment)} | enabled
+    owners: list[Component | App] = [
+        *(c for c in components if is_component_active(c, deployment)),
+        *(a for a in apps if a.metadata.name in enabled),
+    ]
+    errs: list[ValidationError] = []
+    for owner in owners:
+        for env_var in owner.spec.env.required:
+            src = env_var.source
+            for ref in (src.from_component, src.from_component_host, src.from_component_port):
+                if ref is not None and ref not in active:
+                    errs.append(ValidationError(
+                        f"{owner.metadata.name!r} requires env {env_var.name!r} from "
+                        f"{ref!r}, which this install does not run; enable it, or make "
+                        "the var optional"
+                    ))
+    return errs
+
+
 def _validate_oidc_client_ids_unique(
     components: list[Component], apps: list[App], deployment: Deployment
 ) -> list[ValidationError]:
@@ -459,6 +486,7 @@ def validate_all(
     )
     report.errors.extend(_validate_depends_on_resolvable(components, apps))
     report.errors.extend(_validate_env_from_component_resolvable(components, apps))
+    report.errors.extend(_validate_required_env_targets_active(deployment, components, apps))
     report.errors.extend(
         _validate_oidc_client_ids_unique(components, apps, deployment)
     )
