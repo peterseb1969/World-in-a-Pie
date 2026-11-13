@@ -1773,6 +1773,36 @@ _PLAIN_RESTORE_ORDER = (
     "registry_entries",
 )
 
+# The Registry entries of definitions. They are written with the definitions,
+# ahead of the reporting structure gate and of any document, not with the
+# rest of the entries at the end: every service resolves a template or
+# terminology id through the Registry, so until its entry exists the
+# definition is unknown to every read. Reporting-sync's batch sync lists a
+# template's documents by its id, and document-store answers 404 for an id the
+# Registry does not know; reporting-sync rightly reads that as "source did
+# not answer", creates no table, and the gate times out.
+_DEFINITION_ENTRY_TYPES = frozenset({"terminologies", "terms", "templates"})
+
+
+def _is_definition_entry(row: dict[str, Any]) -> bool:
+    return row.get("entity_type") in _DEFINITION_ENTRY_TYPES
+
+
+def _structure_issue(template: dict[str, Any], sync_error: str | None) -> str:
+    """One template's failed structure check, with reporting-sync's reason
+    for it when its batch-sync job failed."""
+    if template.get("error"):
+        problem = str(template["error"])
+    elif template.get("legacy_table"):
+        problem = "legacy pre-split table shadows the entity view"
+    elif not template.get("table_present"):
+        problem = "table missing"
+    else:
+        problem = f"missing columns {template.get('missing_columns')}"
+    if sync_error:
+        problem += f" — its reporting sync failed: {sync_error}"
+    return f"{template.get('template_value')}: {problem}"
+
 
 class DirectRestoreEngine:
     """Restore an archive's namespaces via direct MongoDB bulk writes.
@@ -1825,6 +1855,10 @@ class DirectRestoreEngine:
         # triggered (the count phase). Reported on the complete event so the
         # job's completion does not trigger a second, full re-sync of them.
         self._reporting_synced: list[str] = []
+        # Per namespace, the key claims of the definitions' registry entries
+        # (claimed, owned by another), written in a pass ahead of the rest and
+        # reported together with them (_restore_entity_type).
+        self._held_claims: dict[str, tuple[int, int]] = {}
         # Per-namespace reporting verdicts (verified / incomplete /
         # unavailable / not_checked), put on the result at completion.
         self._reporting_verdicts: dict[str, dict[str, Any]] = {}
@@ -2030,13 +2064,23 @@ class DirectRestoreEngine:
                 reader, entity_type, src, tgt, entry,
                 dropped=dropped, repoint=repoint, batch_size=batch_size,
                 processed=processed, total=total, skipped=skipped,
+                definition_entries=False if entity_type == "registry_entries" else None,
             )
-            # Structural gate between templates and documents: the
-            # reporting tables the restored templates imply must be
-            # creatable and correctly shaped BEFORE any document
-            # moves. Catches broken bookkeeping / mis-shaped tables
-            # at the first template instead of after a full restore.
             if entity_type == "templates":
+                # The definitions' Registry entries first: until they
+                # exist no service can resolve a restored template or
+                # terminology (_DEFINITION_ENTRY_TYPES).
+                processed += await self._restore_entity_type(
+                    reader, "registry_entries", src, tgt, entry,
+                    dropped=dropped, repoint=repoint, batch_size=batch_size,
+                    processed=processed, total=total, skipped=skipped,
+                    definition_entries=True,
+                )
+                # Structural gate between templates and documents: the
+                # reporting tables the restored templates imply must be
+                # creatable and correctly shaped BEFORE any document
+                # moves. Catches broken bookkeeping / mis-shaped tables
+                # at the first template instead of after a full restore.
                 await self._reporting_phase_structure(tgt)
 
         await self._release_retired_synonyms(tgt)
@@ -2139,14 +2183,22 @@ class DirectRestoreEngine:
     def _rows_to_restore(
         self, reader: ArchiveReader, entity_type: str, src: str,
         dropped: Any, repoint: Any, skipped: set[str],
+        definition_entries: bool | None = None,
     ) -> Iterator[dict[str, Any]]:
         """The archive's rows of one type and namespace as a plain restore
         writes them: without MongoDB's _id, without dropped rows and the
-        Registry entries of skipped types, and repointed."""
+        Registry entries of skipped types, and repointed. For registry
+        entries, ``definition_entries`` True keeps only the definitions'
+        entries, False only the others, None all of them."""
         for entity in reader.read_entities(entity_type, namespace=src):
             entity.pop("_id", None)  # Strip MongoDB internal ID
             if (dropped and _dropped_row(entity_type, entity, dropped)) or _entry_of_skipped(
                 entity_type, entity, skipped,
+            ):
+                continue
+            if (
+                definition_entries is not None and entity_type == "registry_entries"
+                and _is_definition_entry(entity) != definition_entries
             ):
                 continue
             yield repoint.rewrite(entity_type, entity, self) if repoint is not None else entity
@@ -2165,26 +2217,35 @@ class DirectRestoreEngine:
         processed: int,
         total: int,
         skipped: set[str] | None = None,
+        definition_entries: bool | None = None,
     ) -> int:
         """Write one entity type of one namespace in batches of batch_size;
         returns the rows written. ``processed`` is the run's count before this
         type, for the progress percentage. Registry entries of a skipped
         entity type (``skipped``) are left out with their entities: an entry
         claims its keys, and one without its entity would hold them for
-        nothing."""
+        nothing. ``definition_entries`` splits the registry entries into the
+        definitions' (True) and the rest (False); see _rows_to_restore."""
         db_name, coll_name = COLLECTION_MAP[entity_type]
         collection = self._mongo[db_name][coll_name]
         expected = getattr(entry.counts, entity_type, 0) if entry else 0
         phase_name = f"phase_{entity_type}"
+        if definition_entries is None or entity_type != "registry_entries":
+            what = f"{entity_type} ({expected} expected)"
+        else:
+            what = f"registry_entries of {'definitions' if definition_entries else 'documents and files'}"
         self._emit(
             phase_name,
-            f"[{tgt}] Restoring {entity_type} ({expected} expected)",
+            f"[{tgt}] Restoring {what}",
             percent=self._pct(processed, total),
         )
 
         batch: list[dict[str, Any]] = []
         count = claimed = taken_by_other = 0
-        for entity in self._rows_to_restore(reader, entity_type, src, dropped, repoint, skipped or set()):
+        rows = self._rows_to_restore(
+            reader, entity_type, src, dropped, repoint, skipped or set(), definition_entries,
+        )
+        for entity in rows:
             batch.append(entity)
             if len(batch) < batch_size:
                 continue
@@ -2207,7 +2268,14 @@ class DirectRestoreEngine:
 
         logger.info("Restored %d %s into namespace %s", count, entity_type, tgt)
         if entity_type == "registry_entries":
-            self._report_claims(tgt, claimed, taken_by_other)
+            # The definitions' entries are written in a pass of their own;
+            # their claims are reported with the rest's, once per namespace.
+            held = self._held_claims.pop(tgt, (0, 0))
+            claimed, taken_by_other = claimed + held[0], taken_by_other + held[1]
+            if definition_entries:
+                self._held_claims[tgt] = (claimed, taken_by_other)
+            else:
+                self._report_claims(tgt, claimed, taken_by_other)
         return count
 
     async def _write_restore_batch(
@@ -5341,12 +5409,32 @@ class DirectRestoreEngine:
         With ``streamed``, documents are read from the archive again chain by
         chain and written in batches instead of coming from ``doc_groups``.
         """
+        # The definitions' Registry entries are written with the definitions,
+        # before the documents and their reporting gate; the rest at the end
+        # (_DEFINITION_ENTRY_TYPES).
+        entries_plan = plans.get("registry_entries")
+        new_entries = entries_plan.to_insert if entries_plan else []
+        definition_entries = [e for e in new_entries if _is_definition_entry(e)]
+        other_entries = [e for e in new_entries if not _is_definition_entry(e)]
+        entries_written = False
         for entity_type in MERGE_ENTITY_ORDER:
             plan = plans.get(entity_type)
             if plan is None:
                 continue
             db_name, coll_name = COLLECTION_MAP[entity_type]
             collection = self._mongo[db_name][coll_name]
+            if entity_type in ("documents", "registry_entries") and not entries_written:
+                entries_db, entries_coll = COLLECTION_MAP["registry_entries"]
+                await self._merge_insert_rows(
+                    namespace, self._mongo[entries_db][entries_coll],
+                    "registry_entries", definition_entries, batch_size,
+                )
+                entries_written = True
+            if entity_type == "registry_entries":
+                await self._merge_insert_rows(
+                    namespace, collection, entity_type, other_entries, batch_size,
+                )
+                continue
             if entity_type != "documents":
                 await self._merge_insert_rows(
                     namespace, collection, entity_type, plan.to_insert, batch_size,
@@ -5360,10 +5448,9 @@ class DirectRestoreEngine:
         if plans.get("documents") is not None or plans.get("files") is not None:
             await self._recount_file_references(namespace)
 
-        entries_plan = plans.get("registry_entries")
-        if entries_plan and entries_plan.to_insert:
+        if new_entries:
             claimed, taken_by_other = await self._claim_inserted_entries(
-                namespace, entries_plan.to_insert
+                namespace, new_entries
             )
             self._report_claims(namespace, claimed, taken_by_other)
 
@@ -6325,14 +6412,11 @@ class DirectRestoreEngine:
             if parity.get("bookkeeping_tables_ok", True) and parity.get("structural_issues", 0) == 0:
                 return
             await asyncio.sleep(self._REPORTING_POLL_INTERVAL_S)
+        # Why reporting-sync's jobs failed, by template: a missing table
+        # says only that the sync did not get there.
+        sync_errors = await self._reporting.failed_jobs(namespace)
         issues = [
-            f"{t.get('template_value')}: "
-            + (t.get("error") or (
-                "legacy pre-split table shadows the entity view"
-                if t.get("legacy_table")
-                else "table missing" if not t.get("table_present")
-                else f"missing columns {t.get('missing_columns')}"
-            ))
+            _structure_issue(t, sync_errors.get(str(t.get("template_value"))))
             for t in (parity or {}).get("templates", [])
             if not (
                 t.get("table_present")
@@ -6344,11 +6428,12 @@ class DirectRestoreEngine:
         raise RestoreEngineError(
             f"Reporting tables for namespace '{namespace}' did not verify "
             f"within {self._REPORTING_STRUCTURE_TIMEOUT_S}s — halting before "
-            f"document restore. Issues: {'; '.join(issues[:5]) or 'unknown'}. "
+            f"document restore. Issues: {'; '.join(issues[:5]) or 'unknown'}"
+            f"{f' (and {len(issues) - 5} more)' if len(issues) > 5 else ''}. "
             f"NOTE: namespace '{namespace}' is now PARTIAL — definitions were "
-            "restored but documents and registry identities were NOT, so "
-            "namespaced lookups against it will fail to resolve. Delete the "
-            "namespace and re-restore after remediating."
+            "restored but documents and their registry identities were NOT, "
+            "so namespaced lookups against it will fail to resolve. Delete "
+            "the namespace and re-restore after remediating."
         )
 
     async def _reporting_phase_counts(

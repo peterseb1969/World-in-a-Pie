@@ -37,6 +37,7 @@ def _reporting_stub(parity_result):
     stub.parity = AsyncMock(return_value=parity_result)
     stub.trigger_batch_sync = AsyncMock(return_value=True)
     stub.drop_namespace_schema = AsyncMock(return_value=True)
+    stub.failed_jobs = AsyncMock(return_value={})
     return stub
 
 

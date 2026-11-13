@@ -36,6 +36,10 @@ class ReportingSyncClient:
     def __init__(self) -> None:
         self._base = os.getenv("REPORTING_SYNC_URL", "http://wip-reporting-sync:8005")
         self._api_key: str = service_api_key(*REPORTING_SYNC_KEY)
+        # Per namespace, the batch-sync jobs the last trigger answered with
+        # (each {job_id, template_value, status, message}), so a caller
+        # whose wait timed out can ask why (failed_jobs).
+        self._started: dict[str, list[dict[str, Any]]] = {}
 
     def _headers(self) -> dict[str, str]:
         return {"X-API-Key": self._api_key}
@@ -85,7 +89,7 @@ class ReportingSyncClient:
                     headers=self._headers(),
                 )
                 if 200 <= resp.status_code < 300:
-                    return self._queued_any(namespace, resp)
+                    return self._queued_any(namespace, resp, self._started)
                 logger.warning(
                     "reporting batch sync for %s refused: HTTP %s %s",
                     namespace, resp.status_code, resp.text[:200],
@@ -96,9 +100,13 @@ class ReportingSyncClient:
             return False
 
     @staticmethod
-    def _queued_any(namespace: str, resp: httpx.Response) -> bool:
+    def _queued_any(
+        namespace: str, resp: httpx.Response,
+        started: dict[str, list[dict[str, Any]]] | None = None,
+    ) -> bool:
         """Whether a batch-sync answer started at least one job; logs those
-        that failed to start and an answer that started none."""
+        that failed to start and an answer that started none. With
+        ``started``, records the answer's jobs under the namespace."""
         try:
             jobs = resp.json()
         except ValueError:
@@ -109,6 +117,8 @@ class ReportingSyncClient:
                 namespace, resp.text[:200],
             )
             return False
+        if started is not None:
+            started[namespace] = [j for j in jobs if isinstance(j, dict)]
         failed = [j for j in jobs if isinstance(j, dict) and j.get("status") == "failed"]
         for job in failed:
             logger.warning(
@@ -119,6 +129,37 @@ class ReportingSyncClient:
             logger.warning("reporting batch sync for %s queued no job", namespace)
             return False
         return True
+
+    async def failed_jobs(self, namespace: str) -> dict[str, str]:
+        """Why the last trigger's jobs for ``namespace`` failed, by template
+        value: those that did not start (their answer's message) and those
+        that started and then failed (the job record's error_message).
+
+        Best effort like the rest of this client: a job that cannot be read
+        is left out, and an unreachable reporting-sync answers {}.
+        """
+        reasons: dict[str, str] = {}
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                for job in self._started.get(namespace, []):
+                    value = str(job.get("template_value") or "?")
+                    if job.get("status") == "failed":
+                        reasons[value] = str(job.get("message") or "did not start")
+                        continue
+                    if not job.get("job_id"):
+                        continue
+                    resp = await client.get(
+                        f"{self._base}/api/reporting-sync/sync/batch/jobs/{job['job_id']}",
+                        headers=self._headers(),
+                    )
+                    if resp.status_code != 200:
+                        continue
+                    record = resp.json()
+                    if record.get("status") == "failed":
+                        reasons[value] = str(record.get("error_message") or "failed")
+        except (httpx.HTTPError, ValueError) as e:
+            logger.warning("reporting-sync job status for %s unreadable: %s", namespace, e)
+        return reasons
 
     async def drop_namespace_schema(self, namespace: str) -> bool:
         """Drop the namespace's reporting schema. True on success."""
