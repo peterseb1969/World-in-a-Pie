@@ -122,6 +122,10 @@ class ValidationResult:
         # isolation check needs this real value; passing the document's
         # namespace in its place makes the template branch constant-false.
         self.template_namespace: str | None = None
+        # The template's usage ("entity", "reference", "relationship"). It is
+        # immutable, so a later stage reads it here instead of asking
+        # template-store again.
+        self.template_usage: str | None = None
         # Array format for indexing: [{"field_path": "gender", "term_id": "019abc42-..."}, ...]
         self.term_references: list[dict[str, Any]] = []
         # Array format: [{"field_path": "supervisor", "reference_type": "document", "resolved": {...}}, ...]
@@ -392,6 +396,7 @@ class ValidationService:
         result.template_version = template.get("version", 1)
         result.template_value = template.get("value")
         result.template_namespace = template.get("namespace")
+        result.template_usage = template.get("usage", "entity")
 
         # Stage 3: Field validation
         start = time.perf_counter()
@@ -1841,6 +1846,19 @@ class ValidationService:
                 # refuse the write rather than let the reference through
                 # unchecked.
                 raise
+            except AmbiguousIdentifierError as e:
+                # A target_templates entry naming several templates, reached
+                # while matching a value or a business key (the endpoint
+                # check reports its own): ambiguity, never a failed check.
+                result.add_error(
+                    code="ambiguous_reference",
+                    message=(
+                        f"Target template '{e.value}' of field '{field_path}' names "
+                        "several templates; declare it by id or as ns:VALUE"
+                    ),
+                    field=field_path,
+                    details={"value": e.value, "candidates": e.candidates},
+                )
             except Exception as e:
                 # Any other failure leaves the reference unchecked, and an
                 # unchecked reference is never written: an error, not a
@@ -1975,6 +1993,24 @@ class ValidationService:
 
         return file_values
 
+    @staticmethod
+    async def _descendant_refs(client: Any, tpl_id: str, version_strategy: str) -> list[str]:
+        """The templates inheriting from ``tpl_id``: their ids (pinned) or
+        values (latest). A template the store does not serve has none; an
+        outage is refused, never read as "no subtypes" (which would refuse
+        every legal subtype reference, and be cached for the batch)."""
+        try:
+            template = await client.get_template(template_id=tpl_id)
+            if not template:
+                return []
+            descendants = await client.get_template_descendants(cast(str, template.get("template_id")))
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable("template-store", f"subtypes of template {tpl_id!r}", e) from e
+            return []
+        key = "template_id" if version_strategy == "pinned" else "value"
+        return [cast(str, d.get(key)) for d in descendants if d.get(key)]
+
     async def _expand_target_templates(
         self,
         target_templates: list[str],
@@ -1997,26 +2033,9 @@ class ValidationService:
         client = get_template_store_client()
 
         for tpl_id in target_templates:
-            if tpl_id in cache:
-                expanded.update(cache[tpl_id])
-                continue
-
-            try:
-                template = await client.get_template(template_id=tpl_id)
-                if not template:
-                    cache[tpl_id] = []
-                    continue
-
-                descendants = await client.get_template_descendants(cast(str, template.get("template_id")))
-                desc_refs: list[str]
-                if version_strategy == "pinned":
-                    desc_refs = [cast(str, d.get("template_id")) for d in descendants if d.get("template_id")]
-                else:
-                    desc_refs = [cast(str, d.get("value")) for d in descendants if d.get("value")]
-                cache[tpl_id] = desc_refs
-                expanded.update(desc_refs)
-            except TemplateStoreError:
-                cache[tpl_id] = []
+            if tpl_id not in cache:
+                cache[tpl_id] = await self._descendant_refs(client, tpl_id, version_strategy)
+            expanded.update(cache[tpl_id])
 
         return list(expanded)
 
@@ -2997,10 +3016,11 @@ class ValidationService:
         spelling — so every alias of one referent yields one identity. The
         Registry computes the actual identity_hash from these values.
 
-        Fail-closed: a referent identity field with no resolution (for
-        example a Def-Store outage, which degrades non-identity term fields
-        to a warning) rejects the write — hashing the spelling instead
-        would fork the document on a later, resolvable write.
+        Fail-closed: a referent identity field with no resolution rejects
+        the write — hashing the spelling instead would fork the document on
+        a later, resolvable write. A def-store outage never reaches this
+        stage: stage 4 refuses it (dependency_unavailable) for every term
+        field, identity or not.
         """
         identity_fields = template.get("identity_fields", [])
         result.identity_fields = identity_fields

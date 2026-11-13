@@ -23,7 +23,11 @@ nested template the archive does not carry is listed in `unverifiable`, and the
 value it governs is not judged.
 
 One live behaviour it cannot reproduce: the closed-namespace refusal of term
-values depends on the caller's permissions, not the archive. When a name is
+values depends on the caller's permissions, not the archive. Nor does it have
+a dependency to lose: live refuses a term value or a duration unit when
+def-store cannot answer (dependency_unavailable), an outage of the moment; a
+vocabulary the archive does not carry is a fact about the archive, listed in
+`unverifiable` as above, and the server judges that value on upload. When a name is
 ambiguous on a non-identity field, live picks the first-created bearer and so
 does this resolver, ordering bearers by their `created_at`, then `term_id`. Term
 rows without a `created_at` sort ahead of every dated one, so only there can

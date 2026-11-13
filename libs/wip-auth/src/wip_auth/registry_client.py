@@ -103,11 +103,14 @@ class DependencyUnavailableError(Exception):
     an error status. ``dependency`` names it ("registry", "def-store",
     "template-store").
 
-    The platform's one class for "could not be asked", as opposed to any
-    answer — not found, no access, invalid. A caller that catches it refuses
-    the request: ``setup_auth`` registers a handler that turns it into HTTP
-    503, and a bulk write reports it per item. It is never read as a miss,
-    as a warning, or as a pass.
+    The class for "could not be asked" of these three dependencies, as
+    opposed to any answer — not found, no access, invalid. A caller that
+    catches it refuses the request: ``setup_auth`` registers a handler that
+    turns it into HTTP 503, and a bulk write reports it per item. It is
+    never read as a miss, as a warning, or as a pass. Two outages have
+    classes of their own, outside this one: the object store's
+    (document-store's FileStorageUnavailableError) and a permission read's
+    (``reference_policy.PermissionUnavailableError``).
     """
 
     def __init__(self, message: str, dependency: str):
@@ -140,12 +143,22 @@ class RegistryUnavailableError(DependencyUnavailableError):
 def _raise_item_error(results: list[dict[str, Any]], operation: str, value: str) -> None:
     """A lookup answered 200 but its item reports an error: the Registry did
     not answer for this value, which is an outage for the caller, never "no
-    match". A ``not_found`` item is an answer and passes through."""
-    if results and results[0].get("status") == "error":
-        raise RegistryUnavailableError(
-            f"Registry could not look up {value!r} ({operation}): {results[0].get('error')}",
-            operation,
+    match". A ``not_found`` item is an answer and passes through.
+
+    An item refused for what the caller sent (an ``invalid_*`` error_code,
+    e.g. an entity type the Registry does not know) is an answer too, and a
+    retry would never change it: RegistryError, not an outage."""
+    if not results or results[0].get("status") != "error":
+        return
+    item = results[0]
+    if str(item.get("error_code") or "").startswith("invalid_"):
+        raise RegistryError(
+            f"Registry refused to look up {value!r} ({operation}): {item.get('error')}"
         )
+    raise RegistryUnavailableError(
+        f"Registry could not look up {value!r} ({operation}): {item.get('error')}",
+        operation,
+    )
 
 
 def registry_unavailable_from(
@@ -615,7 +628,8 @@ class RegistryClientBase:
     ) -> bool:
         """Hard-delete a Registry entry. Returns True if deleted, False if
         the entry was already gone; raises RegistryError when the Registry
-        refused (e.g. the namespace's deletion_mode gate).
+        refused (e.g. the namespace's deletion_mode gate) or could not be
+        reached.
 
         The endpoint is bulk-first — a refusal comes back as a per-item
         error inside HTTP 200 — so the item's own status is checked, never
@@ -639,28 +653,33 @@ class RegistryClientBase:
         # fields, and services restart at different moments during a rollout.
         if owner_hard_deleted:
             item["owner_hard_deleted"] = True
-        async with self._make_client() as client:
-            response = await client.request(
-                "DELETE",
-                f"{self.base_url}/api/registry/entries",
-                headers=self._get_headers(),
-                json=[item],
-            )
-            if response.status_code != 200:
-                raise RegistryError(
-                    f"Failed to hard-delete entry {entry_id}: "
-                    f"{response.status_code} - {response.text}"
+        try:
+            async with self._make_client() as client:
+                response = await client.request(
+                    "DELETE",
+                    f"{self.base_url}/api/registry/entries",
+                    headers=self._get_headers(),
+                    json=[item],
                 )
-            results = response.json().get("results") or [{}]
-            status = results[0].get("status")
-            if status == "deleted":
-                return True
-            if status == "not_found":
-                return False
+        except httpx.HTTPError as e:
+            # Every caller handles RegistryError (a rollback logs it); a bare
+            # transport error escaped them as a 500.
+            raise RegistryError(f"Registry unreachable hard-deleting entry {entry_id}: {e}") from e
+        if response.status_code != 200:
             raise RegistryError(
-                f"Registry refused to hard-delete entry {entry_id}: "
-                f"{results[0].get('error') or status}"
+                f"Failed to hard-delete entry {entry_id}: "
+                f"{response.status_code} - {response.text}"
             )
+        results = response.json().get("results") or [{}]
+        status = results[0].get("status")
+        if status == "deleted":
+            return True
+        if status == "not_found":
+            return False
+        raise RegistryError(
+            f"Registry refused to hard-delete entry {entry_id}: "
+            f"{results[0].get('error') or status}"
+        )
 
     async def deactivate_entries(
         self,

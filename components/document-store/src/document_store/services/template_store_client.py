@@ -101,7 +101,9 @@ class TemplateStoreClient:
                 if response.status_code != 200:
                     return None
                 return cast(str | None, response.json().get("stamp"))
-        except httpx.RequestError:
+        except (httpx.RequestError, ValueError, AttributeError):
+            # Unreachable, or a 200 whose body is not the stamp object (not
+            # JSON, or not an object): unknown, as the docstring promises.
             return None
 
     def forget_namespace(self, namespace: str) -> None:

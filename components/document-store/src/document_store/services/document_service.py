@@ -1238,8 +1238,17 @@ class DocumentService:
             await get_registry_client().hard_delete_entry(
                 document_id, rollback_uncommitted=True,
             )
-        except RegistryError as e:
+        except (RegistryError, RegistryUnavailableError) as e:
+            # A Registry that cannot be reached is no exception: the refusal
+            # stands, and the entry stays minted until a later release.
             logger.error("failed to release unused entry %s: %s", document_id, e)
+
+    async def _release_entry_if_minted(self, document_id: str, *, minted: bool) -> None:
+        """Release the entry of a document rolled back after its write, when
+        this request minted it (with the identity and synonyms it claims); an
+        entry the request found already there stays."""
+        if minted:
+            await self._release_minted_entry(document_id)
 
     async def _register_inline_synonyms(
         self,
@@ -1254,7 +1263,9 @@ class DocumentService:
 
         Returns (warnings, error_code, error_message):
           - all added / already-owned     -> ([], None, None)
-          - on_synonym_conflict == "warn"  -> (warnings, None, None); caller proceeds
+          - on_synonym_conflict == "warn"  -> (warnings, None, None) when the
+            Registry refused some synonyms; caller proceeds. A Registry that
+            could not answer refuses in either mode.
           - on_synonym_conflict == "fail"  -> ([], code, msg) AFTER rolling back
             the synonyms added in this call (and, if is_new_entry, releasing the
             document's own entry). The caller must then abort without persisting.
@@ -1269,8 +1280,9 @@ class DocumentService:
                 entity_type="documents", synonyms=synonyms,
             )
         except RegistryError as e:
-            if on_synonym_conflict == "warn":
-                return [f"Synonyms not registered (registry error): {e}"], None, None
+            # The Registry could not answer (unreachable, or an error status):
+            # an outage, refused in either mode. "warn" covers only the
+            # synonyms it answers it refuses, below.
             await self._rollback_synonym_allocation(document_id, namespace, [], is_new_entry)
             return [], "registry_error", f"Synonym registration failed: {e}"
 
@@ -1312,16 +1324,17 @@ class DocumentService:
         (CASE-436 rollback_uncommitted — bypasses the deletion_mode gate); the
         hard-delete cascades to its claims and embedded synonyms, so the
         just-added ones go with it. Otherwise (update path) remove only the
-        synonyms added in this call. Failures are logged, never raised, so the
-        original conflict is what surfaces; any residue is swept by the
-        registry's claim reconciliation.
+        synonyms added in this call. Failures, an unreachable Registry
+        included, are logged, never raised, so the original conflict is what
+        surfaces. What a failed release leaves (a committed entry or synonyms)
+        is not swept by anything: the log line is the record.
         """
         registry = get_registry_client()
         if is_new_entry:
             try:
                 await registry.hard_delete_entry(document_id, rollback_uncommitted=True)
                 return
-            except RegistryError as e:
+            except (RegistryError, RegistryUnavailableError) as e:
                 logger.error(
                     "CASE-436: failed to roll back entry %s after synonym conflict: %s",
                     document_id, e,
@@ -1332,7 +1345,7 @@ class DocumentService:
                     entry_id=document_id, namespace=namespace,
                     entity_type="documents", synonyms=added_synonyms,
                 )
-            except RegistryError as e:
+            except (RegistryError, RegistryUnavailableError) as e:
                 logger.warning(
                     "CASE-436: failed to remove %d added synonym(s) from %s during "
                     "rollback: %s", len(added_synonyms), document_id, e,
@@ -1396,8 +1409,9 @@ class DocumentService:
             return None, error_fields(e)
 
         # Register auto-synonym for migration portability (version 1 only).
-        # On failure, roll back the MongoDB document and refuse the item with
-        # registry_error, as the bulk path does — never a 500.
+        # On failure, roll back the MongoDB document and the Registry entry
+        # this request minted (with the inline synonyms it carries), and
+        # refuse the item with registry_error, as the bulk path does.
         if version == 1 and not version_override:
             try:
                 registry = get_registry_client()
@@ -1415,6 +1429,7 @@ class DocumentService:
                     document_id,
                 )
                 await document.delete()
+                await self._release_entry_if_minted(document_id, minted=is_new_entry)
                 return None, error_fields(e)
 
         # Publish document created event
@@ -4115,6 +4130,7 @@ class DocumentService:
         validation_results: list[tuple[int, DocumentCreateRequest, Any]],
         namespace: str,
         actor: str,
+        minted: set[str],
     ) -> set[str]:
         """Register the auto-synonym of each document a bulk create made new.
 
@@ -4171,6 +4187,7 @@ class DocumentService:
             await Document.find(
                 {"namespace": namespace, "document_id": document_id}
             ).delete()
+            await self._release_entry_if_minted(document_id, minted=document_id in minted)
         for pos, result in enumerate(results):
             if result.document_id in reasons and result.status != "error":
                 results[pos] = BulkResultItem(
@@ -4192,6 +4209,18 @@ class DocumentService:
         with term_resolution_batch(), placement_batch():
             return await self._bulk_create(items, namespace, continue_on_error)
 
+    @staticmethod
+    async def _gate_template(template_client: Any, template_id: str) -> dict[str, Any] | None:
+        """The template Stage 1b checks an item against. A store that cannot
+        answer raises DependencyUnavailableError; a template it does not
+        serve is None (the validation that already ran reported it)."""
+        try:
+            return cast(dict[str, Any] | None, await template_client.get_template_resolved(template_id))
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable("template-store", f"template {template_id!r}", e) from e
+            return None
+
     async def _gate_refusal(
         self, template_client: Any, idx: int, req: Any, vr: Any,
         namespace: str, placements: dict[str, str] | None,
@@ -4203,7 +4232,12 @@ class DocumentService:
         isolation; the bulk path applies the identical checks, in the same
         order, or the guardrail holds on one path only.
         """
-        tmpl = await template_client.get_template_resolved(req.template_id)
+        try:
+            tmpl = await self._gate_template(template_client, req.template_id)
+        except DependencyUnavailableError as e:
+            # The relationship constraints cannot be checked: the item is
+            # refused as an outage, never written unchecked.
+            return BulkResultItem(index=idx, status="error", **error_fields(e))
         if tmpl and tmpl.get("usage") == "relationship":
             rel_error = await self._validate_relationship_constraints(tmpl, vr, namespace)
             if rel_error:
@@ -4340,7 +4374,7 @@ class DocumentService:
         start = time.perf_counter()
         try:
             registry_results = await get_registry_client().generate_document_ids_bulk(
-                await self._registry_items(validation_results),
+                self._registry_items(validation_results),
                 created_by=actor,
                 namespace=namespace,
             )
@@ -4384,8 +4418,12 @@ class DocumentService:
         # edge or an identity-less document, the only synonym it has). A
         # refused synonym fails that document, as it fails a single create.
         start = time.perf_counter()
+        minted = {
+            reg["registry_id"] for reg in registry_results
+            if reg.get("status") == "created" and reg.get("registry_id")
+        }
         pending_events = await self._register_batch_auto_synonyms(
-            results, validation_results, namespace, actor, pending_events,
+            results, validation_results, namespace, actor, pending_events, minted,
         )
         timing["4c_auto_synonyms"] = (time.perf_counter() - start) * 1000
 
@@ -4400,11 +4438,13 @@ class DocumentService:
         namespace: str,
         actor: str,
         pending_events: list[tuple[EventType, dict]],
+        minted: set[str],
     ) -> list[tuple[EventType, dict]]:
         """Register the batch's auto-synonyms; a document whose synonym was
-        refused is rolled back, and its event is not published."""
+        refused is rolled back (its Registry entry too, when ``minted`` says
+        this batch created it), and its event is not published."""
         rolled_back = await self._register_bulk_auto_synonyms(
-            results, validation_results, namespace, actor,
+            results, validation_results, namespace, actor, minted,
         )
         if not rolled_back:
             return pending_events
@@ -4414,8 +4454,9 @@ class DocumentService:
         ]
 
     async def _warm_templates(self, template_ids: set[str]) -> None:
-        """Load each template of a batch into the cache once, nested
-        template_refs included, concurrently."""
+        """Load each template of a batch the store answers for into the
+        cache once, nested template_refs included, concurrently. Used by
+        bulk create and validate-bulk."""
         client = get_template_store_client()
         warmed: set[str] = set()
         await asyncio.gather(*(self._warm_template(client, tid, warmed) for tid in template_ids))
@@ -4427,9 +4468,9 @@ class DocumentService:
         warmed.add(tid)
         try:
             template = await client.get_template_resolved(tid)
-        except TemplateStoreError as e:
-            # The warm-up only saves time. A template it cannot load is left
-            # for each item's validation, which refuses that item on its own
+        except Exception as e:  # the warm-up only saves time
+            # A template it cannot load, for whatever reason, is left for
+            # each item's validation, which refuses that item on its own
             # (dependency_unavailable) instead of failing the batch as a 500.
             logger.warning("Template warm-up skipped %s: %s", tid, e)
             return
@@ -4465,19 +4506,11 @@ class DocumentService:
             return None
 
     @staticmethod
-    async def _registry_items(validation_results: list[Any]) -> list[dict[str, Any]]:
+    def _registry_items(validation_results: list[Any]) -> list[dict[str, Any]]:
         """The Registry registration item of each validated document."""
-        # CASE-430: suppress the bare identity-values synonym for
-        # relationship/edge types. Usage is read from the templates already
-        # warmed into cache in Stage 0, so this is a cache hit per template_id.
-        template_client = get_template_store_client()
-        is_relationship: dict[str, bool] = {}
         registry_items = []
         for _, item, vr in validation_results:
             tid = item.template_id
-            if tid not in is_relationship:
-                t = await template_client.get_template_resolved(tid)
-                is_relationship[tid] = bool(t and t.get("usage") == "relationship")
             reg_item: dict[str, Any] = {
                 "identity_values": vr.identity_values or None,
                 # Submitted spellings, qualified by the template, mint the
@@ -4488,7 +4521,10 @@ class DocumentService:
                 ),
                 "template_id": tid,
                 "has_identity_fields": bool(vr.identity_fields),
-                "skip_identity_value_synonym": is_relationship[tid],
+                # CASE-430: an edge type gets no bare identity-values
+                # synonym. Usage is the one validation read (immutable), so
+                # this stage asks template-store nothing.
+                "skip_identity_value_synonym": vr.template_usage == "relationship",
             }
             # A restore/migration (document_id + version) asks for its exact
             # id. A document_id without a version is an upsert: the identity
@@ -4728,25 +4764,10 @@ class DocumentService:
         order. The caller (endpoint) has already resolved template_id and
         checked the namespace read permission.
         """
-        # Stage 0: pre-warm the template + its nested template refs once
-        # (same pattern as bulk_create).
-        template_client = get_template_store_client()
-        warmed_templates: set[str] = set()
-
-        async def warm_template(tid: str):
-            if tid in warmed_templates:
-                return
-            warmed_templates.add(tid)
-            template = await template_client.get_template_resolved(tid)
-            if not template:
-                return
-            for field in template.get("fields", []):
-                for key in ("template_ref", "array_template_ref"):
-                    ref = field.get(key)
-                    if ref:
-                        await warm_template(ref)
-
-        await warm_template(template_id)
+        # Stage 0: pre-warm the template + its nested template refs once,
+        # as bulk_create does. An outage there is left to each item's
+        # validation, which refuses it (dependency_unavailable).
+        await self._warm_templates({template_id})
 
         # Shared document-reference cache across the batch (same as
         # _validate_batch) so repeated reference lookups hit cache.

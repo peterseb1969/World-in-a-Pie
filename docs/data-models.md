@@ -1317,7 +1317,7 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 |------|-------------|
 | `invalid_structure` | Document data is not an object ("must be a dictionary") |
 | `non_finite_number` | A number anywhere in the data is NaN or ±Infinity |
-| `template_not_found` | The document's template does not exist |
+| `template_not_found` | The document's template does not exist, or a nested (`template_ref`) or array-item (`array_template_ref`) template it declares |
 | `template_inactive` | The template version is deactivated |
 | `template_error` | The template could not be fetched/resolved |
 | `template_unresolvable` | The template exists but its inheritance chain cannot be resolved |
@@ -1375,7 +1375,8 @@ PATCH returns for the write as a whole (e.g. `validation_failed`, `append_only`,
 | `invalid_reference_template` | Referenced document's template is not in the allowed `target_templates` |
 | `invalid_template_reference` | The referenced template was not found |
 | `reference_not_found` | The referenced document does not exist |
-| `ambiguous_reference` | The value names several documents the field's `target_templates` allow; the details list the candidates |
+| `ambiguous_reference` | The value names several documents the field's `target_templates` allow, or a `target_templates` entry names several templates; the details list the candidates |
+| `reference_check_failed` | The reference could not be checked for a reason other than an outage (an outage is `dependency_unavailable` on the write); the reference is never written unchecked |
 | `missing_endpoint_constraint` | An edge type's `source_ref` / `target_ref` has no endpoint constraint to check against |
 
 **Files**

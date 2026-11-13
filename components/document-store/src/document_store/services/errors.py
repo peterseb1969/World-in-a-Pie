@@ -29,6 +29,16 @@ class DocumentStoreError(ValueError):
         self.details: dict[str, Any] | None = {"rule": rule} if rule else None
 
 
+def _registry_error_fields(exc: BaseException, message: str, unreachable: type) -> dict[str, Any]:
+    """A RegistryError's item fields: one that could not reach the Registry
+    carries details.rule registry_unavailable, as every other "could not be
+    reached" does, so a caller can tell the outage from a refusal."""
+    fields: dict[str, Any] = {"error": f"Registry error: {message}", "error_code": "registry_error"}
+    if isinstance(exc, unreachable):
+        fields["details"] = {"rule": "registry_unavailable"}
+    return fields
+
+
 def error_fields(exc: BaseException) -> dict[str, Any]:
     """The error, error_code and details of a per-item bulk result for ``exc``."""
     # Imported here: these modules import this one.
@@ -38,7 +48,7 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
         ReferenceValidationError,
         RegistryUnavailableError,
     )
-    from .registry_client import RegistryError
+    from .registry_client import RegistryError, RegistryUnreachableError
 
     message = str(exc)
     if isinstance(exc, DocumentStoreError):
@@ -61,7 +71,7 @@ def error_fields(exc: BaseException) -> dict[str, Any]:
         return {"error": message, "error_code": "dependency_unavailable",
                 "details": {"dependency": exc.dependency}}
     if isinstance(exc, RegistryError):
-        return {"error": f"Registry error: {message}", "error_code": "registry_error"}
+        return _registry_error_fields(exc, message, RegistryUnreachableError)
     if isinstance(exc, HTTPException):
         code = {403: "forbidden", 404: "not_found"}.get(exc.status_code, "invalid_request")
         return {"error": str(exc.detail), "error_code": code}

@@ -3,9 +3,9 @@
 A term- or reference-typed identity field feeds its resolved referent's
 canonical ID into the identity hash, never the submitted spelling — so
 every alias of one term converges on one document. The rule is
-fail-closed: an identity field whose resolution is missing (for example a
-Def-Store outage, which degrades non-identity term fields to a warning)
-rejects the write instead of hashing the spelling.
+fail-closed: an identity field whose resolution is missing rejects the
+write instead of hashing the spelling. A Def-Store outage refuses every term
+field, identity or not (dependency_unavailable), before identity is computed.
 
 The conftest Def-Store mock resolves term values case-insensitively to a
 stable per-term id: "M" and "m" are aliases of one term, "M" and "F" are

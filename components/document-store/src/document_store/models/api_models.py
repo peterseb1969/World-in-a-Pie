@@ -82,7 +82,9 @@ class DocumentCreateRequest(StrictModel):
             "allocated for it are rolled back — use this when the synonyms are "
             "load-bearing (e.g. you rely on original IDs to resolve after "
             "import). 'warn': the document is created and the refused synonyms "
-            "are reported in `warnings`."
+            "are reported in `warnings`. A Registry that cannot answer (unreachable "
+            "or an error status) is not a refusal: the create fails with "
+            "registry_error in either mode."
         ),
     )
 

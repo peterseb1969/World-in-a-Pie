@@ -38,7 +38,7 @@ from typing import Any, cast
 
 import httpx
 
-from .registry_client import registry_unavailable_from
+from .registry_client import _raise_item_error, registry_unavailable_from
 from .service_keys import REGISTRY_KEY, service_api_key
 
 logger = logging.getLogger(__name__)
@@ -530,6 +530,9 @@ async def _post_resolve(
 
     data = response.json()
     results = data.get("results", [])
+    # An error item is the Registry not answering for this identifier: an
+    # outage, never the "found nothing" below.
+    _raise_item_error(results, "resolve", identifier)
     if results and results[0].get("status") == "found":
         return cast(str, results[0]["entry_id"])
     if results and results[0].get("status") == "ambiguous":
@@ -608,6 +611,7 @@ async def _post_lookup_by_id(
         raise registry_unavailable_from("value lookup", response)
 
     results = response.json().get("results", [])
+    _raise_item_error(results, "value lookup", value)
     if not results or results[0].get("status") != "found":
         return None
     hit = results[0]
@@ -654,6 +658,7 @@ async def terminology_coordinates_by_id(entry_id: str) -> tuple[str, str] | None
     results = response.json().get("results", [])
     if not results:
         return None
+    _raise_item_error(results, "terminology lookup", entry_id)
     hit = results[0]
     if hit.get("status") != "found" or hit.get("matched_via") != "entry_id":
         return None
@@ -907,6 +912,7 @@ async def _settle_batch_resolution(
     storm. Strict callers then get the refusal for an ambiguous key or a
     miss; non-strict, an ambiguous key stays unresolved, never picked.
     """
+    _raise_item_error([resolve_result], "batch resolve", raw_id)
     status = resolve_result.get("status")
     if status == "found":
         return cast(str, resolve_result["entry_id"])

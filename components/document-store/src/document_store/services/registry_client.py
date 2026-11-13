@@ -31,20 +31,29 @@ logger = logging.getLogger(__name__)
 
 @contextlib.asynccontextmanager
 async def _transport_errors(operation: str) -> AsyncIterator[None]:
-    """A call the Registry could not be reached for raises RegistryError, as
-    an error status does, so every caller reports it per item as
-    registry_error. A bare httpx error escaped them as a 500."""
+    """A call the Registry could not be reached for raises
+    RegistryUnreachableError, a RegistryError, as an error status does, so
+    every caller reports it per item as registry_error. A bare httpx error
+    escaped them as a 500."""
     try:
         yield
     except httpx.HTTPError as e:
-        raise RegistryError(
+        raise RegistryUnreachableError(
             f"Registry unreachable ({operation}): {type(e).__name__}: {e}"
         ) from e
+
+
+class RegistryUnreachableError(RegistryError):
+    """A Registry write that could not reach the Registry. A RegistryError,
+    so every write path's handler reports it per item; its item carries
+    ``details.rule: registry_unavailable``, as every other "could not be
+    reached" does, so a caller can tell the outage from a refusal."""
 
 __all__ = [
     "SYSTEM_QUALIFIER_KEY",
     "RegistryClient",
     "RegistryError",
+    "RegistryUnreachableError",
     "clear_registry_transport",
     "configure_registry_client",
     "get_registry_client",
@@ -455,9 +464,9 @@ class RegistryClient(RegistryClientBase):
 
     async def get_namespace_status(self, namespace: str) -> str | None:
         """The namespace's lifecycle status as the Registry serves it, or None
-        when the Registry does not serve it: deleted, or locked for deletion
-        (the Registry hides a locked namespace from every caller, so the two
-        are indistinguishable here).
+        when the Registry does not serve it to this service's key: deleted,
+        no grant, or locked for deletion when the key is not a platform admin
+        (a platform admin sees "locked"). None never says which.
 
         Raises RegistryError (or the transport's error) when the Registry
         cannot answer — callers gating a destructive action must fail closed.
