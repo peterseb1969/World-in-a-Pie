@@ -4798,11 +4798,8 @@ async def import_documents_csv(
 
         # If no mapping provided, auto-map by getting template fields
         if column_mapping is None:
-            # Preview to get headers
+            # Preview to get headers (an unreadable file is a 422, raised here)
             preview = await client.preview_import(content, p.name)
-            if "error" in preview:
-                return f"Error: {preview['error']}"
-
             headers = preview.get("headers", [])
 
             fields = tmpl.get("fields", [])

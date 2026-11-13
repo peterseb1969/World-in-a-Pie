@@ -3,8 +3,8 @@
 The import tests cover every branch of POST /import except a file that fails
 to parse. Both outcomes are pinned here: a parser refusal (ValueError) is
 answered with its own message, and any other parse failure is answered as
-"Failed to parse file: ..." — in both cases a 200 with an error body, before
-any template lookup or document write.
+"Failed to parse file: ..." — in both cases a 422, before any template lookup
+or document write.
 """
 
 import io
@@ -23,7 +23,7 @@ def _empty_xlsx() -> bytes:
     return buf.getvalue()
 
 
-async def _import(client: AsyncClient, headers: dict, name: str, content: bytes) -> dict:
+async def _import(client: AsyncClient, headers: dict, name: str, content: bytes) -> str:
     response = await client.post(
         "/api/document-store/import",
         headers=headers,
@@ -34,18 +34,16 @@ async def _import(client: AsyncClient, headers: dict, name: str, content: bytes)
             "namespace": "wip",
         },
     )
-    assert response.status_code == 200
-    return response.json()
+    assert response.status_code == 422, response.text
+    return response.json()["detail"]
 
 
 @pytest.mark.asyncio
 async def test_parser_refusal_is_answered_with_its_message(client: AsyncClient, auth_headers: dict):
-    data = await _import(client, auth_headers, "empty.xlsx", _empty_xlsx())
-    assert data == {"error": "Empty spreadsheet"}
+    assert await _import(client, auth_headers, "empty.xlsx", _empty_xlsx()) == "Empty spreadsheet"
 
 
 @pytest.mark.asyncio
 async def test_unreadable_file_is_answered_as_a_parse_failure(client: AsyncClient, auth_headers: dict):
-    data = await _import(client, auth_headers, "broken.xlsx", b"this is not a zip archive")
-    assert set(data) == {"error"}
-    assert data["error"].startswith("Failed to parse file: ")
+    detail = await _import(client, auth_headers, "broken.xlsx", b"this is not a zip archive")
+    assert detail.startswith("Failed to parse file: ")

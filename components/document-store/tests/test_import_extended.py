@@ -48,6 +48,13 @@ def _import_data(template_id: str, mapping: dict, namespace: str = "wip", skip_e
 # ============================================================================
 
 
+
+def _refusal(response) -> str:
+    """The message of a 422 refusing an unusable upload."""
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    return detail if isinstance(detail, str) else detail["message"]
+
 @pytest.mark.asyncio
 async def test_csv_quoted_fields_with_commas(client: AsyncClient, auth_headers: dict):
     """CSV with quoted fields containing commas parses values correctly."""
@@ -164,10 +171,8 @@ async def test_csv_missing_mapped_column(client: AsyncClient, auth_headers: dict
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping),
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert "error" in data
-    assert "missing_col" in data["error"]
+    message = _refusal(response)
+    assert "missing_col" in message
 
 
 @pytest.mark.asyncio
@@ -520,9 +525,7 @@ async def test_import_empty_file(client: AsyncClient, auth_headers: dict):
         files={"file": ("empty.csv", b"", "text/csv")},
         data=_import_data("PERSON", {"a": "b"}),
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert "error" in data
+    assert _refusal(response) == "Empty file"
 
 
 @pytest.mark.asyncio
@@ -540,9 +543,7 @@ async def test_import_header_only_file(client: AsyncClient, auth_headers: dict):
         files={"file": ("data.csv", csv_bytes, "text/csv")},
         data=_import_data("PERSON", mapping),
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert "error" in data
+    assert _refusal(response) == "No documents to import (file may be empty)"
 
 
 @pytest.mark.asyncio
@@ -575,10 +576,8 @@ async def test_import_column_mapping_not_a_dict(client: AsyncClient, auth_header
             "namespace": "wip",
         },
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert "error" in data
-    assert "object" in data["error"].lower() or "dict" in data["error"].lower()
+    message = _refusal(response)
+    assert "object" in message.lower() or "dict" in message.lower()
 
 
 # ============================================================================
@@ -652,10 +651,8 @@ async def test_preview_empty_xlsx(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
         files={"file": ("empty.xlsx", xlsx_bytes, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
     )
-    assert response.status_code == 200
-    data = response.json()
+    assert _refusal(response) == "Empty spreadsheet"
     # Empty XLSX should return an error (no rows)
-    assert "error" in data
 
 
 # ============================================================================

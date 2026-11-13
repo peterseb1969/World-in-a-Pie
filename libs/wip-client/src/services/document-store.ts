@@ -49,9 +49,9 @@ function nsParam(namespace?: string): Record<string, unknown> | undefined {
 }
 
 /**
- * The import routes answer an unusable file (empty, unparseable, a bad column
- * mapping, nothing to import) with 200 and a bare `{error}` body. That is a
- * failed call, never a result.
+ * The import routes refuse an unusable file (empty, unparseable, a bad column
+ * mapping, nothing to import) with 422. Older document-stores answered it with
+ * 200 and a bare `{error}` body; that is a failed call too, never a result.
  */
 function refuseErrorBody<T>(body: T): T {
   if (body && typeof body === 'object' && 'error' in body) {

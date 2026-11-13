@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from wip_auth import UserIdentity, check_namespace_permission, require_api_key, resolve_or_404
 from wip_auth.term_resolution import term_resolution_batch
@@ -35,16 +35,13 @@ async def preview_import(
     """
     content = await read_upload(file)
     if not content:
-        return {"error": "Empty file"}
+        raise _unusable("Empty file")
 
     try:
-        result = ImportService.preview(content, file.filename or "data.csv")
-        return result
-    except ValueError as e:
-        return {"error": str(e)}
+        return ImportService.preview(content, file.filename or "data.csv")
     except Exception as e:
-        logger.error(f"Preview failed: {e}")
-        return {"error": f"Failed to parse file: {e}"}
+        logger.info(f"Preview refused an unreadable file: {e}")
+        raise _parse_failure(e) from None
 
 
 # The most created rows and failed rows a response lists; counts stay complete.
@@ -52,31 +49,28 @@ _MAX_LISTED_RESULTS = 100
 _MAX_LISTED_ERRORS = 50
 
 
-def _parse_mapping(column_mapping: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
-    """(the column mapping, None), or (None, the error response refusing it)."""
+def _unusable(message: str, **extra: Any) -> HTTPException:
+    """The answer to an upload that cannot be imported: 422, never a 200 that
+    a caller would read as an (empty) result."""
+    return HTTPException(status_code=422, detail={"message": message, **extra} if extra else message)
+
+
+def _parse_mapping(column_mapping: str) -> dict[str, Any]:
+    """The column mapping; 422 when it is not a JSON object."""
     try:
         mapping = json.loads(column_mapping)
     except json.JSONDecodeError as e:
-        return None, {"error": f"Invalid column_mapping JSON: {e}"}
+        raise _unusable(f"Invalid column_mapping JSON: {e}") from None
     if not isinstance(mapping, dict):
-        return None, {"error": "column_mapping must be a JSON object"}
-    return mapping, None
+        raise _unusable("column_mapping must be a JSON object")
+    return mapping
 
 
-def _parse_file(
-    content: bytes, filename: str,
-) -> tuple[list[str], list[dict[str, Any]]] | dict[str, Any]:
-    """The file's (headers, rows), or the error response when it cannot be read.
-
-    A parser refusal (ValueError) is answered with its own message; any other
-    failure is reported as a parse failure.
-    """
-    try:
-        return ImportService.parse_rows(content, filename)
-    except ValueError as e:
-        return {"error": str(e)}
-    except Exception as e:
-        return {"error": f"Failed to parse file: {e}"}
+def _parse_failure(e: Exception) -> HTTPException:
+    """A file the parser cannot read is the upload's fault: 422. A parser
+    refusal (ValueError) keeps its own message; anything else raised while
+    reading the bytes (a corrupt XLSX archive, say) is a parse failure too."""
+    return _unusable(str(e) if isinstance(e, ValueError) else f"Failed to parse file: {e}")
 
 
 async def _field_types(template_id: str) -> dict[str, str]:
@@ -231,31 +225,29 @@ async def import_documents(
 
     content = await read_upload(file)
     if not content:
-        return {"error": "Empty file"}
+        raise _unusable("Empty file")
 
-    mapping, mapping_error = _parse_mapping(column_mapping)
-    if mapping is None:
-        return mapping_error or {}
+    mapping = _parse_mapping(column_mapping)
 
-    parsed = _parse_file(content, file.filename or "data.csv")
-    if isinstance(parsed, dict):
-        return parsed
-    headers, rows = parsed
+    try:
+        headers, rows = ImportService.parse_rows(content, file.filename or "data.csv")
+    except Exception as e:
+        raise _parse_failure(e) from None
 
     # Validate mapping references valid columns
     invalid_cols = [col for col in mapping if col not in headers]
     if invalid_cols:
-        return {
-            "error": f"Column mapping references columns not found in file: {invalid_cols}",
-            "available_columns": headers,
-        }
+        raise _unusable(
+            f"Column mapping references columns not found in file: {invalid_cols}",
+            available_columns=headers,
+        )
 
     documents = ImportService.build_documents(
         rows, template_id, mapping, namespace,
         field_types=await _field_types(template_id),
     )
     if not documents:
-        return {"error": "No documents to import (file may be empty)"}
+        raise _unusable("No documents to import (file may be empty)")
 
     outcome = await _import_rows(documents, namespace, skip_errors)
     return _import_response(outcome)

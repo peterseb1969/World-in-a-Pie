@@ -28,6 +28,13 @@ def _make_xlsx(headers: list[str], rows: list[list]) -> bytes:
     return buf.getvalue()
 
 
+
+def _refusal(response) -> str:
+    """The message of a 422 refusing an unusable upload."""
+    assert response.status_code == 422, response.text
+    detail = response.json()["detail"]
+    return detail if isinstance(detail, str) else detail["message"]
+
 @pytest.mark.asyncio
 async def test_preview_csv(client: AsyncClient, auth_headers: dict):
     """Preview a CSV file — returns headers and sample rows."""
@@ -60,9 +67,7 @@ async def test_preview_empty_file(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
         files={"file": ("empty.csv", b"", "text/csv")},
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert "error" in data
+    assert _refusal(response) == "Empty file"
 
 
 @pytest.mark.asyncio
@@ -187,10 +192,9 @@ async def test_import_invalid_column_mapping(client: AsyncClient, auth_headers: 
             "namespace": "wip",
         },
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert "error" in data
-    assert "nonexistent_column" in data["error"]
+    assert "nonexistent_column" in _refusal(response)
+    # The refusal names the columns the file does have.
+    assert response.json()["detail"]["available_columns"]
 
 
 @pytest.mark.asyncio
@@ -207,10 +211,8 @@ async def test_import_bad_json_mapping(client: AsyncClient, auth_headers: dict):
             "namespace": "wip",
         },
     )
-    assert response.status_code == 200
-    data = response.json()
-    assert "error" in data
-    assert "JSON" in data["error"]
+    message = _refusal(response)
+    assert "JSON" in message
 
 
 @pytest.mark.asyncio

@@ -331,6 +331,35 @@ async def test_import_documents_csv_success():
 
 
 @pytest.mark.asyncio
+async def test_import_documents_csv_reports_an_unusable_file():
+    """The import routes refuse an unusable file with a 422; the tool reports
+    it as an error carrying the service's message, never as a result."""
+    import httpx
+
+    mock = _mock_client()
+    mock.get_template_by_value.return_value = {"template_id": "0190c000-0000-7000-0000-000000000001"}
+    request = httpx.Request("POST", "http://wip/api/document-store/import/preview")
+    response = httpx.Response(422, request=request, json={"detail": "Empty file"})
+    mock.preview_import.side_effect = httpx.HTTPStatusError(
+        '422 Unprocessable Entity from http://wip/api/document-store/import/preview: {"detail":"Empty file"}',
+        request=request,
+        response=response,
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False, mode="w") as f:
+        f.write("")
+        tmp_path = f.name
+    try:
+        with patch("wip_mcp.server.get_client", return_value=mock):
+            result = await import_documents_csv(file_path=tmp_path, template_value="PATIENT")
+        assert result.startswith("Error: 422")
+        assert "Empty file" in result
+        mock.import_documents.assert_not_awaited()
+    finally:
+        os.unlink(tmp_path)
+
+
+@pytest.mark.asyncio
 async def test_import_documents_csv_not_found():
     """import_documents_csv returns error for missing file."""
     mock = _mock_client()
