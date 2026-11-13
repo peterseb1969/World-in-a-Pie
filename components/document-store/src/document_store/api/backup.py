@@ -34,8 +34,10 @@ Endpoints
 * ``GET  /backup/jobs/{job_id}/download``
     Stream a job's retained archive. Backup jobs: their COMPLETE output
     (read permission, as before). Restore jobs: their input archive —
-    valid regardless of job outcome, but it may carry several namespaces'
-    data, so admin is required on every namespace the job spans.
+    valid regardless of job outcome, but it carries the archive's
+    namespaces' data, so admin is required on every namespace the job writes
+    and every one the archive holds; a fresh restore's input only to the key
+    that created the job or a platform admin.
 * ``POST /backup/jobs/{job_id}/restore``
     Restore from a job's retained archive without re-uploading it. The new
     restore job gets its OWN archive copy so deleting either job never
@@ -79,7 +81,13 @@ from beanie.odm.enums import SortDirection
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from wip_auth import UserIdentity, check_namespace_permission, get_auth_config, require_api_key
+from wip_auth import (
+    UserIdentity,
+    check_namespace_permission,
+    get_auth_config,
+    is_superadmin,
+    require_api_key,
+)
 
 from ..models.backup_job import (
     BackupJob,
@@ -651,6 +659,7 @@ async def start_restore(
         kind=BackupJobKind.RESTORE,
         namespace=job_namespace,
         namespaces=write_targets,
+        source_namespaces=prefixes,
         archive_path=str(archive_path),
         archive_size=archive_size,
         options=options,
@@ -1000,18 +1009,40 @@ async def _archive_retained(store: ArchiveStore, job: BackupJob) -> bool:
 
 
 async def _check_job_permission(
-    identity: UserIdentity, job: BackupJob, permission: Literal["read", "write", "admin"],
+    identity: UserIdentity,
+    job: BackupJob,
+    permission: Literal["read", "write", "admin"],
+    *,
+    archive_access: bool = False,
 ) -> None:
-    """`permission` on every namespace a job spans, not just its anchor.
+    """`permission` on every namespace whose data the job holds, not just its
+    anchor.
 
-    A backup or restore job may cover several namespaces, and creating one
-    required admin on each. Seeing it, streaming it, downloading its archive
-    or deleting it must not need less on any of them: a read key on the
-    anchor alone would otherwise read the other namespaces' data out of the
-    archive, and an admin of the anchor alone could delete everyone's backup.
+    A backup or restore job may cover several namespaces: a read key on the
+    anchor alone would otherwise read the others' data out of the archive,
+    and an admin of the anchor alone could delete everyone's backup. The
+    namespaces are the ones it writes or exports (`namespaces`) and, for an
+    uploaded restore or merge, the archive's own (`source_namespaces`): a
+    merge redirected into another namespace records only that target, while
+    its retained input is the sources' full export, and creating it already
+    required admin on them.
+
+    A fresh restore's sources are often namespaces of another install, on
+    which nobody here holds rights. Its retained input is the sources' data
+    all the same, so ``archive_access`` (downloading it, deleting it) is
+    further limited to the key that created the job and platform admins.
+    Refusals answer 404, as a missing job does.
     """
-    for ns in job.namespaces or [job.namespace]:
+    for ns in dict.fromkeys([*(job.namespaces or [job.namespace]), *job.source_namespaces]):
         await check_namespace_permission(identity, ns, permission)
+    if archive_access and _is_fresh_restore(job) and not (
+        job.created_by == identity.identity_string or is_superadmin(identity)
+    ):
+        raise HTTPException(status_code=404, detail=f"Backup job {job.job_id} not found")
+
+
+def _is_fresh_restore(job: BackupJob) -> bool:
+    return job.kind == BackupJobKind.RESTORE and (job.options or {}).get("mode") == "fresh"
 
 
 @router.get(
@@ -1214,13 +1245,11 @@ async def download_archive(
     backup covers: the archive holds each one's data.
     Restore jobs serve their INPUT: it is fully on disk before the job even
     starts, so it is valid regardless of the job's outcome — a FAILED
-    restore's input is the most useful one to re-download. Admin is required
-    on every namespace the job records, which for a restore job are the
-    namespaces it writes: its own namespaces for a plain restore, the map's
-    targets for a fresh one, the target for a redirected merge. That is not
-    every namespace whose data the archive carries — a fresh or redirected
-    restore never needed rights on its sources, so its input is no more
-    exposed by downloading it than by restoring it.
+    restore's input is the most useful one to re-download. It carries the
+    archive's own namespaces' data, so admin is required on every namespace
+    the job writes and every one the archive holds (_check_job_permission);
+    a fresh restore's input, whose sources may not exist here, only to the
+    key that created the job or a platform admin.
     """
     job = await BackupJob.find_one(BackupJob.job_id == job_id)
     if job is None:
@@ -1234,7 +1263,7 @@ async def download_archive(
                 detail=f"Job {job_id} is {job.status}, archive not available",
             )
     else:
-        await _check_job_permission(identity, job, "admin")
+        await _check_job_permission(identity, job, "admin", archive_access=True)
 
     if not job.archive_path:
         raise HTTPException(status_code=500, detail="Job has no archive_path recorded")
@@ -1421,8 +1450,9 @@ async def delete_job(
     if job is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
 
-    # Admin on every namespace, as creating the job required.
-    await _check_job_permission(identity, job, "admin")
+    # Admin on every namespace the job holds data of; a fresh restore's
+    # retained input only to its creator or a platform admin.
+    await _check_job_permission(identity, job, "admin", archive_access=True)
 
     if job.status in (BackupJobStatus.PENDING, BackupJobStatus.RUNNING):
         raise HTTPException(

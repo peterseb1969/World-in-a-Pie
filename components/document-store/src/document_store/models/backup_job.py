@@ -82,6 +82,15 @@ class BackupJob(BeanieDocument):
                     "(the scalar namespace when the manifest was unreadable — "
                     "never blank on new records; legacy records may be empty).",
     )
+    source_namespaces: list[str] = Field(
+        default_factory=list,
+        description="For an uploaded restore in restore or merge mode: the "
+                    "archive's own namespaces, whose data its retained input "
+                    "carries. A redirected merge writes to a target other than "
+                    "these, so `namespaces` alone does not name them. Empty "
+                    "for backups, fresh restores and records made before the "
+                    "field existed.",
+    )
 
     # Lifecycle
     status: BackupJobStatus = Field(
@@ -458,6 +467,11 @@ class BackupJobSnapshot(BaseModel):
     kind: BackupJobKind
     namespace: str
     namespaces: list[str] = Field(default_factory=list)
+    source_namespaces: list[str] = Field(
+        default_factory=list,
+        description="An uploaded restore or merge: the archive's own namespaces, "
+                    "whose data its retained input carries (see BackupJob)",
+    )
     status: BackupJobStatus
     phase: str | None = None
     percent: float | None = None
@@ -482,6 +496,7 @@ class BackupJobSnapshot(BaseModel):
             kind=job.kind,
             namespace=job.namespace,
             namespaces=job.namespaces,
+            source_namespaces=job.source_namespaces,
             status=job.status,
             phase=job.phase,
             percent=job.percent,

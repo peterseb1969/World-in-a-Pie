@@ -139,3 +139,17 @@ async def test_single_namespace_merge_without_target_targets_the_source(
     body = resp.json()
     assert body["options"]["target_namespace"] == "kb"
     assert body["namespaces"] == ["kb"]
+
+
+@pytest.mark.asyncio
+async def test_redirected_merge_records_the_archives_namespaces_as_sources(
+    client: AsyncClient, auth_headers: dict, tmp_path
+):
+    """The retained input is the source's export: the job must name the
+    source, or a target-only admin reads it (CASE-1092 reopen)."""
+    archive = _make_v3_archive(tmp_path, ["wip"])
+    resp = await _post_merge(client, auth_headers, archive, {"target_namespace": "scratch-ns"})
+    assert resp.status_code == 202, resp.text
+    stored = await BackupJob.find_one(BackupJob.job_id == resp.json()["job_id"])
+    assert stored.namespaces == ["scratch-ns"]
+    assert stored.source_namespaces == ["wip"]

@@ -66,6 +66,14 @@ export interface BackupJobSnapshot {
   job_id: string
   kind: BackupJobKind
   namespace: string
+  /** Every namespace the job exports (backup) or writes (restore). */
+  namespaces?: string[]
+  /**
+   * An uploaded restore or merge: the archive's own namespaces, whose data its
+   * retained input carries. Seeing, downloading or deleting the job needs the
+   * job's permission on these too.
+   */
+  source_namespaces?: string[]
   status: BackupJobStatus
   phase: string | null
   percent: number | null

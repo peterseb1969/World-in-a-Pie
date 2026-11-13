@@ -1093,6 +1093,58 @@ async def test_admin_of_a_single_namespace_backup_can_still_delete_it(client: As
     assert resp.status_code == 204, resp.text
 
 
+# A restore job's retained input is its archive's data: a merge redirected
+# into another namespace also needs the job's permission on the archive's
+# namespaces, and a fresh restore's input goes only to its creator or a
+# platform admin (CASE-1092 reopen).
+
+
+async def _restore_job(mode: str, *, created_by: str = "test", sources: list[str] | None = None) -> BackupJob:
+    job = await _make_persisted_job(
+        kind=BackupJobKind.RESTORE, namespace="wip", status=BackupJobStatus.COMPLETE,
+        archive_path="/tmp/no-such-archive.zip",
+    )
+    job.namespaces = ["wip"]
+    job.source_namespaces = sources or []
+    job.options = {"mode": mode, "target_namespace": "wip"}
+    job.created_by = created_by
+    await job.save()
+    return job
+
+
+@pytest.mark.asyncio
+async def test_a_target_admin_cannot_reach_a_redirected_merges_source(
+    client: AsyncClient, auth_headers: dict,
+):
+    """Merged from 'xns-closed' into 'wip': admin on 'wip' alone neither sees,
+    downloads nor deletes it."""
+    job = await _restore_job("merge", sources=["xns-closed"])
+    base = f"/api/document-store/backup/jobs/{job.job_id}"
+    assert (await client.get(base, headers=WIP_ADMIN)).status_code == 404
+    assert (await client.get(base + "/download", headers=WIP_ADMIN)).status_code == 404
+    assert (await client.delete(base, headers=WIP_ADMIN)).status_code == 404
+    assert await BackupJob.find_one(BackupJob.job_id == job.job_id) is not None
+    assert (await client.delete(base, headers=auth_headers)).status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_a_fresh_restores_input_is_its_creators(client: AsyncClient, auth_headers: dict):
+    """Another admin of the target sees the job but cannot download or delete
+    the source's export; the creator and a platform admin can."""
+    job = await _restore_job("fresh", created_by="apikey:someone-else")
+    base = f"/api/document-store/backup/jobs/{job.job_id}"
+    assert (await client.get(base, headers=WIP_ADMIN)).status_code == 200
+    assert (await client.get(base + "/download", headers=WIP_ADMIN)).status_code == 404
+    assert (await client.delete(base, headers=WIP_ADMIN)).status_code == 404
+    # A platform admin is past the check: the archive itself is gone (410).
+    assert (await client.get(base + "/download", headers=auth_headers)).status_code == 410
+
+    own = await _restore_job("fresh", created_by="apikey:test-wip-admin")
+    own_base = f"/api/document-store/backup/jobs/{own.job_id}"
+    assert (await client.get(own_base + "/download", headers=WIP_ADMIN)).status_code == 410
+    assert (await client.delete(own_base, headers=WIP_ADMIN)).status_code == 204
+
+
 class TestRestoreRequester:
     """A restore creates and configures namespaces with the caller's own
     credential, passed on as it arrived: an API key, or an OIDC login's
