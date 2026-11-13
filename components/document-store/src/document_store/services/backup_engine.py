@@ -655,6 +655,83 @@ def _engine_tool_version() -> str:
     return f"document-store {build['version']} (image {build['image_tag']}, build {build['sha']})"
 
 
+# A template version's coordinates, and a requirement on another template:
+# a specific version, or (None) every version of it.
+_TemplateKey = tuple[str, int]
+_TemplateLink = tuple[str, int | None]
+
+# The field slots that pin a nested template version.
+_NESTED_PIN_SLOTS = (
+    ("template_ref", "template_ref_version"),
+    ("array_template_ref", "array_template_ref_version"),
+)
+
+
+def _template_index(
+    rows: list[dict[str, Any]],
+) -> tuple[dict[str, list[int]], dict[tuple[str, str], str]]:
+    """Each template's versions, and its template_id by (namespace, value)."""
+    versions: dict[str, list[int]] = {}
+    by_value: dict[tuple[str, str], str] = {}
+    for r in rows:
+        versions.setdefault(r["template_id"], []).append(r["version"])
+        if r.get("value"):
+            by_value[(r["namespace"], r["value"])] = r["template_id"]
+    return versions, by_value
+
+
+def _resolve_template_ref(
+    ref: str, namespace: str,
+    versions: dict[str, list[int]], by_value: dict[tuple[str, str], str],
+) -> str | None:
+    """The template_id a nested ref names among the archive's templates. An
+    active template stores the template_id; a draft may still hold the
+    submitted value or NS:VALUE. None for a template outside the archive."""
+    if ref in versions:
+        return ref
+    ns, sep, value = ref.partition(":")
+    if sep and (ns, value) in by_value:
+        return by_value[(ns, value)]
+    return by_value.get((namespace, ref))
+
+
+def _version_requirements(
+    row: dict[str, Any],
+    versions: dict[str, list[int]], by_value: dict[tuple[str, str], str],
+) -> list[_TemplateLink]:
+    """What one template version needs of others: the version it extends,
+    and each nested template version a field pins (version None: every
+    version of it). A ref outside the archive is skipped: it cannot be
+    carried."""
+    links: list[_TemplateLink] = []
+    if row.get("extends") and row.get("extends_version") is not None:
+        links.append((row["extends"], row["extends_version"]))
+    for field in row.get("fields") or []:
+        for ref_key, version_key in _NESTED_PIN_SLOTS:
+            ref = field.get(ref_key)
+            tid = _resolve_template_ref(ref, row["namespace"], versions, by_value) if ref else None
+            if tid is not None:
+                links.append((tid, field.get(version_key)))
+    return links
+
+
+def _close_over_requirements(
+    needed: set[_TemplateKey],
+    requires: dict[_TemplateKey, list[_TemplateLink]],
+    versions: dict[str, list[int]],
+) -> None:
+    """Add to ``needed`` every existing version a needed version requires,
+    transitively."""
+    frontier = list(needed)
+    while frontier:
+        for tid, version in requires.get(frontier.pop(), []):
+            for v in versions.get(tid, []) if version is None else [version]:
+                target = (tid, v)
+                if target not in needed and v in versions.get(tid, []):
+                    needed.add(target)
+                    frontier.append(target)
+
+
 class DirectBackupEngine:
     """Backup a namespace via direct MongoDB cursor reads.
 
@@ -1025,74 +1102,21 @@ class DirectBackupEngine:
                  "fields.array_template_ref": 1, "fields.array_template_ref_version": 1},
             )
         ]
-        versions: dict[str, list[int]] = {}
-        by_value: dict[tuple[str, str], str] = {}
-        for r in rows:
-            versions.setdefault(r["template_id"], []).append(r["version"])
-            if r.get("value"):
-                by_value[(r["namespace"], r["value"])] = r["template_id"]
-
-        def template_id_of(ref: str, namespace: str) -> str | None:
-            """An active template stores a nested ref as its template_id; a
-            draft may still hold the submitted value or NS:VALUE."""
-            if ref in versions:
-                return ref
-            ns, sep, value = ref.partition(":")
-            if sep and (ns, value) in by_value:
-                return by_value[(ns, value)]
-            return by_value.get((namespace, ref))
-
-        # What each version needs of other versions: the one it extends, and
-        # each nested template it pins (version None: every version of it).
-        # A ref to a template outside the archive's namespaces needs nothing
-        # here — it cannot be carried — and is skipped.
-        requires: dict[tuple[str, int], list[tuple[str, int | None]]] = {}
-        for r in rows:
-            key = (r["template_id"], r["version"])
-            links: list[tuple[str, int | None]] = []
-            if r.get("extends") and r.get("extends_version") is not None:
-                links.append((r["extends"], r["extends_version"]))
-            for field in r.get("fields") or []:
-                for ref_key, version_key in (
-                    ("template_ref", "template_ref_version"),
-                    ("array_template_ref", "array_template_ref_version"),
-                ):
-                    ref = field.get(ref_key)
-                    tid = template_id_of(ref, r["namespace"]) if ref else None
-                    if tid is not None:
-                        links.append((tid, field.get(version_key)))
-            if links:
-                requires[key] = links
+        versions, by_value = _template_index(rows)
+        requires = {
+            (r["template_id"], r["version"]): links
+            for r in rows
+            if (links := _version_requirements(r, versions, by_value))
+        }
         needed = {(r["template_id"], r["version"]) for r in rows if r.get("status") != "inactive"}
-
         if not skip_documents:
-            d_db, d_coll = COLLECTION_MAP["documents"]
-            async for pin in self._mongo[d_db][d_coll].aggregate([
-                {"$match": {"namespace": {"$in": namespaces}}},
-                {"$group": {"_id": {"t": "$template_id", "v": "$template_version"}}},
-            ]):
-                tid, version = pin["_id"].get("t"), pin["_id"].get("v")
-                if version is None:
-                    needed.update((tid, v) for v in versions.get(tid, []))
-                else:
-                    needed.add((tid, version))
+            needed |= await self._document_template_pins(namespaces, versions)
 
-        def close_over_requirements() -> None:
-            frontier = list(needed)
-            while frontier:
-                for tid, version in requires.get(frontier.pop(), []):
-                    pinned = versions.get(tid, []) if version is None else [version]
-                    for v in pinned:
-                        target = (tid, v)
-                        if target not in needed and v in versions.get(tid, []):
-                            needed.add(target)
-                            frontier.append(target)
-
-        close_over_requirements()
+        _close_over_requirements(needed, requires, versions)
         for tid, vs in versions.items():
             if not any((tid, v) in needed for v in vs):
                 needed.add((tid, max(vs)))
-        close_over_requirements()
+        _close_over_requirements(needed, requires, versions)
 
         left_out: dict[str, list[tuple[str, int]]] = {}
         for r in rows:
@@ -1100,6 +1124,24 @@ class DirectBackupEngine:
             if key not in needed:
                 left_out.setdefault(r["namespace"], []).append(key)
         return left_out
+
+    async def _document_template_pins(
+        self, namespaces: list[str], versions: dict[str, list[int]],
+    ) -> set[tuple[str, int]]:
+        """The template versions the archive's document rows (any status) pin.
+        A pin with no version stands for every version of its template."""
+        d_db, d_coll = COLLECTION_MAP["documents"]
+        pinned: set[tuple[str, int]] = set()
+        async for pin in self._mongo[d_db][d_coll].aggregate([
+            {"$match": {"namespace": {"$in": namespaces}}},
+            {"$group": {"_id": {"t": "$template_id", "v": "$template_version"}}},
+        ]):
+            tid, version = pin["_id"].get("t"), pin["_id"].get("v")
+            if version is None:
+                pinned.update((tid, v) for v in versions.get(tid, []))
+            else:
+                pinned.add((tid, version))
+        return pinned
 
     def _build_query(self, namespace: str) -> dict[str, Any]:
         # Every entity, every status: live data references inactive and
