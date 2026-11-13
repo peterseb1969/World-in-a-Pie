@@ -1696,8 +1696,9 @@ class AggregatedIntegrityResult(BaseModel):
             "Overall status: partial (some services unreachable), error or "
             "warning by the worst issue, incomplete (no issue found, but a "
             "service's scan did not cover everything: some checks could not "
-            "run, or the limit cut the scan short), healthy only when every "
-            "service checked everything"
+            "run, or the limit cut the scan short; services_incomplete and "
+            "services_truncated say which), healthy only when every service "
+            "checked everything"
         ),
     )
     checked_at: datetime = Field(
@@ -1708,8 +1709,15 @@ class AggregatedIntegrityResult(BaseModel):
     services_incomplete: list[str] = Field(
         default_factory=list,
         description=(
-            "Services that answered but did not check everything: their own "
-            "status was incomplete/unknown, or their scan was truncated"
+            "Services that answered but could not run every check (their own "
+            "status was incomplete/unknown: a service they ask did not answer)"
+        ),
+    )
+    services_truncated: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Services whose scan the request's limit cut short: everything in "
+            "the window was checked, the rest was not scanned"
         ),
     )
     summary: IntegritySummary = Field(default_factory=IntegritySummary)
@@ -1755,6 +1763,7 @@ async def aggregated_integrity_check(
     services_checked = []
     services_unavailable = []
     services_incomplete: list[str] = []
+    services_truncated: list[str] = []
     all_issues: list[IntegrityIssue] = []
     summary = IntegritySummary()
 
@@ -1778,8 +1787,10 @@ async def aggregated_integrity_check(
 
                 # Extract summary
                 ts_summary = data.get("summary", {})
-                if data.get("status") in _UPSTREAM_INCOMPLETE or ts_summary.get("truncated"):
+                if data.get("status") in _UPSTREAM_INCOMPLETE:
                     services_incomplete.append("template-store")
+                elif ts_summary.get("truncated"):
+                    services_truncated.append("template-store")
                 summary.total_templates = ts_summary.get("total_templates", 0)
                 summary.templates_with_issues = ts_summary.get("templates_with_issues", 0)
                 summary.orphaned_terminology_refs = ts_summary.get("orphaned_terminology_refs", 0)
@@ -1829,11 +1840,10 @@ async def aggregated_integrity_check(
                 ds_summary = data.get("summary", {})
                 summary.total_documents = ds_summary.get("total_documents", 0)
                 summary.documents_checked = ds_summary.get("documents_checked", 0)
-                if (
-                    data.get("status") in _UPSTREAM_INCOMPLETE
-                    or summary.documents_checked < summary.total_documents
-                ):
+                if data.get("status") in _UPSTREAM_INCOMPLETE:
                     services_incomplete.append("document-store")
+                elif summary.documents_checked < summary.total_documents:
+                    services_truncated.append("document-store")
                 summary.documents_with_issues = ds_summary.get("documents_with_issues", 0)
                 summary.orphaned_template_refs = ds_summary.get("orphaned_template_refs", 0)
                 summary.orphaned_term_refs = ds_summary.get("orphaned_term_refs", 0)
@@ -1868,7 +1878,7 @@ async def aggregated_integrity_check(
         status = "error"
     elif has_warnings:
         status = "warning"
-    elif services_incomplete:
+    elif services_incomplete or services_truncated:
         status = "incomplete"
     else:
         status = "healthy"
@@ -1878,6 +1888,7 @@ async def aggregated_integrity_check(
         services_checked=services_checked,
         services_unavailable=services_unavailable,
         services_incomplete=services_incomplete,
+        services_truncated=services_truncated,
         summary=summary,
         issues=all_issues,
     )

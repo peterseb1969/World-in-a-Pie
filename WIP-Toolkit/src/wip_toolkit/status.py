@@ -353,6 +353,38 @@ def _check_ingest_gateway_metrics(
     )]
 
 
+def _integrity_not_fully_checked(data: dict, summary: dict) -> CheckResult | None:
+    """No orphans found is a clean bill only when every check could run. A
+    store that did not answer (services_unavailable), or answered without
+    running every check because a service it asks was down
+    (services_incomplete), means references went unchecked: the result is
+    unknown, naming those services. A scan the window cut short
+    (services_truncated) is not: it checked what it scanned, which the ok
+    message says. None when every check could run."""
+    unchecked = list(dict.fromkeys(
+        list(data.get("services_unavailable") or []) + list(data.get("services_incomplete") or [])
+    ))
+    if not unchecked:
+        return None
+    named = ", ".join(unchecked)
+    return CheckResult(
+        name="integrity",
+        severity="unknown",
+        message=(
+            f"integrity not fully checked: {named} could not check every reference "
+            f"(aggregate status {data.get('status')!r}); no orphans found in what was checked"
+        ),
+        details={
+            "summary": summary,
+            "status": data.get("status"),
+            "services_checked": data.get("services_checked"),
+            "services_unavailable": data.get("services_unavailable"),
+            "services_incomplete": data.get("services_incomplete"),
+            "services_truncated": data.get("services_truncated"),
+        },
+    )
+
+
 def _check_integrity(
     client: WIPClient,
     thresholds: StatusThresholds,
@@ -397,6 +429,9 @@ def _check_integrity(
                 "services_unavailable": data.get("services_unavailable"),
             },
         )]
+    not_checked = _integrity_not_fully_checked(data, summary)
+    if not_checked is not None:
+        return [not_checked]
     return [CheckResult(
         name="integrity",
         severity="ok",

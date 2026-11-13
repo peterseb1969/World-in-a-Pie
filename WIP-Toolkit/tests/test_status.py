@@ -206,6 +206,44 @@ def test_status_integrity_drift_is_critical():
     assert "2 orphaned" in integrity.message
 
 
+_CLEAN_SUMMARY = {
+    "orphaned_terminology_refs": 0, "orphaned_template_refs": 0, "orphaned_term_refs": 0,
+}
+
+
+@pytest.mark.parametrize(("aggregate", "named"), [
+    # A store answered but could not check everything (its peer was down).
+    ({"status": "incomplete", "services_checked": ["template-store", "document-store"],
+      "services_unavailable": [], "services_incomplete": ["document-store"]}, "document-store"),
+    # A store did not answer at all.
+    ({"status": "partial", "services_checked": ["document-store"],
+      "services_unavailable": ["template-store"], "services_incomplete": []}, "template-store"),
+])
+def test_status_integrity_not_fully_checked_is_not_ok(aggregate, named):
+    """No orphans found is not "ok" when not everything was checked: a
+    def-store or template-store outage must not read as a clean bill."""
+    client = _make_client(integrity={"summary": _CLEAN_SUMMARY, "issues": [], **aggregate})
+    report = collect_status(client, include_integrity=True)
+    integrity = next(c for c in report.checks if c.name == "integrity")
+    assert integrity.severity == "unknown"
+    assert named in integrity.message
+    assert report.overall != "ok"
+
+
+@pytest.mark.parametrize("truncated", [[], ["document-store"]])
+def test_status_integrity_clean_and_complete_is_ok(truncated):
+    """A scan the window cut short checked what it scanned: still ok."""
+    client = _make_client(integrity={
+        "status": "incomplete" if truncated else "healthy",
+        "summary": _CLEAN_SUMMARY, "issues": [],
+        "services_checked": ["template-store", "document-store"],
+        "services_unavailable": [], "services_incomplete": [], "services_truncated": truncated,
+    })
+    report = collect_status(client, include_integrity=True)
+    integrity = next(c for c in report.checks if c.name == "integrity")
+    assert integrity.severity == "ok"
+
+
 def test_status_integrity_skipped_by_default():
     client = _make_client()
     report = collect_status(client)

@@ -99,32 +99,38 @@ def _integrity_upstream(monkeypatch, template_store: dict, document_store: dict)
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "tpl,doc,status,incomplete",
+    "tpl,doc,status,incomplete,truncated",
     [
         ({"status": "healthy", "summary": {}},
          {"status": "healthy", "summary": {"total_documents": 5, "documents_checked": 5}},
-         "healthy", []),
-        # the limit cut the template scan short
+         "healthy", [], []),
+        # the limit cut the template scan short: truncated, not incomplete
         ({"status": "healthy", "summary": {"truncated": True}},
          {"status": "healthy", "summary": {"total_documents": 5, "documents_checked": 5}},
-         "incomplete", ["template-store"]),
-        # checks that could not run
+         "incomplete", [], ["template-store"]),
+        # checks that could not run (a peer of the store was down)
         ({"status": "unknown", "summary": {}},
          {"status": "incomplete", "summary": {"total_documents": 5, "documents_checked": 5}},
-         "incomplete", ["template-store", "document-store"]),
+         "incomplete", ["template-store", "document-store"], []),
         # a limited document scan
         ({"status": "healthy", "summary": {}},
          {"status": "healthy", "summary": {"total_documents": 50, "documents_checked": 10}},
-         "incomplete", ["document-store"]),
+         "incomplete", [], ["document-store"]),
+        # both: the outage is what is reported
+        ({"status": "healthy", "summary": {}},
+         {"status": "incomplete", "summary": {"total_documents": 50, "documents_checked": 10}},
+         "incomplete", ["document-store"], []),
     ],
 )
 async def test_integrity_is_healthy_only_when_everything_was_checked(
-    monkeypatch, tpl, doc, status, incomplete,
+    monkeypatch, tpl, doc, status, incomplete, truncated,
 ):
     _integrity_upstream(monkeypatch, tpl, doc)
     r = await _call("GET", f"{P}/health/integrity")
     body = r.json()
-    assert (body["status"], body["services_incomplete"]) == (status, incomplete)
+    assert (body["status"], body["services_incomplete"], body["services_truncated"]) == (
+        status, incomplete, truncated,
+    )
 
 
 # ---------------------------------------------------------------------------

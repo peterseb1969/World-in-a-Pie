@@ -366,8 +366,10 @@ export interface IntegrityCheckResult {
   checked_at: string
   services_checked: string[]
   services_unavailable: string[]
-  /** Services that answered but did not check everything (checks not run, scan truncated). */
+  /** Services that answered but could not run every check (a service they ask was down). */
   services_incomplete: string[]
+  /** Services whose scan the request's limit cut short (the window was checked). Absent from older servers. */
+  services_truncated?: string[]
   summary: IntegritySummary
   issues: IntegrityIssue[]
 }
