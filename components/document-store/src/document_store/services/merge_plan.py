@@ -21,8 +21,12 @@ that says which real-world thing it is (a terminology's ``value``, a document's
 install the two keys agree. An archive from another install, or a namespace
 since deleted here, may carry other ids for the same things: the engine maps
 definitions by content first (merge_definitions) and refuses an id that names
-something else here (_check_ids_are_free), but this plan still compares the
-entities in their stored form.
+something else here (_check_ids_are_free). This plan compares the entities in
+their stored form, with their references already rewritten through those
+mappings and their own ids and id-derived fields left out (_COPY_FIELDS), so
+the same content under another id is identical, not a clash. Documents are
+read projected and never field-diffed here: their identical-content check
+runs where they are written (backup_engine._same_document_content).
 
 Reads are bulk and indexed: the target is probed by batched key queries derived
 from the archive's own keys, so the cost scales with the delta being merged
@@ -107,6 +111,20 @@ _NON_SCHEMA_FIELDS = frozenset({
     "updated_by",
     "last_synced_at",
 })
+
+# Per type, the fields in which two copies of the same content legitimately
+# differ: the entity's own canonical id (a copy from another install, or a
+# redirected merge, matches on its logical key under another id; the plan
+# records that as a mapping), and fields derived from it or written as
+# bookkeeping. They are not content, so they never make a clash. A file's
+# storage_key is its file_id; uploaded_at/uploaded_by are its audit fields;
+# reference_count is recounted from the documents after every merge. An
+# entry's search_values flatten its keys (namespace and ids included) and
+# revision is a write counter.
+_COPY_FIELDS: dict[str, frozenset[str]] = {
+    "files": frozenset({"file_id", "storage_key", "uploaded_at", "uploaded_by", "reference_count"}),
+    "registry_entries": frozenset({"entry_id", "search_values", "revision"}),
+}
 
 
 @dataclass
@@ -195,11 +213,12 @@ def diff_entities(
 
     Audit and bookkeeping fields are excluded: two faithful copies of one
     terminology differ in ``updated_at`` and that is not a schema difference.
-    Comparison is on stored form: exact for two copies one install wrote. For
-    an archive from another install, ids and the references that carry them
-    are compared as stored too, so two copies with the same content under
-    different ids (a file matched by checksum under a re-minted file_id)
-    report as a clash, not as unchanged.
+    Comparison is on stored form. References to other entities need no
+    rewriting here: the merge rewrites the archive's rows through its id
+    mappings before they are planned. ``ignore`` names the type's own id and
+    the fields derived from it (_COPY_FIELDS), so two copies with the same
+    content under different ids (a file matched by checksum under a
+    re-minted file_id) compare as identical.
     """
     skip = _NON_SCHEMA_FIELDS | set(ignore)
     diff: dict[str, dict[str, Any]] = {}
@@ -309,7 +328,9 @@ class MergePlanner:
                         # A projected read cannot support a field-level diff —
                         # the fields it omitted would all read as differences.
                         # Types that need diffing declare no projection.
-                        diff={} if projection else diff_entities(entity, targets[0]),
+                        diff={} if projection else diff_entities(
+                            entity, targets[0], ignore=_COPY_FIELDS.get(entity_type, ()),
+                        ),
                     )
                 )
 

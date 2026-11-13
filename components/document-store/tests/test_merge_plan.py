@@ -437,3 +437,64 @@ class TestMatchingByContent:
         )
 
         assert plan.mapping == {"A-tpl": "B-tpl"}
+
+
+# ---------------------------------------------------------------------------
+# The same content under another id is identical (CASE-1236)
+# ---------------------------------------------------------------------------
+
+
+class TestSameContentUnderAnotherId:
+    """A copy from another install, or a redirected merge, carries other ids
+    for the same things. Matched on its logical key, it differs from the
+    target's copy in its own id and the fields derived from it or kept as
+    bookkeeping: those make no clash. The id difference is recorded as a
+    mapping instead."""
+
+    @pytest.mark.asyncio
+    async def test_a_file_with_the_same_bytes_under_another_id_is_identical(self, planner):
+        target = {
+            "namespace": NAMESPACE, "file_id": "F-HERE", "storage_key": "F-HERE",
+            "checksum": "sha256:abc", "filename": "a.pdf", "content_type": "application/pdf",
+            "size_bytes": 3, "status": "active", "reference_count": 2,
+            "uploaded_at": "2026-11-01T00:00:00Z", "uploaded_by": "apikey:here",
+        }
+        await planner.seed("files", [target])
+        archived = dict(
+            target, file_id="F-THERE", storage_key="F-THERE", reference_count=0,
+            uploaded_at="2025-01-01T00:00:00Z", uploaded_by="apikey:there",
+        )
+        plan = await planner.plan("files", [archived], NAMESPACE)
+        assert len(plan.clashes) == 1 and plan.clashes[0].diff == {}
+        assert plan.mapping == {"F-THERE": "F-HERE"}
+        assert plan.summary()["unchanged"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_file_whose_content_differs_is_still_a_clash(self, planner):
+        target = {"namespace": NAMESPACE, "file_id": "F1", "checksum": "sha256:x", "filename": "a.pdf"}
+        await planner.seed("files", [target])
+        plan = await planner.plan("files", [dict(target, file_id="F2", filename="b.pdf")], NAMESPACE)
+        assert set(plan.clashes[0].diff) == {"filename"}
+
+    @pytest.mark.asyncio
+    async def test_an_entry_under_another_id_is_identical(self, planner):
+        target = {
+            "namespace": NAMESPACE, "entry_id": "E-HERE", "entity_type": "documents",
+            "primary_composite_key_hash": "h1", "primary_composite_key": {"k": "v"},
+            "status": "active", "search_values": [NAMESPACE, "v"], "revision": 7,
+        }
+        await planner.seed("registry_entries", [target])
+        archived = dict(target, entry_id="E-THERE", search_values=["src-ns", "v"], revision=1)
+        plan = await planner.plan("registry_entries", [archived], NAMESPACE)
+        assert plan.clashes[0].diff == {}
+        assert plan.mapping == {"E-THERE": "E-HERE"}
+
+    @pytest.mark.asyncio
+    async def test_an_entrys_lifecycle_difference_stays_visible(self, planner):
+        target = {
+            "namespace": NAMESPACE, "entry_id": "E1", "entity_type": "documents",
+            "primary_composite_key_hash": "h2", "status": "inactive",
+        }
+        await planner.seed("registry_entries", [target])
+        plan = await planner.plan("registry_entries", [dict(target, entry_id="E2", status="active")], NAMESPACE)
+        assert set(plan.clashes[0].diff) == {"status"}
