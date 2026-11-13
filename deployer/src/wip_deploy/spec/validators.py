@@ -432,6 +432,64 @@ def _validate_app_key_names(
     ]
 
 
+def _validate_privileged_apps(
+    deployment: Deployment, apps: list[App]
+) -> list[ValidationError]:
+    """An app holds the install's master key only when the operator grants it.
+
+    `privileged_key: true` is a line in a manifest the app's author writes,
+    and the master key it unlocks is admin on every namespace. So the manifest
+    only asks; the install grants, per app (`AppRef.privileged`, set by
+    `--privileged-app` or `add-app --privileged`). An enabled app that asks
+    without the grant is refused, and a grant to an app that does not ask is
+    refused too, so a stale grant cannot sit in the spec waiting for a
+    manifest to start asking."""
+    manifests = {a.metadata.name: a for a in apps}
+    install = deployment.metadata.name
+    errors: list[ValidationError] = []
+    for ref in deployment.spec.apps:
+        app = manifests.get(ref.name)
+        if not ref.enabled or app is None:
+            continue
+        if app.spec.privileged_key and not ref.privileged:
+            errors.append(ValidationError(
+                f"app {ref.name!r} declares privileged_key: it would hold the "
+                "install's master key, admin on every namespace. Only the operator "
+                f"grants that: `wip-deploy add-app {ref.name} --privileged --name "
+                f"{install}`, or `--privileged-app {ref.name}` on install"
+            ))
+        elif ref.privileged and not app.spec.privileged_key:
+            errors.append(ValidationError(
+                f"app {ref.name!r} is granted the master key (privileged) but its "
+                "manifest does not declare privileged_key; it runs with a key of "
+                "its own, so remove the grant"
+            ))
+    return errors
+
+
+def _validate_provisioned_key_names(
+    deployment: Deployment, apps: list[App]
+) -> list[ValidationError]:
+    """A spec-declared key must not take the name of a key the deployer
+    provisions itself (the app edge's, the canary). The names come from the
+    keys config_gen builds, so a system key added there is reserved here
+    without a list to keep in step. App keys are _validate_app_key_names'."""
+    from wip_deploy.config_gen.api_keys import provisioned_api_keys
+
+    system = {
+        k.name: k.owner for k in provisioned_api_keys(deployment, apps)
+        if not k.owner.startswith("app:")
+    }
+    return [
+        ValidationError(
+            f"auth.api_keys declares {k.name!r}, the name of a key wip-deploy "
+            f"provisions itself ({system[k.name]}); rename the declared key"
+        )
+        for k in deployment.spec.auth.api_keys
+        if k.name in system
+    ]
+
+
 def _validate_app_operator_secrets(
     deployment: Deployment, components: list[Component], apps: list[App]
 ) -> list[ValidationError]:
@@ -478,7 +536,9 @@ def _validate_app_operator_secrets(
             owners[c.secret_name] = f"Dex connector {c.id!r}"
     for c in components:
         for ev in (*c.spec.env.required, *c.spec.env.optional):
-            if ev.source.from_secret is not None:
+            # A component's operator-supplied secret is the operator's, shared
+            # by design, exactly as an app's is below.
+            if ev.source.from_secret is not None and ev.source.supplied_by != "operator":
                 owners.setdefault(ev.source.from_secret, f"component {c.metadata.name!r}")
     for a in apps:
         key = app_api_key(a)
@@ -541,6 +601,8 @@ def validate_all(
     report.errors.extend(_validate_images_resolvable(deployment, components, apps))
     report.errors.extend(_validate_namespace_reservations(deployment, apps))
     report.errors.extend(_validate_app_key_names(deployment, apps))
+    report.errors.extend(_validate_provisioned_key_names(deployment, apps))
+    report.errors.extend(_validate_privileged_apps(deployment, apps))
     report.errors.extend(_validate_app_labels_unique(deployment, apps))
     report.errors.extend(_validate_app_names_free(deployment, components, apps))
     report.errors.extend(_validate_app_operator_secrets(deployment, components, apps))

@@ -148,6 +148,7 @@ class TestValidateAppsEnabling:
             "--hostname", "wip.local",
             "--app", "dnd",
             "--app", "react-console",
+            "--privileged-app", "react-console",
             "--repo-root", str(REPO_ROOT),
         )
         assert r.exit_code == 0, r.output
@@ -893,7 +894,7 @@ class TestScopedNukeWiring:
         saved = SimpleNamespace(
             spec=SimpleNamespace(secrets=SimpleNamespace(location=str(recorded)))
         )
-        monkeypatch.setattr("wip_deploy.cli._try_load_previous_deployment", lambda d: saved)
+        monkeypatch.setattr("wip_deploy.cli._load_for_teardown", lambda d: saved)
         captured = self._capture(monkeypatch)
 
         r = _invoke(

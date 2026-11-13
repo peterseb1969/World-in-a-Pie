@@ -43,7 +43,8 @@ def _secure_install(request: httpx.Request) -> httpx.Response:
     target = request.url.raw_path.decode()
     key = request.headers.get("X-API-Key")
     if path in PUBLIC_PATHS:
-        return _json(200, {"status": "healthy"})
+        # A Registry reports what its last pass did with the key file.
+        return _json(200, {"status": "healthy", "key_file_import": "imported"})
     if key == ADMIN:
         if path == "/api/reporting-sync/status":
             return _json(200, {"postgres_service_roles_ok": True})

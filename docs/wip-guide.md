@@ -1428,6 +1428,11 @@ Add `--live` to also test the running install through its public URL:
 wip-deploy verify --security --live --name <name>
 ```
 
+- The Registry must report that its last pass imported the install's key
+  file. A refused file (a key named twice) imports none of it, and a pass
+  that failed partway may have applied some; either way the previous keys
+  keep serving while the apply reports success. A Registry still starting,
+  or one whose image does not report the import, fails the check too.
 - Every protected route must refuse a request without credentials, and
   health probes must answer without one.
 - reporting-sync must run on its unprivileged PostgreSQL roles.

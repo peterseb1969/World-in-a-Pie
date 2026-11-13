@@ -98,18 +98,6 @@ section: action-required
   `DIR/secrets` (they went to `~/.wip-deploy/<name>/secrets`, outside the
   install dir). An existing install keeps the location its saved spec
   records.
-- **The imported external CA is probed, written and mounted from the install's
-  secret store** (`spec.secrets.location`) instead of three places that agreed
-  only by coincidence. `install`/`render` no longer look in
-  `<install-dir>/secrets`, the renderers emit the absolute store path
-  (`/…/secrets/external-ca.crt:…` rather than `./secrets/external-ca.crt:…`),
-  and `import-bundle` gained `--install-dir` and resolves its destination by the
-  same rule `install` uses — so it writes api-key, CA and `bootstrap.yaml` into
-  the store the install actually reads, and carries `--install-dir` into the
-  install command it prints. An install materialized outside
-  `~/.wip-deploy/<name>/` used to render app containers with no CA mount and
-  say nothing; to repair one, re-run `import-bundle` with that install's
-  `--install-dir` and re-render it.
 - **An install that failed at the image pull no longer records a tag it never
   ran.** Whether a failed apply still persists the new spec was decided by
   position — anything from `compose up` onward counted as a change — but
@@ -161,14 +149,6 @@ section: action-required
   the saved spec.
 - `redeploy` warns about tag overrides that match nothing on every run, not
   only when the call passes `--image-tag`.
-- `--apps-only` with `--auth-mode` other than `api-key-only`, or with
-  `--auth-gateway`, is refused by name instead of failing as "oidc needs a
-  Dex user".
-- `import-bundle` refuses a `--name` that is not an install name (it wrote
-  secrets wherever `--name ../x` pointed), refuses to replace a different
-  master `api-key` in a dir holding a saved install, prints a valid suggested
-  command when the bundle suggests no app, and fingerprints every
-  certificate of a chain, CRLF line ends included.
 - Missing, unreadable or malformed operator files (`connector add
   --secret-file/--config-file`, `user add --password-hash-file`, `user import
   --file/--groups-file`, `export-ca --out`) end in `error:` and exit 2, not a
@@ -206,27 +186,15 @@ section: action-required
   authenticates Dex sessions, and `api-key-only` runs no Dex, so the spec was
   rejected for a pairing the flag had only half-made. The mode now clears the
   gateway (and the Dex users that would have nothing to authenticate against)
-  itself — the same coupling `--apps-only` makes, and the shape the `core` and
-  `headless` presets ship. `--auth-mode api-key-only` alone and
+  itself — the shape the `core` and `headless` presets ship. `--auth-mode api-key-only` alone and
   `--auth-mode api-key-only --no-auth-gateway` now produce identical specs, so
   shorthand and longhand are one install. An explicit `--auth-gateway` is never
   overridden: naming it with `api-key-only` is a deliberate contradiction, and the
   refusal now says so and names both flags instead of
   `auth.gateway=True requires auth.mode ∈ {oidc, hybrid}; got api-key-only`.
-- **A bundle whose URL has a trailing slash is refused at import.** The bundle's
-  `external_base_url` was checked only for being a string, then echoed verbatim as
-  the `--remote-wip` value in the install command it prints — and `--remote-wip`
-  rejects any path, because apps append their own `/api/*`. So the import reported
-  success and the very next command failed. The same rule now runs at import
-  (`✗ bundle invalid: spec.external_base_url must not include a path; …`), which
-  also keeps the slash out of the `bootstrap.yaml` record the import writes. Fix
-  the bundle; the deployer deliberately does not strip the slash for you, since a
-  silently rewritten URL is a record of something nobody submitted. The rule is
-  shared with `network.remote_wip_url`, so the two doors cannot drift apart.
 - **`--no-auth-gateway`, not `--auth-gateway false`.** The flag is a boolean pair,
   so passing it a value is refused by the parser (`Got unexpected extra
-  argument(s) (false)`) — and the `--apps-only` help told operators to pass it
-  exactly that way. Corrected there, and the gateway refusal, which previously
+  argument(s) (false)`). The gateway refusal, which previously
   named no flag at all, now points at the form that works. `--auth-mode` also
   documents what the mode implies.
 - **The analytics preset is described as what it is.** Its help said "standard +
@@ -637,9 +605,7 @@ section: action-required
   the admin key nothing counts. App-key checks fail when they probed
   nothing or could not list the install's namespaces, pair each
   cross-namespace refusal with an admin read of the same thing, and catch a
-  hidden entry that answers another status than a missing one. On an
-  apps-only install the live checks are not applicable (they belong on the
-  WIP it attaches to), and the master-key rule does not apply.
+  hidden entry that answers another status than a missing one.
 - **`check-app-deployability`:** the probe-binary check reads only the
   runtime stage, joins continuation lines and knows `apk --no-cache add`;
   the npx check follows `npm start` / `npm run <script>`, absolute
@@ -3999,11 +3965,6 @@ Registry alone:
 - **`wip-deploy verify --security`** has a new check: the key file is mounted
   only into the Registry. A render from before this change fails it, with a
   re-render hint.
-- **Apps-only installs** (`--apps-only` against a remote WIP): the apps now
-  run with the install's `api-key`, the key `wip-deploy import-bundle`
-  brings from the remote WIP. Since apps got derived keys, they had run with
-  a derived key the remote WIP never knew. That was found by reading the
-  code; it has not been run.
 
 **Action:** re-render every install with images that carry this change, in
 one apply: `wip-deploy redeploy --name <install> --tag <tag>`. Run

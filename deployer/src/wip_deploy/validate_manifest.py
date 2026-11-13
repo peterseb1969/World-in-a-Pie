@@ -39,8 +39,11 @@ Explicitly out of scope (v1):
   - Live cluster state (offline analysis only)
   - Whether a `from_secret` exists — secret resolution is install-time
     state. Whose it is is checked: the App model refuses a deployer-supplied
-    secret the app does not own, and an operator-supplied name another owner
-    uses is refused when an install validates (spec/validators.py).
+    secret the app does not own, and an operator-supplied name that the
+    deployer or another app or component in this repo uses is refused here
+    (_check_operator_secrets). Names only an install adds (its spec keys,
+    its Dex connectors) are refused when the install validates
+    (spec/validators.py).
 """
 
 from __future__ import annotations
@@ -236,6 +239,7 @@ def _check_references(
 
     errors.extend(_check_name_free(app, component_names))
     errors.extend(_check_env_references(app, target_names))
+    errors.extend(_check_operator_secrets(app, components, discovered_apps))
     errors.extend(_check_depends_on(app, target_names))
     errors.extend(_check_route_collisions(app, other_apps))
 
@@ -288,6 +292,85 @@ def _check_env_references(
     for i, ev in enumerate(app.spec.env.optional):
         _check_one(ev, "optional", i)
 
+    return errors
+
+
+def _secret_owners(
+    own: str, components: list[Component], discovered_apps: list[App],
+) -> dict[str, str]:
+    """Every secret name this repo alone decides, with whose it is: the
+    master key, the deployer's generated secrets and system keys, every other
+    discovered app's key and passwords, and every component's
+    deployer-supplied secret."""
+    from wip_deploy.config_gen.api_keys import APP_KEY_PREFIX, MASTER_KEY_SECRET
+    from wip_deploy.config_gen.garage import GARAGE_SECRET_NAMES
+    from wip_deploy.config_gen.mongodb import PASSWORD_SECRET_PREFIX as MONGO
+    from wip_deploy.config_gen.mongodb import ROOT_PASSWORD_SECRET
+    from wip_deploy.config_gen.nats import PASSWORD_SECRET_PREFIX as NATS
+    from wip_deploy.spec.deployment import SYSTEM_KEY_NAMES
+
+    owners: dict[str, str] = {MASTER_KEY_SECRET: "the install's master key"}
+    owners.update(dict.fromkeys((*GARAGE_SECRET_NAMES, ROOT_PASSWORD_SECRET), "a secret the deployer generates"))
+    owners.update({f"{key}-api-key": "a key the deployer provisions" for key in SYSTEM_KEY_NAMES})
+    for other in (a.metadata.name for a in discovered_apps if a.metadata.name != own):
+        for secret in (f"{APP_KEY_PREFIX}{other}-api-key", f"{NATS}{other}", f"{MONGO}{other}"):
+            owners[secret] = f"app {other!r}"
+    for secret, component in _component_secrets(components):
+        owners.setdefault(secret, f"component {component!r}")
+    return owners
+
+
+def _component_secrets(components: list[Component]) -> list[tuple[str, str]]:
+    """(secret, component) for every deployer-supplied from_secret a
+    component names. Its operator-supplied ones are the operator's."""
+    return [
+        (ev.source.from_secret, c.metadata.name)
+        for c in components
+        for ev in (*c.spec.env.required, *c.spec.env.optional)
+        if ev.source.from_secret is not None and ev.source.supplied_by != "operator"
+    ]
+
+
+def _generated_family(secret: str) -> str | None:
+    """The deployer's generated-name family a secret falls in, if any."""
+    from wip_deploy.config_gen.dex import CLIENT_SECRET_PREFIX as DEX_CLIENT
+    from wip_deploy.config_gen.dex import PASSWORD_SECRET_PREFIX as DEX_PASSWORD
+    from wip_deploy.config_gen.mongodb import PASSWORD_SECRET_PREFIX as MONGO
+    from wip_deploy.config_gen.nats import PASSWORD_SECRET_PREFIX as NATS
+
+    return next(
+        (f"the deployer's {p}* family" for p in (DEX_PASSWORD, DEX_CLIENT, NATS, MONGO)
+         if secret.startswith(p)),
+        None,
+    )
+
+
+def _check_operator_secrets(
+    app: App, components: list[Component], discovered_apps: list[App],
+) -> list[ManifestValidationError]:
+    """An operator-supplied `from_secret` must not be a name the deployer or
+    another owner in this repo already uses: the install refuses it
+    (spec/validators.py, _validate_app_operator_secrets), so the author's
+    check says so first. Names an install adds (its spec keys, its Dex
+    connectors) are left to the install."""
+    owners = _secret_owners(app.metadata.name, components, discovered_apps)
+    errors: list[ManifestValidationError] = []
+    for section in ("required", "optional"):
+        for i, ev in enumerate(getattr(app.spec.env, section)):
+            secret = ev.source.from_secret
+            if secret is None or ev.source.supplied_by != "operator":
+                continue
+            owner = owners.get(secret) or _generated_family(secret)
+            if owner is None:
+                continue
+            errors.append(ManifestValidationError(
+                field=f"spec.env.{section}[{i}].source.from_secret",
+                message=(
+                    f"{ev.name} names {secret!r} as operator-supplied, but that "
+                    f"is {owner}; the install refuses it"
+                ),
+                hint="give the secret a name of the app's own",
+            ))
     return errors
 
 

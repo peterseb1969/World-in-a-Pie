@@ -102,6 +102,11 @@ class AppRef(WIPModel):
 
     name: str = Field(min_length=1, pattern=r"^[a-z][a-z0-9-]*$")
     enabled: bool = True
+    # The operator lets this app hold the install's master key. Its manifest's
+    # privileged_key only asks for it: the manifest is written by the app's
+    # author, so the grant is this install's (`--privileged-app`, `add-app
+    # --privileged`), and an app asking without it is refused at validation.
+    privileged: bool = False
     namespaces: list[AddedNamespace] = Field(default_factory=list)
     namespace_access: list[NamespaceAccess] = Field(default_factory=list)
 

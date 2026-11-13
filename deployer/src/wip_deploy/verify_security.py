@@ -75,7 +75,9 @@ check mutates anything; the whole module is read-only.
 
 ### What's NOT checked
 
-  - Live service health — that's `wip-deploy status`.
+  - Live service health — that's `wip-deploy status`. The one health
+    answer read here is the Registry's report of its key-file import
+    (check 14), which says whether the install's keys took effect.
   - The k8s secret backend and k8s port exposure — file-backend and
     compose-shaped checks report "not applicable" on k8s installs
     rather than guessing at cluster state.
@@ -112,6 +114,14 @@ check mutates anything; the whole module is read-only.
      were missing, would create the namespace `wip-canary-probe` — the
      failure says so. The canary must also see no namespace and no
      Registry entry in `wip`.
+
+  14. **The Registry imported the key file** — the Registry's health must
+     say its last pass imported the install's key file. A refused file
+     (a key named twice) imports none of it, and a pass that failed
+     partway may have applied some: either way the previous keys keep
+     serving and the apply reported success. A pass not yet finished, and
+     a Registry that does not report it, also fail: neither shows the file
+     took effect. Runs first.
 
 """
 
@@ -824,14 +834,36 @@ def _route_missing(client: Any, base_url: str, probe: LiveProbe, admin_key: str 
     return None
 
 
+# What the Registry's health says about its last key-file pass, when it is not
+# "imported". Each one means a change in the file has not taken effect.
+_KEY_FILE_STATES = {
+    "refused": (
+        "the Registry refused the key file at its last import: no key change in it "
+        "took effect, and keys removed or narrowed keep their old grants. The "
+        "Registry's log names why (`Key file not imported`)."
+    ),
+    "failed": (
+        "the Registry's last key-file import failed partway: some of the file may "
+        "be applied and some not. The Registry's log has the error."
+    ),
+    "not_configured": (
+        "the Registry has no key file path, so it imports none of this install's "
+        "keys — its container predates the render; re-apply the install"
+    ),
+    "pending": "the Registry has not finished a key-file import yet — run verify again",
+}
+
+
 def check_key_file_imported(base_url: str, client: Any) -> CheckResult:
     """The Registry took the install's key file at its last import.
 
     A refused file (a key named twice, a malformed entry) imports nothing:
     the previous import keeps serving, so the Registry stays healthy and every
     apply reports success, while no key added, removed or narrowed since took
-    effect. The Registry's public health answer says whether that happened;
-    its log says why.
+    effect. The Registry's public health answer says what its last pass did;
+    its log says why. Only "imported" passes: a pass that failed or has not
+    finished, and a Registry that does not answer the question, cannot show
+    the file took effect.
     """
     name = "the Registry imported the key file"
     try:
@@ -841,19 +873,17 @@ def check_key_file_imported(base_url: str, client: Any) -> CheckResult:
     if resp.status_code != 200:
         return CheckResult(name, False, f"the Registry's health answered {resp.status_code}")
     try:
-        refused = resp.json().get("key_file_refused")
+        state = resp.json().get("key_file_import")
     except ValueError:
         return CheckResult(name, False, "the Registry's health answer is not JSON")
-    if refused is None:
-        return CheckResult(name, True, "not reported by this Registry (it predates the field)")
-    if refused:
-        return CheckResult(
-            name, False,
-            "the Registry refused the key file at its last import: no key change in it "
-            "took effect, and keys removed or narrowed keep their old grants. The "
-            "Registry's log names why (`Key file not imported`).",
-        )
-    return CheckResult(name, True, "imported")
+    if state == "imported":
+        return CheckResult(name, True, "imported")
+    return CheckResult(name, False, _KEY_FILE_STATES.get(
+        state,
+        "this Registry does not say whether it imported the key file (its image "
+        "predates the answer), so the import cannot be confirmed — roll the "
+        "Registry to an image that reports it",
+    ))
 
 
 def check_anonymous_refusal(

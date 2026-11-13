@@ -147,6 +147,21 @@ def app_edge_active(deployment: Deployment) -> bool:
     return APP_EDGE_MODULE in deployment.spec.modules.optional
 
 
+class DuplicateKeyName(ValueError):
+    """Two of an install's config-file keys share a name."""
+
+
+def provisioned_api_keys(
+    deployment: Deployment, apps: list[App] | None = None
+) -> list[SpecAPIKey]:
+    """The keys the deployer adds to an install itself: one per enabled app,
+    the app edge's when it is active, and the canary. A spec key may take none
+    of their names; the spec validator reads them from here, so a key added
+    here is reserved without being listed anywhere else."""
+    edge = [APP_EDGE_KEY] if app_edge_active(deployment) else []
+    return [*app_api_keys(deployment, apps or []), *edge, CANARY_KEY]
+
+
 def effective_api_keys(
     deployment: Deployment, apps: list[App] | None = None
 ) -> list[SpecAPIKey]:
@@ -154,16 +169,16 @@ def effective_api_keys(
     app (derived, never stored in the spec), the app edge's when it is
     active, plus the canary.
 
-    Raises ValueError when two of them share a name. The Registry refuses a
-    key file that names a key twice and imports none of it, while the apply
-    reports success, so the render refuses it first: a system key added
-    without its name in SYSTEM_KEY_NAMES fails here, loudly."""
-    edge = [APP_EDGE_KEY] if app_edge_active(deployment) else []
-    keys = [*deployment.spec.auth.api_keys, *app_api_keys(deployment, apps or []), *edge, CANARY_KEY]
+    Raises DuplicateKeyName when two of them share a name. The Registry
+    refuses a key file that names a key twice and imports none of it, while
+    the apply reports success. Spec validation refuses such a name first
+    (validators._validate_provisioned_key_names); this is the backstop for a
+    spec that reached here unvalidated, and the CLI reports it as an error."""
+    keys = [*deployment.spec.auth.api_keys, *provisioned_api_keys(deployment, apps)]
     names = [k.name for k in keys]
     twice = sorted({n for n in names if names.count(n) > 1})
     if twice:
-        raise ValueError(
+        raise DuplicateKeyName(
             f"the install's key file would name {', '.join(twice)} twice; the "
             "Registry would refuse the whole file"
         )
@@ -259,6 +274,9 @@ def generate_api_keys_json(
                     else f"App key for {k.owner.removeprefix('app:')} — derived from "
                     "its manifest (spec.namespaces, spec.namespace_access)"
                     if k.owner.startswith("app:")
+                    else f"System key for {k.owner.removeprefix('system:')} — "
+                    "provisioned by wip-deploy, not declared in the spec"
+                    if k.owner.startswith("system:")
                     else "Spec-declared key (wip-deploy auth.api_keys) — "
                     "the Registry imports its scope and grants from the key file"
                 ),

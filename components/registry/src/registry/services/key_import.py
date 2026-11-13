@@ -90,10 +90,17 @@ _file_prehashes: dict[str, bytes] = {}
 _last_seen: tuple[str | None, str | None] | None = None
 # Why the reservations file could not be used at the last pass, if it could not
 _reservations_error: ReservationsUnavailable | None = None
-# Why the key file was refused at the last pass, if it was. The previous import
-# stands and keys keep working, so nothing fails on it; the health endpoint
-# reports that it happened (never why: the reason names paths and keys).
-_key_file_refused: str | None = None
+# What the last pass did with the key file, as the health endpoint reports it
+# (never why: the reason names paths and keys, and the log has it):
+#   "imported"        the file's keys are what the Registry serves;
+#   "refused"         the file could not be read or names a key twice — none of
+#                     it imported, the previous import stands;
+#   "failed"          the import raised partway, possibly half applied;
+#   "not_configured"  this Registry has no key file path;
+#   "pending"         no pass has finished yet.
+# Only "imported" says the file took effect; a pass that raised is never
+# reported as one that succeeded.
+_key_file_state: str = "pending"
 # Names this process has seen as managed records: a provider record under one
 # of them that MongoDB no longer backs is stale (see _align_provider).
 _seen_managed: set[str] = set()
@@ -507,7 +514,7 @@ async def run_pass(provider: APIKeyProvider | None = None) -> ImportReport:
     that wrote MongoDB without refreshing the provider would leave it stale
     for good, since the next pass finds MongoDB current and changes nothing.
     """
-    global _last_seen, _reservations_error, _key_file_refused
+    global _last_seen, _reservations_error, _key_file_state
     if provider is None:
         from ..api.api_keys import _api_key_provider_or_none
 
@@ -518,15 +525,19 @@ async def run_pass(provider: APIKeyProvider | None = None) -> ImportReport:
 
         entries, why = _read_key_file()
         if entries is None:
-            _key_file_refused = why or None
+            _key_file_state = "refused" if why else "not_configured"
             if why:
                 logger.error("Key file not imported (nothing changed): %s", why)
                 report.skipped.append(why)
         else:
+            # Until the import and the provider's alignment both finish, a
+            # pass that raises leaves the state saying so.
+            _key_file_state = "failed"
             await _import_keys(entries, provider, report)
-            _key_file_refused = None
         if provider is not None:
             await _align_provider(provider)
+        if entries is not None:
+            _key_file_state = "imported"
 
         try:
             await _import_reservations(report)
@@ -590,16 +601,16 @@ async def run_loop(provider: APIKeyProvider | None) -> None:
                 logger.exception("API key shadow check failed; keeping the previous result")
 
 
-def key_file_refused() -> bool:
-    """Whether the last pass refused the key file (none of it imported)."""
-    return _key_file_refused is not None
+def key_file_state() -> str:
+    """What the last pass did with the key file (see _key_file_state)."""
+    return _key_file_state
 
 
 def reset_for_tests() -> None:
-    global _last_seen, _reservations_error, _key_file_refused
+    global _last_seen, _reservations_error, _key_file_state
     _verified.clear()
     _seen_managed.clear()
     _file_prehashes.clear()
     _last_seen = None
     _reservations_error = None
-    _key_file_refused = None
+    _key_file_state = "pending"

@@ -32,6 +32,7 @@ from wip_deploy.apply import (
 )
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.config_gen.api_keys import (
+    DuplicateKeyName,
     app_key_secrets,
     effective_api_keys,
     shared_api_key_values,
@@ -517,6 +518,19 @@ def _app_source_opt() -> typer.models.OptionInfo:
     )
 
 
+def _privileged_app_opt() -> typer.models.OptionInfo:
+    return typer.Option(
+        "--privileged-app",
+        help=(
+            "Let the named app hold the install's master key (admin on every "
+            "namespace). Required for an app whose manifest declares "
+            "privileged_key: true (an admin console such as react-console); "
+            "the install refuses such an app without it. Repeatable; the app "
+            "must also be enabled (--app)."
+        ),
+    )
+
+
 def _app_from_registry_opt() -> typer.models.OptionInfo:
     return typer.Option(
         "--app-from-registry",
@@ -720,6 +734,7 @@ def validate(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
+    privileged_app: Annotated[list[str], _privileged_app_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -767,6 +782,7 @@ def validate(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
+        privileged_apps=list(privileged_app),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -844,6 +860,7 @@ def show_spec(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
+    privileged_app: Annotated[list[str], _privileged_app_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -893,6 +910,7 @@ def show_spec(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
+        privileged_apps=list(privileged_app),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -943,6 +961,7 @@ def render(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
+    privileged_app: Annotated[list[str], _privileged_app_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -1001,6 +1020,7 @@ def render(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
+        privileged_apps=list(privileged_app),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -1042,7 +1062,10 @@ def render(
         tree = _render_tree(
             deployment, components, apps_list, secrets, repo_root=render_root,
         )
-    except ValueError as e:
+    except (ValueError, LookupError) as e:
+        # LookupError: an env reference the render cannot resolve (an inactive
+        # component, a secret nothing collected) is the operator's to fix,
+        # not a traceback.
         typer.echo(
             typer.style(f"✗ render aborted: {e}", fg=typer.colors.RED, bold=True),
             err=True,
@@ -1094,6 +1117,7 @@ def install(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
+    privileged_app: Annotated[list[str], _privileged_app_opt()] = [],
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -1213,6 +1237,7 @@ def install(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
+        privileged_apps=list(privileged_app),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -1337,7 +1362,10 @@ def install(
             deployment, components, apps_list, secrets,
             repo_root=effective_repo_root,
         )
-    except ValueError as e:
+    except (ValueError, LookupError) as e:
+        # LookupError: an env reference the render cannot resolve (an inactive
+        # component, a secret nothing collected) is the operator's to fix,
+        # not a traceback.
         typer.echo(
             typer.style(f"✗ install aborted: {e}", fg=typer.colors.RED, bold=True),
             err=True,
@@ -2743,6 +2771,18 @@ def add_app(
             ),
         ),
     ] = None,
+    privileged: Annotated[
+        bool,
+        typer.Option(
+            "--privileged",
+            help=(
+                "Let the app hold the install's master key (admin on every "
+                "namespace). Required for an app whose manifest declares "
+                "privileged_key: true, such as react-console; also grants it "
+                "on an app already enabled."
+            ),
+        ),
+    ] = False,
     name: Annotated[str | None, _name_opt()] = None,
     install_dir: Annotated[
         Path | None,
@@ -2813,15 +2853,18 @@ def add_app(
     # is a real mutation — and so is a --tag or --app-source on an app
     # that is already enabled (the tag path then behaves like app-deploy).
     existing = next((a for a in deployment.spec.apps if a.name == app_name), None)
-    if existing is not None and existing.enabled and source is None and tag is None:
+    grants = privileged and not (existing is not None and existing.privileged)
+    if (existing is not None and existing.enabled and source is None and tag is None
+            and not grants):
         typer.echo(
             f"⊙ app {app_name!r} is already enabled in this install — no change."
         )
         return
     if existing is None:
-        deployment.spec.apps.append(AppRef(name=app_name, enabled=True))
+        deployment.spec.apps.append(AppRef(name=app_name, enabled=True, privileged=privileged))
     else:
         existing.enabled = True
+        existing.privileged = existing.privileged or privileged
 
     if tag is not None:
         deployment.spec.images.tag_overrides[app_name] = tag
@@ -3627,7 +3670,11 @@ def rotate_key(
         secret_name = secret
         label = f"install secret {secret!r}"
     else:
-        keys = effective_api_keys(deployment, apps_list)
+        try:
+            keys = effective_api_keys(deployment, apps_list)
+        except DuplicateKeyName as e:
+            typer.echo(f"error: {e}", err=True)
+            raise typer.Exit(2) from e
         match = next((k for k in keys if k.name == key_name), None)
         if match is None:
             declared = ", ".join(sorted(k.name for k in keys)) or "(none)"
@@ -5540,7 +5587,7 @@ def nuke(
     # unreadable, which matches the historical default.
     saved_target, saved_namespace = _read_saved_target_and_namespace(target_dir)
     if saved_target == "k8s":
-        nuked = _try_load_previous_deployment(target_dir)
+        nuked = _load_for_teardown(target_dir)
         if nuked is None:
             typer.echo(
                 f"error: the saved spec in {target_dir} cannot be read, so the cluster "
@@ -5660,10 +5707,10 @@ def _nuke_secrets_location(
         return None, ""
     if explicit is not None:
         return Path(explicit), "--secrets-location"
-    saved = _try_load_previous_deployment(target_dir)
+    saved = _load_for_teardown(target_dir)
     if saved is not None and saved.spec.secrets.location:
         return Path(saved.spec.secrets.location), "from the install's saved spec"
-    return _default_install_dir(name) / "secrets", f"no saved spec; default for --name {name}"
+    return _default_install_dir(name) / "secrets", f"no readable saved spec; default for --name {name}"
 
 
 def _echo_nuke_result(report: NukeReport) -> None:
@@ -6250,6 +6297,7 @@ def _assemble(
     apps: list[str],
     app_sources: dict[str, Path],
     apps_from_registry: list[str],
+    privileged_apps: list[str],
     auth_mode: str | None,
     auth_gateway: bool | None,
     secrets_backend: str | None,
@@ -6392,6 +6440,7 @@ def _assemble(
         apps=apps,
         app_sources=app_sources,
         apps_from_registry=list(apps_from_registry),
+        privileged_apps=list(privileged_apps or []),
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -6691,13 +6740,26 @@ def _state_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
         network = dict(spec["network"])
     except (KeyError, TypeError):
         return {**payload, "wip_deploy_format_version": 5}
-    if modules.pop("suppress_core", False) or network.get("remote_wip_url"):
+    if modules.pop("suppress_core", False):
         raise RetiredInstallShape(
             "this install is apps-only (its apps talk to a remote WIP with no "
             "backend here), which wip-deploy no longer supports. Attach the apps "
             "to the WIP they use instead: run them with their own deployment and "
             "have that WIP's platform admin record them (app-edge module, `POST "
-            "/api/registry/attachments`). Remove this install with `wip-deploy nuke`."
+            "/api/registry/attachments`). Remove this install with `wip-deploy "
+            "nuke --name <install> --remove-data --remove-secrets`: its secret "
+            "store holds the remote WIP's api-key, which a later install into the "
+            "same store would otherwise take as its own master key."
+        )
+    if network.get("remote_wip_url"):
+        raise RetiredInstallShape(
+            f"this install runs its own WIP but points its apps at another one "
+            f"(network.remote_wip_url = {network['remote_wip_url']!r}), which "
+            "wip-deploy no longer supports. Its data and backend are untouched: "
+            "re-install it with the same flags minus --remote-wip "
+            "(`wip-deploy install --name <install> … --reconcile`), so its apps "
+            "use this install's WIP, or attach them to the other WIP (app-edge "
+            "module, `POST /api/registry/attachments`)."
         )
     network.pop("remote_wip_url", None)
     network.pop("external_ca_mount", None)
@@ -7006,8 +7068,28 @@ def _load_deployment(install_dir: Path) -> Deployment:
         raise typer.Exit(2) from e
 
 
+def _without_retired_shape(payload: dict[str, Any]) -> dict[str, Any]:
+    """The state with the retired install shape's fields removed, for a
+    teardown: nuke needs the install's target, cluster and secret store, which
+    the retired fields do not change, and refusing to read the state would
+    leave the install the refusal tells the operator to remove impossible to
+    remove."""
+    try:
+        spec = dict(payload["deployment"]["spec"])
+    except (KeyError, TypeError):
+        return payload
+    spec["modules"] = {
+        k: v for k, v in dict(spec.get("modules") or {}).items() if k != "suppress_core"
+    }
+    spec["network"] = {
+        k: v for k, v in dict(spec.get("network") or {}).items()
+        if k not in ("remote_wip_url", "external_ca_mount")
+    }
+    return {**payload, "deployment": {**payload["deployment"], "spec": spec}}
+
+
 def _previous_deployment_or_unreadable(
-    install_dir: Path,
+    install_dir: Path, *, teardown: bool = False,
 ) -> tuple[Deployment | None, str | None]:
     """(deployment, None) when the state reads; (None, None) when there is no
     state at all — a first install, with nothing to compare against; and
@@ -7029,6 +7111,8 @@ def _previous_deployment_or_unreadable(
         payload = json.loads(target.read_text())
     except (json.JSONDecodeError, OSError) as e:
         return None, f"{target} is not readable ({type(e).__name__}: {e})"
+    if teardown:
+        payload = _without_retired_shape(payload)
     try:
         payload = _upgrade_state_payload(payload)
     except RetiredInstallShape as e:
@@ -7132,6 +7216,17 @@ def _park_unreadable_state(install_dir: Path) -> None:
     if _deployment is not None or reason is None:
         return
     _park_unusable_state(target, note=reason)
+
+
+def _load_for_teardown(install_dir: Path) -> Deployment | None:
+    """The saved Deployment as nuke reads it: like
+    `_try_load_previous_deployment`, but a state of a retired install shape is
+    read without the retired fields instead of refused, since removing such
+    an install is exactly what the refusal asks for."""
+    deployment, reason = _previous_deployment_or_unreadable(install_dir, teardown=True)
+    if reason is not None:
+        typer.echo(f"warning: {reason}", err=True)
+    return deployment
 
 
 def _try_load_previous_deployment(install_dir: Path) -> Deployment | None:
@@ -7624,6 +7719,9 @@ def _ensure_secrets_via_spec(
             deployment, components, apps_list, backend,
             persist=False, known=known, regenerate=regenerate,
         )
+    except DuplicateKeyName as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
     except SecretDrift as e:
         install = deployment.metadata.name
         typer.echo(f"error: the secret store at {location} is out of step with this install.", err=True)

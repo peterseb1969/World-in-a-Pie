@@ -9,4 +9,4 @@ A spec key named `wip-app-edge`, on an install running the app edge, put two key
 
 - Every name the deployer provisions (`wip-canary`, `wip-app-edge`) is now reserved.
 - The render refuses a key file that would name any key twice.
-- The Registry's health answer carries `key_file_refused`, and `wip-deploy verify --security --live` fails when it is true. The Registry's log names why.
+- The Registry's health answer carries `key_file_import`: `imported`, `refused`, `failed` (the import raised partway), `not_configured` or `pending`. `wip-deploy verify --security --live` passes only on `imported`, so a Registry whose image does not report it fails the check too: roll the Registry with the deployer. The Registry's log names why.

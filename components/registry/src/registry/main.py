@@ -389,17 +389,19 @@ async def health_check():
     try:
         # Ping MongoDB
         await mongo_ping(app.state.mongodb_client)
-        from .services.key_import import key_file_refused
+        from .services.key_import import key_file_state
 
         return {
             "status": "healthy",
             "database": "connected",
             # The mode the auth layer actually enforces (WIP_AUTH_MODE).
             "auth_enabled": get_auth_config().mode != "none",
-            # True when the last pass refused the install's key file: the
-            # previous import stands, so the Registry stays healthy, but no
-            # change in the file took effect. The log says why.
-            "key_file_refused": key_file_refused(),
+            # What the last pass did with the install's key file: imported,
+            # refused, failed, not_configured or pending. Anything but
+            # "imported" means a change in the file has not taken effect,
+            # while the previous import keeps serving, so the Registry stays
+            # healthy. The log says why.
+            "key_file_import": key_file_state(),
         }
     except Exception as e:
         import logging

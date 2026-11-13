@@ -161,14 +161,17 @@ def test_maximal_deployment_passes_full_validation() -> None:
     optional_names = sorted(
         c.metadata.name for c in components if c.metadata.category == "optional"
     )
-    app_names = sorted(a.metadata.name for a in apps)
-
     deployment = Deployment(
         metadata=DeploymentMetadata(name="maximal-test"),
         spec=DeploymentSpec(
             target="compose",
             modules={"optional": optional_names},  # type: ignore[arg-type]
-            apps=[AppRef(name=n) for n in app_names],
+            # An app asking for the master key holds it only by the install's
+            # grant; the maximal deployment grants every one that asks.
+            apps=[
+                AppRef(name=a.metadata.name, privileged=a.spec.privileged_key)
+                for a in sorted(apps, key=lambda a: a.metadata.name)
+            ],
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(hostname="wip.local"),
             images=ImagesSpec(registry="ghcr.io/test", tag="test"),

@@ -65,8 +65,6 @@ def test_a_compose_install_without_its_compose_file_fails(tmp_path: Path, check)
     assert not r.passed and "rendered file missing" in r.message
 
 
-
-
 # ── 1204: the app checks ────────────────────────────────────────────────
 
 

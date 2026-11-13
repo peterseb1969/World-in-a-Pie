@@ -30,9 +30,43 @@ from wip_deploy.spec.deployment import (
 from wip_deploy.verify_security import check_key_file_imported
 
 
-def test_the_edge_key_is_one_of_the_reserved_names() -> None:
-    assert api_keys.APP_EDGE_KEY.name == APP_EDGE_KEY_NAME
-    assert set(SYSTEM_KEY_NAMES) == {CANARY_KEY_NAME, APP_EDGE_KEY_NAME}
+def test_the_reserved_names_are_the_system_keys_the_deployer_provisions() -> None:
+    # SYSTEM_KEY_NAMES lives in the spec layer, which cannot import config_gen;
+    # this pins it to the keys config_gen actually adds, so a system key added
+    # there without its name here fails this test.
+    provisioned = {
+        k.name for k in api_keys.provisioned_api_keys(_edge_install(), [])
+        if not k.owner.startswith("app:")
+    }
+    assert set(SYSTEM_KEY_NAMES) == provisioned
+
+
+def test_a_system_key_added_without_reservation_is_refused_at_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from wip_deploy.spec.validators import _validate_provisioned_key_names
+
+    monkeypatch.setattr(api_keys, "CANARY_KEY", SpecAPIKey(
+        name="wip-new-system", owner="system:new", namespaces=["wip-canary-probe"],
+    ))
+    d = _edge_install()
+    d.spec.auth.api_keys = [SpecAPIKey(name="wip-new-system", owner="me", namespaces=["wip"])]
+    [error] = _validate_provisioned_key_names(d, [])
+    assert "wip-new-system" in str(error) and "system:new" in str(error)
+
+
+def test_the_key_file_says_a_system_key_is_the_deployers() -> None:
+    import json
+
+    class AnySecret:
+        def get(self, name: str) -> str:
+            return "x"
+
+    secrets = AnySecret()
+    keys = json.loads(api_keys.generate_api_keys_json(_edge_install(), secrets, []))["keys"]
+    edge = next(k for k in keys if k["name"] == APP_EDGE_KEY_NAME)
+    assert "provisioned by wip-deploy" in edge["description"]
+    assert "Spec-declared" not in edge["description"]
 
 
 @pytest.mark.parametrize("name", SYSTEM_KEY_NAMES)
@@ -54,7 +88,7 @@ def test_the_render_refuses_a_name_twice(monkeypatch: pytest.MonkeyPatch) -> Non
     # A system key added to the render without its name reserved: the render
     # stops instead of handing the Registry a file it will refuse.
     monkeypatch.setattr(api_keys, "APP_EDGE_KEY", SpecAPIKey(name=CANARY_KEY_NAME, owner="system:x", namespaces=["wip-canary-probe"]))
-    with pytest.raises(ValueError, match=f"name {CANARY_KEY_NAME} twice"):
+    with pytest.raises(api_keys.DuplicateKeyName, match=f"name {CANARY_KEY_NAME} twice"):
         api_keys.effective_api_keys(_edge_install(), [])
 
 
@@ -70,19 +104,31 @@ def _client(status: int, body: dict | None) -> httpx.Client:
     return httpx.Client(transport=httpx.MockTransport(handler))
 
 
-def test_a_refused_key_file_fails_the_live_check() -> None:
-    r = check_key_file_imported("https://wip.example.org", _client(200, {"status": "healthy", "key_file_refused": True}))
-    assert not r.passed and "refused the key file" in r.message
+def _check(body: dict):
+    return check_key_file_imported("https://wip.example.org", _client(200, body))
 
 
-def test_an_imported_key_file_passes() -> None:
-    r = check_key_file_imported("https://wip.example.org", _client(200, {"status": "healthy", "key_file_refused": False}))
+def test_only_an_import_passes() -> None:
+    r = _check({"status": "healthy", "key_file_import": "imported"})
     assert r.passed and r.message == "imported"
 
 
-def test_an_older_registry_is_named_not_failed() -> None:
-    r = check_key_file_imported("https://wip.example.org", _client(200, {"status": "healthy"}))
-    assert r.passed and "predates" in r.message
+@pytest.mark.parametrize(("state", "says"), [
+    ("refused", "refused the key file"),
+    ("failed", "failed partway"),
+    ("not_configured", "no key file path"),
+    ("pending", "not finished"),
+])
+def test_every_other_state_fails_and_says_which(state: str, says: str) -> None:
+    r = _check({"status": "healthy", "key_file_import": state})
+    assert not r.passed and says in r.message
+
+
+def test_a_registry_that_does_not_report_the_import_fails() -> None:
+    # An install whose Registry image predates the answer may be running the
+    # very refusal this check exists for; "cannot tell" is not a pass.
+    r = _check({"status": "healthy"})
+    assert not r.passed and "predates" in r.message and "roll the Registry" in r.message
 
 
 def test_an_unhealthy_registry_fails() -> None:

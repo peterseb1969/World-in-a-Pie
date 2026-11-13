@@ -174,9 +174,11 @@ class App(WIPModel):
         """An app is written by its author, not the operator, and every secret
         it names reaches its container's environment. A deployer-supplied
         `from_secret` may therefore name only what the app owns: its own NATS
-        and MongoDB user passwords, and the master key for a privileged_key
-        app. Anything else, another app's key or a component's password, is
-        refused here. An operator-supplied secret is the operator's to give,
+        and MongoDB user passwords, its own derived key, and the master key
+        for a privileged_key app. Anything else, another app's key or a component's password, is
+        refused here. A privileged_key app's master key still needs the
+        install's grant (validators._validate_privileged_apps). An
+        operator-supplied secret is the operator's to give,
         and the install-level check refuses one whose name another owner
         uses (spec/validators.py)."""
         from wip_deploy.config_gen.mongodb import PASSWORD_SECRET_PREFIX as MONGO_PREFIX
@@ -190,6 +192,12 @@ class App(WIPModel):
             own.add(f"{MONGO_PREFIX}{name}")
         if self.spec.privileged_key:
             own.add("api-key")
+        else:
+            # Its own derived key: the deployer sets WIP_API_KEY from it, and
+            # an app may also read it under a name of its own.
+            from wip_deploy.config_gen.api_keys import APP_KEY_PREFIX
+
+            own.add(f"{APP_KEY_PREFIX}{name}-api-key")
         env = [*self.spec.env.required, *self.spec.env.optional]
         foreign = [
             f"{e.name} ({e.source.from_secret})"

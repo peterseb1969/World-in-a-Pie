@@ -126,7 +126,6 @@ def test_a_full_installs_defaults_are_dropped(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("kw", [
     {"suppress_core": True},
-    {"remote": "https://cloud.example"},
     {"suppress_core": True, "remote": "https://cloud.example", "ca_mount": True},
 ])
 def test_an_apps_only_install_is_refused_with_the_attach_path(
@@ -150,3 +149,102 @@ def test_a_stray_ca_flag_on_a_full_install_is_dropped() -> None:
     # Set from a file at each render, never chosen: nothing to refuse.
     out = _upgrade_state_payload(_v4_state(ca_mount=True))
     assert "external_ca_mount" not in out["deployment"]["spec"]["network"]
+
+
+def test_the_apps_only_refusal_names_the_secrets_to_remove() -> None:
+    # The store holds the remote WIP's api-key; a bare nuke keeps it, and a
+    # later install into the same store would take it as its master key.
+    with pytest.raises(RetiredInstallShape) as refused:
+        _upgrade_state_payload(_v4_state(suppress_core=True))
+    assert "--remove-secrets" in str(refused.value)
+
+
+def test_a_full_install_given_a_remote_wip_is_not_called_apps_only(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(RetiredInstallShape) as refused:
+        _upgrade_state_payload(_v4_state(remote="https://cloud.example"))
+    message = str(refused.value)
+    assert "apps-only" not in message and "nuke" not in message
+    assert "runs its own WIP" in message and "https://cloud.example" in message
+    assert "--reconcile" in message
+
+
+# ── nuke reads a retired state instead of refusing it ───────────────────────
+
+
+def _saved(tmp_path: Path, payload: dict) -> Path:
+    (tmp_path / "deployment.deployer-state").write_text(json.dumps(payload))
+    return tmp_path
+
+
+@pytest.mark.parametrize("kw", [{"suppress_core": True}, {"remote": "https://cloud.example"}])
+def test_teardown_reads_a_retired_state(tmp_path: Path, kw: dict) -> None:
+    from wip_deploy.cli import _load_for_teardown
+
+    install = _saved(tmp_path, _v4_state(**kw))
+    deployment = _load_for_teardown(install)
+    assert deployment is not None
+    assert deployment.spec.network.hostname == "wip-pi.local"
+    # Every other loader still refuses it.
+    assert _previous_deployment_or_unreadable(install)[0] is None
+
+
+def test_nuke_finds_a_retired_installs_own_secret_store(tmp_path: Path) -> None:
+    from wip_deploy.cli import _nuke_secrets_location
+
+    state = _v4_state(suppress_core=True)
+    store = tmp_path / "elsewhere" / "secrets"
+    state["deployment"]["spec"]["secrets"]["location"] = str(store)
+    (tmp_path / "install").mkdir()
+    install = _saved(tmp_path / "install", state)
+
+    location, source = _nuke_secrets_location(install, "old", None, True)
+    assert location == store
+    assert source == "from the install's saved spec"
+
+
+def test_nuke_selects_a_retired_k8s_installs_cluster(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import wip_deploy.cli as cli
+
+    # The saved target is read raw (patched to k8s here); what matters is that
+    # the spec nuke needs for the cluster loads despite the retired shape.
+    install = _saved(tmp_path, _v4_state(suppress_core=True))
+    selected: list = []
+    monkeypatch.setattr(cli, "_read_saved_target_and_namespace", lambda d: ("k8s", "wip"))
+
+    def select(deployment, mutating):
+        selected.append(deployment)
+        raise typer.Exit(0)  # stop before anything is torn down
+
+    monkeypatch.setattr(cli, "_select_cluster_or_exit", select)
+
+    with pytest.raises(typer.Exit) as stopped:
+        cli.nuke(name="old", install_dir=install)
+    assert stopped.value.exit_code == 0
+    assert len(selected) == 1
+
+
+# ── a render reference nothing can resolve is an operator error ─────────────
+
+
+def test_an_unresolvable_env_reference_aborts_the_render_cleanly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import wip_deploy.cli as cli
+    from wip_deploy.config_gen.env import UncollectedSecretRef
+
+    def refuse(*a, **kw):
+        raise UncollectedSecretRef("APP_X: secret 'nope' was not collected")
+
+    monkeypatch.setattr(cli, "_render_tree", refuse)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    result = runner.invoke(app, [
+        "render", "--registry", "ghcr.io/x", "--tag", "t", "--repo-root", str(REPO_ROOT),
+        "--name", "preview", "--output-dir", str(tmp_path / "out"),
+    ])
+    assert result.exit_code == 2, result.output
+    assert result.exception is None or isinstance(result.exception, SystemExit)
+    assert "render aborted" in result.output and "not collected" in result.output

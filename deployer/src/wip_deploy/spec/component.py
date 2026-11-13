@@ -435,7 +435,6 @@ class ActivationSpec(WIPModel):
     """auth.gateway must equal this value. None = no requirement."""
 
 
-
 # ────────────────────────────────────────────────────────────────────
 # Image
 # ────────────────────────────────────────────────────────────────────
@@ -665,6 +664,51 @@ class Component(WIPModel):
             raise ValueError(
                 f"component {self.metadata.name!r}: activation is read only for "
                 f"category infrastructure, and this one is {self.metadata.category!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def reads_no_other_owners_secret(self) -> Component:
+        """A component is platform code and reads the platform's shared
+        secrets (the master key, the Postgres, Garage and Dex client
+        secrets), but never one that belongs to a single other owner: an
+        app's key, another service's NATS or MongoDB user password, the
+        canary's key, the app edge's key outside the app edge, or MongoDB's
+        root password outside MongoDB. Every one of those would put another
+        owner's credential into this container's environment. An
+        operator-supplied secret is the operator's to give."""
+        from wip_deploy.config_gen.mongodb import PASSWORD_SECRET_PREFIX as MONGO_PREFIX
+        from wip_deploy.config_gen.mongodb import ROOT_PASSWORD_SECRET
+        from wip_deploy.config_gen.nats import PASSWORD_SECRET_PREFIX as NATS_PREFIX
+        from wip_deploy.spec.deployment import APP_EDGE_KEY_NAME, APP_EDGE_MODULE, CANARY_KEY_NAME
+
+        name = self.metadata.name
+
+        def whose(secret: str) -> str | None:
+            if secret.startswith("app-") and secret.endswith("-api-key"):
+                return f"app {secret.removeprefix('app-').removesuffix('-api-key')!r}"
+            for prefix in (NATS_PREFIX, MONGO_PREFIX):
+                if secret.startswith(prefix) and secret != f"{prefix}{name}":
+                    return repr(secret.removeprefix(prefix))
+            if secret == f"{CANARY_KEY_NAME}-api-key":
+                return "the canary"
+            if secret == f"{APP_EDGE_KEY_NAME}-api-key" and name != APP_EDGE_MODULE:
+                return "the app edge"
+            if secret == ROOT_PASSWORD_SECRET and name != "mongodb":
+                return "MongoDB's root user"
+            return None
+
+        foreign = [
+            f"{e.name} ({e.source.from_secret}, {owner}'s)"
+            for e in (*self.spec.env.required, *self.spec.env.optional)
+            if e.source.from_secret is not None
+            and e.source.supplied_by != "operator"
+            and (owner := whose(e.source.from_secret)) is not None
+        ]
+        if foreign:
+            raise ValueError(
+                f"component {name!r}: {', '.join(foreign)} reads a secret that "
+                "belongs to another owner"
             )
         return self
 

@@ -79,6 +79,9 @@ class BuildInputs:
     # `--app-from-registry NAME` (repeatable). Applies only to
     # target=dev; ignored otherwise.
     apps_from_registry: list[str] = field(default_factory=list)
+    # --privileged-app: apps this install lets hold the master key. The
+    # manifest's privileged_key asks for it; only the operator grants it.
+    privileged_apps: list[str] = field(default_factory=list)
 
     # Images. tag=None → no deployment-wide tag: manifest pins apply
     # (then "latest"). When set, the tag is authoritative over manifest
@@ -129,6 +132,21 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
     # --app → spec.apps (replaces preset's app list if any provided)
     if inputs.apps:
         spec_dict["apps"] = [{"name": a} for a in inputs.apps]
+    if inputs.privileged_apps:
+        enabled = {
+            (a["name"] if isinstance(a, dict) else a) for a in spec_dict["apps"]
+        }
+        stray = sorted(set(inputs.privileged_apps) - enabled)
+        if stray:
+            raise ValueError(
+                f"--privileged-app {', '.join(stray)} names an app this install "
+                "does not enable; add it with --app as well"
+            )
+        spec_dict["apps"] = [
+            {**(a if isinstance(a, dict) else {"name": a}),
+             "privileged": (a["name"] if isinstance(a, dict) else a) in inputs.privileged_apps}
+            for a in spec_dict["apps"]
+        ]
 
     # Auth CLI overrides
     if inputs.auth_mode is not None:
