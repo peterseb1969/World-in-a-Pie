@@ -878,8 +878,8 @@ class DocumentService:
             "file_references": vr.file_references,
             "document_references": vr.references,
             # What validation already knows (a template's or terminology's
-            # own namespace) wins over a Registry lookup, which does not
-            # place a retired referent.
+            # own namespace) wins over a Registry lookup, so the gate does not
+            # depend on the Registry to place them.
             "placements": {**(placements or {}), **(getattr(vr, "referent_namespaces", None) or {})},
         }
         validator = get_reference_validator()

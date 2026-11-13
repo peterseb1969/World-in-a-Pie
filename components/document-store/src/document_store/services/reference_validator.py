@@ -162,11 +162,24 @@ class ReferenceValidator:
         violations: list[dict[str, Any]] = []
         for kind, entity_id, namespace, _field in targets:
             target_ns = namespace or placed.get(entity_id)
-            # Every resolved referent arrives with its namespace: documents in
-            # their reference, templates and terminologies from validation
-            # (placements). A target still unplaced here is an inactive term
-            # or file, which validation itself refuses.
-            if not target_ns or target_ns == document_namespace:
+            # Documents arrive with their namespace, templates and
+            # terminologies with validation's (placements); terms and files
+            # are placed by the Registry, which answers only for an active
+            # entry. A target it cannot place (an entry soft-deleted or
+            # removed at the Registry, or one id held by several) cannot be
+            # shown to be inside the namespace, so a strict source refuses it.
+            if not target_ns:
+                violations.append({
+                    "type": kind,
+                    "entity_id": entity_id,
+                    "message": (
+                        f"The namespace of {kind} '{entity_id}' cannot be established "
+                        f"(the Registry holds no active entry for it), so "
+                        f"'{document_namespace}' (isolation_mode=strict) cannot reference it"
+                    ),
+                })
+                continue
+            if target_ns == document_namespace:
                 continue
             if not outbound_allows(document_namespace, source_config, target_ns):
                 violations.append({

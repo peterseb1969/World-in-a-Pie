@@ -541,7 +541,11 @@ class RegistryClientBase:
 
         A failed lookup answers {} unless ``raise_on_error``: a reference
         check must refuse when it cannot learn where a target lives, not
-        pass it as if it had none.
+        pass it as if it had none. With ``raise_on_error`` a lookup whose
+        answer holds an item with status ``error`` raises too: the Registry
+        answered the request but not that id, which is an outage for that
+        id, not a sign it is nowhere. An ``ambiguous`` or ``not_found``
+        item is a definite answer, and the id is simply absent.
         """
         if not entry_ids:
             return {}
@@ -559,6 +563,13 @@ class RegistryClientBase:
                 return {}
             namespaces: dict[str, str] = {}
             for r in response.json().get("results", []):
+                if raise_on_error and r.get("status") == "error":
+                    index = r.get("index")
+                    asked = entry_ids[index] if isinstance(index, int) and 0 <= index < len(entry_ids) else "?"
+                    raise RegistryError(
+                        f"Registry entry lookup failed for {asked!r}: "
+                        f"{r.get('error_code') or 'error'}: {r.get('error') or ''}".rstrip(": ")
+                    )
                 if r.get("status") == "found" and r.get("entry_id") and r.get("namespace"):
                     namespaces[r["entry_id"]] = r["namespace"]
             return namespaces

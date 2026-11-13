@@ -86,18 +86,21 @@ async def test_patch_cannot_move_an_edges_source_into_another_namespace(
 # ---------------------------------------------------------------------------
 
 STRICT = {"isolation_mode": "strict", "allowed_external_refs": []}
-RETIRED_TEMPLATE = [{"field_path": "kind", "reference_type": "template",
-                     "resolved": {"template_id": "T-retired"}}]
+UNPLACED_TEMPLATE = [{"field_path": "kind", "reference_type": "template",
+                      "resolved": {"template_id": "T-unplaced"}}]
 
 
 @pytest.mark.asyncio
-async def test_a_referent_the_registry_no_longer_places_was_never_gated():
-    # The Registry does not place a retired template: the gate let it through.
+async def test_a_referent_nothing_places_is_refused_by_a_strict_source():
+    # Neither validation nor the Registry says where it lives, so it cannot
+    # be shown to be inside the namespace: a strict source refuses it.
     reg = _FakeRegistry(STRICT, placed={})
-    await _validator(reg).validate_document_references(
-        document_namespace="appns", template_namespace="appns",
-        document_references=RETIRED_TEMPLATE,
-    )
+    with pytest.raises(ReferenceValidationError) as refused:
+        await _validator(reg).validate_document_references(
+            document_namespace="appns", template_namespace="appns",
+            document_references=UNPLACED_TEMPLATE,
+        )
+    assert refused.value.violations[0]["entity_id"] == "T-unplaced"
 
 
 @pytest.mark.asyncio
@@ -106,8 +109,8 @@ async def test_with_validations_namespace_the_strict_allow_list_applies():
     with pytest.raises(ReferenceValidationError) as refused:
         await _validator(reg).validate_document_references(
             document_namespace="appns", template_namespace="appns",
-            document_references=RETIRED_TEMPLATE,
-            placements={"T-retired": "elsewhere"},
+            document_references=UNPLACED_TEMPLATE,
+            placements={"T-unplaced": "elsewhere"},
         )
     assert refused.value.violations[0]["namespace"] == "elsewhere"
     assert reg.lookups == []  # nothing left for the Registry to place
@@ -149,12 +152,12 @@ async def test_create_hands_validations_namespaces_to_the_gate():
             captured.update(kwargs)
 
     vr = SimpleNamespace(template_namespace="appns", term_references=[], file_references=[],
-                         references=RETIRED_TEMPLATE, identity_values={},
-                         referent_namespaces={"T-retired": "elsewhere"})
+                         references=UNPLACED_TEMPLATE, identity_values={},
+                         referent_namespaces={"T-unplaced": "elsewhere"})
     with patch("document_store.services.document_service.get_reference_validator",
                return_value=_Recorder()):
         await DocumentService()._check_new_references("appns", "TPL", vr, placements={"x": "y"})
-    assert captured["placements"] == {"x": "y", "T-retired": "elsewhere"}
+    assert captured["placements"] == {"x": "y", "T-unplaced": "elsewhere"}
 
 
 @pytest.mark.asyncio

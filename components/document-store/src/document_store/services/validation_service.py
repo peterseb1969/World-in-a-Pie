@@ -82,8 +82,8 @@ class ValidationResult:
         # Entity id -> namespace for referents whose resolver knows where
         # they live (templates, terminologies). The outbound reference gate
         # takes them as placements, so it does not depend on a Registry
-        # lookup for them, which skips an entry that is not active (a
-        # soft-deleted or merged-away entry).
+        # lookup for them, which answers only for an active entry (an entry
+        # soft-deleted at the Registry is not placed).
         self.referent_namespaces: dict[str, str] = {}
         # The hash feed: resolved-referent rule applied — a term/reference
         # identity field carries its referent's canonical ID here, never the

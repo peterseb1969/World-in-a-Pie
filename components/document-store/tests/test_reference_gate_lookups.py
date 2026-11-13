@@ -113,11 +113,18 @@ async def test_a_strict_batch_is_placed_in_chunks_and_never_asked_again():
     assert [len(chunk) for chunk in reg.lookups] == [PLACEMENT_CHUNK, PLACEMENT_CHUNK, 1]
     assert placed[ids[-1]] == ""
 
-    for doc in docs:
+    for doc in docs[:-1]:
         await v.validate_document_references(
             document_namespace="appns", template_namespace="appns",
             placements=placed, **doc,
         )
+    # The id the Registry could not place is refused, without asking again.
+    with pytest.raises(ReferenceValidationError) as refused:
+        await v.validate_document_references(
+            document_namespace="appns", template_namespace="appns",
+            placements=placed, **docs[-1],
+        )
+    assert refused.value.violations[0]["entity_id"] == ids[-1]
     assert len(reg.lookups) == 3
 
 
@@ -147,6 +154,13 @@ def placements_seen(monkeypatch) -> list[list[str]]:
 
     monkeypatch.setattr(RegistryClientBase, "lookup_entry_namespaces", recording)
     return seen
+
+
+def _mock_term_id(value: str) -> str:
+    """The term id the conftest's mocked def-store resolves `value` to."""
+    import hashlib
+
+    return f"0190b000-0000-7000-8000-{hashlib.sha256(value.lower().encode()).hexdigest()[:12]}"
 
 
 def _person(namespace: str = "wip") -> dict:
@@ -195,7 +209,15 @@ async def test_a_strict_namespace_batch_places_once(
             "description": "reference gate tests", "isolation_mode": "strict",
             "allowed_external_refs": ["wip"],
         })
-    assert resp.status_code == 200, resp.text
+        assert resp.status_code == 200, resp.text
+        # The gender term the mocked def-store resolves "M" to lives in wip,
+        # as a real term does: the strict namespace's allow-list admits it.
+        # Unregistered, the Registry could not place it and the gate refuses.
+        term = await reg.post("/api/registry/entries/register", headers=auth_headers, json=[{
+            "namespace": "wip", "entity_type": "terms", "entry_id": _mock_term_id("M"),
+            "composite_key": {"terminology_id": "TERM-GENDER", "value": "M"},
+        }])
+        assert term.json()["results"][0]["status"] in ("created", "already_exists"), term.text
 
     resp = await client.post(DOCS, headers=auth_headers, json=[_person(STRICT) for _ in range(3)])
     body = resp.json()

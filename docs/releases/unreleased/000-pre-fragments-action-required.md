@@ -2399,11 +2399,9 @@ ambiguous. They no longer can:
   or migrated; write it in its source's namespace.
 - **The outbound gate takes a template's or terminology's namespace from
   validation**, which resolved it, instead of looking it up in the Registry.
-  No behaviour changes today: a retired template's Registry entry stays
-  active, so the lookup already placed it and a strict namespace's
-  allow-list already applied. The gate no longer depends on that lookup for
-  these referents (a referent whose entry is inactive would otherwise be
-  skipped).
+  For an ordinary template or terminology the outcome is unchanged (its
+  Registry entry stays active, so the lookup placed it too); the gate no
+  longer depends on that lookup for these referents.
 
 ### The table view and its CSV export show only documents the caller can read
 

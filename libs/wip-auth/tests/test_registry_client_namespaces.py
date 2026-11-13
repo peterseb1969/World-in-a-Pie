@@ -99,3 +99,45 @@ async def test_place_entries_refuses_when_the_bulk_lookup_fails(httpx_mock):
     client = RegistryClientBase(base_url=BASE, api_key="k")
     with pytest.raises(RegistryError):
         await client.place_entries(["id-x"])
+
+
+def _answer(httpx_mock, *results):
+    httpx_mock.add_response(
+        url=f"{BASE}/api/registry/entries/lookup/by-id", json={"results": list(results)},
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_item_the_registry_failed_on_is_an_outage_when_asked_to_raise(httpx_mock):
+    """A 200 whose results hold an `error` item answered the request but not
+    that id: a caller that must not pass an unplaced target as "nowhere"
+    gets an error naming the id, not a map without it."""
+    from wip_auth.registry_client import RegistryError
+
+    _answer(
+        httpx_mock,
+        {"index": 0, "status": "found", "entry_id": "id-a", "namespace": "ns-a"},
+        {"index": 1, "status": "error", "error_code": "internal_error", "error": "boom"},
+    )
+    client = RegistryClientBase(base_url=BASE, api_key="k")
+    with pytest.raises(RegistryError) as failed:
+        await client.lookup_entry_namespaces(["id-a", "id-b"], raise_on_error=True)
+    assert "id-b" in str(failed.value) and "internal_error" in str(failed.value)
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_and_not_found_items_are_answers_not_outages(httpx_mock):
+    _answer(
+        httpx_mock,
+        {"index": 0, "status": "ambiguous", "error_code": "ambiguous"},
+        {"index": 1, "status": "not_found"},
+    )
+    client = RegistryClientBase(base_url=BASE, api_key="k")
+    assert await client.lookup_entry_namespaces(["id-a", "id-b"], raise_on_error=True) == {}
+
+
+@pytest.mark.asyncio
+async def test_without_raise_an_error_item_is_left_out_as_before(httpx_mock):
+    _answer(httpx_mock, {"index": 0, "status": "error", "error_code": "internal_error"})
+    client = RegistryClientBase(base_url=BASE, api_key="k")
+    assert await client.lookup_entry_namespaces(["id-a"]) == {}
