@@ -11,8 +11,8 @@ They now verify against the install's own trust anchor:
 
 | `tls` | Verified against |
 |---|---|
-| `internal` | Caddy's root CA |
+| `internal` | Caddy's root CA, read through podman, else docker |
 | `self-signed` (k8s) | the certificate in the install's TLS Secret |
 | `letsencrypt`, `external` | the system store |
 
-When no anchor is available yet (a first install, before Caddy has made its CA), the request is skipped and the output says so.
+When no anchor is available yet (a first install, before Caddy has made its CA), the request is skipped and the output says so. A certificate that does not verify against the anchor (an `external` terminator with a private CA, say) is the same "could not ask": `rotate-key` then reports its post-rotation check as not run, not as a failed rotation, and exits 0, since the rotation itself completed.

@@ -152,7 +152,7 @@ class TestExportCaddyInternalCA:
     def test_raises_when_podman_missing(self) -> None:
         with (
             patch("wip_deploy.export_ca.shutil.which", return_value=None),
-            pytest.raises(ExportCAError, match="podman is not available"),
+            pytest.raises(ExportCAError, match="neither podman nor docker"),
         ):
             export_caddy_internal_ca("wip-caddy")
 
@@ -188,6 +188,28 @@ class TestExportCaddyInternalCA:
             with pytest.raises(ExportCAError, match="empty"):
                 export_caddy_internal_ca("wip-caddy")
 
+    def test_docker_is_used_when_podman_is_absent(self) -> None:
+        """The apply path falls back to docker; reading the CA does too, so an
+        internal-TLS install on a docker-only host gets its trust anchor."""
+        def which(name: str) -> str | None:
+            return "/usr/bin/docker" if name == "docker" else None
+
+        with patch("wip_deploy.export_ca.shutil.which", side_effect=which), \
+             patch("wip_deploy.export_ca.subprocess.run") as run:
+            run.side_effect = [
+                self._ps_mock(running=True),
+                self._exec_mock(success=True),
+            ]
+            assert export_caddy_internal_ca("wip-caddy") == _FAKE_PEM
+        assert [c[0][0][0] for c in run.call_args_list] == ["docker", "docker"]
+
+    def test_a_longer_name_holding_the_container_name_is_not_it(self) -> None:
+        with patch("wip_deploy.export_ca.shutil.which", return_value="/usr/bin/podman"), \
+             patch("wip_deploy.export_ca.subprocess.run") as run:
+            run.return_value = MagicMock(returncode=0, stdout="wip-caddy-old\n", stderr="")
+            with pytest.raises(ExportCAError, match="is not running"):
+                export_caddy_internal_ca("wip-caddy")
+
     def test_custom_container_name(self) -> None:
         """Allow the container name to be overridden — useful if the
         user customized the compose project name."""
@@ -200,7 +222,7 @@ class TestExportCaddyInternalCA:
             export_caddy_internal_ca(container_name="my-caddy")
             # First call → ps filter mentions the custom name
             ps_args = run.call_args_list[0][0][0]
-            assert "name=^my-caddy$" in ps_args
+            assert "name=my-caddy" in ps_args
             # Second call → exec targets the custom name
             exec_args = run.call_args_list[1][0][0]
             assert "my-caddy" in exec_args

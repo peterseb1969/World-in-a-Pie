@@ -3701,21 +3701,38 @@ def rotate_key(
 
     if not check:
         return
-    from wip_deploy.verify_security import check_key_rotation
+    from wip_deploy.verify_security import RotationNotChecked, check_key_rotation
 
     # A declared key arrives by the Registry re-importing api-keys.json, which
     # on k8s waits for the kubelet to refresh the mount (about a minute
     # measured), so its probe gets a longer window than a restart needs. The
     # probe asks the Registry; other services follow within one key sync.
+    # A check that could not ask (no trust anchor, or a certificate that does
+    # not verify against it) is reported as not run: the rotation is done,
+    # and only an answer from the install can fail it.
+    not_run: str | None = None
+    problems: list[str] = []
     with _install_trust(deployment) as verify:
-        problems = (
-            [f"not checked: {verify.why}; the keys are never sent unverified"]
-            if isinstance(verify, Untrusted)
-            else check_key_rotation(
-                deployment, new_plaintext, old_plaintext,
-                attempts=75 if key_name is not None else 30, verify=verify,
-            )
+        if isinstance(verify, Untrusted):
+            not_run = verify.why
+        else:
+            try:
+                problems = check_key_rotation(
+                    deployment, new_plaintext, old_plaintext,
+                    attempts=75 if key_name is not None else 30, verify=verify,
+                )
+            except RotationNotChecked as e:
+                not_run = str(e)
+    if not_run is not None:
+        typer.echo(
+            typer.style(
+                f"⚠ post-rotation check not run: {not_run}. The keys are never "
+                "sent unverified; the rotation itself completed — check it by hand.",
+                fg=typer.colors.YELLOW,
+            ),
+            err=True,
         )
+        return
     if problems:
         typer.echo(
             typer.style("✗ post-rotation check failed:", fg=typer.colors.RED, bold=True),

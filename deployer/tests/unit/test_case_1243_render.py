@@ -74,6 +74,19 @@ def test_an_unknown_from_spec_path_is_a_validation_error(disc: Discovery) -> Non
     assert any("reads from_spec 'network.internal_base_url'" in e for e in errors), errors
 
 
+def test_a_from_spec_path_of_an_app_the_install_does_not_run_is_not_judged(disc: Discovery) -> None:
+    """Only what the install renders is checked: a disabled app's manifest may
+    target another deployer's spec context."""
+    raw = yaml.safe_load((REPO_ROOT / "apps/wip-cooking/wip-app.yaml").read_text())
+    raw["spec"]["env"]["required"].append(
+        {"name": "INTERNAL", "source": {"from_spec": "network.internal_base_url"}}
+    )
+    apps = [a for a in disc.apps if a.metadata.name != "wip-cooking"] + [App.model_validate(raw)]
+    d = _deployment("compose")
+    errors = [str(e) for e in validate_all(d, disc.components, apps).errors]
+    assert not any("reads from_spec" in e for e in errors), errors
+
+
 # ── 4-config R3 ──────────────────────────────────────────────────────────
 
 

@@ -116,3 +116,40 @@ def test_the_attachment_check_verifies_with_what_it_is_given(monkeypatch: pytest
     transport = httpx.MockTransport(lambda r: httpx.Response(200, json={"items": [], "pages": 1}))
     check_attachment_collisions(_deployment(), disc.apps, "k", verify="/ca.crt", transport=transport)
     assert seen == ["/ca.crt"]
+
+
+def test_a_tls_failure_in_the_rotation_probe_is_not_an_answer() -> None:
+    """An ssl error under the httpx error means the probe could not ask: it
+    raises RotationNotChecked instead of reporting "no response"."""
+    import ssl
+
+    import httpx
+
+    from wip_deploy.verify_security import RotationNotChecked, check_key_rotation
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        try:
+            raise ssl.SSLCertVerificationError("certificate verify failed")
+        except ssl.SSLError as e:
+            raise httpx.ConnectError("tls", request=request) from e
+
+    with pytest.raises(RotationNotChecked, match="did not verify"):
+        check_key_rotation(
+            _deployment(), "new", "old", transport=httpx.MockTransport(handler),
+            attempts=1, delay_seconds=0,
+        )
+
+
+def test_an_unreachable_install_is_still_a_problem_not_a_skip() -> None:
+    import httpx
+
+    from wip_deploy.verify_security import check_key_rotation
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused", request=request)
+
+    problems = check_key_rotation(
+        _deployment(), "new", None, transport=httpx.MockTransport(handler),
+        attempts=1, delay_seconds=0,
+    )
+    assert problems and "no response" in problems[0]

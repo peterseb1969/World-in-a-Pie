@@ -143,6 +143,45 @@ class TestMasterKey:
         assert "post-rotation check failed" in result.output
         assert "still answered 200" in result.output
 
+    def test_a_check_that_cannot_verify_tls_is_not_a_failed_rotation(self, tmp_path):
+        """The rotation is done; a certificate that does not verify against
+        the trust anchor means the check could not ask, which is said as such
+        and does not fail the command."""
+        from wip_deploy.verify_security import RotationNotChecked
+
+        install = _install(tmp_path)
+        key = install / "secrets" / "api-key"
+        key.write_text("old-master")
+        with (
+            patch("wip_deploy.cli._apply_and_persist_mutation",
+                  side_effect=_regenerate(key, "new-master")),
+            patch("wip_deploy.verify_security.check_key_rotation",
+                  side_effect=RotationNotChecked("the certificate did not verify")),
+        ):
+            result = _rotate(install, "--secret", "api-key")
+
+        assert result.exit_code == 0, result.output
+        assert "post-rotation check not run" in result.output
+        assert "post-rotation check failed" not in result.output
+
+    def test_no_trust_anchor_is_a_check_not_run(self, tmp_path):
+        from wip_deploy.tls_trust import Untrusted
+
+        install = _install(tmp_path)
+        key = install / "secrets" / "api-key"
+        key.write_text("old-master")
+        with (
+            patch("wip_deploy.cli._apply_and_persist_mutation",
+                  side_effect=_regenerate(key, "new-master")),
+            patch("wip_deploy.tls_trust.trust_anchor", return_value=Untrusted("no CA yet")),
+            patch("wip_deploy.verify_security.check_key_rotation") as check,
+        ):
+            result = _rotate(install, "--secret", "api-key")
+
+        check.assert_not_called()
+        assert result.exit_code == 0, result.output
+        assert "post-rotation check not run: no CA yet" in result.output
+
     def test_no_check_skips_the_probe(self, tmp_path):
         install = _install(tmp_path)
         key = install / "secrets" / "api-key"

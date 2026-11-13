@@ -1171,6 +1171,26 @@ def verify_live(
         ]
 
 
+class RotationNotChecked(Exception):  # noqa: N818 - an outcome, not a fault of the rotation
+    """The post-rotation probe could not ask the install: its certificate did
+    not verify against the trust anchor (tls_trust.trust_anchor). The rotation
+    itself is done; only the check is missing, and the keys are never sent
+    unverified to try again."""
+
+
+def _tls_failure(exc: BaseException) -> bool:
+    """Whether an httpx error comes from TLS verification: an ssl.SSLError
+    somewhere in its cause chain."""
+    import ssl
+
+    seen: BaseException | None = exc
+    while seen is not None:
+        if isinstance(seen, ssl.SSLError):
+            return True
+        seen = seen.__cause__ or seen.__context__
+    return False
+
+
 def check_key_rotation(
     deployment: Deployment,
     new_key: str,
@@ -1186,7 +1206,8 @@ def check_key_rotation(
     The Registry validates every API key the install knows, so one
     authenticated read against it answers both questions: is the new key
     accepted (retried while restarted services come back), and is the old
-    one refused. An empty list means both held.
+    one refused. An empty list means both held. A certificate that does not
+    verify raises RotationNotChecked: that is "could not ask", not an answer.
     """
     import time
 
@@ -1203,7 +1224,12 @@ def check_key_rotation(
         def status(key: str) -> int | None:
             try:
                 return client.get(url, headers={"X-API-Key": key}).status_code
-            except httpx.HTTPError:
+            except httpx.HTTPError as e:
+                if _tls_failure(e):
+                    raise RotationNotChecked(
+                        f"the certificate at {url} did not verify against the "
+                        f"install's trust anchor ({e})"
+                    ) from e
                 return None
 
         new_status: int | None = None

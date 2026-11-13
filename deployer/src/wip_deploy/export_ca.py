@@ -25,7 +25,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-# Each podman call answers within this, or export-ca stops with an error.
+# Each container-runtime call answers within this, or export-ca stops with an error.
 _PODMAN_TIMEOUT_SECONDS = 30
 
 # Caddy's PKI directory layout is stable across 2.x. The default CA
@@ -41,16 +41,27 @@ class ExportCAError(Exception):
     """
 
 
+def _runtime() -> str | None:
+    """The container runtime CLI on PATH, as the apply path picks it: podman,
+    else docker (the documented fallback), else None. Both take the ps,
+    inspect and exec calls below unchanged."""
+    if shutil.which("podman"):
+        return "podman"
+    return "docker" if shutil.which("docker") else None
+
+
 def _podman(args: list[str], *, text: bool) -> subprocess.CompletedProcess[Any]:
-    """One podman call, bounded (a hung podman socket would hang export-ca)."""
+    """One container-runtime call (podman, else docker), bounded: a hung
+    socket would hang export-ca."""
+    runtime = _runtime() or "podman"
     try:
         return subprocess.run(
-            ["podman", *args], check=False, capture_output=True, text=text,
+            [runtime, *args], check=False, capture_output=True, text=text,
             timeout=_PODMAN_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as e:
         raise ExportCAError(
-            f"`podman {' '.join(args[:2])}` did not answer within {_PODMAN_TIMEOUT_SECONDS}s"
+            f"`{runtime} {' '.join(args[:2])}` did not answer within {_PODMAN_TIMEOUT_SECONDS}s"
         ) from e
 
 
@@ -76,42 +87,46 @@ def export_caddy_internal_ca(
 ) -> bytes:
     """Read the Caddy internal-CA root cert from a running container.
 
-    Uses `podman exec <container> cat <path>` rather than `podman cp`
-    so the output is the raw PEM bytes (cp would produce a tar stream).
+    Uses `<runtime> exec <container> cat <path>` (podman, else docker)
+    rather than `cp`, so the output is the raw PEM bytes (cp would produce a
+    tar stream).
 
     Returns:
         PEM-encoded certificate bytes.
 
     Raises:
-        ExportCAError: podman missing, container not running, or the
+        ExportCAError: no container runtime, container not running, or the
             CA file doesn't exist yet (Caddy lazy-generates on first
             HTTPS request — a freshly-installed but never-probed
             install has no CA on disk).
     """
-    if not shutil.which("podman"):
+    if _runtime() is None:
         raise ExportCAError(
-            "podman is not available on PATH. wip-deploy export-ca "
-            "needs podman to read from the running wip-caddy container."
+            "neither podman nor docker is on PATH. wip-deploy export-ca "
+            "needs one to read from the running wip-caddy container."
         )
 
     # Container-running check first — gives a much clearer error than
-    # falling through to `podman exec` against a non-existent container.
+    # falling through to `exec` against a non-existent container.
+    # The name filter matches a part of the name on docker and podman alike
+    # (their anchored forms differ), so the exact name is compared here.
     ps = _podman(
         [
             "ps",
-            "--filter", f"name=^{container_name}$",
+            "--filter", f"name={container_name}",
             "--filter", "status=running",
             "--format", "{{.Names}}",
         ],
         text=True,
     )
-    if ps.returncode != 0 or container_name not in ps.stdout:
+    running = {line.strip().lstrip("/") for line in (ps.stdout or "").splitlines()}
+    if ps.returncode != 0 or container_name not in running:
         raise ExportCAError(
             f"container {container_name!r} is not running. "
             f"Bring the install up first: `wip-deploy install --target compose ...`"
         )
 
-    # `podman exec ... cat <file>` streams the raw bytes to stdout.
+    # `exec ... cat <file>` streams the raw bytes to stdout.
     # Use bytes mode (no text=True) because the cert is technically PEM
     # text but we don't want any Python-side codec re-encoding.
     if install_dir is not None:

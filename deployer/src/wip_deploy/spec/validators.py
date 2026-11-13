@@ -209,17 +209,24 @@ def _spec_context_paths() -> set[str]:
 
 
 def _validate_from_spec_paths(
-    components: list[Component], apps: list[App]
+    deployment: Deployment, components: list[Component], apps: list[App]
 ) -> list[ValidationError]:
-    """Every `from_spec` names a value the spec context provides. Left to the
-    render, an unknown path raised KeyError there, a traceback."""
+    """Every `from_spec` of an active component or enabled app names a value
+    the spec context provides. Left to the render, an unknown path raised
+    KeyError there, a traceback. An owner this install does not render is not
+    judged: its manifest may target another deployer's spec context."""
     known = _spec_context_paths()
+    enabled = {r.name for r in deployment.spec.apps if r.enabled}
+    owners: list[Component | App] = [
+        *(c for c in components if is_component_active(c, deployment)),
+        *(a for a in apps if a.metadata.name in enabled),
+    ]
     return [
         ValidationError(
             f"{owner.metadata.name!r} env {env_var.name!r} reads from_spec "
             f"{env_var.source.from_spec!r}, which the spec context does not provide"
         )
-        for owner in (*components, *apps)
+        for owner in owners
         for env_var in (*owner.spec.env.required, *owner.spec.env.optional)
         if env_var.source.from_spec is not None and env_var.source.from_spec not in known
     ]
@@ -527,7 +534,7 @@ def validate_all(
     report.errors.extend(_validate_depends_on_resolvable(components, apps))
     report.errors.extend(_validate_env_from_component_resolvable(components, apps))
     report.errors.extend(_validate_required_env_targets_active(deployment, components, apps))
-    report.errors.extend(_validate_from_spec_paths(components, apps))
+    report.errors.extend(_validate_from_spec_paths(deployment, components, apps))
     report.errors.extend(
         _validate_oidc_client_ids_unique(components, apps, deployment)
     )
