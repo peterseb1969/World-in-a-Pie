@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Versions and builds of the libraries WIP ships to apps.
+"""Versions of everything WIP ships, and builds of the libraries apps vendor.
 
 Five packages reach apps as vendored files: the npm tarballs of @wip/client,
 @wip/react and @wip/proxy, and the wheels of wip-archive and wip-toolkit. An
@@ -18,16 +18,27 @@ Nobody edits these versions for a fix. A version is computed from git:
   directory. A change to the package moves its version; a change elsewhere
   does not.
 
-A build from content that is not pushed history gets a suffix, so it can
-never take a number that pushed history will give to different content:
-`+dirty.<hash>` for uncommitted changes, `+local.<tree>` for unpushed
-commits. A plain patch number, not a pre-release (`-dev.N`, `.devN`), because
+A build from content that is not yet on a published branch (develop, or
+main, which only ever receives develop) gets a suffix, so it can never take a
+number those branches will give to different content: `+dirty.<hash>` for
+uncommitted changes, `+local.<tree>` for commits not on develop. A pushed lane
+branch counts as local: two lanes that each change a package from the same
+base would otherwise both compute the same plain number for different bytes.
+A plain patch number, not a pre-release (`-dev.N`, `.devN`), because
 npm's `*` and `^` ranges and pip's default resolution both skip pre-releases.
+
+The platform components (the services, auth-gateway, mcp-server, wip-auth
+and wip-deploy) ship together as one image set, so they carry ONE version: the
+release they were last released in. Nobody edits it for a fix; the release cut
+(`release-notes.py cut X.Y.Z`) writes X.Y.Z into every one of them, and
+`platform` refuses a tree where they disagree. Between releases a running
+service names its exact build in its status payload (sha, image tag).
 
 Usage:
     lib_artifacts.py version [PKG ...]   # the computed version of each package
     lib_artifacts.py build --out DIR     # build all five into DIR; print PKG=PATH lines
     lib_artifacts.py freeze [PKG ...]    # at a release: write each computed version as its base
+    lib_artifacts.py platform            # the platform version; exit 1 if the components disagree
 """
 
 from __future__ import annotations
@@ -78,6 +89,29 @@ _PY_VERSION = re.compile(r'^(version\s*=\s*")([^"]+)(")', re.M)
 _ANCHOR = {"npm": r'^[[:space:]]*"version"[[:space:]]*:', "wheel": r"^version[[:space:]]*="}
 _BASE = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
+# Content reachable from these remote branches is published: it keeps a plain
+# number. main only ever receives develop, so a release tag checks out plain too.
+PUBLISHED = ("develop", "main")
+
+# Every place a platform component declares its version. All carry one value.
+_PY_DUNDER = re.compile(r'^(__version__\s*=\s*")([^"]+)(")', re.M)
+PLATFORM_SITES = tuple(
+    (path, _PY_DUNDER if path.endswith(".py") else _PY_VERSION)
+    for path in (
+        "components/registry/src/registry/__init__.py",
+        "components/def-store/src/def_store/__init__.py",
+        "components/template-store/src/template_store/__init__.py",
+        "components/document-store/src/document_store/__init__.py",
+        "components/reporting-sync/src/reporting_sync/__init__.py",
+        "components/ingest-gateway/src/ingest_gateway/__init__.py",
+        "components/auth-gateway/src/auth_gateway/__init__.py",
+        "components/mcp-server/pyproject.toml",
+        "libs/wip-auth/pyproject.toml",
+        "deployer/pyproject.toml",
+        "deployer/src/wip_deploy/__init__.py",
+    )
+)
+
 
 class LibError(RuntimeError):
     """A version or build that cannot be produced; the message says why."""
@@ -122,7 +156,8 @@ def _dirty_hash(root: Path, pkg: Package) -> str:
 def _suffix(root: Path, pkg: Package) -> str:
     if _git(root, "status", "--porcelain", "--untracked-files=all", "--", pkg.path):
         return f"+dirty.{_dirty_hash(root, pkg)}"
-    if _git(root, "rev-list", "-1", "HEAD", "--not", "--remotes", "--", pkg.path):
+    published = [f"--remotes=*/{branch}" for branch in PUBLISHED]
+    if _git(root, "rev-list", "-1", "HEAD", "--not", *published, "--", pkg.path):
         return f"+local.{_git(root, 'rev-parse', f'HEAD:{pkg.path}')[:8]}"
     return ""
 
@@ -240,11 +275,53 @@ def freeze(root: Path, names: list[str]) -> list[str]:
     for pkg in (PACKAGES[n] for n in names):
         version = compute_version(root, pkg)
         if "+" in version:
-            raise LibError(f"{pkg.name}: {version} is not pushed history; commit and push first")
+            raise LibError(f"{pkg.name}: {version} is not on develop; commit and push it first")
         path = root / pkg.manifest
         path.write_text(_set_version(path.read_text(encoding="utf-8"), pkg, version), encoding="utf-8")
         lines.append(f"{pkg.name} {version}")
     return lines
+
+
+def platform_versions(root: Path) -> dict[str, str]:
+    """The version each platform site declares."""
+    found = {}
+    for path, pattern in PLATFORM_SITES:
+        match = pattern.search((root / path).read_text(encoding="utf-8"))
+        if not match:
+            raise LibError(f"{path}: no version line")
+        found[path] = match.group(2)
+    return found
+
+
+def platform_version(root: Path) -> str:
+    """The one version every platform component carries; refuse a disagreement."""
+    found = platform_versions(root)
+    values = set(found.values())
+    if len(values) != 1:
+        lines = "\n".join(f"  {path}: {version}" for path, version in found.items())
+        raise LibError(
+            "platform components disagree on their version; they carry the release they were "
+            "last released in, and only `release-notes.py cut X.Y.Z` changes it — never a fix:\n" + lines
+        )
+    version = values.pop()
+    if not _BASE.fullmatch(version):
+        raise LibError(f"platform version {version!r} is not X.Y.Z")
+    return version
+
+
+def set_platform_version(root: Path, version: str) -> None:
+    """At a release: write version into every platform site."""
+    if not _BASE.fullmatch(version):
+        raise LibError(f"platform version {version!r} is not X.Y.Z")
+    texts = {}
+    for path, pattern in PLATFORM_SITES:
+        text = (root / path).read_text(encoding="utf-8")
+        new, n = pattern.subn(lambda m: f"{m.group(1)}{version}{m.group(3)}", text, count=1)
+        if n != 1:
+            raise LibError(f"{path}: no version line")
+        texts[path] = new
+    for path, text in texts.items():
+        (root / path).write_text(text, encoding="utf-8")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -255,12 +332,15 @@ def _parser() -> argparse.ArgumentParser:
         p = sub.add_parser(name)
         p.add_argument("packages", nargs="*", metavar="PKG", help=", ".join(PACKAGES))
     sub.add_parser("build").add_argument("--out", required=True)
+    sub.add_parser("platform")
     return parser
 
 
 def _dispatch(args: argparse.Namespace, root: Path) -> list[str]:
     if args.cmd == "build":
         return [f"{name}={path}" for name, path in build_all(root, Path(args.out)).items()]
+    if args.cmd == "platform":
+        return [f"platform {platform_version(root)}"]
     names = args.packages or list(PACKAGES)
     if args.cmd == "version":
         return [f"{name} {compute_version(root, PACKAGES[name])}" for name in names]

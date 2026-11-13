@@ -21,7 +21,7 @@ A fragment is markdown with a small frontmatter block:
 
 - section   required; one of the keys of SECTIONS below.
 - cases     optional; case numbers the entry belongs to.
-- packages  optional; the shipped packages the change touches (PACKAGES).
+- packages  optional; the packages the change touches (PACKAGES).
 
 The body is one or more `###` entries. It may not contain `#` or `##`
 headings outside code fences: the section heading is the assembler's.
@@ -31,7 +31,12 @@ two entries on one case are two files.
 Usage:
     release-notes.py check              # validate fragments; refuse unreleased.md
     release-notes.py preview [--out F]  # render the unreleased note
-    release-notes.py cut X.Y.Z          # write docs/releases/vX.Y.Z.md, delete fragments
+    release-notes.py cut X.Y.Z          # the release cut: note, fragments, every version
+
+The cut defines the version of everything the release ships: it writes X.Y.Z
+into every platform component and writes each vendored library's computed
+version as its base (scripts/lib_artifacts.py). It checks first that every
+library's content is on develop, and changes nothing if one is not.
 
 Stdlib only: CI runs `check` with the runner's bare python3.
 """
@@ -40,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import importlib.util
 import re
 import sys
 from dataclasses import dataclass, field
@@ -60,8 +66,9 @@ SECTIONS = {
     "operational": "Operational notes",
 }
 
-# Packages shipped to consumers under their own version.
-PACKAGES = ("wip-client", "wip-react", "wip-proxy", "wip-archive", "wip-toolkit")
+# Packages a fragment may name: the libraries apps vendor, and wip-auth and
+# wip-deploy, which reach operators and services inside the platform release.
+PACKAGES = ("wip-client", "wip-react", "wip-proxy", "wip-archive", "wip-toolkit", "wip-auth", "wip-deploy")
 
 KEYS = ("section", "cases", "packages")
 SKIP = {"README.md"}
@@ -210,6 +217,15 @@ def cmd_preview(root: Path, out: str | None) -> int:
     return 0
 
 
+def _lib_artifacts():
+    """scripts/lib_artifacts.py, loaded from beside this script (only the cut needs it)."""
+    spec = importlib.util.spec_from_file_location("lib_artifacts", Path(__file__).with_name("lib_artifacts.py"))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["lib_artifacts"] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def cmd_cut(root: Path, version: str) -> int:
     if not re.fullmatch(r"\d+\.\d+\.\d+", version):
         return _fail([f"version {version!r} is not X.Y.Z"])
@@ -221,6 +237,16 @@ def cmd_cut(root: Path, version: str) -> int:
     target = root / RELEASES / f"v{version}.md"
     if target.exists():
         return _fail([f"{target.relative_to(root)} already exists"])
+    la = _lib_artifacts()
+    try:
+        # Everything the cut writes is checked before anything is written.
+        libraries = {name: la.compute_version(root, pkg) for name, pkg in la.PACKAGES.items()}
+        unpublished = [f"{name} {v}" for name, v in libraries.items() if "+" in v]
+        if unpublished:
+            return _fail([f"library content not on develop ({', '.join(unpublished)}); commit and push it first"])
+        previous = la.platform_versions(root)
+    except la.LibError as exc:
+        return _fail([str(exc)])
     today = datetime.date.today().isoformat()
     target.write_text(
         f"# WIP v{version}\n\n**Released:** {today}\n\n"
@@ -229,10 +255,15 @@ def cmd_cut(root: Path, version: str) -> int:
     )
     for frag in frags:
         frag.path.unlink()
+    la.set_platform_version(root, version)
+    la.freeze(root, list(la.PACKAGES))
     packages = sorted({p for f in frags for p in f.packages})
     print(f"release-notes: wrote {target.relative_to(root)} from {len(frags)} fragment(s)")
-    print(f"release-notes: packages changed: {', '.join(packages) or 'none named'}")
-    print("release-notes: next, `scripts/lib_artifacts.py freeze` writes the library versions as their bases")
+    print(f"release-notes: packages the notes name: {', '.join(packages) or 'none'}")
+    print(f"release-notes: platform components {', '.join(sorted(set(previous.values())))} -> {version}")
+    for name, lib_version in libraries.items():
+        print(f"release-notes: {name} {lib_version}")
+    print("release-notes: next, curate the note, then commit and push the cut as one commit")
     return 0
 
 

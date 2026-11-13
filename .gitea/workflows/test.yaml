@@ -36,6 +36,12 @@ jobs:
           # malformed fragment and a recreated shared unreleased.md.
           python3 scripts/release-notes.py check
 
+      - name: Platform components carry one version
+        run: |
+          # The services, auth-gateway, mcp-server, wip-auth and wip-deploy carry
+          # the release number; only the release cut changes it, never a fix.
+          python3 scripts/lib_artifacts.py platform
+
       - name: Ruff (changed files only)
         run: |
           . .venv/bin/activate

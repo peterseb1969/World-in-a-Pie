@@ -20,10 +20,12 @@ every run; tarballs and `dist/` are no longer in git.
 - **Building an app scaffold needs npm** on the host. Without it the scaffold
   stops before touching the app, where it used to fall back to the tracked
   tarballs.
-- **A build from uncommitted or unpushed library changes** carries a
-  `+dirty.<hash>` or `+local.<tree>` suffix, so it never takes a number that
-  pushed history gives to other content.
-- **At a release,** `scripts/lib_artifacts.py freeze` writes each computed
+- **A build from library changes not yet on develop** (uncommitted, or on any
+  other branch, pushed or not) carries a `+dirty.<hash>` or `+local.<tree>`
+  suffix, so it never takes a number develop gives to other content. Two
+  pushed lane branches that each changed a library used to compute the same
+  plain number for different bytes.
+- **At a release,** `scripts/release-notes.py cut X.Y.Z` writes each computed
   version as its package's base.
 
 **Action:** none.

@@ -119,7 +119,16 @@ wip-deploy status
 - [ ] WIP Console loads and can log in via OIDC
 - [ ] Seed data script works: `python scripts/seed_comprehensive.py --profile minimal`
 
-## 7. Git Hygiene
+## 7. Release Cut — notes and versions
+
+Run on `develop`, clean and pushed (the cut refuses library content not yet on develop, and changes nothing then).
+
+- [ ] `scripts/release-notes.py cut X.Y.Z` — writes `docs/releases/vX.Y.Z.md` from the fragments and deletes them; sets every platform component (services, auth-gateway, mcp-server, wip-auth, wip-deploy) to `X.Y.Z`; writes each vendored library's computed version as its base
+- [ ] Curate `docs/releases/vX.Y.Z.md` — headline, self-standing prose, no internal case tokens
+- [ ] Commit the cut as one commit and push it to `develop`
+- [ ] `scripts/lib_artifacts.py platform` prints `platform X.Y.Z`; `scripts/lib_artifacts.py version` prints each library's frozen base with no suffix
+
+## 8. Git Hygiene
 
 - [ ] All changes committed to `develop`
 - [ ] `develop` is clean (`git status` shows no untracked/modified files)
@@ -128,7 +137,7 @@ wip-deploy status
 - [ ] Tag with `vX.Y.Z` on `main`
 - [ ] Push `main` with tags to every configured release remote (the CI primary and any mirrors — remote names are environment-specific; see `git remote -v`)
 
-## 8. Post-Release
+## 9. Post-Release
 
 - [ ] Verify tag exists on both remotes
 - [ ] Deploy tagged version to Pi: `git pull && wip-deploy install --preset full --target compose --hostname <host> --tls internal`
@@ -142,4 +151,4 @@ wip-deploy status
 | Reporting-sync `/health` not proxied | `/health` is on the app root, not under `/api/reporting-sync/`. Use `/api/reporting-sync/status` through Caddy. |
 | OIDC issuer mismatch | `config/dex/config.yaml` `issuer`, `.env` `WIP_AUTH_JWT_ISSUER_URL`, `.env` `VITE_OIDC_AUTHORITY` must all match. |
 | Env vars not reloaded | After `.env` changes, `podman-compose down && up -d` (not `restart`). |
-| Client library versions | Versions are computed from git; at the release, `scripts/lib_artifacts.py freeze` writes each computed version as its package's base. |
+| Component versions | Never edited for a fix. Libraries compute theirs from git; platform components keep the last release's number. The cut (§7) defines both for the release. |

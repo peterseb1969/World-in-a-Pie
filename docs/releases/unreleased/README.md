@@ -27,7 +27,7 @@ affected, and the **Action:** an operator or app must take, if any.
 |---|---|---|
 | `section` | required | `action-required`, `new`, `fixes`, `first-start`, `deployment`, `operational` |
 | `cases` | optional | case numbers |
-| `packages` | optional | `wip-client`, `wip-react`, `wip-proxy`, `wip-archive`, `wip-toolkit`: the shipped packages the change touches |
+| `packages` | optional | `wip-client`, `wip-react`, `wip-proxy`, `wip-archive`, `wip-toolkit` (the libraries apps vendor), `wip-auth`, `wip-deploy`: the packages the change touches |
 
 The body is one or more `###` entries; no `#` or `##` headings outside code
 fences (the section heading comes from `section`).
@@ -36,12 +36,16 @@ fences (the section heading comes from `section`).
 
 - `scripts/release-notes.py preview` prints the whole unreleased note
   (`--out FILE` to write it). Do not commit the rendering.
-- `scripts/release-notes.py cut X.Y.Z` writes `docs/releases/vX.Y.Z.md`, grouped
-  by section in file-name order, deletes the fragments, and lists the packages
-  they name. Curate the written note before committing it.
-- Then `scripts/lib_artifacts.py freeze` writes each library's computed version
-  (`scripts/lib_artifacts.py version`) as its new base, so the release keeps
-  the numbers apps already have. Library versions are never edited for a fix.
+- `scripts/release-notes.py cut X.Y.Z` is the release cut. It writes
+  `docs/releases/vX.Y.Z.md`, grouped by section in file-name order, deletes the
+  fragments, and defines the version of everything the release ships: X.Y.Z
+  for every platform component (`scripts/lib_artifacts.py platform`), and each
+  library's computed version (`scripts/lib_artifacts.py version`) as its new
+  base, so the release keeps the numbers apps already have. It refuses, and
+  changes nothing, while any library holds content not yet on develop. Curate
+  the written note, then commit and push the cut as one commit.
+- Versions are never edited for a fix: libraries compute theirs, and the
+  platform components keep the last release's number until the next cut.
 
 The `000-pre-fragments-*.md` files are the old `unreleased.md`, frozen at the
 cut-over, one per section it had.

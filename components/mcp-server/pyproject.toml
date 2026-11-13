@@ -1,6 +1,6 @@
 [project]
 name = "wip-mcp"
-version = "0.1.0"
+version = "2.1.0"
 description = "MCP server for World In a Pie — AI-assisted development interface"
 requires-python = ">=3.11"
 dependencies = [

@@ -35,7 +35,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from wip_auth.ratelimit import setup_rate_limiting
 
-from . import app_origins
+from . import __version__, app_origins
 from .config import (
     check_production_security,
     check_redirect_mode,
@@ -53,7 +53,7 @@ check_production_security()
 # falling back to 401 behaviour would surface far from its cause.
 check_redirect_mode()
 
-app = FastAPI(title="WIP Auth Gateway", version="0.1.0")
+app = FastAPI(title="WIP Auth Gateway", version=__version__)
 
 app.add_middleware(
     SessionMiddleware,

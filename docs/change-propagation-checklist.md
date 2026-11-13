@@ -18,7 +18,7 @@ Not every change touches every layer — use judgement. But review the full list
 
 - [ ] **@wip/client** (`libs/wip-client/`) — TypeScript types, API methods if applicable
 - [ ] **@wip/react** (`libs/wip-react/`) — hooks for new mutations or queries
-- [ ] **No version edit** — library versions are computed from git (`scripts/lib_artifacts.py version`); the scaffold builds the tarballs apps vendor
+- [ ] **No version edit** — library versions are computed from git (`scripts/lib_artifacts.py version`); the scaffold builds the tarballs apps vendor. Platform components (services, wip-auth, wip-deploy) keep the release number until the next cut
 - [ ] **Release-note fragment** — name the package in `packages:` when apps must act on the change
 
 ## UI

@@ -8,6 +8,8 @@ and write exactly what they would in the repository.
 from __future__ import annotations
 
 import importlib.util
+import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -110,17 +112,77 @@ def test_preview_refuses_invalid_fragments(tmp_path):
     assert run(tmp_path, "preview") == 1
 
 
-def test_cut_writes_the_release_and_removes_fragments(tmp_path, capsys):
-    frag(tmp_path, "case-1-a.md", GOOD)
-    frag(tmp_path, "case-2-b.md", "---\nsection: new\npackages: [wip-archive]\n---\n\n### A feature\n")
-    readme = frag(tmp_path, "README.md", "# format\n")
-    assert run(tmp_path, "cut", "2.2.0") == 0
-    note = (tmp_path / "docs/releases/v2.2.0.md").read_text()
+def git(root: Path, *args: str) -> str:
+    return subprocess.run(["git", *args], cwd=root, check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture
+def release_tree(tmp_path: Path) -> Path:
+    """A clone whose develop holds the five libraries and every platform site, pushed."""
+    la = rn._lib_artifacts()
+    upstream = tmp_path / "upstream.git"
+    git(tmp_path, "init", "-q", "--bare", str(upstream))
+    root = tmp_path / "clone"
+    git(tmp_path, "clone", "-q", str(upstream), str(root))
+    git(root, "config", "user.email", "t@example.invalid")
+    git(root, "config", "user.name", "t")
+    files = {}
+    for pkg in la.PACKAGES.values():
+        if pkg.kind == "npm":
+            files[pkg.manifest] = json.dumps({"name": pkg.name, "version": "0.5.0"}, indent=2) + "\n"
+        else:
+            files[pkg.manifest] = f'[project]\nname = "{pkg.name}"\nversion = "0.5.0"\n'
+    for path, _ in la.PLATFORM_SITES:
+        files[path] = '__version__ = "2.1.0"\n' if path.endswith(".py") else '[project]\nversion = "2.1.0"\n'
+    for rel, text in files.items():
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        (root / rel).write_text(text)
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "base")
+    (root / "libs/wip-client/src.ts").write_text("x\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "a client fix")
+    git(root, "push", "-q", "origin", "HEAD:develop")
+    return root
+
+
+def test_cut_writes_the_release_and_removes_fragments(release_tree, capsys):
+    root = release_tree
+    frag(root, "case-1-a.md", GOOD)
+    frag(root, "case-2-b.md", "---\nsection: new\npackages: [wip-archive, wip-deploy]\n---\n\n### A feature\n")
+    readme = frag(root, "README.md", "# format\n")
+    assert run(root, "cut", "2.2.0") == 0
+    note = (root / "docs/releases/v2.2.0.md").read_text()
     assert note.startswith("# WIP v2.2.0\n")
     assert note.index("## New capabilities") < note.index("## Fixes")
-    remaining = sorted(p.name for p in (tmp_path / "docs/releases/unreleased").iterdir())
+    remaining = sorted(p.name for p in (root / "docs/releases/unreleased").iterdir())
     assert remaining == ["README.md"] and readme.exists()
-    assert "packages changed: wip-archive, wip-client" in capsys.readouterr().out
+    assert "packages the notes name: wip-archive, wip-client, wip-deploy" in capsys.readouterr().out
+
+
+def test_cut_defines_the_version_of_every_component(release_tree, capsys):
+    """Platform components take the release number; each library its computed version."""
+    root = release_tree
+    frag(root, "case-1-a.md", GOOD)
+    assert run(root, "cut", "2.2.0") == 0
+    la = rn._lib_artifacts()
+    assert set(la.platform_versions(root).values()) == {"2.2.0"}
+    assert json.loads((root / "libs/wip-client/package.json").read_text())["version"] == "0.5.1"
+    assert 'version = "0.5.0"' in (root / "libs/wip-archive/pyproject.toml").read_text()
+    out = capsys.readouterr().out
+    assert "platform components 2.1.0 -> 2.2.0" in out and "wip-client 0.5.1" in out
+
+
+def test_cut_refuses_library_content_not_on_develop_and_changes_nothing(release_tree, capsys):
+    root = release_tree
+    fragment = frag(root, "case-1-a.md", GOOD)
+    (root / "libs/wip-react/src.ts").write_text("y\n")
+    git(root, "add", "libs/wip-react/src.ts")
+    git(root, "commit", "-q", "-m", "an unpushed react change")
+    assert run(root, "cut", "2.2.0") == 1
+    assert "wip-react 0.5.1+local." in capsys.readouterr().err
+    assert fragment.exists() and not (root / "docs/releases/v2.2.0.md").exists()
+    assert set(rn._lib_artifacts().platform_versions(root).values()) == {"2.1.0"}
 
 
 @pytest.mark.parametrize("version", ["2.2", "v2.2.0", "2.2.0-rc1"])
