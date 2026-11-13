@@ -15,11 +15,12 @@ no correlation_id to file an outcome under (they are counted).
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from functools import partial
@@ -147,7 +148,7 @@ class IngestWorker:
         http_client: IngestHTTPClient,
         result_publisher: ResultPublisher,
         *,
-        identify_producer: Callable[[str], str | None],
+        identify_producer: Callable[[str], str | Awaitable[str | None] | None],
     ):
         # Rebound to the live connection before every supervised run.
         self.nc = nats_client
@@ -157,6 +158,8 @@ class IngestWorker:
         # Maps a producer's API key to its principal ("apikey:<name>"), which
         # owns the item's outcome; None for a key the platform does not know.
         # Raises KeysUnverifiable while the keys cannot be verified at all.
+        # The gateway's own is a coroutine, so an unknown key's bcrypt checks
+        # run off the event loop.
         self.identify_producer = identify_producer
         self._running = False
         self._messages_processed = 0
@@ -338,10 +341,12 @@ class IngestWorker:
             submitted_by=submitted_by,
         ), delivery=delivery)
 
-    def _identify(self, api_key: str) -> tuple[str | None, tuple[int, str] | None]:
+    async def _identify(self, api_key: str) -> tuple[str | None, tuple[int, str] | None]:
         """The producer's principal, or the status and reason it is not identified."""
         try:
             submitted_by = self.identify_producer(api_key)
+            if inspect.isawaitable(submitted_by):
+                submitted_by = await submitted_by
         except KeysUnverifiable as e:
             return None, (503, f"the message's API key could not be verified: {e}")
         if not submitted_by:
@@ -399,7 +404,7 @@ class IngestWorker:
         or is not known yet (created a moment ago) is retried, and refused
         only once the deliveries run out.
         """
-        submitted_by, unidentified = self._identify(api_key)
+        submitted_by, unidentified = await self._identify(api_key)
         if unidentified is None:
             return submitted_by
         status, error = unidentified

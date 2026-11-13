@@ -71,7 +71,7 @@ def _service_api_key() -> str:
     caller then reported as the Registry being unavailable (503). Blanking
     the variable to switch the legacy key record off must not do that.
     """
-    return os.getenv("WIP_AUTH_LEGACY_API_KEY") or os.getenv("API_KEY", "")
+    return os.getenv("WIP_AUTH_LEGACY_API_KEY") or os.getenv("API_KEY") or ""
 
 
 def is_superadmin(identity: UserIdentity) -> bool:

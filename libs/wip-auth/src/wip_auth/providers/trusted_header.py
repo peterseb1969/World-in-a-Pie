@@ -9,6 +9,7 @@ proxy's, and the groups an asserted identity carries are taken as given — so
 accepting it would let its holder claim any group, wip-admins included.
 """
 
+import asyncio
 import logging
 
 from fastapi import Request
@@ -56,25 +57,33 @@ class TrustedHeaderProvider:
         # headers checks its key). Without one, the key list is walked.
         self._key_provider = key_provider
 
-    def _proxy_key(self, api_key: str) -> APIKeyRecord | None:
+    async def _proxy_key(self, api_key: str) -> APIKeyRecord | None:
         """The matching, unexpired key record if it may assert identities.
+
+        A value no cache knows is checked with bcrypt against every stored
+        key, so the check runs off the event loop: a request carrying
+        X-WIP-User and a fresh random key would otherwise hold the whole
+        service for N x ~170 ms.
 
         Raises KeysUnverifiable when the key cannot be verified now (the
         Registry has not confirmed the runtime keys): that is an outage, not
         a key that may not assert identities."""
         if self._key_provider is not None:
-            record = self._key_provider.lookup(api_key, raise_unverifiable=True)
+            record = await self._key_provider.lookup_async(api_key, raise_unverifiable=True)
         else:
-            record = next(
-                (
-                    r for r in self._keys
-                    if verify_api_key(api_key, r.key_hash, self.hash_salt) and not r.is_expired()
-                ),
-                None,
-            )
+            record = await asyncio.to_thread(self._walk_keys, api_key)
         if record is None or not PROXY_KEY_GROUPS.intersection(record.groups):
             return None
         return record
+
+    def _walk_keys(self, api_key: str) -> APIKeyRecord | None:
+        return next(
+            (
+                r for r in self._keys
+                if verify_api_key(api_key, r.key_hash, self.hash_salt) and not r.is_expired()
+            ),
+            None,
+        )
 
     async def authenticate(self, request: Request) -> UserIdentity | None:
         """Authenticate via trusted proxy headers + API key.
@@ -90,7 +99,7 @@ class TrustedHeaderProvider:
         # other key falls through and authenticates as itself.
         api_key = request.headers.get(self.header_name.lower())
         try:
-            proxy_key = self._proxy_key(api_key) if api_key else None
+            proxy_key = await self._proxy_key(api_key) if api_key else None
         except KeysUnverifiable:
             # The API-key provider answers the request 503; this only keeps
             # an outage from reading as an attack in the log.

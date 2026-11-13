@@ -200,15 +200,16 @@ router = APIRouter(
 )
 
 
-def identify_producer(api_key: str) -> str | None:
+async def identify_producer(api_key: str) -> str | None:
     """The principal of a producer's API key ("apikey:<name>"), or None when
     the gateway does not know the key — the same keys, runtime keys included
     via key sync, that authenticate the gateway's own routes. Raises
     KeysUnverifiable while the Registry has not confirmed the runtime keys
-    (after a start, or past the sync deadline): the key may well be valid."""
+    (after a start, or past the sync deadline): the key may well be valid.
+    An unknown key's bcrypt checks run off the event loop."""
     for provider in _providers:
         if isinstance(provider, APIKeyProvider):
-            identity = provider.identify_key(api_key, raise_unverifiable=True)
+            identity = await provider.identify_key_async(api_key, raise_unverifiable=True)
             return identity.identity_string if identity else None
     return None
 

@@ -127,3 +127,90 @@ async def test_known_values_are_still_answered_from_the_caches(slow_checks):
     assert await _attempt(provider, "secret-b") == "b"
     assert await _attempt(provider, "nope") == "401"
     assert slow_checks == []
+
+
+# --- The other entry points: trusted headers and identify_key ------------
+#
+# authenticate was one of three callers of the bcrypt slow path. A request
+# carrying X-WIP-User goes to TrustedHeaderProvider first (the Registry turns
+# it on), whose proxy-key check called the synchronous lookup; the ingest
+# gateway identifies a producer's key from a NATS header through
+# identify_key. Both held the event loop for N x ~170 ms on an unknown value.
+
+
+def _identity_request(api_key: str) -> Request:
+    return Request({
+        "type": "http", "method": "GET", "path": "/",
+        "headers": [(b"x-wip-user", b"someone@example.org"), (b"x-api-key", api_key.encode())],
+    })
+
+
+@pytest.mark.asyncio
+async def test_a_flood_with_identity_headers_leaves_the_loop_responsive(slow_checks):
+    from wip_auth.providers.trusted_header import TrustedHeaderProvider
+
+    keys = [_key(f"k{i}") for i in range(4)]
+    key_provider = APIKeyProvider(keys)
+    provider = TrustedHeaderProvider(keys, key_provider=key_provider)
+    stop = asyncio.Event()
+    watcher = asyncio.create_task(_max_loop_stall(stop))
+
+    results = await asyncio.gather(
+        *(provider.authenticate(_identity_request(f"random-{i}")) for i in range(4))
+    )
+    stop.set()
+    stall = await watcher
+
+    assert results == [None] * 4
+    assert len(slow_checks) == 16
+    assert stall < CHECK_SECONDS, f"the loop stalled {stall * 1000:.0f} ms"
+
+
+@pytest.mark.asyncio
+async def test_the_key_list_walk_runs_off_the_loop_too(slow_checks, monkeypatch):
+    from wip_auth.providers import trusted_header
+    from wip_auth.providers.trusted_header import TrustedHeaderProvider
+
+    # The walk calls its own import of verify_api_key: slow that one too.
+    monkeypatch.setattr(trusted_header, "verify_api_key", api_key_module.verify_api_key)
+
+    provider = TrustedHeaderProvider([_key(f"k{i}") for i in range(4)])
+    stop = asyncio.Event()
+    watcher = asyncio.create_task(_max_loop_stall(stop))
+    await asyncio.sleep(0.02)  # the watcher is measuring before the check starts
+    assert await provider.authenticate(_identity_request("random")) is None
+    stop.set()
+    assert len(slow_checks) == 4
+    assert await watcher < CHECK_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_a_privileged_key_still_asserts_an_identity(slow_checks):
+    from wip_auth.providers.trusted_header import TrustedHeaderProvider
+
+    proxy = APIKeyRecord(
+        name="gateway", key_hash=hash_api_key("secret-gateway"), owner="system:gateway",
+        groups=["wip-services"],
+    )
+    key_provider = APIKeyProvider([proxy, _key("app")])
+    provider = TrustedHeaderProvider([proxy], key_provider=key_provider)
+
+    identity = await provider.authenticate(_identity_request("secret-gateway"))
+    assert identity is not None and identity.user_id == "someone@example.org"
+    assert await provider.authenticate(_identity_request("secret-app")) is None
+
+
+@pytest.mark.asyncio
+async def test_identify_key_async_leaves_the_loop_responsive(slow_checks):
+    provider = APIKeyProvider([_key(f"k{i}") for i in range(4)])
+    stop = asyncio.Event()
+    watcher = asyncio.create_task(_max_loop_stall(stop))
+
+    results = await asyncio.gather(*(provider.identify_key_async(f"random-{i}") for i in range(4)))
+    known = await provider.identify_key_async("secret-k2")
+    stop.set()
+    stall = await watcher
+
+    assert results == [None] * 4
+    assert known is not None and known.user_id == "apikey:k2"
+    assert stall < CHECK_SECONDS, f"the loop stalled {stall * 1000:.0f} ms"

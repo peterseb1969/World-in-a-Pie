@@ -499,9 +499,27 @@ class APIKeyProvider:
         the same caches as authentication. None too when the key cannot be
         verified (runtime keys past their deadline), unless
         raise_unverifiable=True, which raises KeysUnverifiable instead for
-        a caller that must tell the two apart."""
+        a caller that must tell the two apart.
+
+        Runs bcrypt on the calling thread: never call it on an event loop
+        (an unknown value would hold the loop for N x ~170 ms); use
+        lookup_async there."""
         try:
             record, error = self._validate_key(api_key)
+        except KeysUnverifiable:
+            if raise_unverifiable:
+                raise
+            return None
+        return None if error is not None else record
+
+    async def lookup_async(
+        self, api_key: str, *, raise_unverifiable: bool = False
+    ) -> APIKeyRecord | None:
+        """lookup for a caller on the event loop: an unknown value's bcrypt
+        checks run in a worker thread, behind the same per-loop semaphore as
+        authentication, instead of holding the loop for N x ~170 ms."""
+        try:
+            record, error = await self._validate_key_async(api_key)
         except KeysUnverifiable:
             if raise_unverifiable:
                 raise
@@ -561,6 +579,9 @@ class APIKeyProvider:
         raise_unverifiable=True the second case raises KeysUnverifiable
         instead, for a caller that must tell "this key is wrong" from "the
         Registry has not confirmed the keys" (the latter may pass later).
+
+        Runs bcrypt on the calling thread: on an event loop use
+        identify_key_async.
         """
         try:
             key_record, error = self._validate_key(api_key)
@@ -571,6 +592,14 @@ class APIKeyProvider:
         if error is not None or key_record is None:
             return None
         return self._identity(key_record)
+
+    async def identify_key_async(
+        self, api_key: str, *, raise_unverifiable: bool = False
+    ) -> UserIdentity | None:
+        """identify_key for a caller on the event loop: an unknown value's
+        bcrypt checks run off the loop, as in authentication."""
+        record = await self.lookup_async(api_key, raise_unverifiable=raise_unverifiable)
+        return None if record is None else self._identity(record)
 
     def _identity(self, key_record: APIKeyRecord) -> UserIdentity:
         """The identity an API key authenticates as."""

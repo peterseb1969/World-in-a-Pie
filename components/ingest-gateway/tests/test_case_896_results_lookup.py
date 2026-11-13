@@ -136,12 +136,14 @@ def test_any_correlation_id_yields_one_literal_subject_token(correlation_id):
 # ---- Gateway identifies the producer ----
 
 
-def test_identify_producer_resolves_a_known_key():
-    assert identify_producer(PRODUCER_A[1]) == "apikey:producer-a"
+@pytest.mark.asyncio
+async def test_identify_producer_resolves_a_known_key():
+    assert await identify_producer(PRODUCER_A[1]) == "apikey:producer-a"
 
 
-def test_identify_producer_unknown_key_is_none():
-    assert identify_producer("not-a-key") is None
+@pytest.mark.asyncio
+async def test_identify_producer_unknown_key_is_none():
+    assert await identify_producer("not-a-key") is None
 
 
 # ---- Worker records the submitter ----

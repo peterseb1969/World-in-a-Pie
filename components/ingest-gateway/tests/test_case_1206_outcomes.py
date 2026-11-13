@@ -127,7 +127,8 @@ async def test_an_identified_item_is_forwarded_and_owned(mock_http_client, mock_
     assert mock_result_publisher.publish.await_args.args[0].submitted_by == "apikey:p"
 
 
-def test_identify_producer_tells_unverifiable_from_unknown():
+@pytest.mark.asyncio
+async def test_identify_producer_tells_unverifiable_from_unknown():
     """Past the runtime-key deadline (as right after a start, before the
     first sync) a runtime key is unverifiable, not unknown; a config key
     still answers."""
@@ -136,12 +137,12 @@ def test_identify_producer_tells_unverifiable_from_unknown():
     provider.add_key(record)
     saved = provider._runtime_deadline
     try:
-        assert identify_producer("rt-1206") == "apikey:runtime-1206"
-        assert identify_producer("nobody-1206") is None
+        assert await identify_producer("rt-1206") == "apikey:runtime-1206"
+        assert await identify_producer("nobody-1206") is None
         provider.expire_runtime_keys()
         with pytest.raises(KeysUnverifiable):
-            identify_producer("rt-1206")
-        assert identify_producer(os.environ["WIP_AUTH_LEGACY_API_KEY"]) is not None
+            await identify_producer("rt-1206")
+        assert await identify_producer(os.environ["WIP_AUTH_LEGACY_API_KEY"]) is not None
     finally:
         provider._runtime_deadline = saved
         provider.remove_key(record.key_hash)
