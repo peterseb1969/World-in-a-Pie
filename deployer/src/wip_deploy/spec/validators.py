@@ -358,6 +358,88 @@ def _validate_app_key_names(
     ]
 
 
+def _validate_app_operator_secrets(
+    deployment: Deployment, components: list[Component], apps: list[App]
+) -> list[ValidationError]:
+    """An app's operator-supplied secret must not be one another owner uses.
+
+    The manifest rule (App.reads_only_its_own_secrets) lets an app name any
+    secret the operator supplies, and nothing about the name says whose it
+    is: `supplied_by: operator` on `app-dnd-api-key` or `mongo-root-password`
+    would hand the app that secret's value from the install's store. So the
+    names the platform uses are refused here: the master key, every secret a
+    component manifest names, every app key and declared key, another app's
+    deployer-supplied secrets, and the families the deployer generates
+    (NATS and MongoDB user passwords, Dex passwords and client secrets,
+    Garage's), bcrypt companions included. Operator secrets shared between
+    apps, such as an `anthropic-api-key`, stay allowed.
+    """
+    from wip_deploy.config_gen.api_keys import (
+        MASTER_KEY_SECRET,
+        api_key_secret_names,
+        app_api_key,
+    )
+    from wip_deploy.config_gen.dex import (
+        CLIENT_SECRET_PREFIX as DEX_CLIENT_PREFIX,
+    )
+    from wip_deploy.config_gen.dex import (
+        PASSWORD_SECRET_PREFIX as DEX_PASSWORD_PREFIX,
+    )
+    from wip_deploy.config_gen.garage import GARAGE_SECRET_NAMES
+    from wip_deploy.config_gen.mongodb import PASSWORD_SECRET_PREFIX as MONGO_PREFIX
+    from wip_deploy.config_gen.mongodb import ROOT_PASSWORD_SECRET
+    from wip_deploy.config_gen.nats import PASSWORD_SECRET_PREFIX as NATS_PREFIX
+    from wip_deploy.secrets import BCRYPT_SUFFIX
+
+    owners: dict[str, str] = {MASTER_KEY_SECRET: "the install's master key"}
+    for name in (*GARAGE_SECRET_NAMES, ROOT_PASSWORD_SECRET):
+        owners[name] = "a secret the deployer generates"
+    for name in api_key_secret_names(deployment, apps):
+        owners[name] = "an API key of this install"
+    for c in deployment.spec.auth.connectors:
+        if c.secret_key:
+            owners[c.secret_name] = f"Dex connector {c.id!r}"
+    for c in components:
+        for ev in (*c.spec.env.required, *c.spec.env.optional):
+            if ev.source.from_secret is not None:
+                owners.setdefault(ev.source.from_secret, f"component {c.metadata.name!r}")
+    for a in apps:
+        key = app_api_key(a)
+        if key is not None:
+            owners[key.secret_name] = f"app {a.metadata.name!r}'s own key"
+        for ev in (*a.spec.env.required, *a.spec.env.optional):
+            if ev.source.from_secret is not None and ev.source.supplied_by != "operator":
+                owners.setdefault(ev.source.from_secret, f"app {a.metadata.name!r}")
+    generated = (NATS_PREFIX, MONGO_PREFIX, DEX_PASSWORD_PREFIX, DEX_CLIENT_PREFIX)
+
+    def owner_of(secret: str) -> str | None:
+        base = secret.removesuffix(BCRYPT_SUFFIX)
+        if base in owners:
+            return owners[base]
+        if base.startswith(generated):
+            return "a secret the deployer generates"
+        return None
+
+    enabled = {r.name for r in deployment.spec.apps if r.enabled}
+    errs: list[ValidationError] = []
+    for a in apps:
+        if a.metadata.name not in enabled:
+            continue
+        for ev in a.spec.env.optional:
+            secret = ev.source.from_secret
+            if secret is None or ev.source.supplied_by != "operator":
+                continue
+            owner = owner_of(secret)
+            if owner is not None:
+                errs.append(ValidationError(
+                    f"app {a.metadata.name!r}: {ev.name} names {secret!r} as an "
+                    f"operator-supplied secret, but that is {owner}. An app may only "
+                    "be handed a secret no other owner uses; give the operator's "
+                    "secret a name of its own"
+                ))
+    return errs
+
+
 def validate_all(
     deployment: Deployment,
     components: list[Component],
@@ -382,4 +464,5 @@ def validate_all(
     report.errors.extend(_validate_app_key_names(deployment, apps))
     report.errors.extend(_validate_app_labels_unique(deployment, apps))
     report.errors.extend(_validate_app_names_free(deployment, components, apps))
+    report.errors.extend(_validate_app_operator_secrets(deployment, components, apps))
     return report

@@ -168,3 +168,41 @@ class App(WIPModel):
         if len(accessed) != len(set(accessed)):
             raise ValueError(f"app {name!r}: namespace_access lists a namespace twice")
         return self
+
+    @model_validator(mode="after")
+    def reads_only_its_own_secrets(self) -> App:
+        """An app is written by its author, not the operator, and every secret
+        it names reaches its container's environment. A deployer-supplied
+        `from_secret` may therefore name only what the app owns: its own NATS
+        and MongoDB user passwords, and the master key for a privileged_key
+        app. Anything else, another app's key or a component's password, is
+        refused here. An operator-supplied secret is the operator's to give,
+        and the install-level check refuses one whose name another owner
+        uses (spec/validators.py)."""
+        from wip_deploy.config_gen.mongodb import PASSWORD_SECRET_PREFIX as MONGO_PREFIX
+        from wip_deploy.config_gen.nats import PASSWORD_SECRET_PREFIX as NATS_PREFIX
+
+        name = self.metadata.name
+        own = set()
+        if self.spec.nats_client is not None:
+            own.add(f"{NATS_PREFIX}{name}")
+        if self.spec.mongo_client is not None:
+            own.add(f"{MONGO_PREFIX}{name}")
+        if self.spec.privileged_key:
+            own.add("api-key")
+        env = [*self.spec.env.required, *self.spec.env.optional]
+        foreign = [
+            f"{e.name} ({e.source.from_secret})"
+            for e in env
+            if e.source.from_secret is not None
+            and e.source.supplied_by != "operator"
+            and e.source.from_secret not in own
+        ]
+        if foreign:
+            raise ValueError(
+                f"app {name!r}: {', '.join(foreign)} reads a secret the app does not "
+                "own. An app's from_secret may name its own NATS or MongoDB user "
+                "password, or a secret the operator supplies (an optional var with "
+                "supplied_by: operator)"
+            )
+        return self

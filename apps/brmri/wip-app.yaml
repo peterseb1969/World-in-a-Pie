@@ -29,10 +29,13 @@ spec:
   env:
     required:
       - {name: WIP_BASE_URL, source: {from_component: router}}
-      - {name: JIRA_TOKEN, source: {from_secret: jira-token}}
-      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key}}
       - {name: PORT, source: {literal: "3001"}}
       - {name: NODE_ENV, source: {literal: production}}
+    optional:
+      # Credentials for outside services: the operator puts them in the
+      # install's secret store; the deployer never makes them up.
+      - {name: JIRA_TOKEN, source: {from_secret: jira-token, supplied_by: operator}}
+      - {name: ANTHROPIC_API_KEY, source: {from_secret: anthropic-api-key, supplied_by: operator}}
 
   routes:
     - {path: /, auth_required: true}

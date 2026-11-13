@@ -111,10 +111,14 @@ def _issuer_url(deployment: Deployment) -> str:
     return f"{_public_base(deployment)}/dex"
 
 
+PASSWORD_SECRET_PREFIX = "dex-password-"
+CLIENT_SECRET_PREFIX = "dex-client-"
+
+
 def dex_password_secret(username: str) -> str:
     """The user's password secret. Its bcrypt hash is the same name plus
     `.bcrypt` (see `secrets.bcrypt_secret_name`)."""
-    return f"dex-password-{username}"
+    return f"{PASSWORD_SECRET_PREFIX}{username}"
 
 
 def _user_id(username: str) -> str:
@@ -208,7 +212,7 @@ def _client_entry(
     # component, the app's own for an app.
     redirect_uris = [f"{issuer_base}{p}" for p in redirect_paths]
     # OIDC client secrets live in the secret backend by a well-known name.
-    secret = SecretRef(f"dex-client-{client_id}")
+    secret = SecretRef(f"{CLIENT_SECRET_PREFIX}{client_id}")
     return DexClientEntry(
         client_id=client_id,
         name=name,

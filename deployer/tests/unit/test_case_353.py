@@ -222,12 +222,24 @@ class TestReferenceFailures:
             for e in errors
         )
 
-    def test_from_secret_accepts_arbitrary_names(
+    def test_an_operator_supplied_secret_may_have_any_name(
         self, tmp_path: Path, repo_root: Path
     ) -> None:
-        """v1 scope: secret existence is install-time state. The
-        validator accepts any non-empty secret name as plausible —
-        only `from_component*` names need to resolve."""
+        """Whether a secret exists is install-time state: an operator-supplied
+        name passes the manifest whatever it is (whether another owner uses it
+        is the install's check)."""
+        body = _valid_manifest_body("ref-secret")
+        body["spec"]["env"].setdefault("optional", []).append({
+            "name": "MY_KEY",
+            "source": {"from_secret": "totally-made-up-secret-name", "supplied_by": "operator"},
+        })
+        manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
+        _app_obj, errors = validate_manifest(manifest, repo_root)
+        assert errors == []
+
+    def test_a_deployer_supplied_secret_must_be_the_apps_own(
+        self, tmp_path: Path, repo_root: Path
+    ) -> None:
         body = _valid_manifest_body("ref-secret")
         body["spec"]["env"]["required"].append({
             "name": "MY_KEY",
@@ -235,7 +247,7 @@ class TestReferenceFailures:
         })
         manifest = _write_manifest(tmp_path / "wip-app.yaml", body)
         _app_obj, errors = validate_manifest(manifest, repo_root)
-        assert errors == []
+        assert any("does not own" in str(e) for e in errors), errors
 
 
 # ────────────────────────────────────────────────────────────────────

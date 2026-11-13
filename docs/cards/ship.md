@@ -1,6 +1,6 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-docs/wip-deployable-app-contract.md sha256:43beba9b77a11690 reviewed:2e9d2bb0
-deployer/src/wip_deploy/spec/app.py sha256:fa21d3a8ea1e94ee reviewed:67993302
+docs/wip-deployable-app-contract.md sha256:47e3bdb129fd74c1 reviewed:7ef7f028
+deployer/src/wip_deploy/spec/app.py sha256:cd101b7f63996528 reviewed:7ef7f028
 -->
 # WIP ship card — making the app deployable
 
@@ -29,7 +29,7 @@ Before features: healthy under `wip-deploy` on the first try, SPA at its origin'
 - [ ] `spec.ports`: `{name: http, container_port: <express>}` and `{name: dev, container_port: <vite>}`; pick ports no other `apps/*` manifest uses.
 - [ ] `spec.env.required`: `WIP_BASE_URL` `{from_component: router}`; `PORT`, `NODE_ENV` (`production`) as `{literal: ...}`; no `APP_BASE_PATH` / `VITE_BASE_PATH` (refused). No `WIP_API_KEY`: own key, scoped by `spec.namespaces` + `spec.namespace_access`.
 - [ ] Uses MCP: optional `MCP_URL` `{literal: "http://wip-router:8080/mcp"}`.
-- [ ] Outside-service key: OPTIONAL var, `{from_secret: <name>, supplied_by: operator}`; operator places `~/.wip-deploy/<install>/secrets/<name>`.
+- [ ] Outside-service key: OPTIONAL var, `{from_secret: <name>, supplied_by: operator}`; operator places `~/.wip-deploy/<install>/secrets/<name>`. No other owner's secret name.
 - [ ] `spec.routes`: `{path: /, auth_required: true}`; restrict users with `allowed_groups: [...]` on the route, not in-app `ALLOWED_GROUPS`.
 - [ ] `spec.healthcheck.endpoint: /api/health`, answerable without WIP reachable; `liveness_endpoint` (k8s) if it checks a dependency.
 - [ ] NATS only via `spec.nats_client.roles`, raw subjects rejected. `event-subscriber`, `replay-subscriber`, Mongo `read-all`: `privileged_key` only.

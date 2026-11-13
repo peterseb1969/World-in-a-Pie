@@ -26,9 +26,10 @@ Explicitly out of scope (v1):
   - Build context (no Dockerfile checks, no source-tree walking)
   - Env value resolution (the validator doesn't fetch secrets)
   - Live cluster state (offline analysis only)
-  - `from_secret` deep validation — we accept any non-empty secret
-    name as plausible. Secret resolution is install-time state, not
-    contract-time state.
+  - Whether a `from_secret` exists — secret resolution is install-time
+    state. Whose it is is checked: the App model refuses a deployer-supplied
+    secret the app does not own, and an operator-supplied name another owner
+    uses is refused when an install validates (spec/validators.py).
 """
 
 from __future__ import annotations
@@ -230,8 +231,8 @@ def _check_env_references(
     app: App, component_names: set[str]
 ) -> list[ManifestValidationError]:
     """Each from_component / from_component_host / from_component_port
-    must name a discovered component. from_secret accepts any non-empty
-    string (v1 scope — secret-existence is install-time state)."""
+    must name a discovered component. from_secret's ownership is the App
+    model's rule; whether the secret exists is install-time state."""
     errors: list[ManifestValidationError] = []
 
     def _check_one(env_var, section: str, idx: int) -> None:
