@@ -4,6 +4,7 @@ import csv
 import io
 import logging
 import math
+import re
 from collections.abc import Callable
 from datetime import date, datetime, time
 from itertools import islice
@@ -36,9 +37,10 @@ def convert_cell(value: Any, field_type: str | None) -> Any:
 
     CSV cells are text and XLSX cells are whatever the sheet holds (numbers,
     booleans, dates, text). Number, integer, boolean, date and datetime fields
-    get their own type; every other field gets the text as written. A value
-    that cannot be read as its field's type raises CellConversionError, which
-    fails the row, never the file.
+    get their own type; every other field gets text: a CSV cell as written,
+    an XLSX cell as _as_text renders it (a date in ISO 8601, a whole number
+    without '.0'). A value that cannot be read as its field's type raises
+    CellConversionError, which fails the row, never the file.
     """
     converter = _CONVERTERS.get(field_type or "")
     return converter(value) if converter is not None else _as_text(value)
@@ -54,10 +56,9 @@ def _to_integer(value: Any) -> int:
             return int(value)
         raise CellConversionError(f"{value!r} is not a whole number")
     text = str(value).strip()
-    try:
-        return int(text)
-    except ValueError:
-        raise CellConversionError(f"'{text}' is not an integer") from None
+    if not _INTEGER_TEXT.fullmatch(text):
+        raise CellConversionError(f"'{text}' is not an integer")
+    return int(text)
 
 
 def _to_number(value: Any) -> int | float:
@@ -69,16 +70,20 @@ def _to_number(value: Any) -> int | float:
     return number
 
 
+# A numeral as a sheet or a person writes one: ASCII digits, an optional
+# sign, decimal point and exponent. int() and float() also accept '1_000',
+# other scripts' digits and 'nan'/'inf', which would silently become numbers.
+_INTEGER_TEXT = re.compile(r"[-+]?[0-9]+")
+_NUMBER_TEXT = re.compile(r"[-+]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
+
+
 def _parse_number(text: str) -> int | float:
     """A numeral as an int when it is one, else as a float."""
-    try:
+    if _INTEGER_TEXT.fullmatch(text):
         return int(text)
-    except ValueError:
-        pass
-    try:
+    if _NUMBER_TEXT.fullmatch(text):
         return float(text)
-    except ValueError:
-        raise CellConversionError(f"'{text}' is not a number") from None
+    raise CellConversionError(f"'{text}' is not a number")
 
 
 def _to_boolean(value: Any) -> bool:
@@ -228,9 +233,10 @@ class ImportService:
         if fmt == 'xlsx':
             import openpyxl
             wb = openpyxl.load_workbook(io.BytesIO(file_content), read_only=True, data_only=True)
-            ws = wb.active
-            all_rows = list(ws.iter_rows(values_only=True))
-            wb.close()
+            try:
+                all_rows = list(wb.active.iter_rows(values_only=True))
+            finally:
+                wb.close()
 
             if not all_rows:
                 raise ValueError("Empty spreadsheet")

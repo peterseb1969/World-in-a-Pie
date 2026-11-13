@@ -71,6 +71,23 @@ def _feeds_identity(field_path: str, template: dict[str, Any]) -> bool:
     return base != field_path and base in referent
 
 
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
+
+
+def _fits_int64(value: int, field_path: str, result: "ValidationResult") -> bool:
+    """Whether a whole number can be stored: MongoDB holds a 64-bit integer at
+    most, and a larger one would pass validation and fail only at storage,
+    after the Registry had allocated the document's id."""
+    if _INT64_MIN <= value <= _INT64_MAX:
+        return True
+    result.add_error(
+        code="maximum" if value > _INT64_MAX else "minimum",
+        message=f"Field '{field_path}' must be a whole number between -2^63 and 2^63-1",
+        field=field_path,
+    )
+    return False
+
+
 class ValidationResult:
     """Result of document validation."""
 
@@ -681,6 +698,8 @@ class ValidationService:
                 field=field_path
             )
             return
+        if isinstance(value, int) and not _fits_int64(value, field_path, result):
+            return
 
         self._validate_numeric_constraints(value, field_path, validation, result)
 
@@ -700,6 +719,8 @@ class ValidationService:
                 message=f"Field '{field_path}' must be an integer",
                 field=field_path
             )
+            return
+        if not _fits_int64(value, field_path, result):
             return
 
         self._validate_numeric_constraints(value, field_path, validation, result)

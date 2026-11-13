@@ -13,9 +13,10 @@ from wip_auth.term_resolution import term_resolution_batch
 
 from ..models.api_models import DocumentCreateRequest
 from ..services.document_service import DocumentService
+from ..services.errors import dependency_unavailable
 from ..services.import_service import ImportService
 from ..services.nats_client import get_throttle_delay
-from ..services.template_store_client import get_template_store_client
+from ..services.template_store_client import TemplateStoreError, get_template_store_client
 from .uploads import read_upload
 
 logger = logging.getLogger(__name__)
@@ -75,8 +76,21 @@ def _parse_failure(e: Exception) -> HTTPException:
 
 async def _field_types(template_id: str) -> dict[str, str]:
     """Each field's type in the template's latest version, as validation will
-    use it: a cell is converted to its field's type before its row is validated."""
-    template = await get_template_store_client().get_template(template_id=template_id)
+    use it: a cell is converted to its field's type before its row is validated.
+
+    A template-store that cannot answer is an outage (503,
+    dependency_unavailable); a template it refuses to serve (e.g. a parent it
+    cannot resolve) makes the whole file unusable (422, its code), one answer
+    for one cause rather than the same error on every row."""
+    try:
+        template = await get_template_store_client().get_template(template_id=template_id)
+    except TemplateStoreError as e:
+        if e.unavailable:
+            raise dependency_unavailable("template-store", f"template {template_id!r}", e) from e
+        raise _unusable(
+            f"Template {template_id!r} cannot be used: {e}",
+            error_code=e.code or "template_error",
+        ) from e
     return {
         str(f["name"]): str(f["type"])
         for f in (template or {}).get("fields") or []

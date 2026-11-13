@@ -2461,11 +2461,21 @@ boolean column failed every row, and an XLSX date cell (read as
 
 - **Now:** each cell is converted to its template field's type first.
   Integer fields take whole numbers, number fields finite numbers (`1e3`
-  works), boolean fields `true`/`false`, `yes`/`no` or `1`/`0` in any case,
-  date fields `YYYY-MM-DD` or an XLSX date cell (refused if it carries a time
-  of day), datetime fields ISO 8601 or an XLSX date-time cell. Every other
-  field keeps the text as written; a whole-number XLSX cell in a text field
-  reads without `.0`.
+  works), written with ASCII digits, an optional sign, point and exponent
+  (`1_000` and other scripts' digits are refused); boolean fields
+  `true`/`false`, `yes`/`no` or `1`/`0` in any case, date fields
+  `YYYY-MM-DD` or an XLSX date cell (refused if it carries a time of day),
+  datetime fields ISO 8601 or an XLSX date-time cell. Every other field gets
+  text: a CSV cell as written, an XLSX cell with a date in ISO 8601
+  (`1990-04-12T00:00:00`) and a whole number without `.0`.
+- **Action:** an XLSX date cell in a *text* field used to read
+  `1990-04-12 00:00:00` and now reads `1990-04-12T00:00:00`. Where such a
+  field is an identity field, re-importing a sheet imported before creates
+  new documents once instead of new versions; re-key or merge them, or map
+  the column to a date field.
+- **A template-store that cannot answer** refuses the import with 503
+  (`dependency_unavailable`), and a template it cannot serve with 422 naming
+  its code, instead of a bare 500.
 - **A cell its field's type cannot read fails its row**, reported in
   `errors` with the field and column (`age (column 'age'): 'thirty' is not an
   integer`), like any validation failure; the other rows import.
