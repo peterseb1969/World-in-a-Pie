@@ -3041,7 +3041,8 @@ class DocumentService:
         against that version breaks. Every version and status of a referrer
         counts: a retired document's references must keep resolving too.
         Sample document ids are listed only for namespaces the caller can
-        read; elsewhere the group gives the count alone.
+        read; elsewhere the group gives the count alone. A read check the
+        Registry cannot answer raises RegistryUnavailableError.
         """
         target: dict[str, Any] = {"resolved.document_id": document_id}
         if version is not None:
@@ -3061,16 +3062,16 @@ class DocumentService:
         if not groups:
             return []
 
-        from wip_auth import get_current_identity, permission_sufficient, resolve_permission
+        from wip_auth import get_current_identity
         identity = get_current_identity()
-        readable: dict[str, bool] = {}
+        permissions: dict[str, str] = {}
 
         async def can_read(ns: str) -> bool:
             if identity is None:
                 return True  # internal caller, no request identity
-            if ns not in readable:
-                readable[ns] = permission_sufficient(await resolve_permission(identity, ns), "read")
-            return readable[ns]
+            # A Registry that cannot answer fails the delete (registry_error)
+            # rather than reading as "no read" and dropping the sample ids.
+            return await _can_read_namespace(identity, ns, permissions)
 
         referrers: list[dict[str, Any]] = []
         for group in groups:

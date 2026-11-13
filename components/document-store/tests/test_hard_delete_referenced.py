@@ -251,19 +251,41 @@ async def test_deleting_the_last_version_counts_every_reference(client, auth_hea
 async def test_referrers_in_an_unreadable_namespace_are_counted_without_ids(
     client, auth_headers, namespaces, monkeypatch,
 ):
-    import wip_auth
+    import wip_auth.permissions
 
     chapter, _ = await _chapter_and_holder(client, auth_headers, holder_ns=RETAIN)
 
     async def no_read_on_retain(identity, namespace):
         return "none" if namespace == RETAIN else "admin"
 
-    monkeypatch.setattr(wip_auth, "resolve_permission", no_read_on_retain)
+    monkeypatch.setattr(wip_auth.permissions, "resolve_permission", no_read_on_retain)
 
     [item] = await _delete(client, auth_headers, [{"id": chapter, "hard_delete": True}])
 
     [group] = item["details"]["referrers"]
     assert group == {"namespace": RETAIN, "template_id": group["template_id"], "documents": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_read_check_the_registry_cannot_answer_fails_the_delete(
+    client, auth_headers, namespaces, monkeypatch,
+):
+    """An outage is not "no read": the referrers' sample ids are not dropped
+    silently, the delete fails as a Registry outage and deletes nothing."""
+    import wip_auth.permissions
+
+    chapter, _ = await _chapter_and_holder(client, auth_headers, holder_ns=RETAIN)
+
+    async def unavailable_on_retain(identity, namespace):
+        return wip_auth.permissions.PERMISSION_UNAVAILABLE if namespace == RETAIN else "admin"
+
+    monkeypatch.setattr(wip_auth.permissions, "resolve_permission", unavailable_on_retain)
+
+    [item] = await _delete(client, auth_headers, [{"id": chapter, "hard_delete": True}])
+
+    assert (item["status"], item["error_code"]) == ("error", "registry_error"), item
+    assert item["details"]["rule"] == "registry_unavailable"
+    assert await _exists(chapter)
 
 
 @pytest.mark.asyncio

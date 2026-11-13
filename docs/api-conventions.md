@@ -87,8 +87,8 @@ Services extend `BulkResultItem` with extra fields:
 
 ### Key Rules
 
-1. **Always HTTP 200** — errors are per-item in `results[i].status == "error"`, not HTTP status codes
-2. **Never check HTTP status for business errors** — a 409 Conflict will never be returned; check `result.error` instead
+1. **Always HTTP 200 for item outcomes** — errors are per-item in `results[i].status == "error"`, not HTTP status codes
+2. **Never check HTTP status for business errors** — a duplicate, a failed validation or a missing referent is never a 409 or any other status; check `result.error` instead. Only the request-level refusals under [Status Codes](#status-codes) change the status: an ambiguous identifier in the path or query (409), and an outage before any item is processed (503)
 3. **Updates use PUT with ID in the body** — `PUT /templates` with `[{"template_id": "...", ...}]`
 4. **Deletes use DELETE with body** — `DELETE /terminologies` with `[{"id": "..."}]`
 5. **GET endpoints are NOT bulk** — single-entity GET and paginated list GET stay as-is
@@ -514,7 +514,7 @@ async createTerminology(data: CreateTerminologyRequest) {
 try:
     result = client.post("def-store", "/terminologies", json=[payload])
 except WIPClientError as e:
-    if e.status_code == 409:  # This NEVER fires!
+    if e.status_code == 409:  # A duplicate is never a 409: this NEVER fires!
         print("Duplicate")
 
 # CORRECT — check per-item result status
@@ -637,7 +637,7 @@ Where an endpoint has a value-based fallback, resolution is **best-effort** abou
 - Existing code using canonical UUIDs continues to work unchanged
 - Invalid synonyms are caught by downstream validation (e.g., "template not found"), not by the resolve layer
 
-It is never best-effort about an **outage**. If the Registry does not answer (unreachable, timed out, or an error status), the request fails with **503** and `error_code: "registry_unavailable"`: it is not answered as "not found", items are not passed on unresolved, and nothing is cached. Registry down means WIP down. An identifier that names several entities is **409** with its candidates (`detail.candidates`, `detail.total`); pick one by canonical ID or a qualified value.
+It is never best-effort about an **outage**. If the Registry does not answer (unreachable, timed out, or an error status) while an identifier is being resolved, nothing is answered as "not found", nothing is passed on unresolved, and nothing is cached. Registry down means WIP down. How the refusal reads depends on where the identifier sits: one in the path or query fails the request with **503** and `error_code: "registry_unavailable"`; one inside an item of a bulk write refuses that item, in the 200 response, with `error_code: "registry_error"` (document-store adds `details.rule: "registry_unavailable"`), and nothing is written for it — see the per-store error codes above. An identifier that names several entities is **409** with its candidates (`detail.candidates`, `detail.total`); pick one by canonical ID or a qualified value.
 
 ### Auto-Synonyms
 
@@ -669,6 +669,8 @@ For details, see `docs/design/universal-synonym-resolution.md`.
 | **503** | The Registry did not answer (`error_code: "registry_unavailable"`), or the authorization check could not be made — retry |
 
 **Note:** 201 is never returned, and write results are communicated via `BulkResponse.results[i].status`: a per-item failure never changes the HTTP status. A 409 or 503 refuses the request as a whole.
+
+**Health and readiness answer 503 outside the served specs.** `/health`, `/api/<svc>/health` and `/ready` on the Registry, Def-Store, Template-Store and Document-Store, and `/health` on Reporting-Sync, answer **503** when the service cannot serve (the `/health` body says which dependency is down; `/ready` answers `{"detail": {"ready": false}}`). The OpenAPI specs in `schemas/` declare only their 200 response. A probe treats any status other than 200 as unhealthy, and reads the body for the reason.
 
 ---
 

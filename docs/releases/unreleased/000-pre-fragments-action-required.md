@@ -675,9 +675,8 @@ section: action-required
   locked namespace either, and taking the lock tells every service to drop
   its cached permissions. Cost: an administrator's first request per
   namespace in 30 s is a Registry lookup, and during a Registry outage
-  administrators get 503 like every other caller. Not covered: a listing
-  that names no namespace still reads every namespace for an administrator,
-  a locked one included.
+  administrators get 503 like every other caller. A listing that names no
+  namespace leaves locked namespaces out for administrators too.
 - **The platform group names have one definition.** wip-auth exports
   `ADMIN_GROUP`, `SERVICES_GROUP`, `PRIVILEGED_GROUPS` and `is_superadmin`;
   every service uses them, and each suite fails on a group name spelled
@@ -6571,8 +6570,8 @@ out of its Service's endpoints until MongoDB answers, instead of staying
 `Ready` and failing requests. Every Deployment has one replica, so for that
 time callers reach no pod at all rather than the store's own errors. On compose, the
 stores' container health now reflects MongoDB, so `wip-deploy`'s wait for
-"all healthy" also waits for MongoDB. `/health` keeps its always-200
-contract, and `wip-deploy verify --security --live` is unaffected.
+"all healthy" also waits for MongoDB. `/health` answers 503 while the
+service cannot serve, and `wip-deploy verify --security --live` is unaffected.
 **Action:** re-render the install (`wip-deploy redeploy`); the services
 must run this release's images, since the manifests now probe `/livez`.
 

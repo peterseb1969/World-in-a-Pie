@@ -14,7 +14,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pymongo import UpdateOne
 from pymongo.errors import BulkWriteError
 
-from wip_auth import PRIVILEGED_GROUPS, UserIdentity, is_superadmin
+from wip_auth import PRIVILEGED_GROUPS, UserIdentity
 
 from ..models.api_models import (
     ActivateBulkResponse,
@@ -1811,7 +1811,8 @@ async def export_entries(
     key short of admin fails loudly. An id in a namespace the caller cannot
     read is `not_found`, exactly like a missing id: as on /lookup/by-id, this
     route does not confirm that an entry exists to a caller who cannot read
-    its namespace.
+    its namespace. A locked namespace (one being deleted) is readable by no
+    one, platform administrators included.
     """
     from .grants import _resolve_permission
 
@@ -1822,12 +1823,11 @@ async def export_entries(
     for row in found_rows:
         entries_by_id[row.entry_id] = row
 
-    superadmin = is_superadmin(identity)
     permission_by_namespace: dict[str, str] = {}
 
     async def _permission_on(namespace: str) -> str:
-        if superadmin:
-            return "admin"
+        # Through the one permission rule, superadmins included: a locked
+        # namespace is "none" to everyone, so its entries read as not_found.
         if namespace not in permission_by_namespace:
             permission_by_namespace[namespace] = await _resolve_permission(
                 identity, namespace

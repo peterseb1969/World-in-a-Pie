@@ -425,12 +425,12 @@ _ensure_component_test_deps() {
     echo "  Provisioning $name test deps (CI recipe, one-time)..."
     if (cd "$dir" && pip install -q -r requirements.txt) \
         && (cd "$REPO_ROOT/components/registry" && pip install -q -r requirements.txt) \
-        && pip install -q pytest-asyncio pytest-xdist httpx; then
+        && pip install -q pytest-asyncio pytest-xdist httpx pytest-httpx; then
         touch "$marker"
     else
         echo "  WARNING: test-dep provisioning failed — imports may error below." >&2
         echo "           Manual recipe: pip install -r $dir/requirements.txt \\" >&2
-        echo "             -r components/registry/requirements.txt pytest-asyncio httpx" >&2
+        echo "             -r components/registry/requirements.txt pytest-asyncio httpx pytest-httpx" >&2
     fi
     _pip_check_tripwire "$name"
 }

@@ -119,3 +119,32 @@ async def test_export_caps_batch_size(client: AsyncClient, auth_headers: dict):
         headers=auth_headers,
     )
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_a_locked_namespace_exports_nothing_even_to_a_platform_admin(
+    client: AsyncClient, auth_headers: dict,
+):
+    """A namespace being deleted is readable by no one: its entries come back
+    not_found, as every other surface answers for it, admins included."""
+    import uuid
+
+    from registry.models.namespace import Namespace
+
+    prefix = f"exp-locked-{uuid.uuid4().hex[:8]}"
+    resp = await client.put(f"/api/registry/namespaces/{prefix}", json={}, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    entry_id = await _register_entry(
+        client, auth_headers, namespace=prefix, composite_key={"value": "locked-probe"},
+    )
+    await Namespace.get_motor_collection().update_one(
+        {"prefix": prefix}, {"$set": {"status": "locked"}}
+    )
+
+    resp = await client.post(EXPORT, json={"entry_ids": [entry_id]}, headers=auth_headers)
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["found"] == 0
+    assert data["results"][0]["status"] == "not_found"
+    assert "entry" not in data["results"][0] or data["results"][0]["entry"] is None
