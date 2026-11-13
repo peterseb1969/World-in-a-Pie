@@ -2009,8 +2009,11 @@ async def lookup_candidates(
                     results.append(LookupCandidatesResponse(index=i, status="not_found"))
                     continue
                 query["namespace"] = item.namespace
-            elif not access.unrestricted:
-                query["namespace"] = {"$in": await resolve_accessible_namespaces(identity) or []}
+            else:
+                # Every caller is scoped to what it can read: a privileged
+                # caller reads every namespace except one locked for
+                # deletion, and `total` must not count that one's entries.
+                query["namespace"] = {"$in": await access.readable_namespaces()}
 
             exact = await RegistryEntry.find_one({**query, "entry_id": item.value})
             if exact:
