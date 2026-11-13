@@ -239,7 +239,13 @@ class RegisterKeyItem(StrictModel):
                     "and would collide across edge types between the same pair."
     )
     source_info: SourceInfo | None = Field(default=None, description="Source system info")
-    created_by: str | None = Field(default=None, description="Creator identifier")
+    created_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who created it, kept as the entry's actor_note; "
+            "created_by is the authenticated caller"
+        ),
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -331,7 +337,13 @@ class ProvisionRequest(StrictModel):
                     "(defusing circular references) and the correct key claimed "
                     "at activation. Default False = claim at provision.",
     )
-    created_by: str | None = Field(default=None, description="Creator identifier")
+    created_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who created it, kept as the entry's actor_note; "
+            "created_by is the authenticated caller"
+        ),
+    )
 
     @model_validator(mode="after")
     def _one_key_per_id(self) -> "ProvisionRequest":
@@ -370,7 +382,13 @@ class ReserveItem(StrictModel):
     namespace: str = Field(..., description="Namespace")
     entity_type: str = Field(..., description="Entity type")
     composite_key: dict[str, Any] | None = Field(default=None, description="Composite key values")
-    created_by: str | None = Field(default=None, description="Creator identifier")
+    created_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who created it, kept as the entry's actor_note; "
+            "created_by is the authenticated caller"
+        ),
+    )
 
 
 class ReserveItemResponse(BaseModel):
@@ -408,7 +426,13 @@ class ActivateSynonym(StrictModel):
     )
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key for the synonym")
     synonym_source_info: SourceInfo | None = Field(default=None, description="Source info for synonym")
-    created_by: str | None = Field(default=None, description="Creator identifier")
+    created_by: str | None = Field(
+        default=None,
+        description=(
+            "Accepted and not stored: the synonym's created_by is the authenticated "
+            "caller, and the entry keeps the actor_note its reservation set"
+        ),
+    )
 
 
 class ActivateItem(StrictModel):
@@ -481,7 +505,13 @@ class AddSynonymItem(StrictModel):
     )
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key for the synonym")
     synonym_source_info: SourceInfo | None = Field(default=None, description="Source info for synonym")
-    created_by: str | None = Field(default=None, description="Creator identifier")
+    created_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who created it, kept as the entry's actor_note; "
+            "created_by is the authenticated caller"
+        ),
+    )
 
 
 class AddSynonymResponse(BaseModel):
@@ -506,7 +536,13 @@ class RemoveSynonymItem(StrictModel):
         default=None, description="Entity type of the synonym to remove (default: the entry's)",
     )
     synonym_composite_key: dict[str, Any] = Field(..., description="Composite key of synonym to remove")
-    updated_by: str | None = Field(default=None, description="Updater identifier")
+    updated_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who made the change, kept as the entry's "
+            "actor_note; the entry's updated_by is the authenticated caller"
+        ),
+    )
 
 
 class RemoveSynonymResponse(BaseModel):
@@ -529,7 +565,13 @@ class MergeItem(StrictModel):
 
     preferred_id: str
     deprecated_id: str
-    updated_by: str | None = Field(default=None, description="Updater identifier")
+    updated_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who made the change, kept as the entry's "
+            "actor_note; the entry's updated_by is the authenticated caller"
+        ),
+    )
     owner_merge: bool = Field(
         default=False,
         description=(
@@ -849,7 +891,13 @@ class UpdateEntryItem(StrictModel):
     entry_id: str
     source_info: SourceInfo | None = None
     metadata: dict[str, Any] | None = None
-    updated_by: str | None = None
+    updated_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who made the change, kept as the entry's "
+            "actor_note; the entry's updated_by is the authenticated caller"
+        ),
+    )
 
 
 class UpdateEntryResponse(BaseModel):
@@ -895,7 +943,13 @@ class DeleteItem(StrictModel):
             "privileged callers (wip-admins / wip-services). Implies hard_delete."
         ),
     )
-    updated_by: str | None = None
+    updated_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who made the change, kept as the entry's "
+            "actor_note; the entry's updated_by is the authenticated caller"
+        ),
+    )
 
 
 class DeleteResponse(BaseModel):
@@ -917,7 +971,13 @@ class EntryLifecycleItem(StrictModel):
     """Request model for deactivating or reactivating an entry."""
 
     entry_id: str = Field(..., description="Canonical ID of the entry whose entity was retired or revived")
-    updated_by: str | None = None
+    updated_by: str | None = Field(
+        default=None,
+        description=(
+            "A free-text note on who made the change, kept as the entry's "
+            "actor_note; the entry's updated_by is the authenticated caller"
+        ),
+    )
 
 
 class EntryLifecycleResponse(BaseModel):
@@ -1023,6 +1083,10 @@ class UnifiedSearchResultItem(BaseModel):
     created_by: str | None = None
     updated_at: datetime
     updated_by: str | None = None
+    actor_note: str | None = Field(
+        default=None,
+        description="Free text the caller sent on who acted, with the write that last set created_by or updated_by",
+    )
     matched_via: str = Field(
         ...,
         description="How the match was found: entry_id, composite_key_value, synonym_key_value"
@@ -1068,3 +1132,7 @@ class EntryDetailResponse(BaseModel):
     created_by: str | None = None
     updated_at: datetime
     updated_by: str | None = None
+    actor_note: str | None = Field(
+        default=None,
+        description="Free text the caller sent on who acted, with the write that last set created_by or updated_by",
+    )

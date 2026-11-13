@@ -33,6 +33,7 @@ from pymongo.errors import DuplicateKeyError
 from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
 from .claims import confirm_keys_bulk, new_claim_token, release_keys_bulk, resolve_stale_claim
+from .entry_actor import STAMP_FIELDS, EntryActor
 from .entry_writes import UNCHANGED, apply_to_entry
 from .hash import HashService
 
@@ -64,14 +65,14 @@ class MergedEntryChanged(Exception):
     error_code = "concurrency_conflict"
 
 
-def moving_keys(deprecated: RegistryEntry, updated_by: str | None) -> list[Synonym]:
+def moving_keys(deprecated: RegistryEntry, actor: EntryActor) -> list[Synonym]:
     """The synonyms P gains from D: D's id, D's primary key, and D's synonyms
     as they are (an inactive one moves as a record only)."""
     def own(key: dict, key_hash: str) -> Synonym:
         return Synonym(
             namespace=deprecated.namespace, entity_type=deprecated.entity_type,
             composite_key=key, composite_key_hash=key_hash,
-            created_by=updated_by, merged_from=deprecated.entry_id,
+            created_by=actor.by, merged_from=deprecated.entry_id,
         )
 
     id_key = {"entry_id": deprecated.entry_id}
@@ -132,7 +133,7 @@ class _ClaimMove:
         await confirm_keys_bulk([(*_scope(s), self.preferred_id, "synonym") for s in claimable])
 
 
-def _absorb(keys: list[Synonym], now: datetime, by: str | None):
+def _absorb(keys: list[Synonym], now: datetime, actor: EntryActor):
     def mutate(entry: RegistryEntry):
         present = {_scope(s) for s in entry.synonyms}
         new = [s for s in keys if _scope(s) not in present]
@@ -140,12 +141,14 @@ def _absorb(keys: list[Synonym], now: datetime, by: str | None):
             return UNCHANGED
         entry.synonyms.extend(new)
         entry.rebuild_search_values()
-        entry.updated_at, entry.updated_by = now, by
+        actor.stamp(entry, now)
         return None
     return mutate
 
 
-def _retire(preferred_id: str, moved: set[tuple[str, str, str]], now: datetime, by: str | None):
+def _retire(
+    preferred_id: str, moved: set[tuple[str, str, str]], now: datetime, actor: EntryActor,
+):
     def mutate(entry: RegistryEntry):
         gained = [s for s in entry.active_synonyms() if _scope(s) not in moved]
         if gained:
@@ -159,18 +162,18 @@ def _retire(preferred_id: str, moved: set[tuple[str, str, str]], now: datetime, 
         entry.merged_into = preferred_id
         entry.primary_composite_key_hash = ""
         entry.rebuild_search_values()
-        entry.updated_at, entry.updated_by = now, by
+        actor.stamp(entry, now)
         return None
     return mutate
 
 
 async def merge_into(
-    preferred: RegistryEntry, deprecated: RegistryEntry, updated_by: str | None,
+    preferred: RegistryEntry, deprecated: RegistryEntry, actor: EntryActor,
 ) -> None:
     """Merge ``deprecated`` into ``preferred`` (both active, same namespace
     and entity type, permission already checked). Raises MergeKeyConflict
     (nothing merged), MergedEntryChanged or EntryWriteConflict."""
-    keys = moving_keys(deprecated, updated_by)
+    keys = moving_keys(deprecated, actor)
     claimable = [s for s in keys if s.status != "inactive"]
     move = _ClaimMove(preferred.entry_id, deprecated.entry_id)
     await _check_holders(claimable, move.allowed)
@@ -180,8 +183,8 @@ async def merge_into(
         for syn in claimable:
             await move.take(syn)
         await apply_to_entry(
-            preferred.entry_id, _absorb(keys, now, updated_by),
-            ("synonyms", "search_values", "updated_at", "updated_by"), first=preferred,
+            preferred.entry_id, _absorb(keys, now, actor),
+            ("synonyms", "search_values", *STAMP_FIELDS), first=preferred,
         )
     except BaseException:
         await move.undo()
@@ -189,9 +192,9 @@ async def merge_into(
     await move.confirm(claimable)
 
     retired, _ = await apply_to_entry(
-        deprecated.entry_id, _retire(preferred.entry_id, {_scope(s) for s in keys}, now, updated_by),
+        deprecated.entry_id, _retire(preferred.entry_id, {_scope(s) for s in keys}, now, actor),
         ("status", "merged_into", "primary_composite_key_hash", "synonyms",
-         "search_values", "updated_at", "updated_by"),
+         "search_values", *STAMP_FIELDS),
         first=deprecated, read_filter={"status": "active"},
     )
     if retired is None:

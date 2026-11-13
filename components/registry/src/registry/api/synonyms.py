@@ -30,6 +30,7 @@ from ..services.claims import (
     new_claim_token,
     release_keys_bulk,
 )
+from ..services.entry_actor import STAMP_FIELDS, EntryActor, entry_actor
 from ..services.entry_writes import UNCHANGED, apply_to_entry, write_entry
 from ..services.errors import error_fields, invalid_entity_type_fields
 from ..services.event_bus import entries_changed
@@ -136,8 +137,12 @@ async def add_synonyms(
         [[_add_claim_key(entry, synonym)] for _, entry, synonym, _ in plan.planned], token,
     )
     changed = _apply_claimed(plan, blocked)
+    # The caller's own words on who added a synonym (its created_by) are the
+    # entry's note; the synonym's created_by is the authenticated caller.
+    notes = {entry.entry_id: items[i].created_by for i, entry, _, _ in plan.planned}
     failed, redecided = await _write_synonym_lists(
         changed, lambda entry_id, entry: _reapply_adds(plan, entry_id, entry),
+        entry_actor(identity), notes,
     )
     to_confirm, to_release = _settle_written_adds(plan, failed, redecided)
     # A failed write releases the claims this request inserted (anything
@@ -300,7 +305,7 @@ async def _decide_add(
         composite_key=item.synonym_composite_key,
         composite_key_hash=synonym_hash,
         source_info=item.synonym_source_info,
-        created_by=item.created_by,
+        created_by=identity.identity_string,
     )
     plan.pending[(entry.entry_id, synonym_hash)] = len(plan.planned)
     plan.planned.append((i, entry, synonym, recorded))
@@ -382,15 +387,16 @@ async def _load_active_entries(entry_ids: set[str]) -> dict[str, RegistryEntry]:
 
 SynonymOutcomes = dict[str, str]  # composite_key_hash -> per-item status
 
-# updated_by is always among them: an entry a request does not name it for
-# keeps the value it was read with.
-_SYNONYM_FIELDS = ("synonyms", "search_values", "updated_at", "updated_by")
+# Every write that changes an entry's synonyms stamps it with the request's
+# caller (entry_actor).
+_SYNONYM_FIELDS = ("synonyms", "search_values", *STAMP_FIELDS)
 
 
 async def _write_synonym_lists(
     changed: dict[str, RegistryEntry],
     reapply: Callable[[str, RegistryEntry], SynonymOutcomes],
-    updated_by: dict[str, str | None] | None = None,
+    actor: EntryActor,
+    notes: dict[str, str | None] | None = None,
 ) -> tuple[dict[str, dict], dict[str, SynonymOutcomes]]:
     """Write each changed entry's synonyms, search_values and updated_at, each
     write filtered on the revision the entry was read with (entry_writes), so
@@ -405,6 +411,9 @@ async def _write_synonym_lists(
     longer active fails its items, as one that was not active at the start
     would have.
 
+    Each written entry is stamped with ``actor``, carrying the caller's
+    note for that entry from ``notes`` (none when absent).
+
     Returns (failed entries with their per-item error fields, the outcomes
     re-decided on a re-read, by entry).
     """
@@ -414,9 +423,7 @@ async def _write_synonym_lists(
 
     def finish(entry: RegistryEntry) -> None:
         entry.rebuild_search_values()
-        entry.updated_at = now
-        if updated_by is not None and entry.entry_id in updated_by:
-            entry.updated_by = updated_by[entry.entry_id]
+        actor.noting((notes or {}).get(entry.entry_id)).stamp(entry, now)
 
     async def first_write(entry: RegistryEntry) -> bool | BaseException:
         finish(entry)
@@ -501,7 +508,7 @@ async def remove_synonyms(
     failed, redecided = await _write_synonym_lists(
         plan.changed,
         lambda entry_id, entry: _reapply_removals(plan, entry_id, entry),
-        updated_by=plan.updated_by,
+        entry_actor(identity), plan.notes,
     )
     released = _settle_removals(plan, failed, redecided, results)
     # Release the removed synonyms' claims (CASE-427), each scoped to its
@@ -526,13 +533,13 @@ def _remove_response(
 
 class _RemovePlan:
     """The removals a synonym-remove request applied in memory: each entry's
-    (item index, claim key) pairs, the changed entries, and who updated
-    each."""
+    (item index, claim key) pairs, the changed entries, and the caller's
+    note on who acted, for each."""
 
     def __init__(self) -> None:
         self.removals: dict[str, list[tuple[int, tuple]]] = {}
         self.changed: dict[str, RegistryEntry] = {}
-        self.updated_by: dict[str, str | None] = {}
+        self.notes: dict[str, str | None] = {}
 
 
 def _drop_synonym(entry: RegistryEntry, namespace: str, entity_type: str, synonym_hash: str) -> bool:
@@ -572,7 +579,7 @@ async def _decide_removal(
             error="Synonym not found in entry",
         )
     plan.changed[entry.entry_id] = entry
-    plan.updated_by[entry.entry_id] = item.updated_by
+    plan.notes[entry.entry_id] = item.updated_by
     plan.removals.setdefault(entry.entry_id, []).append((i, (
         synonym_namespace, synonym_entity_type, synonym_hash, entry.entry_id, "synonym",
     )))
@@ -677,7 +684,7 @@ async def _merge_one(
         return invalid
 
     try:
-        await merge_into(preferred, deprecated, item.updated_by)
+        await merge_into(preferred, deprecated, entry_actor(identity, item.updated_by))
     except (MergeKeyConflict, MergedEntryChanged) as e:
         return MergeResponse(
             index=i, status="error",

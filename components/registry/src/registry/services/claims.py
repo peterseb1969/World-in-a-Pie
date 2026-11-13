@@ -29,6 +29,7 @@ from pymongo.errors import BulkWriteError, DuplicateKeyError
 
 from ..models.composite_key_claim import CompositeKeyClaim
 from ..models.entry import RegistryEntry, Synonym
+from .entry_actor import STAMP_FIELDS, EntryActor
 from .entry_writes import UNCHANGED, apply_to_entry
 
 logger = logging.getLogger("registry.claims")
@@ -412,7 +413,7 @@ def releasable_synonyms(entry: RegistryEntry) -> list[Synonym]:
 
 
 async def retire_entry_synonyms(
-    entry: RegistryEntry, updated_by: str | None = None, *, dry_run: bool = False,
+    entry: RegistryEntry, actor: EntryActor, *, dry_run: bool = False,
 ) -> list[Synonym]:
     """Retire an entry's synonyms: mark the releasable ones inactive and drop
     their claims, so they neither block another entity from taking the key nor
@@ -436,12 +437,11 @@ async def retire_entry_synonyms(
         for syn in released:
             syn.status = "inactive"
         fresh.rebuild_search_values()
-        fresh.updated_at = now
-        fresh.updated_by = updated_by
+        actor.stamp(fresh, now)
         return released
 
     written, released = await apply_to_entry(
-        entry.entry_id, retire, ("synonyms", "search_values", "updated_at", "updated_by"),
+        entry.entry_id, retire, ("synonyms", "search_values", *STAMP_FIELDS),
         first=entry,
     )
     if written is None or released is UNCHANGED:
@@ -496,7 +496,7 @@ async def _claim_inactive_synonyms(
     return claimed, taken
 
 
-def _revival(claimed: set[tuple[str, str, str]], updated_by: str | None):
+def _revival(claimed: set[tuple[str, str, str]], actor: EntryActor):
     """The change a revival makes, applied to the entry as written
     (entry_writes): a claimed synonym that another request removed meanwhile
     is not brought back. Returns the synonyms revived, or UNCHANGED."""
@@ -512,8 +512,7 @@ def _revival(claimed: set[tuple[str, str, str]], updated_by: str | None):
         for syn in revived:
             syn.status = "active"
         fresh.rebuild_search_values()
-        fresh.updated_at = now
-        fresh.updated_by = updated_by
+        actor.stamp(fresh, now)
         return revived
 
     return revive
@@ -527,7 +526,7 @@ async def _release_synonym_claims(entry_id: str, synonyms: list[Synonym], token:
 
 
 async def revive_entry_synonyms(
-    entry: RegistryEntry, updated_by: str | None = None,
+    entry: RegistryEntry, actor: EntryActor,
 ) -> tuple[list[Synonym], list[tuple[Synonym, str]]]:
     """Revive an entry's inactive synonyms: re-claim each one whose key is
     free. One another entity took while this one was retired stays inactive —
@@ -548,8 +547,8 @@ async def revive_entry_synonyms(
 
     try:
         _written, revived = await apply_to_entry(
-            entry.entry_id, _revival({_synonym_scope(s) for s in claimed}, updated_by),
-            ("synonyms", "search_values", "updated_at", "updated_by"), first=entry,
+            entry.entry_id, _revival({_synonym_scope(s) for s in claimed}, actor),
+            ("synonyms", "search_values", *STAMP_FIELDS), first=entry,
         )
     except Exception:
         await _release_synonym_claims(entry.entry_id, claimed, token)

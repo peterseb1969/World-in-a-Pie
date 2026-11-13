@@ -79,6 +79,7 @@ from ..services.claims import (
     retire_entry_synonyms,
     revive_entry_synonyms,
 )
+from ..services.entry_actor import STAMP_FIELDS, EntryActor, entry_actor
 from ..services.entry_writes import (
     REVISION_INC,
     UNCHANGED,
@@ -391,6 +392,7 @@ async def unified_search(
             created_by=entry.created_by,
             updated_at=entry.updated_at,
             updated_by=entry.updated_by,
+            actor_note=entry.actor_note,
             matched_via=matched_via,
             matched_value=matched_value,
             resolution_path=resolution_path,
@@ -439,6 +441,7 @@ async def get_entry_detail(
         created_by=entry.created_by,
         updated_at=entry.updated_at,
         updated_by=entry.updated_by,
+        actor_note=entry.actor_note,
     )
 
 
@@ -498,6 +501,7 @@ async def register_keys(
             (item.entity_type, item.composite_key)
             for item in items if item.synonym_values
         ),
+        creator=identity.identity_string,
     )
     for i, (item, key_hash, id_hash) in enumerate(zip(items, hashes, identity_hashes, strict=False)):
         try:
@@ -561,6 +565,9 @@ class _RegisterPlan:
     existing_by_entry_id: dict[str, RegistryEntry]
     # The identity fields of the templates the batch's documents name.
     identity_fields: dict[str, frozenset[str]] = field(default_factory=dict)
+    # The authenticated caller: every entry and synonym the batch creates
+    # names it as created_by.
+    creator: str | None = None
     entries: list[RegistryEntry] = field(default_factory=list)
     indices: list[int] = field(default_factory=list)
     # CASE-567: keyed by (namespace, entity_type, key_hash) — the same key
@@ -745,10 +752,11 @@ def _plan_register_item(
         entity_type=item.entity_type,
         primary_composite_key=item.composite_key,
         primary_composite_key_hash=key_hash,
-        synonyms=_identity_value_synonyms(item, id_hash),
+        synonyms=_identity_value_synonyms(item, id_hash, plan.creator),
         source_info=item.source_info,
         status="active",
-        created_by=item.created_by,
+        created_by=plan.creator,
+        actor_note=item.created_by,
         metadata=item.metadata,
     )
     entry.rebuild_search_values()
@@ -761,7 +769,9 @@ def _plan_register_item(
     return None
 
 
-def _identity_value_synonyms(item: RegisterKeyItem, id_hash: str | None) -> list[Synonym]:
+def _identity_value_synonyms(
+    item: RegisterKeyItem, id_hash: str | None, creator: str | None,
+) -> list[Synonym]:
     """The synonym a new entry gets from its identity values, if any.
 
     CASE-430: relationship/edge types set skip_identity_value_synonym so the
@@ -788,7 +798,7 @@ def _identity_value_synonyms(item: RegisterKeyItem, id_hash: str | None) -> list
         entity_type=item.entity_type,
         composite_key=item.synonym_values,
         composite_key_hash=HashService.compute_composite_key_hash(item.synonym_values),
-        created_by=item.created_by,
+        created_by=creator,
     )]
 
 
@@ -1036,15 +1046,14 @@ async def rekey_identity(
                 fresh.primary_composite_key = new_key
                 fresh.primary_composite_key_hash = new_hash
                 fresh.rebuild_search_values()
-                fresh.updated_at = now
-                fresh.updated_by = identity.identity_string
+                entry_actor(identity).stamp(fresh, now)
                 return None
 
             try:
                 await apply_to_entry(
                     entry.entry_id, rekey,
                     ("primary_composite_key", "primary_composite_key_hash", "search_values",
-                     "updated_at", "updated_by"),
+                     *STAMP_FIELDS),
                     first=entry,
                 )
             except Exception:
@@ -1129,7 +1138,8 @@ async def provision_ids(
             primary_composite_key=composite_key,
             primary_composite_key_hash=key_hash,
             status="reserved",
-            created_by=request.created_by,
+            created_by=identity.identity_string,
+            actor_note=request.created_by,
         )
         entry.rebuild_search_values()
         entries.append(entry)
@@ -1244,7 +1254,8 @@ async def reserve_ids(
                 primary_composite_key=composite_key,
                 primary_composite_key_hash=key_hash,
                 status="reserved",
-                created_by=item.created_by,
+                created_by=identity.identity_string,
+                actor_note=item.created_by,
             )
             entry.rebuild_search_values()
             entries_to_insert.append(entry)
@@ -1300,7 +1311,7 @@ async def reserve_ids(
 
 def _attach_activation_synonyms(
     entry: RegistryEntry, synonyms: list[ActivateSynonym],
-    identity_fields: dict[str, frozenset[str]],
+    identity_fields: dict[str, frozenset[str]], creator: str,
 ) -> dict | None:
     """Give an entry the synonyms its activation item carries, in memory.
 
@@ -1351,7 +1362,7 @@ def _attach_activation_synonyms(
             composite_key=item.synonym_composite_key,
             composite_key_hash=key_hash,
             source_info=item.synonym_source_info,
-            created_by=item.created_by,
+            created_by=creator,
         ))
     return None
 
@@ -1360,6 +1371,7 @@ async def _activate_keyed(
     items: list[ActivateItem],
     keyed: list[int],
     results: list[ActivateItemResponse | None],
+    creator: str,
 ) -> None:
     """Activate the keyed items of a request in bulk; fills ``results`` at
     their indices.
@@ -1393,7 +1405,7 @@ async def _activate_keyed(
     candidates: list[tuple[int, RegistryEntry]] = []
     for eid, i in first_index.items():
         entry = loaded.get(eid)
-        answer = _prepare_keyed_activation(i, eid, entry, items[i], identity_fields)
+        answer = _prepare_keyed_activation(i, eid, entry, items[i], identity_fields, creator)
         if answer is not None:
             results[i] = answer
         else:
@@ -1427,7 +1439,7 @@ def _first_and_repeats(
 
 def _prepare_keyed_activation(
     i: int, eid: str, entry: RegistryEntry | None, item: ActivateItem,
-    identity_fields: dict[str, frozenset[str]],
+    identity_fields: dict[str, frozenset[str]], creator: str,
 ) -> ActivateItemResponse | None:
     """Answer an item whose entry cannot take its key (missing, active
     already, not reserved, a key or synonym scoped elsewhere), or give the
@@ -1449,7 +1461,7 @@ def _prepare_keyed_activation(
         return ActivateItemResponse(index=i, status="error", entry_id=eid, **refusal)
     entry.primary_composite_key = key
     entry.primary_composite_key_hash = HashService.compute_composite_key_hash(key) if key else ""
-    refusal = _attach_activation_synonyms(entry, item.synonyms or [], identity_fields)
+    refusal = _attach_activation_synonyms(entry, item.synonyms or [], identity_fields, creator)
     if refusal is not None:
         return ActivateItemResponse(index=i, status="error", entry_id=eid, **refusal)
     entry.rebuild_search_values()
@@ -1652,7 +1664,7 @@ async def activate_entries(
     keyed = [i for i, it in enumerate(items) if it.composite_key is not None]
     keyless = [i for i, it in enumerate(items) if it.composite_key is None]
     if keyed:
-        await _activate_keyed(items, keyed, results)
+        await _activate_keyed(items, keyed, results, identity.identity_string)
     if keyless:
         await _activate_keyless(items, keyless, results)
     return _activation_response(results, len(items))
@@ -2191,19 +2203,20 @@ async def update_entries(
         try:
             now = datetime.now(UTC)
 
-            def update(entry: RegistryEntry, item=item, now=now) -> None:
+            actor = entry_actor(identity, item.updated_by)
+
+            def update(entry: RegistryEntry, item=item, now=now, actor=actor) -> None:
                 if item.source_info is not None:
                     entry.source_info = item.source_info
                 if item.metadata is not None:
                     entry.metadata.update(item.metadata)
-                entry.updated_at = now
-                entry.updated_by = item.updated_by
+                actor.stamp(entry, now)
 
             # Only the fields an update changes, and only over the revision it
             # read: a concurrent synonym change or soft delete is kept.
             entry, _ = await apply_to_entry(
                 item.entry_id, update,
-                ("source_info", "metadata", "updated_at", "updated_by"),
+                ("source_info", "metadata", *STAMP_FIELDS),
                 read_filter={"status": "active"},
             )
             if not entry:
@@ -2228,18 +2241,17 @@ async def update_entries(
     )
 
 
-async def _soft_delete_entry(index: int, entry: RegistryEntry, updated_by: str | None) -> DeleteResponse:
+async def _soft_delete_entry(index: int, entry: RegistryEntry, actor: EntryActor) -> DeleteResponse:
     """Set an entry inactive — only those fields, over the revision read
     (entry_writes), so a concurrent change to the entry is kept."""
     now = datetime.now(UTC)
 
     def deactivate(fresh: RegistryEntry) -> None:
         fresh.status = "inactive"
-        fresh.updated_at = now
-        fresh.updated_by = updated_by
+        actor.stamp(fresh, now)
 
     gone, _ = await apply_to_entry(
-        entry.entry_id, deactivate, ("status", "updated_at", "updated_by"), first=entry,
+        entry.entry_id, deactivate, ("status", *STAMP_FIELDS), first=entry,
     )
     status = "not_found" if gone is None else "deactivated"
     return DeleteResponse(index=index, status=status, registry_id=entry.entry_id)
@@ -2311,7 +2323,9 @@ async def delete_entries(
                     index=i, status="deleted", registry_id=item.entry_id,
                 ))
             else:
-                results.append(await _soft_delete_entry(i, entry, item.updated_by))
+                results.append(await _soft_delete_entry(
+                    i, entry, entry_actor(identity, item.updated_by),
+                ))
 
         except Exception as e:
             results.append(DeleteResponse(
@@ -2361,7 +2375,9 @@ async def deactivate_entries(
                     index=i, status="not_found", registry_id=item.entry_id,
                 ))
                 continue
-            released = await retire_entry_synonyms(entry, item.updated_by, dry_run=dry_run)
+            released = await retire_entry_synonyms(
+                entry, entry_actor(identity, item.updated_by), dry_run=dry_run,
+            )
             results.append(EntryLifecycleResponse(
                 index=i,
                 status="deactivated" if released else "unchanged",
@@ -2414,7 +2430,7 @@ async def reactivate_entries(
                     index=i, status="not_found", registry_id=item.entry_id,
                 ))
                 continue
-            reclaimed, taken = await revive_entry_synonyms(entry, item.updated_by)
+            reclaimed, taken = await revive_entry_synonyms(entry, entry_actor(identity, item.updated_by))
             results.append(EntryLifecycleResponse(
                 index=i,
                 status="reactivated" if reclaimed or taken else "unchanged",

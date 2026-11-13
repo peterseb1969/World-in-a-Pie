@@ -121,7 +121,10 @@ export interface RegistryEntryFull {
   created_at: string
   created_by: string | null
   updated_at: string
+  /** The authenticated caller who last changed the entry. */
   updated_by: string | null
+  /** The caller's own note on who acted, sent as `updated_by` with that write. */
+  actor_note?: string | null
 }
 
 /**
@@ -252,7 +255,10 @@ export interface RegistrySearchResult {
   created_at: string
   created_by: string | null
   updated_at: string
+  /** The authenticated caller who last changed the entry. */
   updated_by: string | null
+  /** The caller's own note on who acted, sent as `updated_by` with that write. */
+  actor_note?: string | null
   matched_via: 'entry_id' | 'composite_key_value' | 'synonym_key_value'
   matched_value: string
   resolution_path: string
@@ -281,6 +287,7 @@ export interface AddSynonymRequest {
   synonym_entity_type: string
   synonym_composite_key: Record<string, unknown>
   synonym_source_info?: { system_id: string; endpoint_url?: string }
+  /** A note on who acted, kept as the entry's `actor_note`; the synonym's `created_by` is the authenticated caller. */
   created_by?: string
 }
 
@@ -289,12 +296,14 @@ export interface RemoveSynonymRequest {
   synonym_namespace: string
   synonym_entity_type: string
   synonym_composite_key: Record<string, unknown>
+  /** A note on who acted, kept as the entry's `actor_note`; the entry's `updated_by` is the authenticated caller. */
   updated_by?: string
 }
 
 export interface MergeRequest {
   preferred_id: string
   deprecated_id: string
+  /** A note on who acted, kept as the entry's `actor_note`; the entry's `updated_by` is the authenticated caller. */
   updated_by?: string
 }
 

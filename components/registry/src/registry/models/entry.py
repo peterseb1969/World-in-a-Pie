@@ -49,7 +49,7 @@ class Synonym(BaseModel):
     )
     created_by: str | None = Field(
         default=None,
-        description="User or system that created this synonym"
+        description="The authenticated caller who added this synonym"
     )
     status: str = Field(
         default="active",
@@ -154,14 +154,21 @@ class RegistryEntry(Document):
     )
     created_by: str | None = Field(
         default=None,
-        description="User or system that created this entry"
+        description="The authenticated caller who created this entry"
     )
     updated_at: datetime = Field(
         default_factory=lambda: datetime.now(UTC)
     )
     updated_by: str | None = Field(
         default=None,
-        description="User or system that last updated this entry"
+        description="The authenticated caller who last changed this entry"
+    )
+    actor_note: str | None = Field(
+        default=None,
+        description=(
+            "Free text the caller sent on who acted (the request's created_by "
+            "or updated_by), with the write that last set created_by or updated_by"
+        ),
     )
 
     # Flat array of all string values from primary + synonym composite keys
