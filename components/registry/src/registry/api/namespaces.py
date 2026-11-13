@@ -126,10 +126,13 @@ def namespace_to_response(ns: Namespace) -> NamespaceResponse:
     )
 
 
-async def _reserved_settings(prefix: str) -> dict[str, Any] | None:
+async def _reserved_settings(
+    prefix: str, stored_id_config: dict[str, Any] | None = None
+) -> dict[str, Any] | None:
     """The settings the reservation of `prefix` approves (from the install's
     file or a runtime reservation), with its id_config validated as any
-    namespace write's is; None when not reserved.
+    namespace write's is, against the existing namespace's stored id_config
+    when there is one; None when not reserved.
 
     An unusable reservations file is a 503; an invalid reservation is a 409.
     Each names the cause: the
@@ -147,7 +150,9 @@ async def _reserved_settings(prefix: str) -> dict[str, Any] | None:
         return None
     settings = reservation.effective_settings()
     try:
-        settings["id_config"] = validate_id_config_write(settings["id_config"])
+        settings["id_config"] = validate_id_config_write(
+            settings["id_config"], stored_id_config
+        )
     except ValidationError as e:
         raise HTTPException(
             status_code=409,
@@ -210,7 +215,7 @@ async def _check_reserved_upsert(
     )
     if owner is None and await _resolve_permission(identity, prefix) != "admin":
         raise refused
-    reserved = await _reserved_settings(prefix)
+    reserved = await _reserved_settings(prefix, ns.id_config if ns is not None else None)
     if reserved is None:
         raise refused
     for field in SETTING_FIELDS:
@@ -465,8 +470,8 @@ async def upsert_namespace(
     the call would store it, and every refusal is the real call's.
     """
     ns = await Namespace.find_one({"prefix": prefix})
-    update_data = _validated_upsert_data(request, ns)
     is_admin = identity.has_any_group(get_auth_config().admin_groups)
+    update_data = _validated_upsert_data(request, ns, is_admin)
     archived_id = _archived_namespace_id(update_data, is_admin)
     owner: str | None = None
     reserved: dict[str, Any] | None = None
@@ -493,15 +498,27 @@ async def upsert_namespace(
     )
 
 
-def _validated_upsert_data(request: NamespaceUpdate, ns: Namespace | None) -> dict[str, Any]:
+def _validated_upsert_data(
+    request: NamespaceUpdate, ns: Namespace | None, is_admin: bool
+) -> dict[str, Any]:
     """The fields the body sets, with a sent id_config validated against the
-    stored one (a 422 locating the error in the body otherwise)."""
+    stored one (a 422 locating the error in the body otherwise).
+
+    A platform admin's create whose body carries namespace_id (null included,
+    for an archive older than namespace ids) re-creates a namespace from an
+    archive, and its id_config is the archive's stored value: accepted as
+    stored, like a namespace's own. Any other caller's create is validated.
+    """
     update_data = request.model_dump(exclude_unset=True)
     if update_data.get("id_config") is not None:
+        if ns is not None:
+            stored = ns.id_config
+        elif is_admin and "namespace_id" in update_data:
+            stored = update_data["id_config"]
+        else:
+            stored = None
         try:
-            update_data["id_config"] = validate_id_config_write(
-                update_data["id_config"], ns.id_config if ns is not None else None
-            )
+            update_data["id_config"] = validate_id_config_write(update_data["id_config"], stored)
         except ValidationError as e:
             raise RequestValidationError(
                 [{**err, "loc": ("body", "id_config", *err["loc"])} for err in e.errors()]

@@ -288,3 +288,27 @@ async def test_description_is_free_on_create_and_ignored_after(
         json={"description": "x", "deletion_mode": "retain"},
     )
     assert refused.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_reserved_id_config_the_namespace_already_holds_is_reaccepted(
+    client: AsyncClient, app_key, monkeypatch, tmp_path
+):
+    """A reservation whose id_config predates the write bounds, and which the
+    existing namespace holds as stored, does not refuse the app's bootstrap
+    re-run; a reservation that differs from the stored value is validated."""
+    headers, prefix = app_key
+    legacy = {"documents": {"algorithm": "nanoid", "length": 3}}
+    await Namespace(prefix=prefix, id_config=legacy).create()
+    _reserve(monkeypatch, tmp_path, {
+        "prefix": prefix, "app": "cooking", "settings": {"id_config": legacy},
+    })
+    resp = await client.put(f"{BASE}/{prefix}", headers=headers, json={})
+    assert resp.status_code == 200, resp.text
+
+    _reserve(monkeypatch, tmp_path, {
+        "prefix": prefix, "app": "cooking",
+        "settings": {"id_config": {"documents": {"algorithm": "nanoid", "length": 4}}},
+    })
+    resp = await client.put(f"{BASE}/{prefix}", headers=headers, json={})
+    assert resp.status_code == 409, resp.text

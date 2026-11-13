@@ -77,9 +77,11 @@ class IdAlgorithmWrite(BaseModel):
     later mint), a prefixed config without a prefix (bare numbers that collide
     across entity types), a prefix with characters an ID cannot carry in a URL
     path or a qualified name, and pad or length values outside the ranges
-    below. A field of another algorithm (pad on a uuid7 config, say) is stored
-    and has no effect; it is not refused, because a restore re-sends configs
-    as they were stored before this model was strict.
+    below. The ranges hold whatever the algorithm: a pad of 50 on a uuid7
+    config is refused like on a prefixed one, while an in-range field of
+    another algorithm is stored and has no effect. A config stored before
+    these rules, re-sent as stored or restored from an archive, is accepted
+    unchanged by validate_id_config_write, not by this model.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -121,20 +123,47 @@ IdConfigWrite = dict[IdEntityType, IdAlgorithmWrite]
 _ID_CONFIG_WRITE: TypeAdapter[IdConfigWrite] = TypeAdapter(IdConfigWrite)
 
 
+def _as_read(config: dict[str, Any], entity_type: str) -> Any:
+    """One entity type's config as a read serves it: defaults merged in, and
+    an absent type as the platform default. A value that cannot be read is
+    compared as it is."""
+    value = config.get(entity_type)
+    if value is None:
+        return DEFAULT_ID_CONFIG.get(entity_type, IdAlgorithmConfig()).model_dump()
+    if not isinstance(value, dict):
+        return value
+    try:
+        return IdAlgorithmConfig(**value).model_dump()
+    except (TypeError, ValueError):
+        return value
+
+
+def same_id_config(submitted: dict[str, Any], stored: dict[str, Any]) -> bool:
+    """Whether two configs mint the same IDs: equal per entity type once
+    defaults are merged in, so a config read back (GET serves every entity
+    type, defaults filled) and re-sent matches the stored one it came from."""
+    return all(
+        _as_read(submitted, t) == _as_read(stored, t) for t in set(submitted) | set(stored)
+    )
+
+
 def validate_id_config_write(
     submitted: dict[str, Any], stored: dict[str, Any] | None = None
 ) -> dict[str, Any]:
     """The id_config to store for a namespace write, or pydantic.ValidationError.
 
-    A config re-sent exactly as stored (a bootstrap resume, a same-name
-    restore) is returned unchanged, even if it predates this validation:
-    refusing it would break those writes for a namespace that already
-    holds the value. The same rule grandfathers the prefix-uniqueness
-    check (services/id_prefixes.claim_for_write). Anything else is
-    validated, and returned with only the keys it was submitted with.
+    `stored` is the config the namespace already holds, or, for a namespace
+    re-created from an archive, the archive's: either is a value the platform
+    accepted when it was written. A config that mints the same IDs as it
+    (re-sent as stored, or read back and re-sent) is returned as stored, even
+    if it predates this validation: refusing it would break a bootstrap
+    resume, a restore or a reserved app's upsert for a namespace that already
+    holds the value. The same rule grandfathers the prefix-uniqueness check
+    (services/id_prefixes.claim_for_write). Anything else is validated, and
+    returned with only the keys it was submitted with.
     """
-    if stored is not None and submitted == stored:
-        return submitted
+    if stored is not None and same_id_config(submitted, stored):
+        return stored
     validated: dict[str, Any] = _ID_CONFIG_WRITE.dump_python(
         _ID_CONFIG_WRITE.validate_python(submitted), exclude_unset=True
     )

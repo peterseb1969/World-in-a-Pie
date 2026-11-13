@@ -158,3 +158,81 @@ async def test_a_bad_stored_value_does_not_fail_the_listing(client: AsyncClient,
     assert resp.status_code == 200 and "invalid" in resp.json()["terms"]
 
 
+
+
+LEGACY_BOUNDS = {"documents": {"algorithm": "nanoid", "length": 3}}
+
+
+@pytest.mark.asyncio
+async def test_a_stored_config_read_back_and_re_sent_is_accepted(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """GET serves every entity type with defaults filled in; PUTting that back
+    mints the same IDs as the stored config, so it is accepted, and the
+    stored form is kept."""
+    await Namespace(prefix="idc-roundtrip", id_config=LEGACY_BOUNDS).create()
+    served = (await client.get(
+        "/api/registry/namespaces/idc-roundtrip", headers=auth_headers
+    )).json()["id_config"]
+    resp = await client.put(
+        "/api/registry/namespaces/idc-roundtrip", json={"id_config": served}, headers=auth_headers
+    )
+    assert resp.status_code == 200, resp.text
+    stored = await Namespace.find_one({"prefix": "idc-roundtrip"})
+    assert stored is not None and stored.id_config == LEGACY_BOUNDS
+
+
+@pytest.mark.asyncio
+async def test_an_archive_re_create_keeps_its_stored_config(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """An ID-preserving restore re-creates the namespace with the archive's
+    namespace_id and stored id_config; a config the platform once accepted is
+    not refused there, while a plain create with the same config is."""
+    resp = await client.put(
+        "/api/registry/namespaces/idc-archived",
+        json={"id_config": LEGACY_BOUNDS, "namespace_id": None},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    stored = await Namespace.find_one({"prefix": "idc-archived"})
+    assert stored is not None and stored.id_config == LEGACY_BOUNDS
+
+    resp = await client.put(
+        "/api/registry/namespaces/idc-plain", json={"id_config": LEGACY_BOUNDS}, headers=auth_headers
+    )
+    assert resp.status_code == 422, resp.text
+
+
+def test_only_a_platform_admin_re_creates_from_an_archive() -> None:
+    """namespace_id in the body is what marks an archive re-create; a caller
+    who is not a platform admin gains nothing by sending it."""
+    from fastapi.exceptions import RequestValidationError
+
+    from registry.api.namespaces import _validated_upsert_data
+    from registry.models.api_models import NamespaceUpdate
+
+    body = NamespaceUpdate(id_config=LEGACY_BOUNDS, namespace_id=None)
+    with pytest.raises(RequestValidationError):
+        _validated_upsert_data(body, None, is_admin=False)
+    assert _validated_upsert_data(body, None, is_admin=True)["id_config"] == LEGACY_BOUNDS
+
+
+@pytest.mark.asyncio
+async def test_bounds_hold_for_a_field_of_another_algorithm(
+    client: AsyncClient, auth_headers: dict
+) -> None:
+    """The pad and length ranges apply whatever the algorithm; an in-range
+    field of another algorithm is stored and has no effect."""
+    resp = await client.put(
+        "/api/registry/namespaces/idc-xalg-bad",
+        json={"id_config": {"documents": {"algorithm": "uuid7", "pad": 50}}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 422, resp.text
+    resp = await client.put(
+        "/api/registry/namespaces/idc-xalg-ok",
+        json={"id_config": {"documents": {"algorithm": "uuid7", "pad": 4}}},
+        headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text

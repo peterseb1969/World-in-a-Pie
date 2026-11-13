@@ -2372,8 +2372,12 @@ ambiguous. They no longer can:
   - `pad` above 20;
   - a nanoid `length` outside 8–64.
 
-  Configs already stored are re-accepted unchanged, as before. A field of
-  another algorithm (`pad` on uuid7) is still accepted and has no effect.
+  A config the platform already holds is re-accepted unchanged: re-sent as
+  stored or as a read serves it (defaults filled in), reached through a
+  reserved app's upsert, or restored with namespace ids from an archive.
+  The ranges hold whatever the algorithm: an in-range field of another
+  algorithm (`pad` on uuid7) is accepted and has no effect, an out-of-range
+  one is refused.
 - **`/entries/reactivate`** is documented as what it is: it reclaims synonyms
   and does not change the entry's status.
 - **Versions:** registry, def-store, template-store and document-store serve
