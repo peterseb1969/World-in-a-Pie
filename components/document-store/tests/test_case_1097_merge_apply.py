@@ -111,10 +111,84 @@ async def test_an_overwrite_moves_the_count_to_the_new_heads_files(mongo):
 
     await _run_merge(mongo, _archive({
         "documents": [_doc(1, doc_id="D1", ident="h1", data={"n": "new"}, files=["F2"])],
+    }), on_clash="overwrite", older_versions="retire")
+
+    # The retired version no longer holds F1; the new head holds F2.
+    assert await _counts(mongo) == {"F1": 0, "F2": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_version_older_versions_keep_leaves_active_still_counts(mongo):
+    """keep leaves the overwritten version active, and it still references
+    F1: a live referrer, so F1 must not drop to 0."""
+    await _seed_namespace(mongo)
+    await _seed(mongo, "templates", [_template()])
+    await _seed(mongo, "files", [_file("F1", count=1), _file("F2")])
+    await _seed(mongo, "documents", [_doc(1, doc_id="D1", ident="h1", files=["F1"])])
+
+    await _run_merge(mongo, _archive({
+        "documents": [_doc(1, doc_id="D1", ident="h1", data={"n": "new"}, files=["F2"])],
     }), on_clash="overwrite", older_versions="keep")
 
-    # Counts follow each document's latest version, as document writes do.
-    assert await _counts(mongo) == {"F1": 0, "F2": 1}
+    assert await _counts(mongo) == {"F1": 1, "F2": 1}
+
+
+ELSEWHERE = "merge-elsewhere-ns"
+
+
+async def _elsewhere(mongo, entity_type, rows=None):
+    """Rows of another namespace (seeded when ``rows`` is given), cleared by
+    the caller's finally: the fixture clears only NAMESPACE."""
+    db_name, coll_name = COLLECTION_MAP[entity_type]
+    coll = mongo[db_name][coll_name]
+    if rows is not None:
+        await coll.insert_many([dict(r, namespace=ELSEWHERE) for r in rows])
+    return coll
+
+
+async def _clear_elsewhere(mongo):
+    for entity_type in ("files", "documents"):
+        await (await _elsewhere(mongo, entity_type)).delete_many({"namespace": ELSEWHERE})
+
+
+@pytest.mark.asyncio
+async def test_a_reference_from_another_namespace_keeps_its_count(mongo):
+    """F1 lives in the merge target and is referenced by a document in
+    another namespace; a merge into the target that never touches it must
+    not zero its count (a non-forced delete would then succeed)."""
+    try:
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
+        await _seed(mongo, "files", [_file("F1", count=1)])
+        await _elsewhere(mongo, "documents", [_doc(1, doc_id="DX", ident="hx", files=["F1"])])
+
+        await _run_merge(mongo, _archive({
+            "documents": [_doc(1, doc_id="D2", ident="h2")],
+        }))
+
+        files = await _rows(mongo, "files")
+        assert [(f["file_id"], f["reference_count"], f["status"]) for f in files] == [("F1", 1, "active")]
+    finally:
+        await _clear_elsewhere(mongo)
+
+
+@pytest.mark.asyncio
+async def test_a_merged_document_raises_a_file_in_another_namespace(mongo):
+    """A merged-in document references a file stored in another namespace:
+    that file's count follows it too."""
+    try:
+        await _seed_namespace(mongo)
+        await _seed(mongo, "templates", [_template()])
+        files = await _elsewhere(mongo, "files", [dict(_file("FX"), status="orphan")])
+
+        await _run_merge(mongo, _archive({
+            "documents": [_doc(1, doc_id="D3", ident="h3", files=["FX"])],
+        }))
+
+        fx = await files.find_one({"namespace": ELSEWHERE, "file_id": "FX"})
+        assert (fx["reference_count"], fx["status"]) == (1, "active")
+    finally:
+        await _clear_elsewhere(mongo)
 
 
 # ── 2. dates on an overwrite in place ─────────────────────────────────

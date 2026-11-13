@@ -5668,48 +5668,62 @@ class DirectRestoreEngine:
         return [r for r in rows if (r["document_id"], r["version"]) in present]
 
     async def _recount_file_references(self, namespace: str) -> None:
-        """Set every file's reference_count in the namespace from the
-        documents, as document writes maintain it: each reference in the
-        latest version of each active document counts once. A merge writes
-        documents as raw rows, so the counts are recomputed afterwards rather
-        than adjusted; this also corrects the archive's counts on files it
-        inserted."""
+        """Recount the reference_count (and the status that follows it) of
+        every file this merge can have changed: the files of the namespace,
+        and every file its documents reference, wherever that file lives.
+
+        A merge writes documents as raw rows, so counts are recomputed
+        afterwards rather than adjusted. The rule is the platform's own,
+        which is not namespace-scoped: a file is held by each active
+        document, in any namespace, that references it (live_referrers,
+        and the drift repair that raises a count to match it). An active
+        row counts whatever its version, since older_versions=keep leaves a
+        superseded version active and still holding its files. Files no
+        document of this namespace references and that live elsewhere are
+        never read or written."""
         files_db, files_coll = COLLECTION_MAP["files"]
         docs_db, docs_coll = COLLECTION_MAP["documents"]
         files = self._mongo[files_db][files_coll]
         docs = self._mongo[docs_db][docs_coll]
 
-        latest: dict[str, tuple[int, list[dict[str, Any]]]] = {}
-        async for row in docs.find(
-            {"namespace": namespace, "status": "active", "file_references.0": {"$exists": True}},
-            {"document_id": 1, "version": 1, "file_references": 1},
-        ):
-            doc_id = str(row.get("document_id"))
-            version = row.get("version", 1)
-            if doc_id not in latest or version > latest[doc_id][0]:
-                latest[doc_id] = (version, row.get("file_references") or [])
-        # Documents whose latest version references no file still supersede
-        # an older version that did.
-        async for row in docs.find(
-            {"namespace": namespace, "status": "active", "document_id": {"$in": list(latest)}},
-            {"document_id": 1, "version": 1},
-        ):
-            doc_id = str(row.get("document_id"))
-            if row.get("version", 1) > latest[doc_id][0]:
-                latest[doc_id] = (row.get("version", 1), [])
-
-        counts: dict[str, int] = {}
-        for _version, refs in latest.values():
-            for ref in refs:
-                file_id = ref.get("file_id")
-                if file_id:
-                    counts[str(file_id)] = counts.get(str(file_id), 0) + 1
+        touched: set[str] = {
+            str(f) for f in await files.distinct("file_id", {"namespace": namespace}) if f
+        }
+        touched |= {
+            str(f) for f in await docs.distinct(
+                "file_references.file_id", {"namespace": namespace},
+            ) if f
+        }
+        if not touched:
+            return
+        ids = sorted(touched)
+        holders: dict[str, int] = {}
+        async for row in docs.aggregate([
+            {"$match": {"status": "active", "file_references.file_id": {"$in": ids}}},
+            {"$project": {"document_id": 1, "file_references.file_id": 1}},
+            {"$unwind": "$file_references"},
+            {"$match": {"file_references.file_id": {"$in": ids}}},
+            {"$group": {"_id": {"f": "$file_references.file_id", "d": "$document_id"}}},
+            {"$group": {"_id": "$_id.f", "n": {"$sum": 1}}},
+        ]):
+            holders[str(row["_id"])] = int(row["n"])
 
         changed = 0
-        async for f in files.find({"namespace": namespace}, {"file_id": 1, "reference_count": 1}):
-            want = counts.get(str(f.get("file_id")), 0)
+        async for f in files.find(
+            {"file_id": {"$in": ids}}, {"file_id": 1, "reference_count": 1, "status": 1},
+        ):
+            want = holders.get(str(f.get("file_id")), 0)
+            update: dict[str, Any] = {}
             if f.get("reference_count") != want:
-                await files.update_one({"_id": f["_id"]}, {"$set": {"reference_count": want}})
+                update["reference_count"] = want
+            # The status follows the count as update_reference_count keeps it;
+            # an inactive file stays inactive.
+            if f.get("status") != "inactive":
+                status = "active" if want > 0 else "orphan"
+                if f.get("status") != status:
+                    update["status"] = status
+            if update:
+                await files.update_one({"_id": f["_id"]}, {"$set": update})
                 changed += 1
         if changed:
             self._emit(

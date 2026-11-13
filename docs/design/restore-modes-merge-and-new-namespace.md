@@ -100,8 +100,12 @@ latest version on top of the target's head, preserving both histories (on a
 clash whose archive copy equals the target's (data, the resolved references
 and `metadata.custom`, as document writes compare them) is left alone under
 either policy: a new version that changes nothing is noise. After the
-documents, every file's `reference_count` in the namespace is recounted from
-the latest version of each active document.
+documents, the `reference_count` (and the status that follows it) of every
+file the merge can have changed is recounted: the namespace's files and every
+file its documents reference, wherever it lives. A file is held by each active
+document, in any namespace, that references it, the rule the platform's own
+referrer check and drift repair use, so a reference from another namespace, or
+from a version `older_versions: keep` left active, keeps the file counted.
 `newer` does what `overwrite` does only where the archive's copy has a more
 recent `updated_at`; ties and missing/unparseable timestamps keep the
 target's and are reported as job warnings — across installs `newer` is only
