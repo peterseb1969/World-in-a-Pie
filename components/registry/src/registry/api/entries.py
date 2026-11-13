@@ -1650,33 +1650,40 @@ async def activate_entries(
     preserved — it is composed from the classify read rather than from
     per-item lookups.
 
-    The update filter re-asserts status == "reserved", so an entry whose
-    status changes between the read and the write is simply not matched;
-    the modified-count cross-check below turns any such shortfall into
-    per-item errors instead of silently reporting it activated.
+    The keyless write's filter re-asserts status == "reserved", so an entry
+    whose status changes between the read and the write is not matched.
+    When the write falls short, a re-read decides each entry: one now active
+    is answered activated (another request may have flipped it), one still
+    reserved or moved to another status is a concurrency conflict.
     """
     results: list[ActivateItemResponse | None] = [None] * len(items)
+    # Acquired before either path writes: a request whose keyed half has
+    # written must not then fail as a whole on the keyless half.
+    entries_coll = RegistryEntry.get_motor_collection()
     # A keyed item (composite_key present) is a deferred-claim reservation
     # being finalized: set the FINAL key on the entry, claim it here (a
     # collision fails the item loudly, never duplicating an identity), then
-    # flip to active. Keyless items keep the bulk fast path below unchanged.
+    # flip to active (_activate_keyed). Keyless items take the bulk fast
+    # path, one classify read and one guarded write (_activate_keyless).
     keyed = [i for i, it in enumerate(items) if it.composite_key is not None]
     keyless = [i for i, it in enumerate(items) if it.composite_key is None]
     if keyed:
         await _activate_keyed(items, keyed, results, identity.identity_string)
     if keyless:
-        await _activate_keyless(items, keyless, results)
+        await _activate_keyless(entries_coll, items, keyless, results)
     return _activation_response(results, len(items))
 
 
 async def _activate_keyless(
+    entries_coll: Any,
     items: list[ActivateItem],
     keyless: list[int],
     results: list[ActivateItemResponse | None],
 ) -> None:
     """Activate the keyless items with one classify read and one guarded
-    update_many; fills ``results`` at their indices."""
-    entries_coll = RegistryEntry.get_motor_collection()
+    update_many; fills ``results`` at their indices. A repeated entry_id is
+    answered as the keyed path answers it: the first activates, the rest
+    find it active."""
     requested_ids = [items[i].entry_id for i in keyless]
     status_by_id: dict[str, str] = {}
     try:
@@ -1701,16 +1708,25 @@ async def _activate_keyless(
         if status_by_id.get(eid) == "reserved"
     ]
     flipped_ids, update_error = await _flip_reserved(entries_coll, reserved_ids)
-    for i in keyless:
-        results[i] = _keyless_answer(i, items[i].entry_id, status_by_id, flipped_ids, update_error)
+    first_index, repeats = _first_and_repeats(items, keyless)
+    for eid, i in first_index.items():
+        results[i] = _keyless_answer(i, eid, status_by_id, flipped_ids, update_error)
+    _answer_activation_repeats(items, repeats, first_index, results)
 
 
 async def _flip_reserved(
     entries_coll: Any, reserved_ids: list[str],
 ) -> tuple[set[str], dict | None]:
     """Flip the reserved entries active with one guarded write. Returns the
-    ids this request activated, and the write's error fields if it failed
-    (then none were)."""
+    ids now active, and the error fields that answer every id not among
+    them.
+
+    When the write modifies fewer entries than it was given, the status of
+    some changed between the classify read and the write, and a re-read
+    decides: an id it finds active counts as activated, whichever request
+    flipped it (the entry is live either way); one still reserved or moved
+    to another status (retired, say) is a conflict.
+    """
     if not reserved_ids:
         return set(), None
     try:
@@ -1721,23 +1737,42 @@ async def _flip_reserved(
                 "updated_at": datetime.now(UTC),
             }, "$inc": dict(REVISION_INC)},
         )
-        if update_result.modified_count == len(reserved_ids):
-            return set(reserved_ids), None
-        # A concurrent status change between classify and update: the guard
-        # kept the write safe; re-read which ids are active now. An entry
-        # still reserved, or one another request moved off reserved
-        # (retired, say), was not activated by this request.
-        flipped: set[str] = set()
-        async for doc in entries_coll.find(
-            {"entry_id": {"$in": reserved_ids}, "status": "active"},
-            {"entry_id": 1, "_id": 0},
-        ):
-            flipped.add(doc["entry_id"])
-        return flipped, None
     except Exception as e:
-        # Only the items this write was for failed; the classify read
-        # already decided the rest (not_found, already_active, ...).
+        # The write failed: its items are errors; the classify read already
+        # answered the rest (not_found, already_active, ...).
         return set(), error_fields(e)
+    if update_result.modified_count == len(reserved_ids):
+        return set(reserved_ids), None
+    return await _reread_active(entries_coll, reserved_ids, update_result.modified_count)
+
+
+async def _reread_active(
+    entries_coll: Any, reserved_ids: list[str], modified: int,
+) -> tuple[set[str], dict | None]:
+    """The ids among ``reserved_ids`` that are active now, read with one
+    retry. When both reads fail, which entries the write activated is
+    unknown: every id is answered with an error that says the write landed
+    for ``modified`` of them, never as a failed write."""
+    last: Exception | None = None
+    for _ in range(2):
+        try:
+            return {
+                doc["entry_id"]
+                async for doc in entries_coll.find(
+                    {"entry_id": {"$in": reserved_ids}, "status": "active"},
+                    {"entry_id": 1, "_id": 0},
+                )
+            }, None
+        except Exception as e:
+            last = e
+    return set(), {
+        "error": (
+            f"The activation wrote {modified} of {len(reserved_ids)} entries, but reading "
+            f"which ones failed ({last}); this entry's outcome is unknown. Activating it "
+            "again answers already_active if it is live."
+        ),
+        "error_code": "internal_error",
+    }
 
 
 def _keyless_answer(

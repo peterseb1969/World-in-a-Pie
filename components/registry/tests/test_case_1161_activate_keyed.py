@@ -1,10 +1,11 @@
 """Keyed activation's failure handling, pinned before _activate_keyed's refactor.
 
-Provenance: CASE-1161. The suite never reached these branches of a keyed
-activation (a deferred-claim reservation finalised with its key): the entry
-read failing, the claim failing, the guarded bulk write failing per row or
-with an unknown outcome, the re-read failing, an entry whose status changed
-between the read and the write, and the claim confirm failing. Each is
+Provenance: CASE-1161, CASE-1268. The suite did not reach these branches of a
+keyed activation (a deferred-claim reservation finalised with its key): the
+entry read failing, the guarded bulk write failing per row or with an unknown
+outcome, the re-read failing, an entry whose status changed between the read
+and the write, and the claim confirm failing. The claim failing was already
+pinned by test_case_1132_registry_lows; the test here adds the counts. Each is
 answered per item (bulk-first), the entries are never wrongly reported
 activated, and the response counts match the statuses.
 """

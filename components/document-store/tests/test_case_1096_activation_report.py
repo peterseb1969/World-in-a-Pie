@@ -99,3 +99,32 @@ async def test_an_earlier_target_that_went_live_is_named():
     assert "'second': 0 of 4 active, 4 not activated" in message
     assert "('first', 'second')" in message or "'first', 'second'" in message
     assert refused.value.details["result_kind"] == "activation_failed"
+
+
+@pytest.mark.asyncio
+async def test_only_a_key_collision_is_called_a_duplicate():
+    # CASE-1268: a Registry failure is not a duplicate identity.
+    engine = _engine()
+    body = {"errors": 2, "results": [
+        {"status": "activated"},
+        {"status": "error", "error_code": "internal_error", "error": "re-read failed"},
+        {"status": "error", "error_code": "already_exists", "error": "key claimed"},
+    ]}
+    with patch("httpx.AsyncClient", _client_answering(_Response(200, body))), \
+            pytest.raises(RestoreEngineError) as refused:
+        await engine._activate_entries("kb-copy", _items(3))
+
+    message = str(refused.value)
+    assert "2 identit(ies) were not activated (1 already_exists, 1 internal_error)" in message
+    assert "1 could not claim their composite key (a genuine duplicate)" in message
+
+
+@pytest.mark.asyncio
+async def test_a_registry_failure_alone_names_no_duplicate():
+    engine = _engine()
+    body = {"errors": 1, "results": [{"status": "error", "error_code": "internal_error", "error": "x"}]}
+    with patch("httpx.AsyncClient", _client_answering(_Response(200, body))), \
+            pytest.raises(RestoreEngineError) as refused:
+        await engine._activate_entries("kb-copy", _items(1))
+
+    assert "duplicate" not in str(refused.value)

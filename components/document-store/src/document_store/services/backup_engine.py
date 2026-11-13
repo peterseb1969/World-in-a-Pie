@@ -1337,6 +1337,29 @@ def _same_document_content(archive_row: dict[str, Any], target_row: dict[str, An
     return norm(custom_a) == norm(custom_t)
 
 
+def _activation_failure_cause(failed: list[dict[str, Any]]) -> str:
+    """What stopped an activation batch, by the Registry's error codes.
+
+    Only a key collision (``already_exists``) is a duplicate identity; any
+    other code is the Registry failing to activate or to confirm, which a
+    retry may get past.
+    """
+    codes: dict[str, int] = {}
+    for r in failed:
+        code = r.get("error_code") or r.get("status") or "unknown"
+        codes[code] = codes.get(code, 0) + 1
+    by_code = ", ".join(f"{n} {code}" for code, n in sorted(codes.items()))
+    duplicate = codes.get("already_exists", 0)
+    note = (
+        f"; {duplicate} could not claim their composite key (a genuine duplicate)"
+        if duplicate else ""
+    )
+    return (
+        f"{len(failed)} identit(ies) were not activated ({by_code}){note}; "
+        f"first: {failed[:5]}"
+    )
+
+
 def _rehydrate_timestamps(row: dict[str, Any]) -> None:
     """Convert platform ``*_at`` ISO strings back to datetime, in place.
 
@@ -3315,11 +3338,7 @@ class DirectRestoreEngine:
                         if r.get("status") not in ("activated", "already_active")
                     ]
                     progress["failed"] += len(failed)
-                    self._raise_activation_failure(
-                        namespace,
-                        f"{len(failed)} identit(ies) could not claim their "
-                        f"composite key (a genuine duplicate); first: {failed[:5]}",
-                    )
+                    self._raise_activation_failure(namespace, _activation_failure_cause(failed))
 
     def _raise_activation_failure(self, namespace: str, cause: str) -> None:
         """Stop a fresh restore whose activation failed, saying what is live.
