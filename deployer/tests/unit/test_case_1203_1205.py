@@ -25,23 +25,18 @@ from wip_deploy.check_app import (
 )
 from wip_deploy.export_ca import ExportCAError, export_caddy_internal_ca
 from wip_deploy.spec import Deployment
-from wip_deploy.verify_app_keys import check_rendered_master_key
 from wip_deploy.verify_security import (
     check_mongodb_authentication,
     check_nats_authentication,
-    verify_live,
 )
 
 
-def _deployment(*, target: str = "compose", apps_only: bool = False) -> Deployment:
-    d = build_deployment(BuildInputs(
+def _deployment(*, target: str = "compose") -> Deployment:
+    return build_deployment(BuildInputs(
         target=target,  # type: ignore[arg-type]
         hostname="wip.example.org", tls="internal", compose_data_dir=Path("/tmp/d"),
         k8s_namespace="wip-t",
     ))
-    if apps_only:
-        d.spec.modules.suppress_core = True
-    return d
 
 
 # ── 1203: rendered-file checks ──────────────────────────────────────────
@@ -70,17 +65,6 @@ def test_a_compose_install_without_its_compose_file_fails(tmp_path: Path, check)
     assert not r.passed and "rendered file missing" in r.message
 
 
-def test_live_checks_are_not_applicable_on_an_apps_only_install() -> None:
-    [r] = verify_live(_deployment(apps_only=True), set(), "k")
-    assert r.passed and "apps-only" in r.message
-
-
-# ── 1204 item 5: apps-only apps run with the install's api-key ──────────
-
-
-def test_the_master_key_rule_does_not_apply_to_apps_only(tmp_path: Path) -> None:
-    r = check_rendered_master_key(tmp_path, _deployment(apps_only=True), [])
-    assert r.passed and "apps-only" in r.message
 
 
 # ── 1204: the app checks ────────────────────────────────────────────────

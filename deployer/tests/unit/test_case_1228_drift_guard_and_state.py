@@ -268,13 +268,10 @@ class TestDriftGuardCoverage:
         """The point of the structural pass: nothing depends on someone adding
         the next field to the enumeration."""
         prev = _deployment()
-        curr = _deployment()
-        curr.spec.network.external_ca_mount = True
-        assert (
-            "network.external_ca_mount",
-            "False",
-            "True",
-        ) in _diff_spec_for_identity_drift(prev, curr)
+        curr = _deployment(users=[])
+        assert "auth.users" in {
+            field for field, _, _ in _diff_spec_for_identity_drift(prev, curr)
+        }
 
     def test_secrets_location_change_is_drift(self) -> None:
         drift = _diff_spec_for_identity_drift(

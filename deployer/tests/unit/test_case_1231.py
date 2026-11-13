@@ -1,5 +1,5 @@
 """The deployer CLI's smaller defects: operator files, connector values,
-certificate fingerprints, bundle import, apps-only auth, purge-all pods,
+purge-all pods,
 per-install secrets, the --no-wait outcome line and discovery's contract."""
 
 from __future__ import annotations
@@ -9,26 +9,15 @@ from types import SimpleNamespace
 
 import pytest
 import typer
-from typer.testing import CliRunner
 
-from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.cli import (
     _connector_value,
     _install_secrets_location,
     _load_operator_yaml,
-    _pem_fingerprint,
     _read_operator_file,
-    app,
 )
 from wip_deploy.discovery import discover
 from wip_deploy.nuke import nuke_purge_all
-
-runner = CliRunner()
-
-# A real (tiny) DER body is not needed: the fingerprint hashes whatever the
-# base64 decodes to. Two distinct bodies stand in for a chain.
-_CERT_A = b"-----BEGIN CERTIFICATE-----\nQUFBQQ==\n-----END CERTIFICATE-----\n"
-_CERT_B = b"-----BEGIN CERTIFICATE-----\nQkJCQg==\n-----END CERTIFICATE-----\n"
 
 
 class TestOperatorFiles:
@@ -60,55 +49,6 @@ class TestConnectorValues:
     )
     def test_numbers_and_null_stay_strings(self, raw: str, expected: object) -> None:
         assert _connector_value(raw) == expected
-
-
-class TestFingerprint:
-    def test_crlf_pem_is_read(self) -> None:
-        crlf = _CERT_A.replace(b"\n", b"\r\n")
-        assert _pem_fingerprint(crlf) == _pem_fingerprint(_CERT_A) != "<malformed>"
-
-    def test_a_chain_lists_every_certificate(self) -> None:
-        out = _pem_fingerprint(_CERT_A + _CERT_B)
-        assert out.startswith(_pem_fingerprint(_CERT_A))
-        assert "+1 more in the chain" in out
-        assert _pem_fingerprint(_CERT_B) in out
-
-    def test_no_certificate_is_malformed(self) -> None:
-        assert _pem_fingerprint(b"nothing here") == "<malformed>"
-
-
-def test_import_bundle_refuses_a_path_as_a_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """`--name ../x` would write secrets outside ~/.wip-deploy/; it is
-    refused before anything is created."""
-    monkeypatch.setattr("wip_deploy.cli._default_install_dir", lambda n: tmp_path / "root" / n)
-    monkeypatch.setattr(
-        "wip_deploy.import_bundle.parse_bundle", lambda raw: SimpleNamespace(),
-    )
-    bundle = tmp_path / "b.yaml"
-    bundle.write_text("x: 1\n")
-    r = runner.invoke(app, ["import-bundle", str(bundle), "--name", "../escape"])
-    assert r.exit_code == 2, r.output
-    assert "not an install name" in r.output
-    assert not (tmp_path / "escape").exists()
-    assert not (tmp_path / "root").exists()
-
-
-class TestAppsOnlyAuth:
-    @pytest.mark.parametrize(
-        "overrides", [{"auth_mode": "oidc"}, {"auth_gateway": True}],
-    )
-    def test_conflicting_auth_override_is_refused_by_name(self, overrides: dict) -> None:
-        with pytest.raises(ValueError, match="--apps-only runs with auth.mode=api-key-only"):
-            build_deployment(BuildInputs(apps_only=True, apps=["wip-kb"], **overrides))
-
-    def test_api_key_only_is_accepted(self) -> None:
-        d = build_deployment(
-            BuildInputs(
-                apps_only=True, apps=["wip-kb"], auth_mode="api-key-only",
-                compose_data_dir=Path("/tmp/wip-data"),
-            ),
-        )
-        assert d.spec.auth.mode == "api-key-only"
 
 
 def test_purge_all_removes_each_installs_pod(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

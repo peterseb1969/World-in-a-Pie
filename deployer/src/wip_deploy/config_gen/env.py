@@ -213,19 +213,6 @@ def resolve_env_source(
         return SecretRef(source.from_secret)
 
     if source.from_component is not None:
-        # CASE-359: the wip-router is the apps' handle to "the WIP
-        # backend URL." When apps-only suppresses it, the semantically-
-        # correct substitute is the deployment's external_base_url —
-        # which itself resolves to remote_wip_url (cross-host) or this
-        # install's _public_base (single-host fallback). This keeps app
-        # manifests that declare `from_component: router` for WIP_BASE_URL
-        # working in apps-only mode without per-app manifest edits.
-        if (
-            source.from_component == "router"
-            and source.from_component not in active_names
-            and deployment.spec.modules.suppress_core
-        ):
-            return Literal(ctx.network.external_base_url)
         target_c = _lookup_active_component(
             source.from_component, components_by_name, active_names, "from_component"
         )
@@ -351,20 +338,12 @@ def _mongo_env(
 def _app_key_env(owner: Component | App, deployment: Deployment) -> list[EnvVar]:
     """WIP_API_KEY for an app: its own derived key (config_gen/api_keys.py),
     never the master key. Nothing for components or a privileged_key app,
-    which declare their key themselves.
-
-    An apps-only install (no local backend) has no Registry of its own to
-    import a derived key: its apps talk to a remote WIP, which knows only the
-    key the operator was issued there (the bundle's, imported into the
-    install's `api-key` secret by `wip-deploy import-bundle`). Its apps run
-    with that key."""
+    which declare their key themselves."""
     if not isinstance(owner, App):
         return []
     key = app_api_key(owner)
     if key is None:
         return []
-    if deployment.spec.modules.suppress_core:
-        return [EnvVar(name="WIP_API_KEY", source=EnvSource(from_secret="api-key"))]
     return [EnvVar(name="WIP_API_KEY", source=EnvSource(from_secret=key.secret_name))]
 
 

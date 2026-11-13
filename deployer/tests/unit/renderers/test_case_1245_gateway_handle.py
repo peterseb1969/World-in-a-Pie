@@ -4,7 +4,7 @@ Every app origin served with a gateway on answers `/auth/handoff`, `/auth/renew`
 `/auth/renewed`, `/auth/logout` and `/auth/userinfo` by proxying to
 `wip-auth-gateway:4180`. That block was emitted unconditionally, on both the
 per-app site and the k8s catch-all site — so in an install where
-`auth.gateway=False` (apps-only, or an explicit `--no-auth-gateway`) the render
+`auth.gateway=False` (api-key-only, or an explicit `--no-auth-gateway`) the render
 pointed at a service it never emitted. `forward_auth` was already gated on the
 gateway being on (`config_gen/routing.py`); the reserved-path handle was the
 asymmetric half, and `CaddyConfig` had no field with which to tell.

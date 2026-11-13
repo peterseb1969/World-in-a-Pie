@@ -256,7 +256,7 @@ class TestStateV3ToV4:
     def test_saved_fail_is_dropped_and_a_sticky_no_wait_is_cleared(self, tmp_path: Path) -> None:
         state = _v3_state({"wait": False, "timeout_seconds": 600, "on_timeout": "fail"})
         out = _upgrade_state_payload(state)
-        assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION == 4
+        assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION
         assert out["deployment"]["spec"]["apply"] == {"wait": True, "timeout_seconds": 600}
 
         (tmp_path / "deployment.deployer-state").write_text(json.dumps(state))

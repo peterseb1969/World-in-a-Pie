@@ -21,6 +21,7 @@ from typer.testing import CliRunner
 
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.cli import (
+    _DEPLOYMENT_JSON_VERSION,
     _load_deployment,
     _persist_deployment,
     _state_v1_to_v2,
@@ -81,13 +82,6 @@ def test_the_validator_refuses_it_without_the_gateway(discovery: Discovery) -> N
     msgs = [m for m in _errors(d, discovery) if APP_EDGE_MODULE in m]
     assert len(msgs) == 1
     assert "auth gateway" in msgs[0] and "remove-module app-edge" in msgs[0]
-
-
-def test_the_validator_refuses_it_with_core_suppressed(discovery: Discovery) -> None:
-    d = _minimal_compose(modules=EDGE_MODULES)
-    d.spec.modules.suppress_core = True
-    msgs = [m for m in _errors(d, discovery) if APP_EDGE_MODULE in m]
-    assert len(msgs) == 1 and "core" in msgs[0]
 
 
 # ── One source for "is the edge on" ───────────────────────────────────
@@ -191,7 +185,7 @@ def test_an_explicit_add_stays_for_the_validator_to_refuse(discovery: Discovery)
 # ── The one-time saved-spec migration ─────────────────────────────────
 
 
-def _v1(*, gateway: bool, suppress_core: bool = False, optional: list[str] | None = None) -> dict:
+def _v1(*, gateway: bool, optional: list[str] | None = None) -> dict:
     return {
         "wip_deploy_format_version": 1,
         "deployment": {
@@ -199,7 +193,7 @@ def _v1(*, gateway: bool, suppress_core: bool = False, optional: list[str] | Non
             "spec": {
                 "target": "compose",
                 "apps": [],
-                "modules": {"optional": optional or ["mcp-server"], "suppress_core": suppress_core},
+                "modules": {"optional": optional or ["mcp-server"]},
                 "auth": (
                     {"mode": "hybrid", "gateway": True}
                     if gateway
@@ -217,14 +211,14 @@ def _v1(*, gateway: bool, suppress_core: bool = False, optional: list[str] | Non
 
 def test_v1_with_the_gateway_keeps_its_edge() -> None:
     out = _upgrade_state_payload(_v1(gateway=True))
-    assert out["wip_deploy_format_version"] == 4
+    assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION
     assert out["deployment"]["spec"]["modules"]["optional"] == ["mcp-server", APP_EDGE_MODULE]
 
 
-@pytest.mark.parametrize("kw", [{"gateway": False}, {"gateway": True, "suppress_core": True}])
+@pytest.mark.parametrize("kw", [{"gateway": False}])
 def test_v1_without_an_edge_gets_none(kw: dict) -> None:
     out = _upgrade_state_payload(_v1(**kw))
-    assert out["wip_deploy_format_version"] == 4
+    assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION
     assert APP_EDGE_MODULE not in out["deployment"]["spec"]["modules"]["optional"]
 
 
@@ -240,7 +234,7 @@ def test_a_v2_spec_without_the_edge_stays_without_it() -> None:
     payload = _v1(gateway=True)
     payload["wip_deploy_format_version"] = 2
     out = _upgrade_state_payload(payload)
-    assert out["wip_deploy_format_version"] == 4
+    assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION
     assert out["deployment"]["spec"]["modules"] == payload["deployment"]["spec"]["modules"]
 
 
@@ -261,7 +255,7 @@ def test_both_loaders_upgrade_and_the_next_persist_writes_the_current_version(tm
 
     _persist_deployment(loaded, tmp_path)
     saved = json.loads((tmp_path / "deployment.deployer-state").read_text())
-    assert saved["wip_deploy_format_version"] == 4
+    assert saved["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION
     assert APP_EDGE_MODULE in saved["deployment"]["spec"]["modules"]["optional"]
 
     # The operator removes it; it stays removed on the next load.

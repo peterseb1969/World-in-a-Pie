@@ -113,9 +113,6 @@ check mutates anything; the whole module is read-only.
      failure says so. The canary must also see no namespace and no
      Registry entry in `wip`.
 
-  The live checks probe what an install runs. An apps-only install runs no
-  WIP service of its own; they are not applicable there (by its spec, not
-  because nothing answered) and belong on the WIP it attaches to.
 """
 
 from __future__ import annotations
@@ -1133,16 +1130,6 @@ def verify_live(
     # not transport trust (check_tls_hostname_sanity covers that), so it does
     # not let an untrusted certificate stop the probes.
     verify_tls = deployment.spec.network.tls == "letsencrypt"
-    if deployment.spec.modules.suppress_core:
-        # Decided by the spec, not by finding nothing to probe: an apps-only
-        # install runs no WIP service of its own, so the live checks belong
-        # to the WIP it attaches to.
-        return [CheckResult(
-            name="live checks",
-            passed=True,
-            message="not applicable (apps-only install: no WIP service runs here — "
-            "run `verify --security --live` on the WIP it attaches to)",
-        )]
     with httpx.Client(
         transport=transport, verify=verify_tls, timeout=10.0, follow_redirects=False
     ) as client:

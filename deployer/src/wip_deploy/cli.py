@@ -55,7 +55,6 @@ from wip_deploy.nuke import (
 from wip_deploy.presets import PRESETS
 from wip_deploy.renderers import (
     FileTree,
-    external_ca_host_path,
     render_compose,
     render_dev_simple,
     render_k8s,
@@ -534,36 +533,6 @@ def _app_from_registry_opt() -> typer.models.OptionInfo:
     )
 
 
-def _remote_wip_opt() -> typer.models.OptionInfo:
-    return typer.Option(
-        "--remote-wip",
-        help=(
-            "URL of a remote WIP install this install's apps should "
-            "talk to (e.g., https://wip-pi.local:8443). Apps that "
-            "declare WIP_BASE_URL via `from_spec: network.external_base_url` "
-            "resolve to this URL instead of the local install's public "
-            "URL. Use for cross-host scenarios — Console-on-Mac pointing "
-            "at WIP-on-Pi. CASE-358. Compose with --apps-only (CASE-359) "
-            "for a true apps-only install with no local backend stack."
-        ),
-    )
-
-
-def _apps_only_opt() -> typer.models.OptionInfo:
-    return typer.Option(
-        "--apps-only",
-        help=(
-            "Install ONLY the named apps + Caddy — no core services, "
-            "no mongodb, no router, no Dex, no auth-gateway. Use for "
-            "cross-host scenarios where this install's apps talk to a "
-            "remote WIP via --remote-wip. Implies --auth-mode "
-            "api-key-only and --no-auth-gateway (no Dex available "
-            "locally; /apps/* is publicly served — appropriate for a "
-            "personal device). Requires at least one --app. CASE-359."
-        ),
-    )
-
-
 def _parse_app_sources_or_exit(raw: list[str]) -> dict[str, Path]:
     """CLI-facing wrapper around `_parse_app_sources` that reports parse
     errors via typer and exits 2 on failure."""
@@ -753,8 +722,6 @@ def validate(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
-    remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
-    apps_only: Annotated[bool, _apps_only_opt()] = False,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -803,8 +770,6 @@ def validate(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
-        remote_wip_url=remote_wip,
-        apps_only=apps_only,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -883,8 +848,6 @@ def show_spec(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
-    remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
-    apps_only: Annotated[bool, _apps_only_opt()] = False,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -935,8 +898,6 @@ def show_spec(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
-        remote_wip_url=remote_wip,
-        apps_only=apps_only,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -988,8 +949,6 @@ def render(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
-    remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
-    apps_only: Annotated[bool, _apps_only_opt()] = False,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -1049,8 +1008,6 @@ def render(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
-        remote_wip_url=remote_wip,
-        apps_only=apps_only,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -1078,14 +1035,6 @@ def render(
             err=True,
         )
         raise typer.Exit(2)
-
-    # CASE-373 — render mirrors install's auto-detection so the previewed
-    # tree matches what install would produce: an imported-bundle CA in the
-    # install's secret store flips the flag and the compose gets the mount.
-    # Read from the store, not the output dir, which may be anywhere.
-    ca_host = external_ca_host_path(deployment)
-    if ca_host is not None and Path(ca_host).exists():
-        deployment.spec.network.external_ca_mount = True
 
     # Read-only: a preview must never create or extend a secret store.
     secrets = _ensure_secrets_via_spec(
@@ -1153,8 +1102,6 @@ def install(
     apps: Annotated[list[str], _app_opt()] = [],
     app_source: Annotated[list[str], _app_source_opt()] = [],
     app_from_registry: Annotated[list[str], _app_from_registry_opt()] = [],
-    remote_wip: Annotated[str | None, _remote_wip_opt()] = None,
-    apps_only: Annotated[bool, _apps_only_opt()] = False,
     auth_mode: Annotated[str | None, _auth_mode_opt()] = None,
     auth_gateway: Annotated[bool | None, _auth_gateway_opt()] = None,
     secrets_backend: Annotated[str | None, _secrets_backend_opt()] = None,
@@ -1275,8 +1222,6 @@ def install(
         apps=apps,
         app_sources=_parse_app_sources_or_exit(app_source),
         apps_from_registry=list(app_from_registry),
-        remote_wip_url=remote_wip,
-        apps_only=apps_only,
         auth_mode=auth_mode,
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
@@ -1358,21 +1303,6 @@ def install(
     # saved spec keeps waiting on every later apply.
     if wait_timeout is not None:
         deployment.spec.apply.timeout_seconds = wait_timeout
-
-    # CASE-373 — auto-mount external CA into app containers when a bundle
-    # has seeded one. `wip-deploy import-bundle` writes external-ca.crt
-    # into the install's secret store; this flag triggers the compose + dev
-    # renderers to bind-mount it + inject NODE_EXTRA_CA_CERTS.
-    # No CLI flag — the bundle's import is the trigger. If the file is
-    # removed (operator manually deleted it), this install re-renders
-    # without the mount.
-    #
-    # The store location, not `<install-dir>/secrets`: that is where
-    # import-bundle writes, and `--secrets-location` can move it anywhere.
-    # Probing the install dir found the CA only while the store sat under it.
-    ca_host = external_ca_host_path(deployment)
-    if ca_host is not None and Path(ca_host).exists():
-        deployment.spec.network.external_ca_mount = True
 
     # Preflight: catch port conflicts and stale containers before any work
     # happens. Only applies to compose/dev targets that bind host ports;
@@ -6068,271 +5998,6 @@ def export_ca(
     typer.echo(TRUST_INSTRUCTIONS.format(out=out.resolve()))
 
 
-# ────────────────────────────────────────────────────────────────────
-# import-bundle (CASE-373 Phase 1)
-# ────────────────────────────────────────────────────────────────────
-
-
-@app.command("import-bundle")
-def import_bundle(
-    bundle_path: Annotated[
-        Path,
-        typer.Argument(
-            metavar="BUNDLE",
-            help=(
-                "Path to the BootstrapBundle YAML file (use '-' to read "
-                "from stdin)."
-            ),
-        ),
-    ],
-    name: Annotated[str | None, _name_opt()] = None,
-    install_dir_opt: Annotated[
-        Path | None,
-        typer.Option(
-            "--install-dir",
-            help=(
-                "Install directory the bundle is being imported for. Defaults to "
-                "~/.wip-deploy/<name>/. Pass the same --install-dir the install "
-                "uses: the CA has to land in that install's own secret store, or "
-                "install never finds it and renders the app containers without the "
-                "mount. An existing install keeps the store location its saved spec "
-                "records."
-            ),
-        ),
-    ] = None,
-    update_ca_only: Annotated[
-        bool,
-        typer.Option(
-            "--update-ca-only",
-            help=(
-                "Refresh the install's external-ca.crt (its secret store, "
-                "~/.wip-deploy/<name>/secrets/ unless --install-dir says "
-                "otherwise) from the bundle and exit. Does NOT touch the api-key "
-                "or other state. Use this when the cloud install rotates its CA "
-                "(see CASE-380)."
-            ),
-        ),
-    ] = False,
-) -> None:
-    """Seed an apps-only install from a bootstrap bundle (CASE-373 Phase 1).
-
-    A *bootstrap bundle* is a single YAML file generated on the cloud side
-    that carries everything an apps-only install needs to connect to a
-    remote WIP: the external base URL, a scoped + time-limited API key,
-    and the cloud's internal CA cert. Today the bundle is hand-crafted
-    on the cloud (see deployer/docs/bootstrap-bundle.md); v1.5 ships a
-    Registry-side `wip-deploy export-bundle` wrapper.
-
-    This verb does NOT run the install — it only seeds state. After
-    import, the suggested install command is printed; the operator runs
-    it themselves.
-
-    The api-key and CA go into the install's own secret store: the location
-    its saved spec records if it already exists, else `<install-dir>/secrets`,
-    else `~/.wip-deploy/<name>/secrets`. That is the same rule `install`
-    applies, so an install materialized outside `~/.wip-deploy/<name>/` must
-    be named here with `--install-dir` too.
-
-    Examples:
-
-      # Import a bundle file into ~/.wip-deploy/laptop-rc/
-      wip-deploy import-bundle laptop-rc.yaml --name laptop-rc
-
-      # Read from stdin (handy for SSH-piped flows)
-      ssh cloud.example "cat laptop-rc.yaml" | wip-deploy import-bundle - --name laptop-rc
-
-      # Refresh just the CA (after the cloud rotates its internal CA)
-      wip-deploy import-bundle laptop-rc.yaml --name laptop-rc --update-ca-only
-
-      # An install materialized outside the default location
-      wip-deploy import-bundle laptop-rc.yaml --name laptop-rc --install-dir /opt/wip
-    """
-    from wip_deploy.import_bundle import BundleParseError, parse_bundle
-
-    raw: bytes | Path
-    if str(bundle_path) == "-":
-        import sys
-
-        raw = sys.stdin.buffer.read()
-    else:
-        raw = bundle_path
-
-    try:
-        bundle = parse_bundle(raw)
-    except BundleParseError as e:
-        typer.echo(typer.style(f"✗ bundle invalid: {e}", fg=typer.colors.RED), err=True)
-        if e.path:
-            typer.echo(f"  (at {e.path})", err=True)
-        raise typer.Exit(2) from e
-
-    name = _resolve_name(name)
-    # The install-name rule (DeploymentMetadata.name), checked before
-    # anything is created: `--name ../x` would otherwise write secrets
-    # outside ~/.wip-deploy/.
-    if not re.fullmatch(r"[a-z][a-z0-9-]*", name):
-        typer.echo(
-            f"error: --name {name!r} is not an install name (lowercase letter, "
-            "then lowercase letters, digits and '-')",
-            err=True,
-        )
-        raise typer.Exit(2)
-    install_dir = install_dir_opt or _default_install_dir(name)
-    # The store follows the install, not the name. `_install_secrets_location`
-    # is the very rule `install` uses to pick it (an existing install keeps the
-    # location its saved spec records, else `<install-dir>/secrets`), so the CA
-    # lands where install will probe and where the renderers mount from — the
-    # three used to agree only when the store sat at its default under the
-    # name-derived install dir.
-    secrets_dir = Path(_install_secrets_location(None, install_dir) or install_dir / "secrets")
-    api_key_path = secrets_dir / "api-key"
-    if not update_ca_only:
-        _refuse_replacing_a_live_installs_key(install_dir, api_key_path, bundle.api_key.value)
-    secrets_dir.mkdir(parents=True, exist_ok=True)
-
-    # Best-effort 0700 on the secrets dir — same convention as
-    # FileSecretBackend.persist().
-    import contextlib
-
-    with contextlib.suppress(NotImplementedError, OSError):
-        secrets_dir.chmod(0o700)
-
-    ca_path = secrets_dir / "external-ca.crt"
-    _write_secret(ca_path, bundle.ca_cert_pem)
-
-    if update_ca_only:
-        typer.echo(
-            typer.style(f"✓ Refreshed external CA at {ca_path}", fg=typer.colors.GREEN)
-        )
-        typer.echo(
-            f"  Fingerprint: {_pem_fingerprint(bundle.ca_cert_pem)}"
-        )
-        return
-
-    _write_secret(api_key_path, bundle.api_key.value.encode() + b"\n")
-
-    # Audit trail — record where this state came from. A compose/dev
-    # apps-only install leaves it in place; a k8s apply clears every
-    # top-level *.yaml in the install dir, this file included. Distinct
-    # from deployment.deployer-state.
-    bootstrap_state = {
-        "imported_from_bundle": {
-            "name": bundle.name,
-            "generated_at": bundle.generated_at.isoformat(),
-            "external_base_url": bundle.external_base_url,
-            "api_key": {
-                "name": bundle.api_key.name,
-                "scope": {
-                    "namespaces": list(bundle.api_key.scope.namespaces),
-                    "permissions": bundle.api_key.scope.permissions,
-                },
-                "expires_at": bundle.api_key.expires_at.isoformat(),
-            },
-            "suggested_apps": list(bundle.suggested_apps),
-        }
-    }
-    (install_dir / "bootstrap.yaml").write_text(
-        yaml.safe_dump(bootstrap_state, sort_keys=False)
-    )
-
-    typer.echo(
-        typer.style(f"✓ Imported bundle into {install_dir}", fg=typer.colors.GREEN)
-    )
-    typer.echo(f"  External base URL: {bundle.external_base_url}")
-    typer.echo(
-        f"  API key '{bundle.api_key.name}' "
-        f"(scope: {','.join(bundle.api_key.scope.namespaces)}, "
-        f"permissions: {bundle.api_key.scope.permissions}, "
-        f"expires: {bundle.api_key.expires_at.date().isoformat()})"
-    )
-    typer.echo(f"  CA fingerprint: {_pem_fingerprint(bundle.ca_cert_pem)}")
-    typer.echo("")
-    typer.echo("Suggested install command:")
-    # --apps-only needs at least one --app; a bundle that suggests none
-    # gets a placeholder rather than a command install would refuse.
-    apps_flags = "".join(f" --app {a}" for a in bundle.suggested_apps) or " --app <app>"
-    # Carry --install-dir through: an install that lands elsewhere would probe
-    # a different store and render without the CA mount this import just seeded.
-    dir_flag = f" --install-dir {install_dir_opt}" if install_dir_opt is not None else ""
-    typer.echo(
-        f"  wip-deploy install --name {name} --target dev --apps-only{dir_flag} \\"
-    )
-    typer.echo(
-        f"    --remote-wip {bundle.external_base_url}{apps_flags}"
-    )
-
-
-def _refuse_replacing_a_live_installs_key(
-    install_dir: Path, api_key_path: Path, new_key: str,
-) -> None:
-    """A bundle carries a new master key. Into a dir that holds a saved
-    install with a different key, it would only make that install's next
-    apply stop on secret drift — refuse instead of replacing it silently.
-    Into a dir without one, a different key is replaced, and said so."""
-    try:
-        current = api_key_path.read_text().strip()
-    except OSError:
-        return
-    if not current or current == new_key:
-        return
-    if any((install_dir / n).exists() for n in STATE_FILENAMES):
-        typer.echo(
-            f"error: {install_dir} holds an install whose master api-key differs "
-            "from the bundle's; importing would replace it. Use another --name, "
-            "or remove the install first (`wip-deploy nuke --name "
-            f"{install_dir.name}`).",
-            err=True,
-        )
-        raise typer.Exit(2)
-    typer.echo(f"note: replacing the existing api-key in {api_key_path.parent}", err=True)
-
-
-def _write_secret(path: Path, content: bytes) -> None:
-    """Write a secret file atomically-ish (write then chmod 0600).
-
-    Same convention as FileSecretBackend.persist() — 0600 best-effort,
-    Windows ACLs aren't covered. Caller owns dir creation.
-    """
-    import contextlib
-
-    path.write_bytes(content)
-    with contextlib.suppress(NotImplementedError, OSError):
-        path.chmod(0o600)
-
-
-def _pem_fingerprint(pem: bytes) -> str:
-    """Compute a short SHA-256 fingerprint of a PEM cert, for display.
-
-    Decodes the base64 between BEGIN/END markers so the fingerprint
-    matches what `openssl x509 -fingerprint -sha256` reports.
-    Returns the colon-separated hex form, truncated to 16 bytes for
-    terminal readability.
-    """
-    import base64
-    import hashlib
-    import re
-
-    # Every certificate of a chain, CRLF or LF line ends; base64-decode
-    # each body and hash the DER.
-    bodies = re.findall(
-        rb"-----BEGIN CERTIFICATE-----\s*(.+?)\s*-----END CERTIFICATE-----",
-        pem,
-        re.DOTALL,
-    )
-    if not bodies:
-        return "<malformed>"
-    prints = []
-    for body in bodies:
-        try:
-            der = base64.b64decode(re.sub(rb"\s+", b"", body), validate=True)
-        except Exception:
-            return "<malformed>"
-        short = hashlib.sha256(der).hexdigest()[:32]  # 16 bytes / 32 hex chars
-        prints.append(":".join(short[i:i + 2] for i in range(0, len(short), 2)))
-    if len(prints) == 1:
-        return prints[0]
-    return f"{prints[0]} (+{len(prints) - 1} more in the chain: {', '.join(prints[1:])})"
-
-
 def _confirm(prompt: str) -> bool:
     response = typer.prompt(f"{prompt} [y/N]", default="n", show_default=False)
     return response.strip().lower() in ("y", "yes")
@@ -6481,7 +6146,6 @@ For verb-specific options:
 More verbs, each with its own --help and examples:
   up · app-deploy · register-app · unregister-app · validate-manifest
   check-app-deployability · add-module · remove-module · export-ca
-  import-bundle
 """
 
 
@@ -6534,8 +6198,6 @@ def _assemble(
     repo_root: Path | None,
     name: str,
     api_keys: list[dict[str, Any]] | None = None,
-    remote_wip_url: str | None = None,
-    apps_only: bool = False,
     skip_discovery: bool = False,
 ) -> tuple[Deployment, list, list]:  # type: ignore[type-arg]
     """Assemble the Deployment and, unless skipped, discover manifests.
@@ -6676,53 +6338,7 @@ def _assemble(
         auth_gateway=auth_gateway,
         secrets_backend=secrets_backend,
         secrets_location=secrets_location,
-        remote_wip_url=remote_wip_url,
-        apps_only=apps_only,
     )
-
-    # CASE-359 validation: apps-only requires at least one --app. An
-    # apps-only install with no apps is structurally useless — refuse
-    # before render to give a clear actionable message.
-    if apps_only and not apps:
-        typer.echo(
-            typer.style(
-                "✗ --apps-only requires at least one --app NAME. "
-                "Without apps, the install would deploy only Caddy "
-                "with no routes — nothing to serve.",
-                fg=typer.colors.RED,
-            ),
-            err=True,
-        )
-        raise typer.Exit(2)
-
-    # CASE-358 + CASE-359: when both are off, no warning. When only
-    # --remote-wip is set, point at --apps-only as the cleaner path.
-    # When only --apps-only is set, point at --remote-wip (apps will
-    # default external_base_url to this install's own hostname, which has
-    # no WIP backend in apps-only mode).
-    if apps_only and remote_wip_url is None:
-        typer.echo(
-            typer.style(
-                "⚠ --apps-only without --remote-wip: apps that resolve "
-                "WIP_BASE_URL via `from_spec: network.external_base_url` "
-                "will point at this install's own hostname — which has "
-                "no WIP backend in apps-only mode. Pass --remote-wip "
-                "<URL> to point them at a real WIP install.",
-                fg=typer.colors.YELLOW,
-            ),
-            err=True,
-        )
-    elif remote_wip_url is not None and not apps_only:
-        typer.echo(
-            typer.style(
-                f"⚠ --remote-wip {remote_wip_url} plumbs the URL but the local "
-                "install still deploys its full backend stack. For a true "
-                "apps-only install pointed at a remote WIP, also pass "
-                "--apps-only (CASE-359).",
-                fg=typer.colors.YELLOW,
-            ),
-            err=True,
-        )
 
     try:
         deployment = build_deployment(inputs)
@@ -6960,7 +6576,7 @@ def _default_install_dir(name: str) -> Path:
 # Version 2: the app edge became an optional module. A version-1 file is
 # upgraded on load (`_upgrade_state_payload`) and written as version 2 by the
 # next persist, so each step runs once per install.
-_DEPLOYMENT_JSON_VERSION = 4
+_DEPLOYMENT_JSON_VERSION = 5
 
 
 def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -6973,7 +6589,47 @@ def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload = _state_v2_to_v3(payload)
     if payload.get("wip_deploy_format_version") == 3:
         payload = _state_v3_to_v4(payload)
+    if payload.get("wip_deploy_format_version") == 4:
+        payload = _state_v4_to_v5(payload)
     return _drop_wip_namespace_access(payload)
+
+
+class RetiredInstallShape(ValueError):
+    """A saved install of a shape this deployer no longer supports."""
+
+
+def _state_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
+    """Version 4 could save an apps-only install: `modules.suppress_core`
+    (no local backend), `network.remote_wip_url` (the WIP its apps talked to)
+    and `network.external_ca_mount` (that WIP's CA, from a bootstrap bundle).
+    Apps-only is retired: an app that runs away from its WIP is attached to it
+    through the app edge instead. Every saved state carries the three fields at
+    their defaults, which are dropped; a state saved as apps-only, or pointed
+    at a remote WIP, is refused (RetiredInstallShape) with that path named.
+    The external-CA flag was set from a file at each render, never chosen, so
+    it is dropped whatever it held."""
+    try:
+        spec = payload["deployment"]["spec"]
+        modules = dict(spec.get("modules") or {})
+        network = dict(spec["network"])
+    except (KeyError, TypeError):
+        return {**payload, "wip_deploy_format_version": 5}
+    if modules.pop("suppress_core", False) or network.get("remote_wip_url"):
+        raise RetiredInstallShape(
+            "this install is apps-only (its apps talk to a remote WIP with no "
+            "backend here), which wip-deploy no longer supports. Attach the apps "
+            "to the WIP they use instead: run them with their own deployment and "
+            "have that WIP's platform admin record them (app-edge module, `POST "
+            "/api/registry/attachments`). Remove this install with `wip-deploy nuke`."
+        )
+    network.pop("remote_wip_url", None)
+    network.pop("external_ca_mount", None)
+    spec = {**spec, "modules": modules, "network": network}
+    return {
+        **payload,
+        "deployment": {**payload["deployment"], "spec": spec},
+        "wip_deploy_format_version": 5,
+    }
 
 
 def _state_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
@@ -7252,7 +6908,11 @@ def _load_deployment(install_dir: Path) -> Deployment:
     except json.JSONDecodeError as e:
         typer.echo(f"error: {target} is not valid JSON: {e}", err=True)
         raise typer.Exit(2) from e
-    payload = _upgrade_state_payload(payload)
+    try:
+        payload = _upgrade_state_payload(payload)
+    except RetiredInstallShape as e:
+        typer.echo(f"error: {target}: {e}", err=True)
+        raise typer.Exit(2) from e
     version = payload.get("wip_deploy_format_version")
     if version != _DEPLOYMENT_JSON_VERSION:
         typer.echo(
@@ -7292,7 +6952,10 @@ def _previous_deployment_or_unreadable(
         payload = json.loads(target.read_text())
     except (json.JSONDecodeError, OSError) as e:
         return None, f"{target} is not readable ({type(e).__name__}: {e})"
-    payload = _upgrade_state_payload(payload)
+    try:
+        payload = _upgrade_state_payload(payload)
+    except RetiredInstallShape as e:
+        return None, f"{target}: {e}"
     version = payload.get("wip_deploy_format_version")
     if version != _DEPLOYMENT_JSON_VERSION:
         return None, (

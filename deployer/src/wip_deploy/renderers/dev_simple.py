@@ -86,14 +86,12 @@ from wip_deploy.naming import (
 )
 from wip_deploy.renderers.base import FileTree
 from wip_deploy.renderers.compose import (
-    _EXTERNAL_CA_CONTAINER_PATH,
     _caddy_service_block,
     _collect_volumes,
     _command_for,
     _environment_block,
     _healthcheck_block,
     _render_dotenv,
-    external_ca_host_path,
 )
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import (
@@ -582,12 +580,6 @@ def _dev_service_block(
         # origin's host.
         allowed_host = f"{owner.app_metadata.label}.{deployment.spec.network.hostname}"
         environment.setdefault("__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS", allowed_host)
-    # CASE-373 Phase 1 — app containers receive NODE_EXTRA_CA_CERTS
-    # pointing at the bind-mounted CA when an imported bundle has
-    # seeded `secrets/external-ca.crt`. Set on apps only (backend
-    # services on the same host don't need cross-host trust).
-    if isinstance(owner, App) and deployment.spec.network.external_ca_mount:
-        environment["NODE_EXTRA_CA_CERTS"] = _EXTERNAL_CA_CONTAINER_PATH
     # CASE-301: extend PYTHONPATH so the bind-mounted wip-auth source
     # shadows the build-baked site-packages copy. Without this, edits
     # to libs/wip-auth/ would only land via a full `wip-deploy install`
@@ -643,13 +635,6 @@ def _dev_service_block(
         enable_source_mount=source_mount,
         app_sources=app_sources,
     )
-    # CASE-373 Phase 1 — bind-mount the imported external CA (read-only)
-    # into app containers when the flag is set. Host side is the absolute
-    # path out of the install's secret store, so the mount survives an
-    # install dir or store location that differs from the name-derived default.
-    ca_host = external_ca_host_path(deployment)
-    if isinstance(owner, App) and deployment.spec.network.external_ca_mount and ca_host is not None:
-        volumes.append(f"{ca_host}:{_EXTERNAL_CA_CONTAINER_PATH}:ro")
     if mounts_auth_config_dir(owner):
         volumes.append(f"./{API_KEYS_RENDER_DIR}:{API_KEYS_CONTAINER_DIR}:ro")
     # The key file's own directory, for the manifests that read it (the

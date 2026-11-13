@@ -7,7 +7,7 @@ supersedes: WIP-KB/papers/k8s-from-start-app-yac-recipe.md
 
 # The wip-deployable app contract
 
-**Audience:** every YAC about to scaffold or maintain a WIP app — backend, frontend, or full-stack — regardless of whether the target install runs on compose, k8s, or apps-only against a remote WIP.
+**Audience:** every YAC about to scaffold or maintain a WIP app — backend, frontend, or full-stack — regardless of whether the target install runs on compose, k8s or dev.
 **Goal:** ship the app so that `wip-deploy install --target <anything> --app <name> --app-source <path>` brings it up healthy on the first try, and the SPA loads at the root of its own origin, `https://<label>.<host>:<port>/`, without manual env patching or container massaging.
 **Provenance:** synthesized 2026-05-14 from the May 13–14 cross-host validation arc and the WIP-KB / WIP-AA containerization work. Supersedes `WIP-KB/papers/k8s-from-start-app-yac-recipe.md` — title and scope generalized; the contract isn't k8s-specific.
 
@@ -34,7 +34,7 @@ The contract has two halves — what the **source repo** must look like, and wha
 | `Dockerfile.dev` | At the path containing `package.json`. Runs `npm run dev`. **No baked `node_modules`** — the deployer mounts a named volume so dev rebuilds are warm. Alpine + curl. Pattern verbatim from `apps/react-console` and `apps/clintrial-explorer`. |
 | `vite.config.ts` (frontend apps) | `server.host: '0.0.0.0'` (without it Caddy → Vite → ECONNREFUSED inside the container). Dev `proxy` keys (`/api`, `/wip`, …) pointing at **this app's Express port** (not 3001 by clintrial-copy-paste reflex). Vite's default `base` (`/`): the app is served at the root of its own origin, and no base path is set. |
 | `docker-entrypoint-dev.sh` (optional, recommended) | Hash-gated `npm ci` populate so dev container restarts don't re-run `ci` unnecessarily. The canonical version is `scripts/scaffold-query/docker-entrypoint-dev.sh` in the WIP repo, which `--preset query` copies into new apps. It runs only at container start: see "a dependency change reaches the dev container only when it restarts" below. |
-| `server/index.ts` (Express apps) | All routes mounted at `/`: the app is served at the root of its own origin. `app.set('trust proxy', 1)` for HTTPS termination. `requireAuth()` middleware passes through when `OIDC_ISSUER` is unset (apps-only / dev mode). In `NODE_ENV=production`, serve `dist/` statically with a SPA fallback. The fallback excludes the API prefixes: an unmatched route under `/api`, `/auth`, `/wip`, `/server-api` or `/mcp` (plus any prefix the app adds) returns `404` JSON for any method, never `index.html`. |
+| `server/index.ts` (Express apps) | All routes mounted at `/`: the app is served at the root of its own origin. `app.set('trust proxy', 1)` for HTTPS termination. `requireAuth()` middleware passes through when `OIDC_ISSUER` is unset (an api-key-only install, which runs no Dex, or dev mode). In `NODE_ENV=production`, serve `dist/` statically with a SPA fallback. The fallback excludes the API prefixes: an unmatched route under `/api`, `/auth`, `/wip`, `/server-api` or `/mcp` (plus any prefix the app adds) returns `404` JSON for any method, never `index.html`. |
 | Runtime app-config route (CASE-551) | `GET /api/app-config` returns the deployment's client-visible config as JSON — at minimum `{"namespace": <WIP_NAMESPACE or null>}`; multi-namespace apps add their extra keys (e.g. `library_namespace`). Allowlist only: never an env dump, never secrets (the response reaches every browser); `Cache-Control: no-store`. The SPA fetches this at boot (scaffold: `src/lib/app-config.ts`) for **every** client-visible per-deployment value — never mirror such values into `VITE_*` build bakes; a bake and runtime env are two sources that drift silently. The scaffold emits the route inline; apps that vendor `@wip/proxy` ≥ 0.4.0 can mount its `appConfigHandler` at the same path. |
 | Client fetches | Every URL prefixed with `import.meta.env.BASE_URL` — *never* bare `/api/...` or `/wip/...`. |
 | `wipProxy` mount order (`@wip/proxy` ≥ 0.5.0) | The proxy streams both directions (O(1) memory in payload size — large archive uploads/downloads pass through flat; no bespoke streaming routes needed). Consequence: it consumes the request as a raw stream, so it must be mounted **before** any body-parsing middleware (`express.json()`, …) that would match the same paths — a parser ahead of the proxy drains the body and an empty stream is forwarded. The deprecated `bodyLimit` option is a no-op. |
@@ -150,11 +150,11 @@ The contract is small. The failure signatures when you skip a step are specific 
 
 ### Skip 9: server `requireAuth()` doesn't pass-through in dev
 
-**Failure:** App boots in `--app-source` mode (apps-only). `OIDC_ISSUER` is unset. `requireAuth()` redirects to a Dex login URL that doesn't exist. Every page redirects forever.
+**Failure:** App boots on an install with no Dex (api-key-only). `OIDC_ISSUER` is unset. `requireAuth()` redirects to a Dex login URL that doesn't exist. Every page redirects forever.
 
 **Symptom signature:** browser bounces between the app's origin and a Dex URL that 404s.
 
-**Origin:** apps-only deployment shape. The middleware must explicitly check `if (!process.env.OIDC_ISSUER) return next()` at the top.
+**Origin:** installs that run no Dex. The middleware must explicitly check `if (!process.env.OIDC_ISSUER) return next()` at the top.
 
 ### Followed, not skipped: the SPA fallback answers missing API routes with 200 HTML
 
@@ -193,7 +193,6 @@ These are platform-side guarantees the contract assumes. They're invariants toda
 
   *Migration / failure signature:* an app still pinning `file:libs/wip-<lib>-latest.tgz` (a pre-versioned-tarball scaffold) heals on its next `--refresh`. If your container build fails with `npm error code EINTEGRITY` on an `@wip/*` package, that is this — re-run `--refresh` and commit the two files. Do not hand-edit or re-pack a bundled tarball: same version must mean same bytes.
 
-- **External CA trust is auto-injected into app containers (Node-stack)** — when an apps-only install carries `external-ca.crt` in its secret store (seeded by `wip-deploy import-bundle`; pass the same `--install-dir` there if the install lives outside `~/.wip-deploy/<name>/`), the deployer automatically bind-mounts it read-only at **`/etc/ssl/certs/external-ca.crt`** in every app container and sets **`NODE_EXTRA_CA_CERTS`** to that path. You declare nothing — there is no manifest field; the behaviour flips on purely from the CA file's presence (the deployer's `install`/`render` auto-detect it). **Node-stack apps** pick the extra CA up transparently (Node reads `NODE_EXTRA_CA_CERTS`); **Python / Go / Rust apps ignore it** and use their own trust stores (`certifi`, the system pool, …) — harmless either way. Two reservations follow: don't unset `NODE_EXTRA_CA_CERTS`, and don't bind your own file at `/etc/ssl/certs/external-ca.crt`. Backend / full-stack installs never see this — it is apps-only. For the operator-side flow that makes the CA file exist in the first place, see `docs/design/bootstrap-bundle.md`.
 
 - **Who may open your app is a route field, enforced by the gateway** — behind the auth-gateway your app runs no OIDC client, so an in-app `ALLOWED_GROUPS` check never executes. Declare the groups on the route instead:
 
@@ -239,7 +238,7 @@ One **non-guarantee** belongs in the same list, because apps have assumed its op
 - **Registered reporting views are not archived — apps own them.** WIP backup/restore carries MongoDB state only; registered SQL views (`POST /api/reporting-sync/namespace/{ns}/views`) live in PostgreSQL bookkeeping and come back **missing after every restore, by design**. An app that queries a registered view must tolerate its absence and re-register it idempotently (re-registering an existing name replaces the definition): at bootstrap, at startup, and again when a query fails on a missing relation. Registration validates the SQL against real reporting tables, which exist only after reporting-sync has synced the namespace — so a failure right after bootstrap or restore is a retry, not an error. The bootstrap scaffold ships this pattern as `server/seed/views/` + `ensureRegisteredViews()` / `ensureRegisteredViewsWithRetry()` in `bootstrap.server.ts.template`. Views registered by hand outside any app bootstrap are ephemeral: nothing recreates them after a restore.
   The scaffold seeds an inert example, `templates/bootstrap/seed/views/_00_example.json` (`_`-prefixed files are skipped): write its SQL against the unqualified entity view `doc_<template_value>`, because it runs in the namespace's own schema and the namespace name differs between dev and deployed installs. Registering needs namespace **admin** on the app's namespace, or a `wip-admins` / `wip-services` key; the deployment's key qualifies, a `write`-granted runtime key does not.
 
-**Your app runs with a key of its own, never the install's master key.** The deployer derives one key per enabled app from its manifest, renders it into the install's key file (which the Registry imports; the key is then a Registry record wip-deploy manages) and sets `WIP_API_KEY` from it; do not declare `WIP_API_KEY` yourself, and a manifest naming `from_secret: api-key` is refused. In an apps-only install (no local backend, apps against a remote WIP) the apps run with the install's own key instead, the one `wip-deploy import-bundle` brings from the remote WIP, since the remote Registry knows no derived key. The key holds:
+**Your app runs with a key of its own, never the install's master key.** The deployer derives one key per enabled app from its manifest, renders it into the install's key file (which the Registry imports; the key is then a Registry record wip-deploy manages) and sets `WIP_API_KEY` from it; do not declare `WIP_API_KEY` yourself, and a manifest naming `from_secret: api-key` is refused. The key holds:
 
 - `admin` on every namespace in `spec.namespaces` (your bootstrap creates them and registers their views);
 - `read` or `write` on each namespace you list under `spec.namespace_access`, for namespaces another app owns or a shared one:
@@ -341,8 +340,7 @@ This is enforced as a mechanical checkpoint in `/wip-implement` Step 0 (Q1/Q2) a
 - **Persistence.** Apps with their own non-WIP state (PVCs, separate DBs) need separate manifest declarations. Out of scope here.
 - **Multi-replica.** The contract assumes one pod / in-memory session. Scaling to N replicas requires sticky-session ingress or a shared session store. Separate paper when it lands.
 - **Migrations.** WIP-side schema migrations (your app's bootstrap of templates/terminologies) ride `BootstrapGate`'s offer-on-empty / use-on-exists discipline — already in the scaffold; not contract surface.
-- **The bootstrap-bundle UX.** That's the layer **above** this contract: once apps consistently satisfy the contract, the bundle layer condenses cross-host setup into one click. Apps need not anticipate the bundle work; the contract is sufficient.
-- **The k8s-vs-compose-vs-apps-only choice.** The deployer handles target-specific concerns. The app code is target-agnostic if the contract is met.
+- **The k8s-vs-compose-vs-dev choice.** The deployer handles target-specific concerns. The app code is target-agnostic if the contract is met.
 
 ---
 

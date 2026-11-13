@@ -71,7 +71,7 @@ Do this as early as you can. Under the master key every call is allowed, so a ca
 3. **Verify** with `wip-deploy install --target dev --app <name> --app-source <name>=~/Development/WIP-<name>` — SPA must load at `https://<label>.wip.localhost:8443/` on the first try, container healthy, no manual env patching.
 4. **If something breaks**, find the failure signature in the paper's "What breaks when you skip step N" annex. Once `/check-app-deployability` ships, run it before considering your scaffold done.
 
-The contract is target-agnostic — compose, k8s, and apps-only installs satisfy the same contract.
+The contract is target-agnostic — compose, k8s and dev installs satisfy the same contract.
 
 ## Process
 

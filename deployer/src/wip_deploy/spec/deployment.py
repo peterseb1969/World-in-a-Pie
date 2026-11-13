@@ -51,17 +51,9 @@ class ModulesSpec(WIPModel):
     and required infrastructure (mongodb) are normally always active.
     Valid `optional` values are names of components with
     `category=optional` in their manifest.
-
-    `suppress_core` (CASE-359): when True, core components are
-    deactivated AND infrastructure components with
-    `activation.requires_core=True` (mongodb, router) auto-deactivate.
-    Used for apps-only installs that talk to a remote WIP via
-    `--remote-wip` (CASE-358). The typical apps-only command is
-    `wip-deploy install --apps-only --remote-wip <URL> --app <NAME>`.
     """
 
     optional: list[str] = Field(default_factory=list)
-    suppress_core: bool = False
 
     @field_validator("optional")
     @classmethod
@@ -417,68 +409,11 @@ def app_origins_problem(hostname: str) -> str | None:
     return None
 
 
-def base_url_problem(url: str) -> str | None:
-    """Why `url` cannot be a base URL that service paths get appended to, or
-    None when it can.
-
-    A base URL is concatenated with `/api/<svc>/...` downstream, so a trailing
-    slash yields `//api/...` — which some servers treat as a different resource
-    than `/api/...` — and a path, query or fragment gets glued into the middle
-    of the result instead of ending the request.
-
-    One rule, two doors: `network.remote_wip_url` (an operator writing a spec)
-    and a bootstrap bundle's `spec.external_base_url` (a URL another install
-    hands us, which the deployer prints verbatim as the `--remote-wip` value to
-    copy). Both call this, so they cannot disagree about a shape the other one
-    refuses.
-    """
-    from urllib.parse import urlparse
-
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return f"must use http:// or https:// scheme; got {url!r}"
-    if not parsed.hostname:
-        return f"must include a hostname; got {url!r}"
-    if parsed.path:
-        return (
-            f"must not include a path; got {url!r} "
-            "(strip the path — apps append their own /api/* paths)"
-        )
-    if parsed.query or parsed.fragment:
-        return f"must not include query or fragment; got {url!r}"
-    return None
-
-
 class NetworkSpec(WIPModel):
     hostname: str = Field(min_length=1)
     tls: TLSMode = "internal"
     https_port: int = Field(default=8443, ge=1, le=65535)
     http_port: int = Field(default=8080, ge=1, le=65535)
-    # CASE-358: URL of a remote WIP install this deployment talks to.
-    # When set, `SpecContext.network.external_base_url` resolves here
-    # instead of this install's own _public_base. Used by apps that
-    # need to reach a different WIP (e.g., Console-on-Mac → WIP-on-Pi).
-    # None on standard same-host installs.
-    #
-    # Does NOT override the local install's own hostname/ports — that
-    # would break Caddy binding and OIDC issuer URLs on the local
-    # install. Cross-host requires CASE-359 (apps-only) to suppress
-    # the local backend stack; this field is the URL-plumbing half.
-    remote_wip_url: str | None = Field(default=None)
-    # CASE-373: True when the install's secret store holds an
-    # `external-ca.crt`, set by the install/render verb at render time. App
-    # containers get the file bind-mounted at
-    # `/etc/ssl/certs/external-ca.crt` plus an `NODE_EXTRA_CA_CERTS`
-    # env var. Backend containers (when present in the same install)
-    # do not need cross-host trust — the slot is app-only.
-    #
-    # This field is recordable spec — visible in `deployment.deployer-state`
-    # — so `wip-deploy status --diff` and post-hoc inspection both see it.
-    # The toggle is driven by the install verb, not user-facing CLI flags:
-    # if `wip-deploy import-bundle` wrote a CA, install picks it up.
-    # Both read and mount take the path from `secrets.location`, so an install
-    # whose store sits outside its install dir still finds and mounts the CA.
-    external_ca_mount: bool = Field(default=False)
 
     @model_validator(mode="after")
     def letsencrypt_requires_public_hostname(self) -> NetworkSpec:
@@ -492,23 +427,6 @@ class NetworkSpec(WIPModel):
                     f"tls=letsencrypt requires a public hostname; "
                     f"got {self.hostname!r}"
                 )
-        return self
-
-    @model_validator(mode="after")
-    def remote_wip_url_is_well_formed(self) -> NetworkSpec:
-        """remote_wip_url must be http(s)://<host>[:<port>] with no path/query.
-
-        We refuse trailing slashes, paths, and query strings because the
-        URL is concatenated with `/api/<svc>/...` paths downstream;
-        a trailing slash would yield `//api/...` which some servers
-        treat as a different resource than `/api/...`.
-        """
-        if self.remote_wip_url is None:
-            return self
-
-        problem = base_url_problem(self.remote_wip_url)
-        if problem:
-            raise ValueError(f"remote_wip_url {problem}")
         return self
 
 

@@ -13,16 +13,10 @@ against current HEAD:
 2. **`--auth-mode api-key-only` alone was refused on a gateway preset.** That mode
    runs no Dex and the gateway exists to authenticate Dex sessions, so
    `AuthSpec.gateway_requires_oidc` refused the spec — yet core, headless and
-   `--apps-only` all set both halves together, and only the CLI override set one.
+   the gateway presets' own api-key-only shapes set both halves together, and only
+   the CLI override set one.
    The mode now implies the pair, and the refusal that remains reachable (an
    explicit gateway) names both flags.
-
-3. **`import-bundle` handed over a URL the next command refuses.** The bundle's
-   `external_base_url` was checked only for being a string, then echoed verbatim as
-   the copy-pasteable `--remote-wip` argument; `network.remote_wip_url` refuses any
-   path, including a bare trailing slash. Both doors now run one rule
-   (`base_url_problem`), and the bundle is refused at parse — not tidied in the
-   print — because the same value is also recorded in `bootstrap.yaml`.
 
 4. **The analytics preset was described backwards.** "standard + reporting" when
    analytics adds no module that standard lacks and drops Garage (file storage);
@@ -46,15 +40,12 @@ from wip_deploy.cli import _load_import_entries, app
 from wip_deploy.config_gen.dex import DexConfig, DexUserEntry
 from wip_deploy.config_gen.env import SecretRef
 from wip_deploy.discovery import Discovery, discover
-from wip_deploy.import_bundle import BundleParseError, parse_bundle
 from wip_deploy.presets import PRESETS
 from wip_deploy.renderers.compose_dex import _render_static_passwords
 from wip_deploy.secrets import bcrypt_secret_name
 from wip_deploy.secrets_backend import ResolvedSecrets
-from wip_deploy.spec import NetworkSpec
 
 from .test_build import _minimal_compose_inputs
-from .test_case_373_parser import _FAKE_PEM
 from .test_case_964_supplied_hashes import (
     _dex_config,
     _entry,
@@ -186,7 +177,7 @@ def test_api_key_only_alone_clears_the_gateway_on_a_gateway_preset() -> None:
     d = build_deployment(_minimal_compose_inputs(auth_mode="api-key-only"))
     assert d.spec.auth.mode == "api-key-only"
     assert d.spec.auth.gateway is False
-    # No Dex means no Dex users to declare — the shape --apps-only produces.
+    # No Dex means no Dex users to declare.
     assert d.spec.auth.users == []
 
 
@@ -235,84 +226,6 @@ def test_the_coupled_spec_matches_the_documented_pair() -> None:
         _minimal_compose_inputs(auth_mode="api-key-only", auth_gateway=False)
     )
     assert shorthand.spec.auth == explicit.spec.auth
-
-
-# ──────────────────────────────────────────────────────────────────────
-# 3. A bundle URL is checked by the rule it will be validated against
-
-
-def _bundle_yaml(external_base_url: str) -> str:
-    from datetime import UTC, datetime, timedelta
-
-    body = {
-        "api_version": "wip.dev/v1",
-        "kind": "BootstrapBundle",
-        "metadata": {
-            "name": "test-bundle",
-            "generated_at": datetime.now(UTC).isoformat(),
-        },
-        "spec": {
-            "external_base_url": external_base_url,
-            "api_key": {
-                "value": "opaque-secret-value",
-                "name": "test-key",
-                "scope": {"namespaces": ["kb"], "permissions": "read"},
-                "expires_at": (datetime.now(UTC) + timedelta(days=365)).isoformat(),
-            },
-            "ca_cert": _FAKE_PEM,
-            "suggested_apps": [{"name": "react-console"}],
-        },
-    }
-    return yaml.safe_dump(body, sort_keys=False)
-
-
-@pytest.mark.parametrize("url", ["https://wip.example", "http://wip.example:8443"])
-def test_a_bare_origin_is_accepted(url: str) -> None:
-    assert parse_bundle(_bundle_yaml(url)).external_base_url == url
-
-
-@pytest.mark.parametrize(
-    ("url", "reason"),
-    [
-        ("https://wip.example/", "path"),
-        ("https://wip.example/dex", "path"),
-        ("wip.example", "scheme"),
-        ("ftp://wip.example", "scheme"),
-        ("https://", "hostname"),
-        ("https://wip.example?foo=bar", "query or fragment"),
-        ("https://wip.example#frag", "query or fragment"),
-    ],
-)
-def test_both_doors_refuse_the_same_shapes(url: str, reason: str) -> None:
-    """The bundle door and the spec door must not disagree about one URL.
-
-    Before this, a bundle could carry `https://host/` through import and print it
-    as the `--remote-wip` argument the install then rejected.
-    """
-    with pytest.raises(BundleParseError, match=reason) as exc:
-        parse_bundle(_bundle_yaml(url))
-    assert exc.value.path == "spec.external_base_url"
-
-    with pytest.raises(ValidationError, match=reason):
-        NetworkSpec(hostname="wip.localhost", remote_wip_url=url)
-
-
-def test_import_bundle_refuses_and_writes_nothing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The refusal lands before any secret is created — nothing to roll back."""
-    fake_home = tmp_path / "home"
-    fake_home.mkdir()
-    monkeypatch.setattr(Path, "home", lambda: fake_home)
-
-    bundle_file = tmp_path / "bundle.yaml"
-    bundle_file.write_text(_bundle_yaml("https://wip.example/"))
-    result = runner.invoke(app, ["import-bundle", str(bundle_file), "--name", "laptop-rc"])
-
-    assert result.exit_code == 2
-    assert "bundle invalid" in result.output
-    assert "spec.external_base_url" in result.output
-    assert not (fake_home / ".wip-deploy" / "laptop-rc").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────

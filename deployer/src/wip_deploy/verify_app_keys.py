@@ -349,14 +349,6 @@ def check_rendered_master_key(
     bypasses the spec's refusal is caught here.
     """
     name = "only privileged apps hold the master key"
-    if deployment.spec.modules.suppress_core:
-        # Apps-only: no local Registry imports a derived key, so every app
-        # runs with the install's api-key by design (config_gen/env.py).
-        return CheckResult(
-            name, True,
-            "not applicable (apps-only install: each app runs with the install's "
-            "api-key by design; the WIP it attaches to issues the keys)",
-        )
     enabled = {r.name for r in deployment.spec.apps if r.enabled}
     privileged = {a.metadata.name for a in apps if a.spec.privileged_key and a.metadata.name in enabled}
     holders = _master_key_holders(install_dir, deployment, enabled)

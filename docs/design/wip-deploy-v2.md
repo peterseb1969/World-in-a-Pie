@@ -119,11 +119,8 @@ class DeploymentSpec(BaseModel):
 
 class ModulesSpec(BaseModel):
     optional: list[str]                    # e.g., ["console", "oidc", "reporting", "files"]
-    suppress_core: bool = False            # when True, core components are NOT
-                                           # deployed (app-only install against an
-                                           # existing WIP)
     # Core (mongodb, registry, def-store, template-store, document-store) is
-    # otherwise always active and not listed here.
+    # always active and not listed here.
 
 class AppRef(BaseModel):
     name: str                              # matches apps/<name>/
