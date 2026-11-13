@@ -38,6 +38,7 @@ from ..models.deletion_journal import (
     InboundReferenceCount,
 )
 from ..models.entry import RegistryEntry
+from ..models.id_algorithm import VALID_ENTITY_TYPES
 from ..models.namespace import Namespace, set_unless_locked
 from .event_bus import access_changed, get_event_bus
 
@@ -65,7 +66,13 @@ class DeletionNotStarted(Exception):
 
 
 class DeletionRefused(ValueError):
-    """The request may not go ahead as asked (inbound references need force)."""
+    """The request may not go ahead as asked; ``status`` is the HTTP status
+    the refusal answers with (400 by default: inbound references need force;
+    404 for a namespace that is gone, 409 for one already locked)."""
+
+    def __init__(self, message: str, status: int = 400):
+        super().__init__(message)
+        self.status = status
 
 
 # The journal keeps this many of the inbound references a deletion breaks;
@@ -149,10 +156,11 @@ def deletion_refusals(ns: Namespace) -> list[tuple[str, str, int]]:
             ("default_namespace", "Cannot delete the default 'wip' namespace", 400)
         )
     if ns.deletion_mode != "full":
+        # 'wip' can never be switched to full, so it gets no advice to do so.
+        advice = "" if ns.prefix == "wip" else " Set deletion_mode='full' first via PATCH."
         refusals.append((
             "deletion_mode",
-            f"Namespace '{ns.prefix}' has deletion_mode='retain'. "
-            "Set deletion_mode='full' first via PATCH.",
+            f"Namespace '{ns.prefix}' has deletion_mode='retain'.{advice}",
             400,
         ))
     if ns.status == "locked":
@@ -169,10 +177,15 @@ def id_counter_filter(prefix: str) -> dict[str, Any]:
 
     The name is escaped: a namespace named before the prefix rule may hold a
     regex metacharacter, and "a.b" unescaped would also match "axb:"'s
-    counters — deleting another namespace's sequence. The install-wide
-    "@prefix:" counters never match: no namespace name starts with "@".
+    counters — deleting another namespace's sequence. The entity type
+    segment is anchored too: such a name may also hold the ":" delimiter,
+    and "^a:" alone would match "a:b"'s counters. (One shape stays
+    ambiguous: a pre-rule name "<namespace>:<entity type>…" — the key
+    cannot tell it apart.) The install-wide "@prefix:" counters never
+    match: no namespace name starts with "@".
     """
-    return {"counter_key": {"$regex": f"^{re.escape(prefix)}:"}}
+    types = "|".join(sorted(VALID_ENTITY_TYPES))
+    return {"counter_key": {"$regex": f"^{re.escape(prefix)}:(?:{types}):"}}
 
 # Template field slots, by what they point at.
 _FIELD_TERMINOLOGY_SLOTS = ("terminology_ref", "array_terminology_ref")
@@ -684,8 +697,9 @@ class NamespaceDeletionService:
         ``safe_to_delete`` answers what the delete would answer: false when
         the delete refuses the namespace outright (``refusals`` names each
         rule and its reason, worded as the delete words it) and when inbound
-        references require ``force`` (``requires_force``). The report itself
-        is always given — it is what a dry run is for.
+        references require ``force`` (``requires_force``). For an existing
+        namespace the report is always given — it is what a dry run is for;
+        a missing one returns only an error (the route answers 404 first).
         """
         ns = await Namespace.find_one({"prefix": prefix})
         if not ns:
@@ -726,16 +740,17 @@ class NamespaceDeletionService:
         free text it sent, recorded beside it."""
         ns = await Namespace.find_one({"prefix": prefix})
         if not ns:
-            raise ValueError(f"Namespace not found: {prefix}")
+            raise DeletionRefused(f"Namespace not found: {prefix}", 404)
 
         if refusals := deletion_refusals(ns):
-            raise ValueError(refusals[0][1])
+            _rule, message, status = refusals[0]
+            raise DeletionRefused(message, status)
 
         # Check inbound references
         inbound_refs = await self._check_inbound_references(prefix)
         high_severity = [r for r in inbound_refs if r.type in _HIGH_SEVERITY_INBOUND]
         if high_severity and not force:
-            raise ValueError(
+            raise DeletionRefused(
                 f"Namespace '{prefix}' has {len(high_severity)} inbound reference(s) "
                 "from other namespaces. Use force=true to proceed."
             )
@@ -744,8 +759,8 @@ class NamespaceDeletionService:
         # both read it unlocked cannot both take the lock.
         prior_status = ns.status
         if not await set_unless_locked(ns, {"status": "locked", "updated_at": datetime.now(UTC)}):
-            raise ValueError(
-                f"Namespace '{prefix}' is already locked (deletion in progress)"
+            raise DeletionRefused(
+                f"Namespace '{prefix}' is already locked (deletion in progress)", 409,
             )
         logger.info("Namespace '%s' locked for deletion", prefix)
         # Every service drops its cached permissions now: an answer cached

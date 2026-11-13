@@ -128,7 +128,7 @@ async def test_claim_entry_keys_pending_conflict_rolls_back_partial_claims(clien
         status="active",
         created_by="test",
     )
-    conflict = await claim_entry_keys_pending(contender)
+    conflict = await claim_entry_keys_pending(contender, "t-test")
     assert conflict is not None and blocker.entry_id in conflict
     # the primary pair claimed before the collision must be rolled back
     assert await CompositeKeyClaim.find_existing(
@@ -249,7 +249,7 @@ async def test_full_two_phase_happy_path(client):
         status="active",
         created_by="test",
     )
-    assert await claim_entry_keys_pending(entry) is None
+    assert await claim_entry_keys_pending(entry, "t-test") is None
     entry.rebuild_search_values()
     await entry.insert()
     await confirm_entry_keys(entry)

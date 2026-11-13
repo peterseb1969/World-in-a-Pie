@@ -2130,7 +2130,9 @@ did every namespace listing on the install, and no API call could repair it.
   switch from `retain` to `full` is meant to be explicit.
 - **An install that already stored such a value** still fails on reads of
   that namespace. Repair it in MongoDB: set the namespace's `deletion_mode`
-  in `wip_registry.namespaces` to `retain` or `full`.
+  in `wip_registry.namespaces` to `retain`. To enable deletion afterwards,
+  switch it to `full` through the API (`PUT`/`PATCH` with
+  `confirm_enable_deletion=true`), so the confirmation step is not skipped.
 
 ### Restores rehash each document against the template it is pinned to; restored Registry rows search by their new keys
 
@@ -2305,11 +2307,15 @@ ambiguous. They no longer can:
   failing one are written: they keep their claims, and `register`/`reserve`
   report them `created`/`reserved` instead of `error`. Only the entries that
   were not written lose their claims. When the error does not say how far the
-  insert got, every claim stays pending for the pending reconcile.
+  insert got, the entries are read back to find out; only if that read fails
+  too does every claim stay pending for the pending reconcile.
 - **The orphan audit (`reconcile_orphan_claims`, run by
   `python -m registry.admin_backfill_claims`) skips pending claims younger
   than the grace window.** It deletes a claim only in the state and with the
-  date it read, so it can run against a live Registry.
+  date it read, so its deletes no longer race requests in flight. It stays a
+  deliberate admin step: it scans the whole claim collection, and the same
+  entrypoint first runs `backfill_claims`, which strips duplicate synonyms
+  from entries.
 
 ### Registry lows: export, activation errors, status filters, ID formats; one version per service
 

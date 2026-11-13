@@ -114,14 +114,14 @@ async def resolve_stale_claim(existing: CompositeKeyClaim | None) -> bool:
     return True
 
 
-async def claim_entry_keys_pending(
-    entry: RegistryEntry, token: str | None = None,
-) -> str | None:
+async def claim_entry_keys_pending(entry: RegistryEntry, token: str) -> str | None:
     """Claim-first gate for one entry: claim every key pair as ``pending``
     BEFORE the entry insert. Returns None on success or a conflict message —
     in which case the pairs this call took have been rolled back and the
     entry must NOT be inserted. The single-entry form of
-    ``claim_entries_keys_pending``.
+    ``claim_entries_keys_pending``. ``token`` (``new_claim_token()``) is
+    required: it is what the caller hands release_entry_keys to roll back
+    only its own claims, and a token minted here could not be.
 
     Fail-fast is deliberate (CASE-554): a primary key colliding with an
     existing synonym is a real conflict — the composite key already resolves
@@ -146,7 +146,7 @@ async def confirm_entry_keys(entry: RegistryEntry) -> None:
             )
 
 
-async def release_entry_keys(entry: RegistryEntry, token: str | None = None) -> None:
+async def release_entry_keys(entry: RegistryEntry, token: str) -> None:
     """Roll back an entry's claims after its insert failed: with the claiming
     request's ``token``, only the claims that request inserted. Best-effort —
     anything left behind is pending and dies in the reconcile pass."""
@@ -328,7 +328,7 @@ async def confirm_keys_bulk(keys: Sequence[ClaimKey]) -> None:
                 "composite_key_hash": key_hash,
                 "owner_entry_id": owner,
             },
-            {"$set": {"state": "confirmed"}},
+            {"$set": {"state": "confirmed", "claim_token": None}},
         )
         for ns, etype, key_hash, owner, _kind in keys
         if key_hash
@@ -592,19 +592,18 @@ async def reconcile_pending_claims(
         backed = entry is not None and _entry_doc_backs_claim(
             entry.model_dump(), doc
         )
+        # The observed state and date in the filter: a request that took the
+        # claim over since re-dated it, and its claim is in flight again. Only
+        # what the filter matched is counted.
+        observed = {"_id": doc["_id"], "state": "pending", "created_at": doc["created_at"]}
         if backed:
-            await claims_coll.update_one(
-                {"_id": doc["_id"], "state": "pending", "created_at": doc["created_at"]},
-                {"$set": {"state": "confirmed"}},
+            result = await claims_coll.update_one(
+                observed, {"$set": {"state": "confirmed", "claim_token": None}},
             )
-            summary["confirmed"] += 1
+            summary["confirmed"] += result.modified_count
         else:
-            # The observed date in the filter: a request that took the claim
-            # over since re-dated it, and its claim is in flight again.
-            await claims_coll.delete_one(
-                {"_id": doc["_id"], "state": "pending", "created_at": doc["created_at"]}
-            )
-            summary["deleted"] += 1
+            result = await claims_coll.delete_one(observed)
+            summary["deleted"] += result.deleted_count
 
     if summary["checked"]:
         logger.info("CASE-554 pending reconcile: %s", summary)
@@ -710,8 +709,12 @@ async def reconcile_orphan_claims() -> dict[str, int]:
     """Full-collection audit: delete claims whose backing entry/synonym no
     longer exists. ADMIN VERB — not on the startup path since the two-phase
     protocol (CASE-554); day-to-day consistency is kept by
-    reconcile_pending_claims + inline healing, and this scan's concurrency
-    hazard against live traffic (CASE-553) is why it stays manual.
+    reconcile_pending_claims + inline healing. Its old hazard against live
+    traffic, deleting a claim an in-flight request was about to back
+    (CASE-553), is closed by the grace window and the state-and-date filter
+    below. It stays manual because it scans the whole collection, and its
+    entrypoint (registry.admin_backfill_claims) first runs backfill_claims,
+    which strips duplicate synonyms from entries.
 
     Idempotent — only deletes dangling claims, never mutates entries.
     Catches confirmed-dangling residue in bulk: claims for deleted entries,

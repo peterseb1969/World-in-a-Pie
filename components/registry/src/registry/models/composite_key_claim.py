@@ -80,7 +80,7 @@ class CompositeKeyClaim(Document):
                     "deletes only claims carrying its own token, so it never "
                     "deletes a claim its entry held before the request, nor one "
                     "another request on the same entry has taken over (taking "
-                    "over clears the token). None on confirmed one-shot claims "
+                    "over clears the token). None on every confirmed claim "
                     "and on claims taken over."
     )
 
@@ -177,7 +177,10 @@ class CompositeKeyClaim(Document):
                         return_document=ReturnDocument.AFTER,
                     )
                     if taken is not None:
-                        return cls(**{**doc, "kind": taken["kind"], "claim_token": None})
+                        # The claim as stored, not the insert that failed
+                        # (whose _id and created_at were never written).
+                        taken.pop("_id", None)
+                        return cls(**taken)
                 existing = await cls.find_existing(namespace, entity_type, composite_key_hash)
                 if existing is not None and existing.owner_entry_id != owner_entry_id:
                     raise
@@ -214,7 +217,9 @@ class CompositeKeyClaim(Document):
                 "composite_key_hash": composite_key_hash,
                 "owner_entry_id": owner_entry_id,
             },
-            {"$set": {"state": "confirmed"}},
+            # A confirmed claim carries no request's token: no rollback may
+            # take it (the field's contract).
+            {"$set": {"state": "confirmed", "claim_token": None}},
         )
 
     @classmethod

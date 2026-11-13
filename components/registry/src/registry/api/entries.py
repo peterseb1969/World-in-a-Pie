@@ -129,8 +129,30 @@ def _insert_failure(e: Exception) -> dict[str, Any]:
     }
 
 
+async def _written_prefix(entries: list[RegistryEntry]) -> int | None:
+    """How many of an ordered batch's entries are in the collection, read
+    back after an insert that failed without saying where: the leading ones
+    that exist. None when the read fails as well."""
+    try:
+        found = {
+            e.entry_id
+            async for e in RegistryEntry.find(
+                {"entry_id": {"$in": [e.entry_id for e in entries]}}
+            )
+        }
+    except Exception:
+        logger.exception("Could not read back a failed entry insert")
+        return None
+    written = 0
+    for entry in entries:
+        if entry.entry_id not in found:
+            break
+        written += 1
+    return written
+
+
 async def _insert_claimed_entries(
-    entries: list[RegistryEntry], token: str,
+    entries: list[RegistryEntry], token: str, laps: "_Laps | None" = None,
 ) -> tuple[int | None, Exception | None]:
     """Insert entries whose keys this request claimed pending (under
     ``token``), then settle those claims. Returns (how many entries were
@@ -140,23 +162,31 @@ async def _insert_claimed_entries(
     entries before the failing one are written and the rest are not. The
     written ones keep their claims, confirmed; the others lose the claims
     this request took for them. When the error does not say how far the
-    insert got, the count is None and nothing is released — every claim
-    stays pending, and the pending reconcile settles each one by whether its
-    entry exists.
+    insert got, the entries are read back to find out (a prefix of the batch
+    is written). Only when that read fails too is the count None and nothing
+    released — every claim stays pending, and the pending reconcile settles
+    each one by whether its entry exists.
     """
+    lap = laps.lap if laps is not None else (lambda _phase: None)
     try:
         await RegistryEntry.insert_many(entries)
     except Exception as e:
+        lap("4_insert_entries")
         written: int | None = None
         if isinstance(e, BulkWriteError):
             failing = [err["index"] for err in e.details.get("writeErrors", [])]
             if failing:
                 written = min(failing)
+        if written is None:
+            written = await _written_prefix(entries)
         if written is not None:
             await confirm_entries_keys(entries[:written])
             await release_entries_keys(entries[written:], token)
+        lap("4b_confirm_keys")
         return written, e
+    lap("4_insert_entries")
     await confirm_entries_keys(entries)
+    lap("4b_confirm_keys")
     return len(entries), None
 
 
@@ -532,8 +562,9 @@ async def register_keys(
 
     # Phase 4: batch insert, then confirm the pending claims.
     if gated_entries:
-        await _insert_and_answer(gated_entries, gated_indices, identity_hashes, results, token)
-        laps.lap("4_insert_entries")
+        await _insert_and_answer(
+            gated_entries, gated_indices, identity_hashes, results, token, laps,
+        )
 
     _answer_duplicates(results, plan.duplicates)
     return _register_response(results, laps)
@@ -811,10 +842,11 @@ async def _insert_and_answer(
     identity_hashes: list[str | None],
     results: list[RegisterKeyResponse | None],
     token: str,
+    laps: "_Laps | None" = None,
 ) -> None:
     """Insert the claimed entries and answer each of their items: created
     for each entry written, the insert's failure for the rest."""
-    written, insert_error = await _insert_claimed_entries(gated_entries, token)
+    written, insert_error = await _insert_claimed_entries(gated_entries, token, laps)
     failure = _insert_failure(insert_error) if insert_error is not None else {}
     for pos, idx in enumerate(gated_indices):
         entry = gated_entries[pos]
@@ -1405,6 +1437,32 @@ async def _activate_keyed(
                 index=i, status="error", entry_id=items[i].entry_id, **error_fields(e))
         return
 
+    # The key each entry holds now: a reservation made with a key claimed it,
+    # and activation under another key must give that claim back.
+    previous_hash = {eid: e.primary_composite_key_hash for eid, e in loaded.items()}
+    candidates = _keyed_candidates(first_index, loaded, items, identity_fields, creator, results)
+
+    # Two-phase claim, as provision does it: pending before the write,
+    # confirmed after it.
+    token = new_claim_token()
+    to_write = await _claim_for_activation(candidates, results, token)
+    if to_write:
+        await _write_activations(items, keyed, to_write, results, token, creator)
+        await _release_left_keys(to_write, previous_hash, results)
+
+    _answer_activation_repeats(items, repeats, first_index, results)
+
+
+def _keyed_candidates(
+    first_index: dict[str, int],
+    loaded: dict[str, RegistryEntry],
+    items: list[ActivateItem],
+    identity_fields: dict[str, frozenset[str]],
+    creator: str,
+    results: list[ActivateItemResponse | None],
+) -> list[tuple[int, RegistryEntry]]:
+    """The keyed items whose entries can take their final key (given it),
+    with their indices; every other item is answered in ``results``."""
     candidates: list[tuple[int, RegistryEntry]] = []
     for eid, i in first_index.items():
         entry = loaded.get(eid)
@@ -1413,15 +1471,30 @@ async def _activate_keyed(
             results[i] = answer
         else:
             candidates.append((i, cast(RegistryEntry, entry)))
+    return candidates
 
-    # Two-phase claim, as provision does it: pending before the write,
-    # confirmed after it.
-    token = new_claim_token()
-    to_write = await _claim_for_activation(candidates, results, token)
-    if to_write:
-        await _write_activations(items, keyed, to_write, results, token, creator)
 
-    _answer_activation_repeats(items, repeats, first_index, results)
+async def _release_left_keys(
+    written: list[tuple[int, RegistryEntry]],
+    previous_hash: dict[str, str],
+    results: list[ActivateItemResponse | None],
+) -> None:
+    """Release the claim on the key an activated entry left: a reservation
+    made with a key claimed it, and activation moved the entry to its final
+    key. Owner-scoped and untokened, as /rekey-identity releases a key it
+    moves off; a key the entry still carries as a synonym stays claimed."""
+    left = []
+    for i, entry in written:
+        old = previous_hash.get(entry.entry_id) or ""
+        result = results[i]
+        if (
+            old and old != entry.primary_composite_key_hash
+            and result is not None and result.status == "activated"
+            and not any(s.composite_key_hash == old for s in entry.active_synonyms())
+        ):
+            left.append((entry.namespace, entry.entity_type, old, entry.entry_id, "primary"))
+    if left:
+        await release_keys_bulk(left)
 
 
 def _first_and_repeats(

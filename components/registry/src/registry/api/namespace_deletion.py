@@ -60,7 +60,10 @@ async def delete_namespace(
     Requires deletion_mode='full' on the namespace. Creates a persistent
     journal for crash-safe execution across MongoDB, the object store, and PostgreSQL.
 
-    - dry_run=true: Returns impact report (entity counts, inbound references)
+    - dry_run=true: Returns impact report (entity counts, inbound references).
+      ``safe_to_delete`` answers what the delete would: false when
+      ``refusals`` ([{rule, message}]: default_namespace, deletion_mode,
+      locked) is not empty, or when ``requires_force`` (inbound references).
     - force=true: Proceeds even if other namespaces reference this one
     """
     ns = await Namespace.find_one({"prefix": prefix})
@@ -85,6 +88,10 @@ async def delete_namespace(
         )
     except DeletionNotStarted as e:
         raise HTTPException(503, str(e)) from None
+    except DeletionRefused as e:
+        # Each refusal answers with its own status (a namespace deleted
+        # meanwhile is 404, one locked meanwhile 409), as the checks above.
+        raise HTTPException(e.status, str(e)) from None
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
 
@@ -181,7 +188,7 @@ async def resume_deletion(
     except DeletionAlreadyRunning as e:
         raise HTTPException(409, str(e)) from None
     except DeletionRefused as e:
-        raise HTTPException(400, str(e)) from None
+        raise HTTPException(e.status, str(e)) from None
     except DeletionNotStarted as e:
         raise HTTPException(503, str(e)) from None
     except ValueError as e:

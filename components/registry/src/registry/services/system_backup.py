@@ -560,6 +560,25 @@ def _skip_named(name: str, code: SkipReason, reason: str) -> SkippedRecord:
     return SkippedRecord(id=name, name=name, reason_code=code, reason=reason)
 
 
+def _invalid_reservation_settings(settings: dict[str, Any]) -> str | None:
+    """Why archived reservation settings fail the rules a reservation is
+    written under (ReservationSettings: the namespace route's values, e.g.
+    deletion_mode retain or full), or None. A restore writes no setting the
+    API would refuse: such a reservation fails on every later read."""
+    from pydantic import ValidationError
+
+    from .reservations import ReservationSettings
+
+    try:
+        ReservationSettings(**settings)
+    except ValidationError as e:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()
+        )
+        return f"its settings fail today's rules ({problems})"
+    return None
+
+
 def _skip_reservation(prefix: str, code: SkipReason, reason: str) -> SkippedRecord:
     return SkippedRecord(id=prefix, prefix=prefix, reason_code=code, reason=reason)
 
@@ -1703,6 +1722,10 @@ async def _restore_reservations(
             # Only an install's reservation is archived without an id (by
             # develop builds that archived them; backups leave them out).
             out.skipped.append(_skip_reservation(r.prefix, "managed_on_source", _INSTALL_RESERVATION))
+            continue
+        invalid = _invalid_reservation_settings(r.settings)
+        if invalid is not None:
+            out.skipped.append(_skip_reservation(r.prefix, "invalid_record", invalid))
             continue
         ns = await Namespace.find_one(Namespace.prefix == r.prefix)
         existing = await RuntimeReservation.find_one(RuntimeReservation.prefix == r.prefix)

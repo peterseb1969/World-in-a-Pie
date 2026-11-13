@@ -169,3 +169,24 @@ async def test_an_archive_may_omit_the_id_only_for_an_install_reservation(client
     resp = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
     assert resp.status_code == 422, resp.text
     assert "namespace_id is required" in resp.text
+
+
+@pytest.mark.asyncio
+async def test_an_archived_reservation_with_settings_the_api_refuses_is_skipped(
+    client, auth_headers,
+):
+    """The namespace route accepts deletion_mode retain or full only; a
+    restore must not write another value through a reservation's untyped
+    settings, which would then fail on every read. CASE-1279 (6ec7fb25 R2)."""
+    prefix = _p("badmode")
+    archive = (await client.post(BACKUP, headers=auth_headers)).json()
+    archive["reservations"].append({
+        "prefix": prefix, "app": "someone", "namespace_id": _uuid(),
+        "settings": {"deletion_mode": "FULL"},
+    })
+    resp = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    skipped = {s["prefix"]: s for s in resp.json()["reservations"]["skipped"]}
+    assert skipped[prefix]["reason_code"] == "invalid_record", skipped.get(prefix)
+    assert "deletion_mode" in skipped[prefix]["reason"]
+    assert await _reserved(prefix) is None

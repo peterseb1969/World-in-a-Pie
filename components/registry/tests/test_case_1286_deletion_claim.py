@@ -153,4 +153,4 @@ async def test_writes_set_only_the_fields_of_the_step_they_record(client, monkey
 def test_the_lease_is_longer_than_a_step_writes_apart():
     # A run refreshes its claim with every write; one step (a batch of 1,000
     # stored objects, a delete_many) must fit inside the lease many times over.
-    assert mod._CLAIM_LEASE >= timedelta(minutes=10)
+    assert timedelta(minutes=10) <= mod._CLAIM_LEASE

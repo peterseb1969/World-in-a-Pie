@@ -47,7 +47,7 @@ class TestPostCommitBestEffort:
         """A transient error during the confirm flip must not fail the
         already-committed entry — the claim stays pending for reconcile."""
         entry = await _insert_entry("CASE431_A")
-        await claim_entry_keys_pending(entry)
+        await claim_entry_keys_pending(entry, "t-test")
 
         async def _boom(*_args, **_kwargs):
             raise RuntimeError("transient mongo hiccup")
@@ -68,7 +68,7 @@ class TestPostCommitBestEffort:
         failing release logs and returns; the pending claim dies in the
         reconcile pass."""
         entry = await _insert_entry("CASE431_B")
-        await claim_entry_keys_pending(entry)
+        await claim_entry_keys_pending(entry, "t-test")
 
         async def _boom(*_args, **_kwargs):
             raise RuntimeError("transient mongo hiccup")
@@ -76,13 +76,13 @@ class TestPostCommitBestEffort:
         monkeypatch.setattr(CompositeKeyClaim, "release", _boom)
 
         # Must NOT raise.
-        await release_entry_keys(entry)
+        await release_entry_keys(entry, "t-test")
 
     @pytest.mark.asyncio
     async def test_happy_path_claims_pending_then_confirms(self, client):
         """Sanity: the two-phase pair leaves a confirmed primary claim."""
         entry = await _insert_entry("CASE431_C")
-        assert await claim_entry_keys_pending(entry) is None
+        assert await claim_entry_keys_pending(entry, "t-test") is None
         await confirm_entry_keys(entry)
         existing = await CompositeKeyClaim.find_existing(
             entry.namespace, entry.entity_type, entry.primary_composite_key_hash
