@@ -109,8 +109,9 @@ async def test_file_keys_are_split_across_steps(client, auth_headers, monkeypatc
     monkeypatch.setattr(svc, "_get_storage_keys", AsyncMock(return_value=keys))
     journal = await svc._build_journal(prefix, False, "t", [])
     storage = [s for s in journal.steps if s.store == "file_storage"]
-    assert [len(s.storage_keys) for s in storage] == [1000, 1000, 500]
-    assert [k for s in storage for k in s.storage_keys] == keys
+    batches = [await mod.step_storage_keys(s) for s in storage]
+    assert [len(b) for b in batches] == [1000, 1000, 500]
+    assert [k for b in batches for k in b] == keys
 
 
 @pytest.mark.asyncio
@@ -151,3 +152,76 @@ async def test_a_platform_admin_sees_a_locked_namespace(client, auth_headers):
     })
     scoped = {"X-API-Key": r.json()["plaintext_key"]}
     assert (await client.get(f"{NS}/{prefix}", headers=scoped)).status_code == 404
+
+
+# ── Reopened (FRanC review of 26d19f9c) ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_the_keys_live_outside_the_journal(client, auth_headers, monkeypatch):
+    """Splitting keys across steps did not shrink the journal: every step
+    sits in the one document. The keys now wait in a document per batch, so
+    a namespace with 300,000 files builds a journal of a few kilobytes."""
+    import bson
+
+    prefix = await _namespace(client, auth_headers)
+    svc = _svc(monkeypatch)
+    keys = [str(uuid.uuid4()) for _ in range(300_000)]
+    monkeypatch.setattr(svc, "_get_storage_keys", AsyncMock(return_value=keys))
+
+    journal = await svc._build_journal(prefix, False, "t", [])
+
+    storage = [s for s in journal.steps if s.store == "file_storage"]
+    assert len(storage) == 300 and all(s.storage_keys is None for s in storage)
+    size = len(bson.encode(journal.model_dump(mode="json", exclude={"id"})))
+    assert size < 1_000_000, size  # the inline keys alone were ~14 MB
+    await journal.insert()  # MongoDB takes it
+    assert await mod.step_storage_keys(storage[-1]) == keys[-1000:]
+    await mod._key_batches().delete_many({"namespace": prefix})
+
+
+@pytest.mark.asyncio
+async def test_a_completed_batch_drops_its_keys(client, auth_headers, monkeypatch):
+    prefix = await _namespace(client, auth_headers)
+    svc = _svc(monkeypatch)
+    monkeypatch.setattr(svc, "_get_storage_keys", AsyncMock(return_value=["k1", "k2"]))
+    monkeypatch.setattr(svc, "_exec_file_storage_step", AsyncMock(return_value=2))
+
+    await svc.start_deletion(prefix, requested_by="t")
+
+    assert await mod._key_batches().count_documents({"namespace": prefix}) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_resumed_deletion_leaves_a_namespace_created_again_alone(
+    client, auth_headers, monkeypatch,
+):
+    """A deletion that stopped after the namespace record was gone, resumed
+    once another namespace took the prefix, deleted that namespace's data and
+    record by name: only the reporting step checked. Every step checks now."""
+    prefix = await _namespace(client, auth_headers)
+    svc = _svc(monkeypatch)
+    templates = Namespace.get_motor_collection().database.client["wip_template_store"]["templates"]
+    await templates.insert_one({"namespace": prefix, "template_id": "old"})
+    old = await Namespace.find_one({"prefix": prefix})
+    journal = await svc._build_journal(prefix, False, "t", [])
+    journal.namespace_id = old.namespace_id
+    journal.status = "failed"
+    await journal.insert()
+    assert any(s.collection == "templates" for s in journal.steps)
+
+    # The old namespace's record is gone; a new one holds the prefix, with data.
+    await old.delete()
+    await templates.delete_many({"namespace": prefix})
+    await Namespace(prefix=prefix, namespace_id=f"new-{uuid.uuid4().hex}", status="active").insert()
+    await templates.insert_one({"namespace": prefix, "template_id": "new"})
+    try:
+        resumed = await svc.resume_deletion(prefix)
+
+        assert await templates.count_documents({"namespace": prefix, "template_id": "new"}) == 1
+        assert await Namespace.find_one({"prefix": prefix}) is not None
+        assert resumed.status == "completed_with_warnings"
+        assert all("exists again" in (s.error or "") for s in resumed.steps)
+    finally:
+        await templates.delete_many({"namespace": prefix})
+        await Namespace.find({"prefix": prefix}).delete()

@@ -24,7 +24,14 @@ class DeletionStep(BaseModel):
     action: str | None = None
     detail: str | None = None
     filter: dict[str, Any] | None = None
+    # The stored-object keys this step deletes. Journals write them to a
+    # separate document per batch (storage_keys_batch, the _id of a
+    # namespace_deletion_keys document): a journal is one MongoDB document,
+    # and the keys of a namespace with a few hundred thousand files do not
+    # fit in it however they are split across steps. storage_keys inline is
+    # what older journals wrote, and is still read.
     storage_keys: list[str] | None = None
+    storage_keys_batch: str | None = None
     # completed_with_errors: the step ran to completion under best-effort
     # semantics (file-storage/PostgreSQL cleanup must not block namespace deletion —
     # MongoDB is the system of record) but swallowed a failure, so data may

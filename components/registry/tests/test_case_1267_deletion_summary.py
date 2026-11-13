@@ -13,7 +13,12 @@ import uuid
 import pytest
 
 from registry.models.deletion_journal import DeletionJournal
-from registry.services.namespace_deletion import _STORAGE_DELETE_BATCH, NamespaceDeletionService, _Unreachable
+from registry.services.namespace_deletion import (
+    _STORAGE_DELETE_BATCH,
+    NamespaceDeletionService,
+    _Unreachable,
+    step_storage_keys,
+)
 
 
 async def _journal_with_objects(client, monkeypatch, total: int):
@@ -29,7 +34,7 @@ async def _journal_with_objects(client, monkeypatch, total: int):
         return [f"k{i}" for i in range(total)]
 
     async def execute(self, step, namespace):
-        return len(step.storage_keys or [])
+        return len(await step_storage_keys(step))
 
     monkeypatch.setattr(svc, "_get_storage_keys", keys)
     monkeypatch.setattr(NamespaceDeletionService, "_execute_step", execute)
@@ -44,8 +49,9 @@ async def test_every_object_batch_counts_into_the_summary(client, monkeypatch):
     svc, journal = await _journal_with_objects(client, monkeypatch, total)
 
     batches = [s for s in journal.steps if s.store == "file_storage"]
-    assert [len(s.storage_keys or []) for s in batches] == [_STORAGE_DELETE_BATCH,
-                                                             _STORAGE_DELETE_BATCH, 500]
+    assert [len(await step_storage_keys(s)) for s in batches] == [
+        _STORAGE_DELETE_BATCH, _STORAGE_DELETE_BATCH, 500,
+    ]
 
     await svc._run_steps(journal)
 
@@ -74,7 +80,7 @@ async def test_a_resumed_journal_counts_each_batch_once(client, monkeypatch):
     async def execute(self, step, namespace):
         if step.order in down:
             raise _Unreachable("object store down")
-        return len(step.storage_keys or [])
+        return len(await step_storage_keys(step))
 
     monkeypatch.setattr(NamespaceDeletionService, "_execute_step", execute)
 

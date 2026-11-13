@@ -83,7 +83,7 @@ async def test_journal_builds_the_step_without_any_storage_env(client, monkeypat
 
     first = journal.steps[0]
     assert first.store == "file_storage"
-    assert first.storage_keys == ["k1", "k2"]
+    assert await mod.step_storage_keys(first) == ["k1", "k2"]
     # It is the first step, so it runs before any metadata (the files
     # records included) is deleted.
     assert all(s.order > first.order for s in journal.steps[1:])

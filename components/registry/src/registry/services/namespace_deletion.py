@@ -23,6 +23,7 @@ from datetime import UTC, datetime
 from typing import Any, cast
 
 import httpx
+from bson import ObjectId
 
 from wip_auth.cache_events import announce_namespace_deleted
 from wip_auth.startup import retry_until_done
@@ -212,13 +213,53 @@ def _endpoint_id(entry: Any) -> str | None:
     return entry if isinstance(entry, str) else None
 
 
+# Where a deletion's stored-object keys wait, one document per batch, until
+# the step that deletes them has completed.
+_KEY_BATCHES = "namespace_deletion_keys"
+
+
+def _key_batches() -> Any:
+    return DeletionJournal.get_motor_collection().database[_KEY_BATCHES]
+
+
+async def _store_key_batch(namespace: str, keys: list[str]) -> str:
+    """Persist one batch of keys outside the journal; its id, for the step."""
+    result = await _key_batches().insert_one({
+        "namespace": namespace, "keys": keys, "created_at": datetime.now(UTC),
+    })
+    return str(result.inserted_id)
+
+
+async def step_storage_keys(step: DeletionStep) -> list[str]:
+    """The keys a file-storage step deletes: inline (older journals) or read
+    from its batch document. A batch that is gone while its step is not
+    completed is lost data, and fails the step rather than reading as none."""
+    if step.storage_keys is not None:
+        return step.storage_keys
+    if not step.storage_keys_batch:
+        return []
+    doc = await _key_batches().find_one({"_id": ObjectId(step.storage_keys_batch)})
+    if doc is None:
+        raise ValueError(
+            f"the stored-object keys of step {step.order} "
+            f"(batch {step.storage_keys_batch}) are missing"
+        )
+    return list(doc.get("keys") or [])
+
+
+async def _drop_key_batch(step: DeletionStep) -> None:
+    """A completed step's keys are no longer needed."""
+    if step.storage_keys_batch:
+        await _key_batches().delete_one({"_id": ObjectId(step.storage_keys_batch)})
+
+
 def _count_step(summary: dict[str, int], step: DeletionStep) -> None:
     """Add a done step's deletions to the journal summary: under its
     collection, as object-store objects, or as PostgreSQL rows.
 
     A summary key can cover several steps — the stored objects are one step
-    per batch, so that a journal fits in one MongoDB document — hence each
-    step adds to the running total instead of replacing it. The total is
+    per batch of keys — hence each step adds to the running total instead of
+    replacing it. The total is
     rebuilt from every step on each run, so a resumed journal counts each
     step once.
     """
@@ -808,12 +849,12 @@ class NamespaceDeletionService:
         order = 1
 
         # Step 1: stored file objects. Runs before the files metadata is
-        # deleted, and the keys are persisted on the step itself, so a step
-        # that fails or is retried later still knows what to remove after the
-        # file records are gone.
-        # One step per batch of keys: a journal is one MongoDB document, and
-        # every key inline on a single step would outgrow its 16 MiB limit
-        # for a namespace with a few hundred thousand files.
+        # deleted, and the keys are persisted, so a step that fails or is
+        # retried later still knows what to remove after the file records are
+        # gone. One step per batch of keys, each batch in its own document
+        # outside the journal: the journal is one MongoDB document, and a
+        # namespace with a few hundred thousand files has more keys than its
+        # 16 MiB hold, however the steps divide them.
         storage_keys = await self._get_storage_keys(prefix)
         for start in range(0, len(storage_keys), _STORAGE_DELETE_BATCH):
             batch = storage_keys[start:start + _STORAGE_DELETE_BATCH]
@@ -826,7 +867,7 @@ class NamespaceDeletionService:
                     + (f" (keys {start + 1}-{start + len(batch)} of {len(storage_keys)})"
                        if len(storage_keys) > _STORAGE_DELETE_BATCH else "")
                 ),
-                storage_keys=batch,
+                storage_keys_batch=await _store_key_batch(prefix, batch),
             ))
             order += 1
 
@@ -967,21 +1008,24 @@ class NamespaceDeletionService:
         """Run one step not yet completed and save the journal.
 
         Returns "executed", "deferred" (its service was unreachable: the step
-        stays pending for the recovery loop) or "kept" (reporting data of a
-        namespace created again under the prefix, left alone). A failing step
+        stays pending for the recovery loop) or "kept" (left undone: a
+        namespace created again under the prefix holds the name now). A failing step
         fails the journal and the error propagates.
         """
         # A re-run must not inherit the error of an earlier attempt.
         step.error = None
-        if step.store == "postgresql" and await self._namespace_recreated(journal):
-            # A deferred cleanup can run long after the namespace record
-            # is gone. If the prefix was created again meanwhile, its
-            # reporting data is the NEW namespace's: never delete it on
-            # behalf of the old one.
+        if await self._namespace_recreated(journal):
+            # A deferred or resumed step can run long after the namespace
+            # record is gone. If the prefix was created again meanwhile, every
+            # step still to run would act on the NEW namespace: they all match
+            # by name (its documents, registry rows, counters, reporting
+            # schema, the namespace record itself), and its stored objects may
+            # carry the same keys. None of them may run on behalf of the old
+            # namespace.
             step.status = "completed_with_errors"
             step.error = (
                 f"namespace '{journal.namespace}' exists again (re-created after "
-                "this deletion); its reporting data was left alone to protect it"
+                "this deletion); this step was left undone to protect it"
             )
             step.completed_at = datetime.now(UTC)
             await journal.save()
@@ -1021,6 +1065,8 @@ class NamespaceDeletionService:
         )
         # Save progress after each step
         await journal.save()
+        if step.status == "completed":
+            await _drop_key_batch(step)
         return "executed"
 
     async def _wait_for_deferred(
@@ -1091,7 +1137,7 @@ class NamespaceDeletionService:
 
     async def _exec_file_storage_step(self, step: DeletionStep, namespace: str) -> int:
         """Delete the step's stored objects through document-store."""
-        keys = step.storage_keys or []
+        keys = await step_storage_keys(step)
         if not keys:
             return 0
         # A re-run must not inherit the error of an earlier attempt.
