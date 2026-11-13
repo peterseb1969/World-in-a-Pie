@@ -144,7 +144,16 @@ def unregister_app(
 
     Silent and idempotent when the entry doesn't exist — the operator
     can re-run `unregister-app NAME` without worrying about prior state.
+
+    The name is checked as `register_app` checks it before it becomes part
+    of a path: `../<install>/docker-compose` or an absolute path would
+    otherwise delete a `.yaml` file anywhere the operator can write.
     """
+    if not _APP_NAME_RE.match(name):
+        raise AppRegistryError(
+            f"app name {name!r} must match {_APP_NAME_RE.pattern!r} "
+            f"(lowercase, starts with a letter, kebab-case)"
+        )
     target = directory or registry_dir()
     entry_file = target / f"{name}.yaml"
     if not entry_file.is_file():

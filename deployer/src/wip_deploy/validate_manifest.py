@@ -1,7 +1,9 @@
 """External manifest validator (CASE-353).
 
-The canonical answer to "would this `wip-app.yaml` be accepted by the
-deployer?" — without staging the manifest into the WIP repo first.
+Answers "would this `wip-app.yaml` be accepted by the deployer?" for every
+rule a manifest can be judged by on its own — without staging it into the
+WIP repo first. The rules that need an install (which other apps are enabled
+beside it) are named in the output instead of answered.
 Used by:
 
   - `wip-deploy validate-manifest <path>` (CLI surface)
@@ -15,11 +17,20 @@ Scope (v1, per CASE-353):
   2. Cross-reference validation against the current WIP root's
      discovered components and apps:
        - `from_component` / `from_component_host` / `from_component_port`
-         → name must match a discovered component
-       - `depends_on[]` → names must match discovered components
+         and `depends_on[]` → must name a discovered component or app, as
+         the install's own validators accept
+       - `metadata.name` → must not be a component's or the front door's
+         (the deployer's rule, spec/validators.py): the app's service would
+         replace that one
        - `app_metadata.label` → must not be another app's (excluding
          self when the manifest is already in the repo under the same
-         name): the label names the app's origin, <label>.<hostname>
+         name): the label names the app's origin, <label>.<hostname>.
+         Checked against every discovered app; an install checks only the
+         enabled ones, so this is the stricter of the two.
+
+  Not answerable here, and named in the CLI's output: namespace
+  reservations and OIDC client-id collisions, which depend on the other
+  apps an install enables.
 
 Explicitly out of scope (v1):
 
@@ -211,28 +222,49 @@ def _check_references(
     components: list[Component],
     discovered_apps: list[App],
 ) -> list[ManifestValidationError]:
-    """Run the four reference checks. Returns a flat list of errors."""
+    """Run the reference checks. Returns a flat list of errors."""
     errors: list[ManifestValidationError] = []
     component_names = {c.metadata.name for c in components}
+    # What an env source or depends_on may name: the install's validators
+    # and env resolution accept an app as a target too.
+    target_names = component_names | {a.metadata.name for a in discovered_apps}
 
     # Existing apps in the repo with the same name as the one under
     # validation are NOT a collision — we're validating an update,
     # not a new entry.
     other_apps = [a for a in discovered_apps if a.metadata.name != app.metadata.name]
 
-    errors.extend(_check_env_references(app, component_names))
-    errors.extend(_check_depends_on(app, component_names))
+    errors.extend(_check_name_free(app, component_names))
+    errors.extend(_check_env_references(app, target_names))
+    errors.extend(_check_depends_on(app, target_names))
     errors.extend(_check_route_collisions(app, other_apps))
 
     return errors
+
+
+def _check_name_free(app: App, component_names: set[str]) -> list[ManifestValidationError]:
+    """An app's name is its service's name on every target, so it cannot be
+    a component's or the front door's — the rule spec/validators.py applies
+    to every enabled app at install."""
+    from wip_deploy.spec.validators import RESERVED_SERVICE_NAMES
+
+    name = app.metadata.name
+    if name not in component_names | RESERVED_SERVICE_NAMES:
+        return []
+    what = "the front door" if name in RESERVED_SERVICE_NAMES else "a component"
+    return [ManifestValidationError(
+        field="metadata.name",
+        message=f"app name {name!r} is the name of {what}",
+        hint="rename the app; its service would replace that one",
+    )]
 
 
 def _check_env_references(
     app: App, component_names: set[str]
 ) -> list[ManifestValidationError]:
     """Each from_component / from_component_host / from_component_port
-    must name a discovered component. from_secret's ownership is the App
-    model's rule; whether the secret exists is install-time state."""
+    must name a discovered component or app. from_secret's ownership is the
+    App model's rule; whether the secret exists is install-time state."""
     errors: list[ManifestValidationError] = []
 
     def _check_one(env_var, section: str, idx: int) -> None:
@@ -244,10 +276,10 @@ def _check_env_references(
                     ManifestValidationError(
                         field=f"spec.env.{section}[{idx}].source.{attr}",
                         message=(
-                            f"references undiscovered component "
+                            f"references undiscovered component or app "
                             f"{target!r}"
                         ),
-                        hint=_format_available("components", component_names),
+                        hint=_format_available("components and apps", component_names),
                     )
                 )
 
@@ -262,7 +294,7 @@ def _check_env_references(
 def _check_depends_on(
     app: App, component_names: set[str]
 ) -> list[ManifestValidationError]:
-    """Every entry in spec.depends_on must be a discovered component."""
+    """Every entry in spec.depends_on must be a discovered component or app."""
     errors: list[ManifestValidationError] = []
     for i, dep in enumerate(app.spec.depends_on):
         if dep not in component_names:
@@ -270,9 +302,9 @@ def _check_depends_on(
                 ManifestValidationError(
                     field=f"spec.depends_on[{i}]",
                     message=(
-                        f"references undiscovered component {dep!r}"
+                        f"references undiscovered component or app {dep!r}"
                     ),
-                    hint=_format_available("components", component_names),
+                    hint=_format_available("components and apps", component_names),
                 )
             )
     return errors

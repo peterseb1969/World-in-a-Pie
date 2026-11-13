@@ -2265,9 +2265,13 @@ def unregister_app_cmd(
 
       wip-deploy unregister-app wip-kb
     """
-    from wip_deploy.app_registry import unregister_app
+    from wip_deploy.app_registry import AppRegistryError, unregister_app
 
-    existed = unregister_app(app_name)
+    try:
+        existed = unregister_app(app_name)
+    except AppRegistryError as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
     if existed:
         typer.echo(
             typer.style(f"✓ Unregistered {app_name!r}", fg=typer.colors.GREEN)
@@ -2315,8 +2319,9 @@ def validate_manifest_cmd(
 ) -> None:
     """Validate an external `wip-app.yaml` against the current WIP root.
 
-    The canonical answer to "would this manifest be accepted by the
-    deployer?" — without staging the manifest into the WIP repo first.
+    Answers "would this manifest be accepted by the deployer?" for every
+    rule a manifest can be judged by on its own — without staging the
+    manifest into the WIP repo first.
     Use it from an APP-YAC's repo to verify a draft manifest before
     asking an operator to integrate it.
 
@@ -2324,13 +2329,15 @@ def validate_manifest_cmd(
 
       1. Schema — Pydantic validation on the `App` model. Catches
          missing fields, wrong types, bad enum values.
-      2. References — names in `from_component*`, `depends_on`, and
-         route paths are checked against the WIP root's discovered
-         components and apps. Any reference that doesn't resolve is
-         flagged with the list of valid alternatives.
+      2. References — names in `from_component*` and `depends_on` must be
+         a discovered component or app, the app's name must not be a
+         component's, and its label must not be another app's (the label
+         names its origin). Any reference that doesn't resolve is flagged
+         with the list of valid alternatives.
 
-    Out of scope (v1): build context, env value resolution
-    (`from_secret` accepts any non-empty name), live cluster state.
+    Not checked here, because they depend on the other apps an install
+    enables: namespace reservations and OIDC client-id collisions. Out of
+    scope: build context, whether a secret exists, live cluster state.
 
     Exit codes:
       0  Manifest passes schema + reference validation.
@@ -2417,6 +2424,10 @@ def validate_manifest_cmd(
             fg=typer.colors.GREEN,
             bold=True,
         )
+    )
+    typer.echo(
+        "  Checked at install, not here: namespace reservations and OIDC "
+        "client ids against the other apps the install enables."
     )
 
 
