@@ -330,7 +330,7 @@ Phase 2 was implemented in three services: `check_namespace_permission()` is cal
 
 ### Single-User Compatibility
 
-The `wip-admins` superadmin bypass ensures single-user deployments are unaffected. The default admin user and legacy API key are both in `wip-admins` — they skip all permission checks.
+The `wip-admins` superadmin bypass ensures single-user deployments are unaffected. The default admin user and legacy API key are both in `wip-admins` — the Registry answers them with admin on every namespace, except one locked for deletion, which is closed to everyone (a deletion in progress refuses every caller, an administrator included).
 
 ---
 

@@ -1589,6 +1589,8 @@ class TemplateService:
         old: FieldDefinition,
         new: FieldDefinition,
         namespace: str,
+        *,
+        ignore_default_value: bool = False,
     ) -> bool:
         """True if two FieldDefinitions are semantically equivalent.
 
@@ -1621,7 +1623,62 @@ class TemplateService:
             | set(TemplateService._FIELD_REF_LIST_PROPS)
             | TemplateService._FIELD_INHERITANCE_PROPS
         )
+        if ignore_default_value:
+            # A client's prefill: the platform never applies it, so it does
+            # not change which documents a field accepts.
+            exclude.add("default_value")
         return old.model_dump(exclude=exclude) == new.model_dump(exclude=exclude)
+
+    @staticmethod
+    async def _one_sync_strategy(template: Template) -> None:
+        """Give every version of the template the sync_strategy ``template``
+        (just written) has.
+
+        The strategy is one value per template, not per version: reporting-
+        sync keeps one live row per document across the version tables, and
+        versions that disagree delete rows another version must keep. A
+        write that sets it — in place on one version, or on a new version —
+        sets it for the template. A version with no reporting config runs on
+        the default strategy, and is given the config that says otherwise.
+        """
+        strategy = (template.reporting or ReportingConfig()).sync_strategy
+        default = ReportingConfig().sync_strategy
+        others = {"template_id": template.template_id, "version": {"$ne": template.version}}
+        collection = Template.get_motor_collection()
+        await collection.update_many(
+            {**others, "reporting": {"$ne": None}, "reporting.sync_strategy": {"$ne": strategy}},
+            {"$set": {"reporting.sync_strategy": strategy}},
+        )
+        if strategy != default:
+            await collection.update_many(
+                {**others, "reporting": None},
+                {"$set": {"reporting": ReportingConfig(sync_strategy=strategy).model_dump()}},
+            )
+
+    @staticmethod
+    async def _parent_change(
+        existing: Template,
+        proposed: CreateTemplateRequest | Template,
+        namespace: str,
+    ) -> dict | None:
+        """The old and new parent when ``proposed`` inherits from another
+        template or version than ``existing``, else None. A request that
+        does not send extends keeps the existing parent; extends compares
+        by what it resolves to (value, ns:VALUE and id are one parent)."""
+        if isinstance(proposed, CreateTemplateRequest) and not (
+            {"extends", "extends_version"} & proposed.model_fields_set
+        ):
+            return None
+        if existing.extends_version == proposed.extends_version and (
+            await TemplateService._refs_equivalent(
+                existing.extends, proposed.extends, "template", namespace,
+            )
+        ):
+            return None
+        return {
+            "old": {"extends": existing.extends, "extends_version": existing.extends_version},
+            "new": {"extends": proposed.extends, "extends_version": proposed.extends_version},
+        }
 
     @staticmethod
     async def _compare_template_relationship_refs(
@@ -1690,7 +1747,8 @@ class TemplateService:
         - "identical": no schema differences — proposed matches existing exactly
         - "compatible": only differences are added optional fields (a
           mandatory field is required whatever its default_value, which the
-          platform never applies)
+          platform never applies) and changed default_values (a change, so a
+          new version, but one no document's validity depends on)
         - "incompatible": any other change (removed field, type change, made-required,
           identity_fields change, modified existing field, added required field,
           changed source/target_templates on a relationship template)
@@ -1739,6 +1797,7 @@ class TemplateService:
         changed_type: list[dict] = []
         made_required: list[str] = []
         modified_existing: list[str] = []
+        default_value_changed: list[str] = []
         for name in sorted(common_names):
             old = existing_fields[name]
             new = proposed_fields[name]
@@ -1752,9 +1811,15 @@ class TemplateService:
             if (not old.mandatory) and new.mandatory:
                 made_required.append(name)
                 continue
-            # CASE-406: semantic field equality, not JSON byte equality.
-            if not await TemplateService._compare_field_definitions(old, new, namespace):
+            # Semantic field equality, not JSON byte equality (CASE-406). A
+            # changed default_value alone changes no document's validity: it
+            # is reported apart and blocks nothing.
+            if not await TemplateService._compare_field_definitions(
+                old, new, namespace, ignore_default_value=True,
+            ):
                 modified_existing.append(name)
+            elif old.default_value != new.default_value:
+                default_value_changed.append(name)
 
         identity_changed: dict | None = None
         if list(existing.identity_fields or []) != list(proposed.identity_fields or []):
@@ -1775,8 +1840,13 @@ class TemplateService:
             "changed_type": changed_type,
             "made_required": made_required,
             "modified_existing": modified_existing,
+            "default_value_changed": default_value_changed,
             "identity_changed": identity_changed,
             "relationship_refs_changed": relationship_refs_changed,
+            # The parent (extends / extends_version) the version inherits
+            # from: inherited fields are not in the lists above, so a new
+            # parent can require what this diff does not show.
+            "parent_changed": await TemplateService._parent_change(existing, proposed, namespace),
         }
 
         is_incompatible = bool(
@@ -1790,7 +1860,7 @@ class TemplateService:
         )
         if is_incompatible:
             return "incompatible", diff
-        if added_optional:
+        if added_optional or default_value_changed:
             return "compatible", diff
         return "identical", diff
 
@@ -1858,6 +1928,7 @@ class TemplateService:
             original.updated_at = datetime.now(UTC)
             original.updated_by = actor
             await original.save()
+            await TemplateService._one_sync_strategy(original)
             await publish_template_event(
                 EventType.TEMPLATE_UPDATED,
                 TemplateService._template_to_event_payload(original),
@@ -2086,6 +2157,7 @@ class TemplateService:
             original.template_id, change=revives, retired=False, actor=actor,
         ):
             await new_template.insert()
+        await TemplateService._one_sync_strategy(new_template)
 
         # Publish template updated event — skip for drafts, as create does
         if new_template.status != "draft":
@@ -2617,6 +2689,16 @@ class TemplateService:
                 "reason": (
                     "type changes, newly-required fields, or modified fields "
                     "require app-side data decisions"
+                ),
+                "via": via,
+            }
+        elif diff.get("parent_changed"):
+            migration = {
+                "eligible": None,
+                "reason": (
+                    "the parent template changed (extends / extends_version): the "
+                    "fields it now gives are not in this diff and may be required — "
+                    "run the migrate dry-run for a per-document readiness report"
                 ),
                 "via": via,
             }

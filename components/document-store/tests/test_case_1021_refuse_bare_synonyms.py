@@ -50,11 +50,12 @@ def _engine() -> DirectRestoreEngine:
     return DirectRestoreEngine(None, None, lambda event: None)
 
 
-def test_bare_identity_synonyms_are_refused_with_a_count_per_namespace():
+@pytest.mark.asyncio
+async def test_bare_identity_synonyms_are_refused_with_a_count_per_namespace():
     reader = _archive(_entities({"code": "X-1"}))
 
     with pytest.raises(RestoreEngineError) as exc:
-        _engine()._refuse_bare_identity_synonyms(reader, reader.read_manifest())
+        await _engine()._refuse_bare_identity_synonyms(reader, reader.read_manifest())
 
     assert f"{SOURCE}: 1 document(s)" in str(exc.value)
     assert "earlier WIP release" in str(exc.value)
@@ -63,14 +64,55 @@ def test_bare_identity_synonyms_are_refused_with_a_count_per_namespace():
     assert "remove them" in str(exc.value)
 
 
-def test_qualified_identity_synonyms_and_custom_synonyms_pass():
+@pytest.mark.asyncio
+async def test_qualified_identity_synonyms_and_custom_synonyms_pass():
     entities = _entities({"@template": "ITEM", "code": "X-1"})
     entities["registry_entries"][0]["synonyms"].append(
         {"namespace": SOURCE, "entity_type": "documents", "composite_key": {"erp_id": "E-9"}},
     )
     reader = _archive(entities)
 
-    _engine()._refuse_bare_identity_synonyms(reader, reader.read_manifest())
+    await _engine()._refuse_bare_identity_synonyms(reader, reader.read_manifest())
+
+
+@pytest.mark.asyncio
+async def test_a_template_that_inherits_its_identity_is_judged_by_its_parents():
+    """A child template stores no identity of its own: its documents are
+    hashed by the parent's fields, and a synonym of exactly those is bare."""
+    entities = _entities({"code": "X-1"})
+    parent = entities["templates"][0]
+    entities["templates"] = [
+        {**parent, "template_id": "PARENT-TPL", "value": "BASE"},
+        {**parent, "template_id": "OLD-TPL", "identity_fields": [], "extends": "PARENT-TPL",
+         "extends_version": 1},
+    ]
+    reader = _archive(entities)
+
+    with pytest.raises(RestoreEngineError, match="old bare form"):
+        await _engine()._refuse_bare_identity_synonyms(reader, reader.read_manifest())
+
+
+@pytest.mark.asyncio
+async def test_a_template_the_archive_does_not_carry_is_read_from_this_install(
+    session_mongo_client,
+):
+    """The Registry's doors read template-store for a template the archive
+    lacks; the restore reads the same, so it refuses up front what the
+    Registry would refuse halfway through the restore."""
+    entities = _entities({"code": "X-1"})
+    entities["templates"] = []
+    reader = _archive(entities)
+    db, coll = backup_engine.COLLECTION_MAP["templates"]
+    await session_mongo_client[db][coll].insert_one(
+        {"template_id": "OLD-TPL", "namespace": "elsewhere", "value": "ITEM", "version": 1,
+         "identity_fields": ["code"]},
+    )
+    try:
+        engine = DirectRestoreEngine(session_mongo_client, None, lambda event: None)
+        with pytest.raises(RestoreEngineError, match="old bare form"):
+            await engine._refuse_bare_identity_synonyms(reader, reader.read_manifest())
+    finally:
+        await session_mongo_client[db][coll].delete_many({"template_id": "OLD-TPL"})
 
 
 @pytest.mark.asyncio

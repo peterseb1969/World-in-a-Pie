@@ -405,9 +405,10 @@ export interface TemplateVersionImpact {
 export interface TemplateMigrationOffer {
   /**
    * true = offerable; false = needs app-side data decisions (type changes,
-   * newly-required fields, removed fields carrying live data); null =
-   * removed fields present but the counts were unavailable, so run the
-   * dry-run for a per-document readiness report.
+   * newly-required fields, removed fields carrying live data); null = not
+   * known here — removed fields whose counts were unavailable, or a changed
+   * parent (see `parent_changed`) — so run the dry-run for a per-document
+   * readiness report.
    */
   eligible: boolean | null
   reason: string
@@ -430,8 +431,18 @@ export interface TemplateVersionEventDetails {
   changed_type: Array<{ name: string; old_type: string; new_type: string }>
   made_required: string[]
   modified_existing: string[]
+  /** Fields whose default_value alone changed: reported, never blocking (the
+   * platform never applies a default). Absent from older backends. */
+  default_value_changed?: string[]
   identity_changed: { old: string[]; new: string[] } | null
   relationship_refs_changed: unknown | null
+  /** The parent this version inherits from changed: inherited fields are not
+   * in the lists above, so migration eligibility is withheld (null). Absent
+   * from older backends. */
+  parent_changed?: {
+    old: { extends: string | null; extends_version: number | null }
+    new: { extends: string | null; extends_version: number | null }
+  } | null
   impact: TemplateVersionImpact
   migration: TemplateMigrationOffer
 }

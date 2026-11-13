@@ -126,3 +126,78 @@ async def test_activate_refuses_a_bare_identity_synonym(client: AsyncClient, aut
     assert item["details"]["rule"] == "bare_identity_synonym"
     entry = await RegistryEntry.find_one(RegistryEntry.entry_id == eid)
     assert entry.status == "reserved"
+
+
+# CASE-1263 (review of d1594bdd): the rule reaches every door and every
+# template shape.
+
+
+async def _child_template(parent_id: str) -> str:
+    """A template that extends ``parent_id`` and declares no identity: its
+    documents are hashed by the parent's fields."""
+    template_id = f"tpl-child-{uuid.uuid4().hex[:8]}"
+    await _templates().insert_one({
+        "template_id": template_id, "namespace": NAMESPACE, "value": template_id.upper(),
+        "version": 1, "identity_fields": [], "extends": parent_id, "extends_version": 1,
+    })
+    return template_id
+
+
+@pytest.mark.asyncio
+async def test_add_refuses_the_identity_a_template_inherits(client: AsyncClient, auth_headers: dict):
+    child = await _child_template(await _template(["code"]))
+    entry_id = await _document(client, auth_headers, child)
+
+    result = await _add(client, auth_headers, entry_id, {"code": "X"})
+
+    assert result["status"] == "error"
+    assert result["details"]["identity_fields"] == ["code"]
+
+
+@pytest.mark.asyncio
+async def test_merge_refuses_a_key_that_is_bare_on_the_preferred_entry(
+    client: AsyncClient, auth_headers: dict,
+):
+    """{"code": "X"} is an ordinary synonym on a document whose template is
+    identified by "title"; merged onto a document identified by "code" it
+    would be that document's bare identity."""
+    by_code = await _document(client, auth_headers, await _template(["code"]))
+    by_title = await _document(client, auth_headers, await _template(["title"]))
+    assert (await _add(client, auth_headers, by_title, {"code": "X"}))["status"] == "added"
+
+    resp = await client.post(f"{BASE}/synonyms/merge", headers=auth_headers, json=[{
+        "preferred_id": by_code, "deprecated_id": by_title,
+    }])
+
+    result = resp.json()["results"][0]
+    assert result["status"] == "error", result
+    assert result["details"]["rule"] == "bare_identity_synonym"
+    deprecated = await RegistryEntry.find_one(RegistryEntry.entry_id == by_title)
+    assert deprecated.status == "active" and deprecated.merged_into is None
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_template_store_fails_the_item_not_the_request(
+    client: AsyncClient, auth_headers: dict, monkeypatch,
+):
+    """The read decides nothing when it fails: a document synonym it would
+    judge is an error of its own (never added unjudged), a system-qualified
+    one and other items go through, and the request answers 200."""
+    from registry.services import bare_identity
+
+    entry_id = await _document(client, auth_headers, await _template(["code"]))
+
+    async def broken(*_a, **_k):
+        raise RuntimeError("template-store database unavailable")
+
+    monkeypatch.setattr(bare_identity, "identity_fields_by_template", broken)
+    resp = await client.post(f"{BASE}/synonyms/add", headers=auth_headers, json=[
+        {"target_id": entry_id, "synonym_composite_key": {"code": "X"}},
+        {"target_id": entry_id, "synonym_composite_key": {"@template": "T", "code": "Y"}},
+    ])
+
+    assert resp.status_code == 200
+    judged, qualified = resp.json()["results"]
+    assert judged["status"] == "error" and judged["error_code"] == "internal_error"
+    assert judged["details"]["rule"] == "bare_identity_synonym"
+    assert qualified["status"] == "added", qualified

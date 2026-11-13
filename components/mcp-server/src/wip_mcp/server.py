@@ -195,7 +195,11 @@ version). Per item:
   * any difference (schema or label/description/metadata) → status='updated',
     is_new_version=true, version=N+1, with the structured schema diff in
     details={added_optional, added_required, removed, changed_type,
-    made_required, modified_existing} as the loud report — never blocking
+    made_required, modified_existing, default_value_changed,
+    parent_changed} as the loud report — never blocking. A version that
+    changes only a default_value lists it under default_value_changed (the
+    platform never applies a default); a changed parent (extends /
+    extends_version) withholds the migration verdict (eligible null)
   * identity-bearing or immutable differences are rejected per item instead
     of versioned: identity_fields differ → error_code=
     'identity_fields_immutable' (changing identity is a fork — declare a new
@@ -337,7 +341,8 @@ All entities are scoped to a namespace.
 
 ### Permission Model
 Namespaces have permission grants (read, write, admin) assigned to users or groups.
-Superadmins (wip-admins group) bypass all checks. Users without a grant on a
+Superadmins (wip-admins group) have admin on every namespace, except one
+locked for deletion, which is closed to everyone. Users without a grant on a
 namespace get 404 (not 403) — the namespace's existence is not leaked.
 
 ### Cross-Namespace References

@@ -67,7 +67,11 @@ from ..models.entry import RegistryEntry, Synonym
 from ..models.id_algorithm import VALID_ENTITY_TYPES, IdAlgorithmConfig, IdFormatValidator
 from ..models.namespace import Namespace
 from ..services.auth import require_api_key, require_privileged_key
-from ..services.bare_identity import bare_identity_refusal, identity_fields_by_template
+from ..services.bare_identity import (
+    bare_identity_refusal,
+    identity_fields_by_template,
+    identity_fields_or_unreadable,
+)
 from ..services.claims import (
     claim_entries_keys_pending,
     claim_keys_pending_bulk,
@@ -496,7 +500,7 @@ async def register_keys(
         invalid_namespaces=invalid_namespaces,
         existing_by_hash=existing_by_hash,
         existing_by_entry_id=existing_by_entry_id,
-        identity_fields=await identity_fields_by_template(
+        identity_fields=await identity_fields_or_unreadable(
             (item.entity_type, item.composite_key)
             for item in items if item.synonym_values
         ),

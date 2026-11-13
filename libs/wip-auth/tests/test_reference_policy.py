@@ -3,7 +3,9 @@
 Two gates: the source namespace's isolation_mode (outbound) and the target
 namespace's inbound_references (inbound, decided by the writer's read). The
 Registry is a fake that answers from the key's grants, else read on its
-scope, else none — the rule the real one applies to these keys.
+scope, else none — the rule the real one applies to these keys; a
+privileged key gets admin everywhere except a namespace locked for deletion
+("locked" here), which is closed to everyone.
 """
 
 from unittest.mock import AsyncMock, patch
@@ -25,6 +27,8 @@ from wip_auth.reference_policy import (
 @pytest.fixture(autouse=True)
 def _registry():
     async def answer(identity: UserIdentity, namespace: str) -> str:
+        if identity.has_any_group(["wip-admins", "wip-services"]):
+            return "none" if namespace == "locked" else "admin"
         claims = identity.raw_claims or {}
         declared = (claims.get("grants") or {}).get(namespace)
         if declared:
@@ -107,6 +111,13 @@ class TestCheckReference:
     async def test_privileged_keys_pass_the_inbound_gate(self):
         service = _key([], groups=["wip-services"])
         assert await check_reference("app", OPEN, "lib", CLOSED, service) == "ok"
+
+    @pytest.mark.parametrize("group", ["wip-admins", "wip-services"])
+    async def test_a_namespace_locked_for_deletion_refuses_even_a_privileged_key(self, group):
+        """The Registry closes a namespace being deleted to everyone; a
+        reference written into it would outlive the namespace."""
+        privileged = _key([], groups=[group])
+        assert await check_reference("app", OPEN, "locked", CLOSED, privileged) == "inbound"
 
     async def test_same_namespace_is_never_checked(self):
         assert await check_reference("app", {"isolation_mode": "strict"}, "app", CLOSED, None) == "ok"

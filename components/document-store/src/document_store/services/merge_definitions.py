@@ -1075,6 +1075,9 @@ _SCHEMA_KEYS = (
 )
 # Filled in when a template is resolved, never part of the stored schema.
 _FIELD_RESOLUTION_KEYS = frozenset({"inherited", "inherited_from"})
+# A client's prefill, which the platform never applies: it does not change
+# which documents a field accepts, so it does not keep two versions apart.
+_FIELD_INFORMATIONAL_KEYS = frozenset({"default_value"})
 
 
 def _endpoints(entries: Any) -> list[str]:
@@ -1089,7 +1092,8 @@ def _endpoints(entries: Any) -> list[str]:
 
 
 def _fields(template: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """The template's fields by name, as a document is validated against them.
+    """The template's fields by name, as a document is validated against them
+    (so without what validation never reads: resolution markers, default_value).
 
     An edge type's source_ref/target_ref constraint is derived from its
     endpoint declaration when the template is served, so what a stored field
@@ -1100,7 +1104,10 @@ def _fields(template: dict[str, Any]) -> dict[str, dict[str, Any]]:
     for f in template.get("fields") or []:
         if not isinstance(f, dict) or not f.get("name"):
             continue
-        f = {k: v for k, v in f.items() if k not in _FIELD_RESOLUTION_KEYS}
+        f = {
+            k: v for k, v in f.items()
+            if k not in _FIELD_RESOLUTION_KEYS and k not in _FIELD_INFORMATIONAL_KEYS
+        }
         if edge and f["name"] in ("source_ref", "target_ref"):
             f.pop("target_templates", None)
         fields[f["name"]] = f

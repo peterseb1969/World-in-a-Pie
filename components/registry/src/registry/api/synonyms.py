@@ -23,7 +23,11 @@ from ..models.api_models import (
 )
 from ..models.entry import RegistryEntry, Synonym
 from ..services.auth import require_api_key
-from ..services.bare_identity import bare_identity_refusal, identity_fields_by_template
+from ..services.bare_identity import (
+    bare_identity_refusal,
+    identity_fields_by_template,
+    identity_fields_or_unreadable,
+)
 from ..services.claims import (
     claim_keys_pending_bulk,
     confirm_keys_bulk,
@@ -114,7 +118,7 @@ async def add_synonyms(
     results: list[AddSynonymResponse | None] = [None] * len(items)
     access = NamespaceAccess(identity)
     loaded = await _load_active_entries({item.target_id for item in items})
-    identity_fields = await identity_fields_by_template(
+    identity_fields = await identity_fields_or_unreadable(
         (e.entity_type, e.primary_composite_key) for e in loaded.values()
     )
 
@@ -679,7 +683,9 @@ async def _merge_one(
             index=i, status="forbidden",
             preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id, error=refusal,
         )
-    invalid = _merge_refusal(i, item, preferred, deprecated, identity)
+    invalid = _merge_refusal(i, item, preferred, deprecated, identity) or (
+        await _bare_identity_merge_refusal(i, preferred, deprecated)
+    )
     if invalid is not None:
         return invalid
 
@@ -718,6 +724,29 @@ async def _merge_pair(
     if deprecated.status != "active":
         return MergeResponse(index=i, status="deprecated_not_found", deprecated_id=item.deprecated_id)
     return preferred, deprecated
+
+
+async def _bare_identity_merge_refusal(
+    i: int, preferred: RegistryEntry, deprecated: RegistryEntry,
+) -> MergeResponse | None:
+    """A merge moves the deprecated entry's keys onto the preferred one: each
+    is judged by the rule every other door applies, against the PREFERRED
+    entry's template. A synonym that was not bare on its own document (its
+    template's identity is other fields) can be bare on the preferred one."""
+    target = (preferred.entity_type, preferred.primary_composite_key)
+    fields = await identity_fields_by_template([target])
+    if not fields:
+        return None
+    moving = [deprecated.primary_composite_key, *(syn.composite_key for syn in deprecated.synonyms)]
+    for key in moving:
+        refusal = bare_identity_refusal(*target, key, fields)
+        if refusal is not None:
+            return MergeResponse(
+                index=i, status="error",
+                preferred_id=preferred.entry_id, deprecated_id=deprecated.entry_id,
+                **refusal,
+            )
+    return None
 
 
 def _merge_refusal(

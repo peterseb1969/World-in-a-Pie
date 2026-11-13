@@ -40,6 +40,7 @@ from wip_archive.remap import IDRemapper
 from wip_auth import REGISTRY_KEY, service_api_key
 from wip_auth.build_info import build_metadata
 from wip_auth.composite_key import compute_composite_key_hash
+from wip_auth.template_identity import TemplateIdentityRow, effective_identity_fields
 
 from .archived_status import retire_archived_row
 from .document_chains import (
@@ -1426,6 +1427,44 @@ def _left_out(entity_type: str, row: dict[str, Any], skipped: set[str], dropped:
     )
 
 
+def _entry_template_id(entry: dict[str, Any]) -> str | None:
+    """The template a document's Registry entry names in its primary key."""
+    template_id = (entry.get("primary_composite_key") or {}).get("template_id")
+    return template_id if isinstance(template_id, str) else None
+
+
+def _archived_template_rows(reader: Any, sources: list[str]) -> dict[str, TemplateIdentityRow]:
+    """(identity_fields, extends) of every template the archive carries."""
+    rows: dict[str, TemplateIdentityRow] = {}
+    for src in sources:
+        for template in reader.read_entities("templates", namespace=src):
+            if template.get("template_id"):
+                rows.setdefault(
+                    template["template_id"],
+                    (template.get("identity_fields") or [], template.get("extends")),
+                )
+    return rows
+
+
+def _bare_identity_synonyms(
+    entries: list[tuple[str, dict[str, Any]]], identity: dict[str, set[str]],
+) -> tuple[dict[str, int], list[str]]:
+    """Per namespace, how many document entries carry a synonym whose keys
+    are exactly their template's identity; and examples ("<entry> <key>")."""
+    counts: dict[str, int] = {}
+    examples: list[str] = []
+    for src, entry in entries:
+        keys = identity.get(_entry_template_id(entry) or "")
+        bare = [
+            syn["composite_key"] for syn in entry.get("synonyms") or []
+            if keys and isinstance(syn, dict) and set(syn.get("composite_key") or {}) == keys
+        ]
+        if bare:
+            counts[src] = counts.get(src, 0) + 1
+            examples.append(f"{entry.get('entry_id')} {bare[0]}")
+    return counts, examples
+
+
 def _would_restore(
     reader: Any, entry: Any, src: str, entity_type: str, skipped: set[str],
     dropped: Any = None,
@@ -1932,7 +1971,7 @@ class DirectRestoreEngine:
             self._check_derived_archive(
                 raw_manifest, allow_failed_verify=allow_failed_verify
             )
-            self._refuse_bare_identity_synonyms(reader, manifest)
+            await self._refuse_bare_identity_synonyms(reader, manifest)
             targets = self._resolve_targets(reader, manifest, target_namespace)
 
             self._emit(
@@ -2387,7 +2426,7 @@ class DirectRestoreEngine:
             self._check_derived_archive(
                 raw_manifest, allow_failed_verify=allow_failed_verify
             )
-            self._refuse_bare_identity_synonyms(reader, manifest)
+            await self._refuse_bare_identity_synonyms(reader, manifest)
             sources = self._archive_namespaces(reader, manifest)
             mapping = self._resolve_remap_mapping(
                 sources, target_namespace, namespace_map
@@ -3731,7 +3770,7 @@ class DirectRestoreEngine:
                         f"First failures: {failed[:5]}"
                     )
 
-    def _refuse_bare_identity_synonyms(self, reader: Any, manifest: Any) -> None:
+    async def _refuse_bare_identity_synonyms(self, reader: Any, manifest: Any) -> None:
         """Refuse an archive that carries document identity synonyms in the
         old, bare form, before anything is written. Every restore mode.
 
@@ -3741,41 +3780,32 @@ class DirectRestoreEngine:
         …}), which claims the spelling for every template in the namespace.
         The bare form has no use any more and is not brought forward: a
         restore that wrote it would put it back into an install. A synonym is
-        bare when its key set is exactly its template's identity_fields. A
-        document whose template is not in the archive cannot be judged and is
-        not counted.
+        bare when its key set is exactly its template's effective identity:
+        its own identity_fields, else the nearest ancestor's along
+        ``extends`` (wip_auth.template_identity.effective_identity_fields).
+        Templates are read from the archive, and one it does not carry from
+        this install's template-store, as the Registry's synonym doors read
+        it: the restore must refuse up front whatever the Registry would
+        refuse halfway through. A document whose template is found nowhere
+        cannot be judged and is not counted.
 
-        The current release can produce such a synonym too: the Registry's
-        synonym door accepts a caller-added synonym of that shape. The rule
-        is kept; the message says which entries carry one and how to clear
-        it on the source.
+        The Registry refuses such a synonym at every door that writes one
+        (add, register, activate, merge); an archive can still carry one
+        from before that, or from a source install whose template-store
+        could not be read when it was written.
         """
         sources = self._archive_namespaces(reader, manifest)
-        identity: dict[str, set[str]] = {}
-        for src in sources:
-            for template in reader.read_entities("templates", namespace=src):
-                fields = template.get("identity_fields") or []
-                if fields and template.get("template_id"):
-                    identity[template["template_id"]] = set(fields)
-        if not identity:
-            return
-        counts: dict[str, int] = {}
-        examples: list[str] = []
-        for src in sources:
-            for entry in reader.read_entities("registry_entries", namespace=src):
-                if entry.get("entity_type") != "documents":
-                    continue
-                template_id = (entry.get("primary_composite_key") or {}).get("template_id")
-                keys = identity.get(template_id) if isinstance(template_id, str) else None
-                if not keys:
-                    continue
-                bare = [
-                    syn["composite_key"] for syn in entry.get("synonyms") or []
-                    if isinstance(syn, dict) and set(syn.get("composite_key") or {}) == keys
-                ]
-                if bare:
-                    counts[src] = counts.get(src, 0) + 1
-                    examples.append(f"{entry.get('entry_id')} {bare[0]}")
+        entries = [
+            (src, entry) for src in sources
+            for entry in reader.read_entities("registry_entries", namespace=src)
+            if entry.get("entity_type") == "documents"
+        ]
+        rows = _archived_template_rows(reader, sources)
+        await self._add_live_template_rows(rows, {
+            tid for _src, entry in entries if (tid := _entry_template_id(entry))
+        })
+        identity = {tid: set(f) for tid in rows if (f := effective_identity_fields(tid, rows))}
+        counts, examples = _bare_identity_synonyms(entries, identity)
         if counts:
             listed = ", ".join(f"{ns}: {n}" for ns, n in sorted(counts.items()))
             raise RestoreEngineError(
@@ -3790,6 +3820,28 @@ class DirectRestoreEngine:
                 "a key that is not exactly the identity fields, on the source install, "
                 "then take a new backup."
             )
+
+    async def _add_live_template_rows(
+        self, rows: dict[str, TemplateIdentityRow], template_ids: set[str],
+    ) -> None:
+        """Add to ``rows`` the templates, and the ancestors their identity
+        walk needs, that the archive does not carry, read from this install's
+        template-store level by level (the Registry's doors read the same)."""
+        if self._mongo is None:
+            return
+        db_name, coll_name = COLLECTION_MAP["templates"]
+        templates = self._mongo[db_name][coll_name]
+        wanted = template_ids
+        for _ in range(10):  # inheritance chains are shallow; a cycle stops here
+            missing = sorted(wanted - rows.keys())
+            if not missing:
+                return
+            async for row in templates.find(
+                {"template_id": {"$in": missing}},
+                {"template_id": 1, "identity_fields": 1, "extends": 1},
+            ):
+                rows.setdefault(row["template_id"], (row.get("identity_fields") or [], row.get("extends")))
+            wanted = {parent for fields, parent in rows.values() if not fields and parent}
 
     def _check_derived_archive(
         self, raw_manifest: Any, *, allow_failed_verify: bool
@@ -4067,7 +4119,7 @@ class DirectRestoreEngine:
             self._check_derived_archive(
                 raw_manifest, allow_failed_verify=allow_failed_verify
             )
-            self._refuse_bare_identity_synonyms(reader, manifest)
+            await self._refuse_bare_identity_synonyms(reader, manifest)
             targets = self._resolve_targets(
                 reader, manifest, target_namespace, allow_redirect=True
             )
