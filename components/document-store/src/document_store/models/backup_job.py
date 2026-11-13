@@ -382,7 +382,8 @@ class RestoreFromJobRequest(StrictModel):
     extend_terminologies: bool = Field(
         False,
         description=(
-            "Merge only — add terms the target's terminology is missing."
+            "Merge only — add terms the target's terminology is missing, "
+            "and the names a term has in the archive but not on the target."
         ),
     )
     align_templates: bool = Field(

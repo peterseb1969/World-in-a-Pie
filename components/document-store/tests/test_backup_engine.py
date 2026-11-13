@@ -1985,18 +1985,6 @@ class TestMapExternalReferents:
         assert "does not hold" in warning
 
     @pytest.mark.asyncio
-    async def test_an_id_the_restore_already_maps_is_left_alone(self, tmp_path):
-        from wip_archive.remap import IDRemapper
-
-        remapper = IDRemapper()
-        remapper.add_template_mapping("TPL-SRC", "TPL-MATCHED")
-        _, remapper, _ = await self._map(
-            tmp_path, [self._row("TPL-SRC", "templates", "src")],
-            {"TPL-SRC": "TPL-RESOLVED"}, remapper=remapper,
-        )
-        assert remapper.template_map == {"TPL-SRC": "TPL-MATCHED"}
-
-    @pytest.mark.asyncio
     async def test_an_archive_without_a_table_says_so(self, tmp_path):
         from wip_archive.archive import ArchiveReader, ArchiveWriter
         from wip_archive.remap import IDRemapper

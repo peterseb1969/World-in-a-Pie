@@ -1686,8 +1686,13 @@ class _IdentityRehash:
 
     def rehash(self, archived: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
         """``row`` is ``archived`` after the reference rewrite; recompute its
-        hash in place when the rewrite changed a resolution."""
-        if all(row.get(k) == archived.get(k) for k in ("references", "term_references")):
+        hash in place when the rewrite changed anything the hash is fed from:
+        a resolution, or an id in the data itself (a file field's file_id,
+        say, which no resolution list records)."""
+        if all(
+            row.get(k) == archived.get(k)
+            for k in ("data", "references", "term_references")
+        ):
             return row
         template = self._templates.lookup(archived)
         if template and rehash_document_row(
@@ -2945,9 +2950,10 @@ class DirectRestoreEngine:
 
         Feeds the remapper before any row is rewritten, so these references
         are rewritten by the same passes as references to archived entities.
-        An id the remapper already maps (an archived entity, or a merge
-        definition matched by content) is left to that mapping. Returns the
-        summary for the job result. The referents it could not identify are
+        Every caller runs it first, on a remapper that maps nothing yet; the
+        referents are the entities the archive does not carry, so no later
+        mapping (an archived entity, a merge definition matched by content)
+        names one of them. Returns the summary for the job result. The referents it could not identify are
         left in ``self._unresolved_referents`` for
         ``_report_unresolved_references``, which warns about them.
         """
@@ -2994,8 +3000,6 @@ class DirectRestoreEngine:
             if existing is None:
                 continue
             for old_id, new_id in mapping.items():
-                if old_id in existing:
-                    continue
                 if entity_type == "documents":
                     snapshot = snapshots.get(new_id)
                     if snapshot is None:
@@ -4345,6 +4349,7 @@ class DirectRestoreEngine:
             raw_entities = archive_entities.get(entity_type)
             if entity_type in DEFINITION_TYPES or raw_entities is None:
                 continue
+            rounds = 0
             while True:
                 entities, changed = self._rewrite_entities(
                     entity_type, raw_entities, remapper
@@ -4359,10 +4364,25 @@ class DirectRestoreEngine:
                 # under has to reach everything referencing it — other
                 # documents included, whose identity may hash that very
                 # reference. So documents are planned again, from the
-                # archived rows, until a round discovers nothing new.
-                # Mappings only grow, so this ends.
+                # archived rows, until a round learns no mapping. A round
+                # follows one step of a chain of documents identified
+                # through one another, so a chain of n documents settles in
+                # n rounds; a round that learns a mapping only changes an
+                # id another round set is a cycle, and the rounds stop at
+                # one more than the archived documents with a refusal
+                # rather than run on. Each round re-reads the streamed
+                # documents once.
                 if not self._learn_document_mappings(entity_type, plan, remapper):
                     break
+                rounds += 1
+                if rounds > len(raw_entities):
+                    raise RestoreEngineError(
+                        f"Merge into '{tgt}' refused — identifying the "
+                        "archived documents on the target did not settle: "
+                        f"after {rounds} rounds, documents still map to "
+                        "different target documents from one round to the "
+                        "next. Nothing was written."
+                    )
             rewritten += changed
             archive_entities[entity_type] = entities
             built[entity_type] = plan
@@ -5054,11 +5074,15 @@ class DirectRestoreEngine:
             if not any(counts.values()):
                 continue
             retire = f", {counts['retire']} to retire" if counts.get("retire") else ""
+            names = (
+                f", {counts['extend_names']} to gain the archive's names"
+                if counts.get("extend_names") else ""
+            )
             self._emit(
                 phase,
                 f"[{namespace}] {entity_type}: {counts['unchanged']} already "
                 f"identical, {counts['add']} to add, {counts['mapped']} mapped "
-                f"to the target's IDs{retire}",
+                f"to the target's IDs{retire}{names}",
             )
         # Never silent: an operator who loses a label or an alias list to the
         # target's copy finds out later from a UI that changed under them.
@@ -5095,9 +5119,17 @@ class DirectRestoreEngine:
             f"{issue.entity_type} '{issue.name}' — {issue.reason}"
             for issue in issues[:5]
         )
+        cap = MERGE_REFUSAL_INCOMPATIBILITY_CAP
+        recorded = (
+            f"the first {cap}, with the two sides' values, are on the job "
+            "record (result.incompatibilities; result."
+            "incompatibilities_truncated counts the rest)"
+            if len(issues) > cap
+            else "every one, with the two sides' values, is on the job record "
+            "(result.incompatibilities)"
+        )
         more = (
-            f" …and {len(issues) - 5} more; every one, with the two sides' "
-            "values, is on the job record (result.incompatibilities)."
+            f" …and {len(issues) - 5} more; {recorded}."
             if len(issues) > 5
             else " The job record carries each with the two sides' values "
             "(result.incompatibilities)."
@@ -5175,8 +5207,33 @@ class DirectRestoreEngine:
                 "did not have",
             )
 
+        await self._extend_term_names(namespace, definitions)
         recount.update(await self._retire_terms(namespace, definitions, remapper))
         await self._recount_terms(recount)
+
+    async def _extend_term_names(
+        self, namespace: str, definitions: DefinitionsPlan,
+    ) -> None:
+        """extend_terminologies: give the target's copy of each term the
+        names only the archive's copy had. The target's own names stay."""
+        if not definitions.extend_names:
+            return
+        db_name, coll_name = COLLECTION_MAP["terms"]
+        collection = self._mongo[db_name][coll_name]
+        now = datetime.now(UTC)
+        for extension in definitions.extend_names:
+            await collection.update_one(
+                {"term_id": extension["term_id"]},
+                {
+                    "$push": {"names": {"$each": extension["names"]}},
+                    "$set": {"updated_at": now, "updated_by": "restore-merge"},
+                },
+            )
+        self._emit(
+            "phase_definitions",
+            f"[{namespace}] added the archive's names to "
+            f"{len(definitions.extend_names)} term(s) the target held without them",
+        )
 
     async def _retire_terms(
         self,

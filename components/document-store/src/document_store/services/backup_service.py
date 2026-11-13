@@ -268,6 +268,25 @@ async def _persist_with_retry(job_id: str, event: ProgressEvent) -> bool:
             logger.exception("Failed to persist %s event for %s", event.phase, job_id)
         if delay is not None:
             await asyncio.sleep(delay)
+    if event.phase == "error" and event.details:
+        # A failure's structured account can be what the record cannot take
+        # (a refused merge's incompatibilities, carrying both sides' schemas,
+        # can outgrow a MongoDB document). The failure itself still belongs
+        # on the record: written once more without the account, and saying
+        # so, it does not fall back to a message that only says it was lost.
+        logger.error("Job %s: result not stored on its record: %s", job_id, event.details)
+        lean = event.model_copy(update={
+            "details": None,
+            "message": (
+                f"{event.message} (The detailed result could not be stored on "
+                "the job record; the document-store log has it.)"
+            ),
+        })
+        try:
+            await _persist_event(job_id, lean)
+            return True
+        except Exception:
+            logger.exception("Failed to persist the lean error event for %s", job_id)
     return False
 
 

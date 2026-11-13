@@ -73,25 +73,43 @@ Changing the target's definitions is opt-in and split deliberately:
 target's active terms the archive retired, with the archive's reason and
 replacement. With all three off a merge changes none of the target's
 definitions: a term the archive retired stays active, and the merge reports
-how many. Where a definition matches but label/aliases differ, the target's
-win and the difference is reported.
+how many. Where a definition matches but its label, description or a term's
+names differ, the target's win and the difference is reported; under
+`extend_terminologies` the target's copy of a term also gains the names only
+the archive's copy has. A term's names compare as a set, one per (value,
+type, language). A terminology's `unique_names` is judged by its effect:
+where the target holds it, the merge refuses only if the terms and names it
+adds would give one name to two terms; otherwise the target's setting stands
+and the difference is reported.
 
 Both sides are compared as their models read them: a field a row lacks
 (written before the field existed) counts as the model's default, nested
 models included — a template's fields, rules and reporting, a term's names,
-a terminology's metadata. An archive one release older than the target
-therefore differs from it only where the content differs. The defaults are
+a terminology's metadata. Fields computed from other entities (a
+terminology's `term_count`, a term's `terminology_value`) are not compared.
+References to templates compare by the template they name: an edge type's
+endpoint lists and a field's `target_templates` as sets, a legacy bare-value
+entry as the target's template of that value, and an edge type's
+`source_ref` / `target_ref` constraint not at all (it is derived from the
+endpoint declaration when the template is served). The defaults are
 generated from the def-store and template-store models
 (`components/document-store/scripts/generate_definition_defaults.py`), and a
-contract test fails when they fall behind. A refused merge records every
-incompatibility, with both sides' values, on the failed job's `result`
-(`result_kind: merge_refused`); the error message names the first five.
+contract test fails when they fall behind. A refused merge records its
+incompatibilities, with both sides' values, on the failed job's `result`
+(`result_kind: merge_refused`), up to 1000 (`incompatibilities_truncated`
+counts the rest); a value a side's row does not hold is shown as
+`{"absent": true}`, not as the default it was compared as. The error message
+names the first five.
 
-Templates are matched per `(value, version)` by default. Version numbers are
-per install, so an archive whose history runs to v6 never lines up with a
-fresh bootstrap's v1; `align_templates` matches templates by value instead
-and maps each archive version onto the target version whose schema can take
-its documents (`docs/design/merge-template-version-alignment.md`).
+Templates are compared per `(value, version)` by default, and the archive's
+`template_id` maps onto the target's by value, whichever versions each side
+holds: a template's id is the same in every version, so a reference to it
+names the same template either way. Version numbers are per install, so an
+archive whose history runs to v6 never lines up with a fresh bootstrap's v1;
+a template the target holds with no version number in common is refused,
+naming `align_templates`, which matches templates by value and maps each
+archive version onto the target version whose schema can take its documents
+(`docs/design/merge-template-version-alignment.md`).
 
 **Pass 2 — documents, under `on_clash`.** `skip` (default) keeps the
 target's version of a clashing identity. `overwrite` appends the archive's

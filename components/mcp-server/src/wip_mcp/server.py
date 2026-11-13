@@ -5032,9 +5032,12 @@ async def start_restore(
     the target's active terms the archive retired. With all three off a merge
     changes none of the target's definitions: a term the archive retired stays
     active, and the job reports how many (retirements_not_carried). Where a
-    definition matches but its label/aliases differ, the target's win and the
-    difference is reported. Templates are matched by (value, version) unless
-    align_templates is set; see its description below.
+    definition matches but its label, description or a term's names differ,
+    the target's win and the difference is reported (under
+    extend_terminologies the target's term also gains the archive's names).
+    Templates are matched by (value, version) unless align_templates is set;
+    a template the target holds with no version number in common with the
+    archive is refused, naming align_templates. See its description below.
 
     Then documents merge under on_clash — 'skip' (default) keeps the target's
     version, 'overwrite' appends the archive's latest version on top of the
@@ -5091,7 +5094,8 @@ async def start_restore(
         add_missing: Merge only — insert terminologies and templates the
             target does not have, instead of refusing.
         extend_terminologies: Merge only — add terms the target's terminology
-            is missing.
+            is missing, and the names a term has in the archive but not on
+            the target.
         align_templates: Merge only — for an archive from another install,
             whose template version numbers do not line up with the target's
             (a fresh bootstrap holds v1 while the archive's history runs to

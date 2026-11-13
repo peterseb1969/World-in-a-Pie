@@ -508,7 +508,8 @@ async def start_restore(
     extend_terminologies: bool = Form(
         False,
         description=(
-            "Merge only — add terms the target's terminology is missing. "
+            "Merge only — add terms the target's terminology is missing, "
+            "and the names a term has in the archive but not on the target. "
             "Separate from add_missing on purpose: allowing new vocabulary "
             "entries is not the same decision as allowing new schemas."
         ),

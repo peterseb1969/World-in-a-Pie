@@ -20,8 +20,9 @@ that says which real-world thing it is (a terminology's ``value``, a document's
 ``(template_id, identity_hash)``). IDs are preserved end to end, so within one
 install the two keys agree. An archive from another install, or a namespace
 since deleted here, may carry other ids for the same things: the engine maps
-definitions by content first (merge_definitions) and refuses an id that names
-something else here (_check_ids_are_free). This plan compares the entities in
+definitions by content first (merge_definitions), and a merge redirected into
+another namespace refuses an archived id this Registry already holds
+(_check_ids_are_free, which runs on a redirected merge only). This plan compares the entities in
 their stored form, with their references already rewritten through those
 mappings and their own ids and id-derived fields left out (_COPY_FIELDS), so
 the same content under another id is identical, not a clash. Documents are

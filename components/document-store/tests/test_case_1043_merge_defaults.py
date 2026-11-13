@@ -30,7 +30,7 @@ from wip_archive.models import ProgressEvent
 from document_store.models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
 from document_store.services import backup_service
 from document_store.services.backup_engine import COLLECTION_MAP, RestoreEngineError
-from document_store.services.merge_definitions import DefinitionsPlanner, with_defaults
+from document_store.services.merge_definitions import ABSENT, DefinitionsPlanner, with_defaults
 from tests.test_merge_restore import (
     NAMESPACE,
     _all_collections,
@@ -99,11 +99,24 @@ class TestAbsentFieldsReadAsDefaults:
         plan = await _plan(
             mongo,
             {"terminologies": [_terminology("A1", "KB_DOC_KIND")]},
-            {"terminologies": [_terminology("B1", "KB_DOC_KIND", unique_names=True)]},
+            {"terminologies": [_terminology("B1", "KB_DOC_KIND", case_sensitive=True)]},
         )
         [issue] = plan.incompatibilities
-        assert "unique_names" in issue.reason
-        assert issue.detail == {"unique_names": {"target": True, "archive": False}}
+        assert "case_sensitive" in issue.reason
+        assert issue.detail == {"case_sensitive": {"target": True, "archive": ABSENT}}
+
+    @pytest.mark.asyncio
+    async def test_unique_names_is_judged_by_effect_not_compared(self, mongo):
+        # Nothing the merge adds collides, so the target's setting stands and
+        # the difference is reported (test_case_1293_merge_comparisons has the
+        # collision that refuses).
+        plan = await _plan(
+            mongo,
+            {"terminologies": [_terminology("A1", "KB_DOC_KIND")]},
+            {"terminologies": [_terminology("B1", "KB_DOC_KIND", unique_names=True)]},
+        )
+        assert plan.compatible
+        assert [w.fields for w in plan.target_wins] == [["unique_names"]]
 
     @pytest.mark.asyncio
     async def test_nested_metadata_reads_as_its_defaults(self, mongo):
@@ -196,7 +209,7 @@ class TestRefusalCarriesEveryCause:
         assert sorted(i["name"] for i in details["incompatibilities"]) == sorted(names)
         first = details["incompatibilities"][0]
         assert first["namespace"] == NAMESPACE
-        assert first["detail"] == {"case_sensitive": {"target": True, "archive": False}}
+        assert first["detail"] == {"case_sensitive": {"target": True, "archive": ABSENT}}
 
 
 @pytest_asyncio.fixture
