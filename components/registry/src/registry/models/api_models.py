@@ -430,7 +430,8 @@ class ActivateSynonym(StrictModel):
         default=None,
         description=(
             "Accepted and not stored: the synonym's created_by is the authenticated "
-            "caller, and the entry keeps the actor_note its reservation set"
+            "caller. Activation stamps the entry's updated_by with the caller and "
+            "clears its actor_note, as any change that sends no text does"
         ),
     )
 
@@ -1086,9 +1087,13 @@ class UnifiedSearchResultItem(BaseModel):
     source_info: SourceInfo | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
-    created_by: str | None = None
+    created_by: str | None = Field(default=None, description="The authenticated caller who created the entry")
     updated_at: datetime
-    updated_by: str | None = None
+    updated_by: str | None = Field(
+        default=None,
+        description="The authenticated caller who last changed the entry; "
+        "null until the entry is first changed after it was created",
+    )
     actor_note: str | None = Field(
         default=None,
         description="Free text the caller sent on who acted, with the write that last set created_by or updated_by",
@@ -1135,9 +1140,13 @@ class EntryDetailResponse(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
     status: str
     created_at: datetime
-    created_by: str | None = None
+    created_by: str | None = Field(default=None, description="The authenticated caller who created the entry")
     updated_at: datetime
-    updated_by: str | None = None
+    updated_by: str | None = Field(
+        default=None,
+        description="The authenticated caller who last changed the entry; "
+        "null until the entry is first changed after it was created",
+    )
     actor_note: str | None = Field(
         default=None,
         description="Free text the caller sent on who acted, with the write that last set created_by or updated_by",

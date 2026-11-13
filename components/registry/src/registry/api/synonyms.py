@@ -142,8 +142,13 @@ async def add_synonyms(
     )
     changed = _apply_claimed(plan, blocked)
     # The caller's own words on who added a synonym (its created_by) are the
-    # entry's note; the synonym's created_by is the authenticated caller.
-    notes = {entry.entry_id: items[i].created_by for i, entry, _, _ in plan.planned}
+    # entry's note; the synonym's created_by is the authenticated caller. The
+    # note is the one sent with an addition that landed (the first, when one
+    # request adds several to an entry), never one a refused item sent.
+    notes = {
+        entry_id: items[plan.planned[positions[0]][0]].created_by
+        for entry_id, positions in plan.by_entry.items()
+    }
     failed, redecided = await _write_synonym_lists(
         changed, lambda entry_id, entry: _reapply_adds(plan, entry_id, entry),
         entry_actor(identity), notes,

@@ -188,7 +188,10 @@ async def test_reserved_and_activated_entries_name_their_creator(client, auth_he
     assert r.status_code == 200, r.text
     entry = await RegistryEntry.find_one({"entry_id": entry_id})
     assert entry.status == "active", r.text
-    assert (entry.created_by, entry.actor_note) == (who, "reserved for ann")
+    # The activation is the entry's latest change and sends no text: it names
+    # the caller and clears the reservation's note (review of 7f05647c R1).
+    assert entry.created_by == who
+    assert (entry.updated_by, entry.actor_note) == (who, None)
     assert {s.created_by for s in entry.synonyms} == {who}
 
 

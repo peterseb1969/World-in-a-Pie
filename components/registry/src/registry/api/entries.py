@@ -1419,7 +1419,7 @@ async def _activate_keyed(
     token = new_claim_token()
     to_write = await _claim_for_activation(candidates, results, token)
     if to_write:
-        await _write_activations(items, keyed, to_write, results, token)
+        await _write_activations(items, keyed, to_write, results, token, creator)
 
     _answer_activation_repeats(items, repeats, first_index, results)
 
@@ -1507,12 +1507,13 @@ async def _write_activations(
     to_write: list[tuple[int, RegistryEntry]],
     results: list[ActivateItemResponse | None],
     token: str,
+    by: str,
 ) -> None:
     """Write the claimed entries active with one guarded bulk write, then
     answer each by what it now holds, and confirm or release its claims."""
     entries_coll = RegistryEntry.get_motor_collection()
     with_synonyms = {items[i].entry_id for i in keyed if items[i].synonyms}
-    failed = await _bulk_activate(entries_coll, to_write, with_synonyms)
+    failed = await _bulk_activate(entries_coll, to_write, with_synonyms, by)
 
     # An entry is activated only if it now holds the key this request
     # wrote. Anything else (a write error, or a status that changed
@@ -1547,13 +1548,25 @@ async def _write_activations(
         logger.exception("activate: confirming or releasing key claims failed")
 
 
+def _activation_stamp(by: str, now: datetime) -> dict[str, Any]:
+    """The stamp fields of an activation: it changes the entry (status, and
+    its key), so it names the authenticated caller as every entry change
+    does (entry_actor). An activation item carries no text of its own, so
+    the note is cleared, as for any write that names nobody: the note
+    beside updated_by is always the one sent with that write."""
+    stamp = EntryActor(by)
+    return {"updated_at": now, "updated_by": stamp.by, "actor_note": stamp.note}
+
+
 async def _bulk_activate(
     entries_coll: Any,
     to_write: list[tuple[int, RegistryEntry]],
     with_synonyms: set[str],
+    by: str,
 ) -> dict[int, dict]:
     """The guarded write that flips each entry from reserved to active with
-    its key (and synonyms, when the item carried them). Returns the error
+    its key (and synonyms, when the item carried them), stamped with the
+    caller ``by`` as every entry change is (entry_actor). Returns the error
     fields of each position in ``to_write`` the write failed or may have
     failed."""
     now = datetime.now(UTC)
@@ -1564,7 +1577,7 @@ async def _bulk_activate(
             "primary_composite_key_hash": entry.primary_composite_key_hash,
             "search_values": entry.search_values,
             "status": "active",
-            "updated_at": now,
+            **_activation_stamp(by, now),
         }
         if entry.entry_id in with_synonyms:
             fields["synonyms"] = Encoder().encode(entry)["synonyms"]
@@ -1674,7 +1687,7 @@ async def activate_entries(
     if keyed:
         await _activate_keyed(items, keyed, results, identity.identity_string)
     if keyless:
-        await _activate_keyless(entries_coll, items, keyless, results)
+        await _activate_keyless(entries_coll, items, keyless, results, identity.identity_string)
     return _activation_response(results, len(items))
 
 
@@ -1683,6 +1696,7 @@ async def _activate_keyless(
     items: list[ActivateItem],
     keyless: list[int],
     results: list[ActivateItemResponse | None],
+    by: str,
 ) -> None:
     """Activate the keyless items with one classify read and one guarded
     update_many; fills ``results`` at their indices. A repeated entry_id is
@@ -1711,7 +1725,7 @@ async def _activate_keyless(
         eid for eid in dict.fromkeys(requested_ids)
         if status_by_id.get(eid) == "reserved"
     ]
-    flipped_ids, update_error = await _flip_reserved(entries_coll, reserved_ids)
+    flipped_ids, update_error = await _flip_reserved(entries_coll, reserved_ids, by)
     first_index, repeats = _first_and_repeats(items, keyless)
     for eid, i in first_index.items():
         results[i] = _keyless_answer(i, eid, status_by_id, flipped_ids, update_error)
@@ -1719,9 +1733,10 @@ async def _activate_keyless(
 
 
 async def _flip_reserved(
-    entries_coll: Any, reserved_ids: list[str],
+    entries_coll: Any, reserved_ids: list[str], by: str,
 ) -> tuple[set[str], dict | None]:
-    """Flip the reserved entries active with one guarded write. Returns the
+    """Flip the reserved entries active with one guarded write, stamped with
+    the caller ``by`` (entry_actor). Returns the
     ids now active, and the error fields that answer every id not among
     them.
 
@@ -1738,7 +1753,7 @@ async def _flip_reserved(
             {"entry_id": {"$in": reserved_ids}, "status": "reserved"},
             {"$set": {
                 "status": "active",
-                "updated_at": datetime.now(UTC),
+                **_activation_stamp(by, datetime.now(UTC)),
             }, "$inc": dict(REVISION_INC)},
         )
     except Exception as e:
