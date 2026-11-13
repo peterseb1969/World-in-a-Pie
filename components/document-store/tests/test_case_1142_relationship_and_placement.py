@@ -201,3 +201,101 @@ async def test_migrate_refuses_an_edge_whose_source_lies_in_another_namespace(
     assert resp.status_code == 200, resp.text
     [item] = [r for r in resp.json()["results"] if r["document_id"] == edge["document_id"]]
     assert item["status"] == "error" and item["error_code"] == "cross_namespace_relationship", item
+
+
+@pytest.mark.asyncio
+async def test_an_unchanged_patch_of_an_edge_with_a_foreign_source_is_refused(
+    client: AsyncClient, auth_headers: dict, edge_identity_without_source,
+):
+    """The relationship check runs before PATCH's no-op detection: an edge
+    whose stored source lies in another namespace is not reported
+    "unchanged" as if it were acceptable."""
+    from document_store.models.document import Document
+
+    exp = await _create(client, auth_headers, "EXPERIMENT", {"experiment_id": "EXP-1282p", "name": "e"})
+    mol = await _create(client, auth_headers, "MOLECULE", {"molecule_id": "MOL-1282p", "name": "m"})
+    foreign = await _create(client, auth_headers, "EXPERIMENT",
+                            {"experiment_id": "EXP-1282p-OTHER"}, namespace="other-ns")
+    if foreign["status"] != "created":
+        pytest.skip(f"test fixture does not support namespace 'other-ns': {foreign}")
+    edge = await _create(client, auth_headers, "EXPERIMENT_INPUT", {
+        "source_ref": exp["document_id"], "target_ref": mol["document_id"], "role": "r-1282",
+    })
+    assert edge["status"] == "created", edge
+    # Plant the foreign source the API now refuses, in the data and in the
+    # resolved references alike, so the stored edge is exactly what a PATCH
+    # that changes nothing re-validates to.
+    row = await Document.find_one({"document_id": edge["document_id"]})
+    src = await Document.find_one({"document_id": foreign["document_id"]})
+    references = [dict(r) for r in row.references]
+    for ref in references:
+        if ref["field_path"] == "source_ref":
+            ref["lookup_value"] = src.document_id
+            ref["resolved"] = {
+                **ref["resolved"], "document_id": src.document_id,
+                "identity_hash": src.identity_hash, "template_id": src.template_id,
+                "version": src.version, "namespace": src.namespace,
+            }
+    await row.set({"data.source_ref": src.document_id, "references": references})
+
+    same = await _patch(client, auth_headers, edge["document_id"], {"role": "r-1282"})
+    assert same["status"] == "error", same
+    assert same["error_code"] == "cross_namespace_relationship"
+
+
+@pytest.mark.asyncio
+async def test_patch_hands_validations_namespaces_to_the_gate():
+    from types import SimpleNamespace
+
+    from document_store.services.document_service import DocumentService
+
+    captured = {}
+
+    class _Recorder(ReferenceValidator):
+        async def validate_document_references(self, **kwargs):
+            captured.update(kwargs)
+
+    current = SimpleNamespace(template_id="TPL", template_version=1, namespace="appns")
+    vr = SimpleNamespace(template_namespace="appns", term_references=[], file_references=[],
+                         references=UNPLACED_TEMPLATE,
+                         referent_namespaces={"T-unplaced": "elsewhere"})
+    with patch("document_store.services.document_service.get_reference_validator",
+               return_value=_Recorder()), \
+         patch.object(DocumentService, "_relationship_refusal", AsyncMock(return_value=None)):
+        await DocumentService()._check_patch_references(current, vr)
+    assert captured["placements"] == {"T-unplaced": "elsewhere"}
+    assert captured["previous"] is current
+
+
+@pytest.mark.asyncio
+async def test_migrate_runs_the_reference_gates(client: AsyncClient, auth_headers: dict):
+    """A re-pin is a write: the reference gates run on it, as on create and
+    PATCH, and a refusal is the item's reference_violation."""
+    import copy
+
+    from .conftest import VERSIONED_TEMPLATE_OVERRIDES
+
+    mol = await _create(client, auth_headers, "MOLECULE", {"molecule_id": "MOL-1282m", "name": "m"})
+    assert mol["status"] == "created", mol
+
+    class _Refuses(ReferenceValidator):
+        async def validate_document_references(self, **kwargs):
+            raise ReferenceValidationError("refused", violations=[{"type": "term", "entity_id": "x"}])
+
+    tpl = next(t for t in SAMPLE_TEMPLATES.values() if t.get("value") == "MOLECULE")
+    v2 = copy.deepcopy(tpl)
+    v2["version"] = 2
+    v2["fields"].append({"name": "note", "label": "Note", "type": "string", "mandatory": False})
+    VERSIONED_TEMPLATE_OVERRIDES[(tpl["template_id"], 2)] = v2
+    try:
+        with patch("document_store.services.document_service.get_reference_validator",
+                   return_value=_Refuses()):
+            resp = await client.post(f"{API}/documents/migrate", params={"namespace": "wip"},
+                                     headers=auth_headers, json={
+                "template_id": "MOLECULE", "from_version": 1, "to_version": 2, "dry_run": True,
+            })
+    finally:
+        VERSIONED_TEMPLATE_OVERRIDES.clear()
+    assert resp.status_code == 200, resp.text
+    [item] = [r for r in resp.json()["results"] if r["document_id"] == mol["document_id"]]
+    assert item["status"] == "error" and item["error_code"] == "reference_violation", item

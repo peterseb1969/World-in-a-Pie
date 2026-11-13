@@ -5200,6 +5200,34 @@ class DocumentService:
                 error=message, error_code=code,
             )
 
+        # The reference gates, as on every other write. A reference the
+        # document already holds carries over; one the target version makes
+        # (a rename moving a value into a reference field) is checked.
+        try:
+            await get_reference_validator().validate_document_references(
+                document_namespace=namespace,
+                template_namespace=vr.template_namespace or namespace,
+                term_references=vr.term_references,
+                file_references=vr.file_references,
+                document_references=vr.references,
+                previous=doc,
+                placements=vr.referent_namespaces or None,
+            )
+        except ReferenceValidationError as exc:
+            return BulkResultItem(
+                index=index, status="error", document_id=doc.document_id,
+                error=f"Cross-namespace reference violation: {exc.violations}",
+                error_code="reference_violation",
+                details={"rule": "cross_namespace", "violations": exc.violations},
+            )
+        except RegistryUnavailableError as exc:
+            # Isolation cannot be checked, so the re-pin is refused rather
+            # than let through unchecked.
+            return BulkResultItem(
+                index=index, status="error", document_id=doc.document_id,
+                **error_fields(exc),
+            )
+
         # The re-pin carries the stored identity hash forward, so it must be the
         # hash the Registry would compute for this document under the target
         # version: the resolved identity feed validation just built. A hash
@@ -5365,7 +5393,15 @@ class DocumentService:
             #      keep its identity.
             validation_result = await self._validate_patch(current, merged_data)
 
-            # 7. No-op detection — if data, all 3 reference arrays, and the
+            # 7. Relationship constraints and the reference gates, before the
+            #    no-op check: an edge whose source lies in another namespace
+            #    is refused even when the PATCH changes nothing, rather than
+            #    reported unchanged as if it were acceptable. References the
+            #    current version holds carry over, so the gates check nothing
+            #    for an unchanged PATCH.
+            await self._check_patch_references(current, validation_result)
+
+            # 8. No-op detection — if data, all 3 reference arrays, and the
             #    merged custom metadata are byte-equal to the current version,
             #    return without bumping. A metadata-only delta is a real
             #    change and falls through to the write like any other.
@@ -5378,9 +5414,6 @@ class DocumentService:
                 new_metadata_custom=merged_custom,
             ):
                 return _patch_result(index, current, "unchanged", validation_result.warnings)
-
-            # 7b-8. Relationship constraints and the reference gates.
-            await self._check_patch_references(current, validation_result)
 
             # 9. Write. Phase-3 branch: templates with versioned=False
             #    overwrite the existing document in place.
@@ -5483,12 +5516,12 @@ class DocumentService:
             )
 
     async def _check_patch_references(self, current: Document, validation_result: Any) -> None:
-        """7b. Relationship constraints, as on create and before the gates: an
+        """Relationship constraints, as on create and before the gates: an
         edge's source lives in the edge's namespace, whatever the namespace
         settings. A PATCH re-pointing source_ref (an edge type whose identity
         does not include it) is refused.
 
-        8. Cross-namespace reference validation, the same gates as the POST
+        Then cross-namespace reference validation, the same gates as the POST
         flow. A PATCH is a new write, so a reference it adds is checked;
         references the current version already holds carry over unchecked,
         so a document whose references a namespace setting or a revoked grant

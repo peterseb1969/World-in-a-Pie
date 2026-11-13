@@ -2393,7 +2393,12 @@ ambiguous. They no longer can:
   `cross_namespace_relationship`, as POST refuses it. (Reachable only for an
   edge type whose `identity_fields` leave out `source_ref`; with it in the
   identity, PATCH already refused the change.) Migrate refuses to re-pin an
-  edge whose source lies in another namespace.
+  edge whose source lies in another namespace. The check runs before
+  PATCH's no-op detection, so a PATCH that changes nothing on such an edge
+  is refused too, not reported `unchanged`. Migrate also runs the
+  cross-namespace reference gates: a reference the target version makes
+  that the document did not hold is checked (`reference_violation`), as on
+  create and PATCH.
 - **Action:** an edge that already carries a source in another namespace
   (written before the rule, or landed by a restore) can no longer be patched
   or migrated; write it in its source's namespace.
