@@ -87,7 +87,10 @@ class TestDataDirRefused:
         assert not target.exists()
 
     def test_help_does_not_promise_a_data_directory(self) -> None:
-        result = runner.invoke(app, ["install", "--help"])
+        # The width is pinned: rich wraps help text to the console, and an
+        # unpinned run inherits the caller's (CI's or a terminal's), which
+        # can split the phrase or push it past the window below.
+        result = runner.invoke(app, ["install", "--help"], env={"COLUMNS": "200"})
         assert result.exit_code == 0
         # Under GITHUB_ACTIONS (which Gitea's runner sets) rich colours the
         # help and styles "--data-dir" in pieces, so match on plain text.
