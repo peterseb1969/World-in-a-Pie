@@ -329,6 +329,7 @@ class NamespaceAccess:
         self._identity = identity
         self.unrestricted = identity.has_any_group(PRIVILEGED_GROUPS)
         self._permissions: dict[str, str] = {}
+        self._readable: list[str] | None = None
 
     async def allows(self, namespace: str, required: str) -> bool:
         if self.unrestricted:
@@ -347,11 +348,15 @@ class NamespaceAccess:
         )
 
     async def readable_namespaces(self) -> list[str]:
-        """The namespaces this caller may read. A privileged caller reads
-        every namespace except one locked for deletion."""
-        if self.unrestricted:
-            return await _unlocked_namespaces()
-        return await resolve_accessible_namespaces(self._identity)
+        """The namespaces this caller may read, read once per request. A
+        privileged caller reads every namespace except one locked for
+        deletion."""
+        if self._readable is None:
+            self._readable = (
+                await _unlocked_namespaces() if self.unrestricted
+                else await resolve_accessible_namespaces(self._identity)
+            )
+        return self._readable
 
 
 # =============================================================================

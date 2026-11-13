@@ -2081,12 +2081,15 @@ async def lookup_candidates(
                     continue
                 query["namespace"] = item.namespace
             else:
-                # Every caller is scoped to what it can read: a privileged
-                # caller reads every namespace except one locked for
-                # deletion, and `total` must not count that one's entries.
-                query["namespace"] = {"$in": await access.readable_namespaces()}
+                # Scoped to the namespaces the caller may read (read once for
+                # the request): for a non-privileged caller its accessible
+                # namespaces, for a privileged one every namespace except a
+                # locked one, so `total` never counts a locked one's entries.
+                query["namespace"] = {"$in": list(await access.readable_namespaces())}
 
             exact = await RegistryEntry.find_one({**query, "entry_id": item.value})
+            if exact and not await access.allows(exact.namespace, "read"):
+                exact = None  # locked since the list was read
             if exact:
                 results.append(LookupCandidatesResponse(
                     index=i, status="found", total=1,
@@ -2098,6 +2101,7 @@ async def lookup_candidates(
                 continue
 
             by_value = {**query, "search_values": item.value}
+            await _drop_unreadable(by_value, access)
             total = await RegistryEntry.find(by_value).count()
             entries = await RegistryEntry.find(by_value).sort("+created_at").limit(item.limit).to_list()
             results.append(LookupCandidatesResponse(
@@ -2116,6 +2120,21 @@ async def lookup_candidates(
         not_found=sum(1 for r in results if r.status == "not_found"),
         errors=sum(1 for r in results if r.status == "error"),
     )
+
+
+async def _drop_unreadable(by_value: dict, access: NamespaceAccess) -> None:
+    """Narrow ``by_value`` to the namespaces of its matches the caller may
+    still read. The readable list was read before the query: a namespace
+    locked since then is asked again (allows() reads it at decision time)
+    and dropped, so neither the candidates nor `total` include it."""
+    found = await RegistryEntry.get_motor_collection().distinct("namespace", by_value)
+    closed = [ns for ns in found if not await access.allows(ns, "read")]
+    if closed:
+        scope = by_value.get("namespace")
+        if isinstance(scope, dict) and "$in" in scope:
+            by_value["namespace"] = {"$in": [ns for ns in scope["$in"] if ns not in closed]}
+        else:
+            by_value["namespace"] = {"$nin": closed}
 
 
 @router.post(
