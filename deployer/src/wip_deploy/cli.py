@@ -11,6 +11,7 @@ import json
 import re
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -1265,10 +1266,11 @@ def install(
             err=True,
         )
         typer.echo(
-            f"  It is set aside as "
-            f"{(target_dir / _DEPLOYMENT_STATE_FILENAME).name}.retired before the "
-            "new state is written, so its bytes — including the secret digests it "
-            "carried — survive to be compared against.",
+            f"  It is set aside under a "
+            f"{(target_dir / _DEPLOYMENT_STATE_FILENAME).name}.retired name "
+            "(.retired2 and on when that is taken; the exact name is printed when "
+            "it moves) before the new state is written, so its bytes — including "
+            "the secret digests it carried — survive to be compared against.",
             err=True,
         )
     if previous is not None:
@@ -1380,7 +1382,7 @@ def install(
             )
             typer.echo(
                 "deployer-state persisted: the apply changed the running "
-                "deployment before failing (CASE-455)",
+                "deployment before failing",
                 err=True,
             )
         typer.echo(
@@ -2530,6 +2532,7 @@ def _apply_and_persist_mutation(
     repo_root: Path | None = None,
     regenerate: frozenset[str] = frozenset(),
     removes_workloads: bool = False,
+    after_persist: Callable[[], None] | None = None,
 ) -> None:
     """Shared post-mutation lifecycle: validate → render → apply → persist.
 
@@ -2565,6 +2568,15 @@ def _apply_and_persist_mutation(
     `regenerate` names secrets the verb deliberately replaces (rotate-key);
     every other secret must match what the install runs (see
     `_ensure_secrets_via_spec`).
+
+    `after_persist` runs whenever the mutated spec is saved: after a
+    successful apply, and also when the apply failed after it had already
+    changed the running install (that failure saves the spec too). A verb
+    whose cleanup has to follow the saved spec puts the cleanup here. If it
+    ran only after a successful return, a failure that saved the spec would
+    skip it. remove-app is the case: its spec no longer lists the app, a
+    re-run answers "no change", and the container would keep running with
+    no verb left that removes it.
     """
     _validate_or_exit(deployment, components, apps_list)
 
@@ -2637,9 +2649,11 @@ def _apply_and_persist_mutation(
             _persist_deployment(deployment, target_dir, repo_root=repo_root, secrets=secrets)
             typer.echo(
                 "deployer-state persisted: the apply changed the running "
-                "deployment before failing (CASE-455)",
+                "deployment before failing",
                 err=True,
             )
+            if after_persist is not None:
+                after_persist()
         typer.echo(
             typer.style(f"✗ {action_label} failed: {e}", fg=typer.colors.RED, bold=True),
             err=True,
@@ -2647,6 +2661,8 @@ def _apply_and_persist_mutation(
         raise typer.Exit(1) from e
 
     _persist_deployment(deployment, target_dir, repo_root=repo_root, secrets=secrets)
+    if after_persist is not None:
+        after_persist()
 
     _echo_apply_outcome(result, action_label, action_label)
     _echo_skipped_post_install(result)
@@ -2738,7 +2754,7 @@ def add_app(
     Loads the persisted spec, appends the named app, re-discovers,
     re-renders, re-applies, and overwrites the deployment-state.
     The rest of the install (other apps, optional modules, secrets,
-    network) is preserved untouched (CASE-313). `--tag` sets the app's
+    network) is preserved untouched. `--tag` sets the app's
     image-tag override in the same mutation — one render, one apply —
     for apps whose images are built on their own cadence and don't
     exist at the install's base tag.
@@ -2851,10 +2867,11 @@ def remove_app(
     `spec.apps`, drops any `app_sources` entry on the dev platform and
     any `images.tag_overrides` entry for the app, re-renders,
     re-applies, persists. The removed app's container is
-    force-removed (`podman rm -f <install>_wip-<name>`), once the apply
-    has succeeded, so it doesn't linger
-    as an orphan after the rendered compose stops mentioning it
-    (CASE-313).
+    force-removed (`podman rm -f <install>_wip-<name>`) once the spec that
+    drops it is saved, so it doesn't linger as an orphan after the rendered
+    compose stops mentioning it. The spec is saved after a
+    successful apply, and also after a failed one that had already changed
+    the install.
 
     Examples:
 
@@ -2884,6 +2901,8 @@ def remove_app(
     # the app returns months later, silently pins it to a stale tag.
     deployment.spec.images.tag_overrides.pop(app_name, None)
 
+    from wip_deploy.apply import stop_and_remove_container
+
     _apply_and_persist_mutation(
         deployment,
         components,
@@ -2898,13 +2917,16 @@ def remove_app(
         services_scope=[],
         repo_root=repo_root,
         removes_workloads=True,
+        # The container goes once the spec that drops the app is saved.
+        # That covers a successful apply and an apply that failed after it
+        # had already changed the install, because that failure saves the
+        # spec as well. A refused validation, secret check or render, or a
+        # failure that changed nothing, saves nothing, so the app keeps
+        # running, matching the saved spec that still lists it.
+        after_persist=lambda: stop_and_remove_container(
+            deployment.metadata.name, app_name,
+        ),
     )
-
-    # Only once the apply succeeded (as remove-module does): a refused
-    # validation, secret check or render leaves the app running, matching
-    # the saved spec that still lists it.
-    from wip_deploy.apply import stop_and_remove_container
-    stop_and_remove_container(deployment.metadata.name, app_name)
 
 
 @app.command("app-deploy")
@@ -5224,7 +5246,7 @@ def add_module(
 
     Equivalent to passing `--add <module>` on a fresh install, but
     applied to the persisted spec. Other modules, apps, and platform
-    state are preserved (CASE-313).
+    state are preserved.
 
     Examples:
 
@@ -5284,8 +5306,7 @@ def remove_module(
     """Disable an optional module in an existing install without dropping anything.
 
     Inverse of `add-module`. Force-removes the module's container
-    (`podman rm -f <install>_wip-<name>`) so it doesn't linger as an orphan
-    (CASE-313).
+    (`podman rm -f <install>_wip-<name>`) so it doesn't linger as an orphan.
 
     Examples:
 

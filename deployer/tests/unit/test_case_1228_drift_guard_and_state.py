@@ -866,3 +866,104 @@ class TestUnreadableCanonicalStateIsParked:
 
         parked = sorted(p.read_text() for p in tmp_path.glob(f"{STATE}.retired*"))
         assert parked == ["{ first", "{ second"]
+
+
+# ────────────────────────────────────────────────────────────────────
+# Review of the 5b fix — remove-app's container follows the saved spec
+# ────────────────────────────────────────────────────────────────────
+
+
+class TestRemoveAppContainerFollowsTheSavedSpec:
+    """remove-app applies with an empty scope. A failure after the up step (a
+    proxy reload, a post-install hook, the health wait) is stamped `mutated=True`,
+    so the spec without the app is saved. The container used to be removed only
+    after a successful return, so this failure left it running. A re-run of
+    remove-app then answers "not in this install — no change", and the container
+    stayed with no verb left to remove it. Now the removal runs whenever the spec
+    that drops the app is saved. When nothing is saved, the container stays,
+    matching the spec that still lists the app."""
+
+    def _run(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        apply_effect: object,
+    ) -> tuple[SimpleNamespace, list[str]]:
+        state = _deployment(users=[])
+        state.spec.apps = [AppRef(name="react-console")]
+        _persist(tmp_path, state)
+
+        order: list[str] = []
+        for fn in (
+            "_validate_or_exit",
+            "_select_cluster_or_exit",
+            "_refuse_runtime_reservation_collisions",
+            "_refuse_attachment_collisions",
+        ):
+            monkeypatch.setattr(cli, fn, lambda *a, **k: None)
+        monkeypatch.setattr(cli, "_ensure_secrets_via_spec", lambda *a, **k: object())
+        monkeypatch.setattr(cli, "_render_tree", lambda *a, **k: cli.FileTree())
+        monkeypatch.setattr(cli, "changed_outside_scope", lambda *a, **k: [])
+        monkeypatch.setattr(
+            cli, "_persist_deployment", lambda *a, **k: order.append("persist"),
+        )
+
+        def apply(**_kw: object) -> object:
+            order.append("apply")
+            if isinstance(apply_effect, BaseException):
+                raise apply_effect
+            return apply_effect
+
+        monkeypatch.setattr(cli, "apply_compose", apply)
+        monkeypatch.setattr(
+            apply_mod,
+            "stop_and_remove_container",
+            lambda install, name: order.append(f"stop {install} {name}"),
+        )
+        result = runner.invoke(
+            app, ["remove-app", "react-console", "--install-dir", str(tmp_path)],
+        )
+        return result, order
+
+    def test_a_failure_after_the_change_landed_still_removes_the_container(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, order = self._run(
+            tmp_path, monkeypatch,
+            apply_mod.ApplyError("proxy reload failed", mutated=True),
+        )
+        assert result.exit_code == 1
+        assert order == ["apply", "persist", "stop guard react-console"]
+
+    def test_a_failure_that_changed_nothing_leaves_the_container(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, order = self._run(
+            tmp_path, monkeypatch,
+            apply_mod.ApplyError("compose up refused", mutated=False),
+        )
+        assert result.exit_code == 1
+        assert order == ["apply"]
+
+    def test_a_successful_apply_removes_the_container_after_saving(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        result, order = self._run(
+            tmp_path, monkeypatch,
+            apply_mod.ApplyResult(install_dir=tmp_path, services_up=0, healthy=True),
+        )
+        assert result.exit_code == 0, result.output
+        assert order == ["apply", "persist", "stop guard react-console"]
+
+
+class TestReconcileWarningDoesNotPromiseOneName:
+    """The park step falls back to `.retired2`, `.retired3`, … when `.retired` is
+    taken, so the warning `install --reconcile` prints first must not name
+    `.retired` as the place the state goes. The park step's own warning names
+    the real file."""
+
+    def test_the_warning_allows_for_a_numbered_name(self, tmp_path: Path) -> None:
+        _persist(tmp_path, _deployment(users=[]))
+        (tmp_path / STATE).write_text("{ broken")
+        result = _install(tmp_path, "--reconcile")
+        assert ".retired2 and on when that is taken" in result.output
