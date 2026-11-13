@@ -97,14 +97,18 @@ def _derive_namespace_from_identity() -> str | None:
 
     If the authenticated API key is scoped to exactly one namespace,
     return it. Otherwise return None (caller must provide namespace
-    explicitly).
+    explicitly). Only an API key's record carries a scope (the rule of
+    ``permissions._key_scope``): another identity's ``namespaces`` claim,
+    an OIDC token's for one, derives nothing.
     """
+    from .permissions import _key_scope
+
     identity = get_current_identity()
     if identity is None:
         return None
-    namespaces = (identity.raw_claims or {}).get("namespaces")
-    if isinstance(namespaces, list) and len(namespaces) == 1:
-        return cast(str | None, namespaces[0])
+    namespaces = _key_scope(identity)
+    if namespaces is not None and len(namespaces) == 1:
+        return namespaces[0]
     return None
 
 
@@ -381,7 +385,9 @@ async def resolve_bulk_ids(
         id_field: Attribute name containing the ID to resolve.
         entity_type: Entity type for resolution.
         namespace: Namespace for resolution. Per-item namespace is used if
-            the item has a ``namespace`` attribute and ``namespace`` is None.
+            the item has a ``namespace`` attribute and ``namespace`` is None;
+            the namespace a single-namespace key derives is used only for an
+            item that names none.
         bypass_cache: Skip the resolution-cache read and always ask
             Registry. REQUIRED on write doors: a resolved ID that will be
             persisted (a deprecation's replacement pointer, a relation's
@@ -397,20 +403,20 @@ async def resolve_bulk_ids(
             itself, e.g. a relation's ``source_terminology``). An item
             without the attribute set falls back to the string path.
     """
-    # Derive namespace from identity if not provided
-    if namespace is None:
-        namespace = _derive_namespace_from_identity()
+    # A namespace the caller names outranks each item's own; one derived
+    # from a single-namespace key only fills in for an item that names none.
+    derived = _derive_namespace_from_identity() if namespace is None else None
 
     def _item_context(item: object) -> tuple[str | None, str | None, str | None]:
         if isinstance(item, dict):
             raw_id = item.get(id_field)
-            item_ns = namespace or item.get("namespace")
+            item_ns = namespace or item.get("namespace") or derived
             item_terminology = terminology or (
                 item.get(terminology_field) if terminology_field else None
             )
         else:
             raw_id = getattr(item, id_field, None)
-            item_ns = namespace or getattr(item, "namespace", None)
+            item_ns = namespace or getattr(item, "namespace", None) or derived
             item_terminology = terminology or (
                 getattr(item, terminology_field, None) if terminology_field else None
             )

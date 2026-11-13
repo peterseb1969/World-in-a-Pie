@@ -109,7 +109,16 @@ async def export_all_terminologies(
 )
 async def import_terminology(
     data: dict[str, Any] = Body(...),
-    format: str = Query("json", description="Import format: json, csv"),
+    format: str = Query(
+        "json",
+        description=(
+            "Import format: json, csv. In a csv import, a text cell that starts "
+            "with an apostrophe followed by =, +, -, @, tab, carriage return or "
+            "another apostrophe loses that one apostrophe: it is the escape WIP's "
+            "CSV exports write so a spreadsheet does not run the cell as a "
+            "formula. To import such a value literally, double the apostrophe."
+        ),
+    ),
     namespace: str | None = Query(
         None,
         description=(

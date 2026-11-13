@@ -305,3 +305,48 @@ async def test_candidate_honors_declared_renames(
     )
     assert resp.status_code == 200, resp.text
     assert resp.json()["invalid_count"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_a_candidate_that_extends_is_validated_with_its_parent(
+    client: AsyncClient, auth_headers: dict
+):
+    """A candidate that extends another template is validated as a stored
+    version would be: its parent's fields (and identity) apply, so a
+    document carrying them is valid, and one missing the parent's mandatory
+    field is not. Provenance: CASE-1279 (f7b38b1c R1)."""
+    person = SAMPLE_TEMPLATES["PERSON"]
+    candidate = {
+        "value": "PERSON_CHILD", "label": "Child", "namespace": "wip",
+        "extends": person["template_id"], "extends_version": 1,
+        "fields": [{"name": "nickname", "label": "Nick", "type": "string"}],
+    }
+    full = {"national_id": "127900101", "first_name": "A", "last_name": "B", "nickname": "n"}
+    partial = {"nickname": "only"}
+    resp = await client.post(CANDIDATE, headers=auth_headers, json={
+        "namespace": "wip", "template_definition": candidate, "documents": [full, partial],
+    })
+    assert resp.status_code == 200, resp.text
+    results = resp.json()["results"]
+    assert results[0]["validation"]["valid"], results[0]
+    assert not results[1]["validation"]["valid"]
+    codes = {e["code"] for e in results[1]["validation"]["errors"]}
+    assert "required" in codes and "unknown_field" not in codes, results[1]
+
+
+@pytest.mark.asyncio
+async def test_an_unpinned_nested_identity_path_is_not_a_referent(monkeypatch):
+    """template-store does not follow a nested template with no pinned
+    version, so such a path names no referent; the candidate rule agrees
+    instead of reading the nested template's latest version."""
+    from document_store.services import validation_service as vs
+
+    async def must_not_fetch(*args, **kwargs):
+        raise AssertionError("an unpinned nested template is not followed")
+
+    monkeypatch.setattr(vs.ValidationService, "_nested_template_fields", must_not_fetch)
+    paths = await vs.ValidationService()._candidate_referent_paths({
+        "identity_fields": ["addr.country"],
+        "fields": [{"name": "addr", "type": "object", "template_ref": "ADDR"}],
+    })
+    assert paths == []

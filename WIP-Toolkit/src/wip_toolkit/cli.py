@@ -731,11 +731,14 @@ def export_csv_cmd(
 
     if as_json:
         click.echo(_json.dumps({
-            "schema": "1.0",
+            # 1.1: each file also reports its header as written (column
+            # names formula-escaped like cells); columns stay unescaped.
+            "schema": "1.1",
             "dry_run": dry_run,
             "all_versions": all_versions,
             "files": [{"namespace": f.namespace, "template": f.template, "path": str(f.path),
-                       "rows": f.rows, "columns": f.columns} for f in files],
+                       "rows": f.rows, "columns": f.columns, "header": f.header}
+                      for f in files],
         }, indent=2, default=str))
         return
     table = Table(title="export-csv" + (" (dry run, nothing written)" if dry_run else ""))

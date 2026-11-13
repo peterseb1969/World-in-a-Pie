@@ -40,11 +40,11 @@ def _masked(item: dict, *ids: str) -> str:
 async def ids(client: AsyncClient, auth_headers: dict) -> tuple[str, str]:
     """An experiment in 'wip' and a molecule in the closed namespace."""
     exp = await _post(client, auth_headers, [{
-        "namespace": "wip", "template_id": "EXPERIMENT",
+        "namespace": "wip", "template_id": "wip:EXPERIMENT",
         "data": {"experiment_id": "EXP-P", "name": "x"},
     }])
     mol = await _post(client, auth_headers, [{
-        "namespace": "xns-closed", "template_id": "MOLECULE",
+        "namespace": "xns-closed", "template_id": "wip:MOLECULE",
         "data": {"molecule_id": "MOL-P", "name": "x"},
     }])
     assert exp["status"] == mol["status"] == "created", (exp, mol)
@@ -53,7 +53,7 @@ async def ids(client: AsyncClient, auth_headers: dict) -> tuple[str, str]:
 
 def _edge(source: str, target: str) -> list[dict]:
     return [{
-        "namespace": "wip", "template_id": "EXPERIMENT_INPUT",
+        "namespace": "wip", "template_id": "wip:EXPERIMENT_INPUT",
         "data": {"source_ref": source, "target_ref": target, "role": "input"},
     }]
 
@@ -88,7 +88,7 @@ async def test_the_validate_endpoint_answers_the_same(client: AsyncClient, ids) 
     async def check(target: str) -> dict:
         resp = await client.post(
             f"{API}/validation/validate", headers=WRITER,
-            json={"namespace": "wip", "template_id": "EXPERIMENT_INPUT",
+            json={"namespace": "wip", "template_id": "wip:EXPERIMENT_INPUT",
                   "data": {"source_ref": exp_id, "target_ref": target, "role": "input"}},
         )
         assert resp.status_code == 200, resp.text
@@ -134,7 +134,7 @@ async def test_a_template_in_a_closed_namespace_reads_as_missing(
 async def test_a_patch_keeping_a_held_reference_is_not_refused(client: AsyncClient, ids) -> None:
     exp_id, mol_id = ids
     other = await _post(client, READER, [{
-        "namespace": "wip", "template_id": "EXPERIMENT",
+        "namespace": "wip", "template_id": "wip:EXPERIMENT",
         "data": {"experiment_id": "EXP-Q", "name": "y"},
     }])
     edge = await _post(client, READER, _edge(exp_id, mol_id))

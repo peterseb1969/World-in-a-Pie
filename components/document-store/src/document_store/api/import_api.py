@@ -192,9 +192,18 @@ def _import_response(outcome: _ImportOutcome) -> dict[str, Any]:
     }
 
 
+# The import side of the CSV formula escape (wip_auth.csv_cells).
+_UNESCAPE_NOTE = (
+    "A text cell that starts with an apostrophe followed by =, +, -, @, tab, "
+    "carriage return or another apostrophe loses that one apostrophe: it is the "
+    "escape WIP's CSV exports write so a spreadsheet does not run the cell as a "
+    "formula. To import such a value literally, double the apostrophe."
+)
+
+
 @router.post("")
 async def import_documents(
-    file: UploadFile = File(..., description="CSV or XLSX file to import"),
+    file: UploadFile = File(..., description=f"CSV or XLSX file to import. {_UNESCAPE_NOTE}"),
     template_id: str = Form(..., description="Template ID for the documents"),
     column_mapping: str = Form(..., description="JSON object mapping CSV columns to template fields, e.g. {\"Name\": \"name\", \"Email\": \"email\"}"),
     namespace: str = Form(..., description="Target namespace"),

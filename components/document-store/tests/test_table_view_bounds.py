@@ -74,3 +74,29 @@ async def test_a_document_with_several_active_versions_is_one_row(client, auth_h
     lines = [r for r in csv.DictReader(io.StringIO(exported.text))
              if r["_document_id"] == first["document_id"]]
     assert [r["first_name"] for r in lines] == ["New"]
+
+
+@pytest.mark.asyncio
+async def test_a_csv_that_fails_before_its_first_chunk_is_an_error_not_an_empty_200(
+    client, auth_headers, monkeypatch,
+):
+    """The export starts streaming only after its first chunk exists, so a
+    failure up to it raises from the route (an error status) instead of
+    answering 200 with an empty or partial body."""
+    from fastapi.responses import StreamingResponse
+
+    from wip_auth import UserIdentity
+
+    await _person(client, auth_headers, "114500401", "Fail")
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("flatten failed")
+
+    monkeypatch.setattr(table_view, "_flatten_document", broken)
+    admin = UserIdentity(user_id="a", username="a", groups=["wip-admins"], auth_method="api_key")
+    with pytest.raises(RuntimeError, match="flatten failed"):
+        response = await table_view.export_table_csv(
+            "PERSON", status=None, namespace="wip", max_cross_product=1000,
+            include_metadata=True, identity=admin,
+        )
+        assert not isinstance(response, StreamingResponse)

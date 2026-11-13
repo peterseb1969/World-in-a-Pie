@@ -26,8 +26,10 @@ API = "/api/document-store"
 
 
 async def _create(client, auth_headers, template, data, namespace="wip") -> dict:
+    # The templates live in "wip": an item in another namespace names them
+    # "wip:VALUE" (a bare value resolves in the item's own namespace).
     resp = await client.post(f"{API}/documents", headers=auth_headers, json=[{
-        "namespace": namespace, "template_id": template, "data": data,
+        "namespace": namespace, "template_id": f"wip:{template}", "data": data,
     }])
     assert resp.status_code == 200, resp.text
     return resp.json()["results"][0]
@@ -194,7 +196,7 @@ async def test_migrate_refuses_an_edge_whose_source_lies_in_another_namespace(
     try:
         resp = await client.post(f"{API}/documents/migrate", params={"namespace": "wip"},
                                  headers=auth_headers, json={
-            "template_id": "EXPERIMENT_INPUT", "from_version": 1, "to_version": 2, "dry_run": True,
+            "template_id": "wip:EXPERIMENT_INPUT", "from_version": 1, "to_version": 2, "dry_run": True,
         })
     finally:
         VERSIONED_TEMPLATE_OVERRIDES.clear()
@@ -292,7 +294,7 @@ async def test_migrate_runs_the_reference_gates(client: AsyncClient, auth_header
                    return_value=_Refuses()):
             resp = await client.post(f"{API}/documents/migrate", params={"namespace": "wip"},
                                      headers=auth_headers, json={
-                "template_id": "MOLECULE", "from_version": 1, "to_version": 2, "dry_run": True,
+                "template_id": "wip:MOLECULE", "from_version": 1, "to_version": 2, "dry_run": True,
             })
     finally:
         VERSIONED_TEMPLATE_OVERRIDES.clear()

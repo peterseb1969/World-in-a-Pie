@@ -22,7 +22,7 @@ DOCS_ONLY_READER = {"X-API-Key": "test_xns_only_key"}  # reads 'xns-closed', not
 
 async def _create(client: AsyncClient, headers: dict, namespace: str, national_id: str) -> str:
     resp = await client.post(f"{API}/documents", headers=headers, json=[{
-        "namespace": namespace, "template_id": "PERSON",
+        "namespace": namespace, "template_id": "wip:PERSON",
         "data": {"national_id": national_id, "first_name": namespace, "last_name": "Scope"},
     }])
     assert resp.status_code == 200, resp.text
@@ -106,6 +106,18 @@ async def test_reading_documents_does_not_open_the_templates_layout(client, two_
         )
         assert resp.status_code == 404, (path, resp.text)
         assert two_namespaces["xns-closed"] not in resp.text
+        # Exactly what an id naming nothing answers: the gate does not
+        # confirm the template exists.
+        absent = "0190ffff-0000-7000-8000-000000001279"
+        missing = await client.get(
+            f"{API}/{path.replace(template_id, absent)}",
+            headers=DOCS_ONLY_READER, params={"namespace": "xns-closed"},
+        )
+        assert missing.status_code == 404
+        # Each echoes the id it was asked for, and nothing else differs.
+        assert resp.json()["detail"].replace(template_id, absent) == missing.json()["detail"], (
+            resp.text, missing.text,
+        )
 
 
 @pytest.mark.asyncio

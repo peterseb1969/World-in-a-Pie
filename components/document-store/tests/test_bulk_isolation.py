@@ -30,13 +30,17 @@ async def _post(client: AsyncClient, headers: dict, items: list[dict]) -> list[d
     return resp.json()["results"]
 
 
+# The templates live in "wip". A bare value resolves in the item's own
+# namespace, so a document in another namespace names a shared template as
+# "wip:VALUE" (a single-namespace key's namespace no longer outranks the
+# item's own).
 def _chapter(namespace: str) -> dict:
-    return {"template_id": "CHAPTER_Q", "namespace": namespace,
+    return {"template_id": "wip:CHAPTER_Q", "namespace": namespace,
             "data": {"title": f"C-{uuid.uuid4().hex[:8]}"}}
 
 
 def _holder(ref: str) -> dict:
-    return {"template_id": "HOLDER_Q", "namespace": STRICT,
+    return {"template_id": "wip:HOLDER_Q", "namespace": STRICT,
             "data": {"name": f"H-{uuid.uuid4().hex[:8]}", "ref": ref}}
 
 

@@ -121,3 +121,44 @@ async def test_plain_shape_needs_no_exception_filter():
     assert query == {"namespace": {"$in": [NS]}, "status": "active"}
     query = await DocumentService._latest_versions_query({"namespace": {"$in": [NS]}}, None)
     assert query == {"namespace": {"$in": [NS]}, "status": "active"}
+
+
+# --- CASE-1279: a document is (namespace, document_id); the id lists are bounded --
+
+
+NS2 = "c1039-other"
+
+
+@pytest.mark.asyncio
+async def test_a_document_of_another_namespace_with_the_same_id_does_not_hide_one():
+    """A listing over two namespaces where ns2 holds a document with the same
+    id as ns1's 'live' document, at a higher version and deleted: grouping on
+    document_id alone made ns2's row the latest of both and dropped ns1's
+    live document from the active listing."""
+    await Document.find({"namespace": NS2}).delete()
+    await Document.insert_many([
+        Document(namespace=NS2, document_id="live", template_id=TPL, template_version=1,
+                 template_value="C1039", identity_hash="h-other", version=v,
+                 data={"doc": "other", "v": v}, status="inactive",
+                 created_at=BASE, updated_at=BASE + timedelta(seconds=v))
+        for v in range(1, 6)
+    ])
+    try:
+        result = await DocumentService().list_documents(
+            ns_filter={"namespace": {"$in": [NS, NS2]}}, latest_only=True,
+            status=DocumentStatus.ACTIVE, page=1, page_size=100,
+        )
+        listed = {(d.namespace, d.document_id, d.version) for d in result.items}
+        assert (NS, "live", 3) in listed, listed
+        assert not any(ns == NS2 for ns, _d, _v in listed), listed
+    finally:
+        await Document.find({"namespace": NS2}).delete()
+
+
+@pytest.mark.asyncio
+async def test_more_exceptions_than_the_filter_can_name_are_refused(monkeypatch):
+    import document_store.services.document_service as ds
+
+    monkeypatch.setattr(ds, "MAX_LATEST_EXCEPTIONS", 2)
+    with pytest.raises(ValueError, match="status=active"):
+        await _listed(None)

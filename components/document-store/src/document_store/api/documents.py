@@ -128,6 +128,26 @@ async def create_documents(
     return result
 
 
+def _namespace_batches(
+    items: list[DocumentCreateRequest], continue_on_error: bool,
+) -> list[list[int]]:
+    """The item positions of each batch _bulk_create_per_namespace writes:
+    one per namespace when the request continues past errors, else runs of
+    consecutive items sharing a namespace."""
+    if continue_on_error:
+        by_namespace: dict[str, list[int]] = {}
+        for i, item in enumerate(items):
+            by_namespace.setdefault(item.namespace, []).append(i)
+        return list(by_namespace.values())
+    runs: list[list[int]] = []
+    for i, item in enumerate(items):
+        if runs and items[runs[-1][0]].namespace == item.namespace:
+            runs[-1].append(i)
+        else:
+            runs.append([i])
+    return runs
+
+
 async def _bulk_create_per_namespace(
     service: DocumentService, items: list[DocumentCreateRequest], continue_on_error: bool,
 ) -> BulkResponse:
@@ -136,19 +156,17 @@ async def _bulk_create_per_namespace(
 
     The service writes one batch into one namespace (validation context,
     identity registration and the existing-document lookup are all scoped to
-    it), so the request is taken in runs of consecutive items that share a
-    namespace — one run in the common case of a single-namespace request.
-    Runs go in submission order, and each run's rows are renumbered to the
-    items' positions in the request. With ``continue_on_error`` false the
-    request stops at its first failing item, as a single batch does: every
-    later item is skipped, whichever namespace it names.
+    it). With ``continue_on_error`` (the default) the items are grouped by
+    namespace, in submission order within each: one batch per namespace the
+    request names, however its items interleave (namespaces do not share
+    documents, so their order between them changes nothing). Without it the
+    request stops at its first failing item, as a single batch does, so it
+    is taken in runs of consecutive items that share a namespace, in
+    submission order: every item after the failure is skipped, whichever
+    namespace it names. Either way each batch's rows are renumbered to the
+    items' positions in the request.
     """
-    runs: list[list[int]] = []
-    for i, item in enumerate(items):
-        if runs and items[runs[-1][0]].namespace == item.namespace:
-            runs[-1].append(i)
-        else:
-            runs.append([i])
+    runs = _namespace_batches(items, continue_on_error)
     if len(runs) == 1:
         return await service.bulk_create(
             items, namespace=items[0].namespace, continue_on_error=continue_on_error,

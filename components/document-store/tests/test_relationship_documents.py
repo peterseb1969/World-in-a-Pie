@@ -88,7 +88,7 @@ async def test_create_relationship_rejects_cross_namespace_source(
         headers=auth_headers,
         json=[{
             "namespace": "other-ns",
-            "template_id": "EXPERIMENT",
+            "template_id": "wip:EXPERIMENT",
             "data": {"experiment_id": "EXP-OTHER"},
         }],
     )
@@ -142,12 +142,12 @@ async def test_bulk_create_lays_down_relationship_indexes(
         json=[
             {
                 "namespace": "wip",
-                "template_id": "EXPERIMENT_INPUT",
+                "template_id": "wip:EXPERIMENT_INPUT",
                 "data": {"source_ref": exp_id, "target_ref": mol_id, "role": "input"},
             },
             {
                 "namespace": "wip",
-                "template_id": "EXPERIMENT_INPUT",
+                "template_id": "wip:EXPERIMENT_INPUT",
                 "data": {"source_ref": exp_id, "target_ref": mol2_id, "role": "control"},
             },
         ],
@@ -177,7 +177,7 @@ async def test_bulk_create_relationship_enforces_cross_namespace_per_item(
         headers=auth_headers,
         json=[{
             "namespace": "other-ns",
-            "template_id": "EXPERIMENT",
+            "template_id": "wip:EXPERIMENT",
             "data": {"experiment_id": "EXP-OTHER-BULK"},
         }],
     )
@@ -194,12 +194,12 @@ async def test_bulk_create_relationship_enforces_cross_namespace_per_item(
         json=[
             {  # valid edge, both endpoints in 'wip'
                 "namespace": "wip",
-                "template_id": "EXPERIMENT_INPUT",
+                "template_id": "wip:EXPERIMENT_INPUT",
                 "data": {"source_ref": exp_id, "target_ref": mol_id, "role": "input"},
             },
             {  # cross-namespace edge -> must be rejected per-item
                 "namespace": "wip",
-                "template_id": "EXPERIMENT_INPUT",
+                "template_id": "wip:EXPERIMENT_INPUT",
                 "data": {"source_ref": other_exp_id, "target_ref": mol_id, "role": "input"},
             },
         ],

@@ -766,6 +766,38 @@ def _collect_outcome(
         pending_events.append(outcome.pending_event)
 
 
+async def _exception_rows(base: dict[str, Any], exceptions: list[dict]) -> tuple[list, list]:
+    """The rows of the documents whose latest version is not simply their one
+    active row: (active rows that are not their document's latest, latest
+    rows that are inactive). A document is (namespace, document_id)."""
+    hidden_active: list = []
+    latest_inactive: list = []
+    if not exceptions:
+        return hidden_active, latest_inactive
+    active = DocumentStatus.ACTIVE.value
+    top = {(e["_id"]["ns"], e["_id"]["doc"]): e["top"] for e in exceptions}
+    rows = Document.get_motor_collection().find(
+        {**base, "document_id": {"$in": list({doc for _ns, doc in top})}},
+        {"_id": 1, "namespace": 1, "document_id": 1, "version": 1, "status": 1},
+    )
+    async for row in rows:
+        key = (row.get("namespace"), row["document_id"])
+        if key not in top:
+            continue  # the same id in another namespace, a normal document
+        is_latest = row["version"] == top[key]
+        if row["status"] == active and not is_latest:
+            hidden_active.append(row["_id"])
+        elif row["status"] != active and is_latest:
+            latest_inactive.append(row["_id"])
+    return hidden_active, latest_inactive
+
+
+# How many documents a "latest version" filter names by id (those whose
+# latest row is not simply their one active row). Kept well under the size
+# a query document may reach.
+MAX_LATEST_EXCEPTIONS = 200_000
+
+
 class DocumentService:
     """
     Service for document CRUD operations and upsert logic.
@@ -4917,10 +4949,13 @@ class DocumentService:
         - an active row under a higher inactive one: the inactive one is.
         """
         active = DocumentStatus.ACTIVE.value
+        # A document is (namespace, document_id): a listing may span several
+        # namespaces, and one namespace's document must not stand in for
+        # another's.
         exceptions = await Document.get_motor_collection().aggregate([
             {"$match": base},
             {"$group": {
-                "_id": "$document_id",
+                "_id": {"ns": "$namespace", "doc": "$document_id"},
                 "top": {"$max": "$version"},
                 "n_active": {"$sum": {"$cond": [{"$eq": ["$status", active]}, 1, 0]}},
                 "top_active": {"$max": {"$cond": [
@@ -4931,22 +4966,20 @@ class DocumentService:
                 {"n_active": 0},
                 {"$expr": {"$lt": ["$top_active", "$top"]}},
             ]}},
+            {"$limit": MAX_LATEST_EXCEPTIONS + 1},
         ], allowDiskUse=True).to_list(None)
-
-        hidden_active: list = []    # active rows that are not their document's latest
-        latest_inactive: list = []  # the latest rows of documents whose latest is inactive
-        if exceptions:
-            top = {e["_id"]: e["top"] for e in exceptions}
-            rows = Document.get_motor_collection().find(
-                {**base, "document_id": {"$in": list(top)}},
-                {"_id": 1, "document_id": 1, "version": 1, "status": 1},
+        if len(exceptions) > MAX_LATEST_EXCEPTIONS:
+            # The filter below names these documents' rows by id; past this
+            # many it would outgrow a query document. Refused by name instead
+            # of failing inside MongoDB.
+            raise ValueError(
+                f"More than {MAX_LATEST_EXCEPTIONS} of the documents in reach have "
+                "a latest version that is not their only active one (most often: "
+                "soft-deleted). List them with status=active, or narrow by "
+                "namespace or template."
             )
-            async for row in rows:
-                is_latest = row["version"] == top[row["document_id"]]
-                if row["status"] == active and not is_latest:
-                    hidden_active.append(row["_id"])
-                elif row["status"] != active and is_latest:
-                    latest_inactive.append(row["_id"])
+
+        hidden_active, latest_inactive = await _exception_rows(base, exceptions)
 
         live: dict[str, Any] = {"status": active}
         if hidden_active:

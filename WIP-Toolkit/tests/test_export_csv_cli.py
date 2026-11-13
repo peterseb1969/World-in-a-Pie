@@ -30,3 +30,25 @@ def test_an_existing_csv_needs_force_and_dry_run_writes_nothing(archive, tmp_pat
     refused = run(archive, out)
     assert refused.exit_code == 1 and "Nothing written" in refused.output
     assert run(archive, out, "--force").exit_code == 0
+
+
+def test_the_reported_header_is_the_one_the_file_carries(archive, tmp_path):  # noqa: F811
+    """A column name a spreadsheet would run as a formula is escaped in the
+    file's header; the JSON report names the header as written (schema 1.1),
+    beside the unescaped column names."""
+    out = tmp_path / "csv"
+    payload = json.loads(run(archive, out, "--json").output)
+    assert payload["schema"] == "1.1"
+    for f in payload["files"]:
+        with open(f["path"], newline="") as fh:
+            assert next(csv.reader(fh)) == f["header"]
+        assert len(f["header"]) == len(f["columns"])
+
+
+def test_a_formula_column_name_is_reported_escaped():
+    from pathlib import Path
+
+    from wip_archive.export_csv import CsvFile
+
+    f = CsvFile("ns", "T", Path("x.csv"), columns=["document_id", "=total"])
+    assert f.header == ["document_id", "'=total"]

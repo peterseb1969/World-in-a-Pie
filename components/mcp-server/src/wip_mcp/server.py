@@ -4035,9 +4035,11 @@ async def get_table_view(
 
     Needs read on the namespace the template lives in: the template's
     layout is shown only to its namespace's readers, so a template the caller
-    cannot read answers not found — at the value lookup or at the table —
-    even when the caller can read documents on it elsewhere. Read those with
-    query_by_template instead.
+    cannot read answers not found at the template lookup, even when the
+    caller can read documents on it elsewhere. Read those with
+    list_documents(template_value=...), which filters on the value the
+    documents carry and never reads the template; get_template_facets shows
+    which templates a namespace's documents use.
     """
     try:
         tmpl = await get_client().get_template_by_value(
@@ -4102,9 +4104,11 @@ async def export_table_csv(
 
     Needs read on the namespace the template lives in: the template's
     layout is shown only to its namespace's readers, so a template the caller
-    cannot read answers not found — at the value lookup or at the table —
-    even when the caller can read documents on it elsewhere. Read those with
-    query_by_template instead.
+    cannot read answers not found at the template lookup, even when the
+    caller can read documents on it elsewhere. Read those with
+    list_documents(template_value=...), which filters on the value the
+    documents carry and never reads the template; get_template_facets shows
+    which templates a namespace's documents use.
     """
     try:
         tmpl = await get_client().get_template_by_value(
@@ -4781,6 +4785,10 @@ async def import_documents_csv(
     documents in bulk. If column_mapping is omitted, columns are
     auto-mapped to template fields by matching names (case-insensitive).
     Term fields take human-readable values in the file, as in create_document.
+    A text cell that starts with an apostrophe followed by =, +, -, @, tab,
+    carriage return or another apostrophe loses that one apostrophe: it is
+    the escape WIP's CSV exports write so a spreadsheet does not run the cell
+    as a formula. To import such a value literally, double the apostrophe.
 
     Args:
         file_path: Path to a CSV or XLSX file.

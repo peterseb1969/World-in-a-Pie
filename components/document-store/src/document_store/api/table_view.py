@@ -19,8 +19,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from wip_auth import UserIdentity, check_namespace_permission, resolve_namespace_filter, resolve_or_404
+from wip_auth import UserIdentity, check_readable, resolve_namespace_filter, resolve_or_404
 from wip_auth.csv_cells import escape_cell
+from wip_auth.fastapi_helpers import unresolved_detail
 
 from ..models.document import Document, DocumentStatus
 from ..services.document_service import DocumentService
@@ -110,6 +111,16 @@ async def _template_in(template_id: str, namespace: str | None) -> str:
     return await resolve_or_404(template_id, "template", namespace, param_name="template_id")
 
 
+def _template_not_found(template_id: str, namespace: str | None) -> str:
+    """The 404 detail of a template this route cannot find: with
+    ``namespace``, the resolver's (the identifier is resolved there first),
+    else the route's own. A template in a namespace the caller cannot read
+    answers with it too, so the answer does not confirm the template exists."""
+    if namespace:
+        return unresolved_detail(template_id, "template", namespace, "template_id")
+    return "Template not found"
+
+
 async def _documents_query(
     template_id: str,
     status: DocumentStatus | None,
@@ -128,7 +139,10 @@ async def _documents_query(
     """
     base: dict[str, Any] = {"template_id": template_id}
     base.update((await resolve_namespace_filter(identity, namespace)).query)
-    return await DocumentService._latest_versions_query(base, status)
+    try:
+        return await DocumentService._latest_versions_query(base, status)
+    except ValueError as e:  # more documents than the filter can name
+        raise HTTPException(status_code=422, detail=str(e)) from e
 
 
 def _get_field_value(data: dict[str, Any], field_path: str) -> Any:
@@ -307,6 +321,10 @@ Array fields can be flattened into multiple rows (cross-product) or kept as JSON
 - 2+ arrays, cross-product ≤ max_cross_product rows (default 1000, tunable up to 10000): Cross-product (flatten all)
 - 2+ arrays, cross-product > max_cross_product rows: Keep arrays as JSON fields
 
+**Row cap:** one response carries at most 10,000 flattened rows; a page that
+flattens to more is refused (422): lower page_size or max_cross_product. The
+CSV export is not capped (it streams).
+
 **Metadata Columns:**
 All rows include system columns prefixed with underscore:
 - `_document_id`: Document ID
@@ -321,7 +339,10 @@ the table's columns are the template's full declared layout (inherited
 fields included), and a template's schema is shown only to readers of its
 namespace, as the template store's own reads do. Without it the answer is
 404, even when the caller can read documents on the template in another
-namespace; read those through `GET /documents?template_id=…&namespace=…`.
+namespace; read those through `GET /documents?namespace=…` with
+`template_id` set to the template's canonical id or `ns:VALUE` (a bare
+value is resolved in `namespace`, not the template's), or with
+`template_value=…`, which filters on the value the documents carry.
 The rows are then limited to the namespaces the caller can read.
     """
 )
@@ -373,7 +394,8 @@ async def get_table_view(
     ns = template.get("namespace")
     if not ns:
         raise HTTPException(status_code=500, detail="Template response missing namespace")
-    await check_namespace_permission(identity, ns, "read")
+    # A template the caller cannot read answers as one that does not exist.
+    await check_readable(identity, ns, _template_not_found(template_id, namespace))
 
     # Extract column definitions and identify array fields
     columns = _extract_columns_from_template(template)
@@ -460,7 +482,10 @@ the table's columns are the template's full declared layout (inherited
 fields included), and a template's schema is shown only to readers of its
 namespace, as the template store's own reads do. Without it the answer is
 404, even when the caller can read documents on the template in another
-namespace; read those through `GET /documents?template_id=…&namespace=…`.
+namespace; read those through `GET /documents?namespace=…` with
+`template_id` set to the template's canonical id or `ns:VALUE` (a bare
+value is resolved in `namespace`, not the template's), or with
+`template_value=…`, which filters on the value the documents carry.
 The rows are then limited to the namespaces the caller can read.
     """
 )
@@ -512,7 +537,8 @@ async def export_table_csv(
     ns = template.get("namespace")
     if not ns:
         raise HTTPException(status_code=500, detail="Template response missing namespace")
-    await check_namespace_permission(identity, ns, "read")
+    # A template the caller cannot read answers as one that does not exist.
+    await check_readable(identity, ns, _template_not_found(template_id, namespace))
 
     # Extract column definitions and identify array fields
     columns = _extract_columns_from_template(template)
@@ -550,4 +576,16 @@ async def export_table_csv(
         if buf.tell():
             yield buf.getvalue()
 
-    return StreamingResponse(rows(), media_type="text/csv", headers=disposition)
+    # The first chunk is produced before the response starts, so a failure
+    # up to it answers an error status instead of 200 with an empty body. A
+    # failure after it can only end the stream early: the status has been
+    # sent.
+    stream = rows()
+    first = await anext(stream, "")
+
+    async def body() -> AsyncIterator[str]:
+        yield first
+        async for chunk in stream:
+            yield chunk
+
+    return StreamingResponse(body(), media_type="text/csv", headers=disposition)

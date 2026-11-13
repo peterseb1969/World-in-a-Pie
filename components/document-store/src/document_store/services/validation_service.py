@@ -382,10 +382,11 @@ class ValidationService:
             # identity paths name a referent; a stored version carries that
             # answer from the template store. Derived here, by the same rule —
             # whatever the caller put in the field is not taken on trust.
-            template = dict(template_override)
-            template["referent_identity_paths"] = await self._candidate_referent_paths(
-                template
-            )
+            template = await self._composed_candidate(dict(template_override), result)
+            if template is not None:
+                template["referent_identity_paths"] = await self._candidate_referent_paths(
+                    template
+                )
         else:
             template = await self._resolve_template(template_id, result, version=template_version)
         result.timing["2_template_resolution"] = (time.perf_counter() - start) * 1000
@@ -1587,6 +1588,41 @@ class ValidationService:
 
         return leaves
 
+    async def _composed_candidate(
+        self, candidate: dict[str, Any], result: ValidationResult,
+    ) -> dict[str, Any] | None:
+        """An inline candidate as a stored version would be served: with its
+        parent's fields and rules ahead of its own, and the parent's identity
+        when it declares none (``extends`` at ``extends_version``, read
+        composed from the template store). A candidate's own fields cannot
+        repeat a parent's (the template store refuses it), so nothing is
+        overridden. None, with the error on ``result``, when the parent
+        cannot be read."""
+        parent_ref = candidate.get("extends")
+        if not parent_ref:
+            return candidate
+        try:
+            parent = await get_template_store_client().get_template_resolved(
+                parent_ref, version=candidate.get("extends_version"),
+            )
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable(
+                    "template-store", f"parent template {parent_ref!r}", e,
+                ) from e
+            parent = None
+        if parent is None:
+            result.add_error(
+                code="template_unresolvable",
+                message=f"The candidate's parent template '{parent_ref}' cannot be read",
+            )
+            return None
+        candidate["fields"] = [*(parent.get("fields") or []), *(candidate.get("fields") or [])]
+        candidate["rules"] = [*(parent.get("rules") or []), *(candidate.get("rules") or [])]
+        if not candidate.get("identity_fields"):
+            candidate["identity_fields"] = list(parent.get("identity_fields") or [])
+        return candidate
+
     async def _candidate_referent_paths(
         self, template: dict[str, Any]
     ) -> list[str] | None:
@@ -1613,6 +1649,10 @@ class ValidationService:
                     referent = is_referent_field(field)
                     break
                 if field.get("type") != "object" or not field.get("template_ref"):
+                    break
+                if field.get("template_ref_version") is None:
+                    # template-store's rule: an unpinned nested template is
+                    # not followed, so the path names no referent.
                     break
                 fields = await self._nested_template_fields(
                     field["template_ref"], field.get("template_ref_version")

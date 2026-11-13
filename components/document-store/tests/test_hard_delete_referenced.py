@@ -44,12 +44,12 @@ async def _delete(client: AsyncClient, headers: dict, items: list[dict]) -> list
 
 
 def _chapter(namespace: str = FULL) -> dict:
-    return {"template_id": "CHAPTER_Q", "namespace": namespace,
+    return {"template_id": "wip:CHAPTER_Q", "namespace": namespace,
             "data": {"title": f"C-{uuid.uuid4().hex[:8]}"}}
 
 
 def _holder(ref: str, namespace: str = FULL) -> dict:
-    return {"template_id": "HOLDER_Q", "namespace": namespace,
+    return {"template_id": "wip:HOLDER_Q", "namespace": namespace,
             "data": {"name": f"H-{uuid.uuid4().hex[:8]}", "ref": ref}}
 
 
@@ -193,9 +193,9 @@ async def test_a_self_reference_does_not_block(client, auth_headers, namespaces)
 
 async def _molecule_with_two_versions(client, headers) -> str:
     mol_id = f"MOL-{uuid.uuid4().hex[:8]}"
-    [v1] = await _post(client, headers, [{"template_id": "MOLECULE", "namespace": FULL,
+    [v1] = await _post(client, headers, [{"template_id": "wip:MOLECULE", "namespace": FULL,
                                           "data": {"molecule_id": mol_id, "name": "one"}}])
-    [v2] = await _post(client, headers, [{"template_id": "MOLECULE", "namespace": FULL,
+    [v2] = await _post(client, headers, [{"template_id": "wip:MOLECULE", "namespace": FULL,
                                           "data": {"molecule_id": mol_id, "name": "two"}}])
     assert v2["document_id"] == v1["document_id"] and v2["version"] == 2, v2
     return v1["document_id"]

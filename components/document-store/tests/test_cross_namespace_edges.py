@@ -25,15 +25,15 @@ async def _create(client: AsyncClient, headers: dict, namespace: str, template: 
 
 @pytest.fixture
 async def endpoints(client: AsyncClient, auth_headers: dict) -> tuple[str, str]:
-    exp = await _create(client, auth_headers, "wip", "EXPERIMENT", {"experiment_id": "EXP-X", "name": "x"})
-    mol = await _create(client, auth_headers, "xns-closed", "MOLECULE", {"molecule_id": "MOL-X", "name": "x"})
+    exp = await _create(client, auth_headers, "wip", "wip:EXPERIMENT", {"experiment_id": "EXP-X", "name": "x"})
+    mol = await _create(client, auth_headers, "xns-closed", "wip:MOLECULE", {"molecule_id": "MOL-X", "name": "x"})
     assert exp["status"] == "created", exp
     assert mol["status"] == "created", mol
     return exp["document_id"], mol["document_id"]
 
 
 async def _edge(client: AsyncClient, headers: dict, exp_id: str, mol_id: str) -> dict:
-    return await _create(client, headers, "wip", "EXPERIMENT_INPUT",
+    return await _create(client, headers, "wip", "wip:EXPERIMENT_INPUT",
                          {"source_ref": exp_id, "target_ref": mol_id, "role": "input"})
 
 

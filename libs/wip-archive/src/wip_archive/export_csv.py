@@ -137,6 +137,13 @@ class CsvFile:
     rows: int = 0
     columns: list[str] = field(default_factory=list)
 
+    @property
+    def header(self) -> list[str]:
+        """The header line as the file carries it: each column name escaped
+        like a cell (a field name a spreadsheet would run as a formula gets a
+        leading apostrophe). ``columns`` holds the names unescaped."""
+        return [escape_cell(c) for c in self.columns]
+
 
 def _order(columns: set[str], declared: list[str]) -> list[str]:
     """Declared top-level fields first, in template order, each followed by
