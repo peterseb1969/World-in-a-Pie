@@ -36,6 +36,13 @@ EDGE_READER_GROUP = "wip-app-edge"
 # DNS label (an app is served at https://<name>.<hostname>/). The app edge
 # applies the same pattern.
 NAME_PATTERN = r"^[a-z][a-z0-9-]{0,39}[a-z0-9]$"
+# What a stored record's name may be: NAME_PATTERN, plus the trailing hyphen
+# the rule allowed before it was a DNS label. NAME_PATTERN is enforced where
+# a name is written; a record stored before must still load, or one such
+# record fails every read of the collection (the listing the app edge polls,
+# the system backup). It is reported not served (`name_invalid`), and the
+# edge refuses only that record.
+STORED_NAME_PATTERN = r"^[a-z][a-z0-9-]{1,40}$"
 GROUP_PATTERN = r"^[A-Za-z0-9._-]+$"
 HEALTH_PATTERN = r"^/[A-Za-z0-9._~/-]*$"
 
@@ -135,7 +142,7 @@ class AttachmentFields(BaseModel):
 
 
 class AppAttachment(Document, AttachmentFields):
-    name: str = Field(..., pattern=NAME_PATTERN)
+    name: str = Field(..., pattern=STORED_NAME_PATTERN)
     status: Literal["active", "inactive"] = "active"
     managed_by: Literal["wip-deploy"] | None = Field(
         default=None,
@@ -168,7 +175,9 @@ class AttachmentRequest(AttachmentFields):
 # "policy_unavailable" (the Registry cannot use the file; the app edge reads
 # the file on its own and may still serve).
 EdgeState = Literal["serving", "no_app_edge", "policy_unavailable"]
-NotServedReason = Literal["inactive", "upstream_invalid", "no_app_edge", "policy_unavailable"]
+NotServedReason = Literal[
+    "inactive", "name_invalid", "upstream_invalid", "no_app_edge", "policy_unavailable",
+]
 
 _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 
@@ -228,6 +237,9 @@ class AttachmentResponse(AttachmentFields):
     not_served_reason: NotServedReason | None = Field(
         default=None,
         description="Why `served` is false: `inactive` (the record is deactivated), "
+        "`name_invalid` (a record stored before today's name rule, a name ending with a "
+        "hyphen: no origin can carry it, and the edge refuses it; deactivate it and attach "
+        "the app again under a valid name), "
         "`upstream_invalid` (a record stored before today's host rule: the edge refuses "
         "its upstream host), `no_app_edge` (this install runs no app edge), or "
         "`policy_unavailable` (the Registry cannot use the attach policy file; the app "
@@ -239,6 +251,8 @@ class AttachmentResponse(AttachmentFields):
         reason: NotServedReason | None
         if doc.status == "inactive":
             reason = "inactive"
+        elif not re.fullmatch(NAME_PATTERN, doc.name):
+            reason = "name_invalid"
         elif _stored_host_error(doc.upstream):
             reason = "upstream_invalid"
         elif edge == "serving":

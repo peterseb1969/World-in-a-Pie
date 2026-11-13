@@ -1142,8 +1142,11 @@ they run. Without the edge:
 - records already active stay active but are not served, so their apps go
   offline until the edge is back. Reads say so: every attachment in a list or
   get carries `served` (true when it is active and an edge runs) and, when
-  false, `not_served_reason`: `inactive`, `upstream_invalid` (a record
-  stored before the host rule below: the edge refuses its host),
+  false, `not_served_reason`: `inactive`, `name_invalid` (a record stored
+  while a name could end with a hyphen: no origin can carry it and the edge
+  refuses it; deactivate it and attach the app again under a valid name),
+  `upstream_invalid` (a record stored before the host rule below: the edge
+  refuses its host),
   `no_app_edge`, or `policy_unavailable` (the Registry cannot use the attach
   policy file; the app edge reads the file on its own, so what it serves may
   differ). `served` is not a reachability check: the Registry never

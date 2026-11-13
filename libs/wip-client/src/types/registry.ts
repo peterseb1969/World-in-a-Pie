@@ -644,13 +644,16 @@ export interface Attachment extends Required<Omit<AttachmentRequest, 'upstream_t
 }
 
 /**
- * `inactive`: the record is deactivated. `upstream_invalid`: a record stored
+ * `inactive`: the record is deactivated. `name_invalid`: a record stored while
+ * a name could end with a hyphen; no origin can carry it and the app edge
+ * refuses it. `upstream_invalid`: a record stored
  * before the Registry's upstream host rule; the app edge refuses its host.
  * `no_app_edge`: this install runs no app edge. `policy_unavailable`: the
  * attach policy file cannot be used, so the edge serves nothing.
  */
 export type AttachmentNotServedReason =
   | 'inactive'
+  | 'name_invalid'
   | 'upstream_invalid'
   | 'no_app_edge'
   | 'policy_unavailable'

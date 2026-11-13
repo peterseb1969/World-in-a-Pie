@@ -36,7 +36,7 @@ from pymongo.errors import DuplicateKeyError
 from wip_auth import get_identity_string
 
 from ..models.attachment import (
-    NAME_PATTERN,
+    STORED_NAME_PATTERN,
     AppAttachment,
     AttachmentBulkResponse,
     AttachmentBulkResultItem,
@@ -189,7 +189,9 @@ async def upsert_attachments(
 class DeactivateItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(..., pattern=NAME_PATTERN)
+    # Names a stored record, so any name one may carry: a record stored
+    # before today's name rule must stay deactivatable.
+    name: str = Field(..., pattern=STORED_NAME_PATTERN)
 
 
 @router.post(
