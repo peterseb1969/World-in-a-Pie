@@ -151,26 +151,15 @@ async def test_the_migration_leaves_an_install_reservation_without_an_id(client,
 
 
 @pytest.mark.asyncio
-async def test_a_system_backup_carries_it_and_a_restore_gives_it_an_id(
-    client, auth_headers, install_reserves, monkeypatch,
-):
-    """Archived with no id; restored where the install does not reserve the
-    name, it becomes a runtime reservation, which holds one."""
-    from registry.services.reservations import RESERVATIONS_FILE_ENV
-
+async def test_a_system_backup_leaves_it_out(client, auth_headers, install_reserves):
+    """It holds no id and the target's deployer reserves its own names, so it
+    is not archived (the review of 4a479b7f: archived, it came back as a
+    runtime reservation with an id of its own, refusing the namespace restore
+    after it, and its null was unreadable to an older Registry)."""
     prefix = _p("kb")
     await install_reserves(prefix)
     archive = (await client.post(BACKUP, headers=auth_headers)).json()
-    archived = next(r for r in archive["reservations"] if r["prefix"] == prefix)
-    assert archived["namespace_id"] is None and archived["managed_by"] == "wip-deploy"
-
-    # Restore onto a stack whose install does not reserve it.
-    monkeypatch.delenv(RESERVATIONS_FILE_ENV)
-    await RuntimeReservation.find(RuntimeReservation.prefix == prefix).delete()
-    resp = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
-    assert resp.status_code == 200, resp.text
-    r = await _reserved(prefix)
-    assert r is not None and r.managed_by is None and r.namespace_id is not None
+    assert prefix not in {r["prefix"] for r in archive["reservations"]}
 
 
 @pytest.mark.asyncio

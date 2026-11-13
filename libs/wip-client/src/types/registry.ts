@@ -806,6 +806,12 @@ export type SystemRestoreSkipReason =
    * install's that shares the name).
    */
   | 'scope_key_not_restored'
+  /**
+   * A grant archived with no namespace id (no namespace of its name existed
+   * on the source), where a namespace of the name exists here: not the one
+   * it was given for.
+   */
+  | 'unrelated_namespace_here'
 
 export interface SystemRestoreSkipped {
   /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */

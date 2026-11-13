@@ -1300,8 +1300,10 @@ class NamespaceDeletionService:
         try:
             deleted = await self._execute_step(step, journal.namespace)
             if step.store == "mongodb" and step.collection == "namespaces":
-                # The namespace is gone, and its id with it: a reservation
-                # that stays reserves a new namespace of that name.
+                # The namespace is gone, and its id with it: a runtime
+                # reservation that stays reserves a new namespace of that
+                # name (a new id); an install's reservation holds no id until
+                # a namespace of the name is created.
                 from .namespace_identity import after_namespace_deleted
                 await after_namespace_deleted(journal.namespace)
         except _Unreachable as e:

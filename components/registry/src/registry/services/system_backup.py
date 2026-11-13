@@ -58,6 +58,16 @@ Restore rules:
   created under another id does not inherit it. So the system and data
   restores work in either order. A grant the archive holds orphaned is
   written orphaned, and never replaces a grant that is effective here.
+- **A grant archived without a namespace id** was given while no namespace
+  of its name existed on the source (a key-file grant, or a key created
+  listing a namespace not yet created). It is written effective for the
+  namespace that takes the name later, as on the source, and skipped
+  (`unrelated_namespace_here`) where a namespace of the name is here
+  already: that namespace is not the one it was given for.
+- **An install's reservation of an absent namespace is not archived.** It
+  holds no namespace id and only says the source's deployer reserves the
+  name; the target's deployer reserves its own names. One an older archive
+  carries (namespace_id null) is skipped as `managed_on_source`.
 - **A version 1 archive's key scopes become read grants.** Archives are
   version 2 now: a runtime key's namespaces list is a scope only, and every
   read the key has is a grant in the archive. A version 1 archive was mostly
@@ -526,6 +536,7 @@ SkipReason = Literal[
     "out_of_scope_here",        # a scoped restore would replace a key that reaches outside the scope here
     "scope_namespace_absent",   # a version 1 key's list named it, the archive has no id, and it is not here
     "scope_key_not_restored",   # a version 1 key's list named it, and the key here is not the archive's
+    "unrelated_namespace_here",  # archived with no namespace id; a namespace of its name here is another one
 ]
 
 
@@ -561,6 +572,10 @@ def _skip_grant(g: "ArchiveGrant", code: SkipReason, reason: str) -> SkippedReco
 
 
 _MANAGED = "managed by wip-deploy on this instance"
+_INSTALL_RESERVATION = (
+    "the source's install reserved the name and no namespace of it existed; "
+    "this install's deployer reserves its own names"
+)
 _DIFFERS = "differs on this instance; pass overwrite to replace it"
 _OUTSIDE_ARCHIVE_SCOPE = (
     "outside the scope the archive declares; a scoped archive is restored only within it"
@@ -736,6 +751,7 @@ async def build_archive(
         keys, grants, reservations, attachments = _narrow_to_scope(
             scope, keys, grants, reservations, attachments,
         )
+    reservations = _archivable(reservations)
     held = await _held_namespace_ids(grants)
     return SystemArchive(
         created_at=datetime.now(UTC),
@@ -751,6 +767,20 @@ async def build_archive(
         reservations=[_archive_reservation(r) for r in sorted(reservations, key=lambda r: r.prefix)],
         attachments=[_archive_attachment(a) for a in sorted(attachments, key=lambda a: a.name)],
     )
+
+
+def _archivable(reservations: list[RuntimeReservation]) -> list[RuntimeReservation]:
+    """The reservations an archive carries: all but an install's reservation
+    of an absent namespace. That one holds no id and says only "this install's
+    deployer reserves the name"; the target's own deployer re-creates its
+    reservations (as an attachment the deployer manages is not restored).
+    Archived, it would come back as a runtime reservation with an id of its
+    own, which refuses the namespace restore that follows."""
+    return [r for r in reservations if _holds_identity(r)]
+
+
+def _holds_identity(r: RuntimeReservation) -> bool:
+    return r.managed_by is None or bool(r.namespace_id)
 
 
 def _narrow_to_scope(
@@ -1669,6 +1699,11 @@ async def _restore_reservations(
         if scope is not None and r.prefix not in scope.namespaces:
             out.skipped.append(_skip_reservation(r.prefix, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
             continue
+        if r.namespace_id is None:
+            # Only an install's reservation is archived without an id (by
+            # develop builds that archived them; backups leave them out).
+            out.skipped.append(_skip_reservation(r.prefix, "managed_on_source", _INSTALL_RESERVATION))
+            continue
         ns = await Namespace.find_one(Namespace.prefix == r.prefix)
         existing = await RuntimeReservation.find_one(RuntimeReservation.prefix == r.prefix)
         # Restored, a reservation is a runtime one and holds an id. One the
@@ -1779,8 +1814,10 @@ async def _grantable(g: ArchiveGrant, planned: dict[str, str]) -> bool:
     archived with. A namespace or reservation of the same name with another
     id is another namespace: the grant is written orphaned, with its id, and a
     namespace created later with that id activates it. A grant archived
-    without an id (no namespace or reservation held its name on the source)
-    is written as it was: effective, for whichever namespace takes the name.
+    without an id (no namespace held its name on the source) is written as it
+    was, effective, for the namespace that takes the name later; where a
+    namespace of the name is here already, _restore_grant skips it, since
+    that namespace is not the one it was given for.
     """
     if g.namespace_id is None:
         return True
@@ -1791,6 +1828,35 @@ async def _grantable(g: ArchiveGrant, planned: dict[str, str]) -> bool:
         return planned[g.namespace] == g.namespace_id
     doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == g.namespace)
     return doc is not None and doc.namespace_id == g.namespace_id
+
+
+async def _grant_refusal_here(
+    g: ArchiveGrant, existing: NamespaceGrant | None, bind_by_name: bool,
+) -> SkippedRecord | None:
+    """Why this install does not take the grant: the install's files own it,
+    or it was archived with no namespace id and a namespace of its name here
+    is another one (never for a scope read placed by name)."""
+    if await _grant_owned_by_file(g, existing):
+        return _skip_grant(g, "managed_by_deployer", _MANAGED)
+    if not bind_by_name and await _unrelated_namespace_here(g):
+        return _skip_grant(
+            g, "unrelated_namespace_here",
+            "archived with no namespace id: no namespace of this name existed on the "
+            "source, so the namespace of the name here is another one",
+        )
+    return None
+
+
+async def _unrelated_namespace_here(g: ArchiveGrant) -> bool:
+    """An effective grant archived with no namespace id (no namespace held its
+    name on the source) whose name a namespace here holds: that namespace was
+    not the one the grant was given for, so it may not receive it."""
+    return (
+        g.namespace_id is None and not g.orphaned
+        and await Namespace.find_one(
+            {"prefix": g.namespace, "status": {"$in": ["active", "archived"]}}
+        ) is not None
+    )
 
 
 async def _grant_owned_by_file(g: ArchiveGrant, existing: NamespaceGrant | None) -> bool:
@@ -1822,7 +1888,10 @@ async def _restore_grants(
         if skip is not None:
             out.skipped.append(skip)
             continue
-        await _restore_grant(g, out, planned, dry_run=dry_run, overwrite=overwrite)
+        await _restore_grant(
+            g, out, planned, dry_run=dry_run, overwrite=overwrite,
+            bind_by_name=archive.is_scope_read_grant(g),
+        )
     # Only the scope reads written count as restored; a skipped one is
     # under grants.skipped, and an orphaned one also under grants.orphaned.
     written = set(out.created) | set(out.replaced)
@@ -1919,8 +1988,10 @@ def _grant_refusal(
 
 async def _restore_grant(
     g: ArchiveGrant, out: Any, planned: dict[str, str], *, dry_run: bool, overwrite: bool,
+    bind_by_name: bool = False,
 ) -> None:
-    """Restore (or report) one archived grant into ``out``."""
+    """Restore (or report) one archived grant into ``out``. ``bind_by_name``:
+    a version 1 key's scope read, placed by name (_place_scope_grant)."""
     gid = _grant_id(g.namespace, g.subject_type, g.subject)
     # Ownership first: the import writes a key's declared grants whether
     # or not the namespace exists, and "restore the namespace" would send
@@ -1928,8 +1999,9 @@ async def _restore_grant(
     existing = await NamespaceGrant.find_one({
         "namespace": g.namespace, "subject": g.subject, "subject_type": g.subject_type,
     })
-    if await _grant_owned_by_file(g, existing):
-        out.skipped.append(_skip_grant(g, "managed_by_deployer", _MANAGED))
+    refusal = await _grant_refusal_here(g, existing, bind_by_name)
+    if refusal is not None:
+        out.skipped.append(refusal)
         return
     orphaned = g.orphaned or not await _grantable(g, planned)
     if existing is not None:

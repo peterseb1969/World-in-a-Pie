@@ -969,8 +969,11 @@ in §5.5.
 - **The restored namespace's id.** A platform admin's ID-preserving restore
   re-creates the namespace under its archived `namespace_id`, unless a
   namespace on this install already holds that id (restoring beside the
-  original makes a copy, with a new id; the job warns). Onto a name reserved
-  here for another id it is refused (409): release the reservation first. A
+  original makes a copy, with a new id; the job warns). Onto a name a runtime
+  key reserved here for another id it is refused (409): release that
+  reservation first. A name this install reserves for one of its apps holds no
+  id while no namespace of it exists, so the app can stay installed: delete
+  the namespace, then restore it, before the app's bootstrap re-creates it. A
   reservation holder's restore creates the namespace under the reservation's
   id, and a fresh restore under a new one; the job warns when the namespace
   is not the archived one, since the archive's orphaned grants then stay
