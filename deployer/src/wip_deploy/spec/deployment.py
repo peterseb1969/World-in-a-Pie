@@ -207,10 +207,25 @@ class SpecAPIKey(WIPModel):
     nothing, and the Registry keeps what the API sets."""
     owner: str = "system"
     groups: list[str] = Field(default_factory=list)
+    """Authorization groups. Never wip-admins or wip-services: a key in
+    either acts on every namespace and is never scoped, and a spec key always
+    carries `namespaces`. The Registry refuses a key file holding such a key."""
 
     @property
     def secret_name(self) -> str:
         return f"{self.name}-api-key"
+
+    @field_validator("groups")
+    @classmethod
+    def _no_privileged_group(cls, groups: list[str]) -> list[str]:
+        held = sorted(set(groups) & set(RESERVED_GROUPS))
+        if held:
+            raise ValueError(
+                f"groups {held}: a key in wip-admins or wip-services acts on "
+                "every namespace and is never scoped, and a spec key always "
+                "carries `namespaces`; drop the group and give the key grants"
+            )
+        return groups
 
     @model_validator(mode="after")
     def grants_within_namespaces(self) -> SpecAPIKey:

@@ -28,7 +28,9 @@ NO_REGISTERED = "registry.api.api_keys._api_key_provider_or_none"
 
 
 def _entry(name: str, plaintext: str, groups: list[str] | None = None) -> dict:
-    return {"name": name, "key": plaintext, "owner": f"app:{name}", "groups": groups or [],
+    if groups:  # a key in a privileged group is never scoped
+        return {"name": name, "key": plaintext, "owner": f"app:{name}", "groups": groups}
+    return {"name": name, "key": plaintext, "owner": f"app:{name}", "groups": [],
             "namespaces": ["default"], "grants": {"default": "write"}}
 
 

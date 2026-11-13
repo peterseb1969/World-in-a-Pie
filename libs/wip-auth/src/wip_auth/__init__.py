@@ -55,7 +55,7 @@ from .fastapi_helpers import (
     resolve_term_by_fields_or_404,
 )
 from .federation import FederatedGroupPolicy
-from .groups import ADMIN_GROUP, PRIVILEGED_GROUPS, SERVICES_GROUP
+from .groups import ADMIN_GROUP, PRIVILEGED_GROUPS, SERVICES_GROUP, privileged_scope_error
 from .health_cache import DEFAULT_TTL_SECONDS, HealthCache
 from .identity import (
     clear_current_identity,
@@ -146,6 +146,7 @@ __all__ = [
     "KEY_SYNC_KEY",
     "PERMISSION_KEY",
     "PRIVILEGED_GROUPS",
+    "privileged_scope_error",
     "REGISTRY_KEY",
     "SERVICES_GROUP",
     "TEMPLATE_STORE_KEY",

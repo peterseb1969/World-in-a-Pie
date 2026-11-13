@@ -406,7 +406,7 @@ class TestUpdatePersistence:
         await client.patch(
             f"{BASE}/persist-test",
             json={
-                "groups": ["wip-users", "wip-services"],
+                "groups": ["wip-users", "wip-editors"],
                 "description": "changed",
                 "namespaces": ["wip", "dev"],
                 "enabled": False,
@@ -418,7 +418,7 @@ class TestUpdatePersistence:
         resp = await client.get(f"{BASE}/persist-test", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
-        assert data["groups"] == ["wip-users", "wip-services"]
+        assert data["groups"] == ["wip-users", "wip-editors"]
         assert data["description"] == "changed"
         assert data["namespaces"] == ["wip", "dev"]
         assert data["enabled"] is False

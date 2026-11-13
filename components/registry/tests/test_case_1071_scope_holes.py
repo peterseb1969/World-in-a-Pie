@@ -293,7 +293,8 @@ async def test_a_scoped_backup_never_carries_a_stack_wide_key(fresh, auth_header
     client = fresh
     a, _ = await _two_namespaces(client, auth_headers)
     k = _p("stack-wide")
-    await _key(client, auth_headers, k, [a], groups=[group])
+    await _key(client, auth_headers, k, [a])
+    await _set_groups(k, [group])  # stored before the API refused a list on it
 
     archive = await _backup(client, auth_headers, namespaces=a)
     assert k not in {x["name"] for x in archive["api_keys"]}
@@ -307,7 +308,8 @@ async def test_a_scoped_mirror_never_removes_a_stack_wide_key(fresh, auth_header
     a, _ = await _two_namespaces(client, auth_headers)
     archive = await _backup(client, auth_headers, namespaces=a)
     k = _p("stack-wide-here")
-    await _key(client, auth_headers, k, [a], groups=[group])  # only on this stack
+    await _key(client, auth_headers, k, [a])  # only on this stack
+    await _set_groups(k, [group])  # stored before the API refused a list on it
 
     report = await _restore(client, auth_headers, archive, mode="mirror")
     assert k not in report["api_keys"]["deleted"]

@@ -812,6 +812,18 @@ export type SystemRestoreSkipReason =
    * it was given for.
    */
   | 'unrelated_namespace_here'
+  /**
+   * A key in wip-admins or wip-services that carries a namespaces list: a
+   * privileged key is never scoped, and the API refuses to create one. A key
+   * of its name here keeps its record.
+   */
+  | 'scoped_privileged_key'
+  /**
+   * A grant to a key the archive carries but this restore does not write: it
+   * would go to whichever key holds the name here. A key the deployer manages
+   * on both sides keeps the grants the API gave it.
+   */
+  | 'key_not_restored'
 
 export interface SystemRestoreSkipped {
   /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */

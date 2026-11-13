@@ -422,7 +422,7 @@ Other services discover key changes via the Registry's `/api/registry/api-keys/s
 
 API keys carry a `namespaces` field that scopes their access. The rule is:
 
-- **Privileged groups** — `wip-admins` and `wip-services` — are exempt from namespace scoping. A key in either group has access across all namespaces.
+- **Privileged groups** — `wip-admins` and `wip-services` — are exempt from namespace scoping. A key in either group has access across all namespaces, and is never scoped: it carries no `namespaces` list, not even an empty one. The Registry refuses the combination on create and update (422), in the install's key file (the import refuses the file) and in a system restore (the key is skipped, `scoped_privileged_key`); `wip-deploy` refuses a privileged group on a spec key. A key stored with both before the rule is named in the Registry's startup log and under `scoped_privileged_keys` in its `/health`: drop the group (`PATCH groups`), or revoke it and create it again without the list. A key that needs a namespace scope has no privileged group and gets its access through grants.
 - **Every other key** must declare `namespaces` explicitly. Non-privileged keys without a namespace scope receive 403 on every request.
 - **Single-namespace keys** get a convenience: omit the `namespace` query parameter and the server derives it from the key's scope. Multi-namespace keys must always pass `namespace` explicitly.
 

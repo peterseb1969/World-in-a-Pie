@@ -68,6 +68,14 @@ Restore rules:
   holds no namespace id and only says the source's deployer reserves the
   name; the target's deployer reserves its own names. One an older archive
   carries (namespace_id null) is skipped as `managed_on_source`.
+- **A key in wip-admins or wip-services that carries a namespaces list** is
+  skipped (`scoped_privileged_key`): such a key is never scoped, and the API
+  refuses to create one. A key of its name here keeps its record.
+- **A grant to a key the restore does not write is skipped**
+  (`key_not_restored`). A grant follows its key's name, so it would go to
+  whichever key holds the name here, or to the next one created under it.
+  A key the deployer managed on the source and manages here (or loads as a
+  config key) keeps the grants the API gave it.
 - **A version 1 archive's key scopes become read grants.** Archives are
   version 2 now: a runtime key's namespaces list is a scope only, and every
   read the key has is a grant in the archive. A version 1 archive was mostly
@@ -151,7 +159,7 @@ from beanie.exceptions import RevisionIdWasChanged
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 from pymongo.errors import DuplicateKeyError
 
-from wip_auth import PRIVILEGED_GROUPS, get_auth_config
+from wip_auth import PRIVILEGED_GROUPS, get_auth_config, privileged_scope_error
 
 from ..models.api_key import StoredAPIKey, key_name_error
 from ..models.attachment import REMOVED_FIELDS as REMOVED_ATTACHMENT_FIELDS
@@ -378,14 +386,15 @@ def _archived_namespace_ids(archive: "SystemArchive") -> dict[str, str]:
 
 def _scope_gave_read(k: ArchiveKey, scope: ArchiveScope | None) -> bool:
     """Whether a version 1 key's namespaces list gave it read: a runtime key
-    with a list, not the source deployer's, with a valid name. As the startup
-    backfill did, a key in a stack-wide group counts too: such a key that is
-    not a platform admin read its listed namespaces through the list as well.
-    A scoped archive holds only keys inside its scope (holds_key, which also
-    leaves out stack-wide keys). Whether the key is written here is decided
-    at restore (_restore_grants), against this install."""
+    with a list, not the source deployer's, with a valid name. Not a key in a
+    stack-wide group: such a key is never scoped, so a restore does not
+    write it (scoped_privileged_key) and there is no key to give the read
+    to. A scoped archive holds only keys inside its scope (holds_key, which
+    also leaves out stack-wide keys). Whether the key is written here is
+    decided at restore (_restore_grants), against this install."""
     return (
         k.managed_by is None and bool(k.namespaces) and not key_name_error(k.name)
+        and not stack_wide(k.groups)
         and (scope is None or scope.holds_key(k.namespaces, k.groups))
     )
 
@@ -537,6 +546,8 @@ SkipReason = Literal[
     "scope_namespace_absent",   # a version 1 key's list named it, the archive has no id, and it is not here
     "scope_key_not_restored",   # a version 1 key's list named it, and the key here is not the archive's
     "unrelated_namespace_here",  # archived with no namespace id; a namespace of its name here is another one
+    "scoped_privileged_key",    # a key in wip-admins or wip-services with a namespaces list
+    "key_not_restored",         # a grant to an archived key this restore does not write
 ]
 
 
@@ -1416,6 +1427,11 @@ def _key_skip(
     scope = archive.source.scope
     if scope is not None and not scope.holds_key(k.namespaces, k.groups):
         return _skip_named(k.name, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE)
+    scope_error = privileged_scope_error(k.groups, k.namespaces)
+    if scope_error:
+        # The API refuses the combination; a restore does not write it
+        # either. A key of the name here keeps its record.
+        return _skip_named(k.name, "scoped_privileged_key", scope_error)
     if existing is not None and existing.managed_by is not None:
         return _skip_named(k.name, "managed_by_deployer", _MANAGED)
     if k.name in config_key_names:
@@ -1900,6 +1916,7 @@ async def _restore_grants(
     # read is given only to them, never to a key of this install's that
     # merely shares the name (a config key, one the deployer manages here).
     archive_keys = await _keys_left_as_archived(archive, report.api_keys)
+    key_skips = {s.name: s.reason_code for s in report.api_keys.skipped}
     for g in archive.grants:
         skip = _grant_refusal(g, archive.source.scope, user_grants, removed_keys)
         if skip is None and archive.is_scope_read_grant(g):
@@ -1914,11 +1931,43 @@ async def _restore_grants(
         await _restore_grant(
             g, out, planned, dry_run=dry_run, overwrite=overwrite,
             bind_by_name=archive.is_scope_read_grant(g),
+            unrestored_key=_grant_to_unrestored_key(g, archive, archive_keys, key_skips),
         )
     # Only the scope reads written count as restored; a skipped one is
     # under grants.skipped, and an orphaned one also under grants.orphaned.
     written = set(out.created) | set(out.replaced)
     report.scope_read_grants = sorted(archive._scope_read_grants & written)
+
+
+def _grant_to_unrestored_key(
+    g: ArchiveGrant, archive: SystemArchive, archive_keys: set[str], key_skips: dict[str, str],
+) -> SkippedRecord | None:
+    """A grant to a key the archive carries but this restore does not leave
+    as the archive's key, or None.
+
+    A grant follows the key's name, so written it would go to whichever key
+    holds the name here: none (a later key of the name would inherit it), or
+    another one. The exception is the deployer's own key: one wip-deploy
+    managed on the source, held here by a key the deployer manages or a
+    config key, is the install's key of that name, and its grants the API
+    set are restored as before (the ones the key file owns are skipped as
+    managed_by_deployer). Grants to keys the archive does not carry are
+    written as any grant (see the scoped-archive warning)."""
+    if g.subject_type != "api_key" or g.subject in archive_keys:
+        return None
+    archived = next((k for k in archive.api_keys if k.name == g.subject), None)
+    if archived is None:
+        return None
+    if archived.managed_by is not None and key_skips.get(g.subject) in (
+        "managed_by_deployer", "config_key_name",
+    ):
+        return None
+    return _skip_grant(
+        g, "key_not_restored",
+        "its key is in the archive but this restore does not write it (see the "
+        "key's own entry under api_keys); written, the grant would go to whichever "
+        "key holds the name here",
+    )
 
 
 async def _keys_left_as_archived(archive: SystemArchive, keys: RecordReport) -> set[str]:
@@ -2011,10 +2060,12 @@ def _grant_refusal(
 
 async def _restore_grant(
     g: ArchiveGrant, out: Any, planned: dict[str, str], *, dry_run: bool, overwrite: bool,
-    bind_by_name: bool = False,
+    bind_by_name: bool = False, unrestored_key: SkippedRecord | None = None,
 ) -> None:
     """Restore (or report) one archived grant into ``out``. ``bind_by_name``:
-    a version 1 key's scope read, placed by name (_place_scope_grant)."""
+    a version 1 key's scope read, placed by name (_place_scope_grant).
+    ``unrestored_key``: the skip for a grant whose key this restore does not
+    write, reported after the install's own refusals (the more specific)."""
     gid = _grant_id(g.namespace, g.subject_type, g.subject)
     # Ownership first: the import writes a key's declared grants whether
     # or not the namespace exists, and "restore the namespace" would send
@@ -2022,7 +2073,7 @@ async def _restore_grant(
     existing = await NamespaceGrant.find_one({
         "namespace": g.namespace, "subject": g.subject, "subject_type": g.subject_type,
     })
-    refusal = await _grant_refusal_here(g, existing, bind_by_name)
+    refusal = await _grant_refusal_here(g, existing, bind_by_name) or unrestored_key
     if refusal is not None:
         out.skipped.append(refusal)
         return

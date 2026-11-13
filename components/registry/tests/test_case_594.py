@@ -25,12 +25,12 @@ BASE = "/api/registry/api-keys"
 async def _create_key_with_groups(
     client: AsyncClient, auth_headers: dict, name: str, groups: list[str]
 ) -> str:
-    """Create a runtime key with the given groups; return its plaintext."""
-    resp = await client.post(
-        BASE,
-        json={"name": name, "groups": groups, "namespaces": ["wip"]},
-        headers=auth_headers,
-    )
+    """Create a runtime key with the given groups; return its plaintext. A
+    key in a privileged group is never scoped, so only the others get a list."""
+    body: dict = {"name": name, "groups": groups}
+    if not {"wip-admins", "wip-services"} & set(groups):
+        body["namespaces"] = ["wip"]
+    resp = await client.post(BASE, json=body, headers=auth_headers)
     assert resp.status_code == 201, resp.text
     plaintext = resp.json()["plaintext_key"]
     assert plaintext

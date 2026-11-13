@@ -236,6 +236,35 @@ async def _startup_maintenance() -> None:
 
 
 
+async def _report_stored_keys_made_before_rules() -> None:
+    """Name, loudly, the stored keys a rule made since then refuses; they
+    are reported, never rewritten.
+
+    A key stored under a name new keys may not take is also read as the key
+    its name spells: it holds that key's grants. A key in a privileged group
+    that also carries a namespaces list is scoped by the stores and not by
+    the Registry's platform doors."""
+    import logging
+
+    from .models.api_key import key_name_error
+
+    log = logging.getLogger(__name__)
+    for doc in await StoredAPIKey.find_all().to_list():
+        name_error = key_name_error(doc.name)
+        if name_error:
+            log.critical(
+                "API key %r: %s. It is also read as that key; revoke it and "
+                "create it again under another name.", doc.name, name_error,
+            )
+    for name in await key_import.scoped_privileged_keys():
+        log.critical(
+            "API key %r is in a privileged group and carries a namespaces list; "
+            "a privileged key is never scoped, and the services disagree about "
+            "this one. Drop the group (PATCH groups), or revoke it and create it "
+            "again without the list.", name,
+        )
+
+
 async def _start_key_management(api_key_provider: APIKeyProvider) -> asyncio.Task:
     """Set the runtime salt, import the key file, load the runtime keys into
     the provider (warning about names and hashes that need attention),
@@ -266,20 +295,7 @@ async def _start_key_management(api_key_provider: APIKeyProvider) -> asyncio.Tas
     for doc in runtime_docs:
         api_key_provider.add_key(key_shadowing.runtime_record(doc))
     print(f"Loaded {len(runtime_docs)} runtime API key(s) from MongoDB.")
-    # A key stored under a name new keys may not take (made before the
-    # rule) is also read as the key its name spells: it holds that key's
-    # grants. Name it loudly so an operator revokes and re-creates it.
-    import logging
-
-    from .models.api_key import key_name_error
-
-    for doc in await StoredAPIKey.find_all().to_list():
-        name_error = key_name_error(doc.name)
-        if name_error:
-            logging.getLogger(__name__).critical(
-                "API key %r: %s. It is also read as that key; revoke it and "
-                "create it again under another name.", doc.name, name_error,
-            )
+    await _report_stored_keys_made_before_rules()
     # A legacy SHA-256 hash is unsalted by bcrypt and fast to attack: the
     # salt is not secret, so only the key's own entropy protects it.
     for doc in runtime_docs:
@@ -411,6 +427,9 @@ async def health_check():
             # while the previous import keeps serving, so the Registry stays
             # healthy. The log says why.
             "key_file_import": key_file_state(),
+            # Stored keys in a privileged group that carry a namespaces list,
+            # a combination the API refuses; empty when there are none.
+            "scoped_privileged_keys": await key_import.scoped_privileged_keys(),
         }
     except Exception as e:
         import logging

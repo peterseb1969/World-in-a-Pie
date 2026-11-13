@@ -58,7 +58,7 @@ from typing import Any, Literal
 
 from pydantic import TypeAdapter, ValidationError
 
-from wip_auth import APIKeyProvider, APIKeyRecord
+from wip_auth import PRIVILEGED_GROUPS, APIKeyProvider, APIKeyRecord, privileged_scope_error
 from wip_auth.providers.api_key import api_key_prehash, hash_api_key, prehash_matches
 
 from ..models.api_key import StoredAPIKey, key_name_error
@@ -132,6 +132,16 @@ def is_dormant(doc: StoredAPIKey, config_key_names: Iterable[str]) -> bool:
     return doc.managed_by is not None and doc.name in set(config_key_names)
 
 
+async def scoped_privileged_keys() -> list[str]:
+    """Names of the stored keys in a privileged group that carry a
+    namespaces list: a combination the API, the key-file import and the
+    restore refuse, so only a key stored before the rule has it."""
+    docs = await StoredAPIKey.find(
+        {"groups": {"$in": sorted(PRIVILEGED_GROUPS)}, "namespaces": {"$ne": None}}
+    ).to_list()
+    return sorted(d.name for d in docs if privileged_scope_error(d.groups, d.namespaces))
+
+
 def _digest(path: str | None) -> str | None:
     if not path:
         return None
@@ -182,6 +192,9 @@ def _read_key_file() -> tuple[list[dict[str, Any]] | None, str | None]:
         name_error = key_name_error(str(entry.get("name")))
         if name_error:
             return None, f"{path}: {name_error}"
+        scope_error = privileged_scope_error(entry.get("groups"), entry.get("namespaces"))
+        if scope_error:
+            return None, f"{path}: key '{entry.get('name')}': {scope_error}"
     return entries, None
 
 

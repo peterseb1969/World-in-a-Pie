@@ -19,6 +19,7 @@ from wip_auth import (
     UserIdentity,
     get_identity_string,
     hash_api_key,
+    privileged_scope_error,
 )
 from wip_auth.key_sync import RUNTIME_SALT_HEADER
 
@@ -278,6 +279,7 @@ async def create_api_key(
     provider = _get_provider()
 
     _refuse_past_expiry(request.expires_at)
+    _refuse_scoped_privileged(request.groups, request.namespaces)
 
     # CASE-450: grant_permission without a namespace scope is meaningless —
     # there is nothing to grant on.
@@ -555,6 +557,7 @@ async def update_api_key(
         raise HTTPException(status_code=404, detail=f"Runtime key '{name}' not found")
 
     _refuse_past_expiry(request.expires_at)
+    _refuse_scope_change(doc, request)
     reserved = await _reserved_by(name)
     if request.namespaces is not None:
         _refuse_dropping_reserved(name, reserved, doc.namespaces, request.namespaces)
@@ -595,6 +598,28 @@ def _refuse_past_expiry(expires_at: datetime | None) -> None:
             detail=f"expires_at {expires_at.isoformat()} has already passed "
             "(an expiry without an offset is read as UTC)",
         )
+
+
+def _refuse_scoped_privileged(groups: list[str] | None, namespaces: list[str] | None) -> None:
+    """Refuse a key that would be in a privileged group and carry a
+    namespaces list (wip_auth.privileged_scope_error says why). A restore or
+    key-file import refuses the same combination by its own report."""
+    error = privileged_scope_error(groups, namespaces)
+    if error:
+        raise HTTPException(status_code=422, detail=f"groups and namespaces: {error}")
+
+
+def _refuse_scope_change(doc: StoredAPIKey, request: APIKeyUpdateRequest) -> None:
+    """Refuse an update whose groups and scope together would make a scoped
+    privileged key. Only a change of either is checked: a key stored with
+    both before the rule can still be disabled, described or given another
+    expiry."""
+    if request.groups is None and request.namespaces is None:
+        return
+    _refuse_scoped_privileged(
+        request.groups if request.groups is not None else doc.groups,
+        request.namespaces if request.namespaces is not None else doc.namespaces,
+    )
 
 
 def _refuse_dropping_reserved(
@@ -651,6 +676,7 @@ async def add_key_namespace(
             status_code=400,
             detail=f"Runtime key '{name}' is not namespace-scoped; there is no scope to widen",
         )
+    _refuse_scoped_privileged(doc.groups, [*doc.namespaces, prefix])
     permission = request.permission or ("admin" if request.reserve is not None else "read")
     if request.reserve is not None:
         if permission != "admin":

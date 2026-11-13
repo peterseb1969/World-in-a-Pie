@@ -26,9 +26,9 @@ These grants are now placed more carefully:
 - **Only the archive's own key gets one.** A key of this install that shares
   the name (a config key, or one wip-deploy manages) is skipped with the new
   reason `scope_key_not_restored`.
-- **A key in a stack-wide group gets its read back too**, as the startup
-  backfill gave it, unless the archive is scoped (a scoped archive holds no
-  such key).
+- **A key in a stack-wide group gets no read.** A key in wip-admins or
+  wip-services is never scoped, so the restore skips one that carries a list
+  (`scoped_privileged_key`, see CASE-1314) and writes no read for it.
 - **`scope_read_grants` lists only the reads written** (or, in a dry run, to
   be written). A skipped one is under `grants.skipped`; one written orphaned
   is also under `grants.orphaned`.

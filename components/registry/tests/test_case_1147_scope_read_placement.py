@@ -11,7 +11,7 @@ where that namespace is, and only for the archive's own key:
   reservation, which holds no id yet, places nothing, and a skip says to
   restore again after the namespace;
 - a key of this install that shares the name gets nothing;
-- a key in a stack-wide group gets its read, as the startup backfill gave it;
+- a key in a stack-wide group is never scoped: it is skipped and gets no read;
 - the report lists only the reads written.
 """
 
@@ -141,22 +141,19 @@ async def test_a_key_of_this_install_sharing_the_name_gets_no_scope_read(client,
 
 
 @pytest.mark.asyncio
-async def test_a_stack_wide_keys_scope_read_comes_back(client, auth_headers):
+async def test_a_stack_wide_key_with_a_list_is_skipped_and_gets_no_read(client, auth_headers):
     prefix = _p("svc")
-    archive, name, plaintext = await _scope_key_archive(
-        client, auth_headers, prefix, groups=["wip-services"],
-    )
+    archive, name, _ = await _scope_key_archive(client, auth_headers, prefix)
+    # Made before the API refused a list on a key in wip-services.
+    next(k for k in archive["api_keys"] if k["name"] == name)["groups"] = ["wip-services"]
     await _wipe()
 
     report = await _restore(client, auth_headers, archive, dry_run=False)
-    gid = f"{prefix}/api_key:{name}"
-    assert gid in report["scope_read_grants"]
-    grant = await NamespaceGrant.find_one({"namespace": prefix, "subject": name})
-    assert grant is not None and grant.permission == "read" and not grant.orphaned
-    r = await client.get(
-        f"{BASE}/my/namespaces/{prefix}/permission", headers={"X-API-Key": plaintext},
-    )
-    assert r.status_code == 200 and r.json()["permission"] in ("read", "write", "admin")
+    skipped = {(s["id"], s["reason_code"]) for s in report["api_keys"]["skipped"]}
+    assert (name, "scoped_privileged_key") in skipped
+    assert f"{prefix}/api_key:{name}" not in report["scope_read_grants"]
+    assert await StoredAPIKey.find_one(StoredAPIKey.name == name) is None
+    assert await NamespaceGrant.find_one({"namespace": prefix, "subject": name}) is None
 
 
 @pytest.mark.asyncio

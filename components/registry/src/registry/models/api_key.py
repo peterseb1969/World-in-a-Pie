@@ -18,6 +18,16 @@ from pymongo import IndexModel
 
 from ..services.reservations import ReservationSettings
 
+KEY_GROUPS_DESCRIPTION = (
+    "Authorization groups. A key in wip-admins or wip-services acts on every "
+    "namespace and is never scoped: it carries no `namespaces` list (422)."
+)
+KEY_NAMESPACES_DESCRIPTION = (
+    "Namespace scope (None = unrestricted, for a key in wip-admins or "
+    "wip-services only). A key in either group cannot carry a list, an empty "
+    "one included (422); a scoped key gets its access through grants."
+)
+
 KEY_EXPIRES_AT_DESCRIPTION = (
     "When the key stops authenticating, in UTC; a value without an offset is "
     "read as UTC. None = never."
@@ -133,15 +143,13 @@ class APIKeyCreateRequest(BaseModel):
             raise ValueError(error)
         return v
     owner: str = Field(default="system", description="Owner identifier")
-    groups: list[str] = Field(default_factory=list, description="Authorization groups")
+    groups: list[str] = Field(default_factory=list, description=KEY_GROUPS_DESCRIPTION)
     description: str | None = Field(default=None, description="What this key is for")
     expires_at: datetime | None = Field(
         default=None,
         description=KEY_EXPIRES_AT_DESCRIPTION + " An expiry already past is refused (422).",
     )
-    namespaces: list[str] | None = Field(
-        default=None, description="Namespace scope (None = unrestricted)"
-    )
+    namespaces: list[str] | None = Field(default=None, description=KEY_NAMESPACES_DESCRIPTION)
     grant_permission: Literal["read", "write", "admin"] | None = Field(
         default=None,
         description=(
@@ -256,8 +264,17 @@ class APIKeyUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     description: str | None = None
-    groups: list[str] | None = None
-    namespaces: list[str] | None = None
+    groups: list[str] | None = Field(
+        default=None,
+        description="The key's new groups; null or left out keeps them. A key in "
+        "wip-admins or wip-services carries no `namespaces` list: a change that "
+        "would leave it with both is refused (422).",
+    )
+    namespaces: list[str] | None = Field(
+        default=None,
+        description="The key's new namespace scope; null or left out keeps it. "
+        "A key in wip-admins or wip-services cannot carry a list (422).",
+    )
     expires_at: datetime | None = Field(
         default=None,
         description=(

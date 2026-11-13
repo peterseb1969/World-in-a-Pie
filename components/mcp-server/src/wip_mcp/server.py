@@ -408,7 +408,8 @@ namespaces appear), a peer in a namespace the caller cannot read reports
 ### API Key Namespace Scoping
 Non-privileged API keys MUST have an explicit `namespaces` list. Keys without
 namespace scoping that are not in `wip-admins` or `wip-services` get no access
-(all namespaces appear as 404).
+(all namespaces appear as 404). A key in `wip-admins` or `wip-services` is
+never scoped: creating or updating one with a `namespaces` list is refused (422).
 
 **Single-namespace keys** get automatic namespace derivation: when the caller
 omits the `namespace` parameter, WIP derives it from the key's single namespace.
