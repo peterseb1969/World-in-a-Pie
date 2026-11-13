@@ -19,10 +19,13 @@
 #   3. Generates a backend-focused CLAUDE.md (overwrites any existing)
 #   4. Copies backend slash commands to .claude/commands/ (deletes any existing
 #      *.md in that directory first — custom commands will be lost)
-#   4b. Merges the scaffold's permission/hook baseline into the committed
+#   4a. Merges the scaffold's permission/hook baseline into the committed
 #       .claude/settings.json on every run (CASE-446, CASE-882): baseline
 #       entries added and retired, entries added locally kept;
 #       .claude/settings.local.json is never touched
+#   4b. Points core.hooksPath at scripts/git-hooks, so the pre-commit hook runs
+#       CI's complexity ratchet on each commit (an operator's own hooks path is
+#       left alone)
 #   5. Verifies MCP connectivity (local target only)
 #
 # Re-sync (an already-set-up clone, auto-detected — no flag):
@@ -351,15 +354,19 @@ _venv_install_allowed() {
 # pre-existing .venv skips the create branch above. Without pytest,
 # scripts/wip-test.sh fails with "pytest: command not found" well after setup
 # reported success — so a failed install here is reported, not swallowed.
-if ! "$VENV_PYTHON" -c "import pytest, ruff, mypy, build" 2>/dev/null \
+# radon is pinned to CI's version (.gitea/workflows/test.yaml): its complexity
+# counts shift across releases, and the pre-commit hook enabled below runs the
+# same ratchet CI does, so a different radon would let the two disagree.
+if ! "$VENV_PYTHON" -c "import pytest, ruff, mypy, build, radon" 2>/dev/null \
     && _venv_install_allowed "test tools"; then
-    echo "   Installing test tools (pytest, ruff, mypy, build)..."
-    if "$VENV_PYTHON" -m pip install pytest ruff mypy build -q 2>&1; then
+    echo "   Installing test tools (pytest, ruff, mypy, build, radon)..."
+    if "$VENV_PYTHON" -m pip install pytest ruff mypy build radon==6.0.1 -q 2>&1; then
         echo "   Test tools installed"
     else
         echo ""
-        echo "   WARNING: test tool install failed — scripts/wip-test.sh will not run."
-        echo "   Fix manually: .venv/bin/pip install pytest ruff mypy build"
+        echo "   WARNING: test tool install failed — scripts/wip-test.sh will not run,"
+        echo "   and the pre-commit complexity ratchet will refuse every commit."
+        echo "   Fix manually: .venv/bin/pip install pytest ruff mypy build radon==6.0.1"
         echo ""
     fi
 fi
@@ -468,7 +475,7 @@ if [[ "$TARGET" == "local" ]]; then
                 | grep -oE 'com\.docker\.compose\.project\.working_dir[=:][^, ]*' | sed -E 's/^[^=:]*[=:]//; s/\]$//' \
                 | grep '/\.wip-deploy/' | xargs -n1 basename 2>/dev/null | sort -u || true)"
         fi
-        _all="$(ls -d "$HOME"/.wip-deploy/*/deployment.deployer-state 2>/dev/null | xargs -n1 dirname 2>/dev/null | xargs -n1 basename 2>/dev/null | sort -u || true)"
+        _all="$(for _state in "$HOME"/.wip-deploy/*/deployment.deployer-state; do [ -e "$_state" ] && basename "$(dirname "$_state")"; done | sort -u || true)"
         if [ "$(printf '%s\n' "$_running" | grep -c .)" -eq 1 ]; then
             INSTALL_NAME="$_running"; INSTALL_SOURCE="the one running install"
         elif [ -z "$_running" ] && [ "$(printf '%s\n' "$_all" | grep -c .)" -eq 1 ]; then
@@ -633,6 +640,25 @@ if $TIER3; then TIER_FLAG="--tier3"; fi
 PYTHONPATH="$WIP_ROOT/scaffold/src${PYTHONPATH:+:$PYTHONPATH}" \
     "$VENV_PYTHON" -m wip_scaffold backend --wip-root "$WIP_ROOT" $TIER_FLAG $MCP_FLAGS
 echo "   Written: CLAUDE.md (tier $($TIER3 && echo 3 || echo 2))"
+
+# --- 4b. Git hooks: the pre-commit complexity ratchet ---
+# scripts/git-hooks/pre-commit runs the ratchet CI's lint job runs on each
+# pushed commit, against the staged snapshot. The ratchet compares commits and
+# never reads the working tree, so a bare run before committing checks the
+# previous commit and passes, and the new commit fails in CI; running it from a
+# hook is what makes it check the commit being made. A hooks path the operator
+# set to something else is left alone and reported, never overwritten.
+if git -C "$WIP_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    HOOKS_PATH="$(git -C "$WIP_ROOT" config --get core.hooksPath || true)"
+    if [[ -z "$HOOKS_PATH" || "$HOOKS_PATH" == "scripts/git-hooks" ]]; then
+        git -C "$WIP_ROOT" config core.hooksPath scripts/git-hooks
+        echo "4b. Git hooks: pre-commit runs the complexity ratchet (core.hooksPath = scripts/git-hooks)"
+    else
+        echo "4b. Git hooks: core.hooksPath is already '$HOOKS_PATH' — left as is."
+        echo "    To run the complexity ratchet before each commit, chain"
+        echo "    scripts/git-hooks/pre-commit from that hooks directory."
+    fi
+fi
 
 # --- Tier-3 provisioning (CASE-463, CASE-517, CASE-537) ---
 # Provisioning (kb.json write, served-client install, /wip-case stub) runs only

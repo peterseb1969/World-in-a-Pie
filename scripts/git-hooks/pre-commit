@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Pre-commit: run CI's complexity ratchet on what is about to be committed.
+#
+# CI's lint job runs scripts/check-complexity-ratchet.py on each pushed head
+# commit (--base HEAD~1 --head HEAD) and fails one that adds a function ranked
+# C or worse, or raises the excess by more than 3. The script compares commits
+# and never reads the working tree, so a bare run before committing checks the
+# previous commit, passes, and the new commit fails in CI. This hook makes the
+# staged snapshot a commit object (git write-tree + git commit-tree: nothing is
+# written to the branch, the index or the working tree) and ratchets that
+# against HEAD.
+#
+# Enable in a clone:  git config core.hooksPath scripts/git-hooks
+# Skip once:          git commit --no-verify
+#
+# On `git commit --amend` the base is still HEAD (the commit being replaced),
+# so the hook checks the amendment's change, not the amended commit as a whole.
+
+set -euo pipefail
+
+root=$(git rev-parse --show-toplevel)
+python="$root/.venv/bin/python"
+script="$root/scripts/check-complexity-ratchet.py"
+
+# The first commit of a repository has nothing to compare against.
+parent=$(git rev-parse -q --verify HEAD) || exit 0
+[ -f "$script" ] || exit 0
+
+if [ ! -x "$python" ] || ! "$python" -c "import radon" 2>/dev/null; then
+    echo "pre-commit: the complexity ratchet needs radon 6.0.1 in $root/.venv" >&2
+    echo "  (CI pins that version). Install it there, or commit with --no-verify" >&2
+    echo "  knowing CI's lint job runs the same check on the pushed commit." >&2
+    exit 1
+fi
+
+tree=$(git write-tree)
+staged=$(git commit-tree "$tree" -p "$parent" -m "pre-commit ratchet snapshot")
+
+if ! "$python" "$script" --base "$parent" --head "$staged"; then
+    echo "pre-commit: refused by the complexity ratchet (the same check CI runs)." >&2
+    exit 1
+fi
