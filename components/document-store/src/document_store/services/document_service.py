@@ -1597,7 +1597,7 @@ class DocumentService:
             return False
         latest = await coll.find_one(
             {"namespace": namespace, "document_id": document_id},
-            {"_id": 1, "version": 1},
+            {"_id": 1, "version": 1, "status": 1, "updated_at": 1, "updated_by": 1},
             sort=[("version", -1)],
         )
         if latest is None:
@@ -1606,12 +1606,44 @@ class DocumentService:
         stamp = (prior or {}).get(latest["_id"])
         if stamp is not None:
             update["updated_at"], update["updated_by"] = stamp
-        await coll.update_one({"_id": latest["_id"]}, {"$set": update})
+        result = await coll.update_one(
+            {"_id": latest["_id"], "status": {"$ne": DocumentStatus.ACTIVE.value}},
+            {"$set": update},
+        )
+        if result.modified_count == 0:
+            return False
+        if await self._another_active_row(namespace, document_id, latest["_id"]):
+            # A concurrent write gave the document an active version between
+            # the check above and this repair: the repair steps aside, so the
+            # document keeps one active row, the one that write made.
+            await coll.update_one(
+                {"_id": latest["_id"], "status": DocumentStatus.ACTIVE.value},
+                {"$set": {
+                    "status": latest.get("status"),
+                    "updated_at": latest.get("updated_at"),
+                    "updated_by": latest.get("updated_by"),
+                }},
+            )
+            logger.warning(
+                "Document %s/%s: a concurrent write made a version active while a "
+                "failed write was repaired; the repair of version %s was undone",
+                namespace, document_id, latest.get("version"),
+            )
+            return False
         logger.warning(
             "Document %s/%s had no active version after a failed write; "
             "reactivated version %s", namespace, document_id, latest.get("version"),
         )
         return True
+
+    @staticmethod
+    async def _another_active_row(namespace: str, document_id: str, row_id: Any) -> bool:
+        """Whether the document has an active row other than ``row_id``."""
+        return await Document.get_motor_collection().find_one(
+            {"namespace": namespace, "document_id": document_id,
+             "status": DocumentStatus.ACTIVE.value, "_id": {"$ne": row_id}},
+            {"_id": 1},
+        ) is not None
 
     async def _insert_or_restore(
         self,

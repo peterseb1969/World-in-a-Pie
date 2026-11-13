@@ -19,11 +19,13 @@ import contextlib
 import logging
 import os
 import re
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import httpx
 from bson import ObjectId
+from pymongo import ReturnDocument
 
 from wip_auth.cache_events import announce_namespace_deleted
 from wip_auth.startup import retry_until_done
@@ -45,10 +47,20 @@ _recovery_sleep = asyncio.sleep  # replaced in tests
 
 # Journal statuses resume_deletion picks up: not finished cleanly.
 _RESUMABLE = ("in_progress", "failed", "completed_with_warnings")
+# How long a run's claim on a journal holds without a write. Every journal
+# write refreshes it; a run that died stops refreshing, and after this the
+# next run (the recovery loop, or a resume) takes the journal over.
+_CLAIM_LEASE = timedelta(minutes=15)
 
 
 class DeletionAlreadyRunning(Exception):
     """The deletion's journal is being run already; a second run would race it."""
+
+
+class _ClaimLost(DeletionAlreadyRunning):
+    """This run no longer holds the journal: another run took it over after
+    this one stopped writing for longer than the lease. This run stops
+    without writing anything more."""
 
 
 class _Unreachable(Exception):
@@ -251,6 +263,73 @@ async def _drop_key_batch(step: DeletionStep) -> None:
     """A completed step's keys are no longer needed."""
     if step.storage_keys_batch:
         await _key_batches().delete_one({"_id": ObjectId(step.storage_keys_batch)})
+
+
+def _claimed_at_creation(journal: DeletionJournal) -> None:
+    """A journal is created claimed by the run that creates it."""
+    journal.run_token = uuid.uuid4().hex
+    journal.run_heartbeat = datetime.now(UTC)
+
+
+async def _claim(journal: DeletionJournal, statuses: tuple[str, ...]) -> DeletionJournal | None:
+    """Claim ``journal`` for a run, in one conditional update: only while its
+    status is one of ``statuses`` and no live run holds it (no token, or a
+    heartbeat older than the lease). Sets it in progress. Returns the journal
+    as stored after the claim, the copy the run works from, or None when the
+    claim was not taken."""
+    now = datetime.now(UTC)
+    doc = await DeletionJournal.get_motor_collection().find_one_and_update(
+        {
+            "_id": journal.id,
+            "status": {"$in": list(statuses)},
+            "$or": [
+                {"run_token": None},
+                {"run_heartbeat": None},
+                {"run_heartbeat": {"$lt": now - _CLAIM_LEASE}},
+            ],
+        },
+        {"$set": {
+            "status": "in_progress", "completed_at": None,
+            "run_token": uuid.uuid4().hex, "run_heartbeat": now,
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
+    return None if doc is None else DeletionJournal.model_validate(doc)
+
+
+async def _write_journal(journal: DeletionJournal, fields: dict[str, Any]) -> None:
+    """Set ``fields`` on the stored journal while this run still holds it.
+    Raises _ClaimLost when another run has taken it over."""
+    result = await DeletionJournal.get_motor_collection().update_one(
+        {"_id": journal.id, "run_token": journal.run_token},
+        {"$set": {**fields, "run_heartbeat": datetime.now(UTC)}},
+    )
+    if result.matched_count == 0:
+        raise _ClaimLost(
+            f"The deletion of namespace '{journal.namespace}' was taken over by another run"
+        )
+
+
+async def _write_step(journal: DeletionJournal, i: int, status: str | None = None) -> None:
+    """Record step ``i``'s outcome (and the journal's status, when given)."""
+    step = journal.steps[i]
+    fields: dict[str, Any] = {
+        f"steps.{i}.status": step.status,
+        f"steps.{i}.error": step.error,
+        f"steps.{i}.deleted_count": step.deleted_count,
+        f"steps.{i}.completed_at": step.completed_at,
+    }
+    if status is not None:
+        fields["status"] = status
+    await _write_journal(journal, fields)
+
+
+async def _release(journal: DeletionJournal) -> None:
+    """Give the journal up at the end of a run, if this run still holds it."""
+    await DeletionJournal.get_motor_collection().update_one(
+        {"_id": journal.id, "run_token": journal.run_token},
+        {"$set": {"run_token": None, "run_heartbeat": None}},
+    )
 
 
 def _count_step(summary: dict[str, int], step: DeletionStep) -> None:
@@ -590,6 +669,7 @@ class NamespaceDeletionService:
         journal = await self._build_journal(prefix, force, requested_by, inbound_refs)
         journal.namespace_id = ns.namespace_id
         journal.requested_note = requested_note
+        _claimed_at_creation(journal)
         await journal.create()
         logger.info("Deletion journal created for '%s' with %d steps", prefix, len(journal.steps))
 
@@ -622,18 +702,25 @@ class NamespaceDeletionService:
             inbound_refs = await self._check_inbound_references(prefix)
             journal = await self._build_journal(prefix, True, "resume-delete", inbound_refs)
             journal.namespace_id = ns.namespace_id
+            _claimed_at_creation(journal)
             await journal.create()
             logger.warning(
                 "Namespace '%s' was locked with no deletion journal: built one (%d steps)",
                 prefix, len(journal.steps),
             )
-        elif journal.status != "in_progress":
-            logger.warning(
-                "Resuming the %s deletion of namespace '%s'", journal.status, prefix,
-            )
-            journal.status = "in_progress"
-            journal.completed_at = None
-            await journal.save()
+        else:
+            if journal.status != "in_progress":
+                logger.warning(
+                    "Resuming the %s deletion of namespace '%s'", journal.status, prefix,
+                )
+            # The claim is the gate and the status write in one: a resume
+            # that loses it to a running deletion writes nothing.
+            claimed = await _claim(journal, _RESUMABLE)
+            if claimed is None:
+                raise DeletionAlreadyRunning(
+                    f"The deletion of namespace '{prefix}' is running already"
+                )
+            journal = claimed
 
         await self._execute_journal(journal)
         return journal
@@ -659,6 +746,16 @@ class NamespaceDeletionService:
                 # it keeps the loop alive in case that run defers a step.
                 remaining += 1
                 continue
+            claimed = await _claim(journal, ("in_progress",))
+            if claimed is None:
+                # Run by another process (its claim is live), or finished
+                # since the read. Counted while it is still in progress.
+                if await DeletionJournal.find_one(
+                    {"_id": journal.id, "status": "in_progress"}
+                ):
+                    remaining += 1
+                continue
+            journal = claimed
             logger.warning(
                 "Found incomplete deletion for namespace '%s', resuming...",
                 journal.namespace,
@@ -969,8 +1066,15 @@ class NamespaceDeletionService:
         self._running.add(journal_id)
         try:
             await self._run_steps(journal)
+        except _ClaimLost:
+            logger.warning(
+                "Deletion of namespace '%s' was taken over by another run; this run stops",
+                journal.namespace,
+            )
+            raise
         finally:
             self._running.discard(journal_id)
+            await _release(journal)
             # After every run, finished or not: whatever it removed may sit in
             # other services' caches, and reads during the run may have cached
             # the namespace's ids again. A repeated flush costs nothing.
@@ -980,20 +1084,16 @@ class NamespaceDeletionService:
         summary: dict[str, int] = {}
         deferred = 0
 
-        # Index-based iteration is load-bearing: Beanie's save() re-syncs the
-        # in-memory document from the DB afterwards, REBUILDING journal.steps
-        # with fresh objects. A `for step in journal.steps` iterator captured
-        # before the first save yields orphans — mutations on them are never
-        # serialized, which is how completed journals persisted with every
-        # step after the first still 'pending'. Re-binding through
-        # journal.steps[i] each iteration always mutates the live objects.
-        for i in range(len(journal.steps)):
-            step = journal.steps[i]
+        # The journal is a fresh read taken with the claim, and every write
+        # below sets only the fields of the step (or journal) it changes,
+        # conditional on still holding the claim: a stale copy never writes
+        # over what another writer recorded.
+        for i, step in enumerate(journal.steps):
             if step.status == "completed":
                 # Already done (crash recovery)
                 _count_step(summary, step)
                 continue
-            outcome = await self._run_step(journal, step)
+            outcome = await self._run_step(journal, i)
             if outcome == "deferred":
                 deferred += 1
             elif outcome == "executed":
@@ -1004,14 +1104,15 @@ class NamespaceDeletionService:
         else:
             await self._close_journal(journal, summary)
 
-    async def _run_step(self, journal: DeletionJournal, step: DeletionStep) -> str:
-        """Run one step not yet completed and save the journal.
+    async def _run_step(self, journal: DeletionJournal, i: int) -> str:
+        """Run step ``i`` (not yet completed) and record its outcome.
 
         Returns "executed", "deferred" (its service was unreachable: the step
         stays pending for the recovery loop) or "kept" (left undone: a
         namespace created again under the prefix holds the name now). A failing step
         fails the journal and the error propagates.
         """
+        step = journal.steps[i]
         # A re-run must not inherit the error of an earlier attempt.
         step.error = None
         if await self._namespace_recreated(journal):
@@ -1028,7 +1129,7 @@ class NamespaceDeletionService:
                 "this deletion); this step was left undone to protect it"
             )
             step.completed_at = datetime.now(UTC)
-            await journal.save()
+            await _write_step(journal, i)
             return "kept"
         try:
             deleted = await self._execute_step(step, journal.namespace)
@@ -1043,14 +1144,14 @@ class NamespaceDeletionService:
             # journal with the data left behind for good.
             step.status = "pending"
             step.error = f"{e}; will retry"
-            await journal.save()
+            await _write_step(journal, i)
             logger.warning("Step %d deferred: %s — %s", step.order, step.detail, e)
             return "deferred"
         except Exception as e:
             step.status = "failed"
             step.error = str(e)
             journal.status = "failed"
-            await journal.save()
+            await _write_step(journal, i, status="failed")
             logger.error("Step %d failed: %s — %s", step.order, step.detail, e)
             raise
         # Best-effort executors (object store/PostgreSQL) record a swallowed
@@ -1064,7 +1165,7 @@ class NamespaceDeletionService:
             step.order, len(journal.steps), step.detail, deleted,
         )
         # Save progress after each step
-        await journal.save()
+        await _write_step(journal, i)
         if step.status == "completed":
             await _drop_key_batch(step)
         return "executed"
@@ -1074,7 +1175,7 @@ class NamespaceDeletionService:
     ) -> None:
         """Not finished: the recovery loop picks the journal up again."""
         journal.summary = summary
-        await journal.save()
+        await _write_journal(journal, {"summary": summary})
         self.start_recovery()
         logger.warning(
             "Namespace '%s' deletion waiting on %d deferred step(s); it stays "
@@ -1090,7 +1191,9 @@ class NamespaceDeletionService:
         journal.status = "completed_with_warnings" if degraded else "completed"
         journal.completed_at = datetime.now(UTC)
         journal.summary = summary
-        await journal.save()
+        await _write_journal(journal, {
+            "status": journal.status, "completed_at": journal.completed_at, "summary": summary,
+        })
         if degraded:
             logger.warning(
                 "Namespace '%s' deletion completed with %d degraded step(s): %s",

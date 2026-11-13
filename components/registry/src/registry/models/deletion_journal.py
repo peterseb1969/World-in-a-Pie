@@ -100,6 +100,14 @@ class DeletionJournal(Document):
     broken_references: list[InboundReference] = Field(default_factory=list)
     steps: list[DeletionStep] = Field(default_factory=list)
     summary: dict[str, int] | None = None
+    # Who runs the journal now. A run claims the journal with one
+    # conditional update (no token, or a heartbeat older than the lease) and
+    # every write it makes is conditional on still holding the token, so two
+    # runs of one deletion, in one process or several, never both act on it.
+    # A run refreshes the heartbeat with each write; a run that died leaves
+    # a heartbeat that ages out, and the next run takes the journal over.
+    run_token: str | None = None
+    run_heartbeat: datetime | None = None
 
     @field_validator("summary", mode="before")
     @classmethod
