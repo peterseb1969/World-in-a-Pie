@@ -2992,16 +2992,34 @@ class DocumentService:
         will not be deleted, so it exempts nobody: it is dropped, and the rest
         is checked again until nothing changes. Exempting it would let a
         document it references go while it stays, pointing at nothing.
+
+        One aggregation reads who references each unforced candidate (every
+        version and status of a referrer counts, as for the delete itself);
+        the fixpoint then runs in memory, so a chain of n candidates costs one
+        query, not one per candidate per pass.
         """
         remaining = dict(candidates)
+        unforced = sorted(d for d, force in candidates.items() if not force)
+        if not unforced:
+            return frozenset(remaining)
+        pipeline = [
+            {"$match": {"references.resolved.document_id": {"$in": unforced}}},
+            {"$unwind": "$references"},
+            {"$match": {"references.resolved.document_id": {"$in": unforced}}},
+            {"$group": {
+                "_id": "$references.resolved.document_id",
+                "referrers": {"$addToSet": "$document_id"},
+            }},
+        ]
+        referrers_of: dict[str, set[str]] = {
+            row["_id"]: set(row["referrers"]) - {row["_id"]}
+            for row in await Document.aggregate(pipeline).to_list()
+        }
         changed = True
         while changed:
             changed = False
-            exempt = frozenset(remaining)
-            for document_id, force in list(remaining.items()):
-                if force:
-                    continue
-                if await self._hard_delete_referrers(document_id, None, exempt):
+            for document_id in unforced:
+                if document_id in remaining and referrers_of.get(document_id, set()) - remaining.keys():
                     del remaining[document_id]
                     changed = True
         return frozenset(remaining)
@@ -3247,9 +3265,10 @@ class DocumentService:
                 or operator_key_in(value) is not None
             ):
                 raise ValueError(
-                    f"Filter on {field!r} carries a MongoDB operator in its "
-                    "field or value; field segments and value keys may not "
-                    "start with '$'."
+                    f"Filter on {field!r} carries a MongoDB operator or an "
+                    "unusable path in its field or value; field segments may "
+                    "not be empty, start with '$' or hold a NUL byte, and "
+                    "value keys may not start with '$'."
                 )
 
             if (

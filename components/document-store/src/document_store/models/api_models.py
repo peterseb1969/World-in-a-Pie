@@ -375,10 +375,13 @@ class DocumentVersionResponse(BaseModel):
 # ============================================================================
 
 def operator_path_segment(path: str) -> str | None:
-    """The first segment of a dotted field path that MongoDB would read as an
-    operator (it starts with ``$``), or None when the path is a plain path."""
+    """The first segment of a dotted field path that cannot be a plain path,
+    or None when the path is one: a segment MongoDB would read as an operator
+    (it starts with ``$``), an empty one (``a..b``, a leading or trailing
+    dot), or one holding a NUL byte, which no BSON key can carry (the encoder
+    fails, a 500 instead of a refusal)."""
     for segment in path.split("."):
-        if segment.startswith("$"):
+        if segment.startswith("$") or not segment or "\x00" in segment:
             return segment
     return None
 
@@ -441,7 +444,7 @@ class QueryFilter(StrictModel):
         if segment is not None:
             raise ValueError(
                 f"filter field {field!r} contains {segment!r}: a field path "
-                "segment may not start with '$'"
+                "segment may not be empty, start with '$' or hold a NUL byte"
             )
         return field
 

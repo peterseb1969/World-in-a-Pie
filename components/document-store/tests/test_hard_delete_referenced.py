@@ -264,3 +264,38 @@ async def test_referrers_in_an_unreadable_namespace_are_counted_without_ids(
 
     [group] = item["details"]["referrers"]
     assert group == {"namespace": RETAIN, "template_id": group["template_id"], "documents": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_request_s_exemptions_cost_one_query_however_many_candidates(
+    client, auth_headers, namespaces, monkeypatch,
+):
+    """Who references the request's own documents is read once, and the
+    fixpoint runs in memory: a referrer outside the request still keeps its
+    target from being exempted."""
+    from document_store.services.document_service import DocumentService
+
+    [c_in] = await _post(client, auth_headers, [_chapter()])
+    [c_out] = await _post(client, auth_headers, [_chapter()])
+    holders = await _post(client, auth_headers, [_holder(c_in["document_id"]) for _ in range(5)])
+    holders += await _post(client, auth_headers, [_holder(c_out["document_id"]) for _ in range(5)])
+    [outsider] = await _post(client, auth_headers, [_holder(c_out["document_id"])])
+    assert outsider["status"] == "created"
+
+    calls = 0
+    original = Document.aggregate
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(Document, "aggregate", counting)
+    candidates = {c_in["document_id"]: False, c_out["document_id"]: False}
+    candidates.update({h["document_id"]: False for h in holders})
+    exempt = await DocumentService().hard_delete_exemptions(candidates)
+
+    assert calls == 1
+    assert c_in["document_id"] in exempt  # every referrer goes with it
+    assert c_out["document_id"] not in exempt  # the outsider stays and points at it
+    assert {h["document_id"] for h in holders} <= exempt

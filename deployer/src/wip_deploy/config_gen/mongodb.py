@@ -29,7 +29,7 @@ whose users or passwords changed:
 2. create or update root, every declared user and the custom roles, and
    drop the users and roles this step created earlier that are no longer
    declared (an app removed);
-3. shut it down and `exec mongod --auth --bind_ip_all`.
+3. shut it down and `exec mongod --auth --noscripting --bind_ip_all` (no server-side JavaScript).
 
 Without `--auth` MongoDB enforces no users even when they exist, so no
 root login and no localhost exception are involved, and an install whose

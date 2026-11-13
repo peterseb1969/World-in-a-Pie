@@ -45,7 +45,17 @@ async def test_an_operator_in_the_field_is_refused(client, auth_headers, field):
         client, auth_headers, {"field": field, "operator": "eq", "value": "this.data.first_name == 'Wherey'"}
     )
     assert response.status_code == 422, response.text
-    assert "may not start with '$'" in response.text
+    assert "start with '$'" in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["data.a\u0000b", "data..name", "data.", ".data"])
+async def test_a_path_no_document_can_hold_is_refused(client, auth_headers, field):
+    """A NUL byte cannot be a BSON key: the encoder used to fail inside the
+    query and the caller got a 500. Empty segments name nothing. Both are
+    refused like an operator segment."""
+    response = await _query(client, auth_headers, {"field": field, "operator": "eq", "value": 1})
+    assert response.status_code == 422, response.text
 
 
 @pytest.mark.asyncio
