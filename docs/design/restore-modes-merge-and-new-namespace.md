@@ -135,7 +135,8 @@ first-class operations. What the platform guarantees:
 - **A backup leaves out the inactive template versions nothing in the
   archive needs** (unless `include_inactive_templates`). It still carries
   every inactive version a document row of any status is pinned to, every
-  version a carried template extends, and the highest version of a template
+  version a carried template extends or pins as a nested template
+  (`template_ref_version` / `array_template_ref_version`), and the highest version of a template
   whose versions are all inactive.
 
 **The recipe: converge the target, then merge with `align_templates`.**

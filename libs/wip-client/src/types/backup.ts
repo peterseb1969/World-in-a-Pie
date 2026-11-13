@@ -180,7 +180,7 @@ export interface ValidateNamespaceParams {
  * would be a restore trap. The one exception is inactive template versions
  * nothing in the archive needs, which are left out unless
  * `include_inactive_templates` is set: a version a document is pinned to, or
- * that a carried template extends, is always kept, and a template whose
+ * that a carried template extends or pins as a nested template, is always kept, and a template whose
  * versions are all inactive keeps its highest. Blob bytes stream to the
  * server's backup scratch dir, so `include_files: true` is safe at any
  * content volume.

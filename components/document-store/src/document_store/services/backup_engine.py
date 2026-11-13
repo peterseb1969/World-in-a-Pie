@@ -1001,8 +1001,13 @@ class DirectBackupEngine:
         A version is carried when it is not inactive (drafts are carried), when
         an exported document row is pinned to it (any status — an inactive
         document, or a superseded version row of an active one, restores with
-        its schema too), or when a carried
-        version extends it. A template whose versions would all be left out
+        its schema too), or when a carried version needs it: extends it, or
+        pins it as a nested template (a field's template_ref /
+        template_ref_version, or array_template_ref /
+        array_template_ref_version). Nested validation reads that exact
+        version, so a parent carried without it restores with its nested
+        objects unvalidated. A nested pin with no version (a draft's) keeps
+        every version of its template. A template whose versions would all be left out
         keeps its highest one: other definitions name templates by id and the
         template's Registry entry travels, so the template itself never
         vanishes from the archive. A document whose pin has no version keeps
@@ -1014,17 +1019,50 @@ class DirectBackupEngine:
         rows = [
             r async for r in self._mongo[t_db][t_coll].find(
                 {"namespace": {"$in": namespaces}},
-                {"_id": 0, "namespace": 1, "template_id": 1, "version": 1,
-                 "status": 1, "extends": 1, "extends_version": 1},
+                {"_id": 0, "namespace": 1, "template_id": 1, "version": 1, "value": 1,
+                 "status": 1, "extends": 1, "extends_version": 1,
+                 "fields.template_ref": 1, "fields.template_ref_version": 1,
+                 "fields.array_template_ref": 1, "fields.array_template_ref_version": 1},
             )
         ]
         versions: dict[str, list[int]] = {}
-        parents: dict[tuple[str, int], tuple[str, int]] = {}
+        by_value: dict[tuple[str, str], str] = {}
+        for r in rows:
+            versions.setdefault(r["template_id"], []).append(r["version"])
+            if r.get("value"):
+                by_value[(r["namespace"], r["value"])] = r["template_id"]
+
+        def template_id_of(ref: str, namespace: str) -> str | None:
+            """An active template stores a nested ref as its template_id; a
+            draft may still hold the submitted value or NS:VALUE."""
+            if ref in versions:
+                return ref
+            ns, sep, value = ref.partition(":")
+            if sep and (ns, value) in by_value:
+                return by_value[(ns, value)]
+            return by_value.get((namespace, ref))
+
+        # What each version needs of other versions: the one it extends, and
+        # each nested template it pins (version None: every version of it).
+        # A ref to a template outside the archive's namespaces needs nothing
+        # here — it cannot be carried — and is skipped.
+        requires: dict[tuple[str, int], list[tuple[str, int | None]]] = {}
         for r in rows:
             key = (r["template_id"], r["version"])
-            versions.setdefault(key[0], []).append(key[1])
+            links: list[tuple[str, int | None]] = []
             if r.get("extends") and r.get("extends_version") is not None:
-                parents[key] = (r["extends"], r["extends_version"])
+                links.append((r["extends"], r["extends_version"]))
+            for field in r.get("fields") or []:
+                for ref_key, version_key in (
+                    ("template_ref", "template_ref_version"),
+                    ("array_template_ref", "array_template_ref_version"),
+                ):
+                    ref = field.get(ref_key)
+                    tid = template_id_of(ref, r["namespace"]) if ref else None
+                    if tid is not None:
+                        links.append((tid, field.get(version_key)))
+            if links:
+                requires[key] = links
         needed = {(r["template_id"], r["version"]) for r in rows if r.get("status") != "inactive"}
 
         if not skip_documents:
@@ -1039,19 +1077,22 @@ class DirectBackupEngine:
                 else:
                     needed.add((tid, version))
 
-        def close_over_parents() -> None:
+        def close_over_requirements() -> None:
             frontier = list(needed)
             while frontier:
-                parent = parents.get(frontier.pop())
-                if parent is not None and parent not in needed and parent[1] in versions.get(parent[0], []):
-                    needed.add(parent)
-                    frontier.append(parent)
+                for tid, version in requires.get(frontier.pop(), []):
+                    pinned = versions.get(tid, []) if version is None else [version]
+                    for v in pinned:
+                        target = (tid, v)
+                        if target not in needed and v in versions.get(tid, []):
+                            needed.add(target)
+                            frontier.append(target)
 
-        close_over_parents()
+        close_over_requirements()
         for tid, vs in versions.items():
             if not any((tid, v) in needed for v in vs):
                 needed.add((tid, max(vs)))
-        close_over_parents()
+        close_over_requirements()
 
         left_out: dict[str, list[tuple[str, int]]] = {}
         for r in rows:

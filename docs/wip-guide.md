@@ -729,7 +729,7 @@ backup/restore (which uses document-store's engine); the CLI is for
 headless, scripted, and composable use. Document-store's backup carries
 every entity in every status except the inactive template versions nothing
 in the archive needs. A version a document is pinned to, or that a carried
-template extends, is always kept, and a template whose versions are all
+template extends or pins as a nested template, is always kept, and a template whose versions are all
 inactive keeps its highest. `include_inactive_templates` keeps every version.
 
 ```bash

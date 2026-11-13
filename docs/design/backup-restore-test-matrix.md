@@ -61,8 +61,8 @@ producers); `include_inactive`, `latest_only`, `template_prefixes`,
 server backup 400-rejects all five as dead fields); the server backup's own
 `include_inactive_templates` keeps every inactive template version. The
 server backup is a copy of every entity in every status, except the inactive
-template versions nothing in the archive needs (a version a document pins or
-a carried template extends is always kept), with **no dry-run by
+template versions nothing in the archive needs (a version a document pins,
+or a carried template extends or pins as a nested template, is always kept), with **no dry-run by
 design**: its predicted counts are just the namespace's entity counts (a
 namespace-stats read, no job machinery needed), a compressed archive size
 cannot be honestly predicted without reading the payload, and the write

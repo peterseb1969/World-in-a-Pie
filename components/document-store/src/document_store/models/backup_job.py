@@ -294,7 +294,7 @@ class BackupRequest(StrictModel):
             "out the inactive versions nothing in the archive needs: it carries "
             "every version that is not inactive (drafts included), every "
             "inactive version an exported document is pinned to or a carried "
-            "version extends, and the highest version of a template whose "
+            "version extends or pins as a nested template, and the highest version of a template whose "
             "versions are all inactive."
         ),
     )

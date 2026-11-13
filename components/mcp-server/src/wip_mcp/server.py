@@ -4942,7 +4942,7 @@ async def start_backup(
     plus term relations and the registry entries (synonyms travel inside
     them). The one exception: inactive template versions nothing in the
     archive needs are left out by default. Every version a document is pinned
-    to or a carried template extends is kept, and a template whose versions
+    to, or a carried template extends or pins as a nested template, is kept, and a template whose versions
     are all inactive keeps its highest. Blob bytes are staged to the server's
     backup scratch dir, not RAM.
 
