@@ -1,14 +1,17 @@
-"""Tests for POST /templates?on_conflict=validate (CASE-25 Phase 1 Gap 2).
+"""Tests for template create as an upsert keyed on (namespace, value).
 
-Behavior matrix:
-  no existing            → status='created'
-  identical existing     → status='unchanged'
-  added optional field   → status='updated'  (compatible, version N+1)
-  removed field          → status='error', error_code='incompatible_schema'
-  added required field   → status='error', error_code='incompatible_schema'
-  changed field type     → status='error', error_code='incompatible_schema'
-  identity_fields change → status='error', error_code='incompatible_schema'
-  modified existing fld  → status='error', error_code='incompatible_schema'
+The on_conflict parameter is deprecated: it is still accepted ('error' and
+'validate' both upsert; any other value is a 400) and no longer selects
+behavior. Matrix:
+  no existing                  → status='created' (version 1)
+  identical existing           → status='unchanged'
+  added optional field         → status='updated'  (version N+1, diff in details)
+  added required field         → status='updated'  (version N+1, diff in details)
+  removed field                → status='updated'  (version N+1, diff in details)
+  changed field type           → status='updated'  (version N+1, diff in details)
+  identity_fields change       → status='error', error_code='identity_fields_immutable'
+  identity field changes type  → status='error', error_code='identity_fields_immutable'
+  reporting table_name change  → status='error', error_code='immutable_property'
 """
 
 import pytest

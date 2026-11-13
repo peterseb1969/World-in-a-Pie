@@ -14,11 +14,9 @@ thin re-export aliases are the only allowed shapes.
 Universal contract (BulkResultItemBase):
     index, status, id, error, error_code, details
 
-error_code is the machine-readable surface callers branch on. The
-documented codes from wip://conventions are:
-    not_found, forbidden, archived, identity_field_change,
-    concurrency_conflict, validation_failed, reference_violation,
-    internal_error, incompatible_schema
+error_code is the machine-readable surface callers branch on. The codes
+the services emit are listed in the error_code field's description below
+(it is what every service's OpenAPI spec publishes).
 """
 
 from typing import Any, Generic, TypeVar
@@ -39,7 +37,7 @@ class BulkResultItemBase(BaseModel):
             "Machine-readable error code. Documented codes: not_found, "
             "forbidden, archived, identity_field_change, "
             "concurrency_conflict, validation_failed, reference_violation, "
-            "internal_error, incompatible_schema, already_exists, "
+            "internal_error, already_exists, "
             "incompatible_config, force_unsupported, invalid_names, "
             "name_collision, identity_fields_immutable, immutable_property, "
             "cross_namespace_reference, invalid_state, invalid_request, "
