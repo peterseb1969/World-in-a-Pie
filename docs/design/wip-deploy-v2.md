@@ -89,7 +89,7 @@ compose.yaml    kustomize/       Tiltfile +
 
 The spec describes **what** the user wants. It is generated internally from CLI flags + preset + environment, Pydantic-validated, passed through the system, and optionally dumped to disk for debugging or re-install.
 
-**Internal artifact, not user-facing.** Users do not write `wip-deployment.yaml` by hand. Flags + presets are the user surface. The spec can be dumped (`--save-spec`, `--show-spec`) and re-loaded (`--from-spec`) for reproducibility, but its schema is not stable and has no migration tooling.
+**Internal artifact, not user-facing.** Users do not write `wip-deployment.yaml` by hand. Flags + presets are the user surface. `wip-deploy show-spec` prints the spec; every apply records it in the install's `deployment.deployer-state`, which `redeploy` and the verbs acting on an existing install load again. There is no `--save-spec` or `--from-spec`. The recorded state has a format version that the deployer upgrades on load; the schema itself carries no stability promise.
 
 ### Shape
 

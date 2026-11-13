@@ -2,9 +2,10 @@
 
 Each preset is a partial DeploymentSpec (dict form) that provides
 sensible defaults for `modules`, `auth` and `apps` (a preset may also
-carry `images`; none does today). The CLI
-fills in `target`, `network`, `platform`, and `secrets` from user flags,
-then merges the preset on top.
+carry `images`; none does today). `build_deployment` starts from the
+preset and applies the CLI's flags over it (`--add`, `--remove`, `--app`,
+`--auth-mode`, …), then fills in `target`, `network`, `platform` and
+`secrets`: a flag wins over the preset.
 
 Presets are Python modules (not YAML) so they can share defaults, compose
 with each other, and be type-checked.

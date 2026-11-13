@@ -5,7 +5,9 @@ For developers iterating on component source locally. Produces the same
 file set as the compose renderer but with three dev-friendly changes:
 
   1. `build:` contexts materialized into the render tree at
-     build-contexts/<name>/ — no pulling from a registry. For the
+     build-contexts/<name>/ for each component that declares one (the
+     others, dex, mongodb, nats, postgres, garage and the router, still
+     pull their images). For the
      Python services that use `wip_auth` the context is patched to
      COPY + pip install `libs/wip-auth` (mirrors `build-release.sh`
      for production). `document-store` additionally gets `libs/wip-archive`
@@ -20,8 +22,9 @@ file set as the compose renderer but with three dev-friendly changes:
      has no watcher: an edit takes effect on a restart, and the render
      notes each one (`FileTree.notes`).
 
-Node/Go apps don't benefit from (2) and (3) — they need rebuilds. MVP
-treats them the same: they get build contexts but no hot reload.
+Apps get no build context from the render: an app builds from its own
+`--app-source` checkout (its Dockerfile.dev when it has one), pulls its
+registry image when named in `--app-from-registry`, and is refused otherwise.
 
 Caddy, Dex, and the .env are rendered identically to compose — same
 auth flow, same internal TLS. Production fidelity by default; if a

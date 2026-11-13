@@ -1,11 +1,12 @@
 """Renderer base types.
 
-A renderer is a pure function: `(deployment, components, apps, configs,
-secrets) → FileTree`. The FileTree is the thing `apply` then writes to
-disk and hands to the platform (podman-compose, kubectl).
+A renderer takes `(deployment, components, apps, secrets)` — the dev
+renderer also `repo_root`, whose tree it reads — computes its own configs
+from them, and returns a FileTree. The FileTree is the thing `apply` then
+writes to disk and hands to the platform (podman-compose, kubectl).
 
 Kept deliberately tiny — real renderer logic lives in target-specific
-modules (compose.py, k8s.py, dev.py).
+modules (compose.py, k8s.py, dev_simple.py).
 """
 
 from __future__ import annotations

@@ -4,12 +4,16 @@ Turns the declarative spec + component manifests + resolved env +
 secrets into a compose file that `podman-compose up -d` (or
 `docker compose up -d`) can directly consume.
 
-Output tree:
+Output tree (the main files; `render_compose` is the full list):
     docker-compose.yaml
     .env
-    config/caddy/Caddyfile     (when auth.gateway=True or OIDC active)
-    config/dex/config.yaml     (when Dex active)
-    config/nats/nats.conf      (when NATS active)
+    config/caddy/Caddyfile     (always: the front door)
+    config/router/Caddyfile    (when the router is active)
+    config/dex/config.yaml     (when Dex is active)
+    config/nats/nats.conf      (when NATS is active)
+    config/garage/garage.toml  (when Garage is active)
+    config/mongodb/entrypoint.sh, and the key, reservation and attach-policy
+    JSON files the Registry and the app edge read
 
 Design decisions:
   - Literals go inline in compose `environment:`; secret refs go via
@@ -21,8 +25,8 @@ Design decisions:
     `wip-<component>-<storage>` (the engine prefixes it with the compose
     project, which the render pins to the install name).
   - Config files bound read-only from the install dir.
-  - Explicit `command:` on WIP services (uvicorn) since we're running
-    published images directly, not the service's own Dockerfile CMD.
+  - A service's `command:` is its manifest's, when it pins one; otherwise
+    the image's own CMD runs. The renderer supplies none of its own.
   - Never `depends_on`. Ordering is not the start path's job: every service
     retries its own real dependencies (Mongo/Postgres via init_beanie_with_retry
     and asyncpg pool retries, NATS via nats-py's reconnect plus retry_async,

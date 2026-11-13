@@ -64,8 +64,10 @@ def read_registry(directory: Path | None = None) -> dict[str, Path]:
     is operator-managed and a corrupt file shouldn't block an install.
     Empty directory or missing directory returns an empty dict.
 
-    Returns absolute Paths even when the YAML stored relative ones
-    (resolved against the operator's HOME for stability).
+    Returns absolute Paths. `~` is expanded; an entry whose path is still
+    relative after that is skipped, like an unreadable file — a relative
+    path would mean something different from every working directory.
+    `register_app` always writes an absolute path.
     """
     target = directory or registry_dir()
     if not target.is_dir():

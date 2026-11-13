@@ -4,12 +4,11 @@ Pure functions that take (Deployment, components, apps) and produce
 structured config objects. Renderers consume these objects; they never
 parse generator output.
 
-Dependency direction:
-  spec_context  ←  env, routing
-  routing       ←  caddy (the public Caddy, every target)
-  caddy         ←  ingress (k8s: one catch-all Ingress to wip-caddy)
-  env, routing  ←  (renderers, later)
-  dex           ←  (renderers, later)
+There is no strict layering: `spec_context` imports `dex` (inside a
+function), `dex` imports `env` and `routing`, and `env` imports
+`spec_context` back; `routing` uses `env`'s port resolution. Read the
+imports, not a map. What holds throughout: generators read the spec and the
+manifests and return values, and only renderers write files.
 """
 
 from wip_deploy.config_gen.caddy import CaddyConfig, generate_caddy_config

@@ -3,9 +3,12 @@
 Help texts that take a module name (`--add`, `--remove`, `add-module`,
 `remove-module`) and `--preset` list the optional modules, one line each,
 read from the components' manifests (`category: optional`,
-`metadata.description`) so the list cannot go stale. The help is built
-when the CLI loads, so a repo that cannot be found gives the plain wording
-instead of failing `--help`.
+`metadata.description`), from `WIP_REPO_ROOT` when it is set, else the
+repo this deployer runs from. The help is built when the CLI loads, before
+any option is parsed, so `--repo-root` cannot reach it: on a host with
+several clones, set `WIP_REPO_ROOT` for the list to describe the one you
+deploy. A repo that cannot be found gives the plain wording instead of
+failing `--help`.
 """
 
 from __future__ import annotations
@@ -32,10 +35,17 @@ def _summary(description: str) -> str:
 @functools.lru_cache(maxsize=1)
 def optional_modules() -> tuple[tuple[str, str], ...]:
     """(name, one-line summary) of every optional component, by name."""
+    import os
+
     from wip_deploy.discovery import find_repo_root
 
+    env_root = os.environ.get("WIP_REPO_ROOT")
     try:
-        root = find_repo_root(Path(__file__).resolve().parent)
+        root = (
+            Path(env_root).expanduser().resolve()
+            if env_root
+            else find_repo_root(Path(__file__).resolve().parent)
+        )
     except FileNotFoundError:
         return ()
     out = []

@@ -119,17 +119,17 @@ class Route(WIPModel):
     """An HTTP route this component exposes.
 
     `auth_required=True` combined with `spec.auth.gateway=True` at the
-    deployment level places the request through the auth-gateway. How
-    that is expressed is target-specific:
-      - compose/dev: Caddy `forward_auth` block
-      - k8s:        NGINX Ingress `auth-url` annotation
+    deployment level places the request through the auth-gateway, as a
+    Caddy `forward_auth` block in the front door (wip-caddy) on every
+    target. On k8s the install's one Ingress sends every path to wip-caddy
+    and carries nothing per route.
     """
 
     path: str = Field(pattern=r"^/.*")
     auth_required: bool = True
     streaming: bool = False
     # Strip the route's path prefix before forwarding to the backend.
-    # Caddy: `handle_path` (vs `handle`). NGINX Ingress: `rewrite-target: /`.
+    # Caddy: `handle_path` (vs `handle`), on every target.
     # Needed for backends that serve at the root and don't know about the
     # public prefix — an S3 object store (Garage) is the canonical case.
     strip_prefix: bool = False
@@ -151,11 +151,8 @@ class Route(WIPModel):
     # without this rewrite the two differ and the store rejects the
     # signature. Object storage (Garage) is the
     # canonical case. Caddy: `header_up Host {upstream_hostport}`.
-    # NGINX Ingress: the `upstream-vhost` annotation (forces a
-    # per-rule Ingress, same as strip_prefix).
     upstream_host_header: bool = False
-    # Emit a 301 from the bare path to the trailing-slash variant
-    # (Caddy only — nginx Ingress matches both via pathType=Prefix).
+    # Emit a 301 from the bare path to the trailing-slash variant.
     # Defaults True for SPA-friendly behavior (relative-URL resolution
     # and cookie-path consistency depend on it). Backends with their
     # own slash-canonicalization logic must opt out — MCP is the
@@ -167,8 +164,8 @@ class Route(WIPModel):
     # the gateway. Empty = any logged-in user. A logged-in user outside
     # these groups gets 403 from the gateway's verify — the app-level gate
     # for gateway-mode apps, which run no OIDC client of their own. The
-    # list travels in the route's verify URL (Caddy forward_auth `uri`,
-    # NGINX `auth-url`), so names are restricted to URL- and
+    # list travels in the route's verify URL (Caddy forward_auth `uri`),
+    # so names are restricted to URL- and
     # Caddyfile-safe characters.
     allowed_groups: list[str] = Field(default_factory=list)
 
@@ -214,10 +211,8 @@ class HealthcheckSpec(WIPModel):
     WIP services use `endpoint`.
 
     `port` names which Port to probe for HTTP checks. Default resolution
-    (in the renderer): the port named "http" if present, else the port
-    named "monitor", else the first declared port. Explicit `port` is
-    required only when both ambiguity and multiple HTTP-ish ports exist
-    (e.g., NATS with data on :4222 and monitoring on :8222).
+    (in the renderers): the port named "http" if present, else the first
+    declared port. Name `port` when the port to probe is neither.
 
     `endpoint` answers "can this serve traffic?" — compose's healthcheck and
     the k8s readinessProbe use it, so it may fail while a dependency is down.
@@ -586,10 +581,10 @@ class ComponentSpec(WIPModel):
     post_install: list[PostInstallHook] = Field(default_factory=list)
     observability: ObservabilitySpec | None = None
     activation: ActivationSpec | None = None
-    # Explicit entrypoint command. When set, overrides both the image's
-    # default CMD and the renderer's uvicorn heuristic. Use when an
-    # image's default CMD is wrong (e.g., mismatched port) or when the
-    # service uses a non-uvicorn entry point (e.g., `python -m wip_mcp`).
+    # Explicit entrypoint command, overriding the image's CMD. Without it
+    # the container runs its image's CMD. Every uvicorn service pins its
+    # command (equal to the image's CMD): the dev render runs a uvicorn
+    # command under its reloading launcher, and only a pinned one.
     command: list[str] | None = None
     # Apps only (see App): the namespaces the app owns on the install, the
     # other namespaces its key may use, and whether it is the rare app that

@@ -20,6 +20,15 @@ the file watcher yields on a timeout) also checks that the worker is alive.
   plain `--reload` does today.
 
 Usage is uvicorn's: `python uvicorn_respawn.py <app> [uvicorn options] --reload`.
+
+It leans on uvicorn internals no public API promises: the supervisor loop
+(`__next__`, `startup`, `restart`), the supervisor's `should_exit` and
+`process`, and `uvicorn.main` being a callable click command. One of these
+is checked at start — that `uvicorn.main` still binds the ChangeReload it
+patches; the rest are not, so a uvicorn upgrade can break it, and only
+inside a dev container. The deployer never imports this file (the dev
+render copies its text into the install), and its behavioural test skips
+unless uvicorn and watchfiles are installed beside the deployer.
 """
 
 from __future__ import annotations

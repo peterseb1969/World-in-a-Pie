@@ -4,9 +4,11 @@ The Deployment is constructed internally from CLI flags + preset +
 environment. It is validated by Pydantic and passed through config
 generators and renderers. It is not a stable user-facing file format.
 
-Dumpable for debugging (`wip-deploy show-spec --save /tmp/spec.yaml`) and
-loadable for reproducibility (`wip-deploy install --from-spec ...`), but
-the schema (`api_version: wip.dev/v1`) has no stability promise.
+`wip-deploy show-spec` prints it; every apply records it in the install's
+`deployment.deployer-state`, which `redeploy` and the other verbs that act
+on an existing install load again (`install` builds it afresh from flags).
+There is no file a user writes or loads by hand, and the schema
+(`api_version: wip.dev/v1`) has no stability promise.
 """
 
 from __future__ import annotations

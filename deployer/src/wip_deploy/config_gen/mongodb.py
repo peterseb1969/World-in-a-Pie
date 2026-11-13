@@ -8,7 +8,7 @@ block connects as its own user:
 - platform components declare the databases they own (`readWrite`), plus
   narrow `collection_privileges` where they reach into another component's
   database — registry's namespace deletion may only `find` and `remove` in
-  the seven collections it deletes from;
+  the collections it deletes from (its manifest lists them);
 - apps hold roles only: `read-all` grants `read` on every database a
   component declares. Apps never write to MongoDB, so WIP data changes only
   through WIP's API, where validation, identity, events and audit apply.
