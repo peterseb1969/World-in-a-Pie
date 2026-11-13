@@ -99,7 +99,7 @@ async def test_round_trip_after_a_wipe(fresh, auth_headers):
     name, plaintext, prefix = await _make_state(client, auth_headers)
     archive = await _backup(client, auth_headers)
 
-    assert archive["format"] == "wip-system-backup" and archive["version"] == 1
+    assert archive["format"] == "wip-system-backup" and archive["version"] == 2
     assert archive["source"]["salt_fingerprint"].startswith("sha256:")
     assert [k["name"] for k in archive["api_keys"]] == [name]
     assert plaintext not in str(archive)

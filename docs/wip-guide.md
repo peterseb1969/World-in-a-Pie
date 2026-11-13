@@ -910,6 +910,18 @@ in §5.5.
   restored in either order, and re-running the system restore is safe. A
   disaster recovery done with a *fresh* restore (new ids, a copy) leaves the
   grants orphaned: activate them on the copy if they should apply there.
+- **Version 1 archives: key scopes come back as read grants.** Backups write
+  `version: 2`. A `version: 1` archive was made while a runtime key's
+  `namespaces` list gave read by itself, so it holds no grant where a key
+  relied on that. The restore writes a `read` grant for each such key and
+  listed namespace, lists them under `scope_read_grants` and warns. Each is
+  restored like any archived grant (orphaned where the name here belongs to
+  another namespace). One whose namespace has no id in the archive is written
+  only where a namespace or reservation of the name is here, and is
+  otherwise skipped (`scope_namespace_absent`). Review the list in the dry
+  run: it also brings back a read the source revoked after the list stopped
+  giving one. A `version: 2` archive gets no such grants. A Registry from
+  before version 2 refuses a version 2 archive.
 - **Archives without namespace ids are refused**, system and namespace
   archives alike. To bring one forward, restore it on a WIP from before
   namespace ids, start this version (its startup gives every namespace and

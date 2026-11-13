@@ -661,7 +661,12 @@ export type AttachmentListResponse = PaginatedResponse<Attachment>
  */
 export interface SystemArchive {
   format: 'wip-system-backup'
-  version: 1
+  /**
+   * 2: every read a key has is a grant in the archive. 1: made while a
+   * runtime key's namespaces list gave read by itself; a restore writes that
+   * read as grants (the report's `scope_read_grants`).
+   */
+  version: 1 | 2
   created_at: string
   source: {
     oidc_issuer: string | null
@@ -733,6 +738,11 @@ export type SystemRestoreSkipReason =
   | 'outside_archive_scope'
   /** A scoped restore would replace a key that, here, reaches outside the scope. */
   | 'out_of_scope_here'
+  /**
+   * Version 1 archive: a read grant a key's namespaces list stood in for, on
+   * a namespace the archive records no id for and that is not here.
+   */
+  | 'scope_namespace_absent'
 
 export interface SystemRestoreSkipped {
   /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */
@@ -790,6 +800,12 @@ export interface SystemRestoreReport {
   refused?: SystemRestoreSkipped[]
   /** Mirror only: pass it as `expect` on the apply (see SystemRestoreOptions). */
   plan_digest?: string | null
+  /**
+   * Version 1 archives: the read grants a key's namespaces list gave on the
+   * source, restored as grants (also listed under `grants`). Absent from
+   * Registries that predate archive version 2.
+   */
+  scope_read_grants?: string[]
   reservations: SystemRestoreRecordReport
   api_keys: SystemRestoreRecordReport
   grants: SystemRestoreRecordReport
