@@ -5061,7 +5061,9 @@ async def start_restore(
     Poll get_backup_job to track progress.
 
     Args:
-        namespace: URL-path namespace (the auth check target).
+        namespace: URL-path namespace. Admin is asked on it unless
+            target_namespace is given (then on that) or a fresh restore is
+            given only namespace_map (then on the map's targets alone).
         archive_path: Local filesystem path to the .zip archive to upload.
         mode: 'restore' (empty target, ids preserved), 'merge' (existing
             namespace, ids preserved) or 'fresh' (new namespace, ids re-minted).
@@ -5070,8 +5072,8 @@ async def start_restore(
             refuses a different value; 'merge' of a single-namespace archive
             writes into this namespace; 'fresh' on a single-namespace archive
             requires it. A multi-namespace archive takes no target in
-            'restore' or 'merge' mode. The `namespace` argument is the
-            permission anchor, not the destination.
+            'restore' or 'merge' mode. The `namespace` argument is not the
+            destination.
         namespace_map: Fresh only — {source: target} for EVERY namespace in
             a multi-namespace archive. Mutually completing with
             target_namespace: pass exactly one of the two for 'fresh'.

@@ -132,10 +132,11 @@ carry the unprefixed value, there is no drop parameter and no platform
 special-case: the remediation is the target-side converge below, made of
 first-class operations. What the platform guarantees:
 
-- **A template's status alone never refuses a merge.** A retired version
-  whose schema matches the target's is the same definition; the target
-  keeps its own status, and the difference is reported. A schema difference
-  still refuses.
+- **A template's or a terminology's status alone never refuses a merge.** A
+  retired template version or terminology whose content otherwise matches the
+  target's is the same definition; the target keeps its own status, and the
+  difference is reported. Any substantive content difference (a template's
+  schema, a terminology's non-cosmetic fields) still refuses.
 - **A backup leaves out the inactive template versions nothing in the
   archive needs** (unless `include_inactive_templates`). It still carries
   every inactive version a document row of any status is pinned to, every

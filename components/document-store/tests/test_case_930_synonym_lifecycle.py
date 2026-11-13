@@ -315,7 +315,11 @@ async def test_restore_release_item_failures_are_a_warning(monkeypatch):
     monkeypatch.setattr(engine, "_retired_entry_ids", _ids)
     monkeypatch.setattr(httpx, "AsyncClient", _Client)
     await engine._release_retired_synonyms("wip")
-    [warning] = [e for e in events if e.phase == "warning"]
-    assert "2 retired entities could not be released" in warning.message
-    assert "E2 (not_found" in warning.message and "E3 (error: boom)" in warning.message
+    absent, blocked = [e.message for e in events if e.phase == "warning"]
+    # An entity with no Registry entry has nothing to release and blocks
+    # nothing: it is named, without the claim that it still blocks keys.
+    assert "1 retired entities have no Registry entry" in absent and "E2 (not_found" in absent
+    assert "block" not in absent and "reconcile" not in absent
+    assert "1 retired entities could not be released" in blocked
+    assert "E3 (error: boom)" in blocked and "E2" not in blocked
     assert any("released the synonyms of 1" in e.message for e in events)

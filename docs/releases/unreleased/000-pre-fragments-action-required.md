@@ -724,14 +724,17 @@ flow writes its journal before any step runs, so it is unaffected.
   plain restore does. `POST /backup/jobs/{job_id}/restore` takes the flag
   too (it rejected it as an unknown field); a merge still refuses it.
 - **An archive store that cannot answer is a 503, not "no longer retained".**
-  Downloading a job's archive or restoring from it answered 410 whenever the
-  object store failed to say whether the archive exists; it now answers 503
-  with a retry hint.
+  Downloading a job's archive or restoring from it answered 410 when the
+  object store answered the existence check with an error (an S3 5xx,
+  `NoSuchBucket`); it now answers 503 with a retry hint, as an unreachable
+  store already did.
 - **Restore-from-job cleans up after a failed copy.** When fetching the
   archive copy failed, the object already copied for the new job stayed in
   the bucket for good. A local restore-from-job now copies the archive
-  instead of hardlinking it, so the copy has its own age and the scratch
-  sweep cannot remove it while the restore reads it.
+  instead of hardlinking it, so the copy has its own age: the scratch sweep
+  leaves it alone for the retention window
+  (`WIP_BACKUP_RETENTION_HOURS`), where a hardlink of an old archive could
+  be swept at once.
 - **A finished run is not recorded as a crash.** A terminal event the job
   record fails to take is retried; if it still cannot be written, the job is
   marked failed with what happened ("the run completed, but its terminal

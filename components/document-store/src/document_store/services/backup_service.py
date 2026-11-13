@@ -249,7 +249,7 @@ def _error_fields(event: ProgressEvent) -> dict[Any, Any]:
 
 # Attempts, and the pause before each retry, for writing an event to the
 # job record. A terminal event is retried: losing it turns a finished run
-# into a failed one and skips its follow-ups.
+# into a failed one.
 _TERMINAL_PERSIST_DELAYS = (0.5, 1.0, 2.0)
 
 
@@ -268,15 +268,24 @@ async def _persist_with_retry(job_id: str, event: ProgressEvent) -> bool:
     return False
 
 
-def _no_terminal_state_message(unpersisted: ProgressEvent | None) -> str:
-    """Why a job is marked FAILED with no terminal state on its record."""
+def _no_terminal_state_message(
+    unpersisted: ProgressEvent | None, follow_ups_started: bool = False,
+) -> str:
+    """Why a job is marked FAILED with no terminal state on its record.
+
+    Only a restore that wrote owes follow-ups; the message names them only
+    then, and says they were started (the consumer starts them itself when
+    the terminal write fails)."""
     if unpersisted is None:
         return "worker terminated without terminal event"
     if unpersisted.phase == "complete":
+        follow_ups = (
+            "; its follow-ups (reporting sync, validation) were started anyway"
+            if follow_ups_started else ""
+        )
         return (
             "the run completed, but its terminal state could not be written to "
-            "the job record, so its follow-ups (reporting sync, validation) did "
-            f"not run: {unpersisted.message}"
+            f"the job record{follow_ups}: {unpersisted.message}"
         )
     return f"the run failed, and its failure could not be written to the job record: {unpersisted.message}"
 
@@ -293,6 +302,36 @@ async def _mark_failed(job_id: str, error: str) -> None:
         BackupJob.phase: "error",
         BackupJob.completed_at: datetime.now(UTC),
     })
+
+
+async def _settle_unfinished(job_id: str, error: str) -> None:
+    """Mark FAILED a job whose run has ended while its record still reads
+    PENDING or RUNNING: no runner is left to move it on, so left as it is
+    it would look alive until a restart (and DELETE refuses a live job).
+
+    Retried like a terminal event: this is the write that runs when the
+    terminal one could not be made, so it meets the same outage."""
+    for delay in (*_TERMINAL_PERSIST_DELAYS, None):
+        try:
+            job = await BackupJob.find_one(BackupJob.job_id == job_id)
+            if job is not None and job.status in (
+                BackupJobStatus.PENDING, BackupJobStatus.RUNNING,
+            ):
+                await _mark_failed(job_id, error)
+            return
+        except Exception:
+            logger.exception("Failed to mark job %s failed", job_id)
+        if delay is not None:
+            await asyncio.sleep(delay)
+
+
+async def _load_job(job_id: str) -> BackupJob | None:
+    """The job record, or None when it cannot be read (logged)."""
+    try:
+        return await BackupJob.find_one(BackupJob.job_id == job_id)
+    except Exception:
+        logger.exception("Could not load job %s", job_id)
+        return None
 
 
 async def start_async_job(
@@ -368,10 +407,18 @@ async def start_async_job(
 
     # The terminal event the run emitted but the record never took, if any.
     unpersisted_terminal: ProgressEvent | None = None
+    follow_ups_started = False
 
     async def consume() -> None:
-        nonlocal unpersisted_terminal
+        nonlocal unpersisted_terminal, follow_ups_started
+        # The record as created. A completed restore's follow-ups depend
+        # only on fields fixed at creation (kind, namespaces, dry_run), so
+        # when its terminal write fails they are started from this copy:
+        # the restore's data is committed either way, and without them the
+        # namespace never reaches PostgreSQL and is never verified.
+        created: BackupJob | None = None
         try:
+            created = await _load_job(job_id)
             while True:
                 item = await queue.get()
                 if isinstance(item, _Sentinel):
@@ -382,14 +429,19 @@ async def start_async_job(
                 written = await _persist_with_retry(job_id, item)
                 if not written and terminal:
                     unpersisted_terminal = item
+                    if item.phase == "complete" and created is not None and _restore_wrote(created):
+                        _schedule_restore_follow_ups(created, item)
+                        follow_ups_started = True
                 if not terminal:
                     await _run_hook(on_event, item)
         finally:
-            job = await BackupJob.find_one(BackupJob.job_id == job_id)
-            if job is not None and job.status == BackupJobStatus.RUNNING:
-                await _mark_failed(job_id, _no_terminal_state_message(unpersisted_terminal))
-            _job_queues.pop(job_id, None)
-            _job_tasks.pop(job_id, None)
+            try:
+                await _settle_unfinished(
+                    job_id, _no_terminal_state_message(unpersisted_terminal, follow_ups_started),
+                )
+            finally:
+                _job_queues.pop(job_id, None)
+                _job_tasks.pop(job_id, None)
 
     # Launch producer and consumer concurrently. The consumer task is
     # tracked in _job_tasks for status lookup; the producer is detached

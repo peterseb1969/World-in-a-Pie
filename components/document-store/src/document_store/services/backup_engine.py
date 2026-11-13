@@ -942,6 +942,7 @@ class DirectBackupEngine:
             processed = await self._backup_entity_type(
                 writer, referents, ns, entity_type, left_out,
                 counts.get(entity_type, 0), processed, total_entities,
+                skip_documents=skip_documents,
             )
 
         # Blobs (per namespace; file_ids are globally unique so the
@@ -960,13 +961,15 @@ class DirectBackupEngine:
         expected: int,
         processed: int,
         total_entities: int,
+        *,
+        skip_documents: bool = False,
     ) -> int:
         """Stream one entity type of one namespace into the archive, in its
         export sort order, reporting progress every 5000 rows. Returns the
         running count of entities processed."""
         db_name, coll_name = COLLECTION_MAP[entity_type]
         collection = self._mongo[db_name][coll_name]
-        query = self._entity_query(ns, entity_type, left_out)
+        query = self._entity_query(ns, entity_type, left_out, skip_documents)
 
         phase_name = f"phase_{entity_type}"
         self._emit(
@@ -1055,18 +1058,24 @@ class DirectBackupEngine:
                 continue
             db_name, coll_name = COLLECTION_MAP[entity_type]
             counts[entity_type] = await self._mongo[db_name][coll_name].count_documents(
-                self._entity_query(namespace, entity_type, left_out or [])
+                self._entity_query(namespace, entity_type, left_out or [], skip_documents)
             )
         return counts
 
     def _entity_query(
         self, namespace: str, entity_type: str, left_out: list[tuple[str, int]],
+        skip_documents: bool = False,
     ) -> dict[str, Any]:
         """The namespace's query for one entity type: every entity, minus the
-        template versions this backup leaves out."""
+        template versions this backup leaves out, and minus the Registry
+        entries of documents a ``skip_documents`` backup leaves out — restored
+        without their documents, they would claim the documents' identity keys
+        for entries with nothing behind them."""
         query = self._build_query(namespace)
         if entity_type == "templates" and left_out:
             query["$nor"] = [{"template_id": tid, "version": v} for tid, v in left_out]
+        if entity_type == "registry_entries" and skip_documents:
+            query["entity_type"] = {"$ne": "documents"}
         return query
 
     async def _template_versions_to_leave_out(
@@ -1356,6 +1365,14 @@ def _release_outcome(results: list[dict[str, Any]]) -> tuple[int, list[dict[str,
     return released, failed
 
 
+def _sample_ids(results: list[dict[str, Any]]) -> str:
+    """The first five of /entries/deactivate's per-item results, for a message."""
+    return ", ".join(
+        f"{r.get('registry_id')} ({r.get('status')}: {r.get('error') or ''})"
+        for r in results[:5]
+    )
+
+
 def _skipped_types(skip_documents: bool, skip_files: bool) -> set[str]:
     """The entity types a restore's skip flags leave out."""
     skipped = {"documents"} if skip_documents else set()
@@ -1369,6 +1386,24 @@ def _entry_of_skipped(entity_type: str, row: dict[str, Any], skipped: set[str]) 
     left out with its entities: restored, it would claim their keys with no
     entity behind them."""
     return entity_type == "registry_entries" and row.get("entity_type") in skipped
+
+
+def _would_restore(
+    reader: Any, entry: Any, src: str, entity_type: str, skipped: set[str],
+) -> int:
+    """How many rows of one entity type a plain restore writes for ``src``:
+    none of a skipped type, and only the Registry entries of the entities it
+    does write. Counts come from the manifest entry when there is one."""
+    if entity_type in skipped:
+        return 0
+    if entity_type == "registry_entries" and skipped:
+        return sum(
+            1 for row in reader.read_entities("registry_entries", namespace=src)
+            if not _entry_of_skipped(entity_type, row, skipped)
+        )
+    if entry is not None:
+        return getattr(entry.counts, entity_type, 0)
+    return reader.entity_count(entity_type, namespace=src)
 
 
 def _recorded_export_time(manifest: Any) -> datetime | None:
@@ -2048,6 +2083,7 @@ class DirectRestoreEngine:
     ) -> None:
         """What a plain restore would write, without writing it."""
         restore_order = list(_PLAIN_RESTORE_ORDER)
+        skipped = _skipped_types(skip_documents, skip_files)
 
         self.result = {
             "mode": "restore",
@@ -2056,10 +2092,8 @@ class DirectRestoreEngine:
             "repointed_referents": remapper.total_mappings,
             "namespaces": {
                 tgt: {
-                    entity_type: (
-                        getattr(entry_by_prefix[src].counts, entity_type, 0)
-                        if src in entry_by_prefix
-                        else reader.entity_count(entity_type, namespace=src)
+                    entity_type: _would_restore(
+                        reader, entry_by_prefix.get(src), src, entity_type, skipped,
                     )
                     for entity_type in restore_order
                 }
@@ -2215,11 +2249,14 @@ class DirectRestoreEngine:
         it leaves the earlier batches live, and the error and the job record
         say exactly how many per target.
 
-        No reporting work happens here. A restore's job is to get the data in;
+        No reporting sync runs here. A restore's job is to get the data in;
         PostgreSQL is a derived layer that can be rebuilt at any time, and
         syncing mid-restore only couples the write to a service that has
         nothing to say yet. Verify afterwards — `check_reporting_parity` and
-        the namespace validation job both exist for that.
+        the namespace validation job both exist for that. The stale-schema
+        precondition does apply: a target that already has a reporting schema
+        is refused, unless ``drop_stale_reporting`` is set, which drops that
+        schema before anything is written.
         """
         if not target_namespace and not namespace_map:
             raise RestoreEngineError(
@@ -3522,19 +3559,24 @@ class DirectRestoreEngine:
 
     def _warn_unreleased(self, namespace: str, failed: list[dict[str, Any]]) -> None:
         """Name the retired entities whose synonyms the Registry could not
-        release (its per-item answers inside a 200)."""
-        if not failed:
-            return
-        sample = ", ".join(
-            f"{r.get('registry_id')} ({r.get('status')}: {r.get('error') or ''})"
-            for r in failed[:5]
-        )
-        self._emit(
-            "warning",
-            f"[{namespace}] the synonyms of {len(failed)} retired entities could not be "
-            f"released ({sample}); they still block other identities with the same keys "
-            "until each store's /maintenance/reconcile-synonym-lifecycle runs",
-        )
+        release (its per-item answers inside a 200). An entity with no
+        Registry entry (not_found) has no synonyms to release and blocks
+        nothing, so it is named apart, without the repair advice."""
+        absent = [r for r in failed if r.get("status") == "not_found"]
+        blocked = [r for r in failed if r.get("status") != "not_found"]
+        if absent:
+            self._emit(
+                "warning",
+                f"[{namespace}] {len(absent)} retired entities have no Registry entry "
+                f"({_sample_ids(absent)}); there was nothing of theirs to release",
+            )
+        if blocked:
+            self._emit(
+                "warning",
+                f"[{namespace}] the synonyms of {len(blocked)} retired entities could not be "
+                f"released ({_sample_ids(blocked)}); they still block other identities with "
+                "the same keys until each store's /maintenance/reconcile-synonym-lifecycle runs",
+            )
 
     async def _add_synonyms(
         self, namespace: str, items: list[dict[str, Any]]
@@ -5399,8 +5441,10 @@ class DirectRestoreEngine:
         The two sides arrive in different shapes: the target's rows come from
         MongoDB as naive datetimes that are UTC by convention, the archive's
         come from JSONL as ISO-8601 strings. Comparing them raw raises rather
-        than answering, so both are coerced to aware UTC and anything
-        unparseable becomes None — which the caller treats as "cannot tell".
+        than answering, so both are made timezone-aware (a naive value is read
+        as UTC; an explicit offset is kept, which compares as the same
+        instant) and anything unparseable becomes None — which the caller
+        treats as "cannot tell".
         """
         if isinstance(value, datetime):
             return value if value.tzinfo else value.replace(tzinfo=UTC)
@@ -6096,10 +6140,9 @@ class DirectRestoreEngine:
                 if skip_files and entity_type == "files":
                     parts.append("files=skipped")
                     continue
-                count = (
-                    getattr(entry.counts, entity_type, 0)
-                    if entry
-                    else reader.entity_count(entity_type, namespace=src)
+                count = _would_restore(
+                    reader, entry, src, entity_type,
+                    _skipped_types(skip_documents, skip_files),
                 )
                 parts.append(f"{entity_type}={count}")
             self._emit(

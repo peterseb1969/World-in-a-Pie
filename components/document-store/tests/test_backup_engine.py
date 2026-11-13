@@ -1351,10 +1351,17 @@ class TestRunRestoreDryRun:
         )
         events = []
         engine = DirectRestoreEngine(mongo, None, _collect_progress(events))
+        reader = self._reader()
+        # Two identity rows: a terminology's, and a document's that the real
+        # run leaves out with its document.
+        entries = [{"entity_type": "terminologies"}, {"entity_type": "documents"}]
+        reader.read_entities = MagicMock(
+            side_effect=lambda et, namespace="": iter(entries if et == "registry_entries" else []),
+        )
 
         with patch(
             "document_store.services.backup_engine.ArchiveReader",
-            return_value=self._reader(),
+            return_value=reader,
         ), _dry_registry():
             await engine.run_restore(
                 tmp_path / "kb.zip", "kb",
@@ -1364,6 +1371,10 @@ class TestRunRestoreDryRun:
         report = next(e for e in events if e.phase == "phase_dry_run")
         assert "documents=skipped" in report.message
         assert "files=skipped" in report.message
+        # The counts are what the real run writes, not the archive's totals.
+        assert "registry_entries=1" in report.message
+        planned = engine.result["namespaces"]["kb"]
+        assert planned["documents"] == 0 and planned["registry_entries"] == 1
 
 
 # ---------------------------------------------------------------------------

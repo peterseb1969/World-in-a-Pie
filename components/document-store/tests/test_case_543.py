@@ -34,6 +34,10 @@ from document_store.services.archive_store import (
     configure_archive_store,
     scratch_path_for,
 )
+from document_store.services.file_storage_client import (
+    FileStorageError,
+    FileStorageUnavailableError,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -713,13 +717,20 @@ class TestArchiveMovesDuringDownload:
 
 class TestArchiveStoreReviewFixes:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", [
+        # The store answered with an error (an S3 5xx, NoSuchBucket): this
+        # read as "not retained" (410) before; it is the case the 503 fixed.
+        FileStorageError("NoSuchBucket"),
+        # The store could not be reached: answered 503 throughout.
+        FileStorageUnavailableError("garage unreachable"),
+    ])
     async def test_an_unanswerable_store_is_503_not_410(
-        self, client: AsyncClient, auth_headers: dict, monkeypatch
+        self, client: AsyncClient, auth_headers: dict, monkeypatch, failure
     ):
         _store, fake = _minio_store(monkeypatch)
 
         async def broken_exists(key):
-            raise ConnectionError("garage unreachable")
+            raise failure
 
         fake.exists = broken_exists
         src = await _job(archive_path="bkp-x.zip", archive_backend="minio")
@@ -750,7 +761,75 @@ class TestArchiveStoreReviewFixes:
         assert list(fake.objects) == ["bkp-src.zip"]
 
     @pytest.mark.asyncio
-    async def test_a_local_copy_has_its_own_age(self, tmp_path):
+    async def test_a_failed_insert_leaves_no_object_behind(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch, tmp_path
+    ):
+        """Until the new job's record is inserted nothing owns the archive
+        copy; an insert that fails must not strand it in the bucket."""
+        _store, fake = _minio_store(monkeypatch)
+        archive = tmp_path / "src.zip"
+        _make_v3_archive(archive, ["wip"])
+        fake.objects["bkp-src.zip"] = archive.read_bytes()
+        src = await _job(archive_path="bkp-src.zip", archive_backend="minio", namespaces=["wip"])
+
+        with patch.object(BackupJob, "insert", AsyncMock(side_effect=RuntimeError("mongo blip"))), \
+                contextlib.suppress(RuntimeError):
+            await client.post(
+                f"/api/document-store/backup/jobs/{src.job_id}/restore",
+                headers=auth_headers, json={},
+            )
+        assert list(fake.objects) == ["bkp-src.zip"]
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_store_during_cleanup_does_not_mask_the_failure(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
+        _store, fake = _minio_store(monkeypatch)
+        fake.objects["bkp-src.zip"] = b"archive"
+        src = await _job(archive_path="bkp-src.zip", archive_backend="minio")
+
+        async def failing_download(key, dest_path, chunk_size=0):
+            raise OSError("No space left on device")
+
+        async def unreachable_delete(key):
+            raise FileStorageUnavailableError("garage unreachable")
+
+        fake.download_to_file = failing_download
+        fake.delete = unreachable_delete
+        with pytest.raises(OSError, match="No space left"):
+            await client.post(
+                f"/api/document-store/backup/jobs/{src.job_id}/restore",
+                headers=auth_headers, json={},
+            )
+
+    @pytest.mark.asyncio
+    async def test_a_local_archive_past_retention_is_410_not_500(
+        self, client: AsyncClient, auth_headers: dict
+    ):
+        """The scratch sweep runs before the retention check, so an archive
+        it removes is reported as no longer retained, not as a crash."""
+        import os
+        import time
+
+        src = await _job(namespaces=["wip"])
+        archive = scratch_path_for(src.job_id)
+        _make_v3_archive(archive, ["wip"])
+        old = time.time() - 30 * 24 * 3600
+        os.utime(archive, (old, old))
+        src.archive_path = str(archive)
+        await src.save()
+
+        resp = await client.post(
+            f"/api/document-store/backup/jobs/{src.job_id}/restore",
+            headers=auth_headers, json={},
+        )
+        assert resp.status_code == 410, resp.text
+        assert "no longer retained" in resp.json()["detail"]
+
+    @pytest.mark.asyncio
+    async def test_a_local_copy_has_its_own_age(self, client, tmp_path):
+        # client: initializes the job collection; without it the test passed
+        # only after another test had done so.
         import os
         import time
 

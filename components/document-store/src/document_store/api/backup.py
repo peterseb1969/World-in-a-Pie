@@ -18,10 +18,13 @@ Endpoints
     target, ``merge`` reconciles the archive into a namespace that already
     holds data: definitions must be compatible (see ``add_missing`` /
     ``extend_terminologies``), then documents merge under ``on_clash``.
-    The URL ``{namespace}`` is the permission anchor; the destination is the
-    archive's own namespace(s), which only a single-namespace ``merge``
-    (``target_namespace``) or a ``fresh`` restore may change. A target the
-    mode cannot honour is refused, never silently replaced.
+    Admin is asked on ``target_namespace``, or on the URL ``{namespace}``
+    when none is given; a ``restore`` or ``merge`` also needs admin on every
+    namespace the archive carries, and a ``fresh`` restore given only a
+    ``namespace_map`` needs admin on the map's targets alone. The destination
+    is the archive's own namespace(s), which only a single-namespace
+    ``merge`` (``target_namespace``) or a ``fresh`` restore may change. A
+    target the mode cannot honour is refused, never silently replaced.
 * ``POST /backup/namespaces/{namespace}/validate``
     Verify a namespace's referential and identity integrity as a job. Started
     automatically after every restore, and available on demand.
@@ -577,8 +580,12 @@ async def start_restore(
 ) -> BackupJobSnapshot:
     """Upload an archive and restore it.
 
-    The URL ``namespace`` is the permission anchor, not the destination. The
-    destination is the archive's own namespace(s): a plain ``restore`` writes
+    Admin is asked on ``target_namespace``, or on the URL ``namespace`` when
+    none is given; a ``restore`` or ``merge`` also needs admin on every
+    namespace the archive carries, and a ``fresh`` restore given only a
+    ``namespace_map`` needs admin on the map's targets alone (the URL
+    ``namespace`` then gates nothing). The URL ``namespace`` is not the
+    destination. The destination is the archive's own namespace(s): a plain ``restore`` writes
     each one to itself and refuses a ``target_namespace`` that differs; a
     ``merge`` of a single-namespace archive may be redirected with
     ``target_namespace``; a ``fresh`` restore needs ``target_namespace`` or
@@ -590,8 +597,8 @@ async def start_restore(
     """
     effective_target = target_namespace or namespace
     # A fresh restore given only a namespace_map writes the map's targets,
-    # each admin-checked as the map is parsed; the URL namespace is not one
-    # of them, so it is not asked of the caller.
+    # each admin-checked as the map is parsed. The URL namespace is asked
+    # only when the map names it as a target, through that same check.
     if not (mode == "fresh" and namespace_map is not None and not target_namespace):
         await check_namespace_permission(identity, effective_target, "admin")
 
@@ -984,14 +991,27 @@ async def start_validation(
 # ---------------------------------------------------------------------------
 
 
+# The 410 for an archive that is no longer retained.
+_ARCHIVE_GONE = (
+    "Archive no longer retained. Without file storage enabled, "
+    "restore inputs are deleted when the job finishes and backup "
+    "archives are swept after the retention window."
+)
+
+
 async def _materialize(
     store: ArchiveStore, src: BackupJob, new_job_id: str, object_copied: bool,
 ) -> Path:
     """The new restore job's own archive copy. On failure nothing is left:
     an object copy that landed before the download failed would have no job
-    record to own it, and would stay in the bucket for good."""
+    record to own it, and would stay in the bucket for good. A local source
+    that vanished since the retention check (another job's scratch sweep)
+    is the 410 that check gives, not a bare 500."""
     try:
         return await store.materialize_for_restore(src, new_job_id)
+    except FileNotFoundError as e:
+        await store.discard_materialized(new_job_id, object_copied)
+        raise HTTPException(status_code=410, detail=_ARCHIVE_GONE) from e
     except Exception:
         await store.discard_materialized(new_job_id, object_copied)
         raise
@@ -1272,11 +1292,7 @@ async def download_archive(
     if not await _archive_retained(store, job):
         raise HTTPException(
             status_code=410,
-            detail=(
-                "Archive no longer retained. Without file storage enabled, "
-                "restore inputs are deleted when the job finishes and backup "
-                "archives are swept after the retention window."
-            ),
+            detail=_ARCHIVE_GONE,
         )
 
     size = job.archive_size
@@ -1302,6 +1318,63 @@ async def download_archive(
 # ---------------------------------------------------------------------------
 
 
+async def _insert_restore_from_job(
+    store: ArchiveStore,
+    src: BackupJob,
+    request: RestoreFromJobRequest,
+    identity: UserIdentity,
+    new_job_id: str,
+    object_copied: bool,
+    scratch: Path,
+) -> BackupJob:
+    """Authorize the restore of ``src``'s archive copy and insert its job
+    record. Until the record is inserted nothing owns the copy, so any
+    failure on the way (a refusal, an insert that meets a database blip)
+    discards it: an object copy left behind would stay in the bucket for
+    good."""
+    try:
+        prefixes, effective_target = await _authorize_archive_restore(
+            scratch, identity
+        )
+        options = {
+            "mode": request.mode,
+            "target_namespace": effective_target,
+            "on_clash": request.on_clash,
+            "older_versions": request.older_versions,
+            "add_missing": request.add_missing,
+            "extend_terminologies": request.extend_terminologies,
+            "align_templates": request.align_templates,
+            "carry_retirements": request.carry_retirements,
+            "skip_documents": request.skip_documents,
+            "skip_files": request.skip_files,
+            "batch_size": request.batch_size,
+            "dry_run": request.dry_run,
+            "drop_stale_reporting": request.drop_stale_reporting,
+            "drop_unresolved_edges": request.drop_unresolved_edges,
+            "allow_failed_verify": request.allow_failed_verify,
+            "allow_missing_identity": request.allow_missing_identity,
+            "restored_from_job": src.job_id,
+        }
+        job = BackupJob(
+            job_id=new_job_id,
+            kind=BackupJobKind.RESTORE,
+            namespace=effective_target or src.namespace,
+            # Same never-blank rule as the upload restore: manifest prefixes,
+            # falling back to the scalar namespace on an unreadable manifest.
+            namespaces=prefixes or [effective_target or src.namespace],
+            archive_path=f"{new_job_id}.zip" if object_copied else str(scratch),
+            archive_backend=BACKEND_MINIO if object_copied else "local",
+            archive_size=scratch.stat().st_size,
+            options=options,
+            created_by=identity.identity_string if hasattr(identity, "identity_string") else str(identity),
+        )
+        await job.insert()
+    except Exception:
+        await store.discard_materialized(new_job_id, object_copied)
+        raise
+    return job
+
+
 @router.post(
     "/jobs/{job_id}/restore",
     response_model=BackupJobSnapshot,
@@ -1318,7 +1391,7 @@ async def restore_from_job(
     re-uploading the archive — the bytes are already retained server-side.
 
     The new restore job receives its OWN archive copy (a server-side object
-    copy in the bucket, or a hardlink in scratch), so deleting either job
+    copy in the bucket, or a plain scratch copy with its own age), so deleting either job
     never removes the archive out from under the other. Authorization is
     two-layered: admin on every namespace the SOURCE job spans (reading the
     archive is download-equivalent), then the same per-namespace admin
@@ -1357,68 +1430,24 @@ async def restore_from_job(
         )
 
     store = get_archive_store()
+    # Sweep first: a local archive past the retention window goes now, and
+    # the check below answers 410 for it. Swept after the check, it vanished
+    # between "retained" and the copy, and the caller got a bare 500.
+    store.sweep_expired_scratch()
     if not src.archive_path or not await _archive_retained(store, src):
-        raise HTTPException(
-            status_code=410,
-            detail=(
-                "Archive no longer retained. Without file storage enabled, "
-                "restore inputs are deleted when the job finishes and backup "
-                "archives are swept after the retention window."
-            ),
-        )
-
-    get_archive_store().sweep_expired_scratch()
+        raise HTTPException(status_code=410, detail=_ARCHIVE_GONE)
 
     new_job_id = f"rst-{uuid.uuid4().hex[:16]}"
     object_copied = src.archive_backend == BACKEND_MINIO
     scratch = await _materialize(store, src, new_job_id, object_copied)
 
-    try:
-        prefixes, effective_target = await _authorize_archive_restore(
-            scratch, identity
-        )
-    except HTTPException:
-        await store.discard_materialized(new_job_id, object_copied)
-        raise
-
-    options = {
-        "mode": request.mode,
-        "target_namespace": effective_target,
-        "on_clash": request.on_clash,
-        "older_versions": request.older_versions,
-        "add_missing": request.add_missing,
-        "extend_terminologies": request.extend_terminologies,
-        "align_templates": request.align_templates,
-        "carry_retirements": request.carry_retirements,
-        "skip_documents": request.skip_documents,
-        "skip_files": request.skip_files,
-        "batch_size": request.batch_size,
-        "dry_run": request.dry_run,
-        "drop_stale_reporting": request.drop_stale_reporting,
-        "drop_unresolved_edges": request.drop_unresolved_edges,
-        "allow_failed_verify": request.allow_failed_verify,
-        "allow_missing_identity": request.allow_missing_identity,
-        "restored_from_job": src.job_id,
-    }
-
-    job = BackupJob(
-        job_id=new_job_id,
-        kind=BackupJobKind.RESTORE,
-        namespace=effective_target or src.namespace,
-        # Same never-blank rule as the upload restore: manifest prefixes,
-        # falling back to the scalar namespace on an unreadable manifest.
-        namespaces=prefixes or [effective_target or src.namespace],
-        archive_path=f"{new_job_id}.zip" if object_copied else str(scratch),
-        archive_backend=BACKEND_MINIO if object_copied else "local",
-        archive_size=scratch.stat().st_size,
-        options=options,
-        created_by=identity.identity_string if hasattr(identity, "identity_string") else str(identity),
+    job = await _insert_restore_from_job(
+        store, src, request, identity, new_job_id, object_copied, scratch,
     )
-    await job.insert()
 
     runner = backup_service.make_direct_restore_runner(
         archive_path=scratch,
-        options=options,
+        options=job.options,
         job_id=new_job_id,
         requester=_restore_requester(http_request, identity),
     )

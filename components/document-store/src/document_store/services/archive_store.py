@@ -361,12 +361,22 @@ class ArchiveStore:
 
     async def discard_materialized(self, new_job_id: str, object_copied: bool) -> None:
         """Undo materialize_for_restore when job creation aborts after it
-        (e.g. the manifest-based authorization refuses the caller)."""
+        (e.g. the manifest-based authorization refuses the caller).
+
+        Never raises: it runs while another failure propagates, and an
+        error of its own (the object store is often down for the same
+        reason the job creation failed) would replace that failure. An
+        object it cannot remove is logged and left behind."""
         with contextlib.suppress(OSError):
             scratch_path_for(new_job_id).unlink()
         if object_copied:
-            with contextlib.suppress(FileStorageError):
+            try:
                 await self._storage().delete(_object_key_for(new_job_id))
+            except (FileStorageError, FileStorageUnavailableError):
+                logger.exception(
+                    "Could not remove the archive copy %s of an aborted restore job",
+                    _object_key_for(new_job_id),
+                )
 
     async def delete_archive(self, job: BackupJob) -> None:
         """Remove a job's archive from wherever it lives (job deletion)."""

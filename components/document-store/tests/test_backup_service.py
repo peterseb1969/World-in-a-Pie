@@ -1124,3 +1124,89 @@ class TestTerminalEventPersistence:
         assert "the run completed" in updated.error
         assert "restored 3 namespaces" in updated.error
         assert "without terminal event" not in updated.error
+        # A backup owes no reporting sync or validation: none is claimed.
+        assert "follow-ups" not in updated.error
+
+    async def test_a_restore_whose_completion_is_lost_still_gets_its_follow_ups(
+        self, fresh_job: BackupJob, monkeypatch,
+    ):
+        """The restore's data is committed whatever the job record says, so
+        the namespaces it wrote are still synced and verified."""
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.namespaces = ["ns-a", "ns-b"]
+        fresh_job.options = {"dry_run": False}
+        await fresh_job.save()
+        monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(backup_service, "_persist_event", self._failing_terminal_writes(99))
+        sync, validate = AsyncMock(), AsyncMock()
+        monkeypatch.setattr(backup_service, "_trigger_reporting_batch_sync", sync)
+        monkeypatch.setattr(backup_service, "trigger_validation_for", validate)
+        events = [ProgressEvent(phase="start", message="go", percent=0.0),
+                  ProgressEvent(phase="complete", message="done", percent=100.0,
+                                details={"reporting_synced": ["ns-a"]})]
+        task = await backup_service.start_async_job(fresh_job.job_id, _scripted_runner(events))
+        await asyncio.wait_for(task, timeout=5.0)
+        for _ in range(3):
+            await asyncio.sleep(0)
+
+        assert [c.args[0] for c in sync.call_args_list] == ["ns-b"]
+        validate.assert_called_once()
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.status == BackupJobStatus.FAILED
+        assert "follow-ups (reporting sync, validation) were started anyway" in updated.error
+
+    async def test_the_fallback_failed_write_is_retried(self, fresh_job: BackupJob, monkeypatch):
+        monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(backup_service, "_persist_event", self._failing_terminal_writes(99))
+        real_mark = backup_service._mark_failed
+        left = {"n": 1}
+
+        async def flaky_mark(job_id, error):
+            if left["n"] > 0:
+                left["n"] -= 1
+                raise RuntimeError("mongo blip")
+            await real_mark(job_id, error)
+        monkeypatch.setattr(backup_service, "_mark_failed", flaky_mark)
+        events = [ProgressEvent(phase="start", message="go", percent=0.0),
+                  ProgressEvent(phase="complete", message="done", percent=100.0)]
+        task = await backup_service.start_async_job(fresh_job.job_id, _scripted_runner(events))
+        await asyncio.wait_for(task, timeout=5.0)
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.status == BackupJobStatus.FAILED
+        assert fresh_job.job_id not in backup_service._job_queues
+        assert fresh_job.job_id not in backup_service._job_tasks
+
+    async def test_the_job_entries_go_even_when_the_record_cannot_be_settled(
+        self, fresh_job: BackupJob, monkeypatch,
+    ):
+        monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(backup_service, "_persist_event", self._failing_terminal_writes(99))
+
+        async def broken_mark(job_id, error):
+            raise RuntimeError("mongo down")
+        monkeypatch.setattr(backup_service, "_mark_failed", broken_mark)
+        events = [ProgressEvent(phase="start", message="go", percent=0.0),
+                  ProgressEvent(phase="complete", message="done", percent=100.0)]
+        task = await backup_service.start_async_job(fresh_job.job_id, _scripted_runner(events))
+        await asyncio.wait_for(task, timeout=5.0)
+
+        assert fresh_job.job_id not in backup_service._job_queues
+        assert fresh_job.job_id not in backup_service._job_tasks
+
+    async def test_a_job_left_pending_is_marked_failed(self, fresh_job: BackupJob, monkeypatch):
+        """Its 'start' never reached the record: with the run over, nothing
+        else would ever move it out of PENDING."""
+        monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
+
+        async def nothing_lands(job_id, event):
+            raise RuntimeError("mongo blip")
+        monkeypatch.setattr(backup_service, "_persist_event", nothing_lands)
+        events = [ProgressEvent(phase="start", message="go", percent=0.0),
+                  ProgressEvent(phase="error", message="boom")]
+        task = await backup_service.start_async_job(fresh_job.job_id, _scripted_runner(events))
+        await asyncio.wait_for(task, timeout=5.0)
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert updated.status == BackupJobStatus.FAILED
+        assert "boom" in updated.error
