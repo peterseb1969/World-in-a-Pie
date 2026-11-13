@@ -1815,10 +1815,12 @@ def rebuild(
     rendered from, so the image is built from the files as they are now,
     not as they were at the last render; nothing else is re-rendered.
     Source-only edits on a dev
-    install need nothing at all: source is bind-mounted and hot-reloads
-    within seconds (the dev renderer injects WATCHFILES_FORCE_POLLING
-    so --reload works across the bind mount). `wip-deploy restart <svc>`
-    is the fallback for stacks rendered before that fix shipped.
+    install need nothing for the uvicorn services: source is bind-mounted
+    and hot-reloads within seconds (the dev renderer injects
+    WATCHFILES_FORCE_POLLING so --reload works across the bind mount).
+    mcp-server and app-edge are mounted but have no watcher, so an edit
+    needs `wip-deploy restart <svc>`; the render says so. Restart is also
+    the fallback for stacks rendered before that fix shipped.
 
     Examples:
 
@@ -7702,9 +7704,12 @@ def _render_tree(
                 err=True,
             )
             raise typer.Exit(1)
-        return render_dev_simple(
+        tree = render_dev_simple(
             deployment, components, apps_list, secrets, repo_root=repo_root,
         )
+        for note in tree.notes:
+            typer.echo(f"note: {note}", err=True)
+        return tree
     typer.echo(
         f"error: renderer for target={deployment.spec.target!r} not implemented yet",
         err=True,

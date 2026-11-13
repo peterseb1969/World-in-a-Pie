@@ -24,6 +24,11 @@ spec:
   ports:
     - {name: http, container_port: 4180}
 
+  # The image's CMD, pinned so the dev render runs it under the reloading
+  # launcher like the other uvicorn services (a dev install mounts this
+  # component's source; without the pin it never reloaded an edit).
+  command: [uvicorn, auth_gateway.main:app, --host, 0.0.0.0, --port, "4180"]
+
   routes:
     # Browser-facing /auth/* endpoints (login, callback, logout,
     # userinfo). The gateway IS the auth — no forward_auth on these.

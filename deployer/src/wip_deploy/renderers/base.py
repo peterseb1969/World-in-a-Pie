@@ -74,10 +74,15 @@ class FileTree:
     leave behind: `write` removes them. Writing only adds and overwrites,
     so without it a file that moved stays where it was, still mounted
     wherever its old directory is.
+
+    `notes` are what the render wants the operator told — a fallback it
+    took, a service that needs a restart to pick up an edit. The verb that
+    rendered prints them; they never change what is written.
     """
 
     files: dict[Path, FileEntry] = field(default_factory=dict)
     obsolete: set[Path] = field(default_factory=set)
+    notes: list[str] = field(default_factory=list)
 
     def add(self, path: str | Path, content: str, *, mode: int = 0o644, atomic: bool = False) -> None:
         self.files[Path(path)] = FileEntry(content=content, mode=mode, atomic=atomic)

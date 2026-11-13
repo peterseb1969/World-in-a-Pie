@@ -16,6 +16,9 @@ file set as the compose renderer but with three dev-friendly changes:
   3. uvicorn commands run through a dev launcher with `--reload` —
      Python services hot-reload on source change, and a worker that dies
      is respawned instead of leaving the container up and unresponsive.
+     A mounted service whose command is not uvicorn (mcp-server, app-edge)
+     has no watcher: an edit takes effect on a restart, and the render
+     notes each one (`FileTree.notes`).
 
 Node/Go apps don't benefit from (2) and (3) — they need rebuilds. MVP
 treats them the same: they get build contexts but no hot reload.
@@ -286,6 +289,60 @@ def refresh_dev_build_contexts(
 # ────────────────────────────────────────────────────────────────────
 
 
+def _mounted_source(owner: Component | App, repo_root: Path) -> Path | None:
+    """The component source the dev render bind-mounts over /app/src, or
+    None: a component with a build context and a `src` directory."""
+    if isinstance(owner, App) or owner.spec.image.build_context is None:
+        return None
+    source = (repo_root / "components" / owner.metadata.name / "src").resolve()
+    return source if source.exists() else None
+
+
+def _hot_reloads(owner: Component | App) -> bool:
+    """Whether the dev render runs the owner under the reloading launcher:
+    only a uvicorn command has a watcher to restart it."""
+    cmd = _command_for(owner)
+    return bool(cmd and cmd[0] == "uvicorn")
+
+
+def _dev_render_notes(
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+    repo_root: Path,
+    *,
+    source_mount: bool,
+    app_sources: dict[str, Path],
+) -> list[str]:
+    """What the dev render tells the operator: each mounted component that
+    does not reload (an edit needs a restart), and each --app-source app
+    built from its production Dockerfile for want of a Dockerfile.dev."""
+    notes: list[str] = []
+    install = deployment.metadata.name
+    if source_mount:
+        for c in components:
+            if (
+                is_component_active(c, deployment)
+                and _mounted_source(c, repo_root) is not None
+                and not _hot_reloads(c)
+            ):
+                notes.append(
+                    f"{c.metadata.name}: its source is mounted but it does not "
+                    f"hot-reload; after an edit, `podman restart {install}_wip-{c.metadata.name}`."
+                )
+    enabled = {r.name for r in deployment.spec.apps if r.enabled}
+    for a in apps:
+        path = app_sources.get(a.metadata.name)
+        if a.metadata.name in enabled and path is not None and not (path / "Dockerfile.dev").is_file():
+            notes.append(
+                f"{a.metadata.name}: {path} has no Dockerfile.dev, so the dev build uses its "
+                "production Dockerfile, with NODE_ENV=development and the checkout mounted "
+                "over /app; an app that serves its built assets only in production may not "
+                "serve them. Add a Dockerfile.dev for a dev server."
+            )
+    return notes
+
+
 def render_dev_simple(
     deployment: Deployment,
     components: list[Component],
@@ -342,6 +399,10 @@ def render_dev_simple(
     tree.add("config/caddy/Caddyfile", render_caddyfile(caddy_cfg))
 
     tree.add(UVICORN_LAUNCHER_RENDER_PATH, _UVICORN_LAUNCHER_SOURCE.read_text())
+    tree.notes.extend(_dev_render_notes(
+        deployment, components, apps, repo_root,
+        source_mount=dev_plat.source_mount, app_sources=dev_plat.app_sources,
+    ))
 
     # Config-file API keys (the spec's plus the canary) — same render + posture as the
     # compose target (0644 inside the 0700 install directory, mounted
@@ -615,7 +676,7 @@ def _dev_service_block(
     # "the fix isn't deployed" misdiagnoses). WATCHFILES_FORCE_POLLING is the
     # backend analogue of the apps' CHOKIDAR_USEPOLLING.
     cmd = _command_for(owner)
-    uses_launcher = bool(cmd and cmd[0] == "uvicorn")
+    uses_launcher = _hot_reloads(owner)
     if cmd:
         if uses_launcher:
             if "--reload" not in cmd:
@@ -716,11 +777,9 @@ def _dev_volumes_for(
 
     # Dev-specific: source mount for Python services.
     if enable_source_mount and not isinstance(owner, App):
-        ref = owner.spec.image
-        if ref.build_context is not None:
-            source = (repo_root / "components" / owner.metadata.name / "src").resolve()
-            if source.exists():
-                volumes.append(f"{source}:/app/src:ro")
+        source = _mounted_source(owner, repo_root)
+        if source is not None:
+            volumes.append(f"{source}:/app/src:ro")
         # CASE-301: also bind-mount libs/wip-auth/src for components that
         # use wip_auth, so library edits propagate via a `restart` instead
         # of forcing a full `wip-deploy install` to refresh the

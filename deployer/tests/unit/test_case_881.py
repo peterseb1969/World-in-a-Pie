@@ -25,6 +25,7 @@ import typer
 from typer.testing import CliRunner
 
 from wip_deploy.cli import _render_tree, app
+from wip_deploy.renderers import FileTree
 
 runner = CliRunner()
 
@@ -79,9 +80,9 @@ class TestRenderTree:
         with (
             patch("wip_deploy.cli.find_repo_root", side_effect=AssertionError(
                 "_render_tree must not look the root up itself")),
-            patch("wip_deploy.cli.render_dev_simple", return_value="tree") as dev,
+            patch("wip_deploy.cli.render_dev_simple", return_value=FileTree()) as dev,
         ):
-            assert _render_tree(_dev_deployment(), [], [], None, repo_root=given) == "tree"
+            assert isinstance(_render_tree(_dev_deployment(), [], [], None, repo_root=given), FileTree)
         assert dev.call_args.kwargs["repo_root"] == given
 
     def test_dev_without_a_root_fails_naming_the_flag(self, capsys):
