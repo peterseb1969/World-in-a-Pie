@@ -90,6 +90,10 @@ _file_prehashes: dict[str, bytes] = {}
 _last_seen: tuple[str | None, str | None] | None = None
 # Why the reservations file could not be used at the last pass, if it could not
 _reservations_error: ReservationsUnavailable | None = None
+# Why the key file was refused at the last pass, if it was. The previous import
+# stands and keys keep working, so nothing fails on it; the health endpoint
+# reports that it happened (never why: the reason names paths and keys).
+_key_file_refused: str | None = None
 # Names this process has seen as managed records: a provider record under one
 # of them that MongoDB no longer backs is stale (see _align_provider).
 _seen_managed: set[str] = set()
@@ -503,7 +507,7 @@ async def run_pass(provider: APIKeyProvider | None = None) -> ImportReport:
     that wrote MongoDB without refreshing the provider would leave it stale
     for good, since the next pass finds MongoDB current and changes nothing.
     """
-    global _last_seen, _reservations_error
+    global _last_seen, _reservations_error, _key_file_refused
     if provider is None:
         from ..api.api_keys import _api_key_provider_or_none
 
@@ -514,11 +518,13 @@ async def run_pass(provider: APIKeyProvider | None = None) -> ImportReport:
 
         entries, why = _read_key_file()
         if entries is None:
+            _key_file_refused = why or None
             if why:
                 logger.error("Key file not imported (nothing changed): %s", why)
                 report.skipped.append(why)
         else:
             await _import_keys(entries, provider, report)
+            _key_file_refused = None
         if provider is not None:
             await _align_provider(provider)
 
@@ -584,10 +590,16 @@ async def run_loop(provider: APIKeyProvider | None) -> None:
                 logger.exception("API key shadow check failed; keeping the previous result")
 
 
+def key_file_refused() -> bool:
+    """Whether the last pass refused the key file (none of it imported)."""
+    return _key_file_refused is not None
+
+
 def reset_for_tests() -> None:
-    global _last_seen, _reservations_error
+    global _last_seen, _reservations_error, _key_file_refused
     _verified.clear()
     _seen_managed.clear()
     _file_prehashes.clear()
     _last_seen = None
     _reservations_error = None
+    _key_file_refused = None

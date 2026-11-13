@@ -824,6 +824,38 @@ def _route_missing(client: Any, base_url: str, probe: LiveProbe, admin_key: str 
     return None
 
 
+def check_key_file_imported(base_url: str, client: Any) -> CheckResult:
+    """The Registry took the install's key file at its last import.
+
+    A refused file (a key named twice, a malformed entry) imports nothing:
+    the previous import keeps serving, so the Registry stays healthy and every
+    apply reports success, while no key added, removed or narrowed since took
+    effect. The Registry's public health answer says whether that happened;
+    its log says why.
+    """
+    name = "the Registry imported the key file"
+    try:
+        resp = client.get(f"{base_url}/api/registry/health")
+    except Exception as e:  # noqa: BLE001 — any transport failure is a finding
+        return CheckResult(name, False, f"the Registry's health did not answer ({type(e).__name__})")
+    if resp.status_code != 200:
+        return CheckResult(name, False, f"the Registry's health answered {resp.status_code}")
+    try:
+        refused = resp.json().get("key_file_refused")
+    except ValueError:
+        return CheckResult(name, False, "the Registry's health answer is not JSON")
+    if refused is None:
+        return CheckResult(name, True, "not reported by this Registry (it predates the field)")
+    if refused:
+        return CheckResult(
+            name, False,
+            "the Registry refused the key file at its last import: no key change in it "
+            "took effect, and keys removed or narrowed keep their old grants. The "
+            "Registry's log names why (`Key file not imported`).",
+        )
+    return CheckResult(name, True, "imported")
+
+
 def check_anonymous_refusal(
     base_url: str, active: set[str], client: Any, admin_key: str | None = None,
 ) -> CheckResult:
@@ -1134,6 +1166,7 @@ def verify_live(
         transport=transport, verify=verify_tls, timeout=10.0, follow_redirects=False
     ) as client:
         return [
+            check_key_file_imported(base_url, client),
             check_anonymous_refusal(base_url, active, client, admin_key),
             check_reporting_roles(base_url, admin_key, active, client),
             check_authorization_refusal(base_url, active, canary_key, admin_key, client),

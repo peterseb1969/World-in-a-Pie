@@ -166,6 +166,11 @@ def _default_dex_users() -> list[DexUser]:
 # The deployer adds a key of this name to every install (the canary, see
 # config_gen/api_keys.py), so a spec may not declare one itself.
 CANARY_KEY_NAME = "wip-canary"
+APP_EDGE_KEY_NAME = "wip-app-edge"
+# Every key the deployer provisions itself. A spec key may take none of these
+# names: the key file would name a key twice, and the Registry refuses the
+# whole file, importing none of it.
+SYSTEM_KEY_NAMES = (CANARY_KEY_NAME, APP_EDGE_KEY_NAME)
 
 
 class SpecAPIKey(WIPModel):
@@ -340,10 +345,11 @@ class AuthSpec(WIPModel):
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:
             raise ValueError(f"duplicate api key names: {dupes}")
-        if CANARY_KEY_NAME in names:
+        reserved = sorted(set(names) & set(SYSTEM_KEY_NAMES))
+        if reserved:
             raise ValueError(
-                f"api key name {CANARY_KEY_NAME!r} is reserved: the deployer "
-                "provisions that key on every install"
+                f"api key name(s) {reserved} reserved: the deployer provisions "
+                "a key of that name itself"
             )
         return self
 

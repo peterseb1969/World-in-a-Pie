@@ -25,7 +25,12 @@ from typing import Literal
 
 from wip_deploy.secrets_backend.base import ResolvedSecrets
 from wip_deploy.spec import App, AppRef, Component, Deployment
-from wip_deploy.spec.deployment import APP_EDGE_MODULE, CANARY_KEY_NAME, SpecAPIKey
+from wip_deploy.spec.deployment import (
+    APP_EDGE_KEY_NAME,
+    APP_EDGE_MODULE,
+    CANARY_KEY_NAME,
+    SpecAPIKey,
+)
 
 # The key file has a directory of its own, mounted only into the manifests
 # that declare it (the Registry), so the plaintext reaches no other
@@ -125,7 +130,7 @@ def app_api_keys(deployment: Deployment, apps: list[App]) -> list[SpecAPIKey]:
 # identities. Rendered whenever the edge module is enabled.
 APP_EDGE_GROUP = "wip-app-edge"
 APP_EDGE_KEY = SpecAPIKey(
-    name="wip-app-edge",
+    name=APP_EDGE_KEY_NAME,
     namespaces=[CANARY_NAMESPACE],
     groups=[APP_EDGE_GROUP],
     owner="system:app-edge",
@@ -137,8 +142,8 @@ def app_edge_active(deployment: Deployment) -> bool:
 
     This is exactly what `is_component_active` decides for an optional
     component, so the edge's key, its k8s egress policy and the component
-    cannot disagree. The spec validator guarantees the gateway is on and core
-    is not suppressed whenever the module is listed."""
+    cannot disagree. The spec validator guarantees the gateway is on whenever
+    the module is listed."""
     return APP_EDGE_MODULE in deployment.spec.modules.optional
 
 
@@ -147,9 +152,22 @@ def effective_api_keys(
 ) -> list[SpecAPIKey]:
     """The config-file keys an install carries: its spec's, one per enabled
     app (derived, never stored in the spec), the app edge's when it is
-    active, plus the canary."""
+    active, plus the canary.
+
+    Raises ValueError when two of them share a name. The Registry refuses a
+    key file that names a key twice and imports none of it, while the apply
+    reports success, so the render refuses it first: a system key added
+    without its name in SYSTEM_KEY_NAMES fails here, loudly."""
     edge = [APP_EDGE_KEY] if app_edge_active(deployment) else []
-    return [*deployment.spec.auth.api_keys, *app_api_keys(deployment, apps or []), *edge, CANARY_KEY]
+    keys = [*deployment.spec.auth.api_keys, *app_api_keys(deployment, apps or []), *edge, CANARY_KEY]
+    names = [k.name for k in keys]
+    twice = sorted({n for n in names if names.count(n) > 1})
+    if twice:
+        raise ValueError(
+            f"the install's key file would name {', '.join(twice)} twice; the "
+            "Registry would refuse the whole file"
+        )
+    return keys
 
 
 def api_key_secret_names(deployment: Deployment, apps: list[App] | None = None) -> list[str]:

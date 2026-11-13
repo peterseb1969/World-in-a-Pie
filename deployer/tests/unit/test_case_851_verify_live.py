@@ -192,7 +192,7 @@ def test_verify_live_targets_the_public_base_url(tmp_path: Path):
     results = verify_live(
         deployment, ALL, ADMIN, canary_key=CANARY, transport=httpx.MockTransport(handler)
     )
-    assert [r.passed for r in results] == [True, True, True], [r.fix_hint for r in results]
+    assert [r.passed for r in results] == [True, True, True, True], [r.fix_hint for r in results]
     assert hosts == {f"https://wip.example:{deployment.spec.network.https_port}"}
 
 

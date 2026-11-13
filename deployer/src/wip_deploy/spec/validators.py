@@ -375,8 +375,9 @@ def _validate_app_operator_secrets(
     apps, such as an `anthropic-api-key`, stay allowed.
     """
     from wip_deploy.config_gen.api_keys import (
+        APP_EDGE_KEY,
+        CANARY_KEY,
         MASTER_KEY_SECRET,
-        api_key_secret_names,
         app_api_key,
     )
     from wip_deploy.config_gen.dex import (
@@ -394,8 +395,10 @@ def _validate_app_operator_secrets(
     owners: dict[str, str] = {MASTER_KEY_SECRET: "the install's master key"}
     for name in (*GARAGE_SECRET_NAMES, ROOT_PASSWORD_SECRET):
         owners[name] = "a secret the deployer generates"
-    for name in api_key_secret_names(deployment, apps):
-        owners[name] = "an API key of this install"
+    # The keys' names one by one, not through effective_api_keys: that refuses
+    # a name used twice, which _validate_app_key_names reports by name.
+    for key in (*deployment.spec.auth.api_keys, APP_EDGE_KEY, CANARY_KEY):
+        owners[key.secret_name] = "an API key of this install"
     for c in deployment.spec.auth.connectors:
         if c.secret_key:
             owners[c.secret_name] = f"Dex connector {c.id!r}"
