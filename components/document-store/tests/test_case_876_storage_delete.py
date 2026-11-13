@@ -210,6 +210,23 @@ async def test_storage_failure_is_reported_per_key(client, auth_headers, storage
 
 
 @pytest.mark.asyncio
+async def test_an_object_already_gone_counts_as_deleted(client, auth_headers, storage):
+    # CASE-1264: a store answering NoSuchKey for a key a retried step sends
+    # again; the object is not there, which is what was asked.
+    from document_store.services.file_storage_client import FileStorageNotFoundError
+
+    ns = _prefix()
+    await _registry_namespace(ns, auth_headers, locked=True)
+    gone = await _file_record(ns)
+    storage.delete.side_effect = FileStorageNotFoundError("NoSuchKey")
+
+    resp = await client.post(URL, json={"namespace": ns, "storage_keys": [gone]}, headers=auth_headers)
+
+    assert resp.status_code == 200, resp.text
+    assert (resp.json()["deleted"], resp.json()["failed"]) == (1, [])
+
+
+@pytest.mark.asyncio
 async def test_unreachable_registry_fails_closed(client, auth_headers, storage):
     broken = AsyncMock()
     broken.get_namespace_status = AsyncMock(side_effect=ConnectionError("down"))

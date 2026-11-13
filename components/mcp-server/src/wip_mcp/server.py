@@ -5179,7 +5179,8 @@ async def validate_namespace(
 
     Scanning a whole namespace takes time, so it runs as a job: poll
     get_backup_job for progress and the result. Findings do not fail the job —
-    it completes, and `result.status` is healthy, warning or error, with
+    it completes, and `result.status` is healthy, warning, error or
+    incomplete (a check could not run because a store did not answer), with
     `result.issues` carrying a capped sample and `result.issues_truncated`
     saying how many more there were.
 

@@ -300,13 +300,17 @@ def field_unresolved_detail(
     value: str, terminology: str, namespace: str | None, param_name: str = "term",
 ) -> str:
     """The 404 detail resolve_term_by_fields_or_404 gives a value that names
-    no term; ``namespace`` as the door passed it (None derives it, as the
-    resolver does)."""
+    no term; ``namespace`` as the door passed it, else the caller key's one
+    namespace. With neither, the text names no namespace: the resolver then
+    takes the terminology's own (from its ns: prefix or its id), which this
+    text cannot know, and "namespace 'None'" would name one that does not
+    exist."""
     if namespace is None:
         namespace = _derive_namespace_from_identity()
+    where = f" (namespace '{namespace}')" if namespace is not None else ""
     return (
         f"Could not resolve {param_name} value '{value}' in "
-        f"terminology '{terminology}' (namespace '{namespace}')"
+        f"terminology '{terminology}'{where}"
     )
 
 

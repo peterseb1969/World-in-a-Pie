@@ -56,13 +56,16 @@ router = APIRouter(
 
 
 async def _gate_unresolvable(
-    exc: TemplateUnresolvable, raw: TemplateResponse | None, not_found: str = "Template not found",
+    exc: TemplateUnresolvable, raw: TemplateResponse | None, not_found: str,
 ) -> None:
     """Let a TemplateUnresolvable through only to a caller who may read it.
 
     The resolving routes check read permission after fetching; a 409 for a
     template the caller cannot read would confirm that it exists, which the
     404 on denial is there to hide. ``raw`` is the same template unresolved.
+    ``not_found`` is the door's own text for a template it does not find
+    (no default: a door that left it out answered a hidden template
+    differently from a missing one).
     """
     if raw is None:
         raise HTTPException(status_code=404, detail="Template not found") from exc
@@ -403,7 +406,7 @@ async def get_template_by_value_and_version(
         raw = await TemplateService.get_template_by_value_and_version(
             value, version, resolve_inheritance=False, namespace=namespace
         )
-        await _gate_unresolvable(exc, raw)
+        await _gate_unresolvable(exc, raw, "Template version not found")
     if not template:
         raise HTTPException(status_code=404, detail="Template version not found")
     # CASE-386 — gate read on the template's actual namespace.

@@ -14,7 +14,7 @@ from wip_auth import (
     resolve_namespace_filter,
     resolve_or_404,
 )
-from wip_auth.fastapi_helpers import unresolved_detail
+from wip_auth.fastapi_helpers import miss_detail
 from wip_auth.registry_client import RegistryUnavailableError
 
 from ..models.api_models import (
@@ -542,7 +542,7 @@ async def get_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_readable(identity, document.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
+    await check_readable(identity, document.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
 
     return document
 
@@ -571,7 +571,7 @@ async def get_document_versions(
     # Check namespace — fetch the document to get its namespace
     doc = await service.get_document(document_id)
     if doc:
-        await check_readable(identity, doc.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
+        await check_readable(identity, doc.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
 
     return versions
 
@@ -598,7 +598,7 @@ async def get_document_version(
     if not document:
         raise HTTPException(status_code=404, detail="Document version not found")
 
-    await check_readable(identity, document.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
+    await check_readable(identity, document.namespace, miss_detail(raw_document_id, "document", namespace, "Document version not found", "document_id"))
 
     return document
 
@@ -629,7 +629,7 @@ async def get_latest_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_readable(identity, document.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
+    await check_readable(identity, document.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
 
     return document
 
@@ -710,7 +710,7 @@ async def get_document_relationships(
     if not seed:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_readable(identity, seed.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
+    await check_readable(identity, seed.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
 
@@ -776,7 +776,7 @@ async def traverse_document_relationships(
     if not seed:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_readable(identity, seed.namespace, unresolved_detail(raw_document_id, "document", namespace, "document_id"))
+    await check_readable(identity, seed.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
 

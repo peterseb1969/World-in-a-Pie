@@ -30,6 +30,7 @@ memory, and no `skip`, which degrades quadratically over a large collection.
 """
 
 import asyncio
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from typing import Any
 
@@ -150,14 +151,22 @@ _term_check_cache: dict[str, bool] = {}  # term_id -> exists
 # fetching it per document would be one HTTP call per row.
 _identity_fields_cache: dict[tuple[str, int], Any] = {}
 
-# Checks skipped in this run because the service they ask could not answer,
-# by "<check>:<service>". Reset with the caches at the start of each run.
-_checks_not_run: dict[str, int] = {}
+# Checks skipped by the current run because the service they ask could not
+# answer, by "<check>:<service>". Each run (check_all_documents) sets its own
+# record, so runs in flight at once (one validation job per restored
+# namespace, the startup sweep, the /health/integrity door) never clear or
+# read each other's; the tasks a run starts share it.
+_checks_not_run: ContextVar[dict[str, int] | None] = ContextVar(
+    "integrity_checks_not_run", default=None,
+)
 
 
 def _not_run(check: str, service: str) -> None:
+    record = _checks_not_run.get()
+    if record is None:  # a check called outside a run records nothing
+        return
     key = f"{check}:{service}"
-    _checks_not_run[key] = _checks_not_run.get(key, 0) + 1
+    record[key] = record.get(key, 0) + 1
 
 
 def clear_integrity_cache():
@@ -166,7 +175,6 @@ def clear_integrity_cache():
     _template_check_cache.clear()
     _term_check_cache.clear()
     _identity_fields_cache.clear()
-    _checks_not_run.clear()
 
 
 async def check_template_reference(
@@ -672,6 +680,8 @@ async def check_all_documents(
     to verify.
     """
     clear_integrity_cache()
+    not_run: dict[str, int] = {}
+    _checks_not_run.set(not_run)
 
     query = _document_query(namespace, status_filter, template_id_filter)
     total_count = await Document.find(query).count()
@@ -704,7 +714,7 @@ async def check_all_documents(
         if progress is not None:
             progress(documents_checked, effective_limit)
 
-    summary = _summarize(all_issues, total_count, documents_checked)
+    summary = _summarize(all_issues, total_count, documents_checked, not_run)
     return IntegrityCheckResult(
         status=_overall_status(all_issues, summary),
         summary=summary,
@@ -768,6 +778,7 @@ _SUMMARY_COUNTERS = {
 
 def _summarize(
     issues: list[IntegrityIssue], total_count: int, documents_checked: int,
+    not_run: dict[str, int],
 ) -> IntegritySummary:
     counts = dict.fromkeys(set(_SUMMARY_COUNTERS.values()), 0)
     for issue in issues:
@@ -779,7 +790,7 @@ def _summarize(
         documents_checked=documents_checked,
         documents_with_issues=len({issue.document_id for issue in issues}),
         **counts,
-        checks_not_run=dict(_checks_not_run),
+        checks_not_run=dict(not_run),
     )
 
 

@@ -271,14 +271,19 @@ async def lifespan(app: FastAPI):
                 check_term_refs=False  # Skip term refs for faster startup
             )
             if result.status == "healthy":
-                logger.info(f"Integrity check: OK ({result.summary.total_documents} documents checked)")
+                # The sweep is capped: say how many it checked, of how many.
+                logger.info(
+                    "Integrity check: OK (%d of %d active documents checked)",
+                    result.summary.documents_checked, result.summary.total_documents,
+                )
             else:
                 if result.summary.checks_not_run:
                     logger.warning(
                         "Integrity check %s: checks not run (a service did not answer): %s",
                         result.status, result.summary.checks_not_run,
                     )
-                logger.warning(f"Integrity check found {len(result.issues)} issues:")
+                if result.issues:  # an incomplete run may have found none
+                    logger.warning(f"Integrity check found {len(result.issues)} issues:")
                 # Group issues by type
                 issue_counts: dict[str, int] = {}
                 for issue in result.issues:

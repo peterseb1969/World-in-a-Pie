@@ -639,3 +639,37 @@ async def test_relationships_include_peers_tier2_only_title_when_doc_status_unde
     # the template so it stays absent.
     assert peer["data"] == {"lesson_id": "LITE-002", "title": "Lite second"}
     assert "doc_status" not in peer["data"]
+
+
+@pytest.mark.asyncio
+async def test_include_peers_meeting_a_permission_outage_is_a_503(
+    client: AsyncClient, auth_headers: dict, monkeypatch,
+):
+    """CASE-1264: a peer whose read permission the Registry could not answer
+    fails the request (503 registry_unavailable) at the door, never a peer
+    reported not_found."""
+    exp_id, mol_id = await _seed_endpoints(client, auth_headers)
+    await _create_doc(client, auth_headers, "EXPERIMENT_INPUT", {
+        "source_ref": exp_id, "target_ref": mol_id, "role": "input",
+    })
+
+    import sys
+
+    from wip_auth import permissions
+
+    real = permissions.resolve_permission
+
+    async def unavailable_for_peers(identity, namespace):
+        # The door's own check on the seed's namespace answers as usual; the
+        # peer read check (_can_read_namespace) meets the outage.
+        if sys._getframe(1).f_code.co_name == "_can_read_namespace":
+            return "unavailable"
+        return await real(identity, namespace)
+
+    monkeypatch.setattr(permissions, "resolve_permission", unavailable_for_peers)
+    resp = await client.get(
+        f"{API}/documents/{exp_id}/relationships?include=peers",
+        headers=auth_headers,
+    )
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error_code"] == "registry_unavailable"

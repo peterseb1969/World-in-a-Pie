@@ -19,7 +19,7 @@ from wip_auth import (
     resolve_accessible_namespaces,
     resolve_namespace_filter,
 )
-from wip_auth.fastapi_helpers import resolve_bulk_ids, resolve_or_404, unresolved_detail
+from wip_auth.fastapi_helpers import miss_detail, resolve_bulk_ids, resolve_or_404
 
 from ..models.api_models import (
     MAX_BULK_ITEMS,
@@ -40,6 +40,7 @@ from ..services.errors import error_fields
 from ..services.file_service import FileServiceError, get_file_service
 from ..services.file_storage_client import (
     FileStorageError,
+    FileStorageNotFoundError,
     get_file_storage_client,
     is_file_storage_enabled,
 )
@@ -257,7 +258,7 @@ async def get_file(
     # The namespace of the record just read: one read, and the check always
     # runs (a second read could miss a file hard-deleted in between and skip it).
     await check_readable(
-        identity, file_response.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"),
+        identity, file_response.namespace, miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"),
     )
     return file_response
 
@@ -291,7 +292,7 @@ async def get_download_url(
     file_doc = await FileModel.find_one({"file_id": file_id})
     if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
-    await check_readable(identity, file_doc.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"))
+    await check_readable(identity, file_doc.namespace, miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
 
     try:
         response = await service.get_download_url(file_id, expires_in)
@@ -329,7 +330,7 @@ async def download_file_content(
         raise HTTPException(status_code=409, detail="File has been deleted")
 
     # Check namespace permission
-    await check_readable(identity, file_doc.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"))
+    await check_readable(identity, file_doc.namespace, miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
 
     # Stream chunks directly from the object store → browser (no full buffering).
     # The first chunk is read before the response starts: once the status line
@@ -552,7 +553,7 @@ async def get_file_documents(
     if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
 
-    await check_readable(identity, file_doc.namespace, unresolved_detail(raw_file_id, "file", namespace, "file_id"))
+    await check_readable(identity, file_doc.namespace, miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
 
     # Query documents with this file_id in file_references. A document in
     # another namespace may reference the file; list only those the caller
@@ -661,9 +662,9 @@ Guards, because this removes bytes outright:
   still running (`in_progress`, `failed` or `completed_with_warnings`, the
   states a deletion resumes from), and the namespace must not be live —
   without such a journal, or for a live namespace, the request is refused
-  with 409, and with an unreachable Registry with 503. A namespace the
-  Registry does not serve (gone, locked, or not visible to this service's
-  key) is never by itself a reason to delete bytes;
+  with 409, and with an unreachable Registry with 503. A namespace that is
+  gone, locked, or not visible to this service's key is never by itself a
+  reason to delete bytes;
 - a key whose file record belongs to a different namespace is refused
   per key and left untouched.
 
@@ -692,10 +693,11 @@ async def delete_namespace_storage_objects(request: StorageDeleteRequest) -> dic
         ) from e
     # Bytes go only on a positive signal: a deletion journal the Registry is
     # still running. The namespace's own status cannot give it — the
-    # Registry answers 404 alike for a namespace that is gone, one locked for
-    # deletion, and one this service's key holds no grant on — and a
-    # completed journal may belong to an earlier deletion of a namespace
-    # since re-created under the same name.
+    # Registry answers 404 alike for a namespace that is gone and one this
+    # service's key holds no grant on, and "locked" (what a platform-admin
+    # key sees mid-deletion) does not say which deletion — and a completed
+    # journal may belong to an earlier deletion of a namespace since
+    # re-created under the same name.
     if journal is None or journal.get("status") not in _DELETION_RUNNING:
         raise HTTPException(
             status_code=409,
@@ -725,6 +727,10 @@ async def delete_namespace_storage_objects(request: StorageDeleteRequest) -> dic
             continue
         try:
             await storage.delete(key)
+            deleted += 1
+        except FileStorageNotFoundError:
+            # Already gone (a retried request, or a store that answers
+            # NoSuchKey): the object is not there, which is what was asked.
             deleted += 1
         except FileStorageError as e:
             failed.append({"storage_key": key, "error": str(e)})

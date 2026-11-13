@@ -516,7 +516,8 @@ export class DocumentStoreService extends BaseService {
    * (`validation_job_ids`); this is the same check on demand.
    *
    * Poll `getBackupJob` for progress and `result`. Findings do not fail the
-   * job — it completes with `result.status` of healthy, warning or error.
+   * job — it completes with `result.status` of healthy, warning, error or
+   * incomplete (a check could not run because a store did not answer).
    */
   async validateNamespace(
     namespace: string,

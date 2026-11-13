@@ -850,7 +850,7 @@ fails its restore with the message naming them; remove or re-key them.
 
 ### An integrity check that could not ask def-store or the template store is `incomplete`, never `healthy`; a peer whose read check the Registry could not answer fails the request (@wip/client 0.106.0)
 
-- **Integrity** (`GET /api/document-store/integrity`, namespace validation
+- **Integrity** (`GET /health/integrity` on document-store, namespace validation
   jobs): the template-reference, term-reference and identity-hash checks
   skipped a document silently when their store did not answer, and the
   status was graded from the issues alone, so an outage read as `healthy`.

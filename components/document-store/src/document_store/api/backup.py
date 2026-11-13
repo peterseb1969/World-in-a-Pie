@@ -957,7 +957,8 @@ async def start_validation(
 
     Findings do not fail the job. The check ran and its answer is the
     deliverable: the job completes, `result.status` is healthy / warning /
-    error, and `result.issues` carries a capped sample.
+    error / incomplete (a check could not run because a store did not
+    answer), and `result.issues` carries a capped sample.
     """
     await check_namespace_permission(identity, namespace, "read")
 
