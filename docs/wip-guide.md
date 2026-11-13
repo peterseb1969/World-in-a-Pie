@@ -342,9 +342,13 @@ For each declared key the deployer generates a random plaintext into the
 install's secret backend (`~/.wip-deploy/<name>/secrets/<key>-api-key`,
 stable across re-applies) and renders it into the key file. `namespaces` is
 the key's read scope; `grants` gives per-namespace `read`/`write`/`admin`
-and must stay within `namespaces`. A key that declares `grants` has them
-owned by the file: the API refuses to change them. A key without `grants`
-keeps Registry grants you set through the API. Because the Registry
+and must stay within `namespaces`. The file owns the grants of every key
+the deployer renders — it writes `grants` for each, `{}` when none are
+declared, which means read on each of `namespaces`: the API refuses to
+change them (`managed_by_deployer`), and a grant set through the API on a
+namespace the file does not declare is removed at the next import. Only a
+key file written by hand, with an entry that leaves `grants` out, keeps its
+grants under the API. Because the Registry
 re-imports the file at every start, a spec-declared key keeps working, at
 full declared scope, after any Mongo rebuild (redeploy with a fresh volume,
 `nuke --remove-data`, or the wipe-and-restore remediation ritual). Console

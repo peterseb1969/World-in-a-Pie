@@ -138,10 +138,12 @@ def _registry_question(
     # would look unscoped and a non-privileged key would get "none".
     headers: dict[str, str] = {}
     if identity.groups:
-        headers["X-User-Groups"] = json.dumps(list(identity.groups))
+        # Sorted: order does not change the answer, and the cache key is
+        # this question, so one set of groups is one entry.
+        headers["X-User-Groups"] = json.dumps(sorted(identity.groups))
     scope = _key_scope(identity)
     if scope is not None:
-        headers["X-Key-Namespaces"] = ",".join(scope)
+        headers["X-Key-Namespaces"] = ",".join(sorted(scope))
     return params, headers
 
 
@@ -151,15 +153,11 @@ def _cache_key(identity: UserIdentity, namespace: str | None = None) -> tuple:
     The answer depends on the caller's groups and key scope as well as its
     user_id, so two identities sharing a user_id (one user arriving with
     different groups, a key name whose scope changed) never share an answer.
-    Group and scope order do not change the answer, so they are sorted.
     """
-    params, _ = _registry_question(identity, namespace)
-    scope = _key_scope(identity)
-    return (
-        tuple(sorted(params.items())),
-        tuple(sorted(identity.groups or [])),
-        None if scope is None else tuple(sorted(scope)),
-    )
+    params, headers = _registry_question(identity, namespace)
+    # Keyed on what is sent, headers included, so a factor added to the
+    # question can never be missing from the key.
+    return (tuple(sorted(params.items())), tuple(sorted(headers.items())))
 
 
 async def resolve_permission(identity: UserIdentity, namespace: str) -> str:

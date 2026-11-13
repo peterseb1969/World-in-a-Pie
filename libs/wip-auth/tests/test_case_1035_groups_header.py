@@ -41,7 +41,8 @@ async def test_a_comma_in_a_group_name_stays_inside_that_group(httpx_mock):
     httpx_mock.add_response(json={"permission": "none"})
     await resolve_permission(_user("staff,wip-admins", "readers"), "ns")
     sent = httpx_mock.get_requests()[0].headers["X-User-Groups"]
-    assert json.loads(sent) == ["staff,wip-admins", "readers"]
+    # The names arrive whole (sent sorted: order does not change the answer).
+    assert sorted(json.loads(sent)) == ["readers", "staff,wip-admins"]
 
 
 async def test_a_name_outside_ascii_fits_in_the_header(httpx_mock):

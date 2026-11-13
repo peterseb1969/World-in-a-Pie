@@ -29,6 +29,21 @@ _MAX_KEY_AGE_SECONDS = 3600.0
 _MIN_ATTEMPT_INTERVAL_SECONDS = 10.0
 
 
+
+def _claimed_groups(groups: object) -> list[str]:
+    """A token's groups claim as a list of names. A single string is one
+    group; anything else that is not a list (a number, an object) is no
+    groups, and a list keeps only its string entries — a malformed claim on
+    a signed token must not make every request of that user a 500
+    (UserIdentity.groups is list[str])."""
+    if isinstance(groups, str):
+        return [groups]
+    if not isinstance(groups, list):
+        if groups:
+            logger.warning("Ignoring a non-list groups claim: %r", type(groups).__name__)
+        return []
+    return [g for g in groups if isinstance(g, str)]
+
 class JWKSCache:
     """The identity provider's signing keys (JWKS), re-read on a schedule.
 
@@ -323,8 +338,7 @@ class OIDCProvider:
             groups = claims.get("roles") or claims.get("role")
         if groups is None:
             groups = self.default_groups
-        if isinstance(groups, str):
-            groups = [groups]
+        groups = _claimed_groups(groups)
         if self.federated_groups is not None:
             groups = self.federated_groups.apply(claims, groups)
 
