@@ -19,7 +19,8 @@ active decision, never a side effect of restoring data into it, so the three
 strategies that would change them are opt-in:
 
 ``add_missing`` — insert terminologies and templates the target does not have.
-``extend_terminologies`` — add terms the target's terminology is missing.
+``extend_terminologies`` — add terms the target's terminology is missing, and
+the names a term has only in the archive.
 ``carry_retirements`` — retire the target's active terms the archive retired.
 
 Without the first two, anything the target lacks is an incompatibility and the
@@ -270,6 +271,13 @@ def _fill(model: str, value: Any) -> Any:
     return filled
 
 
+def _names(term: dict[str, Any]) -> list[dict[str, Any]]:
+    """A term's names, each a mapping. A row of an older shape may hold a
+    bare string where a name belongs; it carries no type or language and is
+    not read as a name here, by every reader alike."""
+    return [n for n in term.get("names") or [] if isinstance(n, dict)]
+
+
 def _name_key(name: dict[str, Any]) -> tuple[str, str, str]:
     """What makes a term's name the same name: its value, type and language.
     Its description, source and preferred flag are about the name, not which
@@ -283,25 +291,23 @@ def _name_key(name: dict[str, Any]) -> tuple[str, str, str]:
 
 def _name_keys(term: dict[str, Any]) -> set[tuple[str, str, str]]:
     """The _name_key of each of a term's names."""
-    return {_name_key(n) for n in term.get("names") or []}
+    return {_name_key(n) for n in _names(term)}
 
 
 def _comparable_term(row: dict[str, Any]) -> dict[str, Any]:
-    """A term with its names as a sorted set, one per _name_key."""
+    """A term with its names in _name_key order, one per key. Each name is
+    compared whole, so a difference in its description, source or preferred
+    flag is a names difference too: cosmetic, and reported."""
     out = dict(row)
-    out["names"] = sorted(
-        {_name_key(n): n for n in row.get("names") or [] if isinstance(n, dict)}
-    )
+    by_key = {_name_key(n): n for n in _names(row)}
+    out["names"] = [by_key[key] for key in sorted(by_key)]
     return out
 
 
 def _term_texts(term: dict[str, Any]) -> list[str]:
     """Every string a term is resolved by: its value and its names' values."""
     texts = [str(term.get("value") or "")]
-    texts += [
-        str(n.get("value") or "")
-        for n in term.get("names") or [] if isinstance(n, dict)
-    ]
+    texts += [str(n.get("value") or "") for n in _names(term)]
     return [t for t in dict.fromkeys(texts) if t]
 
 
@@ -394,19 +400,28 @@ def _target_wins(
     cosmetic: list[str],
     archive_row: dict[str, Any],
     target_row: dict[str, Any],
+    added_names: list[dict[str, Any]] | None = None,
 ) -> TargetWins:
-    """The report of the fields in which the target's value was kept."""
+    """The report of the fields in which the target's value was kept.
+
+    Where the merge adds the archive's names to the target's term
+    (``added_names``), the archive's names are not discarded: the report
+    names the target's names kept and the names added.
+    """
+    detail = {
+        field_name: {
+            "kept": target_row.get(field_name, ABSENT),
+            "discarded": archive_row.get(field_name, ABSENT),
+        }
+        for field_name in cosmetic
+    }
+    if added_names and "names" in detail:
+        detail["names"] = {
+            "kept": target_row.get("names", ABSENT),
+            "added": added_names,
+        }
     return TargetWins(
-        entity_type=entity_type,
-        name=name,
-        fields=cosmetic,
-        detail={
-            field_name: {
-                "kept": target_row.get(field_name, ABSENT),
-                "discarded": archive_row.get(field_name, ABSENT),
-            }
-            for field_name in cosmetic
-        },
+        entity_type=entity_type, name=name, fields=cosmetic, detail=detail,
     )
 
 
@@ -418,7 +433,7 @@ def _names_to_add(
     (on the target, or earlier in this list), since a group has at most one."""
     preferred = {
         (n.get("type"), n.get("language"))
-        for n in target.get("names") or [] if n.get("preferred")
+        for n in _names(target) if n.get("preferred")
     }
     names = []
     for n in missing:
@@ -433,16 +448,42 @@ def _names_to_add(
     return names
 
 
-def _name_additions(plan: DefinitionsPlan) -> dict[str, list[tuple[str, str]]]:
+def _target_names_kept(archive: dict[str, Any], target: dict[str, Any]) -> bool:
+    """Whether the target's term holds a name the archive's copy does not
+    hold as it is (another name, or the same name with another description,
+    source or preferred flag): after a union, the target's copy of it was
+    kept over the archive's."""
+    archive_names = {_name_key(n): n for n in _names(archive)}
+    return any(archive_names.get(_name_key(n)) != n for n in _names(target))
+
+
+def _target_terminology(
+    plan: DefinitionsPlan, external: dict[str, str], terminology_id: Any
+) -> str:
+    """The terminology id an archived term's terminology has on the target:
+    through the plan's mapping, else the external mappings (a terminology
+    the archive does not carry), else the archive's own id (a terminology
+    this merge adds)."""
+    key = str(terminology_id)
+    return str(plan.mapping["terminologies"].get(key, external.get(key, key)))
+
+
+def _is_active(row: dict[str, Any]) -> bool:
+    return (row.get("status") or "active") == "active"
+
+
+def _name_additions(
+    plan: DefinitionsPlan, external: dict[str, str]
+) -> dict[str, list[tuple[str, str]]]:
     """Per target terminology id, the (bearer, text) pairs this merge adds:
-    every text of each term it adds (bearer ``new:<value>``), and each name
-    it adds to an existing term (bearer: that term's id)."""
+    every text of each active term it adds (bearer ``new:<value>``), and
+    each name it adds to an existing term (bearer: that term's id). A term
+    the archive retired bears no name def-store resolves, so it adds none."""
     additions: dict[str, list[tuple[str, str]]] = {}  # terminology -> (bearer, text)
     for row in plan.to_add["terms"]:
-        terminology = str(
-            plan.mapping["terminologies"].get(str(row.get("terminology_id")),
-                                              row.get("terminology_id"))
-        )
+        if not _is_active(row):
+            continue
+        terminology = _target_terminology(plan, external, row.get("terminology_id"))
         bearer = f"new:{row.get('value')}"
         for text in _term_texts(row):
             additions.setdefault(terminology, []).append((bearer, text))
@@ -455,23 +496,40 @@ def _name_additions(plan: DefinitionsPlan) -> dict[str, list[tuple[str, str]]]:
 
 
 def _name_clashes(
-    terminology: str,
     setting: dict[str, Any],
-    target_index: dict[tuple[Any, ...], dict[str, Any]],
+    existing: list[dict[str, Any]],
     added: list[tuple[str, str]],
 ) -> list[str]:
-    """The names (folded per the terminology's case_sensitive, sorted) that
-    the target's terms and the additions would give to more than one term."""
-    fold = (lambda s: s) if setting.get("case_sensitive") else str.casefold
+    """The names, as the terms store them, that the terminology's active
+    terms (``existing``) and the additions would give to more than one term.
+
+    Names are matched as def-store matches them (lower-cased unless the
+    terminology is case_sensitive) and reported as stored: every spelling
+    of a clashing name, sorted. A name added to a term that is not among
+    ``existing`` (retired, or retired by this merge) resolves nowhere and
+    cannot clash.
+    """
+    fold = (lambda s: s) if setting.get("case_sensitive") else str.lower
     bearers: dict[str, set[str]] = {}
-    for key, row in target_index.items():
-        if str(key[0]) != terminology:
-            continue
-        for text in _term_texts(row):
-            bearers.setdefault(fold(text), set()).add(str(row.get("term_id")))
-    for bearer, text in added:
+    spellings: dict[str, set[str]] = {}
+
+    def bear(bearer: str, text: str) -> None:
         bearers.setdefault(fold(text), set()).add(bearer)
-    return sorted(text for text, owners in bearers.items() if len(owners) > 1)
+        spellings.setdefault(fold(text), set()).add(text)
+
+    active = set()
+    for row in existing:
+        active.add(str(row.get("term_id")))
+        for text in _term_texts(row):
+            bear(str(row.get("term_id")), text)
+    for bearer, text in added:
+        if bearer.startswith("new:") or bearer in active:
+            bear(bearer, text)
+    return sorted(
+        text
+        for folded, owners in bearers.items() if len(owners) > 1
+        for text in spellings[folded]
+    )
 
 
 def _unique_names_broken(terminology_value: str, clashes: list[str]) -> Incompatibility:
@@ -539,10 +597,6 @@ class DefinitionsPlanner:
         # references that name a template by its value.
         self._template_ids: dict[str, str] = {}
         self._namespace = ""
-        # Per term compared on both sides: (terminology_id on the target,
-        # term_id on the target, names only the archive has), for the
-        # unique_names check.
-        self._names_to_add: list[tuple[str, str, list[dict[str, Any]]]] = []
 
     async def plan(
         self,
@@ -595,7 +649,7 @@ class DefinitionsPlanner:
         for entity, target in matched:
             self._classify(entity_type, entity, target, remapper, plan)
         if entity_type == "terms":
-            await self._check_unique_names(namespace, target_index, plan)
+            await self._check_unique_names(plan)
 
     def _index_templates(
         self,
@@ -742,8 +796,11 @@ class DefinitionsPlanner:
             ))
             return
 
+        added_names: list[dict[str, Any]] = []
         if entity_type == "terms" and "names" in cosmetic:
-            cosmetic = self._extend_names(archive_filled, target_filled, name, cosmetic, plan)
+            cosmetic, added_names = self._extend_names(
+                archive_filled, target_filled, name, cosmetic, plan
+            )
 
         cosmetic = cosmetic + _status_differs(template_lifecycle, entity, target)
         retired_here = False
@@ -754,7 +811,7 @@ class DefinitionsPlanner:
 
         if cosmetic:
             plan.target_wins.append(_target_wins(
-                entity_type, name, cosmetic, archive_row, target_row
+                entity_type, name, cosmetic, archive_row, target_row, added_names
             ))
         if retired_here:
             return  # retired on the target in pass 2, so not unchanged
@@ -820,65 +877,95 @@ class DefinitionsPlanner:
         name: str,
         cosmetic: list[str],
         plan: DefinitionsPlan,
-    ) -> list[str]:
+    ) -> tuple[list[str], list[dict[str, Any]]]:
         """Names only the archive's copy of a term has: added to the target's
         copy under extend_terminologies, else the target's names stand and the
-        difference is reported. Returns the cosmetic fields left to report.
+        difference is reported. Returns the cosmetic fields left to report and
+        the names added.
 
         An added name loses ``preferred`` where the target already prefers a
         name of the same type and language, since a group has at most one.
         """
         held = _name_keys(target)
-        missing = [n for n in archive.get("names") or [] if _name_key(n) not in held]
+        missing = [n for n in _names(archive) if _name_key(n) not in held]
         if not missing or not self._extend_terminologies:
-            return cosmetic
+            return cosmetic, []
+        added = _names_to_add(missing, target)
         plan.extend_names.append({
             "term_id": target.get(ID_KEYS["terms"]),
             "terminology_id": target.get("terminology_id"),
-            "names": _names_to_add(missing, target),
+            "names": added,
             "name": name,
         })
-        # Every archive name is on the target after the union; the target's
-        # own extra names stay, which is the target winning.
-        if not (held - _name_keys(archive)):
-            return [f for f in cosmetic if f != "names"]
-        return cosmetic
+        if not _target_names_kept(archive, target):
+            return [f for f in cosmetic if f != "names"], added
+        return cosmetic, added
 
-    async def _check_unique_names(
-        self,
-        namespace: str,
-        target_index: dict[tuple[Any, ...], dict[str, Any]],
-        plan: DefinitionsPlan,
-    ) -> None:
-        """Refuse the terms that would break a target terminology's
-        unique_names.
+    async def _check_unique_names(self, plan: DefinitionsPlan) -> None:
+        """Refuse the terms that would break a terminology's unique_names.
 
-        unique_names is judged by its effect, not compared: where the target
-        holds it, no name or value may be borne by two terms. Every term and
-        name this merge adds is checked against the target's terms and
-        against each other; where the target does not hold it, nothing the
-        merge adds can break it, and a difference is only reported.
+        unique_names is judged by its effect, not compared, and the way
+        def-store judges a term write: where the terminology holds it, no
+        name or value may be borne by two active terms. Every term and name
+        this merge adds is checked against the terminology's active terms,
+        less those this merge retires, and against each other. The
+        terminology is the one the terms land in: mapped by this plan, by
+        the external mappings, or added by this merge with the archive's
+        setting. Where it does not hold unique_names, nothing the merge adds
+        can break it, and a difference is only reported.
         """
-        additions = _name_additions(plan)
+        external = self._external.terminology_map if self._external else {}
+        additions = _name_additions(plan, external)
         if not additions:
             return
-        db_name, coll_name = self._collection_map["terminologies"]
-        settings = {
-            str(row["terminology_id"]): row
-            async for row in self._mongo[db_name][coll_name].find(
-                {"namespace": namespace, "terminology_id": {"$in": list(additions)}},
-                {"terminology_id": 1, "value": 1, "unique_names": 1, "case_sensitive": 1},
-            )
-        }
+        settings = await self._terminology_settings(plan, list(additions))
+        retiring = {str(r.get("term_id")) for r in plan.retire_terms}
         for terminology, added in additions.items():
             setting = settings.get(terminology)
             if not setting or not setting.get("unique_names"):
                 continue
-            clashes = _name_clashes(terminology, setting, target_index, added)
+            existing = await self._active_terms(terminology, retiring)
+            clashes = _name_clashes(setting, existing, added)
             if clashes:
                 plan.incompatibilities.append(
                     _unique_names_broken(str(setting.get("value")), clashes)
                 )
+
+    async def _terminology_settings(
+        self, plan: DefinitionsPlan, terminology_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """The unique_names / case_sensitive settings of these terminologies,
+        by id: the archive's for one this merge adds, else the target's. The
+        target's are read by id alone: an externally mapped terminology can
+        live outside the namespace merged into."""
+        settings = {
+            str(row.get("terminology_id")): row
+            for row in plan.to_add["terminologies"]
+        }
+        stored = [t for t in terminology_ids if t not in settings]
+        if not stored:
+            return settings
+        db_name, coll_name = self._collection_map["terminologies"]
+        async for row in self._mongo[db_name][coll_name].find(
+            {"terminology_id": {"$in": stored}},
+            {"terminology_id": 1, "value": 1, "unique_names": 1, "case_sensitive": 1},
+        ):
+            settings[str(row["terminology_id"])] = row
+        return settings
+
+    async def _active_terms(
+        self, terminology_id: str, retiring: set[str]
+    ) -> list[dict[str, Any]]:
+        """The target's active terms of one terminology (value, names), less
+        those this merge retires."""
+        db_name, coll_name = self._collection_map["terms"]
+        return [
+            row async for row in self._mongo[db_name][coll_name].find(
+                {"terminology_id": terminology_id},
+                {"term_id": 1, "value": 1, "names": 1, "status": 1},
+            )
+            if _is_active(row) and str(row.get("term_id")) not in retiring
+        ]
 
     @staticmethod
     def _lifecycle_differs(archive: dict[str, Any], target: dict[str, Any]) -> bool:
@@ -974,9 +1061,7 @@ class DefinitionsPlanner:
             if value is None or value == "":
                 return None
             if field_name == "terminology_id":
-                value = plan.mapping["terminologies"].get(
-                    str(value), external.get(str(value), value)
-                )
+                value = _target_terminology(plan, external, value)
             values.append(value)
         return tuple(values)
 

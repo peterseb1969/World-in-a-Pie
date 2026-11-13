@@ -135,6 +135,38 @@ async def test_mappings_that_never_settle_refuse_instead_of_looping():
 
 
 @pytest.mark.asyncio
+async def test_a_cycle_is_refused_when_it_repeats_not_after_every_document():
+    engine = _engine()
+    engine._external_template_definitions = AsyncMock(return_value={})
+    engine._rewrite_entities = lambda et, rows, remapper: (rows, 0)
+    engine._rehash_merge_round = AsyncMock(
+        side_effect=lambda et, reader, src, tgt, raw, entities, *a: (entities, None, None)
+    )
+    answers = iter([{"D1": "X"}, {"D1": "Y"}] * 100)
+    rounds = []
+
+    class Planner:
+        def __init__(self, *a):
+            pass
+
+        async def plan(self, entity_type, entities, tgt):
+            rounds.append(entity_type)
+            return MagicMock(mapping=next(answers))
+
+    archive = {"documents": [{"document_id": f"D{i}"} for i in range(50)]}
+    with patch.object(backup_engine, "MergePlanner", Planner), \
+            patch.object(backup_engine, "_IdentityRehash", MagicMock()), \
+            patch.object(backup_engine, "_archived_template_ids", lambda *a: set()), \
+            pytest.raises(RestoreEngineError, match="did not settle"):
+        await engine._plan_merge_entities(
+            MagicMock(), MagicMock(), [("src", "tgt")], "src", "tgt",
+            archive, None, _AligningRemapper(),
+        )
+
+    assert len(rounds) == 3
+
+
+@pytest.mark.asyncio
 async def test_mappings_that_settle_are_planned_once_more_and_kept():
     engine = _engine()
     engine._external_template_definitions = AsyncMock(return_value={})

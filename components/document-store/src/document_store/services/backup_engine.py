@@ -1691,6 +1691,15 @@ def _archived_template_ids(reader: Any, sources: list[str]) -> set[str]:
     }
 
 
+def _document_map_state(remapper: IDRemapper) -> str:
+    """A digest of the remapper's document mappings, to tell whether merge
+    planning rounds have come back to mappings they already started from."""
+    digest = hashlib.sha256()
+    for old_id, new_id in sorted(remapper.document_map.items()):
+        digest.update(f"{old_id}\0{new_id}\n".encode())
+    return digest.hexdigest()
+
+
 class _IdentityRehash:
     """Recompute the identity hash of document rows whose references a
     restore rewrote, and re-key their Registry rows to the new hash.
@@ -4432,6 +4441,7 @@ class DirectRestoreEngine:
             if entity_type in DEFINITION_TYPES or raw_entities is None:
                 continue
             rounds = 0
+            seen = {_document_map_state(remapper)}
             while True:
                 entities, changed = self._rewrite_entities(
                     entity_type, raw_entities, remapper
@@ -4449,15 +4459,20 @@ class DirectRestoreEngine:
                 # archived rows, until a round learns no mapping. A round
                 # follows one step of a chain of documents identified
                 # through one another, so a chain of n documents settles in
-                # n rounds; a round that learns a mapping only changes an
-                # id another round set is a cycle, and the rounds stop at
-                # one more than the archived documents with a refusal
-                # rather than run on. Each round re-reads the streamed
-                # documents once.
+                # n rounds. A round is decided by the mappings it starts
+                # from, so mappings that return to a state an earlier round
+                # started from would repeat forever: that is refused at
+                # once, after as many rounds as the cycle is long, rather
+                # than run on. The rounds also stop at one more than the
+                # archived documents, which no chain needs. Each round
+                # re-reads the streamed documents once.
                 if not self._learn_document_mappings(entity_type, plan, remapper):
                     break
                 rounds += 1
-                if rounds > len(raw_entities):
+                state = _document_map_state(remapper)
+                cycled = state in seen
+                seen.add(state)
+                if cycled or rounds > len(raw_entities):
                     raise RestoreEngineError(
                         f"Merge into '{tgt}' refused — identifying the "
                         "archived documents on the target did not settle: "
@@ -5172,8 +5187,7 @@ class DirectRestoreEngine:
             self._emit(
                 phase,
                 f"[{namespace}] {note.entity_type} '{note.name}': target's "
-                f"{', '.join(note.fields)} kept, the archive's discarded "
-                f"({note.detail})",
+                f"{', '.join(note.fields)} kept ({note.detail})",
             )
         if len(definitions.target_wins) > 20:
             self._emit(

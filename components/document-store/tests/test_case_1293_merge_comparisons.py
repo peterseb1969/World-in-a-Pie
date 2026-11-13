@@ -16,6 +16,7 @@ import os
 import pytest
 import pytest_asyncio
 from motor.motor_asyncio import AsyncIOMotorClient
+from wip_archive.remap import IDRemapper
 
 from document_store.services.backup_engine import COLLECTION_MAP
 from document_store.services.merge_definitions import ABSENT, DefinitionsPlanner
@@ -55,7 +56,8 @@ def _terminology(tid, value="APPS", **extra):
 def _term(tid, terminology_id, value, names=(), **extra):
     return {
         "term_id": tid, "namespace": NAMESPACE, "terminology_id": terminology_id,
-        "value": value, "names": [dict(n) for n in names], **extra,
+        "value": value,
+        "names": [dict(n) if isinstance(n, dict) else n for n in names], **extra,
     }
 
 
@@ -147,6 +149,32 @@ class TestTermNames:
 
         assert [n["value"] for n in plan.extend_names[0]["names"]] == ["a"]
         assert [w.fields for w in plan.target_wins] == [["names"]]
+        [note] = plan.target_wins
+        assert "discarded" not in note.detail["names"]
+        assert [n["value"] for n in note.detail["names"]["added"]] == ["a"]
+        assert [n["value"] for n in note.detail["names"]["kept"]] == ["b"]
+
+    @pytest.mark.asyncio
+    async def test_a_names_description_difference_is_reported(self, db):
+        plan = await self._plan(
+            db,
+            [{"value": "wip-aa", "description": "the app's synonym", "source": "RTiS"}],
+            [{"value": "wip-aa"}],
+            extend_terminologies=True,
+        )
+
+        assert plan.compatible, plan.incompatibilities
+        assert plan.extend_names == []
+        assert [w.fields for w in plan.target_wins] == [["names"]]
+
+    @pytest.mark.asyncio
+    async def test_a_bare_string_name_is_not_read_as_a_name(self, db):
+        plan = await self._plan(
+            db, ["legacy", {"value": "a"}], [], extend_terminologies=True,
+        )
+
+        assert plan.compatible, plan.incompatibilities
+        assert [n["value"] for n in plan.extend_names[0]["names"]] == ["a"]
 
     @pytest.mark.asyncio
     async def test_an_added_name_never_makes_a_second_preferred_name(self, db):
@@ -216,7 +244,92 @@ class TestUniqueNames:
         assert not plan.compatible
         [issue] = plan.incompatibilities
         assert issue.entity_type == "terminologies"
+        assert issue.detail["unique_names"]["name_collisions"] == ["Male", "male"]
+
+    @pytest.mark.asyncio
+    async def test_a_name_only_a_retired_term_bears_does_not_refuse(self, db):
+        await _seed(db, "terminologies", [_terminology("T-lov", unique_names=True)])
+        await _seed(db, "terms", [
+            _term("T-m", "T-lov", "M", [{"value": "male"}], status="deprecated"),
+        ])
+        plan = await _planner(db, extend_terminologies=True).plan(
+            {
+                "terminologies": [_terminology("A-lov", unique_names=True)],
+                "terms": [_term("A-x", "A-lov", "X", [{"value": "male"}])],
+            },
+            NAMESPACE,
+        )
+
+        assert plan.compatible, plan.incompatibilities
+
+    @pytest.mark.asyncio
+    async def test_a_name_the_merge_retires_does_not_refuse(self, db):
+        await _seed(db, "terminologies", [_terminology("T-lov", unique_names=True)])
+        await _seed(db, "terms", [_term("T-m", "T-lov", "M", [{"value": "male"}])])
+        plan = await _planner(
+            db, extend_terminologies=True, carry_retirements=True,
+        ).plan(
+            {
+                "terminologies": [_terminology("A-lov", unique_names=True)],
+                "terms": [
+                    _term("A-m", "A-lov", "M", [{"value": "male"}], status="deprecated"),
+                    _term("A-x", "A-lov", "X", [{"value": "male"}]),
+                ],
+            },
+            NAMESPACE,
+        )
+
+        assert [r["term_id"] for r in plan.retire_terms] == ["T-m"]
+        assert plan.compatible, plan.incompatibilities
+
+    @pytest.mark.asyncio
+    async def test_a_term_for_an_externally_mapped_terminology_is_checked(self, db):
+        await _seed(db, "terminologies", [_terminology("T-lov", unique_names=True)])
+        await _seed(db, "terms", [_term("T-m", "T-lov", "M", [{"value": "male"}])])
+        external = IDRemapper()
+        external.terminology_map["A-lov"] = "T-lov"
+        plan = await _planner(db, extend_terminologies=True).plan(
+            {"terms": [_term("A-x", "A-lov", "X", [{"value": "male"}])]},
+            NAMESPACE,
+            external=external,
+        )
+
+        assert not plan.compatible
+        [issue] = plan.incompatibilities
         assert issue.detail["unique_names"]["name_collisions"] == ["male"]
+
+    @pytest.mark.asyncio
+    async def test_terms_added_to_a_terminology_the_merge_adds_are_checked(self, db):
+        plan = await _planner(
+            db, add_missing=True, extend_terminologies=True,
+        ).plan(
+            {
+                "terminologies": [_terminology("A-lov", unique_names=True)],
+                "terms": [
+                    _term("A-m", "A-lov", "M", [{"value": "male"}]),
+                    _term("A-x", "A-lov", "X", [{"value": "MALE"}]),
+                ],
+            },
+            NAMESPACE,
+        )
+
+        assert not plan.compatible
+        [issue] = plan.incompatibilities
+        assert issue.detail["unique_names"]["name_collisions"] == ["MALE", "male"]
+
+    @pytest.mark.asyncio
+    async def test_names_are_folded_as_def_store_folds_them(self, db):
+        await _seed(db, "terminologies", [_terminology("T-lov", unique_names=True)])
+        await _seed(db, "terms", [_term("T-s", "T-lov", "S", [{"value": "Straße"}])])
+        plan = await _planner(db, extend_terminologies=True).plan(
+            {
+                "terminologies": [_terminology("A-lov", unique_names=True)],
+                "terms": [_term("A-x", "A-lov", "X", [{"value": "STRASSE"}])],
+            },
+            NAMESPACE,
+        )
+
+        assert plan.compatible, plan.incompatibilities
 
     @pytest.mark.asyncio
     async def test_without_unique_names_on_the_target_collisions_are_allowed(self, db):

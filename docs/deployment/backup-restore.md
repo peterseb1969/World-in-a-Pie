@@ -202,7 +202,7 @@ restoring data into it. Two separate opt-ins let the merge extend them:
 | Flag | Effect |
 |---|---|
 | `add_missing` | Insert terminologies and templates the target does not have |
-| `extend_terminologies` | Add terms the target's terminology is missing |
+| `extend_terminologies` | Add terms the target's terminology is missing, and the names a term has only in the archive |
 
 They are separate because allowing new vocabulary entries is not the same
 decision as allowing new schemas.
