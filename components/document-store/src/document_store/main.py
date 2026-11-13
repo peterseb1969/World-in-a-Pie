@@ -674,12 +674,15 @@ async def integrity_check(
     recent_first: bool = False
 ):
     """
-    Check referential integrity of document references.
+    Check the referential, identity and mandatory-field integrity of documents.
 
     Scans documents for:
-    - Orphaned template references (referenced template not found)
-    - Orphaned term references (term_references pointing to missing terms)
-    - Inactive template references (referenced template is inactive)
+    - Template, term, document and file references that do not resolve, and
+      references to an inactive template version
+    - Stored identity hashes that no longer match the document's data
+    - Mandatory fields of the pinned template version with no value in a
+      document's current version (nested objects and array items against
+      their own pinned versions)
 
     Args:
         status: Filter documents by status ('active', 'inactive')

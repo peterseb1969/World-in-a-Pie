@@ -5174,9 +5174,14 @@ async def validate_namespace(
 ) -> str:
     """Check that a namespace's data is internally consistent. Returns a job.
 
-    Verifies two things across every document in the namespace: that every
-    reference resolves — template, term, document, file — and that every
-    document's stored identity hash still matches its own data.
+    Verifies three things across every document in the namespace: that every
+    reference resolves — template, term, document, file — that every
+    document's stored identity hash still matches its own data, and that each
+    document's current version has a value for every field its pinned template
+    version declares mandatory (nested objects and array items against their
+    own pinned versions). A document is
+    validated only when written, so one placed on a version it does not
+    satisfy is otherwise found only when its next PATCH is refused.
 
     This is the referential twin of check_reporting_parity: that one compares
     PostgreSQL against MongoDB, this one compares MongoDB against itself.

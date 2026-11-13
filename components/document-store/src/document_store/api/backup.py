@@ -921,7 +921,7 @@ def _restore_write_targets(
     "/namespaces/{namespace}/validate",
     response_model=BackupJobSnapshot,
     status_code=202,
-    summary="Verify a namespace's referential and identity integrity",
+    summary="Verify a namespace's referential, identity and mandatory-field integrity",
 )
 async def start_validation(
     namespace: str,
@@ -946,8 +946,11 @@ async def start_validation(
 ) -> BackupJobSnapshot:
     """Check that a namespace's data is internally consistent.
 
-    Every reference resolves — template, term, document, file — and every
-    document's stored identity hash still matches its own content. This is the
+    Every reference resolves — template, term, document, file — every
+    document's stored identity hash still matches its own content, and each
+    document's current version has a value for every field its pinned
+    template version declares mandatory (nested objects and array items
+    against their own pinned versions). This is the
     referential twin of reporting-sync's parity check: that one compares
     MongoDB against PostgreSQL, this one compares MongoDB against itself.
 

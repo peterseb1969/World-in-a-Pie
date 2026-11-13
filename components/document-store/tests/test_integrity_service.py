@@ -80,6 +80,8 @@ async def _document(
     references=None,
     file_references=None,
     term_references=None,
+    status="active",
+    version=1,
 ):
     data = data or {"patient_id": "P-1"}
     document = Document(
@@ -92,7 +94,8 @@ async def _document(
             if identity_hash is None
             else identity_hash
         ),
-        version=1,
+        version=version,
+        status=status,
         data=data,
         references=references or [],
         file_references=file_references or [],
@@ -472,5 +475,165 @@ class TestScanning:
         await _document("D1", identity_hash="not-the-real-hash")
 
         result = await check_all_documents(namespace=NAMESPACE, check_identity=False)
+
+        assert result.status == "healthy"
+
+
+# ---------------------------------------------------------------------------
+# Mandatory fields of the pinned version
+# ---------------------------------------------------------------------------
+
+ADDRESS_ID = "TPL-ADDR"
+LINE_ID = "TPL-LINE"
+
+
+def _schemas(versions):
+    """A get_template stub serving {(template_id, version): fields}."""
+    async def get_template(template_id=None, version=None, **_):
+        fields = versions.get((template_id, version))
+        if fields is None:
+            return None
+        return {"status": "active", "identity_fields": IDENTITY_FIELDS, "fields": fields}
+    return AsyncMock(side_effect=get_template)
+
+
+PATIENT_ID = {"name": "patient_id", "type": "string", "mandatory": True}
+
+
+class TestMandatoryFields:
+    """A document is validated once, when written. One placed on a version it
+    does not satisfy (a restore, or a merge that re-pinned it under the rule
+    before default_value became informational) is found here, not by its next
+    PATCH."""
+
+    @pytest.mark.asyncio
+    async def test_a_mandatory_field_the_data_lacks_is_an_error(self, db):
+        db["template_store"].get_template = _schemas({(TEMPLATE_ID, 1): [
+            PATIENT_ID,
+            {"name": "status", "type": "string", "mandatory": True, "default_value": "open"},
+            {"name": "note", "type": "string"},
+        ]})
+        await _document("D1")
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.status == "error"
+        assert [(i.type, i.field_path, i.reference) for i in result.issues] == [
+            ("mandatory_field_missing", "status", f"{TEMPLATE_ID}@v1"),
+        ]
+        assert result.summary.mandatory_fields_missing == 1
+
+    @pytest.mark.asyncio
+    async def test_a_null_mandatory_field_is_missing_and_a_present_one_is_healthy(self, db):
+        db["template_store"].get_template = _schemas({(TEMPLATE_ID, 1): [
+            PATIENT_ID, {"name": "status", "type": "string", "mandatory": True},
+        ]})
+        await _document("D1", data={"patient_id": "P-1", "status": None})
+        await _document("D2", data={"patient_id": "P-2", "status": "open"})
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert [(i.document_id, i.field_path) for i in result.issues] == [("D1", "status")]
+
+    @pytest.mark.asyncio
+    async def test_nested_objects_and_array_items_are_checked_at_their_pinned_version(self, db):
+        db["template_store"].get_template = _schemas({
+            (TEMPLATE_ID, 1): [
+                PATIENT_ID,
+                {"name": "address", "type": "object",
+                 "template_ref": ADDRESS_ID, "template_ref_version": 2},
+                {"name": "lines", "type": "array", "array_item_type": "object",
+                 "array_template_ref": LINE_ID, "array_template_ref_version": 1},
+            ],
+            (ADDRESS_ID, 2): [{"name": "city", "type": "string", "mandatory": True}],
+            (LINE_ID, 1): [{"name": "qty", "type": "integer", "mandatory": True}],
+        })
+        await _document("D1", data={
+            "patient_id": "P-1", "address": {"street": "x"},
+            "lines": [{"qty": 1}, {"sku": "A"}],
+        })
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert sorted((i.field_path, i.reference) for i in result.issues) == [
+            ("address.city", f"{ADDRESS_ID}@v2"),
+            ("lines[1].qty", f"{LINE_ID}@v1"),
+        ]
+        assert result.summary.mandatory_fields_missing == 2
+
+    @pytest.mark.asyncio
+    async def test_a_nested_template_version_not_found_is_reported(self, db):
+        db["template_store"].get_template = _schemas({(TEMPLATE_ID, 1): [
+            PATIENT_ID,
+            {"name": "address", "type": "object",
+             "template_ref": ADDRESS_ID, "template_ref_version": 7},
+        ]})
+        await _document("D1", data={"patient_id": "P-1", "address": {"city": "x"}})
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert [(i.type, i.field_path) for i in result.issues] == [
+            ("nested_template_not_found", "address"),
+        ]
+        assert result.summary.nested_templates_not_found == 1
+
+    @pytest.mark.asyncio
+    async def test_runs_with_identity_checking_off(self, db):
+        db["template_store"].get_template = _schemas({(TEMPLATE_ID, 1): [
+            PATIENT_ID, {"name": "status", "type": "string", "mandatory": True},
+        ]})
+        await _document("D1", identity_hash="not-the-real-hash")
+
+        result = await check_all_documents(namespace=NAMESPACE, check_identity=False)
+
+        assert _types(result) == ["mandatory_field_missing"]
+
+    @pytest.mark.asyncio
+    async def test_a_missing_pinned_version_is_reported_with_identity_checking_off(self, db):
+        db["template_store"].get_template = AsyncMock(
+            side_effect=lambda template_id=None, version=None, **_: (
+                None if version is not None else {"status": "active"}
+            )
+        )
+        await _document("D1")
+
+        result = await check_all_documents(namespace=NAMESPACE, check_identity=False)
+
+        assert _types(result) == ["template_version_not_found"]
+
+    @pytest.mark.asyncio
+    async def test_a_template_store_that_does_not_answer_makes_it_incomplete(self, db):
+        from document_store.services.template_store_client import TemplateStoreError
+
+        healthy = _schemas({(TEMPLATE_ID, 1): [
+            PATIENT_ID,
+            {"name": "address", "type": "object",
+             "template_ref": ADDRESS_ID, "template_ref_version": 1},
+        ]})
+
+        async def get_template(template_id=None, version=None, **kwargs):
+            if template_id == ADDRESS_ID:
+                raise TemplateStoreError("down")
+            return await healthy(template_id=template_id, version=version, **kwargs)
+
+        db["template_store"].get_template = AsyncMock(side_effect=get_template)
+        await _document("D1", data={"patient_id": "P-1", "address": {}})
+
+        result = await check_all_documents(namespace=NAMESPACE)
+
+        assert result.status == "incomplete"
+        assert result.summary.checks_not_run == {"mandatory_fields:template-store": 1}
+
+    @pytest.mark.asyncio
+    async def test_only_the_current_version_is_checked(self, db):
+        """A superseded version is history: a document repaired by PATCH keeps
+        its old version row as it was, and must not be reported for ever."""
+        db["template_store"].get_template = _schemas({(TEMPLATE_ID, 1): [
+            PATIENT_ID, {"name": "status", "type": "string", "mandatory": True},
+        ]})
+        await _document("D1", status="inactive", version=1)
+        await _document("D1", data={"patient_id": "P-1", "status": "open"}, version=2)
+
+        result = await check_all_documents(namespace=NAMESPACE)
 
         assert result.status == "healthy"

@@ -96,10 +96,12 @@ async def test_a_template_store_outage_makes_the_result_incomplete(docs):
     result = await _check(TemplateStoreError("down", unavailable=True), {"term_id": "TERM-1"})
     assert result.status == "incomplete"
     # The reference check is cached per (template, version) only on an
-    # answer, so each document asks again; identity likewise.
+    # answer, so each document asks again; identity and the mandatory-field
+    # check, which read the same pinned version, likewise.
     assert result.summary.checks_not_run == {
         "template_reference:template-store": 2,
         "identity_hash:template-store": 2,
+        "mandatory_fields:template-store": 2,
     }
 
 

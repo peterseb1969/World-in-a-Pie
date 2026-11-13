@@ -132,6 +132,15 @@ export interface NamespaceIntegritySummary {
   /** Documents whose identity could not be compared (a value or resolution missing, or the pinned template version not found). */
   identity_unverified: number
   /**
+   * Mandatory fields of the pinned template version with no value in a
+   * document's current version, one per field (nested objects and array
+   * items included). Such a document is
+   * refused by its next PATCH.
+   */
+  mandatory_fields_missing: number
+  /** Nested objects or array items whose pinned template version was not found, so their mandatory fields went unchecked. */
+  nested_templates_not_found: number
+  /**
    * Checks skipped because a service could not answer, counted by
    * `'<check>:<service>'` (e.g. `'term_reference:def-store'`). Any count
    * makes the status `incomplete`.

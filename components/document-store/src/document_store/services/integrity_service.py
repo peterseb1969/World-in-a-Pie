@@ -24,6 +24,12 @@ Checks, by what owns the data:
   template's `identity_fields`. Nothing else in the platform would ever notice
   a hash that stopped matching its content — which is exactly what a botched
   ID re-mint produces.
+- **mandatory fields**: in each document's current version, every field the
+  pinned template version declares mandatory has a value, nested objects and array items included (each
+  against its own pinned template version). A document written once is
+  never validated again, so a document placed on a version it does not
+  satisfy — by a restore, or by a merge's re-pinning under an older rule —
+  stays there until its next PATCH is refused.
 
 Iteration is cursor-based and bounded: never more than BATCH_SIZE documents in
 memory, and no `skip`, which degrades quadratically over a large collection.
@@ -46,7 +52,7 @@ from wip_auth.document_identity import (
 )
 from wip_auth.resolve import EntityNotFoundError, resolve_entity_id
 
-from ..models.document import Document
+from ..models.document import Document, DocumentStatus
 from ..models.file import File
 from .def_store_client import DefStoreError, get_def_store_client
 from .template_store_client import TemplateStoreError, get_template_store_client
@@ -65,7 +71,8 @@ class IntegrityIssue(BaseModel):
             "orphaned_term_ref, orphaned_document_ref, "
             "misplaced_document_ref, orphaned_file_ref, "
             "identity_hash_mismatch, identity_field_missing, "
-            "identity_resolution_missing, template_version_not_found"
+            "identity_resolution_missing, template_version_not_found, "
+            "mandatory_field_missing, nested_template_not_found"
         )
     )
     severity: str = Field(
@@ -107,6 +114,22 @@ class IntegritySummary(BaseModel):
             "to not found"
         ),
     )
+    mandatory_fields_missing: int = Field(
+        default=0,
+        description=(
+            "Mandatory fields with no value in a document's current version: "
+            "one per field, so a document can "
+            "count more than once. Such a document is refused by its next "
+            "PATCH"
+        ),
+    )
+    nested_templates_not_found: int = Field(
+        default=0,
+        description=(
+            "Nested objects or array items whose pinned template version was "
+            "not found, so their mandatory fields could not be checked"
+        ),
+    )
     checks_not_run: dict[str, int] = Field(
         default_factory=dict,
         description=(
@@ -146,10 +169,13 @@ class IntegrityCheckResult(BaseModel):
 # (template_version_not_found).
 _template_check_cache: dict[tuple[str, int], tuple[bool, str]] = {}
 _term_check_cache: dict[str, bool] = {}  # term_id -> exists
-# (template_id, version) -> its identity shape, or _MISSING when the template
-# store has no such version. Identity verification needs the field list, and
-# fetching it per document would be one HTTP call per row.
-_identity_fields_cache: dict[tuple[str, int], Any] = {}
+# (template_id, version) -> its schema shape (identity_fields, fields,
+# referent paths), or _MISSING when the template store has no such version.
+# The identity and mandatory-field checks read it for each document's pinned
+# version and for each nested template version (None = the latest, for a
+# nested reference that pins none); fetching it per document would be one
+# HTTP call per row.
+_identity_fields_cache: dict[tuple[str, int | None], Any] = {}
 
 # Checks skipped by the current run because the service they ask could not
 # answer, by "<check>:<service>". Each run (check_all_documents) sets its own
@@ -499,8 +525,57 @@ async def _identity_shape_for(
     return shape
 
 
-async def check_identity_hash(
-    document: Document, issues: list[IntegrityIssue]
+def _report_missing_version(document: Document, issues: list[IntegrityIssue]) -> None:
+    """The template store has no such version of the document's template.
+
+    A template missing whole is the orphaned-template check's to report; a
+    missing VERSION of an existing template is reported by nothing else, and
+    no check that reads the version's schema can run.
+    """
+    known = _template_check_cache.get((document.template_id, document.template_version))
+    if known is not None and not known[0]:
+        return
+    issues.append(IntegrityIssue(
+        type="template_version_not_found",
+        severity="error",
+        document_id=document.document_id,
+        template_id=document.template_id,
+        version=document.version,
+        field_path=None,
+        reference=f"{document.template_id}@v{document.template_version}",
+        message=(
+            f"Template version {document.template_version} not found; "
+            "the document's identity and mandatory fields cannot be verified"
+        ),
+    ))
+
+
+async def check_pinned_schema(
+    document: Document, issues: list[IntegrityIssue], check_identity: bool = True,
+) -> None:
+    """The checks that read the document's pinned template version: its
+    identity hash (when asked) and its mandatory fields. The version is
+    fetched once for both."""
+    shape = await _identity_shape_for(document.template_id, document.template_version)
+    if shape is _MISSING:
+        _report_missing_version(document, issues)
+        return
+    if shape is None:
+        # The template store could not answer: not a finding, and not cached,
+        # but the checks did not run (the result is incomplete).
+        if check_identity:
+            _not_run("identity_hash", "template-store")
+        _not_run("mandatory_fields", "template-store")
+        return
+    if check_identity:
+        check_identity_hash(document, shape, issues)
+    if document.status == DocumentStatus.ACTIVE:
+        await check_mandatory_fields(document, shape[1], issues)
+
+
+def check_identity_hash(
+    document: Document, shape: tuple[list[str], list[dict[str, Any]], Any],
+    issues: list[IntegrityIssue],
 ) -> None:
     """Recompute the document's identity hash and compare it to the stored one.
 
@@ -514,36 +589,6 @@ async def check_identity_hash(
     A template with no identity_fields is append-only: its documents carry an
     empty hash by contract, and anything else is a defect.
     """
-    shape = await _identity_shape_for(
-        document.template_id, document.template_version
-    )
-    if shape is _MISSING:
-        # The template store has no such version. A template missing whole is
-        # the orphaned-template check's to report; a missing VERSION of an
-        # existing template is reported by nothing else.
-        known = _template_check_cache.get(
-            (document.template_id, document.template_version)
-        )
-        if known is None or known[0]:
-            issues.append(IntegrityIssue(
-                type="template_version_not_found",
-                severity="error",
-                document_id=document.document_id,
-                template_id=document.template_id,
-                version=document.version,
-                field_path=None,
-                reference=f"{document.template_id}@v{document.template_version}",
-                message=(
-                    f"Template version {document.template_version} not found; "
-                    "the document's identity cannot be verified"
-                ),
-            ))
-        return
-    if shape is None:
-        # The template store could not answer: not a finding, and not cached,
-        # but the check did not run (the result is incomplete).
-        _not_run("identity_hash", "template-store")
-        return
     identity_fields, template_fields, referent_paths = shape
 
     if not identity_fields:
@@ -621,6 +666,104 @@ async def check_identity_hash(
                 f"(expected {expected})"
             ),
         ))
+
+
+async def check_mandatory_fields(
+    document: Document, fields: list[dict[str, Any]], issues: list[IntegrityIssue],
+) -> None:
+    """Report every mandatory field of the pinned version that has no value.
+
+    The rule is document validation's: a mandatory field absent from the data,
+    or present as null, is missing. A field's default_value fills nothing (it
+    is informational), so it does not excuse an absent field. Nested objects
+    and object array items are walked against their own pinned template
+    version, as validation walks them.
+
+    Only a document's current version is checked (an active row). A
+    superseded version is history, written once and never changed, so a
+    repaired document would otherwise be reported for ever; a deleted
+    document has no next write to fail.
+    """
+    await _walk_mandatory(
+        document, document.data or {}, fields, "",
+        f"{document.template_id}@v{document.template_version}", issues,
+    )
+
+
+async def _walk_mandatory(
+    document: Document, data: dict[str, Any], fields: list[dict[str, Any]],
+    prefix: str, owner: str, issues: list[IntegrityIssue],
+) -> None:
+    for field in fields:
+        path = f"{prefix}{field['name']}"
+        value = data.get(field["name"])
+        if value is not None:
+            await _walk_nested(document, value, field, path, issues)
+        elif field.get("mandatory"):
+            issues.append(IntegrityIssue(
+                type="mandatory_field_missing",
+                severity="error",
+                document_id=document.document_id,
+                template_id=document.template_id,
+                version=document.version,
+                field_path=path,
+                reference=owner,
+                message=(
+                    f"Field '{path}' is mandatory in template {owner} but has no "
+                    "value; the document's next PATCH will be refused"
+                ),
+            ))
+
+
+async def _walk_nested(
+    document: Document, value: Any, field: dict[str, Any], path: str,
+    issues: list[IntegrityIssue],
+) -> None:
+    """Descend into an object, or the object items of an array, that names an
+    item template. Anything else holds no nested mandatory fields."""
+    field_type = field.get("type")
+    if field_type == "object" and field.get("template_ref") and isinstance(value, dict):
+        await _walk_sub_template(
+            document, value, field["template_ref"], field.get("template_ref_version"),
+            path, issues,
+        )
+    elif (
+        field_type == "array" and field.get("array_item_type") == "object"
+        and field.get("array_template_ref") and isinstance(value, list)
+    ):
+        for i, item in enumerate(value):
+            if isinstance(item, dict):
+                await _walk_sub_template(
+                    document, item, field["array_template_ref"],
+                    field.get("array_template_ref_version"), f"{path}[{i}]", issues,
+                )
+
+
+async def _walk_sub_template(
+    document: Document, data: dict[str, Any], template_ref: str, version: int | None,
+    path: str, issues: list[IntegrityIssue],
+) -> None:
+    shape = await _identity_shape_for(template_ref, version)
+    if shape is None:
+        _not_run("mandatory_fields", "template-store")
+        return
+    owner = f"{template_ref}@v{version}" if version is not None else template_ref
+    if shape is _MISSING:
+        issues.append(IntegrityIssue(
+            type="nested_template_not_found",
+            severity="error",
+            document_id=document.document_id,
+            template_id=document.template_id,
+            version=document.version,
+            field_path=path,
+            reference=owner,
+            message=(
+                f"Template {owner} for '{path}' not found; its mandatory fields "
+                "cannot be checked"
+            ),
+        ))
+        return
+    await _walk_mandatory(document, data, shape[1], f"{path}.", owner, issues)
 
 
 async def check_document_integrity(document: Document) -> list[IntegrityIssue]:
@@ -755,8 +898,7 @@ async def _check_document_batch(
         if check_term_refs and document.term_references:
             for field_path, term_id in extract_term_ids(document.term_references):
                 await check_term_reference(term_id, document, field_path, issues)
-        if check_identity:
-            await check_identity_hash(document, issues)
+        await check_pinned_schema(document, issues, check_identity)
     await check_batch_references(batch, issues)
     return issues
 
@@ -773,6 +915,8 @@ _SUMMARY_COUNTERS = {
     "identity_field_missing": "identity_unverified",
     "identity_resolution_missing": "identity_unverified",
     "template_version_not_found": "identity_unverified",
+    "mandatory_field_missing": "mandatory_fields_missing",
+    "nested_template_not_found": "nested_templates_not_found",
 }
 
 
