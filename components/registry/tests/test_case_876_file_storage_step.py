@@ -76,9 +76,10 @@ async def test_journal_builds_the_step_without_any_storage_env(client, monkeypat
     svc = NamespaceDeletionService()
 
     async def keys(prefix):
-        return ["k1", "k2"]
+        for k in ("k1", "k2"):
+            yield k
 
-    monkeypatch.setattr(svc, "_get_storage_keys", keys)
+    monkeypatch.setattr(svc, "_iter_storage_keys", keys)
     journal = await svc._build_journal("probe-ns", False, None, [])
 
     first = journal.steps[0]

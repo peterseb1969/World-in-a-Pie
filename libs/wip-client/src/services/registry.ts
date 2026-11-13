@@ -149,9 +149,22 @@ export class RegistryService extends BaseService {
     return this.get(`/namespaces/${seg(prefix)}/deletion-status`)
   }
 
-  /** Run every step of an unfinished deletion that is not completed (409 while one runs). */
-  async resumeDeletion(prefix: string): Promise<NamespaceDeletionResult> {
-    return this.post(`/namespaces/${seg(prefix)}/resume-delete`)
+  /**
+   * Run every step of an unfinished deletion that is not completed (409 while
+   * one runs). A namespace locked with no journal gets one built: `force`
+   * proceeds despite references from other namespaces, as for
+   * deleteNamespace (400 without it). 503: that journal could not be built,
+   * nothing was deleted, and the namespace stays locked.
+   */
+  async resumeDeletion(
+    prefix: string,
+    options?: { force?: boolean },
+  ): Promise<NamespaceDeletionResult> {
+    return this.post(
+      `/namespaces/${seg(prefix)}/resume-delete`,
+      null,
+      options?.force ? { force: true } : undefined,
+    )
   }
 
   async initializeWipNamespace(): Promise<Namespace> {

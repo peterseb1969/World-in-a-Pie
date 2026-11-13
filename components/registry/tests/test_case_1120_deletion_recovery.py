@@ -24,6 +24,13 @@ from registry.services.namespace_deletion import NamespaceDeletionService
 NS = "/api/registry/namespaces"
 
 
+def _streamed(keys):
+    async def stream(_prefix):
+        for k in keys:
+            yield k
+    return stream
+
+
 def _svc(monkeypatch) -> NamespaceDeletionService:
     svc = NamespaceDeletionService()
     monkeypatch.setattr(svc, "start_recovery", lambda: None)
@@ -106,7 +113,7 @@ async def test_file_keys_are_split_across_steps(client, auth_headers, monkeypatc
     prefix = await _namespace(client, auth_headers)
     svc = _svc(monkeypatch)
     keys = [f"k{i}" for i in range(2500)]
-    monkeypatch.setattr(svc, "_get_storage_keys", AsyncMock(return_value=keys))
+    monkeypatch.setattr(svc, "_iter_storage_keys", _streamed(keys))
     journal = await svc._build_journal(prefix, False, "t", [])
     storage = [s for s in journal.steps if s.store == "file_storage"]
     batches = [await mod.step_storage_keys(s) for s in storage]
@@ -167,7 +174,7 @@ async def test_the_keys_live_outside_the_journal(client, auth_headers, monkeypat
     prefix = await _namespace(client, auth_headers)
     svc = _svc(monkeypatch)
     keys = [str(uuid.uuid4()) for _ in range(300_000)]
-    monkeypatch.setattr(svc, "_get_storage_keys", AsyncMock(return_value=keys))
+    monkeypatch.setattr(svc, "_iter_storage_keys", _streamed(keys))
 
     journal = await svc._build_journal(prefix, False, "t", [])
 
@@ -184,7 +191,7 @@ async def test_the_keys_live_outside_the_journal(client, auth_headers, monkeypat
 async def test_a_completed_batch_drops_its_keys(client, auth_headers, monkeypatch):
     prefix = await _namespace(client, auth_headers)
     svc = _svc(monkeypatch)
-    monkeypatch.setattr(svc, "_get_storage_keys", AsyncMock(return_value=["k1", "k2"]))
+    monkeypatch.setattr(svc, "_iter_storage_keys", _streamed(["k1", "k2"]))
     monkeypatch.setattr(svc, "_exec_file_storage_step", AsyncMock(return_value=2))
 
     await svc.start_deletion(prefix, requested_by="t")

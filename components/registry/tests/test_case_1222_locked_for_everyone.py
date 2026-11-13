@@ -80,7 +80,9 @@ async def test_taking_the_lock_drops_every_services_cached_permissions(client, a
     stop = RuntimeError("stop after the lock")
     with (
         patch("registry.services.namespace_deletion.access_changed", announced),
-        patch.object(svc, "_build_journal", AsyncMock(side_effect=stop)),
+        # Stopped once the journal is stored: a failure before that gives the
+        # namespace back unlocked (CASE-1120), after it the lock holds.
+        patch.object(svc, "_execute_journal", AsyncMock(side_effect=stop)),
         pytest.raises(RuntimeError, match="stop after the lock"),
     ):
         await svc.start_deletion(prefix, requested_by="t")

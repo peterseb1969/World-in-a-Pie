@@ -201,7 +201,12 @@ export interface NamespaceDeletionJournal {
   requested_at: string | null
   completed_at: string | null
   force: boolean
+  /** The first 1,000 references from other namespaces the deletion breaks. */
   broken_references: Record<string, unknown>[]
+  /** Every broken reference, counted per kind and source namespace. */
+  broken_references_counts?: { type: string; source_namespace: string; count: number }[]
+  /** True when broken_references holds only the first 1,000. */
+  broken_references_truncated?: boolean
   steps: Record<string, unknown>[]
   summary: Record<string, unknown> | null
 }

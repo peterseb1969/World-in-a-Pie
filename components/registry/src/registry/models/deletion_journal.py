@@ -66,6 +66,14 @@ class InboundReference(BaseModel):
     impact: str
 
 
+class InboundReferenceCount(BaseModel):
+    """How many inbound references of one kind came from one namespace."""
+
+    type: str
+    source_namespace: str
+    count: int
+
+
 class DeletionJournal(Document):
     """Persistent journal for namespace deletion.
 
@@ -97,7 +105,13 @@ class DeletionJournal(Document):
     requested_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     completed_at: datetime | None = None
     force: bool = False
+    # The references from other namespaces the deletion breaks. The journal
+    # is one MongoDB document, so it keeps the first ones only (a heavily
+    # referenced namespace has more than 16 MiB of them); the counts per
+    # kind and source namespace cover every one found.
     broken_references: list[InboundReference] = Field(default_factory=list)
+    broken_references_counts: list[InboundReferenceCount] = Field(default_factory=list)
+    broken_references_truncated: bool = False
     steps: list[DeletionStep] = Field(default_factory=list)
     summary: dict[str, int] | None = None
     # Who runs the journal now. A run claims the journal with one

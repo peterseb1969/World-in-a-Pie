@@ -31,12 +31,13 @@ async def _journal_with_objects(client, monkeypatch, total: int):
     svc._postgres_url = None
 
     async def keys(_prefix):
-        return [f"k{i}" for i in range(total)]
+        for i in range(total):
+            yield f"k{i}"
 
     async def execute(self, step, namespace):
         return len(await step_storage_keys(step))
 
-    monkeypatch.setattr(svc, "_get_storage_keys", keys)
+    monkeypatch.setattr(svc, "_iter_storage_keys", keys)
     monkeypatch.setattr(NamespaceDeletionService, "_execute_step", execute)
     journal = await svc._build_journal(prefix, False, None, [])
     await journal.insert()

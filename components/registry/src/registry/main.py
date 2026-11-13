@@ -216,6 +216,15 @@ async def _startup_maintenance() -> None:
     except Exception as e:
         print(f"WARNING: Failed to reconcile pending claims: {e}")
 
+    # Drop the stored-object key batches of deletions whose journal was never
+    # stored (an orphan nothing would ever read), and index them.
+    from .services.namespace_deletion import sweep_key_batches
+    try:
+        if dropped := await sweep_key_batches():
+            print(f"Dropped {dropped} orphaned namespace-deletion key batch(es).")
+    except Exception as e:
+        print(f"WARNING: Failed to sweep namespace-deletion key batches: {e}")
+
     # Attachments are served at their origin's root: records written while
     # they were served under /apps/<name> lose their prefix settings, once.
     from .models.attachment import drop_removed_fields

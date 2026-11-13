@@ -1821,6 +1821,14 @@ describe('Service classes via createWipClient', () => {
       expect(fetchMock.mock.calls[1][0]).toContain('/api/registry/namespaces/old/resume-delete')
       expect(fetchMock.mock.calls[1][1].method).toBe('POST')
       expect(resumed.status).toBe('completed')
+      expect(fetchMock.mock.calls[1][0]).not.toContain('force')
+    })
+
+    it('resumeDeletion sends force when asked', async () => {
+      mockJsonResponse({ status: 'completed', namespace: 'old', summary: {} })
+      await client.registry.resumeDeletion('old', { force: true })
+      expect(fetchMock.mock.calls[0][0]).toContain('/api/registry/namespaces/old/resume-delete')
+      expect(fetchMock.mock.calls[0][0]).toContain('force=true')
     })
 
     it('unifiedSearch sends GET with params', async () => {

@@ -15,6 +15,8 @@ from ..models.namespace import Namespace, set_unless_locked, unwritten_answer
 from ..services.auth import require_admin_key, require_api_key
 from ..services.namespace_deletion import (
     DeletionAlreadyRunning,
+    DeletionNotStarted,
+    DeletionRefused,
     NamespaceDeletionService,
     deletion_refusals,
 )
@@ -32,6 +34,12 @@ def get_deletion_service() -> NamespaceDeletionService:
 @router.delete(
     "/{prefix}",
     summary="Delete namespace (with journal)",
+    responses={
+        400: {"description": "Refused: inbound references need force, or the namespace may not be deleted"},
+        404: {"description": "No such namespace"},
+        503: {"description": "The deletion could not be started (its journal could not be "
+              "stored); nothing was deleted and the namespace is unlocked again"},
+    },
 )
 async def delete_namespace(
     prefix: str,
@@ -75,6 +83,8 @@ async def delete_namespace(
             requested_by=get_identity_string(),
             requested_note=deleted_by,
         )
+    except DeletionNotStarted as e:
+        raise HTTPException(503, str(e)) from None
     except ValueError as e:
         raise HTTPException(400, str(e)) from None
 
@@ -126,6 +136,8 @@ async def deletion_status(
         "completed_at": journal.completed_at.isoformat() if journal.completed_at else None,
         "force": journal.force,
         "broken_references": [r.model_dump() for r in journal.broken_references],
+        "broken_references_counts": [c.model_dump() for c in journal.broken_references_counts],
+        "broken_references_truncated": journal.broken_references_truncated,
         "steps": [s.model_dump() for s in journal.steps],
         "summary": journal.summary,
     }
@@ -134,9 +146,22 @@ async def deletion_status(
 @router.post(
     "/{prefix}/resume-delete",
     summary="Resume incomplete deletion",
+    responses={
+        400: {"description": "A namespace locked with no journal has inbound references "
+              "that need force"},
+        404: {"description": "No unfinished deletion of this namespace"},
+        409: {"description": "The deletion is running already"},
+        503: {"description": "The journal of a namespace locked with no journal could not "
+              "be built; nothing was deleted, and it stays locked"},
+    },
 )
 async def resume_deletion(
     prefix: str,
+    force: bool = Query(
+        False,
+        description="A namespace locked with no journal gets one built now: proceed "
+        "despite inbound references, as for a deletion",
+    ),
     api_key: str = Depends(require_admin_key),
 ):
     """Resume an unfinished deletion from where it left off.
@@ -144,13 +169,21 @@ async def resume_deletion(
     Picks up the namespace's deletion that is still in progress, stopped on a
     failed step, or completed with degraded best-effort steps (stored files,
     reporting rows), and runs every step not completed. A namespace locked
-    with no journal gets one. 409 while the deletion is running already.
+    with no journal gets one, requested by the caller; its inbound references
+    need force as they do for a deletion. 409 while the deletion is running
+    already.
     There is no abandon: a partly deleted namespace is finished, not undone.
     """
     try:
-        journal = await _deletion_service.resume_deletion(prefix)
+        journal = await _deletion_service.resume_deletion(
+            prefix, force=force, requested_by=get_identity_string(),
+        )
     except DeletionAlreadyRunning as e:
         raise HTTPException(409, str(e)) from None
+    except DeletionRefused as e:
+        raise HTTPException(400, str(e)) from None
+    except DeletionNotStarted as e:
+        raise HTTPException(503, str(e)) from None
     except ValueError as e:
         raise HTTPException(404, str(e)) from None
 

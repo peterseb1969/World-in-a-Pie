@@ -20,6 +20,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -34,6 +35,7 @@ from ..models.deletion_journal import (
     DeletionJournal,
     DeletionStep,
     InboundReference,
+    InboundReferenceCount,
 )
 from ..models.entry import RegistryEntry
 from ..models.namespace import Namespace, set_unless_locked
@@ -55,6 +57,23 @@ _CLAIM_LEASE = timedelta(minutes=15)
 
 class DeletionAlreadyRunning(Exception):
     """The deletion's journal is being run already; a second run would race it."""
+
+
+class DeletionNotStarted(Exception):
+    """The deletion could not be started: its journal could not be built or
+    stored (a database error). Nothing was deleted."""
+
+
+class DeletionRefused(ValueError):
+    """The request may not go ahead as asked (inbound references need force)."""
+
+
+# The journal keeps this many of the inbound references a deletion breaks;
+# the counts per kind and source namespace cover all of them.
+_BROKEN_REFS_KEPT = 1000
+# A key batch no journal references is swept at startup once it is this old:
+# younger, it may belong to a journal still being built.
+_ORPHAN_BATCH_AGE = timedelta(hours=1)
 
 
 class _ClaimLost(DeletionAlreadyRunning):
@@ -259,10 +278,76 @@ async def step_storage_keys(step: DeletionStep) -> list[str]:
     return list(doc.get("keys") or [])
 
 
+def _names_no_keys(step: DeletionStep) -> bool:
+    """A file-storage step naming its keys neither inline nor by batch, marked
+    degraded. Every such step this Registry writes names them one way or the
+    other; one naming neither was written in a form this Registry does not
+    read (a newer one's), so nothing is known to be deleted: never a clean
+    step."""
+    if step.storage_keys is not None or step.storage_keys_batch:
+        return False
+    step.error = (
+        "the step names no stored-object keys this Registry can read; its objects may remain"
+    )
+    return True
+
+
 async def _drop_key_batch(step: DeletionStep) -> None:
     """A completed step's keys are no longer needed."""
     if step.storage_keys_batch:
         await _key_batches().delete_one({"_id": ObjectId(step.storage_keys_batch)})
+
+
+def _reference_counts(refs: list[InboundReference]) -> list[InboundReferenceCount]:
+    counts: dict[tuple[str, str], int] = {}
+    for r in refs:
+        counts[(r.type, r.source_namespace)] = counts.get((r.type, r.source_namespace), 0) + 1
+    return [
+        InboundReferenceCount(type=t, source_namespace=ns, count=n)
+        for (t, ns), n in sorted(counts.items())
+    ]
+
+
+async def _drop_batches(batch_ids: list[str]) -> None:
+    """Drop key batches no stored journal references."""
+    if batch_ids:
+        await _key_batches().delete_many({"_id": {"$in": [ObjectId(b) for b in batch_ids]}})
+
+
+async def _unlock(ns: Namespace, status: str) -> None:
+    """Give a namespace locked by a deletion that did not start its prior
+    status back, while it is still that namespace and still locked."""
+    query: dict[str, Any] = {"prefix": ns.prefix, "status": "locked"}
+    if ns.namespace_id:
+        query["namespace_id"] = ns.namespace_id
+    await Namespace.get_motor_collection().update_one(
+        query, {"$set": {"status": status, "updated_at": datetime.now(UTC)}},
+    )
+
+
+async def sweep_key_batches() -> int:
+    """Index the key batches by namespace, and drop every batch no journal
+    references that is older than an hour (a deletion whose journal was
+    never stored, or a step that completed without dropping its own). A
+    batch a step not completed references stays: a failed or degraded
+    deletion resumes with it. Returns how many were dropped."""
+    coll = _key_batches()
+    await coll.create_index([("namespace", 1)], name="namespace_idx")
+    referenced: set[ObjectId] = set()
+    async for journal in DeletionJournal.get_motor_collection().find(
+        {"steps.storage_keys_batch": {"$ne": None}},
+        {"steps.storage_keys_batch": 1, "steps.status": 1},
+    ):
+        for step in journal.get("steps", []):
+            # A completed step's keys are done with, whether or not its batch
+            # was dropped when it completed.
+            if step.get("storage_keys_batch") and step.get("status") != "completed":
+                referenced.add(ObjectId(step["storage_keys_batch"]))
+    result = await coll.delete_many({
+        "_id": {"$nin": list(referenced)},
+        "created_at": {"$lt": datetime.now(UTC) - _ORPHAN_BATCH_AGE},
+    })
+    return result.deleted_count
 
 
 def _claimed_at_creation(journal: DeletionJournal) -> None:
@@ -338,9 +423,10 @@ def _count_step(summary: dict[str, int], step: DeletionStep) -> None:
 
     A summary key can cover several steps — the stored objects are one step
     per batch of keys — hence each step adds to the running total instead of
-    replacing it. The total is
-    rebuilt from every step on each run, so a resumed journal counts each
-    step once.
+    replacing it. The summary is rebuilt from every step that ran, on every
+    run, and a step's count is what all its runs deleted (a degraded step
+    re-run adds to it; one left undone keeps what it deleted before), so the
+    summary is what the whole deletion removed.
     """
     if step.collection:
         key = step.collection
@@ -607,7 +693,9 @@ class NamespaceDeletionService:
         refusals = deletion_refusals(ns)
 
         entity_counts = await self._count_entities(prefix)
-        storage_keys = await self._get_storage_keys(prefix)
+        storage_key_count = 0
+        async for _key in self._iter_storage_keys(prefix):
+            storage_key_count += 1
         inbound_refs = await self._check_inbound_references(prefix)
 
         has_high_severity = any(r.type in _HIGH_SEVERITY_INBOUND for r in inbound_refs)
@@ -619,7 +707,7 @@ class NamespaceDeletionService:
             "entity_counts": entity_counts,
             # Key name kept for API compatibility: it counts stored file
             # objects in whichever object store the install runs.
-            "minio_objects": len(storage_keys),
+            "minio_objects": storage_key_count,
             "inbound_references": [r.model_dump() for r in inbound_refs],
             "refusals": [{"rule": rule, "message": message} for rule, message, _ in refusals],
             "safe_to_delete": not refusals and not has_high_severity,
@@ -654,6 +742,7 @@ class NamespaceDeletionService:
 
         # Lock the namespace, in one conditional update: two deletions that
         # both read it unlocked cannot both take the lock.
+        prior_status = ns.status
         if not await set_unless_locked(ns, {"status": "locked", "updated_at": datetime.now(UTC)}):
             raise ValueError(
                 f"Namespace '{prefix}' is already locked (deletion in progress)"
@@ -664,20 +753,36 @@ class NamespaceDeletionService:
         # rest of its lifetime (30 s) while its data is being deleted.
         await access_changed(keys=False)
 
-        # Build journal. A failure from here to journal.create() leaves the
-        # namespace locked with no journal; resume_deletion builds one then.
-        journal = await self._build_journal(prefix, force, requested_by, inbound_refs)
-        journal.namespace_id = ns.namespace_id
-        journal.requested_note = requested_note
-        _claimed_at_creation(journal)
-        await journal.create()
+        # Build and store the journal. Nothing is deleted until it is stored,
+        # so a failure here (a database error writing the key batches or the
+        # journal) gives the namespace back as it was: its batches are
+        # dropped and its lock released.
+        batches: list[str] = []
+        try:
+            journal = await self._build_journal(prefix, force, requested_by, inbound_refs, batches)
+            journal.namespace_id = ns.namespace_id
+            journal.requested_note = requested_note
+            _claimed_at_creation(journal)
+            await journal.create()
+        except Exception as e:
+            await _drop_batches(batches)
+            await _unlock(ns, prior_status)
+            await access_changed(keys=False)
+            logger.exception("Deletion of namespace '%s' could not be started", prefix)
+            raise DeletionNotStarted(
+                f"The deletion of namespace '{prefix}' could not be started "
+                f"({type(e).__name__}: {e}). Nothing was deleted; the namespace is "
+                f"{prior_status} again."
+            ) from e
         logger.info("Deletion journal created for '%s' with %d steps", prefix, len(journal.steps))
 
         # Execute
         await self._execute_journal(journal)
         return journal
 
-    async def resume_deletion(self, prefix: str) -> DeletionJournal:
+    async def resume_deletion(
+        self, prefix: str, force: bool = False, requested_by: str | None = None,
+    ) -> DeletionJournal:
         """Resume an unfinished deletion from where it left off.
 
         Unfinished is any deletion that has not completed cleanly: one still
@@ -685,7 +790,9 @@ class NamespaceDeletionService:
         best-effort steps (stored files, reporting rows) were degraded. Every
         step deletes by namespace, so running one again is safe; completed
         steps are skipped. A namespace locked with no journal (the deletion
-        stopped before its journal was written) gets one built now. There is
+        stopped before its journal was written) gets one built now, recorded
+        as requested by ``requested_by``; inbound references of high severity
+        need ``force`` as they do for a deletion. There is
         no other way out of a deletion: a namespace partly deleted cannot be
         made whole, so the deletion is finished, never abandoned.
         """
@@ -694,16 +801,7 @@ class NamespaceDeletionService:
             sort=[("requested_at", -1)],
         )
         if journal is None:
-            ns = await Namespace.find_one({"prefix": prefix})
-            if ns is None or ns.status != "locked":
-                raise ValueError(f"No unfinished deletion found for namespace '{prefix}'")
-            # The deletion was requested and its checks passed before the
-            # lock; the inbound references are recorded again as they are now.
-            inbound_refs = await self._check_inbound_references(prefix)
-            journal = await self._build_journal(prefix, True, "resume-delete", inbound_refs)
-            journal.namespace_id = ns.namespace_id
-            _claimed_at_creation(journal)
-            await journal.create()
+            journal = await self._journal_for_lock(prefix, force, requested_by)
             logger.warning(
                 "Namespace '%s' was locked with no deletion journal: built one (%d steps)",
                 prefix, len(journal.steps),
@@ -725,6 +823,40 @@ class NamespaceDeletionService:
         await self._execute_journal(journal)
         return journal
 
+    async def _journal_for_lock(
+        self, prefix: str, force: bool, requested_by: str | None,
+    ) -> DeletionJournal:
+        """Build and store, claimed, the journal of a namespace locked with
+        none (the deletion stopped before its journal was stored)."""
+        ns = await Namespace.find_one({"prefix": prefix})
+        if ns is None or ns.status != "locked":
+            raise ValueError(f"No unfinished deletion found for namespace '{prefix}'")
+        # The deletion was requested before the lock; the inbound references
+        # are checked again as they are now, and need force as they do for a
+        # deletion.
+        inbound_refs = await self._check_inbound_references(prefix)
+        high = [r for r in inbound_refs if r.type in _HIGH_SEVERITY_INBOUND]
+        if high and not force:
+            raise DeletionRefused(
+                f"Namespace '{prefix}' has {len(high)} inbound reference(s) "
+                "from other namespaces. Use force=true to proceed."
+            )
+        batches: list[str] = []
+        try:
+            journal = await self._build_journal(prefix, force, requested_by, inbound_refs, batches)
+            journal.namespace_id = ns.namespace_id
+            _claimed_at_creation(journal)
+            await journal.create()
+        except Exception as e:
+            await _drop_batches(batches)
+            logger.exception("Deletion journal of namespace '%s' could not be built", prefix)
+            raise DeletionNotStarted(
+                f"The deletion journal of namespace '{prefix}' could not be built "
+                f"({type(e).__name__}: {e}). Nothing was deleted; the namespace "
+                "stays locked, and resume-delete can be tried again."
+            ) from e
+        return journal
+
     async def get_deletion_status(self, prefix: str) -> DeletionJournal | None:
         """Get the most recent deletion journal for a namespace."""
         return await DeletionJournal.find_one(
@@ -733,10 +865,12 @@ class NamespaceDeletionService:
         )
 
     async def recover_incomplete_deletions(self) -> int:
-        """Resume every in-progress deletion this process is not running.
+        """Resume every in-progress deletion no run holds.
 
         Returns how many journals are still in progress afterwards: those
-        whose steps are deferred because a service is still unreachable.
+        whose steps are deferred because a service is still unreachable,
+        those another run holds (a request in this process, or another
+        process), and those whose run raised while still in progress.
         """
         incomplete = await DeletionJournal.find({"status": "in_progress"}).to_list()
         remaining = 0
@@ -845,20 +979,18 @@ class NamespaceDeletionService:
 
         return counts
 
-    async def _get_storage_keys(self, prefix: str) -> list[str]:
-        """Storage keys of every file record in this namespace (any status)."""
+    async def _iter_storage_keys(self, prefix: str) -> AsyncIterator[str]:
+        """Storage keys of every file record in this namespace (any status),
+        streamed from the cursor."""
         motor_client = Namespace.get_motor_collection().database.client
-        doc_store_db = motor_client["wip_document_store"]
-        files_coll = doc_store_db["files"]
-        keys = []
+        files_coll = motor_client["wip_document_store"]["files"]
         async for doc in files_coll.find(
             {"namespace": prefix},
             {"storage_key": 1, "file_id": 1},
         ):
             key = doc.get("storage_key") or doc.get("file_id")
             if key:
-                keys.append(key)
-        return keys
+                yield key
 
     async def _check_inbound_references(self, prefix: str) -> list[InboundReference]:
         """Find references from other namespaces into this one.
@@ -940,8 +1072,57 @@ class NamespaceDeletionService:
         force: bool,
         requested_by: str | None,
         inbound_refs: list[InboundReference],
+        batches: list[str] | None = None,
     ) -> DeletionJournal:
-        """Build the deletion journal with all steps."""
+        """Build the deletion journal with all steps. The id of every key
+        batch it writes is added to ``batches``, so a caller can drop them
+        when the journal is not stored."""
+        batches = [] if batches is None else batches
+        steps = await self._file_storage_steps(prefix, batches)
+        order = len(steps) + 1
+
+        # Steps 2-N: MongoDB collections (across all service databases)
+        steps += await self._mongodb_steps(prefix, order)
+        order = len(steps) + 1
+
+        # PostgreSQL rows (if reporting-sync is configured)
+        if self._postgres_url:
+            steps.append(DeletionStep(
+                order=order,
+                store="postgresql",
+                action="delete_namespace_rows",
+                detail=f"Delete rows WHERE namespace = '{prefix}' from all reporting tables",
+                filter={"namespace": prefix},
+            ))
+            order += 1
+
+        # Final step: delete the namespace record itself
+        steps.append(DeletionStep(
+            order=order,
+            store="mongodb",
+            collection="namespaces",
+            database=_registry_db_name(),
+            filter={"prefix": prefix},
+            detail="Delete namespace record",
+        ))
+
+        return DeletionJournal(
+            namespace=prefix,
+            force=force,
+            requested_by=requested_by,
+            # Persisted unconditionally: the journal is the audit trail, and a
+            # non-forced deletion still breaks its low-severity inbound refs
+            # (synonym links) — gating on force would drop the only record of
+            # what broke on the common path. Bounded: the first ones in full,
+            # every one in the counts.
+            broken_references=inbound_refs[:_BROKEN_REFS_KEPT],
+            broken_references_counts=_reference_counts(inbound_refs),
+            broken_references_truncated=len(inbound_refs) > _BROKEN_REFS_KEPT,
+            steps=steps,
+        )
+
+    async def _file_storage_steps(self, prefix: str, batches: list[str]) -> list[DeletionStep]:
+        """Step 1..k: the stored file objects, one step per batch of keys."""
         steps: list[DeletionStep] = []
         order = 1
 
@@ -951,24 +1132,40 @@ class NamespaceDeletionService:
         # gone. One step per batch of keys, each batch in its own document
         # outside the journal: the journal is one MongoDB document, and a
         # namespace with a few hundred thousand files has more keys than its
-        # 16 MiB hold, however the steps divide them.
-        storage_keys = await self._get_storage_keys(prefix)
-        for start in range(0, len(storage_keys), _STORAGE_DELETE_BATCH):
-            batch = storage_keys[start:start + _STORAGE_DELETE_BATCH]
+        # 16 MiB hold, however the steps divide them. The keys are streamed
+        # into their batches: only the batch ids are held here.
+        written: list[tuple[str, int]] = []
+        batch: list[str] = []
+        async for key in self._iter_storage_keys(prefix):
+            batch.append(key)
+            if len(batch) == _STORAGE_DELETE_BATCH:
+                batches.append(await _store_key_batch(prefix, batch))
+                written.append((batches[-1], len(batch)))
+                batch = []
+        if batch:
+            batches.append(await _store_key_batch(prefix, batch))
+            written.append((batches[-1], len(batch)))
+        total = sum(n for _, n in written)
+        start = 0
+        for batch_id, n in written:
             steps.append(DeletionStep(
                 order=order,
                 store="file_storage",
                 action="delete_objects",
                 detail=(
-                    f"Delete {len(batch)} stored file objects"
-                    + (f" (keys {start + 1}-{start + len(batch)} of {len(storage_keys)})"
-                       if len(storage_keys) > _STORAGE_DELETE_BATCH else "")
+                    f"Delete {n} stored file objects"
+                    + (f" (keys {start + 1}-{start + n} of {total})" if len(written) > 1 else "")
                 ),
-                storage_keys_batch=await _store_key_batch(prefix, batch),
+                storage_keys_batch=batch_id,
             ))
+            start += n
             order += 1
+        return steps
 
-        # Steps 2-N: MongoDB collections (across all service databases)
+    async def _mongodb_steps(self, prefix: str, order: int) -> list[DeletionStep]:
+        """The MongoDB steps (every service database), numbered from ``order``;
+        a collection holding nothing of the namespace gets none."""
+        steps: list[DeletionStep] = []
         motor_client = Namespace.get_motor_collection().database.client
         reg_db_name = _registry_db_name()
 
@@ -1017,40 +1214,7 @@ class NamespaceDeletionService:
                 filter=counters,
                 detail=f"Delete {id_counter_count} ID counters for {prefix}",
             ))
-            order += 1
-
-        # PostgreSQL rows (if reporting-sync is configured)
-        if self._postgres_url:
-            steps.append(DeletionStep(
-                order=order,
-                store="postgresql",
-                action="delete_namespace_rows",
-                detail=f"Delete rows WHERE namespace = '{prefix}' from all reporting tables",
-                filter={"namespace": prefix},
-            ))
-            order += 1
-
-        # Final step: delete the namespace record itself
-        steps.append(DeletionStep(
-            order=order,
-            store="mongodb",
-            collection="namespaces",
-            database=reg_db_name,
-            filter={"prefix": prefix},
-            detail="Delete namespace record",
-        ))
-
-        return DeletionJournal(
-            namespace=prefix,
-            force=force,
-            requested_by=requested_by,
-            # Persisted unconditionally: the journal is the audit trail, and a
-            # non-forced deletion still breaks its low-severity inbound refs
-            # (synonym links) — gating on force would drop the only record of
-            # what broke on the common path.
-            broken_references=inbound_refs,
-            steps=steps,
-        )
+        return steps
 
     # -------------------------------------------------------------------------
     # Internal: journal execution
@@ -1090,13 +1254,13 @@ class NamespaceDeletionService:
         # over what another writer recorded.
         for i, step in enumerate(journal.steps):
             if step.status == "completed":
-                # Already done (crash recovery)
-                _count_step(summary, step)
-                continue
-            outcome = await self._run_step(journal, i)
-            if outcome == "deferred":
+                continue  # Already done (crash recovery)
+            if await self._run_step(journal, i) == "deferred":
                 deferred += 1
-            elif outcome == "executed":
+        # Every run rebuilds the summary from every step that ran, so it
+        # says what the whole deletion removed, across its runs.
+        for step in journal.steps:
+            if step.status in ("completed", "completed_with_errors"):
                 _count_step(summary, step)
 
         if deferred:
@@ -1130,6 +1294,8 @@ class NamespaceDeletionService:
             )
             step.completed_at = datetime.now(UTC)
             await _write_step(journal, i)
+            # Its keys will never be deleted on this deletion's behalf.
+            await _drop_key_batch(step)
             return "kept"
         try:
             deleted = await self._execute_step(step, journal.namespace)
@@ -1158,7 +1324,8 @@ class NamespaceDeletionService:
         # failure on step.error instead of raising — surface it as a
         # degraded outcome rather than a clean completion.
         step.status = "completed_with_errors" if step.error else "completed"
-        step.deleted_count = deleted
+        # Added to what earlier runs of a degraded step deleted.
+        step.deleted_count += deleted
         step.completed_at = datetime.now(UTC)
         logger.info(
             "Step %d/%d completed: %s (%d deleted)",
@@ -1240,6 +1407,8 @@ class NamespaceDeletionService:
 
     async def _exec_file_storage_step(self, step: DeletionStep, namespace: str) -> int:
         """Delete the step's stored objects through document-store."""
+        if _names_no_keys(step):
+            return 0
         keys = await step_storage_keys(step)
         if not keys:
             return 0
