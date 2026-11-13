@@ -40,9 +40,11 @@ export function useTemplate(
  * Fetch the latest template with this value.
  *
  * A template value is unique only within a namespace: pass `namespace`
- * whenever the client's key can see more than one, or the lookup returns
- * whichever namespace's template comes first. A scoped lookup does not fall
- * back to the `wip` namespace. Omitting `namespace` is right for a
+ * whenever the client's key can see more than one. Unscoped, the lookup
+ * searches every namespace the key can read and returns the highest version
+ * among them, which can be another namespace's template and a newer version
+ * than the one you meant. A scoped lookup does not fall back to the `wip`
+ * namespace. Omitting `namespace` is right for a
  * single-namespace key, whose namespace the server derives.
  */
 export function useTemplateByValue(

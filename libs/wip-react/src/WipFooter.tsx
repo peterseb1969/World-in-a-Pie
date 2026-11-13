@@ -25,7 +25,7 @@ export interface WipFooterProps {
 
 const WRAPPER_BASE = 'mt-12 border-t border-gray-200 py-4'
 const INNER = 'mx-auto flex max-w-6xl items-center justify-center gap-2 px-4 text-xs text-text-muted'
-const LOGO_CLASS = 'h-4 w-auto'
+const LOGO_CLASS = 'h-4 w-auto opacity-70'
 
 function joinClassNames(base: string, override?: string): string {
   return override ? `${base} ${override}` : base
@@ -46,7 +46,9 @@ function joinClassNames(base: string, override?: string): string {
 // so without intrinsic dimensions, an SVG with `viewBox` + no width/height
 // fills its flex parent (page-dominating logo). The intrinsic attrs are
 // the fallback when Tailwind hasn't compiled the className; consumer-
-// supplied `className` overrides still win via CSS specificity.
+// supplied `className` overrides still win via CSS specificity. The softened
+// mark (opacity-70, docs/ui-guidance.md) is an intrinsic `opacity` attribute
+// for the same reason.
 export function WipFooter({
   appName,
   className,
@@ -71,6 +73,7 @@ export function WipFooter({
           viewBox="0 0 100 100"
           width="16"
           height="16"
+          opacity="0.7"
           className={LOGO_CLASS}
           aria-hidden="true"
           focusable="false"

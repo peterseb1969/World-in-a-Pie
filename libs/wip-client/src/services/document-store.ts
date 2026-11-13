@@ -1,3 +1,4 @@
+import { seg } from '../utils/path.js'
 import { BaseService } from './base.js'
 import { WipValidationError } from '../errors.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
@@ -109,7 +110,7 @@ export class DocumentStoreService extends BaseService {
     const params: Record<string, unknown> = {}
     if (version !== undefined) params.version = version
     if (namespace !== undefined) params.namespace = namespace
-    return this.get(`/documents/${id}`, Object.keys(params).length ? params : undefined)
+    return this.get(`/documents/${seg(id)}`, Object.keys(params).length ? params : undefined)
   }
 
   async createDocument(data: CreateDocumentRequest): Promise<BulkResultItem> {
@@ -226,17 +227,17 @@ export class DocumentStoreService extends BaseService {
   // ---- Versions ----
 
   async getVersions(id: string): Promise<DocumentVersionResponse> {
-    return this.get(`/documents/${id}/versions`)
+    return this.get(`/documents/${seg(id)}/versions`)
   }
 
   async getVersion(id: string, version: number): Promise<Document> {
-    return this.get(`/documents/${id}/versions/${version}`)
+    return this.get(`/documents/${seg(id)}/versions/${seg(version)}`)
   }
 
   // ---- Table View ----
 
   async getTableView(templateId: string, params?: TableViewParams): Promise<TableViewResponse> {
-    return this.get(`/table/${templateId}`, params)
+    return this.get(`/table/${seg(templateId)}`, params)
   }
 
   async exportTableCsv(
@@ -249,13 +250,13 @@ export class DocumentStoreService extends BaseService {
       max_cross_product?: number
     },
   ): Promise<Blob> {
-    return this.getBlob(`/table/${templateId}/csv`, params)
+    return this.getBlob(`/table/${seg(templateId)}/csv`, params)
   }
 
   // ---- Additional Lookups ----
 
   async getLatestDocument(id: string): Promise<Document> {
-    return this.get(`/documents/${id}/latest`)
+    return this.get(`/documents/${seg(id)}/latest`)
   }
 
   /**
@@ -275,7 +276,7 @@ export class DocumentStoreService extends BaseService {
     // namespace scopes identity-hash resolution under a multi-namespace key.
     if (namespace !== undefined) params.namespace = namespace
     if (templateId !== undefined) params.template_id = templateId
-    return this.get(`/documents/by-identity/${identityHash}`, Object.keys(params).length ? params : undefined)
+    return this.get(`/documents/by-identity/${seg(identityHash)}`, Object.keys(params).length ? params : undefined)
   }
 
   /**
@@ -311,7 +312,7 @@ export class DocumentStoreService extends BaseService {
     documentId: string,
     params?: DocumentRelationshipsParams,
   ): Promise<DocumentListResponse> {
-    return this.get(`/documents/${documentId}/relationships`, params)
+    return this.get(`/documents/${seg(documentId)}/relationships`, params)
   }
 
   /**
@@ -327,7 +328,7 @@ export class DocumentStoreService extends BaseService {
     documentId: string,
     params?: DocumentTraverseParams,
   ): Promise<DocumentTraverseResponse> {
-    return this.get(`/documents/${documentId}/traverse`, params)
+    return this.get(`/documents/${seg(documentId)}/traverse`, params)
   }
 
   // ---- Migration ----
@@ -409,19 +410,19 @@ export class DocumentStoreService extends BaseService {
   }
 
   async getReplayStatus(sessionId: string): Promise<ReplaySessionResponse> {
-    return this.get(`/replay/${sessionId}`)
+    return this.get(`/replay/${seg(sessionId)}`)
   }
 
   async pauseReplay(sessionId: string): Promise<ReplaySessionResponse> {
-    return this.post(`/replay/${sessionId}/pause`)
+    return this.post(`/replay/${seg(sessionId)}/pause`)
   }
 
   async resumeReplay(sessionId: string): Promise<ReplaySessionResponse> {
-    return this.post(`/replay/${sessionId}/resume`)
+    return this.post(`/replay/${seg(sessionId)}/resume`)
   }
 
   async cancelReplay(sessionId: string): Promise<ReplaySessionResponse> {
-    return this.del(`/replay/${sessionId}`)
+    return this.del(`/replay/${seg(sessionId)}`)
   }
 
   // ---- Backup / Restore (CASE-23 Phase 3 STEP 7) ----
@@ -442,7 +443,7 @@ export class DocumentStoreService extends BaseService {
     namespace: string,
     request: BackupRequest = {},
   ): Promise<BackupJobSnapshot> {
-    return this.post(`/backup/namespaces/${namespace}/backup`, request)
+    return this.post(`/backup/namespaces/${seg(namespace)}/backup`, request)
   }
 
   /**
@@ -497,7 +498,7 @@ export class DocumentStoreService extends BaseService {
       form.append('allow_failed_verify', String(options.allow_failed_verify))
     if (options.allow_missing_identity !== undefined)
       form.append('allow_missing_identity', String(options.allow_missing_identity))
-    return this.postFormData(`/backup/namespaces/${namespace}/restore`, form)
+    return this.postFormData(`/backup/namespaces/${seg(namespace)}/restore`, form)
   }
 
   /**
@@ -521,12 +522,12 @@ export class DocumentStoreService extends BaseService {
     namespace: string,
     params: ValidateNamespaceParams = {},
   ): Promise<BackupJobSnapshot> {
-    return this.post(`/backup/namespaces/${namespace}/validate`, undefined, params)
+    return this.post(`/backup/namespaces/${seg(namespace)}/validate`, undefined, params)
   }
 
   /** Get the latest persisted snapshot for a backup or restore job. */
   async getBackupJob(jobId: string): Promise<BackupJobSnapshot> {
-    return this.get(`/backup/jobs/${jobId}`)
+    return this.get(`/backup/jobs/${seg(jobId)}`)
   }
 
   /** List recent backup/restore jobs, optionally filtered. */
@@ -549,7 +550,7 @@ export class DocumentStoreService extends BaseService {
 
   /** Delete a backup/restore job and its archive file. */
   async deleteBackupJob(jobId: string): Promise<void> {
-    await this.del(`/backup/jobs/${jobId}`)
+    await this.del(`/backup/jobs/${seg(jobId)}`)
   }
 
   /**
@@ -573,7 +574,7 @@ export class DocumentStoreService extends BaseService {
     jobId: string,
     signal?: AbortSignal,
   ): AsyncIterableIterator<BackupProgressMessage> {
-    const response = await this.stream('GET', `/backup/jobs/${jobId}/events`, {
+    const response = await this.stream('GET', `/backup/jobs/${seg(jobId)}/events`, {
       headers: { Accept: 'text/event-stream' },
       signal,
     })

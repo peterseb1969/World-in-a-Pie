@@ -24,29 +24,27 @@ const REPORT_QUERY_STALE_TIME = 10_000 // 10s — report data is eventually cons
  * Report queries are eventually consistent — don't use for state management.
  * Use the document/template hooks for authoritative current state.
  *
- * @example
- * // Simple aggregation
- * const { data } = useReportQuery(
- *   'SELECT location, COUNT(*) as scenes FROM aa_event GROUP BY location'
- * )
+ * A reporting table is "<namespace>"."doc_<template value>". An unqualified
+ * table name resolves only with `namespace` set (it selects that namespace's
+ * schema); without it, schema-qualify every table in the SQL.
  *
  * @example
- * // Parameterized query with custom cache key
+ * // Simple aggregation in one namespace
  * const { data } = useReportQuery(
- *   'SELECT * FROM aa_event WHERE location = $1',
- *   ['BLACKWOOD_MANOR'],
- *   { queryKey: ['cross-refs', 'location', 'BLACKWOOD_MANOR'] }
- * )
- *
- * @example
- * // Unqualified table names resolve in one namespace's PG schema
- * // (a reporting table is "<ns>"."doc_<value>"); for cross-namespace
- * // queries omit namespace and schema-qualify each table in the SQL.
- * const { data } = useReportQuery(
- *   'SELECT COUNT(*) FROM aa_event',
+ *   'SELECT location, COUNT(*) AS scenes FROM doc_event GROUP BY location',
  *   undefined,
  *   { namespace: 'my-app' }
  * )
+ *
+ * @example
+ * // Parameterized query, schema-qualified (no namespace needed)
+ * const { data } = useReportQuery(
+ *   'SELECT * FROM "my-app".doc_event WHERE location = $1',
+ *   ['BLACKWOOD_MANOR']
+ * )
+ *
+ * The cache key is the hook's own (SQL, params and namespace). A caller that
+ * needs another key uses `useQuery` with `client.reporting.runQuery` directly.
  */
 export function useReportQuery(
   sql: string,
@@ -146,8 +144,11 @@ export function useSyncStatus(
  * docs; pick 2-5s as a reasonable default).
  *
  * @example
- *   const hasRunning = jobs?.some(j => j.status === 'running' || j.status === 'pending')
- *   const { data: jobs } = useBatchJobs({ refetchInterval: hasRunning ? 3000 : false })
+ *   // Poll every 3 s while a job is running or pending, then stop.
+ *   const { data: jobs } = useBatchJobs({
+ *     refetchInterval: (query) =>
+ *       query.state.data?.some(j => j.status === 'running' || j.status === 'pending') ? 3000 : false,
+ *   })
  */
 export function useBatchJobs(
   options?: Omit<UseQueryOptions<BatchSyncJob[]>, 'queryKey' | 'queryFn'>,

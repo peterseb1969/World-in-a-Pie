@@ -1,3 +1,4 @@
+import { seg } from '../utils/path.js'
 import { BaseService } from './base.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
 import type {
@@ -34,41 +35,41 @@ export class TemplateStoreService extends BaseService {
   }
 
   async getTemplate(id: string, version?: number): Promise<Template> {
-    return this.get(`/templates/${id}`, version ? { version } : undefined)
+    return this.get(`/templates/${seg(id)}`, version ? { version } : undefined)
   }
 
   async getTemplateRaw(id: string, version?: number): Promise<Template> {
-    return this.get(`/templates/${id}/raw`, version ? { version } : undefined)
+    return this.get(`/templates/${seg(id)}/raw`, version ? { version } : undefined)
   }
 
   async getTemplateByValue(value: string, opts?: { namespace?: string }): Promise<Template> {
     // A template `value` is unique only within a namespace; with a cross-namespace
     // (admin) key, omitting `namespace` returns the latest across ALL namespaces.
     // Pass `namespace` to scope (CASE-496). Backend: GET /templates/by-value/{value}.
-    return this.get(`/templates/by-value/${value}`, opts?.namespace ? { namespace: opts.namespace } : undefined)
+    return this.get(`/templates/by-value/${seg(value)}`, opts?.namespace ? { namespace: opts.namespace } : undefined)
   }
 
   async getTemplateByValueRaw(value: string, namespace: string): Promise<Template> {
-    return this.get(`/templates/by-value/${value}/raw?namespace=${encodeURIComponent(namespace)}`)
+    return this.get(`/templates/by-value/${seg(value)}/raw?namespace=${encodeURIComponent(namespace)}`)
   }
 
   async getTemplateVersions(value: string, opts?: { namespace?: string }): Promise<TemplateListResponse> {
     // Without `namespace`, a cross-namespace key gets every namespace's versions of
     // this value (a `value` is unique only within a namespace). Pass `namespace` to
     // scope (CASE-496). Backend: GET /templates/by-value/{value}/versions.
-    return this.get(`/templates/by-value/${value}/versions`, opts?.namespace ? { namespace: opts.namespace } : undefined)
+    return this.get(`/templates/by-value/${seg(value)}/versions`, opts?.namespace ? { namespace: opts.namespace } : undefined)
   }
 
   async getTemplateByValueAndVersion(value: string, version: number, opts?: { namespace?: string }): Promise<Template> {
     // A `value` is unique only within a namespace; pass `namespace` to disambiguate
     // (CASE-497). Backend: GET /templates/by-value/{value}/versions/{version}.
-    return this.get(`/templates/by-value/${value}/versions/${version}`, opts?.namespace ? { namespace: opts.namespace } : undefined)
+    return this.get(`/templates/by-value/${seg(value)}/versions/${seg(version)}`, opts?.namespace ? { namespace: opts.namespace } : undefined)
   }
 
   async getTemplateVersionsById(templateId: string): Promise<TemplateListResponse> {
     // A template_id is globally unique and stable across versions, so no namespace
     // is needed (CASE-497). Backend: GET /templates/{template_id}/versions.
-    return this.get(`/templates/${templateId}/versions`)
+    return this.get(`/templates/${seg(templateId)}/versions`)
   }
 
   /**
@@ -123,17 +124,17 @@ export class TemplateStoreService extends BaseService {
   }
 
   async validateTemplate(id: string, request: ValidateTemplateRequest = {}): Promise<ValidateTemplateResponse> {
-    return this.post(`/templates/${id}/validate`, request)
+    return this.post(`/templates/${seg(id)}/validate`, request)
   }
 
   // ---- Inheritance ----
 
   async getChildren(id: string): Promise<TemplateListResponse> {
-    return this.get(`/templates/${id}/children`)
+    return this.get(`/templates/${seg(id)}/children`)
   }
 
   async getDescendants(id: string): Promise<TemplateListResponse> {
-    return this.get(`/templates/${id}/descendants`)
+    return this.get(`/templates/${seg(id)}/descendants`)
   }
 
   // ---- Draft Mode ----
@@ -142,7 +143,7 @@ export class TemplateStoreService extends BaseService {
     id: string,
     options: { namespace: string; dry_run?: boolean },
   ): Promise<ActivateTemplateResponse> {
-    return this.post(`/templates/${id}/activate`, null, options)
+    return this.post(`/templates/${seg(id)}/activate`, null, options)
   }
 
   // ---- Reactivate ----
@@ -162,7 +163,7 @@ export class TemplateStoreService extends BaseService {
     version: number,
     options: { namespace: string },
   ): Promise<Template> {
-    return this.post(`/templates/${id}/reactivate`, null, {
+    return this.post(`/templates/${seg(id)}/reactivate`, null, {
       namespace: options.namespace,
       version,
     })
@@ -171,7 +172,7 @@ export class TemplateStoreService extends BaseService {
   // ---- Cascade ----
 
   async cascadeTemplate(id: string): Promise<CascadeResponse> {
-    return this.post(`/templates/${id}/cascade`)
+    return this.post(`/templates/${seg(id)}/cascade`)
   }
 
   // ---- Edge-type endpoints ----
@@ -196,7 +197,7 @@ export class TemplateStoreService extends BaseService {
     },
   ): Promise<Template> {
     return this.post(
-      `/templates/${id}/endpoints`,
+      `/templates/${seg(id)}/endpoints`,
       {
         add_source_templates: options.addSourceTemplates ?? [],
         add_target_templates: options.addTargetTemplates ?? [],

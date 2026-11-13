@@ -1,3 +1,4 @@
+import { seg } from '../utils/path.js'
 import { BaseService } from './base.js'
 import {
   WipAuthError,
@@ -125,12 +126,12 @@ export class ReportingSyncService extends BaseService {
     namespace: string,
     view: { name: string; sql: string; registered_by?: string },
   ): Promise<RegisterViewResult> {
-    return this.post(`/namespace/${namespace}/views`, view)
+    return this.post(`/namespace/${seg(namespace)}/views`, view)
   }
 
   /** List the namespace's registered views (name, sql, registration audit). */
   async listViews(namespace: string): Promise<ListViewsResponse> {
-    return this.get(`/namespace/${namespace}/views`)
+    return this.get(`/namespace/${seg(namespace)}/views`)
   }
 
   /**
@@ -147,7 +148,7 @@ export class ReportingSyncService extends BaseService {
     name: string,
     params?: ViewRowsParams,
   ): Promise<ReportQueryResult> {
-    return this.post(`/namespace/${namespace}/views/${name}/rows`, params ?? {})
+    return this.post(`/namespace/${seg(namespace)}/views/${seg(name)}/rows`, params ?? {})
   }
 
   /**
@@ -156,7 +157,7 @@ export class ReportingSyncService extends BaseService {
    * first. A later re-register of the same name is a fresh create.
    */
   async deleteView(namespace: string, name: string): Promise<DeleteViewResult> {
-    return this.del(`/namespace/${namespace}/views/${name}`)
+    return this.del(`/namespace/${seg(namespace)}/views/${seg(name)}`)
   }
 
   // ── Batch Sync (CASE-283) ──
@@ -211,7 +212,7 @@ export class ReportingSyncService extends BaseService {
     // The /template/ path reaches every value, including the ones the
     // definition syncs own (terms, terminologies, templates, term_relations).
     return this.post(
-      `/sync/batch/template/${encodeURIComponent(templateValue)}`,
+      `/sync/batch/template/${seg(templateValue)}`,
       undefined,
       { ...options },
     )
@@ -263,12 +264,12 @@ export class ReportingSyncService extends BaseService {
 
   /** Fetch a single batch sync job by id. 404 if unknown. */
   async getBatchJob(jobId: string): Promise<BatchSyncJob> {
-    return this.get(`/sync/batch/jobs/${jobId}`)
+    return this.get(`/sync/batch/jobs/${seg(jobId)}`)
   }
 
   /** Cancel a running batch sync job. */
   async cancelBatchJob(jobId: string): Promise<BatchJobCancelResult> {
-    return this.del(`/sync/batch/jobs/${jobId}`)
+    return this.del(`/sync/batch/jobs/${seg(jobId)}`)
   }
 
   /** Clear all completed/failed/cancelled jobs from in-memory state. */
@@ -368,7 +369,7 @@ export class ReportingSyncService extends BaseService {
   ): Promise<ReportTableSchema> {
     const params: Record<string, string> = { namespace }
     if (version !== undefined) params.version = String(version)
-    return this.get(`/schema/${templateValue}`, params)
+    return this.get(`/schema/${seg(templateValue)}`, params)
   }
 
   // ── Integrity ──
@@ -507,7 +508,7 @@ export class ReportingSyncService extends BaseService {
 
   /** `namespace` is required for a key that can read several namespaces (400 otherwise). */
   async getTermDocuments(termId: string, limit?: number, namespace?: string): Promise<TermDocumentsResponse> {
-    return this.get(`/references/term/${termId}/documents`, {
+    return this.get(`/references/term/${seg(termId)}/documents`, {
       ...(limit ? { limit } : {}),
       ...(namespace ? { namespace } : {}),
     })
@@ -517,7 +518,7 @@ export class ReportingSyncService extends BaseService {
     entityType: 'document' | 'template' | 'terminology' | 'term' | 'file',
     entityId: string,
   ): Promise<EntityReferencesResponse> {
-    return this.get(`/entity/${entityType}/${entityId}/references`)
+    return this.get(`/entity/${seg(entityType)}/${seg(entityId)}/references`)
   }
 
   async getReferencedBy(
@@ -527,7 +528,7 @@ export class ReportingSyncService extends BaseService {
     namespace?: string,
   ): Promise<ReferencedByResponse> {
     // `namespace` is required for a key that can read several namespaces (400 otherwise).
-    return this.get(`/entity/${entityType}/${entityId}/referenced-by`, {
+    return this.get(`/entity/${seg(entityType)}/${seg(entityId)}/referenced-by`, {
       limit,
       ...(namespace ? { namespace } : {}),
     })

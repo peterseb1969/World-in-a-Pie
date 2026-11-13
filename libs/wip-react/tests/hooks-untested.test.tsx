@@ -278,10 +278,10 @@ describe('useFormSchema', () => {
 
     expect(mockClient.templates.getTemplateByValue).toHaveBeenCalledWith('SCHEMA_X', { namespace: 'ns-a' })
     expect(
-      queryClient.getQueryData([...wipKeys.templates.byValue('SCHEMA_X', 'ns-a'), 'form-schema']),
+      queryClient.getQueryData([...wipKeys.templates.byValue('SCHEMA_X', 'ns-a'), 'form-schema', 'latest']),
     ).toBeDefined()
     expect(
-      queryClient.getQueryData([...wipKeys.templates.byValue('SCHEMA_X', 'ns-b'), 'form-schema']),
+      queryClient.getQueryData([...wipKeys.templates.byValue('SCHEMA_X', 'ns-b'), 'form-schema', 'latest']),
     ).toBeUndefined()
   })
 })

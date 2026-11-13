@@ -13,8 +13,9 @@ import { useEffect, useRef } from 'react'
  * `postMessage`.
  *
  * - Renewed: the next renew is scheduled at half the remaining lifetime.
- * - The page is not on an app origin (apps served under `/apps/<name>`):
- *   nothing to renew, so it stops.
+ * - The page is not on an app origin (the gateway answers
+ *   `not_an_app_origin`: the request's host names no app,
+ *   `https://<app>.<hostname>/`): nothing to renew, so it stops.
  * - The WIP login has ended (logout elsewhere, or expiry): `onSessionLost`
  *   runs; by default the page reloads, which signs in again. If the first
  *   renewal after that reload fails too, the default does not reload again

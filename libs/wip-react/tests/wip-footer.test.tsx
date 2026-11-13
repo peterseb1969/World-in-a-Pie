@@ -28,6 +28,8 @@ describe('WipFooter (CASE-308 + CASE-314)', () => {
     // and no dimensions fills the flex parent — page-dominating logo.
     expect(svg!.getAttribute('width')).toBe('16')
     expect(svg!.getAttribute('height')).toBe('16')
+    // The canonical softened mark, intrinsic for the same reason.
+    expect(svg!.getAttribute('opacity')).toBe('0.7')
 
     // World-in-a-pie geometry: pie body path + dish rect both render
     expect(svg!.querySelector('path')).not.toBeNull()

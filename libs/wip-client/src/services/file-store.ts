@@ -1,3 +1,4 @@
+import { seg } from '../utils/path.js'
 import { BaseService } from './base.js'
 import { WipValidationError } from '../errors.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
@@ -45,11 +46,9 @@ export class FileStoreService extends BaseService {
       throw new WipValidationError('uploadFile needs the namespace to store the file in')
     }
     const formData = new FormData()
-    if (file instanceof File) {
-      formData.append('file', file)
-    } else {
-      formData.append('file', file, filename ?? 'upload')
-    }
+    // The part's filename is the stored file's name: the given one, else the
+    // File's own, else 'upload' for a bare Blob.
+    formData.append('file', file, filename ?? (file instanceof File ? file.name : 'upload'))
 
     formData.append('namespace', namespace)
     // Sent whenever set, so an empty description or category reaches the service.
@@ -71,18 +70,18 @@ export class FileStoreService extends BaseService {
   }
 
   async getFile(fileId: string, namespace?: string): Promise<FileEntity> {
-    return this.get(`/${fileId}`, ns(namespace))
+    return this.get(`/${seg(fileId)}`, ns(namespace))
   }
 
   async getDownloadUrl(fileId: string, expiresIn?: number, namespace?: string): Promise<FileDownloadResponse> {
-    return this.get(`/${fileId}/download`, {
+    return this.get(`/${seg(fileId)}/download`, {
       ...(expiresIn ? { expires_in: expiresIn } : {}),
       ...ns(namespace),
     })
   }
 
   async downloadFileContent(fileId: string, namespace?: string): Promise<Blob> {
-    return this.getBlob(`/${fileId}/content`, ns(namespace))
+    return this.getBlob(`/${seg(fileId)}/content`, ns(namespace))
   }
 
   async updateMetadata(
@@ -121,7 +120,7 @@ export class FileStoreService extends BaseService {
   }
 
   async hardDeleteFile(fileId: string, namespace?: string): Promise<void> {
-    return this.del(`/${fileId}/hard`, undefined, ns(namespace))
+    return this.del(`/${seg(fileId)}/hard`, undefined, ns(namespace))
   }
 
   // ---- Utility ----
@@ -134,7 +133,7 @@ export class FileStoreService extends BaseService {
   }
 
   async findByChecksum(checksum: string): Promise<FileEntity[]> {
-    return this.get(`/by-checksum/${checksum}`)
+    return this.get(`/by-checksum/${seg(checksum)}`)
   }
 
   async checkIntegrity(): Promise<FileIntegrityResponse> {
@@ -160,6 +159,6 @@ export class FileStoreService extends BaseService {
     page_size: number
     pages: number
   }> {
-    return this.get(`/${fileId}/documents`, { page, page_size: pageSize, ...ns(namespace) })
+    return this.get(`/${seg(fileId)}/documents`, { page, page_size: pageSize, ...ns(namespace) })
   }
 }

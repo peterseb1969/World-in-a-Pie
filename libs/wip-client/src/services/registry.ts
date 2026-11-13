@@ -1,3 +1,4 @@
+import { seg } from '../utils/path.js'
 import { BaseService } from './base.js'
 import { WipBulkItemError } from '../errors.js'
 import type {
@@ -82,11 +83,11 @@ export class RegistryService extends BaseService {
   }
 
   async getNamespace(prefix: string): Promise<Namespace> {
-    return this.get(`/namespaces/${prefix}`)
+    return this.get(`/namespaces/${seg(prefix)}`)
   }
 
   async getNamespaceStats(prefix: string): Promise<NamespaceStats> {
-    return this.get(`/namespaces/${prefix}/stats`)
+    return this.get(`/namespaces/${seg(prefix)}/stats`)
   }
 
   async createNamespace(data: CreateNamespaceRequest): Promise<Namespace> {
@@ -97,7 +98,7 @@ export class RegistryService extends BaseService {
     prefix: string,
     data: UpdateNamespaceRequest,
   ): Promise<Namespace> {
-    return this.put(`/namespaces/${prefix}`, data)
+    return this.put(`/namespaces/${seg(prefix)}`, data)
   }
 
   /**
@@ -113,15 +114,15 @@ export class RegistryService extends BaseService {
     prefix: string,
     data: UpdateNamespaceRequest,
   ): Promise<Namespace> {
-    return this.put(`/namespaces/${prefix}`, data)
+    return this.put(`/namespaces/${seg(prefix)}`, data)
   }
 
   async archiveNamespace(prefix: string, archivedBy?: string): Promise<Namespace> {
-    return this.post(`/namespaces/${prefix}/archive`, null, archivedBy ? { archived_by: archivedBy } : undefined)
+    return this.post(`/namespaces/${seg(prefix)}/archive`, null, archivedBy ? { archived_by: archivedBy } : undefined)
   }
 
   async restoreNamespace(prefix: string, restoredBy?: string): Promise<Namespace> {
-    return this.post(`/namespaces/${prefix}/restore`, null, restoredBy ? { restored_by: restoredBy } : undefined)
+    return this.post(`/namespaces/${seg(prefix)}/restore`, null, restoredBy ? { restored_by: restoredBy } : undefined)
   }
 
   /**
@@ -137,7 +138,7 @@ export class RegistryService extends BaseService {
     deletedBy?: string,
     options?: { force?: boolean },
   ): Promise<NamespaceDeletionResult> {
-    return this.del(`/namespaces/${prefix}`, undefined, {
+    return this.del(`/namespaces/${seg(prefix)}`, undefined, {
       deleted_by: deletedBy,
       ...(options?.force ? { force: true } : {}),
     })
@@ -145,12 +146,12 @@ export class RegistryService extends BaseService {
 
   /** The deletion journal of a namespace (platform admins only; 404 otherwise). */
   async getDeletionStatus(prefix: string): Promise<NamespaceDeletionJournal> {
-    return this.get(`/namespaces/${prefix}/deletion-status`)
+    return this.get(`/namespaces/${seg(prefix)}/deletion-status`)
   }
 
   /** Run every step of an unfinished deletion that is not completed (409 while one runs). */
   async resumeDeletion(prefix: string): Promise<NamespaceDeletionResult> {
-    return this.post(`/namespaces/${prefix}/resume-delete`)
+    return this.post(`/namespaces/${seg(prefix)}/resume-delete`)
   }
 
   async initializeWipNamespace(): Promise<Namespace> {
@@ -225,7 +226,7 @@ export class RegistryService extends BaseService {
   }
 
   async getEntry(entryId: string): Promise<RegistryEntryFull> {
-    return this.get(`/entries/${entryId}`)
+    return this.get(`/entries/${seg(entryId)}`)
   }
 
   // ---- Mutations ----
@@ -270,15 +271,15 @@ export class RegistryService extends BaseService {
   // ---- Grants ----
 
   async listGrants(prefix: string): Promise<Grant[]> {
-    return this.get(`/namespaces/${prefix}/grants`)
+    return this.get(`/namespaces/${seg(prefix)}/grants`)
   }
 
   async createGrants(prefix: string, grants: CreateGrantRequest[]): Promise<GrantBulkResponse> {
-    return this.post(`/namespaces/${prefix}/grants`, grants)
+    return this.post(`/namespaces/${seg(prefix)}/grants`, grants)
   }
 
   async revokeGrants(prefix: string, grants: RevokeGrantRequest[]): Promise<GrantRevokeBulkResponse> {
-    return this.del(`/namespaces/${prefix}/grants`, grants)
+    return this.del(`/namespaces/${seg(prefix)}/grants`, grants)
   }
 
   /**
@@ -287,7 +288,7 @@ export class RegistryService extends BaseService {
    * error MANAGED_BY_DEPLOYER.
    */
   async activateGrants(prefix: string, grants: ActivateGrantRequest[]): Promise<GrantActivateBulkResponse> {
-    return this.post(`/namespaces/${prefix}/grants/activate`, grants)
+    return this.post(`/namespaces/${seg(prefix)}/grants/activate`, grants)
   }
 
   /**
@@ -322,7 +323,7 @@ export class RegistryService extends BaseService {
   }
 
   async getAttachment(name: string): Promise<Attachment> {
-    return this.get(`/attachments/${name}`)
+    return this.get(`/attachments/${seg(name)}`)
   }
 
   // ---- System backup (platform admin) ----
@@ -391,15 +392,15 @@ export class RegistryService extends BaseService {
   }
 
   async getAPIKey(name: string): Promise<APIKeyInfo> {
-    return this.get(`/api-keys/${name}`)
+    return this.get(`/api-keys/${seg(name)}`)
   }
 
   async updateAPIKey(name: string, request: UpdateAPIKeyRequest): Promise<APIKeyInfo> {
-    return this.patch(`/api-keys/${name}`, request)
+    return this.patch(`/api-keys/${seg(name)}`, request)
   }
 
   async revokeAPIKey(name: string): Promise<APIKeyRevokeResult> {
-    return this.del(`/api-keys/${name}`)
+    return this.del(`/api-keys/${seg(name)}`)
   }
 
   /** Widen a runtime key to one more namespace, optionally reserving it. */
@@ -408,12 +409,12 @@ export class RegistryService extends BaseService {
     prefix: string,
     request: AddAPIKeyNamespaceRequest = {},
   ): Promise<APIKeyInfo> {
-    return this.put(`/api-keys/${name}/namespaces/${prefix}`, request)
+    return this.put(`/api-keys/${seg(name)}/namespaces/${seg(prefix)}`, request)
   }
 
   /** Narrow a runtime key by one namespace; releases its reservation if the namespace was never created. */
   async removeAPIKeyNamespace(name: string, prefix: string): Promise<RemoveAPIKeyNamespaceResult> {
-    return this.del(`/api-keys/${name}/namespaces/${prefix}`)
+    return this.del(`/api-keys/${seg(name)}/namespaces/${seg(prefix)}`)
   }
 
   /** Every namespace reservation, from the install's file and the Registry (admin only). */
@@ -424,6 +425,6 @@ export class RegistryService extends BaseService {
 
   /** Release a runtime reservation; the namespace itself is never touched (admin only). */
   async releaseReservation(prefix: string): Promise<{ status: string; prefix: string; app: string }> {
-    return this.del(`/reservations/${prefix}`)
+    return this.del(`/reservations/${seg(prefix)}`)
   }
 }

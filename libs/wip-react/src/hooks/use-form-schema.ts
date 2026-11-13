@@ -11,17 +11,25 @@ import { STALE_TIMES } from '../utils/defaults.js'
  * Pass `namespace` whenever the client's key can see more than one namespace
  * (a template value is unique only within a namespace) — see
  * `useTemplateByValue`.
+ *
+ * Without `version` the schema is the template's latest version. A form that
+ * edits an existing document should pass the document's `template_version`:
+ * an update is validated against the version the document is pinned to, so a
+ * latest-version form can offer fields that version does not have.
  */
 export function useFormSchema(
   templateValue: string,
-  options?: { namespace?: string } & Omit<UseQueryOptions<FormField[]>, 'queryKey' | 'queryFn'>,
+  options?: { namespace?: string; version?: number } & Omit<UseQueryOptions<FormField[]>, 'queryKey' | 'queryFn'>,
 ) {
   const client = useWipClient()
-  const { namespace, ...queryOptions } = options ?? {}
+  const { namespace, version, ...queryOptions } = options ?? {}
   return useQuery({
-    queryKey: [...wipKeys.templates.byValue(templateValue, namespace), 'form-schema'],
+    // The version is part of the key: two versions' schemas must not share a cache entry.
+    queryKey: [...wipKeys.templates.byValue(templateValue, namespace), 'form-schema', version ?? 'latest'],
     queryFn: async () => {
-      const template = await client.templates.getTemplateByValue(templateValue, { namespace })
+      const template = version === undefined
+        ? await client.templates.getTemplateByValue(templateValue, { namespace })
+        : await client.templates.getTemplateByValueAndVersion(templateValue, version, { namespace })
       return templateToFormSchema(template)
     },
     staleTime: STALE_TIMES.templates,

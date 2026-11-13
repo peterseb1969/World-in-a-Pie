@@ -39,7 +39,7 @@ createMany.mutate(items, {
 
 ### Stale Times Are Tuned for WIP's Data Patterns
 
-Documents change frequently (30s stale time). Terminologies and templates change rarely (5min). Files almost never change (10min). Download URLs expire (1min). Override per-hook if needed:
+Documents change frequently (30s stale time). Terminologies and templates change rarely (5min). Files almost never change (10min). A download URL is cached for 1min; the URL itself is valid for the server's `expires_in` (default 1 hour). Override per-hook if needed:
 
 ```tsx
 // Override stale time for a specific query
@@ -379,10 +379,10 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 
 | Hook | Input | Returns | Invalidates |
 |------|-------|---------|-------------|
-| `useCreateTerminology()` | `CreateTerminologyRequest` | `BulkResultItem` | `terminologies.all` |
+| `useCreateTerminology()` | `CreateTerminologyRequest` | `BulkResultItem` | `terminologies.all` + `registry.all` (active) |
 | `useUpdateTerminology()` | `{ id, data }` | `BulkResultItem` | `terminologies.all` |
 | `useDeleteTerminology()` | `string` | `BulkResultItem` | `terminologies.all` |
-| `useCreateTerm(terminologyId, namespace)` | `CreateTermRequest` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
+| `useCreateTerm(terminologyId, namespace)` | `CreateTermRequest` | `BulkResultItem` | `terms.all` + `terminologies.detail` + `registry.all` (active) |
 | `useUpdateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
 | `useDeprecateTerm()` | `{ termId, data }` | `BulkResultItem` | `terms.all` |
 | `useDeleteTerm(terminologyId)` | `string` | `BulkResultItem` | `terms.all` + `terminologies.detail` |
@@ -393,7 +393,7 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 
 | Hook | Input | Returns | Invalidates |
 |------|-------|---------|-------------|
-| `useCreateTemplate()` | `CreateTemplateRequest` | `BulkResultItem` | `templates.all` |
+| `useCreateTemplate()` | `CreateTemplateRequest` | `BulkResultItem` | `templates.all` + `registry.all` (active) |
 | `useUpdateTemplate()` | `{ id, data }` | `BulkResultItem` | `templates.all` |
 | `useDeleteTemplate()` | `{ id, updatedBy?, version?, force?, hardDelete? }` | `BulkResultItem` | `templates.all` |
 | `useActivateTemplate()` | `{ id, namespace, dry_run? }` | `ActivateTemplateResponse` | `templates.all` |
@@ -404,17 +404,17 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 
 | Hook | Input | Returns | Invalidates |
 |------|-------|---------|-------------|
-| `useCreateDocument()` | `CreateDocumentRequest` | `BulkResultItem` | `documents.all` |
-| `useCreateDocuments()` | `CreateDocumentRequest[]` | `BulkResponse` | `documents.all` |
-| `useUpdateDocument()` | `{ documentId, patch, ifMatch? }` | `BulkResultItem` | `documents.all` + `documents.detail` + `documents.versions` |
-| `useUpdateDocuments()` | `PatchDocumentRequest[]` | `BulkResponse` | `documents.all` |
-| `useDeleteDocument()` | `{ id, updatedBy? }` | `BulkResultItem` | `documents.all` |
+| `useCreateDocument()` | `CreateDocumentRequest` | `BulkResultItem` | `documents.all` + file lists/details + `registry.all` (active) |
+| `useCreateDocuments()` | `CreateDocumentRequest[]` | `BulkResponse` | `documents.all` + file lists/details + `registry.all` (active) |
+| `useUpdateDocument()` | `{ documentId, patch, ifMatch?, metadataPatch? }` | `BulkResultItem` | `documents.all` + `documents.detail` + `documents.versions` + file lists/details |
+| `useUpdateDocuments()` | `PatchDocumentRequest[]` | `BulkResponse` | `documents.all` + file lists/details |
+| `useDeleteDocument()` | `{ id, updatedBy? }` | `BulkResultItem` | `documents.all` + file lists/details |
 
 **Files**
 
 | Hook | Input | Returns | Invalidates |
 |------|-------|---------|-------------|
-| `useUploadFile()` | `{ file, filename?, metadata?, namespace? }` | `FileEntity` | `files.all` |
+| `useUploadFile()` | `{ file, filename?, metadata?, namespace? }` | `FileEntity` | `files.all` + `registry.all` (active) |
 | `useUpdateFileMetadata()` | `{ fileId, data }` | `BulkResultItem` | `files.all` |
 | `useDeleteFile()` | `string`, or `{ fileId, namespace?, force? }` (`force` deletes a file documents still reference) | `BulkResultItem` | `files.all` |
 | `useDeleteFiles()` | `string[]`, or `{ fileIds, namespace?, force? }` | `BulkResponse` | `files.all` |
@@ -584,12 +584,12 @@ function PatientForm() {
 }
 ```
 
-**FormField properties:** `name`, `label`, `inputType` (text/number/integer/checkbox/date/datetime/select/search/file/group/list), `required`, `defaultValue`, `isIdentity`, `terminologyCode`, `referenceType`, `targetTemplates`, `targetTerminologies`, `fileConfig`, `validation` (pattern, minLength, maxLength, minimum, maximum, enum), `semanticType`, `children` (for groups), `arrayItemType`.
+**FormField properties:** `name`, `label`, `inputType` (text/number/integer/checkbox/date/datetime/select/search/file/group/list), `required`, `defaultValue`, `isIdentity`, `terminologyCode`, `referenceType`, `targetTemplates`, `targetTerminologies`, `fileConfig`, `validation` (pattern, minLength, maxLength, minimum, maximum, enum), `semanticType`, `arrayItemType`. A group field (`inputType: 'group'`, an `object` field) carries no subfields: they live in the template it references (`template_ref`), which the converter does not load.
 
 - **Stale time:** 5min (template stale time)
 - **Enabled:** only when `templateValue` is truthy
-- **Options:** `namespace?` plus the usual query options
-- **Query key:** `[...wipKeys.templates.byValue(value, namespace), 'form-schema']`
+- **Options:** `namespace?`, `version?` plus the usual query options. Without `version` the schema is the latest version; a form that edits an existing document passes its `template_version`, since the update is validated against the version the document is pinned to
+- **Query key:** `[...wipKeys.templates.byValue(value, namespace), 'form-schema', version ?? 'latest']`
 
 ### useBulkImport
 
@@ -741,13 +741,17 @@ const { data } = useActivity(params, { refetchInterval: 10_000 }) // poll every 
 
 | Mutation | Invalidates |
 |----------|-------------|
-| `useCreateTerminology` | `wipKeys.terminologies.all` |
-| `useCreateTerm(terminologyId, namespace)` | `wipKeys.terms.all` + `wipKeys.terminologies.detail(terminologyId)` |
-| `useCreateTemplate` | `wipKeys.templates.all` |
-| `useCreateDocument` | `wipKeys.documents.all` |
-| `useCreateDocuments` | `wipKeys.documents.all` |
-| `useUploadFile` | `wipKeys.files.all` |
-| `useDeleteDocument` | `wipKeys.documents.all` |
+| `useCreateTerminology` | `wipKeys.terminologies.all` + `wipKeys.registry.all` (active) |
+| `useCreateTerm(terminologyId, namespace)` | `wipKeys.terms.all` + `wipKeys.terminologies.detail(terminologyId)` + `wipKeys.registry.all` (active) |
+| `useCreateTemplate` | `wipKeys.templates.all` + `wipKeys.registry.all` (active) |
+| `useCreateDocument` | `wipKeys.documents.all` + file lists and details + `wipKeys.registry.all` (active) |
+| `useCreateDocuments` | `wipKeys.documents.all` + file lists and details + `wipKeys.registry.all` (active) |
+| `useUploadFile` | `wipKeys.files.all` + `wipKeys.registry.all` (active) |
+| `useUpdateDocument`, `useUpdateDocuments`, `useDeleteDocument` | `wipKeys.documents.all` + file lists and details |
+
+A document write moves the reference count and status of the files it
+references, so file lists and details refetch (download URLs do not). A
+created entity gets a Registry entry, so Registry searches on screen refetch.
 
 ---
 

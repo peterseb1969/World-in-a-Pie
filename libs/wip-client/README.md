@@ -909,7 +909,6 @@ const formFields = templateToFormSchema(template)
 // - fileConfig (for file fields: allowedTypes, maxSizeMb, multiple)
 // - validation (pattern, minLength, maxLength, minimum, maximum, enum)
 // - semanticType ('email', 'url', 'latitude', etc.)
-// - children (for object/group fields)
 // - arrayItemType, arrayTerminologyCode (for array/list fields)
 ```
 

@@ -36,7 +36,11 @@ export interface FormField {
   /** For array fields */
   arrayItemType?: FormInputType
   arrayTerminologyCode?: string
-  /** For object/group fields */
+  /**
+   * Reserved; templateToFormSchema never sets it. An object (group) field's
+   * subfields live in the template it references (template_ref), which the
+   * converter is not given.
+   */
   children?: FormField[]
   /** Validation */
   validation?: {

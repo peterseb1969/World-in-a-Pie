@@ -52,7 +52,10 @@ export function useQueryDocuments(
     queryKey: [...wipKeys.documents.all, 'query', query] as const,
     queryFn: () => client.documents.queryDocuments(query),
     staleTime: STALE_TIMES.documents,
-    enabled: !!(query.template_id || (query.filters && query.filters.length > 0)),
+    // Any query the server takes runs, a status- or sort-only one included.
+    // A query that names template_id but has none yet (a template still
+    // loading) waits for it; pass `enabled` to gate otherwise.
+    enabled: !('template_id' in query) || !!query.template_id,
     ...options,
   })
 }

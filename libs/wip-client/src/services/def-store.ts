@@ -1,3 +1,4 @@
+import { seg } from '../utils/path.js'
 import { BaseService } from './base.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
 import type {
@@ -51,7 +52,7 @@ export class DefStoreService extends BaseService {
   }
 
   async getTerminology(id: string): Promise<Terminology> {
-    return this.get(`/terminologies/${id}`)
+    return this.get(`/terminologies/${seg(id)}`)
   }
 
   async createTerminology(data: CreateTerminologyRequest): Promise<BulkResultItem> {
@@ -88,7 +89,7 @@ export class DefStoreService extends BaseService {
     sort_by?: string
     sort_order?: 'asc' | 'desc'
   }): Promise<TermListResponse> {
-    return this.get(`/terminologies/${terminologyId}/terms`, params)
+    return this.get(`/terminologies/${seg(terminologyId)}/terms`, params)
   }
 
   /**
@@ -106,7 +107,7 @@ export class DefStoreService extends BaseService {
     options?: { namespace?: string },
   ): Promise<ReconcileTerminologyResponse> {
     return this.post(
-      `/terminologies/${terminologyId}/reconcile`,
+      `/terminologies/${seg(terminologyId)}/reconcile`,
       request,
       options,
     )
@@ -143,7 +144,7 @@ export class DefStoreService extends BaseService {
     namespace?: string
     terminology?: string
   }): Promise<Term> {
-    return this.get(`/terms/${termId}`, options)
+    return this.get(`/terms/${seg(termId)}`, options)
   }
 
   async createTerm(
@@ -152,7 +153,7 @@ export class DefStoreService extends BaseService {
     options: { namespace: string },
   ): Promise<BulkResultItem> {
     // bulkWriteOne carries error_code and details (e.g. already_exists) onto the thrown error.
-    return this.bulkWriteOne(`/terminologies/${terminologyId}/terms`, data, 'POST', {
+    return this.bulkWriteOne(`/terminologies/${seg(terminologyId)}/terms`, data, 'POST', {
       namespace: options.namespace,
     })
   }
@@ -162,7 +163,7 @@ export class DefStoreService extends BaseService {
     terms: CreateTermRequest[],
     options: { namespace: string; batch_size?: number; registry_batch_size?: number },
   ): Promise<BulkResponse> {
-    return this.post(`/terminologies/${terminologyId}/terms`, terms, options)
+    return this.post(`/terminologies/${seg(terminologyId)}/terms`, terms, options)
   }
 
   /**
@@ -360,7 +361,7 @@ export class DefStoreService extends BaseService {
     terminology?: string
     max_depth?: number
   }): Promise<TraversalResponse> {
-    return this.get(`/ontology/terms/${termId}/ancestors`, params)
+    return this.get(`/ontology/terms/${seg(termId)}/ancestors`, params)
   }
 
   async getDescendants(termId: string, params: {
@@ -370,7 +371,7 @@ export class DefStoreService extends BaseService {
     terminology?: string
     max_depth?: number
   }): Promise<TraversalResponse> {
-    return this.get(`/ontology/terms/${termId}/descendants`, params)
+    return this.get(`/ontology/terms/${seg(termId)}/descendants`, params)
   }
 
   async getParents(termId: string, params: {
@@ -379,7 +380,7 @@ export class DefStoreService extends BaseService {
     namespace: string
     terminology?: string
   }): Promise<TermRelation[]> {
-    return this.get(`/ontology/terms/${termId}/parents`, params)
+    return this.get(`/ontology/terms/${seg(termId)}/parents`, params)
   }
 
   async getChildren(termId: string, params: {
@@ -388,7 +389,7 @@ export class DefStoreService extends BaseService {
     namespace: string
     terminology?: string
   }): Promise<TermRelation[]> {
-    return this.get(`/ontology/terms/${termId}/children`, params)
+    return this.get(`/ontology/terms/${seg(termId)}/children`, params)
   }
 
   // ---- Audit Log ----
@@ -398,7 +399,7 @@ export class DefStoreService extends BaseService {
     page?: number
     page_size?: number
   }): Promise<AuditLogResponse> {
-    return this.get(`/audit/terminologies/${terminologyId}`, params)
+    return this.get(`/audit/terminologies/${seg(terminologyId)}`, params)
   }
 
   async getTermAuditLog(termId: string, params?: {
@@ -409,7 +410,7 @@ export class DefStoreService extends BaseService {
     page?: number
     page_size?: number
   }): Promise<AuditLogResponse> {
-    return this.get(`/audit/terms/${termId}`, params)
+    return this.get(`/audit/terms/${seg(termId)}`, params)
   }
 
   async getRecentAuditLog(params?: {

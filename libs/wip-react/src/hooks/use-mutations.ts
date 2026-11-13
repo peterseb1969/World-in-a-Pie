@@ -1,5 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import type { UseMutationOptions } from '@tanstack/react-query'
+import type { QueryClient, UseMutationOptions } from '@tanstack/react-query'
 import type {
   NamespaceDeletionResult,
   SynonymResult,
@@ -35,6 +35,24 @@ import type {
 import { useWipClient } from '../provider.js'
 import { wipKeys } from '../utils/keys.js'
 
+/**
+ * A document write moves the reference count and status of the files it
+ * references or stops referencing, so file lists and details refetch. Download
+ * URLs are not touched (a refetch would mint new ones for nothing).
+ */
+function invalidateFileViews(queryClient: QueryClient): void {
+  queryClient.invalidateQueries({ queryKey: [...wipKeys.files.all, 'list'] })
+  queryClient.invalidateQueries({ queryKey: [...wipKeys.files.all, 'detail'] })
+}
+
+/**
+ * A created entity gets a Registry entry, so Registry listings and searches
+ * on screen refetch; ones not mounted are only marked stale.
+ */
+function invalidateRegistryListings(queryClient: QueryClient): void {
+  queryClient.invalidateQueries({ queryKey: wipKeys.registry.all, refetchType: 'active' })
+}
+
 // ============================================================================
 // TERMINOLOGY HOOKS
 // ============================================================================
@@ -50,6 +68,7 @@ export function useCreateTerminology(
     mutationFn: (data: CreateTerminologyRequest) => client.defStore.createTerminology(data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -106,6 +125,7 @@ export function useCreateTerm(
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.terms.all })
       queryClient.invalidateQueries({ queryKey: wipKeys.terminologies.detail(terminologyId) })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -178,6 +198,7 @@ export function useCreateTemplate(
     mutationFn: (data: CreateTemplateRequest) => client.templates.createTemplate(data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.templates.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -290,6 +311,8 @@ export function useCreateDocument(
     mutationFn: (data: CreateDocumentRequest) => client.documents.createDocument(data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      invalidateFileViews(queryClient)
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -306,6 +329,8 @@ export function useCreateDocuments(
     mutationFn: (data: CreateDocumentRequest[]) => client.documents.createDocuments(data),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      invalidateFileViews(queryClient)
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -350,6 +375,7 @@ export function useUpdateDocument(
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.detail(variables.documentId) })
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.versions(variables.documentId) })
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      invalidateFileViews(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -371,6 +397,7 @@ export function useUpdateDocuments(
     mutationFn: (items: PatchDocumentRequest[]) => client.documents.updateDocuments(items),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      invalidateFileViews(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -387,6 +414,7 @@ export function useDeleteDocument(
     mutationFn: ({ id, updatedBy }) => client.documents.deleteDocument(id, { updatedBy }),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.documents.all })
+      invalidateFileViews(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -429,6 +457,7 @@ export function useUploadFile(
       client.files.uploadFile(file, filename, metadata, namespace),
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
+      invalidateRegistryListings(queryClient)
       onSuccess?.(...args)
     },
   })
@@ -718,7 +747,7 @@ export function useDeactivateEntry(
 // MAINTENANCE HOOKS
 // ============================================================================
 
-// Both passes default to a dry run on the server. Caches are invalidated only
+// The pass defaults to a dry run on the server. Caches are invalidated only
 // when the pass was applied: a dry run changes nothing.
 
 export function useRehashIdentities(
