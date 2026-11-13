@@ -372,7 +372,9 @@ class ArchiveStore:
         if object_copied:
             try:
                 await self._storage().delete(_object_key_for(new_job_id))
-            except (FileStorageError, FileStorageUnavailableError):
+            except Exception:
+                # Any error: a store refusal, an outage, a client that cannot
+                # even sign the request (missing credentials).
                 logger.exception(
                     "Could not remove the archive copy %s of an aborted restore job",
                     _object_key_for(new_job_id),

@@ -61,3 +61,27 @@ async def test_a_skip_documents_backup_carries_no_document_entries(session_mongo
 async def test_a_full_backup_still_carries_them(session_mongo_client, seeded, tmp_path):
     types = await _entry_types(session_mongo_client, seeded, tmp_path / "a.zip")
     assert types == ["documents", "templates"]
+
+
+def test_a_dry_run_counts_neither_dropped_edges_nor_their_entries():
+    """drop_unresolved_edges leaves an edge's document rows and its Registry
+    entry out of the real run; the dry run's counts leave them out too."""
+    from unittest.mock import MagicMock
+
+    from document_store.services.backup_engine import _would_restore
+
+    rows = {
+        "documents": [{"document_id": "E1", "version": 1}, {"document_id": "E1", "version": 2},
+                      {"document_id": "D1", "version": 1}],
+        "registry_entries": [{"entry_id": "E1", "entity_type": "documents"},
+                             {"entry_id": "D1", "entity_type": "documents"},
+                             {"entry_id": "T1", "entity_type": "templates"}],
+    }
+    reader = MagicMock()
+    reader.read_entities = MagicMock(side_effect=lambda et, namespace="": iter(rows.get(et, [])))
+    entry = MagicMock()
+    entry.counts.documents, entry.counts.registry_entries = 3, 3
+
+    assert _would_restore(reader, entry, "ns", "documents", set(), {"E1"}) == 1
+    assert _would_restore(reader, entry, "ns", "registry_entries", set(), {"E1"}) == 2
+    assert _would_restore(reader, entry, "ns", "documents", set(), set()) == 3

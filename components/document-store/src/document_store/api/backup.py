@@ -115,6 +115,7 @@ from ..services.archive_store import (
     get_archive_store,
     scratch_path_for,
 )
+from ..services.file_storage_client import FileStorageNotFoundError
 from ..services.file_validation import content_disposition
 
 # NOTE — GUARDRAIL 1: do not add `import wip_archive` or `from wip_archive ...`
@@ -1005,12 +1006,13 @@ async def _materialize(
 ) -> Path:
     """The new restore job's own archive copy. On failure nothing is left:
     an object copy that landed before the download failed would have no job
-    record to own it, and would stay in the bucket for good. A local source
-    that vanished since the retention check (another job's scratch sweep)
-    is the 410 that check gives, not a bare 500."""
+    record to own it, and would stay in the bucket for good. A source that
+    vanished since the retention check (another job's scratch sweep, an
+    object removed from the bucket) is the 410 that check gives, not a bare
+    500."""
     try:
         return await store.materialize_for_restore(src, new_job_id)
-    except FileNotFoundError as e:
+    except (FileNotFoundError, FileStorageNotFoundError) as e:
         await store.discard_materialized(new_job_id, object_copied)
         raise HTTPException(status_code=410, detail=_ARCHIVE_GONE) from e
     except Exception:

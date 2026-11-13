@@ -57,8 +57,9 @@ def _track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
     return task
 
 
-async def _trigger_reporting_batch_sync(namespace: str) -> None:
-    """Fire-and-forget POST to reporting-sync's batch endpoint.
+async def _trigger_reporting_batch_sync(namespace: str) -> bool:
+    """POST to reporting-sync's batch endpoint; True when it accepted the
+    request (a 2xx).
 
     Called after a successful restore so that the restored documents appear
     in PostgreSQL. Failures are logged but never propagated — reporting-sync
@@ -80,11 +81,13 @@ async def _trigger_reporting_batch_sync(namespace: str) -> None:
                 "Triggered reporting batch sync for namespace %s: HTTP %s",
                 namespace, resp.status_code,
             )
+            return resp.is_success
     except Exception:
         logger.warning(
             "Could not trigger reporting batch sync for namespace %s (non-fatal)",
             namespace, exc_info=True,
         )
+        return False
 
 
 # Sentinel placed on the queue after the producer finishes (success or
@@ -269,23 +272,19 @@ async def _persist_with_retry(job_id: str, event: ProgressEvent) -> bool:
 
 
 def _no_terminal_state_message(
-    unpersisted: ProgressEvent | None, follow_ups_started: bool = False,
+    unpersisted: ProgressEvent | None, follow_ups: str = "",
 ) -> str:
     """Why a job is marked FAILED with no terminal state on its record.
 
-    Only a restore that wrote owes follow-ups; the message names them only
-    then, and says they were started (the consumer starts them itself when
-    the terminal write fails)."""
+    Only a restore that wrote owes follow-ups; ``follow_ups`` is the account
+    of what the consumer started for it (_start_follow_ups_now), empty for
+    any other job."""
     if unpersisted is None:
         return "worker terminated without terminal event"
     if unpersisted.phase == "complete":
-        follow_ups = (
-            "; its follow-ups (reporting sync, validation) were started anyway"
-            if follow_ups_started else ""
-        )
         return (
             "the run completed, but its terminal state could not be written to "
-            f"the job record{follow_ups}: {unpersisted.message}"
+            f"the job record{'; ' + follow_ups if follow_ups else ''}: {unpersisted.message}"
         )
     return f"the run failed, and its failure could not be written to the job record: {unpersisted.message}"
 
@@ -323,6 +322,81 @@ async def _settle_unfinished(job_id: str, error: str) -> None:
             logger.exception("Failed to mark job %s failed", job_id)
         if delay is not None:
             await asyncio.sleep(delay)
+
+
+async def _start_follow_ups_now(job: BackupJob, event: ProgressEvent) -> str:
+    """Start a completed restore's follow-ups when its terminal event could
+    not be written, waiting for each, and say what started.
+
+    The usual path starts them detached once the record is terminal. Here the
+    record never took the terminal state, so the job's error is the only place
+    an operator learns whether the namespace was synced and verified: it
+    names what started and what to run by hand."""
+    already = set((event.details or {}).get("reporting_synced") or [])
+    targets = [t for t in dict.fromkeys(job.namespaces or [job.namespace]) if t not in already]
+    not_synced = [t for t in targets if not await _trigger_reporting_batch_sync(t)]
+    validations = await trigger_validation_for(job)
+    return _follow_up_account(bool(targets), not_synced, validations)
+
+
+def _follow_up_account(synced_any: bool, not_synced: list[str], validations: list[str]) -> str:
+    """What _start_follow_ups_now started, and how to run what it could not."""
+    parts = []
+    if synced_any:
+        parts.append(
+            f"reporting sync could not be started for {', '.join(not_synced)} "
+            "(POST /api/reporting-sync/sync/batch?namespace=<ns>)"
+            if not_synced else "reporting sync started"
+        )
+    parts.append(
+        f"validation started ({', '.join(validations)})" if validations
+        else "validation could not be started "
+        "(POST /api/document-store/backup/namespaces/<ns>/validate)"
+    )
+    return "; ".join(parts)
+
+
+async def _lost_completion_follow_ups(created: BackupJob | None, event: ProgressEvent) -> str:
+    """For a completion the record could not take: start what a restore
+    that wrote owes, and say what happened; "" for a job that owes nothing."""
+    if created is None:
+        return (
+            "the job record could not be read either, so if this is a restore, "
+            "its reporting sync and validation were not started"
+        )
+    if _restore_wrote(created):
+        return await _start_follow_ups_now(created, event)
+    return ""
+
+
+_TERMINATED = "Process terminated during execution (pod restart)"
+
+
+async def reconcile_orphaned_jobs() -> int:
+    """At startup, mark FAILED every job a previous process left PENDING or
+    RUNNING (OOMKill, node drain, crash): no worker in this process will
+    finish it, and left as it is the job would look alive forever. Returns
+    how many.
+
+    A restore that was RUNNING may have committed data before the process
+    ended, and that data is in MongoDB unsynced and unverified; this is the
+    last point anything knows it. Its reporting sync and validation are
+    started here, and its error says what started. A PENDING job never
+    began writing and owes nothing."""
+    jobs = await BackupJob.find(
+        {"status": {"$in": [BackupJobStatus.RUNNING, BackupJobStatus.PENDING]}},
+    ).to_list()
+    for job in jobs:
+        error = _TERMINATED
+        if job.status == BackupJobStatus.RUNNING and _restore_wrote(job):
+            follow_ups = await _start_follow_ups_now(job, ProgressEvent(phase="complete", message=""))
+            error = f"{_TERMINATED}; {follow_ups}"
+        await job.set({
+            BackupJob.status: BackupJobStatus.FAILED,
+            BackupJob.error: error,
+            BackupJob.completed_at: datetime.now(UTC),
+        })
+    return len(jobs)
 
 
 async def _load_job(job_id: str) -> BackupJob | None:
@@ -407,10 +481,10 @@ async def start_async_job(
 
     # The terminal event the run emitted but the record never took, if any.
     unpersisted_terminal: ProgressEvent | None = None
-    follow_ups_started = False
+    follow_ups = ""
 
     async def consume() -> None:
-        nonlocal unpersisted_terminal, follow_ups_started
+        nonlocal unpersisted_terminal, follow_ups
         # The record as created. A completed restore's follow-ups depend
         # only on fields fixed at creation (kind, namespaces, dry_run), so
         # when its terminal write fails they are started from this copy:
@@ -429,15 +503,14 @@ async def start_async_job(
                 written = await _persist_with_retry(job_id, item)
                 if not written and terminal:
                     unpersisted_terminal = item
-                    if item.phase == "complete" and created is not None and _restore_wrote(created):
-                        _schedule_restore_follow_ups(created, item)
-                        follow_ups_started = True
+                    if item.phase == "complete":
+                        follow_ups = await _lost_completion_follow_ups(created, item)
                 if not terminal:
                     await _run_hook(on_event, item)
         finally:
             try:
                 await _settle_unfinished(
-                    job_id, _no_terminal_state_message(unpersisted_terminal, follow_ups_started),
+                    job_id, _no_terminal_state_message(unpersisted_terminal, follow_ups),
                 )
             finally:
                 _job_queues.pop(job_id, None)

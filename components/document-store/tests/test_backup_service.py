@@ -1138,7 +1138,8 @@ class TestTerminalEventPersistence:
         await fresh_job.save()
         monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
         monkeypatch.setattr(backup_service, "_persist_event", self._failing_terminal_writes(99))
-        sync, validate = AsyncMock(), AsyncMock()
+        sync = AsyncMock(return_value=True)
+        validate = AsyncMock(return_value=["val-1", "val-2"])
         monkeypatch.setattr(backup_service, "_trigger_reporting_batch_sync", sync)
         monkeypatch.setattr(backup_service, "trigger_validation_for", validate)
         events = [ProgressEvent(phase="start", message="go", percent=0.0),
@@ -1146,14 +1147,38 @@ class TestTerminalEventPersistence:
                                 details={"reporting_synced": ["ns-a"]})]
         task = await backup_service.start_async_job(fresh_job.job_id, _scripted_runner(events))
         await asyncio.wait_for(task, timeout=5.0)
-        for _ in range(3):
-            await asyncio.sleep(0)
 
         assert [c.args[0] for c in sync.call_args_list] == ["ns-b"]
-        validate.assert_called_once()
+        validate.assert_awaited_once()
         updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
         assert updated.status == BackupJobStatus.FAILED
-        assert "follow-ups (reporting sync, validation) were started anyway" in updated.error
+        assert "reporting sync started" in updated.error
+        assert "validation started (val-1, val-2)" in updated.error
+
+    async def test_follow_ups_that_could_not_start_are_named_with_the_way_to_run_them(
+        self, fresh_job: BackupJob, monkeypatch,
+    ):
+        """The outage that lost the completion usually stops the validation
+        job's own insert too: the record must not claim it ran."""
+        fresh_job.kind = BackupJobKind.RESTORE
+        fresh_job.namespaces = ["ns-a"]
+        fresh_job.options = {"dry_run": False}
+        await fresh_job.save()
+        monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
+        monkeypatch.setattr(backup_service, "_persist_event", self._failing_terminal_writes(99))
+        monkeypatch.setattr(backup_service, "_trigger_reporting_batch_sync", AsyncMock(return_value=False))
+        monkeypatch.setattr(backup_service, "trigger_validation_for", AsyncMock(return_value=[]))
+        events = [ProgressEvent(phase="start", message="go", percent=0.0),
+                  ProgressEvent(phase="complete", message="done", percent=100.0)]
+        task = await backup_service.start_async_job(fresh_job.job_id, _scripted_runner(events))
+        await asyncio.wait_for(task, timeout=5.0)
+
+        updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
+        assert "reporting sync could not be started for ns-a" in updated.error
+        assert "validation could not be started" in updated.error
+        assert "/validate" in updated.error
+        assert "sync started" not in updated.error and "validation started" not in updated.error
+
 
     async def test_the_fallback_failed_write_is_retried(self, fresh_job: BackupJob, monkeypatch):
         monkeypatch.setattr(backup_service, "_TERMINAL_PERSIST_DELAYS", (0.0, 0.0))
@@ -1210,3 +1235,36 @@ class TestTerminalEventPersistence:
         updated = await BackupJob.find_one(BackupJob.job_id == fresh_job.job_id)
         assert updated.status == BackupJobStatus.FAILED
         assert "boom" in updated.error
+
+
+class TestReconcileOrphanedJobs:
+    """A job a previous process left unfinished is marked failed at startup;
+    a restore that was writing gets the follow-ups it owes."""
+
+    async def _job(self, kind, status, **kw) -> BackupJob:
+        job = BackupJob(job_id=f"job-{uuid.uuid4().hex[:8]}", kind=kind, status=status,
+                        namespace="ns-a", namespaces=["ns-a"], created_by="test", **kw)
+        await job.insert()
+        return job
+
+    async def test_a_running_restore_gets_its_follow_ups(self, fresh_job, monkeypatch):
+        sync = AsyncMock(return_value=True)
+        validate = AsyncMock(return_value=["val-9"])
+        monkeypatch.setattr(backup_service, "_trigger_reporting_batch_sync", sync)
+        monkeypatch.setattr(backup_service, "trigger_validation_for", validate)
+        restore = await self._job(BackupJobKind.RESTORE, BackupJobStatus.RUNNING, options={"dry_run": False})
+        dry = await self._job(BackupJobKind.RESTORE, BackupJobStatus.RUNNING, options={"dry_run": True})
+        pending = await self._job(BackupJobKind.RESTORE, BackupJobStatus.PENDING, options={"dry_run": False})
+        backup = await self._job(BackupJobKind.BACKUP, BackupJobStatus.RUNNING)
+
+        assert await backup_service.reconcile_orphaned_jobs() >= 4
+
+        def error(job):
+            return BackupJob.find_one(BackupJob.job_id == job.job_id)
+        settled = {j.job_id: await error(j) for j in (restore, dry, pending, backup)}
+        assert all(j.status == BackupJobStatus.FAILED for j in settled.values())
+        assert "validation started (val-9)" in settled[restore.job_id].error
+        for other in (dry, pending, backup):
+            assert settled[other.job_id].error == "Process terminated during execution (pod restart)"
+        assert [c.args[0] for c in sync.call_args_list] == ["ns-a"]
+        validate.assert_awaited_once()

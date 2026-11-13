@@ -1411,18 +1411,35 @@ def _entry_of_skipped(entity_type: str, row: dict[str, Any], skipped: set[str]) 
     return entity_type == "registry_entries" and row.get("entity_type") in skipped
 
 
+def _rows_left_out(entity_type: str, skipped: set[str], dropped: Any) -> bool:
+    """Whether a plain restore leaves some rows of this type out: the
+    Registry entries of skipped types, or the rows of dropped edges."""
+    if dropped and entity_type in ("documents", "registry_entries"):
+        return True
+    return entity_type == "registry_entries" and bool(skipped)
+
+
+def _left_out(entity_type: str, row: dict[str, Any], skipped: set[str], dropped: Any) -> bool:
+    """Whether a plain restore leaves this row out (see _rows_to_restore)."""
+    return bool(dropped and _dropped_row(entity_type, row, dropped)) or _entry_of_skipped(
+        entity_type, row, skipped,
+    )
+
+
 def _would_restore(
     reader: Any, entry: Any, src: str, entity_type: str, skipped: set[str],
+    dropped: Any = None,
 ) -> int:
     """How many rows of one entity type a plain restore writes for ``src``:
-    none of a skipped type, and only the Registry entries of the entities it
-    does write. Counts come from the manifest entry when there is one."""
+    none of a skipped type, none of a dropped edge (its document rows and
+    Registry entry), and only the Registry entries of the entities it does
+    write. Counts come from the manifest entry when nothing is left out."""
     if entity_type in skipped:
         return 0
-    if entity_type == "registry_entries" and skipped:
+    if _rows_left_out(entity_type, skipped, dropped):
         return sum(
-            1 for row in reader.read_entities("registry_entries", namespace=src)
-            if not _entry_of_skipped(entity_type, row, skipped)
+            1 for row in reader.read_entities(entity_type, namespace=src)
+            if not _left_out(entity_type, row, skipped, dropped)
         )
     if entry is not None:
         return getattr(entry.counts, entity_type, 0)
@@ -1942,7 +1959,7 @@ class DirectRestoreEngine:
             if dry_run:
                 await self._restore_dry_run(
                     reader, manifest, targets, entry_by_prefix, referents, remapper,
-                    skip_documents=skip_documents, skip_files=skip_files,
+                    skip_documents=skip_documents, skip_files=skip_files, dropped=dropped,
                 )
                 return
 
@@ -2147,8 +2164,10 @@ class DirectRestoreEngine:
         *,
         skip_documents: bool,
         skip_files: bool,
+        dropped: Any = None,
     ) -> None:
-        """What a plain restore would write, without writing it."""
+        """What a plain restore would write, without writing it: the same rows
+        the real run writes, so without skipped types and dropped edges."""
         restore_order = list(_PLAIN_RESTORE_ORDER)
         skipped = _skipped_types(skip_documents, skip_files)
 
@@ -2160,7 +2179,7 @@ class DirectRestoreEngine:
             "namespaces": {
                 tgt: {
                     entity_type: _would_restore(
-                        reader, entry_by_prefix.get(src), src, entity_type, skipped,
+                        reader, entry_by_prefix.get(src), src, entity_type, skipped, dropped,
                     )
                     for entity_type in restore_order
                 }
@@ -2177,7 +2196,7 @@ class DirectRestoreEngine:
             )
         self._dry_run_report(
             reader, targets, entry_by_prefix, restore_order,
-            skip_documents=skip_documents, skip_files=skip_files,
+            skip_documents=skip_documents, skip_files=skip_files, dropped=dropped,
         )
 
     def _rows_to_restore(
@@ -6228,11 +6247,13 @@ class DirectRestoreEngine:
         *,
         skip_documents: bool,
         skip_files: bool,
+        dropped: Any = None,
     ) -> None:
         """Emit what a real run would restore, then complete without writing.
 
-        Counts come from the manifest's per-namespace entry when present and
-        fall back to counting the archive's JSONL lines. All preconditions
+        Counts are what the real run writes (_would_restore): the manifest's
+        per-namespace entry when nothing is left out, else the archive's rows
+        less the skipped types and the dropped edges. All preconditions
         have already run at this point — a dry run that reaches this method
         would have started writing if it were a real run.
         """
@@ -6248,7 +6269,7 @@ class DirectRestoreEngine:
                     continue
                 count = _would_restore(
                     reader, entry, src, entity_type,
-                    _skipped_types(skip_documents, skip_files),
+                    _skipped_types(skip_documents, skip_files), dropped,
                 )
                 parts.append(f"{entity_type}={count}")
             self._emit(

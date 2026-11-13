@@ -36,6 +36,7 @@ from document_store.services.archive_store import (
 )
 from document_store.services.file_storage_client import (
     FileStorageError,
+    FileStorageNotFoundError,
     FileStorageUnavailableError,
 )
 
@@ -796,6 +797,48 @@ class TestArchiveStoreReviewFixes:
 
         fake.download_to_file = failing_download
         fake.delete = unreachable_delete
+        with pytest.raises(OSError, match="No space left"):
+            await client.post(
+                f"/api/document-store/backup/jobs/{src.job_id}/restore",
+                headers=auth_headers, json={},
+            )
+
+    @pytest.mark.asyncio
+    async def test_an_object_gone_from_the_bucket_is_410_not_500(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
+        """Removed between the retention check and the copy: the store
+        answers NoSuchKey, which is the same "no longer retained"."""
+        _store, fake = _minio_store(monkeypatch)
+        fake.objects["bkp-src.zip"] = b"archive"
+        src = await _job(archive_path="bkp-src.zip", archive_backend="minio")
+
+        async def vanished(source_key, dest_key):
+            raise FileStorageNotFoundError(f"File not found: {source_key}")
+
+        fake.copy_object = vanished
+        resp = await client.post(
+            f"/api/document-store/backup/jobs/{src.job_id}/restore",
+            headers=auth_headers, json={},
+        )
+        assert resp.status_code == 410, resp.text
+
+    @pytest.mark.asyncio
+    async def test_a_cleanup_that_cannot_even_sign_its_request_does_not_mask_the_failure(
+        self, client: AsyncClient, auth_headers: dict, monkeypatch
+    ):
+        _store, fake = _minio_store(monkeypatch)
+        fake.objects["bkp-src.zip"] = b"archive"
+        src = await _job(archive_path="bkp-src.zip", archive_backend="minio")
+
+        async def failing_download(key, dest_path, chunk_size=0):
+            raise OSError("No space left on device")
+
+        async def unsigned_delete(key):
+            raise RuntimeError("NoCredentialsError: Unable to locate credentials")
+
+        fake.download_to_file = failing_download
+        fake.delete = unsigned_delete
         with pytest.raises(OSError, match="No space left"):
             await client.post(
                 f"/api/document-store/backup/jobs/{src.job_id}/restore",
