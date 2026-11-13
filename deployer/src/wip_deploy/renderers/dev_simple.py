@@ -103,6 +103,7 @@ from wip_deploy.renderers.compose_dex import (
     render_dex_conf,
 )
 from wip_deploy.renderers.router_caddy import render_router_caddyfile
+from wip_deploy.renderers.upstreams import check_caddy_upstreams
 from wip_deploy.secrets_backend import ResolvedSecrets
 from wip_deploy.spec import Deployment
 from wip_deploy.spec.activation import is_component_active
@@ -448,6 +449,7 @@ def render_dev_simple(
             render_router_caddyfile(router_cfg),
         )
 
+    check_caddy_upstreams(tree)
     return tree
 
 
