@@ -1714,7 +1714,7 @@ class _IdentityRehash:
         self,
         reader: Any,
         sources: list[str],
-        external: dict[str, dict[str, Any]] | None = None,
+        external: dict[tuple[str, int], dict[str, Any]] | None = None,
     ):
         # Every archived namespace's templates: a document may use a template
         # of another namespace in the same archive.
@@ -1778,7 +1778,7 @@ class _PlainRestoreRewrite:
         remapper: IDRemapper,
         reader: Any,
         sources: list[str],
-        external: dict[str, dict[str, Any]] | None = None,
+        external: dict[tuple[str, int], dict[str, Any]] | None = None,
     ):
         self.remapper = remapper
         self._rehash = _IdentityRehash(reader, sources, external)
@@ -1903,6 +1903,10 @@ class DirectRestoreEngine:
         self._actor = actor
         # The archive file's digest, computed once per run on first use.
         self._archive_sha256: str | None = None
+        # Templates the archive references but does not carry, read from
+        # this install for the rehash: every version, by the id they map to
+        # here. Kept for the run, so a merge into several targets asks once.
+        self._external_template_cache: dict[str, dict[int, dict[str, Any]]] = {}
         # Set when this run restores an archive whose own verify failed
         # because the request accepted it; recorded on the provenance rows.
         self._accepted_failed_verify = False
@@ -2733,8 +2737,10 @@ class DirectRestoreEngine:
                 self._emit(
                     "warning",
                     f"[{src} → {target}] {unrehashable} document(s) keep their "
-                    "archived identity hash: their template is neither in the "
-                    "archive nor readable here. If an identity field names a "
+                    "archived identity hash: their template (or a parent it "
+                    "extends) is in neither the archive nor this install, or "
+                    "their identity values or resolutions cannot be read from "
+                    "the archived row. If an identity field names a "
                     "term or document this restore re-minted, the next write of "
                     "that identity creates a second document — rehash the "
                     "namespace (POST /api/document-store/maintenance/"
@@ -2951,33 +2957,54 @@ class DirectRestoreEngine:
         manifest: Manifest,
         remapper: IDRemapper,
         carried: set[str],
-    ) -> dict[str, dict[str, Any]]:
+    ) -> dict[tuple[str, int], dict[str, Any]]:
         """The identity definitions of templates the archive's documents are
-        pinned to but the archive does not carry, read from this install.
+        pinned to but the archive does not carry, read from this install at
+        every version it holds (keyed by archived id and version), so each
+        document is rehashed against the version it is pinned to.
 
         Run after ``_map_external_referents``: each such template is read
         under the id it maps to here (its own id when nothing maps it). One
         this install does not hold, or a template store that does not answer,
         leaves the template out — its documents keep their hashes, and the
-        plan counts them.
+        plan counts them. Reads are kept for the engine's run, so a merge
+        into several targets asks once per template version.
         """
         if manifest.referents is None:
             return {}
-        client = get_template_store_client()
-        out: dict[str, dict[str, Any]] = {}
+        out: dict[tuple[str, int], dict[str, Any]] = {}
         for row in reader.read_referents():
             archived_id = row.get("entry_id")
             if row.get("entity_type") != "templates" or not archived_id or archived_id in carried:
                 continue
             here = remapper.template_map.get(archived_id, archived_id)
+            for version, template in (await self._external_template_versions(here)).items():
+                out[(str(archived_id), version)] = template_definition(template)
+        return out
+
+    async def _external_template_versions(self, here: str) -> dict[int, dict[str, Any]]:
+        """Every version of a template this install holds, composed; the
+        latest alone when the versions cannot be listed. Kept per run."""
+        cache = self._external_template_cache
+        if here in cache:
+            return cache[here]
+        client = get_template_store_client()
+        try:
+            versions: list[int | None] = list(await client.get_template_version_numbers(here))
+        except Exception as exc:  # fall back to the latest version below
+            logger.warning("Versions of template %s not listable for the rehash: %s", here, exc)
+            versions = [None]
+        found: dict[int, dict[str, Any]] = {}
+        for version in versions:
             try:
-                template = await client.get_template_resolved(here)
+                template = await client.get_template_resolved(here, version=version)
             except Exception as exc:  # the documents keep their hashes; counted
-                logger.warning("Template %s not readable for the rehash: %s", here, exc)
+                logger.warning("Template %s v%s not readable for the rehash: %s", here, version, exc)
                 continue
             if template:
-                out[str(archived_id)] = template_definition(template)
-        return out
+                found[int(template.get("version") or version or 1)] = template
+        cache[here] = found
+        return found
 
     async def _map_external_referents(
         self,
@@ -6670,9 +6697,10 @@ class DirectRestoreEngine:
         A platform admin's restore upserts the archive's settings, as it
         always has. Anyone else never changes a namespace's settings: an
         existing namespace keeps its own, and one that does not exist is
-        created with the requester's own key, so the Registry applies its
-        rules (a reservation's holder gets the reservation's settings, anyone
-        else is refused). Every archive setting that is not applied is a job
+        created with the requester's own credential (an API key or a login's
+        bearer token), so the Registry applies its rules (the key that owns
+        the prefix's reservation, or a caller holding admin on it, gets the
+        reservation's settings; anyone else is refused). Every archive setting that is not applied is a job
         warning.
 
         ``preserve_id_config`` carries the source's id_config onto the target.

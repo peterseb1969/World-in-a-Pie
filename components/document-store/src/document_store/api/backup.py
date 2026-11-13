@@ -239,7 +239,9 @@ def _restore_requester(request: Request, identity: UserIdentity) -> RestoreReque
     credential: dict[str, str] | None = None
     if identity.auth_method == "api_key":
         key = request.headers.get(config.api_key_header)
-        credential = {"X-API-Key": key} if key else None
+        # Under the header name it arrived on: the install's services, the
+        # Registry included, read the same configured name.
+        credential = {config.api_key_header: key} if key else None
     elif identity.auth_method == "jwt":
         bearer = request.headers.get("Authorization")
         credential = {"Authorization": bearer} if bearer else None

@@ -1175,6 +1175,20 @@ class TestRestoreRequester:
         assert (req.credential, req.platform_admin) == ({"X-API-Key": "k1"}, False)
         assert req.actor == "apikey:u"
 
+    def test_a_key_is_passed_on_under_the_configured_header(self, monkeypatch):
+        """An install configured with another API-key header reads the key
+        there; the Registry reads the same name, so the key is passed on
+        under it, not under a hard-coded X-API-Key."""
+        from starlette.requests import Request
+
+        from document_store.api.backup import _restore_requester
+        from wip_auth import get_auth_config
+
+        monkeypatch.setattr(get_auth_config(), "api_key_header", "X-Wip-Key")
+        request = Request({"type": "http", "headers": [(b"x-wip-key", b"k2")]})
+        req = _restore_requester(request, self._identity("api_key", []))
+        assert req.credential == {"X-Wip-Key": "k2"}
+
     def test_an_oidc_login_is_presented_by_its_bearer_token(self):
         from document_store.api.backup import _restore_requester
 

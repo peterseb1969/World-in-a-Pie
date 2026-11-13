@@ -2233,9 +2233,10 @@ have this done with document-store's own Registry key, so the Registry could
 not tell who asked. Now:
 
 - **An OIDC login's bearer token is passed on**, as an API key always was.
-  The Registry validates it and judges the caller. A login can now also
-  create a namespace by restore (a reservation's holder, as reserved), which
-  used to need an API key.
+  The Registry validates it and judges the caller. A login that holds
+  `admin` on a reserved prefix can now also create that namespace by
+  restore, as reserved, which used to need an API key. Owning a runtime
+  reservation stays an API key's: the key that made it.
 - **A login a gateway forwarded is refused** wherever the restore would
   create or configure a namespace: its request carries the gateway's key,
   not the user's, so it has no credential to pass on. That covers every
@@ -2244,8 +2245,11 @@ not tell who asked. Now:
   The error says to use an API key or a direct login.
 - **The Registry records who asked**: the upsert carries the requester as
   `updated_by`, so a namespace a restore creates has a `created_by`.
-- document-store's own key is used only when the service acts as itself
-  (tests and tooling inside the service), never for a request.
+- Creating and configuring a namespace never uses document-store's own key
+  for a request: only when the service acts as itself (tests and tooling
+  inside the service). The restore's other Registry calls (provisioning,
+  resolving and activating entries, synonyms) still go out under the
+  service key, as before.
 
 ### `if_match` guards versioned:false documents: send `revision`; `@wip/client` 0.92.0
 
@@ -3871,7 +3875,7 @@ Now:
 - **A platform admin's restore** applies the archive's settings, as before.
 - **Anyone else's restore never changes a namespace's settings.** An
   existing namespace keeps its own. A namespace that does not exist is
-  created with the requester's own API key, so the Registry applies its
+  created with the requester's own credential, so the Registry applies its
   normal rules: a reservation's holder gets the reservation's settings,
   anyone else is refused. Every archive setting that is not applied is a
   warning on the job.

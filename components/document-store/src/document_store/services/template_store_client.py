@@ -394,6 +394,25 @@ class TemplateStoreClient:
         except httpx.RequestError as e:
             raise TemplateStoreError(f"Request failed: {e!s}", unavailable=True) from e
 
+    async def get_template_version_numbers(self, template_id: str) -> list[int]:
+        """The version numbers the template store holds for a template, newest
+        first; [] when it holds none. Raises TemplateStoreError when it
+        could not answer."""
+        url = f"{self.base_url}/api/template-store/templates/{template_id}/versions"
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(url, headers=self._get_headers())
+        except httpx.RequestError as e:
+            raise TemplateStoreError(f"Request failed: {e!s}", unavailable=True) from e
+        if response.status_code == 404:
+            return []
+        if response.status_code != 200:
+            raise TemplateStoreError(
+                f"Failed to list versions: {response.status_code} - {response.text}",
+                unavailable=True,
+            )
+        return [int(t["version"]) for t in response.json().get("items", []) if "version" in t]
+
     async def validate_template_references(
         self,
         template_ids: list[str]

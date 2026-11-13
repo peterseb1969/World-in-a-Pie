@@ -249,12 +249,19 @@ def final_document_key(row: dict[str, Any], namespace: str) -> dict[str, Any]:
 
 
 def template_definition(template: dict[str, Any]) -> dict[str, Any]:
-    """What a rehash needs of one template version."""
+    """What a rehash needs of one template version. ``extends`` /
+    ``extends_version`` are kept so an archived row, stored without what it
+    inherits, can be composed along its pinned parents."""
     return {
         "identity_fields": list(template.get("identity_fields") or []),
         "fields": list(template.get("fields") or []),
         "referent_paths": template.get("referent_identity_paths"),
+        "extends": template.get("extends"),
+        "extends_version": template.get("extends_version"),
     }
+
+
+DefinitionKey = tuple[str, int]
 
 
 @dataclass
@@ -268,18 +275,27 @@ class TemplateDefinitions:
     missed every cross-namespace template and, where a template of the same
     value sat in the document's namespace, read the wrong definition.
 
-    A template the archive references but does not carry is read from this
-    install (``external``, by archived template_id): identity_fields are the
-    same in every version of a template (the template store refuses to change
-    them), so its current definition decides which fields feed the hash.
+    ``archived`` holds the archive's template rows as stored: a template that
+    extends another stores neither its inherited fields nor, unless it
+    declares its own, its identity_fields. A lookup composes them along the
+    pinned parents (``extends_version``), as template-store does: the
+    nearest declared identity_fields, the parents' fields before its own.
+    ``external`` holds templates the archive references but does not carry,
+    read from this install per version, already composed.
+
+    When the pinned version is in neither, another version of the same
+    template stands in (the highest held): identity_fields cannot change
+    between versions (the template store refuses it), so the same fields
+    feed the hash. Only a template known in neither, or a parent chain that
+    cannot be followed, leaves a document without a definition.
     """
 
-    archived: dict[tuple[str, int], dict[str, Any]] = field(default_factory=dict)
-    external: dict[str, dict[str, Any]] = field(default_factory=dict)
+    archived: dict[DefinitionKey, dict[str, Any]] = field(default_factory=dict)
+    external: dict[DefinitionKey, dict[str, Any]] = field(default_factory=dict)
 
     @classmethod
     def of_templates(cls, templates: Iterable[dict[str, Any]]) -> TemplateDefinitions:
-        archived: dict[tuple[str, int], dict[str, Any]] = {}
+        archived: dict[DefinitionKey, dict[str, Any]] = {}
         for template in templates:
             template_id = template.get("template_id")
             if template_id:
@@ -293,9 +309,54 @@ class TemplateDefinitions:
 
     def lookup(self, document: dict[str, Any]) -> dict[str, Any] | None:
         """The definition for an ARCHIVED document row, or None."""
-        template_id = str(document.get("template_id"))
-        version = int(document.get("template_version") or 1)
-        return self.archived.get((template_id, version)) or self.external.get(template_id)
+        return self._resolved(
+            str(document.get("template_id")), int(document.get("template_version") or 1),
+        )
+
+    def _held(self, template_id: str, version: int | None) -> tuple[dict[str, Any], bool] | None:
+        """(definition, composed) at the version, else at the highest version
+        held of the template; ``composed`` is False for an archived row."""
+        for source, composed in ((self.archived, False), (self.external, True)):
+            if version is not None and (template_id, version) in source:
+                return source[(template_id, version)], composed
+        for source, composed in ((self.archived, False), (self.external, True)):
+            versions = [v for tid, v in source if tid == template_id]
+            if versions:
+                return source[(template_id, max(versions))], composed
+        return None
+
+    def _resolved(self, template_id: str, version: int | None) -> dict[str, Any] | None:
+        chain: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        current: tuple[str, int | None] | None = (template_id, version)
+        while current is not None:
+            if current[0] in seen:
+                return None  # a cycle cannot be judged
+            seen.add(current[0])
+            held = self._held(*current)
+            if held is None:
+                return None  # a template or parent known nowhere
+            definition, composed = held
+            chain.append(definition)
+            parent = definition.get("extends")
+            current = None if composed or not parent else (
+                str(parent), definition.get("extends_version"),
+            )
+        return _compose(chain)
+
+
+def _compose(chain: list[dict[str, Any]]) -> dict[str, Any]:
+    """A definition from its row and its ancestors (child first): the
+    nearest declared identity_fields, the ancestors' fields before the
+    child's, and the child's own referent paths (template-store stores them
+    computed over the composed template)."""
+    identity_fields = next((d["identity_fields"] for d in chain if d["identity_fields"]), [])
+    fields = [f for d in reversed(chain) for f in d["fields"]]
+    return {
+        "identity_fields": list(identity_fields),
+        "fields": fields,
+        "referent_paths": chain[0]["referent_paths"],
+    }
 
 
 class RemapRestore:
@@ -539,8 +600,10 @@ class RemapRestore:
         term/reference identity field, whose feed is the resolution's
         canonical ID. The remapper has rewritten both, so recomputing from
         the remapped row gives the hash the new instance's writes produce.
-        The definition is the template ``archived`` is pinned to; a keyed row
-        whose template is known nowhere keeps its hash, and says so.
+        The definition is the template ``archived`` is pinned to (composed
+        along its parents); a keyed row whose template is known nowhere, or
+        whose identity values or resolutions cannot be read, keeps its hash,
+        and says so.
         """
         definition = self._templates.lookup(archived)
         if definition is None:
@@ -558,16 +621,17 @@ def rehash_document_row(
     identity_fields: list[str],
     template_fields: list[dict[str, Any]],
     referent_paths: list[str] | None = None,
-) -> bool:
+) -> bool | None:
     """Recompute a rewritten document row's identity hash in place; True if
-    it changed.
+    it changed, None if its identity values or resolutions cannot be read
+    (it keeps its hash, and its caller counts it unrehashable).
 
     The feed is the one a write produces: the identity values, with a term-
     or reference-typed identity field contributing the canonical id its
     stored resolution names (term_references / references). A restore that
     rewrote those resolutions must recompute, or the row carries a hash that
     no longer describes its own feed and the next write of that identity
-    lands somewhere else. A row whose values cannot be read keeps its hash.
+    lands somewhere else.
     """
     from wip_auth.document_identity import (
         build_referent_resolutions,
@@ -593,7 +657,7 @@ def rehash_document_row(
             "Document %s cannot be rehashed (%s); leaving its hash "
             "as archived", row.get("document_id"), exc,
         )
-        return False
+        return None
     recomputed = compute_hash(values)
     if recomputed != row.get("identity_hash"):
         row["identity_hash"] = recomputed
