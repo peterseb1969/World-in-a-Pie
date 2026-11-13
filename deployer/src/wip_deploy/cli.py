@@ -111,7 +111,7 @@ def _version_callback(value: bool) -> None:
 
 def _echo_skipped_post_install(result: ApplyResult) -> None:
     """Surface post-install hooks skipped because health was not established
-    (--no-wait, or a timed-out warn/continue rollout). Skipping is correct —
+    (--no-wait). Skipping is correct —
     the hooks declare `after: healthy` — but it leaves setup incomplete (e.g.
     bucket / namespace bootstrap), so it must be visible, not silent. Re-run a
     waited `wip-deploy install` to complete them (CASE-426)."""
@@ -1145,7 +1145,8 @@ def install(
         typer.Option(
             "--wait-timeout",
             help="Seconds to wait for healthy; saved with the install, so later "
-            "applies (redeploy, add-app, …) wait as long.",
+            "applies (redeploy, add-app, …) wait as long. The same value bounds "
+            "each post-install hook and each Garage provisioning call.",
         ),
     ] = None,
     reconcile: Annotated[
@@ -1828,12 +1829,15 @@ def rebuild(
         ),
     ] = False,
     wait_timeout: Annotated[
-        int,
+        int | None,
         typer.Option(
             "--wait-timeout",
-            help="Seconds to wait for healthy (default 120).",
+            help=(
+                "Seconds to wait for healthy. Default: the install's saved "
+                "timeout (set by `install --wait-timeout`), else 300."
+            ),
         ),
-    ] = 120,
+    ] = None,
 ) -> None:
     """Rebuild and recreate one or more services in an existing install.
 
@@ -1880,7 +1884,9 @@ def rebuild(
             install_dir=target_dir,
             services=list(services),
             wait=not no_wait,
-            timeout_seconds=wait_timeout,
+            timeout_seconds=(
+                wait_timeout if wait_timeout is not None else _saved_wait_timeout(target_dir)
+            ),
         )
     except ApplyError as e:
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
@@ -2002,11 +2008,15 @@ def up(
         typer.Option("--no-wait", help="Skip waiting for healthy."),
     ] = False,
     wait_timeout: Annotated[
-        int,
+        int | None,
         typer.Option(
-            "--wait-timeout", help="Seconds to wait for healthy (default 120)."
+            "--wait-timeout",
+            help=(
+                "Seconds to wait for healthy. Default: the install's saved "
+                "timeout (set by `install --wait-timeout`), else 300."
+            ),
         ),
-    ] = 120,
+    ] = None,
 ) -> None:
     """Bring an existing install back to running, no spec recomputation.
 
@@ -2037,13 +2047,34 @@ def up(
         up_compose_install(
             install_dir=target_dir,
             wait=not no_wait,
-            timeout_seconds=wait_timeout,
+            timeout_seconds=(
+                wait_timeout if wait_timeout is not None else _saved_wait_timeout(target_dir)
+            ),
         )
     except ApplyError as e:
         typer.echo(typer.style(f"✗ {e}", fg=typer.colors.RED), err=True)
         raise typer.Exit(1) from e
 
     _echo_compose_verb_outcome(f"Brought up install at {target_dir}", health_checked=not no_wait)
+
+
+def _saved_wait_timeout(install_dir: Path) -> int:
+    """How long `up` and `rebuild` wait for health when --wait-timeout is not
+    given: the install's saved `spec.apply.timeout_seconds` — its own pace,
+    which every apply waits as long — else the spec's default. A state that
+    cannot be read is reported, and the default used."""
+    from wip_deploy.spec.deployment import ApplySpec
+
+    deployment, reason = _previous_deployment_or_unreadable(install_dir)
+    if deployment is not None:
+        return deployment.spec.apply.timeout_seconds
+    default = ApplySpec().timeout_seconds
+    if reason is not None:
+        typer.echo(
+            f"warning: {reason} — waiting the default {default} s for health.",
+            err=True,
+        )
+    return default
 
 
 def _echo_compose_verb_outcome(done: str, *, health_checked: bool) -> None:
@@ -2580,18 +2611,22 @@ def _apply_and_persist_mutation(
     App verbs pass it; module verbs deliberately do NOT — flipping a
     module changes OTHER services' rendered env (e.g. NATS_URL appears
     on document-store when nats arrives via from_component), so the
-    full apply is semantically required there. On k8s, only a NON-EMPTY
-    scope narrows the apply: "kubectl apply is already incremental" is
-    not a substitute for scoping (a full-tree apply recreates unrelated
+    full apply is semantically required there. On k8s a scope, empty or
+    not, narrows the apply: "kubectl apply is already incremental" is not
+    a substitute for scoping (a full-tree apply recreates unrelated
     drifted manifests — a one-app tag roll once bounced mongodb as
-    collateral). An empty scope with nothing widened, and None, both fall
-    back to the full tree there.
+    collateral). An empty scope with nothing widened (group-map,
+    app-namespace) applies the shared files alone there; only None applies
+    the whole tree.
 
     `removes_workloads`: the mutation drops workloads from the render
-    (remove-app). On k8s their Deployment, Service, ConfigMap and Secret go
-    only through the full apply's prune, so such a mutation always applies
-    the whole tree there, however its scope was widened: a widened scope is a
-    scoped apply, which never prunes, and the removed app kept running.
+    (remove-app). On k8s they go only through the full apply's prune —
+    the app's Deployment or StatefulSet and its Service; a volume claim it
+    declared is kept and named, never pruned — so such a mutation always
+    applies the whole tree there, however its scope was widened, and says
+    so: a widened scope is a scoped apply, which never prunes, and the
+    removed app kept running. That apply waits for every workload, as any
+    whole-tree apply does.
 
     A scope is widened, never trusted blindly: services outside it whose
     rendered configuration changed (a secret they read, the router's
@@ -2607,9 +2642,9 @@ def _apply_and_persist_mutation(
     changed the running install (that failure saves the spec too). A verb
     whose cleanup has to follow the saved spec puts the cleanup here. If it
     ran only after a successful return, a failure that saved the spec would
-    skip it. remove-app is the case: its spec no longer lists the app, a
-    re-run answers "no change", and the container would keep running with
-    no verb left that removes it.
+    skip it. remove-app is the case: its spec no longer lists the app, so a
+    re-run of the verb could not remove the container; only a full
+    `redeploy` or `install` did.
     """
     _validate_or_exit(deployment, components, apps_list)
 
@@ -2634,18 +2669,25 @@ def _apply_and_persist_mutation(
         )
         raise typer.Exit(2) from e
 
-    if services_scope and _k8s_render_predates_front_door(deployment, target_dir):
+    if services_scope is not None and _k8s_render_predates_front_door(
+        deployment, target_dir
+    ):
         # The previous render routed with per-route Ingresses straight to the
         # backends. Only a full apply prunes them; a scoped one would leave
         # them shadowing the front door, blocked by the new NetworkPolicy.
         typer.echo(
             "This install was last applied before wip-caddy became the k8s front "
             "door: applying the whole install once (with prune) instead of only "
-            + ", ".join(services_scope) + "."
+            + (", ".join(services_scope) or "the shared configuration") + "."
         )
         services_scope = None
 
-    if removes_workloads and deployment.spec.target == "k8s":
+    if removes_workloads and deployment.spec.target == "k8s" and services_scope is not None:
+        typer.echo(
+            "Applying the whole install (with prune): on k8s that is how the "
+            "removed workloads are deleted. Volume claims are kept. It waits for "
+            "every workload and re-runs the post-install hooks."
+        )
         services_scope = None
 
     if services_scope is not None:
@@ -2661,11 +2703,11 @@ def _apply_and_persist_mutation(
 
     apply_fn = apply_k8s if deployment.spec.target == "k8s" else apply_compose
     apply_kwargs: dict[str, Any] = {}
-    if deployment.spec.target != "k8s":
+    if deployment.spec.target != "k8s" or services_scope is not None:
         apply_kwargs["services_scope"] = services_scope
-    elif services_scope:
-        # k8s: non-empty scope only — see the docstring's deletion caveat.
-        apply_kwargs["services_scope"] = services_scope
+    if removes_workloads and deployment.spec.target == "k8s":
+        # A removal never deletes a volume: the claims stay, named.
+        apply_kwargs["prune_volume_claims"] = False
     try:
         result = apply_fn(
             deployment=deployment,
@@ -2687,8 +2729,16 @@ def _apply_and_persist_mutation(
             )
             if after_persist is not None:
                 after_persist()
+            # The change is in place and saved; only a later step failed. A
+            # bare "failed" would tell the operator the change did not happen.
+            failure = (
+                f"✗ {action_label} — the change is applied and saved, but a "
+                f"later step of the apply failed: {e}"
+            )
+        else:
+            failure = f"✗ {action_label} failed: {e}"
         typer.echo(
-            typer.style(f"✗ {action_label} failed: {e}", fg=typer.colors.RED, bold=True),
+            typer.style(failure, fg=typer.colors.RED, bold=True),
             err=True,
         )
         raise typer.Exit(1) from e
@@ -2914,10 +2964,14 @@ def remove_app(
     Mutation is the inverse of `add-app`: drops the AppRef from
     `spec.apps`, drops any `app_sources` entry on the dev platform and
     any `images.tag_overrides` entry for the app, re-renders,
-    re-applies, persists. The removed app's container is
-    force-removed (`podman rm -f <install>_wip-<name>`) once the spec that
-    drops it is saved, so it doesn't linger as an orphan after the rendered
-    compose stops mentioning it. The spec is saved after a
+    re-applies, persists. On compose and dev the removed app's container
+    is force-removed (`podman rm -f <install>_wip-<name>`) once the spec
+    that drops it is saved, so it doesn't linger as an orphan after the
+    rendered compose stops mentioning it; when the install no longer lists
+    the app, a container an earlier removal left behind is swept the same
+    way. On k8s the app's Deployment and Service are deleted by a
+    whole-install apply with prune, which also waits for every workload; a
+    volume claim the app declared is kept, and named. The spec is saved after a
     successful apply, and also after a failed one that had already changed
     the install.
 
@@ -2936,9 +2990,15 @@ def remove_app(
     removed = before > len(deployment.spec.apps)
 
     if not removed:
-        typer.echo(
-            f"⊙ app {app_name!r} is not in this install — no change."
-        )
+        if _sweep_orphan_app_container(deployment, components, apps_list, app_name):
+            typer.echo(
+                f"⊙ app {app_name!r} is not in this install — no change to the "
+                "spec; any container it left behind was removed."
+            )
+        else:
+            typer.echo(
+                f"⊙ app {app_name!r} is not in this install — no change."
+            )
         return
 
     if deployment.spec.platform.dev is not None:
@@ -2960,8 +3020,9 @@ def remove_app(
         # Config-only apply: an empty scope skips `compose up` entirely (a
         # bare `up -d` would recreate the whole stack) and still reloads
         # the proxies so the dropped route disappears. The container is
-        # removed below. On k8s the app's objects go only through the full
-        # apply's prune, which removes_workloads selects.
+        # removed once the spec is saved (after_persist, below). On k8s the
+        # app's objects go only through the full apply's prune, which
+        # removes_workloads selects.
         services_scope=[],
         repo_root=repo_root,
         removes_workloads=True,
@@ -2975,6 +3036,29 @@ def remove_app(
             deployment.metadata.name, app_name,
         ),
     )
+
+
+def _sweep_orphan_app_container(
+    deployment: Deployment, components: list[Component], apps_list: list[App], app_name: str,
+) -> bool:
+    """Remove the container an earlier remove-app left running, when the spec
+    no longer lists the app: a removal whose apply failed after it saved the
+    spec once kept the container, and the verb's re-run had nothing to do.
+
+    Only on compose and dev, where the container is `<install>_wip-<app>`,
+    and only for a name that is a known app's and no component's, so the
+    sweep can never take a component's container. Returns whether it ran.
+    """
+    if deployment.spec.target == "k8s":
+        return False
+    if app_name not in {a.metadata.name for a in apps_list}:
+        return False
+    if app_name in {c.metadata.name for c in components}:
+        return False
+    from wip_deploy.apply import stop_and_remove_container
+
+    stop_and_remove_container(deployment.metadata.name, app_name)
+    return True
 
 
 @app.command("app-deploy")
@@ -3516,11 +3600,15 @@ def _key_readers(
     """Active, storage-free services that read `secret_name` at start.
 
     These are the services the rotation's apply restarts: their rendered
-    definition carries a hash of the secrets they take from the environment.
-    The key file (api-keys.json) is not among them — the Registry, which
-    alone reads it, re-imports it while running, and every other service
-    learns the change by key sync, so a declared key needs no restart.
+    definition carries a hash of the secrets they take from the environment —
+    the env their manifest declares and the env the deployer adds (an app's
+    own WIP_API_KEY is the deployer's, never its manifest's). The key file
+    (api-keys.json) is not among them — the Registry, which alone reads it,
+    re-imports it while running, and every other service learns the change by
+    key sync, so a declared key needs no restart.
     """
+    from wip_deploy.config_gen.env import owner_env_vars
+
     enabled_apps = {ref.name for ref in deployment.spec.apps if ref.enabled}
     owners: list[Component | App] = [
         c for c in components if is_component_active(c, deployment)
@@ -3529,8 +3617,8 @@ def _key_readers(
     for owner in owners:
         if owner.spec.storage:
             continue
-        env_vars = (*owner.spec.env.required, *owner.spec.env.optional)
-        if any(ev.source.from_secret == secret_name for ev in env_vars):
+        required, optional = owner_env_vars(owner, deployment, components, apps_list)
+        if any(ev.source.from_secret == secret_name for ev in (*required, *optional)):
             readers.add(owner.metadata.name)
     return sorted(readers)
 
@@ -3543,6 +3631,11 @@ def _rotation_restart_lines(target: str, readers: list[str], *, declared_key: bo
     compose and k8s only the services whose rendered definition carries a
     hash of the key restart (`readers`). A declared key reaches everything
     else through api-keys.json and key sync, without a restart.
+
+    The report is predicted from the spec, not observed: an apply that also
+    restarts services for another reason (a first apply after a deployer
+    upgrade changed how they render) restarts more than it names, and "for
+    it" scopes the "Nothing restarts" line to the key.
     """
     lines: list[str] = []
     if target == "dev":
@@ -6681,9 +6774,15 @@ def _default_install_dir(name: str) -> Path:
 # ────────────────────────────────────────────────────────────────────
 
 
-# Version 2: the app edge became an optional module. A version-1 file is
-# upgraded on load (`_upgrade_state_payload`) and written as version 2 by the
-# next persist, so each step runs once per install.
+# An older file is upgraded on load (`_upgrade_state_payload`), one step per
+# version, and written at the current version by the next persist, so each
+# step runs once per install:
+#   2 — the app edge became an optional module (`_state_v1_to_v2`).
+#   3 — network.app_origins was dropped (`_state_v2_to_v3`).
+#   4 — spec.apply.on_timeout was dropped and a saved `wait: false` reset
+#       (`_state_v3_to_v4`).
+#   5 — the apps-only install shape was retired (`_state_v4_to_v5`).
+#   6 — network.http_port was dropped (`_state_v5_to_v6`).
 _DEPLOYMENT_JSON_VERSION = 6
 
 
@@ -6710,7 +6809,8 @@ def _state_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
     every saved state carries it, and the step drops it."""
     try:
         network = dict(payload["deployment"]["spec"]["network"])
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, ValueError):
+        # Malformed: leave it for model validation to report.
         return {**payload, "wip_deploy_format_version": 6}
     network.pop("http_port", None)
     spec = {**payload["deployment"]["spec"], "network": network}
@@ -6739,7 +6839,8 @@ def _state_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
         spec = payload["deployment"]["spec"]
         modules = dict(spec.get("modules") or {})
         network = dict(spec["network"])
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, ValueError, AttributeError):
+        # Malformed: leave it for model validation to report.
         return {**payload, "wip_deploy_format_version": 5}
     if modules.pop("suppress_core", False):
         raise RetiredInstallShape(
@@ -6775,19 +6876,38 @@ def _state_v4_to_v5(payload: dict[str, Any]) -> dict[str, Any]:
 def _state_v3_to_v4(payload: dict[str, Any]) -> dict[str, Any]:
     """Version 3 saved `spec.apply.on_timeout`, and kept `install --no-wait` as
     `spec.apply.wait: false`. A health wait that runs out now always fails the
-    apply, so the field is gone: its saved value "fail" is dropped, and any
-    other value (only a hand edit could set one) is left for the load to
-    refuse by name. `--no-wait` now belongs to its own run, and nothing else
-    ever set `wait` to false, so a saved false becomes true and later
-    applies wait again."""
+    apply, so the field is gone and is dropped whatever it held; a value other
+    than the saved default "fail" (only a hand edit could set one) is
+    announced. `--no-wait` now belongs to its own run, and nothing else ever
+    set `wait` to false, so a saved false becomes true, announced too: later
+    applies wait again. Loud, never silent, as `_drop_wip_namespace_access`."""
     try:
-        apply_spec = dict(payload["deployment"]["spec"]["apply"])
+        apply_spec = payload["deployment"]["spec"]["apply"]
     except (KeyError, TypeError):
         return {**payload, "wip_deploy_format_version": 4}
-    if apply_spec.get("on_timeout") == "fail":
-        apply_spec.pop("on_timeout")
+    if not isinstance(apply_spec, dict):
+        # Malformed: leave it for model validation to report.
+        return {**payload, "wip_deploy_format_version": 4}
+    apply_spec = dict(apply_spec)
+    metadata = payload["deployment"].get("metadata")
+    install = metadata.get("name", "?") if isinstance(metadata, dict) else "?"
+    on_timeout = apply_spec.pop("on_timeout", "fail")
+    if on_timeout != "fail":
+        typer.echo(
+            f"warning: install {install!r} is saved with apply.on_timeout "
+            f"{on_timeout!r}, a setting that no longer exists — dropping it. A "
+            "health wait that runs out now always fails the apply.",
+            err=True,
+        )
     if apply_spec.get("wait") is False:
         apply_spec["wait"] = True
+        typer.echo(
+            f"warning: install {install!r} was saved by `install --no-wait`, which "
+            "made every later apply skip the health wait and the post-install "
+            "hooks. The flag now covers its own run only: redeploy, add-app and "
+            "the other applies wait for health again.",
+            err=True,
+        )
     spec = {**payload["deployment"]["spec"], "apply": apply_spec}
     return {
         **payload,
@@ -6804,7 +6924,8 @@ def _state_v2_to_v3(payload: dict[str, Any]) -> dict[str, Any]:
     there, naming why."""
     try:
         network = dict(payload["deployment"]["spec"]["network"])
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, ValueError):
+        # Malformed: leave it for model validation to report.
         return {**payload, "wip_deploy_format_version": 3}
     network.pop("app_origins", None)
     spec = {**payload["deployment"]["spec"], "network": network}
@@ -6826,7 +6947,7 @@ def _state_v1_to_v2(payload: dict[str, Any]) -> dict[str, Any]:
         had_edge = bool(spec["auth"]["gateway"]) and not spec.get("modules", {}).get(
             "suppress_core", False
         )
-    except (KeyError, TypeError):
+    except (KeyError, TypeError, AttributeError):
         # Malformed: leave it for model validation to report.
         return {**payload, "wip_deploy_format_version": 2}
     if had_edge:
@@ -7641,6 +7762,9 @@ def _refuse_runtime_reservation_collisions(
         typer.echo(f"note: {result.note}", err=True)
     for warning in result.warnings:
         typer.echo(f"warning: {warning}", err=True)
+    if result.refused:
+        typer.echo(f"error: {result.refused}", err=True)
+        raise typer.Exit(2)
     if result.errors:
         typer.echo(
             "error: the install's namespace reservations claim ID prefixes runtime "
@@ -7671,6 +7795,9 @@ def _refuse_attachment_collisions(
         )
     if result.note:
         typer.echo(f"note: {result.note}", err=True)
+    if result.refused:
+        typer.echo(f"error: {result.refused}", err=True)
+        raise typer.Exit(2)
     if result.errors:
         typer.echo("error: the install's apps would take routes app attachments own:", err=True)
         for error in result.errors:

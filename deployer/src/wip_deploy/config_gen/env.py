@@ -347,6 +347,26 @@ def _app_key_env(owner: Component | App, deployment: Deployment) -> list[EnvVar]
     return [EnvVar(name="WIP_API_KEY", source=EnvSource(from_secret=key.secret_name))]
 
 
+def owner_env_vars(
+    component: Component | App,
+    deployment: Deployment,
+    components: list[Component],
+    apps: list[App],
+) -> tuple[list[EnvVar], list[EnvVar]]:
+    """The env a component (or app) is rendered with, unresolved: what its
+    manifest declares plus what the deployer adds (its NATS and MongoDB
+    credentials, its namespaces, an app's own WIP_API_KEY). As (required,
+    optional). Whoever asks which owners read a secret asks this, not the
+    manifest alone, which misses the added ones."""
+    required_vars = list(component.spec.env.required)
+    optional_vars = list(component.spec.env.optional)
+    required_vars += _nats_env(component, deployment, components, apps)
+    required_vars += _mongo_env(component, deployment, components, apps)
+    required_vars += namespace_env(component)
+    required_vars += _app_key_env(component, deployment)
+    return required_vars, optional_vars
+
+
 def resolve_component_env(
     component: Component | App,
     deployment: Deployment,
@@ -407,12 +427,7 @@ def resolve_component_env(
                 raise
         return out
 
-    required_vars = list(component.spec.env.required)
-    optional_vars = list(component.spec.env.optional)
-    required_vars += _nats_env(component, deployment, components, apps)
-    required_vars += _mongo_env(component, deployment, components, apps)
-    required_vars += namespace_env(component)
-    required_vars += _app_key_env(component, deployment)
+    required_vars, optional_vars = owner_env_vars(component, deployment, components, apps)
 
     return ResolvedEnv(
         required=_resolve(required_vars, skip_inactive=False),

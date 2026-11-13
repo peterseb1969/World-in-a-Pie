@@ -13,12 +13,13 @@ Contract under test, all via mocked subprocess / patched helpers:
     `compose up` at all — an empty service list reaching `up -d` would
     be the full-stack up the scoping exists to prevent.
   - `services_scope=None` keeps install semantics: full up + dev wipe.
-  - Proxy reload fires only for a proxy whose mounted Caddyfile content
-    actually changed across the tree write — on every compose apply, scoped
-    or not (a full up never recreates a proxy for a routing change), and on
-    every scoped dev apply; a full dev apply recreates the proxies instead.
-  - `_reload_proxy` execs `caddy reload` and falls back to a container
-    restart on failure.
+  - Proxy reload fires only for a proxy whose rendered Caddyfile is not the
+    one it is recorded as serving — on every compose apply, scoped or not (a
+    full up never recreates a proxy for a routing change), and on every
+    scoped dev apply; a full dev apply recreates the proxies instead.
+  - `_reload_proxy` execs `caddy reload` and reports whether it worked; a
+    failed reload is never followed by a restart (Caddy keeps serving the
+    old config; a restart would boot it on the refused file).
   - `_wait_healthy(only=...)` intersects the expected set.
 """
 
@@ -70,6 +71,7 @@ def _apply(tmp_path: Path, *, deployment, tree, services_scope):
         patch("wip_deploy.apply._run_up") as run_up,
         patch("wip_deploy.apply._remove_install_containers") as wipe,
         patch("wip_deploy.apply._check_containers_created"),
+        patch("wip_deploy.apply._container_cli", return_value=None),
         patch("wip_deploy.apply._reload_proxy") as reload_proxy,
         patch("wip_deploy.apply._run_post_install"),
     ):
@@ -145,15 +147,27 @@ class TestDevWipeGate:
         wipe.assert_not_called()
 
 
+def _serving(install_dir: Path, rel: str, ctr: str, content: str) -> None:
+    """A proxy `ctr` that runs `content`: the file is on disk and recorded as
+    delivered, as an earlier apply leaves it."""
+    import hashlib
+    import json
+
+    (install_dir / rel).parent.mkdir(parents=True, exist_ok=True)
+    (install_dir / rel).write_text(content)
+    stamp = install_dir / ".proxy-config-delivered.json"
+    delivered = json.loads(stamp.read_text()) if stamp.is_file() else {}
+    delivered[ctr] = hashlib.sha256(content.encode()).hexdigest()
+    stamp.write_text(json.dumps(delivered))
+
+
 class TestProxyReload:
     CADDY = "config/caddy/Caddyfile"
     ROUTER = "config/router/Caddyfile"
 
     def test_changed_router_config_reloads_router_only(self, tmp_path: Path) -> None:
-        (tmp_path / self.CADDY).parent.mkdir(parents=True)
-        (tmp_path / self.CADDY).write_text("edge-v1")
-        (tmp_path / self.ROUTER).parent.mkdir(parents=True)
-        (tmp_path / self.ROUTER).write_text("router-v1")
+        _serving(tmp_path, self.CADDY, "caddy", "edge-v1")
+        _serving(tmp_path, self.ROUTER, "router", "router-v1")
 
         _, _, _, reload_proxy = _apply(
             tmp_path,
@@ -164,8 +178,7 @@ class TestProxyReload:
         assert reload_proxy.call_args_list == [(("test-install_wip-router",),)]
 
     def test_unchanged_configs_reload_nothing(self, tmp_path: Path) -> None:
-        (tmp_path / self.CADDY).parent.mkdir(parents=True)
-        (tmp_path / self.CADDY).write_text("edge-v1")
+        _serving(tmp_path, self.CADDY, "caddy", "edge-v1")
 
         _, _, _, reload_proxy = _apply(
             tmp_path,
@@ -179,8 +192,7 @@ class TestProxyReload:
         # A compose full up does not recreate the proxy for a routing change:
         # its service is static and the Caddyfile is a bind mount. Re-running
         # `install` to add an app is a full apply, and its route must go live.
-        (tmp_path / self.CADDY).parent.mkdir(parents=True)
-        (tmp_path / self.CADDY).write_text("edge-v1")
+        _serving(tmp_path, self.CADDY, "caddy", "edge-v1")
         _, _, _, reload_proxy = _apply(
             tmp_path,
             deployment=_deployment(),
@@ -192,8 +204,7 @@ class TestProxyReload:
     def test_unscoped_compose_install_with_unchanged_proxies_reloads_nothing(
         self, tmp_path: Path
     ) -> None:
-        (tmp_path / self.CADDY).parent.mkdir(parents=True)
-        (tmp_path / self.CADDY).write_text("edge-v1")
+        _serving(tmp_path, self.CADDY, "caddy", "edge-v1")
         _, _, _, reload_proxy = _apply(
             tmp_path,
             deployment=_deployment(),
@@ -205,8 +216,7 @@ class TestProxyReload:
     def test_unscoped_dev_install_needs_no_reload(self, tmp_path: Path) -> None:
         # A full dev apply removes and recreates every container of the
         # install, so each proxy starts on the new config.
-        (tmp_path / self.CADDY).parent.mkdir(parents=True)
-        (tmp_path / self.CADDY).write_text("edge-v1")
+        _serving(tmp_path, self.CADDY, "caddy", "edge-v1")
         _, _, _, reload_proxy = _apply(
             tmp_path,
             deployment=_deployment(target="dev"),
@@ -229,11 +239,13 @@ class TestReloadProxyHelper:
 
     @patch("wip_deploy.apply.subprocess.run")
     @patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/podman")
-    def test_restart_fallback_on_failure(self, _which: MagicMock, run: MagicMock) -> None:
-        run.side_effect = [MagicMock(returncode=1), MagicMock(returncode=0)]
-        _reload_proxy("wip-caddy")
-        assert run.call_count == 2
-        assert run.call_args_list[1].args[0] == ["podman", "restart", "wip-caddy"]
+    def test_a_failed_reload_is_not_followed_by_a_restart(
+        self, _which: MagicMock, run: MagicMock
+    ) -> None:
+        run.return_value = MagicMock(returncode=1)
+        assert _reload_proxy("wip-caddy") is False
+        assert run.call_count == 1
+        assert "restart" not in run.call_args_list[0].args[0]
 
     @patch("wip_deploy.apply.subprocess.run")
     @patch("wip_deploy.apply.shutil.which", return_value=None)

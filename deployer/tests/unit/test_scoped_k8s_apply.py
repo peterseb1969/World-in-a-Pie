@@ -9,17 +9,18 @@ full-tree apply recreates any unrelated manifest that drifted from live
 flashed every Mongo-backed service unhealthy during a one-app tag roll;
 prune against a partial apply set would delete what isn't in it.
 
-Deletion still requires the full apply's prune, so on k8s only a
-NON-EMPTY scope narrows the apply — the empty scope (remove-app's
-compose config-only mode) and None fall back to the full tree.
+Deletion still requires the full apply's prune, so a verb that removes
+workloads (remove-app) passes None, the full tree. Every scope, empty or
+not, narrows the apply: the empty scope is the config-only verbs'
+(group-map, app-namespace) apply of the shared files alone.
 
 Layers:
 - `_kubectl_apply_scoped` over a synthetic install dir, `_kubectl_run`
   mocked — pins the exact apply set and the absence of -R/--prune.
 - `apply_k8s` with a synthetic tree and wait disabled — pins that the
   scope narrows the apply, the workload count, and the hook set.
-- `_apply_and_persist_mutation` forwarding — pins the non-empty-only
-  rule on k8s and unconditional forwarding on compose.
+- `_apply_and_persist_mutation` forwarding — pins that a scope, empty
+  or not, is forwarded on k8s, and None is not.
 """
 
 from __future__ import annotations
@@ -253,12 +254,14 @@ class TestScopeForwarding:
         mock_apply = self._run(_k8s_deployment(apps=["wip-kb"]), ["wip-kb"])
         assert mock_apply.call_args.kwargs["services_scope"] == ["wip-kb"]
 
-    def test_empty_scope_falls_back_to_full_tree_on_k8s(self) -> None:
-        """Empty scope is remove-app's compose config-only mode; on k8s
-        deletion happens via the full apply's prune, so the scope must
-        NOT be forwarded."""
+    def test_empty_scope_is_forwarded_on_k8s(self) -> None:
+        """The empty scope is a config-only verb's (group-map,
+        app-namespace): it deletes nothing, so it is forwarded and applies
+        the shared files alone instead of the whole tree with prune.
+        remove-app, which deletes, selects the full tree itself
+        (removes_workloads)."""
         mock_apply = self._run(_k8s_deployment(apps=[]), [])
-        assert "services_scope" not in mock_apply.call_args.kwargs
+        assert mock_apply.call_args.kwargs["services_scope"] == []
 
     def test_none_scope_falls_back_to_full_tree_on_k8s(self) -> None:
         mock_apply = self._run(_k8s_deployment(apps=[]), None)

@@ -684,7 +684,9 @@ class ApplySpec(WIPModel):
     that runs out fails the apply. `install --no-wait` skips the wait for
     that one run and is never saved. `install --wait-timeout N` sets
     `timeout_seconds`, which is saved: it is the install's own pace, used by
-    every later apply."""
+    every later apply. It also bounds each post-install hook and each Garage
+    provisioning call, every one from its own start, so an apply can run
+    longer than `timeout_seconds` in all."""
 
     wait: bool = True
     timeout_seconds: int = Field(default=300, ge=1)

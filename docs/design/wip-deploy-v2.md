@@ -586,7 +586,7 @@ wip-deploy install [OPTIONS]
     --no-wait                   # skip healthy-wait
     --wait-timeout N            # override spec timeout
     -y, --yes                   # skip confirmation
-    # (Planned and not built: --on-timeout, --save-spec, --from-spec.)
+    # (Planned and not built: --save-spec, --from-spec.)
 
 wip-deploy redeploy --name N [--tag TAG]
     # Re-render the saved spec, re-apply. Secrets preserved. Image-tag
@@ -646,7 +646,10 @@ wip-deploy dev [--mode tilt|simple]
 Configuration:
 
 - `install --wait-timeout N` sets `spec.apply.timeout_seconds`, which is saved
-  with the install: every later apply (redeploy, add-app, …) waits as long.
+  with the install: every later apply (redeploy, add-app, …) waits as long, and
+  `up` / `rebuild` wait as long unless their own `--wait-timeout` says otherwise.
+  The same value bounds each post-install hook and each Garage provisioning
+  call, every one from its own start, so a whole apply can take longer.
 - `install --no-wait` skips the wait, and the post-install hooks that need a
   healthy target, for that one run only. It is never saved; later applies wait.
 - Built-in defaults: `wait=true`, `timeout=300s`.
@@ -658,9 +661,14 @@ Configuration:
 
 Both must be true. Post-install hooks run *after* the component is healthy; each hook's success is part of the wait.
 
-**On timeout:** the apply fails, naming the services that did not become
-healthy. There is no warn-and-continue mode: a stuck service is a failed apply,
-and an operator who knows better re-runs with `--no-wait`.
+**On timeout:** the apply fails, naming the services (compose) or workloads
+(k8s, in kubectl's words) that did not become healthy. There is no
+warn-and-continue mode: a stuck service is a failed apply. Only `install`, `up`
+and `rebuild` take `--no-wait`; the verbs that change a saved install
+(`redeploy`, `add-app`, `remove-app`, `app-deploy`, the module, user and
+namespace verbs) take no wait flag and always wait the saved timeout. When their
+wait fails after the change reached the install, the spec is saved anyway and
+the error says so; fix the stuck service and the next apply waits again.
 
 **Rationale:** first-install ergonomics need wait-to-healthy — otherwise `wip-deploy install && wip-deploy status` reports breakage because the platform is still starting. CI/scripted flows benefit from `--no-wait`, which must not leak into the install's later applies.
 

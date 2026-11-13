@@ -59,7 +59,7 @@ def read_compose_status(install_dir: Path) -> list[ServiceStatus]:
     except ApplyError as e:
         raise StatusError(str(e)) from e
 
-    health_map = _compose_ps(install_dir, compose_cmd)
+    health_map = _compose_ps(install_dir, compose_cmd) or {}
     rows: list[ServiceStatus] = []
     for name, health in sorted(health_map.items()):
         # `_compose_ps` folds state into health when there's no probe.

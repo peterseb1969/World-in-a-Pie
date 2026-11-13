@@ -27,6 +27,9 @@ from wip_deploy.spec import App, Deployment
 class AttachmentCheck:
     errors: list[str] = field(default_factory=list)
     note: str | None = None
+    # The Registry refused or failed the check (registry_refusal): a stop of
+    # its own, not a collision, so it is reported apart from `errors`.
+    refused: str | None = None
 
 
 def collisions(route_names: list[str], attachments: list[dict[str, Any]]) -> list[str]:
@@ -78,7 +81,7 @@ def check_attachment_collisions(
                     )
                 refused = registry_refusal(resp.status_code, "its app attachments")
                 if refused:
-                    return AttachmentCheck(errors=[refused])
+                    return AttachmentCheck(refused=refused)
                 if resp.status_code != 200 or not str(
                     resp.headers.get("content-type", "")
                 ).startswith("application/json"):

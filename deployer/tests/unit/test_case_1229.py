@@ -135,7 +135,7 @@ class TestUpHonoursTimeout:
             patch("wip_deploy.apply._run_up"),
             patch("wip_deploy.apply._check_containers_created"),
             patch("wip_deploy.apply._compose_ps", return_value=statuses),
-            pytest.raises(ApplyError, match=r"timed out after 0 s; not healthy: tc01_wip-def-store\."),
+            pytest.raises(ApplyError, match=r"timed out after 0 s; not confirmed healthy: tc01_wip-def-store\."),
         ):
             up_compose_install(install_dir=tmp_path, wait=True, timeout_seconds=0)
 
@@ -163,13 +163,15 @@ class TestUpHonoursTimeout:
             )
         assert r.exit_code == 1
         assert "Brought up" not in r.output
-        assert "tc01_wip-def-store, tc01_wip-registry" in r.output
+        assert "tc01_wip-def-store (not listed by compose ps), tc01_wip-registry" in r.output
 
 
 class TestAwaitHealthy:
     def test_unlisted_container_counts_as_not_healthy(self, tmp_path: Path) -> None:
         with patch("wip_deploy.apply._compose_ps", return_value={"a": "healthy"}):
-            assert _await_healthy(tmp_path, ["podman-compose"], {"a", "b"}, 0) == ["b"]
+            assert _await_healthy(tmp_path, ["podman-compose"], {"a", "b"}, 0) == [
+                "b (not listed by compose ps)"
+            ]
 
     def test_nothing_expected_is_nothing_pending(self, tmp_path: Path) -> None:
         with patch("wip_deploy.apply._compose_ps") as ps:
@@ -264,17 +266,8 @@ class TestStateV3ToV4:
         assert loaded.spec.apply.wait is True
         assert loaded.spec.apply.timeout_seconds == 600
 
-    @pytest.mark.parametrize("value", ["warn", "continue"])
-    def test_a_hand_set_warn_or_continue_is_refused_by_name(
-        self, tmp_path: Path, value: str, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        state = _v3_state({"wait": True, "timeout_seconds": 300, "on_timeout": value})
-        (tmp_path / "deployment.deployer-state").write_text(json.dumps(state))
-        import typer
-
-        with pytest.raises(typer.Exit):
-            _load_deployment(tmp_path)
-        assert "on_timeout" in capsys.readouterr().err
+    # A hand-set warn/continue is dropped with a warning naming it: see
+    # test_case_1229_review.py (it used to be refused at load).
 
     def test_the_model_has_no_on_timeout(self) -> None:
         assert "on_timeout" not in ApplySpec.model_fields
@@ -367,7 +360,10 @@ class TestRolloutFailureNamesItsCause:
                 1, cmd, stderr='Error from server (Forbidden): deployments.apps "wip-registry" is forbidden'
             )
         out = self._wait(run)
+        # Every workload is asked; each refusal is named.
         assert out == ['deployment/wip-registry: Error from server (Forbidden): '
+                       'deployments.apps "wip-registry" is forbidden',
+                       'statefulset/wip-mongodb: Error from server (Forbidden): '
                        'deployments.apps "wip-registry" is forbidden']
 
     def test_all_rolled_out_is_empty(self) -> None:
@@ -379,8 +375,8 @@ class TestRolloutFailureNamesItsCause:
         with patch("wip_deploy.apply.time.time", side_effect=lambda: next(clock)):
             out = self._wait(lambda *a, **k: MagicMock(returncode=0), timeout=1)
         assert out == [
-            "deployment/wip-registry: not checked, the wait's budget was spent",
-            "statefulset/wip-mongodb: not checked, the wait's budget was spent",
+            "deployment/wip-registry: not checked, the wait's 1 s were spent",
+            "statefulset/wip-mongodb: not checked, the wait's 1 s were spent",
         ]
 
 

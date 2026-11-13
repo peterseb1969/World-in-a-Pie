@@ -133,8 +133,9 @@ def test_a_registry_that_refuses_or_fails_stops_the_apply(discovery: Discovery, 
     # A refused admin key or a failing Registry must not switch the check off.
     d = _minimal_compose(apps=["wip-kb"])
     result = check_attachment_collisions(d, discovery.apps, "k", transport=_transport(status, {}, []))
-    assert len(result.errors) == 1
-    assert f"({status})" in result.errors[0] and "app attachments" in result.errors[0]
+    assert result.errors == []
+    assert result.refused is not None
+    assert f"({status})" in result.refused and "app attachments" in result.refused
 
 
 def test_without_an_admin_key_it_is_a_note(discovery: Discovery) -> None:

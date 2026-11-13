@@ -30,6 +30,7 @@ translates to a non-zero exit code.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import math
 import re
@@ -111,14 +112,23 @@ class ApplyResult:
 # ────────────────────────────────────────────────────────────────────
 
 
-# CASE-443: proxies whose mounted config a scoped mutation may change.
-# Both mount their rendered Caddyfile at /etc/caddy/Caddyfile (ro), so a
-# scoped `up -d <svc>` never recreates them — config changes need an
-# explicit graceful reload.
+# CASE-443: proxies whose mounted config a mutation may change. Both mount
+# their rendered Caddyfile at /etc/caddy/Caddyfile (ro), and their compose
+# service definitions are static, so `up -d` never recreates them for a
+# routing change — config changes need an explicit graceful reload.
 _PROXY_CONFIG_FILES: dict[str, str] = {
     "caddy": "config/caddy/Caddyfile",
     "router": "config/router/Caddyfile",
 }
+
+# The digest of the Caddyfile each proxy is known to serve, kept in the
+# install directory. A digest is recorded only when the config reached the
+# proxy: a reload that succeeded, or a container this apply started on the
+# file. The render is compared with it, not with the file the render
+# overwrote, so a config that reached disk but not the proxy (the apply
+# stopped before the reload, or the reload failed) still differs on the next
+# apply, which reloads it then.
+_PROXY_DELIVERED_FILE = ".proxy-config-delivered.json"
 
 
 def apply_compose(
@@ -135,29 +145,27 @@ def apply_compose(
     Honors `deployment.spec.apply` — wait and timeout; a wait that runs out
     raises ApplyError.
 
-    `services_scope` (CASE-443): None — full-stack up (install semantics,
-    unchanged). A list — incremental mutation: `up -d` only the named
-    compose services (empty list = config-only change, nothing to up),
-    skip the dev-target stale-container wipe, reload any proxy whose
-    mounted Caddyfile content changed, and scope the health wait to the
-    named services. This is what makes `add-app`/`remove-app` honor
-    their "preserves the rest untouched" contract on compose.
+    `services_scope` (CASE-443): None — full-stack up (install semantics:
+    the dev target first removes every container of the install). A list —
+    incremental mutation: `up -d` only the named compose services (empty
+    list = config-only change, nothing to up), skip the dev-target
+    stale-container wipe, and scope the health wait to the named services.
+    This is what makes `add-app`/`remove-app` honor their "preserves the
+    rest untouched" contract on compose.
+
+    Either way, a proxy whose rendered Caddyfile is not the one it is known
+    to serve is reloaded (see `_deliver_proxy_configs`): `compose up -d`
+    never recreates a proxy for a routing change, scoped or not, so
+    re-running `install` to add an app would otherwise leave its route
+    unserved. A proxy container this apply started already runs the new
+    file and is not reloaded — on a full dev apply, that is every proxy.
     """
     install_dir = Path(install_dir)
 
-    # Snapshot proxy configs before the tree overwrites them, so we can
-    # detect changes and reload only what actually changed. Every apply
-    # needs this but a full dev apply, which recreates every container: a
-    # proxy's rendered service is static (its Caddyfile is a bind mount), so
-    # `compose up -d` never recreates it for a routing change, scoped or not
-    # — re-running `install` to add an app would otherwise leave the new
-    # route unserved.
+    # A full dev apply removes and recreates every container, so each proxy
+    # starts on the new file; every other apply may leave a proxy running on
+    # its old config and reloads it.
     reload_changed_proxies = services_scope is not None or deployment.spec.target != "dev"
-    old_proxy_content: dict[str, str | None] = {}
-    if reload_changed_proxies:
-        for ctr, rel in _PROXY_CONFIG_FILES.items():
-            path = install_dir / rel
-            old_proxy_content[ctr] = path.read_text() if path.is_file() else None
 
     tree.write(install_dir)
 
@@ -229,7 +237,8 @@ def apply_compose(
                 services=services_scope,
             )
         # else: empty scope — config-only mutation (e.g. remove-app, whose
-        # container was already removed); nothing to bring up. NB: an empty
+        # container the CLI removes once the spec is saved); nothing to bring
+        # up. NB: an empty
         # list must NOT reach _run_up — `up -d` with no service args is the
         # full-stack up this scoping exists to prevent.
         #
@@ -247,13 +256,15 @@ def apply_compose(
 
         # The up never recreates a proxy for a routing change (its service
         # definition is unchanged — only the mounted file moved), so reload
-        # each one whose rendered config changed.
-        if reload_changed_proxies:
-            for ctr, rel in _PROXY_CONFIG_FILES.items():
-                path = install_dir / rel
-                new_content = path.read_text() if path.is_file() else None
-                if new_content is not None and new_content != old_proxy_content.get(ctr):
-                    _reload_proxy(container_name(deployment.metadata.name, ctr))
+        # each one that does not yet serve its rendered config.
+        _deliver_proxy_configs(
+            install_dir,
+            deployment.metadata.name,
+            started=_started_containers(
+                runtime_cli, deployment.metadata.name, containers_before
+            ),
+            reload=reload_changed_proxies,
+        )
 
         # Count the services in our rendered file to report a summary.
         up_count = (
@@ -790,22 +801,90 @@ def start_install(
         _compose_run_state(Path(install_dir), "start")
 
 
-def _reload_proxy(container: str) -> None:
+def _started_containers(
+    cli: str | None, install: str, before: frozenset[tuple[str, str]] | None
+) -> set[str]:
+    """Names of this install's containers created or recreated since the
+    `before` snapshot; empty when either snapshot cannot be taken."""
+    if cli is None or before is None:
+        return set()
+    after = _project_container_state(cli, install)
+    if after is None:
+        return set()
+    return {name for name, _ in after - before}
+
+
+def _read_delivered(install_dir: Path) -> dict[str, str]:
+    """The proxy digests recorded as delivered; {} when none are (a first
+    apply, or a file that cannot be read — the proxies are then reloaded)."""
+    try:
+        data = json.loads((install_dir / _PROXY_DELIVERED_FILE).read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
+
+
+def _deliver_proxy_configs(
+    install_dir: Path, install: str, *, started: set[str], reload: bool
+) -> None:
+    """Bring each proxy onto its rendered Caddyfile and record what it serves.
+
+    A proxy whose rendered file has the digest recorded as delivered is left
+    alone. One whose container is in `started` began on the file, as does
+    every proxy when `reload` is False (a full dev apply recreates them all),
+    so its digest is recorded without a reload. Any other is reloaded, and its
+    digest is recorded only when the reload worked; a failed one is reported
+    and tried again by the next apply.
+    """
+    delivered = _read_delivered(install_dir)
+    recorded = dict(delivered)
+    for ctr, rel in _PROXY_CONFIG_FILES.items():
+        path = install_dir / rel
+        if not path.is_file():
+            delivered.pop(ctr, None)
+            continue
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if delivered.get(ctr) == digest:
+            continue
+        container = container_name(install, ctr)
+        if not reload or container in started or _reload_proxy(container):
+            delivered[ctr] = digest
+        else:
+            print(
+                f"  warning: {container} is still serving its previous Caddyfile: "
+                "`caddy reload` failed (a config Caddy refuses, a stopped "
+                "container, or no podman/docker on PATH). It was not restarted, "
+                "so the old config keeps serving; the next apply tries again. "
+                f"`podman logs {container}` says why.",
+                file=sys.stderr,
+            )
+    if delivered != recorded:
+        (install_dir / _PROXY_DELIVERED_FILE).write_text(
+            json.dumps(delivered, indent=2, sort_keys=True) + "\n"
+        )
+
+
+def _reload_proxy(container: str) -> bool:
     """Gracefully reload a Caddy proxy whose mounted config changed (CASE-443).
 
-    A scoped `compose up` never recreates the proxies — their service
-    definitions are unchanged, only the mounted Caddyfile content moved.
-    `caddy reload` applies the new config with zero downtime; if the exec
-    fails (stopped container, image without the admin endpoint), fall back
-    to a container restart. Best-effort either way: a route to a brand-new
-    app failing to materialize is visible and recoverable; killing the
-    whole mutation over it is not proportionate.
+    `compose up` never recreates the proxies for a routing change — their
+    service definitions are unchanged, only the mounted Caddyfile content
+    moved. `caddy reload` applies the new config with zero downtime. Returns
+    whether it worked. A failed reload is not followed by a restart: Caddy
+    refuses a config it cannot load and keeps serving the old one, while a
+    restart would boot it on the refused file and leave the proxy down. The
+    failure does not fail the apply either — the caller reports it and the
+    next apply retries; a route to a new app failing to materialize is
+    visible and recoverable, killing the whole mutation over it is not
+    proportionate.
     """
     cli = "podman" if shutil.which("podman") else (
         "docker" if shutil.which("docker") else None
     )
     if cli is None:
-        return
+        return False
     result = subprocess.run(
         [
             cli, "exec", container,
@@ -815,8 +894,7 @@ def _reload_proxy(container: str) -> None:
         ],
         capture_output=True,
     )
-    if result.returncode != 0:
-        subprocess.run([cli, "restart", container], capture_output=True)
+    return result.returncode == 0
 
 
 def stop_and_remove_container(install: str, name: str) -> None:
@@ -897,7 +975,14 @@ def _compose_project(compose_file: Path) -> str:
     except (OSError, _yaml.YAMLError) as e:
         raise ApplyError(f"could not parse {compose_file}: {e}") from e
     pinned = data.get("name") if isinstance(data, dict) else None
-    return str(pinned) if pinned else compose_file.parent.name
+    project = str(pinned) if pinned else compose_file.resolve().parent.name
+    if not project:
+        raise ApplyError(
+            f"{compose_file} pins no compose project name and its directory has "
+            "none to derive one from; re-run `wip-deploy redeploy` to render a "
+            "file that pins it"
+        )
+    return project
 
 
 def _healthcheck_container_names_from_compose(compose_file: Path) -> set[str]:
@@ -930,7 +1015,7 @@ def _container_names_by_service(compose_file: Path) -> dict[str, str]:
     services = data.get("services") if isinstance(data, dict) else None
     if not isinstance(services, dict):
         return {}
-    install = compose_file.parent.name
+    install = compose_file.resolve().parent.name
     return {
         str(svc): str((block or {}).get("container_name") or container_name(install, str(svc)))
         for svc, block in services.items()
@@ -1026,23 +1111,32 @@ def _await_healthy(
 ) -> list[str]:
     """Poll `compose ps` until every container in ``expected`` reports
     healthy or ``timeout_seconds`` pass. Returns the containers that were
-    not healthy at the last poll, sorted — a container `ps` does not list
-    counts as not healthy."""
+    not healthy at the last poll, sorted. One whose status that poll did not
+    observe says so: "(not listed by compose ps)", or "(compose ps failed)"
+    when the query itself failed — its health is unknown, not bad."""
     if not expected:
         return []
     deadline = time.time() + timeout_seconds
     while True:
         statuses = _compose_ps(install_dir, compose_cmd)
-        not_healthy = sorted(n for n in expected if statuses.get(n) != "healthy")
+        if statuses is None:
+            not_healthy = [f"{n} (compose ps failed)" for n in sorted(expected)]
+        else:
+            not_healthy = [
+                n if n in statuses else f"{n} (not listed by compose ps)"
+                for n in sorted(expected)
+                if statuses.get(n) != "healthy"
+            ]
         if not not_healthy or time.time() >= deadline:
             return not_healthy
         time.sleep(2)
 
 
 def _health_timeout_message(not_healthy: list[str], timeout_seconds: int) -> str:
-    """The error for a health wait that ran out, naming what was not healthy."""
+    """The error for a health wait that ran out, naming what was not
+    confirmed healthy (an entry carries why when its status was not seen)."""
     return (
-        f"health wait timed out after {timeout_seconds} s; not healthy: "
+        f"health wait timed out after {timeout_seconds} s; not confirmed healthy: "
         f"{', '.join(not_healthy)}. `wip-deploy status` and the containers' logs say why."
     )
 
@@ -1069,8 +1163,9 @@ def _services_with_healthchecks(
     return names
 
 
-def _compose_ps(install_dir: Path, compose_cmd: list[str]) -> dict[str, str]:
-    """Return a map of container_name → health status.
+def _compose_ps(install_dir: Path, compose_cmd: list[str]) -> dict[str, str] | None:
+    """Return a map of container_name → health status; None when `compose
+    ps` itself failed.
 
     podman-compose and docker compose both support `ps --format json` in
     modern versions, though the JSON shapes differ slightly. We normalize.
@@ -1095,9 +1190,9 @@ def _compose_ps(install_dir: Path, compose_cmd: list[str]) -> dict[str, str]:
             text=True,
         )
     except subprocess.CalledProcessError:
-        # podman-compose sometimes errors noisily on first call; treat
-        # as "no statuses yet" and let the outer loop retry.
-        return {}
+        # podman-compose sometimes errors noisily on first call; the outer
+        # loop retries. None, not {}: a failed query observed nothing.
+        return None
 
     statuses = _parse_ps_output(result.stdout)
     _supplement_health_from_inspect(statuses, compose_cmd)
@@ -1296,14 +1391,21 @@ def _run_post_install(
 
 
 def _run_hook(cmd: list[str], *, cwd: Path | None, label: str, timeout_seconds: int) -> None:
-    """Run one post-install hook, bounded by the apply's timeout: a hook that
-    never returns would otherwise hold the CLI forever, the wait's budget
-    already spent on the health wait before it."""
+    """Run one post-install hook, bounded by `spec.apply.timeout_seconds`: a
+    hook that never returns would otherwise hold the CLI forever. Each hook
+    gets the whole value from its own start — it is not what the health wait
+    left over — so an apply's worst case grows with its number of hooks.
+
+    The bound stops the deployer's wait: the exec client is killed, and
+    whether the command inside the container stops with it is up to the
+    runtime."""
     try:
         subprocess.run(cmd, cwd=cwd, check=True, timeout=timeout_seconds)
     except subprocess.TimeoutExpired as e:
         raise ApplyError(
-            f"post-install hook {label} did not finish within {timeout_seconds} s"
+            f"post-install hook {label} did not finish within {timeout_seconds} s; "
+            "the deployer stopped waiting, and the hook may still be running in "
+            "its container"
         ) from e
     except subprocess.CalledProcessError as e:
         raise ApplyError(f"post-install hook {label} failed (exit {e.returncode})") from e
@@ -1312,6 +1414,12 @@ def _run_hook(cmd: list[str], *, cwd: Path | None, label: str, timeout_seconds: 
 # ────────────────────────────────────────────────────────────────────
 # Garage provisioning (CASE-864)
 # ────────────────────────────────────────────────────────────────────
+
+
+# How long provisioning waits for Garage's admin API, and the bound on each
+# health probe inside that window.
+_GARAGE_READY_SECONDS = 60
+_GARAGE_PROBE_SECONDS = 10
 
 
 def _provision_garage_if_active(
@@ -1383,16 +1491,27 @@ def _provision_garage_if_active(
 
     # Readiness: the component declares no healthcheck (shell-less image,
     # compose healthchecks are CMD-SHELL), so wait for the admin API
-    # here before provisioning.
-    deadline = time.monotonic() + 60
+    # here before provisioning. Each probe has a short bound of its own: a
+    # probe that hangs is one more failed attempt inside the readiness
+    # window, not the end of it.
+    probe_seconds = min(_GARAGE_PROBE_SECONDS, timeout_seconds)
+    deadline = time.monotonic() + _GARAGE_READY_SECONDS
     while True:
-        probe = run(["json-api", "GetClusterHealth"], check=False)
-        if probe.returncode == 0:
-            break
+        try:
+            probe = subprocess.run(
+                [*exec_prefix, "/garage", "json-api", "GetClusterHealth"],
+                cwd=cwd, capture_output=True, text=True, check=False,
+                timeout=probe_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            why = f"the health probe did not answer within {probe_seconds} s"
+        else:
+            if probe.returncode == 0:
+                break
+            why = probe.stderr.strip() or probe.stdout.strip()
         if time.monotonic() > deadline:
             raise ApplyError(
-                "garage did not become ready within 60s: "
-                f"{probe.stderr.strip() or probe.stdout.strip()}"
+                f"garage did not become ready within {_GARAGE_READY_SECONDS}s: {why}"
             )
         time.sleep(2)
 
@@ -1484,16 +1603,25 @@ def apply_k8s(
     tree: FileTree,
     install_dir: Path,
     services_scope: list[str] | None = None,
+    prune_volume_claims: bool = True,
 ) -> ApplyResult:
     """Materialize the tree and run `kubectl apply`.
+
+    `prune_volume_claims=False` (a removal: remove-app) keeps
+    PersistentVolumeClaims out of the full apply's prune, so removing an app
+    never deletes a volume and its data; the claims the render no longer
+    names are printed, kept.
 
     Honors `deployment.spec.apply` — wait and timeout. Wait uses
     `kubectl rollout status` per Deployment/StatefulSet. Post-install
     hooks run via `kubectl exec` against a pod selected by the
     component's `app.kubernetes.io/name` label.
 
-    `services_scope` (non-empty list) narrows the apply for
-    single-service mutations like an app tag roll. The full tree is
+    `services_scope` (a list) narrows the apply for single-service
+    mutations like an app tag roll; an empty list is a config-only
+    mutation (group-map, app-namespace), which applies the shared files
+    and the front door alone and waits only for the front door. The full
+    tree is
     still rendered and written to disk — the on-disk state stays
     truthful — but kubectl applies only the shared cross-cutting files
     (secrets, configmaps, ingress, network policies; no-ops when
@@ -1505,7 +1633,7 @@ def apply_k8s(
     unhealthy — and prune against a partial apply set would delete
     everything not in it. Rollout wait and post-install hooks narrow to
     the scoped services. Resource DELETION happens only via the full
-    apply's prune, so verbs that remove resources must not pass a scope.
+    apply's prune, so verbs that remove resources must pass None.
     """
     if not shutil.which("kubectl"):
         raise ApplyError("kubectl not on PATH")
@@ -1534,7 +1662,7 @@ def apply_k8s(
     # CASE-455: see apply_compose — post-`kubectl apply` failures are
     # post-mutation; stamp them so the CLI persists the applied spec.
     try:
-        if services_scope:
+        if services_scope is not None:
             _kubectl_apply_scoped(install_dir, ns, services_scope)
             # Narrow the wait / hooks / summary to the scoped services.
             # Filtering the component and app lists here composes through
@@ -1547,7 +1675,12 @@ def apply_k8s(
             apps = [a for a in apps if a.metadata.name in scoped_names]
             up_count = len(_expected_workloads(components, apps, deployment))
         else:
-            _kubectl_apply_tree(install_dir, ns)
+            kept_claims = (
+                None if prune_volume_claims else _claims_left_out(ns, tree)
+            )
+            _kubectl_apply_tree(install_dir, ns, prune_volume_claims=prune_volume_claims)
+            if not prune_volume_claims:
+                _report_kept_claims(ns, kept_claims)
             up_count = _count_k8s_workloads(tree)
 
         healthy = True
@@ -1564,10 +1697,10 @@ def apply_k8s(
             healthy = not not_rolled_out
 
         if deployment.spec.apply.wait and not healthy:
-            raise ApplyError(
-                "rollout did not complete within "
-                f"{deployment.spec.apply.timeout_seconds} s: " + "; ".join(not_rolled_out)
-            )
+            # Each entry says why in its own words — a kubectl timeout, a
+            # refusal, or a workload the budget never reached — so the
+            # header claims no time window a refusal never waited out.
+            raise ApplyError("rollout did not complete: " + "; ".join(not_rolled_out))
 
         # Post-install hooks declare `after: healthy`; only run them once a
         # pod is confirmed Running; --no-wait (health never established) skips
@@ -1695,7 +1828,60 @@ def _kubectl_apply_scoped(
         _kubectl_run(["apply", "-n", ns, "-f", str(path)])
 
 
-def _kubectl_apply_tree(install_dir: Path, ns: str) -> None:
+def _rendered_claims(tree: FileTree) -> set[str]:
+    """Names of the PersistentVolumeClaims the render emits."""
+    names: set[str] = set()
+    for rel, entry in tree.files.items():
+        if not str(rel).endswith(".yaml"):
+            continue
+        try:
+            docs = list(yaml.safe_load_all(entry.content))
+        except yaml.YAMLError:
+            continue
+        for doc in docs:
+            if isinstance(doc, dict) and doc.get("kind") == "PersistentVolumeClaim":
+                name = (doc.get("metadata") or {}).get("name")
+                if name:
+                    names.add(str(name))
+    return names
+
+
+def _claims_left_out(ns: str, tree: FileTree) -> list[str] | None:
+    """This install's live volume claims the render no longer names — what a
+    full apply would prune; None when the cluster could not be asked."""
+    listing = subprocess.run(
+        [*kubectl(), "get", "pvc", "-n", ns,
+         "--selector=app.kubernetes.io/part-of=wip",
+         "-o", "jsonpath={.items[*].metadata.name}"],
+        capture_output=True, text=True,
+    )
+    if listing.returncode != 0:
+        return None
+    rendered = _rendered_claims(tree)
+    return sorted(n for n in listing.stdout.split() if n not in rendered)
+
+
+def _report_kept_claims(ns: str, kept: list[str] | None) -> None:
+    """Say which volume claims a removal kept rather than pruned."""
+    if kept is None:
+        print(
+            f"  note: no volume claim was pruned; the claims in namespace {ns!r} "
+            "could not be listed to name any left behind.",
+            file=sys.stderr,
+        )
+        return
+    for name in kept:
+        print(
+            f"  kept volume claim {name!r} (and its data): the install no longer "
+            f"uses it. Delete it with `kubectl delete pvc {name} -n {ns}` once "
+            "the data is not needed.",
+            file=sys.stderr,
+        )
+
+
+def _kubectl_apply_tree(
+    install_dir: Path, ns: str, *, prune_volume_claims: bool = True
+) -> None:
     """Apply the rendered tree with prune.
 
     Namespace applied first without prune (cluster-scoped — pruning could
@@ -1717,6 +1903,8 @@ def _kubectl_apply_tree(install_dir: Path, ns: str) -> None:
         "--selector=app.kubernetes.io/part-of=wip",
     ]
     for kind in _PRUNE_ALLOWLIST:
+        if kind == "core/v1/PersistentVolumeClaim" and not prune_volume_claims:
+            continue
         args.extend(["--prune-allowlist", kind])
     _kubectl_run(args)
 
@@ -1956,19 +2144,22 @@ def _wait_k8s_rollout(
     Returns what did not roll out (empty when every workload did), one
     "<kind>/<name>: <why>" entry each, the why in kubectl's own words — a
     refused kubectl (RBAC, a kind or workload that does not exist) is not
-    reported as a timeout. Respects `spec.apply.timeout_seconds` as a
+    reported as a timeout. A workload that fails does not end the wait: the
+    rest are still asked. Respects `spec.apply.timeout_seconds` as a
     *total* budget across all workloads, not per-workload; workloads the
     budget never reached are listed as such.
     """
     workloads = _expected_workloads(components, apps, deployment)
-    deadline = time.time() + deployment.spec.apply.timeout_seconds
+    budget = deployment.spec.apply.timeout_seconds
+    deadline = time.time() + budget
+    failed: list[str] = []
     for i, (kind, name) in enumerate(workloads):
         # Rounded up: truncating gave the first workload of a 1 s budget 0 s,
         # so it was never asked.
         remaining = math.ceil(deadline - time.time())
         if remaining <= 0:
-            return [
-                f"{k.lower()}/{n}: not checked, the wait's budget was spent"
+            return failed + [
+                f"{k.lower()}/{n}: not checked, the wait's {budget} s were spent"
                 for k, n in workloads[i:]
             ]
         try:
@@ -1985,8 +2176,10 @@ def _wait_k8s_rollout(
             )
         except subprocess.CalledProcessError as e:
             why = (e.stderr or e.stdout or "").strip().splitlines()
-            return [f"{kind.lower()}/{name}: {why[-1] if why else f'exit {e.returncode}'}"]
-    return []
+            failed.append(
+                f"{kind.lower()}/{name}: {why[-1] if why else f'exit {e.returncode}'}"
+            )
+    return failed
 
 
 def _expected_workloads(

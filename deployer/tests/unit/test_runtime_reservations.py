@@ -110,8 +110,9 @@ def test_a_registry_that_refuses_or_fails_stops_the_apply(
     result = check_runtime_reservations(
         _deployment([app]), [app], "admin-key", transport=_transport(status, {}, []),
     )
-    assert len(result.errors) == 1 and needle in result.errors[0]
-    assert "runtime reservations" in result.errors[0]
+    assert result.errors == []
+    assert result.refused is not None and needle in result.refused
+    assert "runtime reservations" in result.refused
 
 
 def test_an_unreachable_registry_is_a_note(discovery: Discovery):

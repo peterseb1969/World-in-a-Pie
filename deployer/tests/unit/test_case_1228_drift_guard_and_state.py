@@ -875,11 +875,11 @@ class TestUnreadableCanonicalStateIsParked:
 
 class TestRemoveAppContainerFollowsTheSavedSpec:
     """remove-app applies with an empty scope. A failure after the up step (a
-    proxy reload, a post-install hook, the health wait) is stamped `mutated=True`,
+    post-install hook or Garage provisioning failing) is stamped `mutated=True`,
     so the spec without the app is saved. The container used to be removed only
     after a successful return, so this failure left it running. A re-run of
-    remove-app then answers "not in this install — no change", and the container
-    stayed with no verb left to remove it. Now the removal runs whenever the spec
+    remove-app then answered "not in this install — no change", and only a full
+    `redeploy` or `install` removed the container. Now the removal runs whenever the spec
     that drops the app is saved. When nothing is saved, the container stays,
     matching the spec that still lists the app."""
 
@@ -930,7 +930,7 @@ class TestRemoveAppContainerFollowsTheSavedSpec:
     ) -> None:
         result, order = self._run(
             tmp_path, monkeypatch,
-            apply_mod.ApplyError("proxy reload failed", mutated=True),
+            apply_mod.ApplyError("post-install hook 'init' on 'registry' failed (exit 1)", mutated=True),
         )
         assert result.exit_code == 1
         assert order == ["apply", "persist", "stop guard react-console"]

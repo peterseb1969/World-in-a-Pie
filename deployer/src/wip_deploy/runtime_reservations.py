@@ -32,6 +32,9 @@ class RuntimeReservationCheck:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     note: str | None = None
+    # The Registry refused or failed the check (registry_refusal): a stop of
+    # its own, not a collision, so it is reported apart from `errors`.
+    refused: str | None = None
 
 
 def replacements(
@@ -134,7 +137,7 @@ def check_runtime_reservations(
         )
     refused = registry_refusal(resp.status_code, "its runtime reservations")
     if refused:
-        return RuntimeReservationCheck(errors=[refused])
+        return RuntimeReservationCheck(refused=refused)
     if resp.status_code != 200 or not str(resp.headers.get("content-type", "")).startswith(
         "application/json"
     ):
