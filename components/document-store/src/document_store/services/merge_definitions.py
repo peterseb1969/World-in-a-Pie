@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -280,6 +281,20 @@ def _name_key(name: dict[str, Any]) -> tuple[str, str, str]:
     )
 
 
+def _name_keys(term: dict[str, Any]) -> set[tuple[str, str, str]]:
+    """The _name_key of each of a term's names."""
+    return {_name_key(n) for n in term.get("names") or []}
+
+
+def _comparable_term(row: dict[str, Any]) -> dict[str, Any]:
+    """A term with its names as a sorted set, one per _name_key."""
+    out = dict(row)
+    out["names"] = sorted(
+        {_name_key(n): n for n in row.get("names") or [] if isinstance(n, dict)}
+    )
+    return out
+
+
 def _term_texts(term: dict[str, Any]) -> list[str]:
     """Every string a term is resolved by: its value and its names' values."""
     texts = [str(term.get("value") or "")]
@@ -292,6 +307,186 @@ def _term_texts(term: dict[str, Any]) -> list[str]:
 
 def _versions(versions: set[int]) -> str:
     return ", ".join(f"v{v}" for v in sorted(versions)) or "none"
+
+
+def _versions_by_value(rows: Iterable[dict[str, Any]]) -> dict[str, set[int]]:
+    """The version numbers each template value has among these rows."""
+    versions: dict[str, set[int]] = {}
+    for row in rows:
+        versions.setdefault(str(row.get("value")), set()).add(
+            int(row.get("version") or 1)
+        )
+    return versions
+
+
+def _no_common_version(
+    value: str, archive_versions: set[int], target_versions: set[int]
+) -> Incompatibility:
+    """The refusal of a template value the target holds with no version in
+    common with the archive."""
+    return Incompatibility(
+        entity_type="templates",
+        name=value,
+        reason=(
+            "the target has this template, but no version of it is on "
+            "both sides (archive "
+            f"{_versions(archive_versions)}, target "
+            f"{_versions(target_versions)}), so there is "
+            "nothing to compare — merge with align_templates=true to map "
+            "the archive's versions onto the target's by schema"
+        ),
+        detail={"versions": {
+            "archive": sorted(archive_versions),
+            "target": sorted(target_versions),
+        }},
+    )
+
+
+def _lifecycle_fields(entity_type: str) -> tuple[frozenset[str], frozenset[str]]:
+    """(term lifecycle fields, template/terminology lifecycle fields) that
+    apply to this definition type; each empty where it does not apply."""
+    lifecycle = _TERM_LIFECYCLE_FIELDS if entity_type == "terms" else frozenset()
+    template_lifecycle = (
+        _DEFINITION_LIFECYCLE_FIELDS
+        if entity_type in ("templates", "terminologies") else frozenset()
+    )
+    return lifecycle, template_lifecycle
+
+
+def _status_differs(
+    fields: frozenset[str], archive: dict[str, Any], target: dict[str, Any]
+) -> list[str]:
+    """The fields (sorted) whose value differs, an absent one read as active."""
+    return [
+        f for f in sorted(fields)
+        if (archive.get(f) or "active") != (target.get(f) or "active")
+    ]
+
+
+def _differing_content(
+    entity_type: str,
+    name: str,
+    substantive: list[str],
+    archive_row: dict[str, Any],
+    target_row: dict[str, Any],
+) -> Incompatibility:
+    """The refusal of a definition both sides hold with different content."""
+    return Incompatibility(
+        entity_type=entity_type,
+        name=name,
+        reason=(
+            "exists on both sides with different content "
+            f"({', '.join(substantive)})"
+        ),
+        detail={
+            field_name: {
+                "target": target_row.get(field_name, ABSENT),
+                "archive": archive_row.get(field_name, ABSENT),
+            }
+            for field_name in substantive
+        },
+    )
+
+
+def _target_wins(
+    entity_type: str,
+    name: str,
+    cosmetic: list[str],
+    archive_row: dict[str, Any],
+    target_row: dict[str, Any],
+) -> TargetWins:
+    """The report of the fields in which the target's value was kept."""
+    return TargetWins(
+        entity_type=entity_type,
+        name=name,
+        fields=cosmetic,
+        detail={
+            field_name: {
+                "kept": target_row.get(field_name, ABSENT),
+                "discarded": archive_row.get(field_name, ABSENT),
+            }
+            for field_name in cosmetic
+        },
+    )
+
+
+def _names_to_add(
+    missing: list[dict[str, Any]], target: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Copies of the names to add to the target's term, each losing
+    ``preferred`` where a name of its type and language is already preferred
+    (on the target, or earlier in this list), since a group has at most one."""
+    preferred = {
+        (n.get("type"), n.get("language"))
+        for n in target.get("names") or [] if n.get("preferred")
+    }
+    names = []
+    for n in missing:
+        n = dict(n)
+        group = (n.get("type"), n.get("language"))
+        if n.get("preferred"):
+            if group in preferred:
+                n["preferred"] = False
+            else:
+                preferred.add(group)
+        names.append(n)
+    return names
+
+
+def _name_additions(plan: DefinitionsPlan) -> dict[str, list[tuple[str, str]]]:
+    """Per target terminology id, the (bearer, text) pairs this merge adds:
+    every text of each term it adds (bearer ``new:<value>``), and each name
+    it adds to an existing term (bearer: that term's id)."""
+    additions: dict[str, list[tuple[str, str]]] = {}  # terminology -> (bearer, text)
+    for row in plan.to_add["terms"]:
+        terminology = str(
+            plan.mapping["terminologies"].get(str(row.get("terminology_id")),
+                                              row.get("terminology_id"))
+        )
+        bearer = f"new:{row.get('value')}"
+        for text in _term_texts(row):
+            additions.setdefault(terminology, []).append((bearer, text))
+    for extension in plan.extend_names:
+        for n in extension["names"]:
+            additions.setdefault(str(extension["terminology_id"]), []).append(
+                (str(extension["term_id"]), str(n.get("value")))
+            )
+    return additions
+
+
+def _name_clashes(
+    terminology: str,
+    setting: dict[str, Any],
+    target_index: dict[tuple[Any, ...], dict[str, Any]],
+    added: list[tuple[str, str]],
+) -> list[str]:
+    """The names (folded per the terminology's case_sensitive, sorted) that
+    the target's terms and the additions would give to more than one term."""
+    fold = (lambda s: s) if setting.get("case_sensitive") else str.casefold
+    bearers: dict[str, set[str]] = {}
+    for key, row in target_index.items():
+        if str(key[0]) != terminology:
+            continue
+        for text in _term_texts(row):
+            bearers.setdefault(fold(text), set()).add(str(row.get("term_id")))
+    for bearer, text in added:
+        bearers.setdefault(fold(text), set()).add(bearer)
+    return sorted(text for text, owners in bearers.items() if len(owners) > 1)
+
+
+def _unique_names_broken(terminology_value: str, clashes: list[str]) -> Incompatibility:
+    """The refusal of additions that would break a terminology's unique_names."""
+    return Incompatibility(
+        entity_type="terminologies",
+        name=terminology_value,
+        reason=(
+            "the target's terminology has unique_names, and the terms "
+            "and names this merge adds would give a name to more than "
+            f"one term ({', '.join(clashes[:10])}"
+            f"{' …' if len(clashes) > 10 else ''})"
+        ),
+        detail={"unique_names": {"name_collisions": clashes}},
+    )
 
 
 def compare_definitions(
@@ -368,36 +563,57 @@ class DefinitionsPlanner:
 
         for entity_type in DEFINITION_TYPES:
             entities = entities_by_type.get(entity_type) or []
-            if not entities:
-                continue
-            if entity_type == "templates" and self._align_templates:
-                entities = await self._align(entities, namespace, plan)
-                if not entities:
-                    continue
-            target_index = await self._index_target(entity_type, namespace)
-            if entity_type == "templates":
-                self._template_ids = {
-                    str(row["value"]): str(row["template_id"])
-                    for row in target_index.values()
-                    if row.get("value") and row.get("template_id")
-                }
-                if not self._align_templates:
-                    entities = self._map_templates_by_value(entities, target_index, plan)
-            # Match the whole type before comparing any of it: a definition
-            # can reference another of its own type (a template's extends or
-            # template_ref, a term's parent_term_id), and that reference
-            # compares equal only once its own mapping is known.
-            matched = [
-                (entity, self._match(entity_type, entity, target_index, plan))
-                for entity in entities
-            ]
-            remapper = self._remapper(plan)
-            for entity, target in matched:
-                self._classify(entity_type, entity, target, remapper, plan)
-            if entity_type == "terms":
-                await self._check_unique_names(namespace, target_index, plan)
+            if entities:
+                await self._plan_type(entity_type, entities, namespace, plan)
 
         return plan
+
+    async def _plan_type(
+        self,
+        entity_type: str,
+        entities: list[dict[str, Any]],
+        namespace: str,
+        plan: DefinitionsPlan,
+    ) -> None:
+        """Check one definition type's archive entities against the target's."""
+        if entity_type == "templates" and self._align_templates:
+            entities = await self._align(entities, namespace, plan)
+            if not entities:
+                return
+        target_index = await self._index_target(entity_type, namespace)
+        if entity_type == "templates":
+            entities = self._index_templates(entities, target_index, plan)
+        # Match the whole type before comparing any of it: a definition
+        # can reference another of its own type (a template's extends or
+        # template_ref, a term's parent_term_id), and that reference
+        # compares equal only once its own mapping is known.
+        matched = [
+            (entity, self._match(entity_type, entity, target_index, plan))
+            for entity in entities
+        ]
+        remapper = self._remapper(plan)
+        for entity, target in matched:
+            self._classify(entity_type, entity, target, remapper, plan)
+        if entity_type == "terms":
+            await self._check_unique_names(namespace, target_index, plan)
+
+    def _index_templates(
+        self,
+        entities: list[dict[str, Any]],
+        target_index: dict[tuple[Any, ...], dict[str, Any]],
+        plan: DefinitionsPlan,
+    ) -> list[dict[str, Any]]:
+        """Record the target's template ids by value; without align_templates,
+        map the archive's templates onto them by value. Returns the archive
+        templates left to compare per version."""
+        self._template_ids = {
+            str(row["value"]): str(row["template_id"])
+            for row in target_index.values()
+            if row.get("value") and row.get("template_id")
+        }
+        if self._align_templates:
+            return entities
+        return self._map_templates_by_value(entities, target_index, plan)
 
     def _map_templates_by_value(
         self,
@@ -423,16 +639,8 @@ class DefinitionsPlanner:
         splice two unrelated version histories into one template. Returns the
         archive templates left to compare per version.
         """
-        target_versions: dict[str, set[int]] = {}
-        for row in target_index.values():
-            target_versions.setdefault(str(row.get("value")), set()).add(
-                int(row.get("version") or 1)
-            )
-        archive_versions: dict[str, set[int]] = {}
-        for row in entities:
-            archive_versions.setdefault(str(row.get("value")), set()).add(
-                int(row.get("version") or 1)
-            )
+        target_versions = _versions_by_value(target_index.values())
+        archive_versions = _versions_by_value(entities)
         kept: list[dict[str, Any]] = []
         refused: set[str] = set()
         for row in entities:
@@ -450,21 +658,8 @@ class DefinitionsPlanner:
             if value in refused:
                 continue
             refused.add(value)
-            plan.incompatibilities.append(Incompatibility(
-                entity_type="templates",
-                name=value,
-                reason=(
-                    "the target has this template, but no version of it is on "
-                    "both sides (archive "
-                    f"{_versions(archive_versions[value])}, target "
-                    f"{_versions(target_versions.get(value, set()))}), so there is "
-                    "nothing to compare — merge with align_templates=true to map "
-                    "the archive's versions onto the target's by schema"
-                ),
-                detail={"versions": {
-                    "archive": sorted(archive_versions[value]),
-                    "target": sorted(target_versions.get(value, set())),
-                }},
+            plan.incompatibilities.append(_no_common_version(
+                value, archive_versions[value], target_versions.get(value, set())
             ))
         return kept
 
@@ -537,41 +732,20 @@ class DefinitionsPlanner:
         target_filled = with_defaults(entity_type, target_row)
         entity = self._comparable(entity_type, archive_filled)
         target = self._comparable(entity_type, target_filled)
-        lifecycle = _TERM_LIFECYCLE_FIELDS if entity_type == "terms" else frozenset()
-        template_lifecycle = (
-            _DEFINITION_LIFECYCLE_FIELDS
-            if entity_type in ("templates", "terminologies") else frozenset()
-        )
+        lifecycle, template_lifecycle = _lifecycle_fields(entity_type)
         cosmetic, substantive = compare_definitions(
             entity, target, skip=lifecycle | template_lifecycle,
         )
         if substantive:
-            plan.incompatibilities.append(
-                Incompatibility(
-                    entity_type=entity_type,
-                    name=name,
-                    reason=(
-                        "exists on both sides with different content "
-                        f"({', '.join(substantive)})"
-                    ),
-                    detail={
-                        field_name: {
-                            "target": target_row.get(field_name, ABSENT),
-                            "archive": archive_row.get(field_name, ABSENT),
-                        }
-                        for field_name in substantive
-                    },
-                )
-            )
+            plan.incompatibilities.append(_differing_content(
+                entity_type, name, substantive, archive_row, target_row
+            ))
             return
 
         if entity_type == "terms" and "names" in cosmetic:
             cosmetic = self._extend_names(archive_filled, target_filled, name, cosmetic, plan)
 
-        cosmetic = cosmetic + [
-            f for f in sorted(template_lifecycle)
-            if (entity.get(f) or "active") != (target.get(f) or "active")
-        ]
+        cosmetic = cosmetic + _status_differs(template_lifecycle, entity, target)
         retired_here = False
         if lifecycle:
             kept = self._classify_term_lifecycle(entity, target, name, plan)
@@ -579,20 +753,9 @@ class DefinitionsPlanner:
             retired_here = not kept and self._lifecycle_differs(entity, target)
 
         if cosmetic:
-            plan.target_wins.append(
-                TargetWins(
-                    entity_type=entity_type,
-                    name=name,
-                    fields=cosmetic,
-                    detail={
-                        field_name: {
-                            "kept": target_row.get(field_name, ABSENT),
-                            "discarded": archive_row.get(field_name, ABSENT),
-                        }
-                        for field_name in cosmetic
-                    },
-                )
-            )
+            plan.target_wins.append(_target_wins(
+                entity_type, name, cosmetic, archive_row, target_row
+            ))
         if retired_here:
             return  # retired on the target in pass 2, so not unchanged
         plan.unchanged[entity_type] += 1
@@ -610,32 +773,32 @@ class DefinitionsPlanner:
           (an archive written before it was derived) is read without it.
         """
         if entity_type == "terms":
-            out = dict(row)
-            out["names"] = sorted(
-                {_name_key(n): n for n in row.get("names") or [] if isinstance(n, dict)}
-            )
-            return out
+            return _comparable_term(row)
         if entity_type != "templates":
             return row
         out = dict(row)
         for prop in ("source_templates", "target_templates"):
             out[prop] = sorted({self._endpoint_key(e) for e in row.get(prop) or []})
         edge = row.get("usage") == "relationship"
-        fields = []
-        for f in row.get("fields") or []:
-            if not isinstance(f, dict):
-                fields.append(f)
-                continue
-            f = dict(f)
-            if edge and f.get("name") in ("source_ref", "target_ref"):
-                f["target_templates"] = None
-            elif f.get("target_templates"):
-                f["target_templates"] = sorted(
-                    {self._endpoint_key(t) for t in f["target_templates"]}
-                )
-            fields.append(f)
-        out["fields"] = fields
+        out["fields"] = [
+            self._comparable_field(f, edge) for f in row.get("fields") or []
+        ]
         return out
+
+    def _comparable_field(self, f: Any, edge: bool) -> Any:
+        """A template field with its target_templates as _comparable reads
+        them: dropped on an edge type's source_ref / target_ref, else the
+        templates they name, sorted."""
+        if not isinstance(f, dict):
+            return f
+        f = dict(f)
+        if edge and f.get("name") in ("source_ref", "target_ref"):
+            f["target_templates"] = None
+        elif f.get("target_templates"):
+            f["target_templates"] = sorted(
+                {self._endpoint_key(t) for t in f["target_templates"]}
+            )
+        return f
 
     def _endpoint_key(self, entry: Any) -> str:
         """The template a reference names: its resolved id when it has one,
@@ -665,33 +828,19 @@ class DefinitionsPlanner:
         An added name loses ``preferred`` where the target already prefers a
         name of the same type and language, since a group has at most one.
         """
-        held = {_name_key(n) for n in target.get("names") or []}
+        held = _name_keys(target)
         missing = [n for n in archive.get("names") or [] if _name_key(n) not in held]
         if not missing or not self._extend_terminologies:
             return cosmetic
-        preferred = {
-            (n.get("type"), n.get("language"))
-            for n in target.get("names") or [] if n.get("preferred")
-        }
-        names = []
-        for n in missing:
-            n = dict(n)
-            group = (n.get("type"), n.get("language"))
-            if n.get("preferred"):
-                if group in preferred:
-                    n["preferred"] = False
-                else:
-                    preferred.add(group)
-            names.append(n)
         plan.extend_names.append({
             "term_id": target.get(ID_KEYS["terms"]),
             "terminology_id": target.get("terminology_id"),
-            "names": names,
+            "names": _names_to_add(missing, target),
             "name": name,
         })
         # Every archive name is on the target after the union; the target's
         # own extra names stay, which is the target winning.
-        if not (held - {_name_key(n) for n in archive.get("names") or []}):
+        if not (held - _name_keys(archive)):
             return [f for f in cosmetic if f != "names"]
         return cosmetic
 
@@ -710,20 +859,7 @@ class DefinitionsPlanner:
         against each other; where the target does not hold it, nothing the
         merge adds can break it, and a difference is only reported.
         """
-        additions: dict[str, list[tuple[str, str]]] = {}  # terminology -> (bearer, text)
-        for row in plan.to_add["terms"]:
-            terminology = str(
-                plan.mapping["terminologies"].get(str(row.get("terminology_id")),
-                                                  row.get("terminology_id"))
-            )
-            bearer = f"new:{row.get('value')}"
-            for text in _term_texts(row):
-                additions.setdefault(terminology, []).append((bearer, text))
-        for extension in plan.extend_names:
-            for n in extension["names"]:
-                additions.setdefault(str(extension["terminology_id"]), []).append(
-                    (str(extension["term_id"]), str(n.get("value")))
-                )
+        additions = _name_additions(plan)
         if not additions:
             return
         db_name, coll_name = self._collection_map["terminologies"]
@@ -738,28 +874,11 @@ class DefinitionsPlanner:
             setting = settings.get(terminology)
             if not setting or not setting.get("unique_names"):
                 continue
-            fold = (lambda s: s) if setting.get("case_sensitive") else str.casefold
-            bearers: dict[str, set[str]] = {}
-            for key, row in target_index.items():
-                if str(key[0]) != terminology:
-                    continue
-                for text in _term_texts(row):
-                    bearers.setdefault(fold(text), set()).add(str(row.get("term_id")))
-            for bearer, text in added:
-                bearers.setdefault(fold(text), set()).add(bearer)
-            clashes = sorted(text for text, owners in bearers.items() if len(owners) > 1)
+            clashes = _name_clashes(terminology, setting, target_index, added)
             if clashes:
-                plan.incompatibilities.append(Incompatibility(
-                    entity_type="terminologies",
-                    name=str(setting.get("value")),
-                    reason=(
-                        "the target's terminology has unique_names, and the terms "
-                        "and names this merge adds would give a name to more than "
-                        f"one term ({', '.join(clashes[:10])}"
-                        f"{' …' if len(clashes) > 10 else ''})"
-                    ),
-                    detail={"unique_names": {"name_collisions": clashes}},
-                ))
+                plan.incompatibilities.append(
+                    _unique_names_broken(str(setting.get("value")), clashes)
+                )
 
     @staticmethod
     def _lifecycle_differs(archive: dict[str, Any], target: dict[str, Any]) -> bool:
