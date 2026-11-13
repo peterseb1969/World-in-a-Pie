@@ -68,7 +68,6 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "namespaces": ["wip"],
     "grants": {"wip": "write"},
 }]))
-os.environ.setdefault("AUTH_ENABLED", "true")
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
 

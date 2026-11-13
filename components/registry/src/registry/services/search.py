@@ -147,9 +147,11 @@ class SearchService:
     def _sanitize_field_name(field_name: str) -> str:
         """Sanitize a field name to prevent NoSQL injection.
 
-        A composite key is flat, so a field name has no dots: a dotted one
-        would be read by the query as a nested path and by the match check as
-        a literal key, and the two would disagree.
+        Search names a top-level field of a key, so a field name has no dots:
+        a dotted one would be read by the query as a nested path and by the
+        match check as a literal key, and the two would disagree. This is a
+        limit of search, not of the data: a key may be registered with any
+        field names and nested values, and such a field cannot be searched.
         """
         if field_name.startswith("$"):
             raise ValueError(f"Invalid field name: {field_name}")

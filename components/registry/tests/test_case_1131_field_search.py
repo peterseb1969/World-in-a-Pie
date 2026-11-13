@@ -24,12 +24,17 @@ async def _register(client, headers, key: dict) -> str:
     return result["registry_id"]
 
 
-async def _search(client, headers, criteria: dict) -> dict:
+async def _search(client, headers, criteria: dict, status: str = "ok") -> dict:
+    """One search item's result, asserting its per-item status: an item that
+    failed answers 200 with no results too, so an empty result proves
+    nothing unless the status says the search ran."""
     r = await client.post(f"{BASE}/search/by-fields", headers=headers, json=[{
         "field_criteria": criteria, "restrict_to_namespaces": ["default"],
     }])
     assert r.status_code == 200, r.text
-    return r.json()["results"][0]
+    result = r.json()["results"][0]
+    assert result["status"] == status, result
+    return result
 
 
 @pytest.fixture
@@ -63,15 +68,30 @@ async def test_fields_split_across_two_keys_are_no_match(client, auth_headers, t
 
 
 @pytest.mark.asyncio
-async def test_a_value_is_matched_as_a_value_not_an_operator(client, auth_headers, tag):
-    await _register(client, auth_headers, {"value": f"V-{tag}", "probe": tag})
-    found = await _search(client, auth_headers, {"value": {"$ne": "nothing"}, "probe": tag})
-    assert found["results"] == []
+@pytest.mark.parametrize("value", [{"$ne": "nothing"}, None, ["a", "b"]])
+async def test_a_criterion_value_is_a_scalar(client, auth_headers, value):
+    """An operator-shaped object never reaches the query, and a null or a list
+    (which MongoDB would match against a missing field or an array element,
+    while the match check would not) is refused rather than half-matched."""
+    r = await client.post(f"{BASE}/search/by-fields", headers=auth_headers, json=[{
+        "field_criteria": {"value": value},
+    }])
+    assert r.status_code == 422, r.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["restrict_to_namespaces", "restrict_to_entity_types"])
+async def test_an_empty_restriction_is_refused_not_read_as_all(client, auth_headers, field):
+    for route, item in (
+        ("by-fields", {"field_criteria": {"value": "x"}}),
+        ("by-term", {"term": "x"}),
+    ):
+        r = await client.post(f"{BASE}/search/{route}", headers=auth_headers, json=[{**item, field: []}])
+        assert r.status_code == 422, (route, r.text)
 
 
 @pytest.mark.asyncio
 async def test_empty_criteria_and_dotted_names_are_refused(client, auth_headers):
     r = await client.post(f"{BASE}/search/by-fields", headers=auth_headers, json=[{"field_criteria": {}}])
     assert r.status_code == 422, r.text
-    dotted = await _search(client, auth_headers, {"value.inner": "x"})
-    assert dotted["status"] == "error", dotted
+    await _search(client, auth_headers, {"value.inner": "x"}, status="error")

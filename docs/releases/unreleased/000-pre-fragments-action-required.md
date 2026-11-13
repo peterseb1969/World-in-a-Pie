@@ -2477,9 +2477,11 @@ primary key and another in a synonym, and labelled such an entry a
 primary-key match. An entry now matches only when one key, its primary key
 or one active synonym, holds every field at the given value. Values are
 compared as values (a `{"$ne": …}` value no longer acts as a query
-operator), field names cannot contain dots (composite keys are flat), and
-empty `field_criteria` is refused with 422. Single-field searches behave as
-before.
+operator), and search names top-level fields with scalar values: a dotted
+field name, a `null`, object or list value, empty `field_criteria`, and an
+empty `restrict_to_namespaces` or `restrict_to_entity_types` list are refused
+(a key may still hold nested values; search does not reach into them).
+Single-field searches behave as before.
 
 ### `prune` and `filter` keep the templates and terminologies documents name; `wip-archive` 0.34.0
 

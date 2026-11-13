@@ -63,7 +63,6 @@ os.environ.setdefault("TEMPLATE_STORE_URL", "http://localhost:8003")
 os.environ.setdefault("TEMPLATE_STORE_API_KEY", "test_template_store_key")
 os.environ.setdefault("DEF_STORE_URL", "http://localhost:8002")
 os.environ.setdefault("DEF_STORE_API_KEY", "test_def_store_key")
-os.environ.setdefault("AUTH_ENABLED", "true")
 
 # Configure namespace-scoped API key for the middleware created at import time.
 # This must happen BEFORE importing document_store.main (which calls setup_auth).

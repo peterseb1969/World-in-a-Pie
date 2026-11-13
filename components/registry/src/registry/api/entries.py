@@ -221,9 +221,8 @@ async def browse_entries(
     query: dict = {}
 
     # Scope the listing to namespaces the caller may read. Enumeration is
-    # grant-gated (unlike cross-namespace reference resolution, which stays
-    # open) — a key must not list a namespace's entry inventory without a
-    # grant on it. An explicit foreign namespace returns an empty page rather
+    # grant-gated, as resolution is: a key must not list a namespace's entry
+    # inventory without a grant on it. An explicit foreign namespace returns an empty page rather
     # than 404, preserving pagination shape while leaking nothing.
     accessible = await resolve_accessible_namespaces(identity)
     if namespace:
@@ -308,8 +307,8 @@ async def unified_search(
     query: dict = {"$or": or_conditions}
 
     # Same namespace-scoping as browse_entries: this is enumeration, so it is
-    # grant-gated. Reference resolution (lookup_by_ids / _keys, resolve_synonyms)
-    # stays cross-namespace by design; unified search does not.
+    # grant-gated. Resolution (lookup_by_ids / _keys, resolve_synonyms) is
+    # grant-gated too, per item.
     accessible = await resolve_accessible_namespaces(identity)
     if namespace:
         if namespace not in accessible:
@@ -1835,6 +1834,12 @@ async def export_entries(
             )
         return permission_by_namespace[namespace]
 
+    # Every namespace's permission is resolved before any item is answered, so
+    # an id in a namespace the caller cannot read costs what a missing id
+    # costs: the answer, not its timing, is all an item reveals.
+    for entry_namespace in {e.namespace for e in entries_by_id.values()}:
+        await _permission_on(entry_namespace)
+
     results: list[ExportEntryItem] = []
     found = not_found = forbidden = 0
     for i, entry_id in enumerate(request.entry_ids):
@@ -2417,9 +2422,10 @@ async def reactivate_entries(
     touched (a retired entity's entry stays active throughout). Each inactive
     synonym is claimed again where its key is free. A key another entity took
     while this one was retired stays with that entity: that synonym stays
-    inactive, the others are reclaimed without it, and a warning names the
-    synonym and its holder. Idempotent: an entry with nothing to reclaim
-    reports unchanged.
+    inactive and a warning names it and its holder. The status is
+    reactivated when a synonym was claimed again, else unchanged, so a
+    repeated call reports unchanged, with the same warnings while a holder
+    keeps the key.
     """
     results: list[EntryLifecycleResponse] = []
     for i, item in enumerate(items):
@@ -2433,7 +2439,7 @@ async def reactivate_entries(
             reclaimed, taken = await revive_entry_synonyms(entry, entry_actor(identity, item.updated_by))
             results.append(EntryLifecycleResponse(
                 index=i,
-                status="reactivated" if reclaimed or taken else "unchanged",
+                status="reactivated" if reclaimed else "unchanged",
                 registry_id=entry.entry_id,
                 reclaimed=[s.composite_key for s in reclaimed],
                 not_reclaimed=[
@@ -2441,8 +2447,8 @@ async def reactivate_entries(
                     for s, holder in taken
                 ],
                 warnings=[
-                    f"Synonym {s.composite_key} is now held by entry {holder}; "
-                    "the other synonyms were reclaimed without it"
+                    f"Synonym {s.composite_key} is now held by entry {holder}"
+                    + ("; the other synonyms were reclaimed without it" if reclaimed else "")
                     for s, holder in taken
                 ],
             ))

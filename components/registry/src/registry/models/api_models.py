@@ -804,22 +804,26 @@ class BulkResolveResponse(BaseModel):
 class SearchItem(StrictModel):
     """Request model for structured search."""
 
-    field_criteria: dict[str, Any] = Field(
+    field_criteria: dict[str, str | int | float | bool] = Field(
         ...,
         min_length=1,
         description=(
             "Field-value pairs a key must hold, all of them: an entry matches "
             "when its primary key, or one of its active synonyms, has every "
-            "field at the given value"
+            "field at the given value. Values are strings, numbers or "
+            "booleans: search compares a field to one value, and does not "
+            "reach into a nested or list value a key may hold"
         ),
     )
     restrict_to_namespaces: list[str] | None = Field(
         default=None,
-        description="Only search in these namespaces (None = all)"
+        min_length=1,
+        description="Only search in these namespaces (omit to search all; an empty list is refused)"
     )
     restrict_to_entity_types: list[str] | None = Field(
         default=None,
-        description="Only search in these entity types (None = all)"
+        min_length=1,
+        description="Only search in these entity types (omit to search all; an empty list is refused)"
     )
     include_inactive: bool = Field(default=False)
 
@@ -830,11 +834,13 @@ class SearchByTermItem(StrictModel):
     term: str = Field(..., description="Term to search for across all composite key values")
     restrict_to_namespaces: list[str] | None = Field(
         default=None,
-        description="Only search in these namespaces (None = all)"
+        min_length=1,
+        description="Only search in these namespaces (omit to search all; an empty list is refused)"
     )
     restrict_to_entity_types: list[str] | None = Field(
         default=None,
-        description="Only search in these entity types (None = all)"
+        min_length=1,
+        description="Only search in these entity types (omit to search all; an empty list is refused)"
     )
     include_inactive: bool = Field(default=False)
     limit: int | None = Field(
@@ -998,7 +1004,7 @@ class EntryLifecycleResponse(BaseModel):
         default_factory=list,
         description=(
             "Synonyms another entry took while this one was retired: "
-            "{composite_key, held_by}. The other synonyms are reclaimed without them."
+            "{composite_key, held_by}; each is also named in warnings."
         ),
     )
     warnings: list[str] = Field(default_factory=list)

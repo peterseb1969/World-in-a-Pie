@@ -79,7 +79,6 @@ os.environ["TEMPLATE_STORE_DATABASE_NAME"] = TEST_DB
 os.environ["DOCUMENT_STORE_DATABASE_NAME"] = TEST_DB
 os.environ["API_KEY"] = TEST_API_KEY
 os.environ["MASTER_API_KEY"] = TEST_API_KEY
-os.environ["AUTH_ENABLED"] = "true"
 os.environ["REGISTRY_URL"] = "http://registry"
 os.environ["REGISTRY_API_KEY"] = TEST_API_KEY
 os.environ["DEF_STORE_URL"] = "http://def-store"

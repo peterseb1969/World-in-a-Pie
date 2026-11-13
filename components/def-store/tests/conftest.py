@@ -36,7 +36,6 @@ os.environ.setdefault("API_KEY", "test_api_key")
 os.environ.setdefault("REGISTRY_URL", "http://registry")
 os.environ.setdefault("REGISTRY_API_KEY", "test_api_key")
 os.environ.setdefault("MASTER_API_KEY", "test_api_key")
-os.environ.setdefault("AUTH_ENABLED", "true")
 # A key scoped to the single namespace 'wip' (write), to which 'xns-closed'
 # is invisible: what an app's key looks like. The admin key passes every
 # check and passes ids through unresolved, so it alone cannot exercise the

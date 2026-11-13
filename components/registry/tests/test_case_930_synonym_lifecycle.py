@@ -204,11 +204,17 @@ class TestRevivalReclaimsSynonyms:
         assert new["status"] == "created"
 
         revived = await _lifecycle(client, auth_headers, "reactivate", old_id)
-        assert revived["status"] == "reactivated"
+        # Nothing was claimed again, so nothing changed: the status says so,
+        # and the warning does not claim other synonyms were reclaimed.
+        assert revived["status"] == "unchanged"
         assert revived["reclaimed"] == []
         assert revived["not_reclaimed"] == [{"composite_key": SPELLING, "held_by": new["registry_id"]}]
         assert len(revived["warnings"]) == 1 and new["registry_id"] in revived["warnings"][0]
+        assert "reclaimed without it" not in revived["warnings"][0]
         assert (await _by_key(client, auth_headers, SPELLING))["entry_id"] == new["registry_id"]
+        again = await _lifecycle(client, auth_headers, "reactivate", old_id)
+        assert again["status"] == "unchanged"
+        assert again["not_reclaimed"] == revived["not_reclaimed"]
 
     @pytest.mark.asyncio
     async def test_reactivate_without_retirement_is_unchanged(
