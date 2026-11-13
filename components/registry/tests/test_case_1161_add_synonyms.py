@@ -1,10 +1,12 @@
 """Synonym additions the suite did not reach, pinned before add_synonyms'
 refactor.
 
-Provenance: CASE-1161. A synonym the entry already holds, or its own primary
-key, is already_exists with no claim; an item that raises is an error of its
-own; a repeat of an item that fails shares its error; and re-adding a
-synonym whose inactive copy is still recorded replaces that copy.
+Provenance: CASE-1161, CASE-1268. A synonym the entry already holds, or its
+own primary key, is already_exists with no claim; an item that raises is an
+error of its own; a repeat of an item that fails shares its error; and
+re-adding a synonym whose inactive copy is still recorded replaces that copy
+on a re-read after a lost race. The same replacement on the first write was
+already pinned by test_case_1019_synonyms_bulk (test_an_inactive_copy_is_replaced).
 """
 
 import uuid

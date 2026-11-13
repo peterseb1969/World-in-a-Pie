@@ -128,6 +128,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Final, Literal
 
+from beanie.exceptions import RevisionIdWasChanged
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 from pymongo.errors import DuplicateKeyError
 
@@ -1276,6 +1277,7 @@ async def _mirror_attachments(archive: SystemArchive) -> list[AppAttachment]:
         and (in_attachments is None or a.name in in_attachments)
     ]
 
+
 async def _caller_replacement(
     archive: SystemArchive, caller_key: str | None, config_key_names: frozenset[str],
 ) -> list[SkippedRecord]:
@@ -1575,24 +1577,31 @@ async def _write_attachment(
     out: Any,
 ) -> bool:
     """Replace or insert the attachment; False when another request attached
-    the name during the restore (the item becomes a concurrent_write skip)."""
+    the name during the restore (the item becomes a concurrent_write skip).
+
+    A replace saves by the record's id and upserts: a record deleted since
+    the read is written back as the archive holds it. One deleted and
+    attached again under the same name (a new id) collides on the name and
+    is skipped, as an insert that loses is.
+    """
     now = datetime.now(UTC)
-    if existing is not None:
-        for k, v in fields.items():
-            setattr(existing, k, v)
-        existing.status = status
-        existing.updated_at = now
-        existing.updated_by = restored_by
-        await existing.save()
-        return True
     try:
-        await AppAttachment(
-            name=a.name, **fields, status=status, managed_by=None,
-            created_at=a.created_at or now, created_by=a.created_by,
-            updated_at=now, updated_by=restored_by,
-        ).insert()
-    except DuplicateKeyError:
-        out.created.remove(a.name)
+        if existing is not None:
+            for k, v in fields.items():
+                setattr(existing, k, v)
+            existing.status = status
+            existing.updated_at = now
+            existing.updated_by = restored_by
+            await existing.save()
+        else:
+            await AppAttachment(
+                name=a.name, **fields, status=status, managed_by=None,
+                created_at=a.created_at or now, created_by=a.created_by,
+                updated_at=now, updated_by=restored_by,
+            ).insert()
+    except (DuplicateKeyError, RevisionIdWasChanged):
+        # Beanie raises an upsert's duplicate key as RevisionIdWasChanged.
+        (out.replaced if existing is not None else out.created).remove(a.name)
         if a.name in out.unresolved:
             out.unresolved.remove(a.name)
         out.skipped.append(_skip_named(
@@ -1600,6 +1609,7 @@ async def _write_attachment(
         ))
         return False
     return True
+
 
 async def _restore_reservations(
     archive: SystemArchive, report: SystemRestoreReport, dry_run: bool, overwrite: bool,

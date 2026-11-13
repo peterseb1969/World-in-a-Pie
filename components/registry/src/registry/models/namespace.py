@@ -257,3 +257,13 @@ async def set_unless_locked(ns: Namespace, fields: dict[str, Any]) -> bool:
     for key, value in fields.items():
         setattr(ns, key, value)
     return True
+
+
+async def unwritten_answer(ns: Namespace, prefix: str) -> tuple[int, str]:
+    """The HTTP status and detail for a ``set_unless_locked`` that wrote
+    nothing: 409 while the namespace is locked, 404 once its deletion has
+    removed it (a client must not retry a namespace that no longer exists
+    as if it were only locked)."""
+    if await Namespace.get_motor_collection().find_one({"_id": ns.id}, {"_id": 1}) is None:
+        return 404, f"Namespace not found: {prefix}"
+    return 409, LOCKED_DETAIL.format(prefix=prefix)

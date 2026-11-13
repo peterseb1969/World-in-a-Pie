@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from wip_auth import UserIdentity, get_auth_config, get_identity_string
 
-from ..models.namespace import LOCKED_DETAIL, Namespace, set_unless_locked
+from ..models.namespace import Namespace, set_unless_locked, unwritten_answer
 from ..services.auth import require_admin_key, require_api_key
 from ..services.namespace_deletion import (
     DeletionAlreadyRunning,
@@ -204,7 +204,7 @@ async def update_deletion_mode(
         "updated_at": datetime.now(UTC), "updated_by": get_identity_string(),
         "actor_note": updated_by,
     }):
-        raise HTTPException(409, LOCKED_DETAIL.format(prefix=prefix))
+        raise HTTPException(*await unwritten_answer(ns, prefix))
 
     return {
         "prefix": prefix,

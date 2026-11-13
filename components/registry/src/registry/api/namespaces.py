@@ -33,6 +33,7 @@ from ..models.namespace import (
     id_config_view,
     prefix_error,
     set_unless_locked,
+    unwritten_answer,
 )
 from ..services.auth import require_admin_key, require_api_key
 from ..services.event_bus import access_changed
@@ -694,7 +695,8 @@ async def _update_namespace(
     with _id_prefix_errors(prefix):
         written = await set_unless_locked(ns, changes)
     if not written:
-        raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
+        status_code, detail = await unwritten_answer(ns, prefix)
+        raise HTTPException(status_code=status_code, detail=detail)
     return namespace_to_response(ns)
 
 
@@ -724,7 +726,8 @@ async def archive_namespace(
         "status": "archived", "updated_at": datetime.now(UTC),
         "updated_by": get_identity_string(), "actor_note": archived_by,
     }):
-        raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
+        status_code, detail = await unwritten_answer(ns, prefix)
+        raise HTTPException(status_code=status_code, detail=detail)
 
     return namespace_to_response(ns)
 
@@ -755,7 +758,8 @@ async def restore_namespace(
         "status": "active", "updated_at": datetime.now(UTC),
         "updated_by": get_identity_string(), "actor_note": restored_by,
     }):
-        raise HTTPException(status_code=409, detail=LOCKED_DETAIL.format(prefix=prefix))
+        status_code, detail = await unwritten_answer(ns, prefix)
+        raise HTTPException(status_code=status_code, detail=detail)
 
     return namespace_to_response(ns)
 
