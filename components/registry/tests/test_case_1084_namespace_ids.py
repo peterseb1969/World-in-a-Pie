@@ -310,9 +310,11 @@ async def test_the_files_takeover_of_a_runtime_reservation_reserves_a_new_namesp
     monkeypatch.setenv(RESERVATIONS_FILE_ENV, str(path))
     await key_import.run_pass()
 
-    assert await _reserved_id(taken) not in (runtime_id, None)
+    # The install's reservation of an absent namespace holds no id (CASE-1303):
+    # the runtime key's id is not inherited, and none is minted in its place.
+    assert runtime_id is not None
+    assert await _reserved_id(taken) is None
     assert await _reserved_id(existing) == ns_id
     # A second pass with the same file changes nothing.
-    kept = await _reserved_id(taken)
     await key_import.run_pass()
-    assert await _reserved_id(taken) == kept
+    assert await _reserved_id(taken) is None

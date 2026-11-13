@@ -465,9 +465,9 @@ async def _import_reservations(report: ImportReport) -> None:
     for prefix, r in reservations.items():
         settings = r.settings.model_dump(exclude_none=True)
         doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
-        # A takeover (another owner) reserves another namespace: a new id,
-        # unless the namespace exists, which is then the one reserved.
-        namespace_id = await reservation_namespace_id(prefix, r.app, doc)
+        # The namespace's id while it exists; none otherwise (the install
+        # gives the name to its app, whichever namespace holds it).
+        namespace_id = await reservation_namespace_id(prefix, r.app, doc, managed=True)
         if doc is None:
             await RuntimeReservation(
                 prefix=prefix, namespace_id=namespace_id, app=r.app, settings=settings,

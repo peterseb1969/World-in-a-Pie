@@ -28,8 +28,9 @@ class RuntimeReservation(Document):
         default=None,
         description=(
             "The identity of the namespace this reservation is for: the "
-            "namespace's own id while it exists, otherwise one minted with the "
-            "reservation. The namespace created under the reservation takes it."
+            "namespace's own id while it exists, otherwise one minted with a "
+            "runtime reservation (none for the install's, managed_by "
+            "wip-deploy). The namespace created under the reservation takes it."
         ),
     )
     app: str = Field(

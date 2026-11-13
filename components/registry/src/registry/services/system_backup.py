@@ -143,7 +143,7 @@ from ..models.reservation import RuntimeReservation
 from .key_salt import adopt as adopt_salt
 from .key_salt import current_salt
 from .key_salt import write_lock as key_salt_write_lock
-from .namespace_identity import id_held_for
+from .namespace_identity import id_held_for, new_namespace_id
 
 logger = logging.getLogger("registry.system_backup")
 
@@ -346,7 +346,9 @@ def _scope_read_grants(archive: "SystemArchive") -> list[ArchiveGrant]:
 def _archived_namespace_ids(archive: "SystemArchive") -> dict[str, str]:
     """The namespace id the archive records for each prefix: a reservation's,
     else any grant's."""
-    ids: dict[str, str] = {r.prefix: r.namespace_id for r in archive.reservations}
+    ids: dict[str, str] = {
+        r.prefix: r.namespace_id for r in archive.reservations if r.namespace_id is not None
+    }
     for g in archive.grants:
         if g.namespace_id is not None:
             ids.setdefault(g.namespace, g.namespace_id)
@@ -368,8 +370,13 @@ class ArchiveReservation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prefix: str
-    namespace_id: str = Field(
-        ..., description="The identity of the namespace reserved. Required."
+    namespace_id: str | None = Field(
+        ...,
+        description=(
+            "The identity of the namespace reserved. Required; null only for a "
+            "reservation the install's file made (managed_by wip-deploy) while no "
+            "namespace of its name existed, which holds none."
+        ),
     )
     app: str
     settings: dict[str, Any] = Field(default_factory=dict)
@@ -377,6 +384,15 @@ class ArchiveReservation(BaseModel):
     created_by: str = "system"
     managed_by: Literal["wip-deploy"] | None = None
     origin: Origin = "console"
+
+    @model_validator(mode="after")
+    def _id_unless_install_reservation(self) -> "ArchiveReservation":
+        if self.namespace_id is None and self.managed_by is None:
+            raise ValueError(
+                f"reservation of '{self.prefix}': namespace_id is required (null only for "
+                "a reservation managed by wip-deploy)"
+            )
+        return self
 
 
 class ArchiveAttachment(BaseModel):
@@ -648,11 +664,13 @@ def _norm_dt(value: datetime | None) -> datetime | None:
     return value.replace(microsecond=value.microsecond // 1000 * 1000)
 
 
-def _require_id(r: RuntimeReservation) -> str:
-    if not r.namespace_id:
-        # The startup migration gives every reservation its id first.
+def _require_id(r: RuntimeReservation) -> str | None:
+    """The reservation's id; none only for an install's reservation of an
+    absent namespace (namespace_identity)."""
+    if not r.namespace_id and r.managed_by is None:
+        # The startup migration gives every runtime reservation its id first.
         raise RuntimeError(f"reservation of '{r.prefix}' has no namespace_id")
-    return r.namespace_id
+    return r.namespace_id or None
 
 
 def _grant_id(namespace: str, subject_type: str, subject: str) -> str:
@@ -1629,8 +1647,15 @@ async def _restore_reservations(
             out.skipped.append(_skip_reservation(r.prefix, "outside_archive_scope", _OUTSIDE_ARCHIVE_SCOPE))
             continue
         ns = await Namespace.find_one(Namespace.prefix == r.prefix)
-        target_id = ns.namespace_id if ns is not None and ns.namespace_id else r.namespace_id
         existing = await RuntimeReservation.find_one(RuntimeReservation.prefix == r.prefix)
+        # Restored, a reservation is a runtime one and holds an id. One the
+        # archive did not record (an install's reservation of an absent
+        # namespace) keeps the id a reservation here already holds, else a
+        # new one.
+        target_id = (
+            ns.namespace_id if ns is not None and ns.namespace_id
+            else r.namespace_id or (existing.namespace_id if existing else None) or new_namespace_id()
+        )
         if existing is not None:
             if existing.managed_by is not None:
                 out.skipped.append(_skip_reservation(r.prefix, "managed_by_deployer", _MANAGED))

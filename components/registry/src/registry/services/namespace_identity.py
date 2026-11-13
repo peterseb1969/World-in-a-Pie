@@ -7,17 +7,24 @@ restore creates) is answered by its `namespace_id`, a UUID7 the Registry
 mints. The rules:
 
 - **Reserve.** A reservation is for the namespace of its name while that
-  exists, and takes its id. With no namespace it mints one, and keeps it
-  while its owner stays the same; a new owner reserves another namespace,
-  so a new id.
+  exists, and takes its id. With no namespace, a runtime reservation (made
+  by an API key) mints one and keeps it while its owner stays the same; a
+  new owner reserves another namespace, so a new id. A reservation the
+  install's file makes (managed by wip-deploy) holds no id while no
+  namespace of its name exists: the install gives the name to its app,
+  whichever namespace holds it, so there is no identity to keep apart —
+  and a pinned id would refuse the one thing an operator does with an app's
+  namespace, restoring it from another install or after deleting it.
 - **Create.** A namespace takes its reservation's id, else a new one. A
   platform admin's ID-preserving restore or import carries the archived id
   instead: it is adopted unless a live namespace already holds it (restoring
   beside the original makes a copy, with a new id). Carried onto a name
   reserved here under another id it is refused: the reservation is for a
-  different namespace.
-- **Delete.** The id ends with the namespace. A reservation that outlives it
-  gets a new one, so creating the name again is a new namespace.
+  different namespace. An install's reservation without an id takes the
+  archived one.
+- **Delete.** The id ends with the namespace. A runtime reservation that
+  outlives it gets a new one, so creating the name again is a new namespace;
+  an install's reservation goes back to holding none.
 - **Orphaned grants** carry the id they were made for and are activated when
   a namespace with that id is created, whoever creates it.
 
@@ -53,16 +60,19 @@ def new_namespace_id() -> str:
 
 
 async def reservation_namespace_id(
-    prefix: str, owner: str, existing: RuntimeReservation | None,
-) -> str:
+    prefix: str, owner: str, existing: RuntimeReservation | None, *, managed: bool = False,
+) -> str | None:
     """The id a reservation of ``prefix`` by ``owner`` holds after a write.
 
-    The namespace's own while it exists; otherwise the reservation's current
-    one when the owner is unchanged, else a new one.
+    The namespace's own while it exists. Otherwise none for a reservation the
+    install's file makes (``managed``); for a runtime one, its current id when
+    the owner is unchanged, else a new one.
     """
     ns = await Namespace.find_one(Namespace.prefix == prefix)
     if ns is not None and ns.namespace_id:
         return ns.namespace_id
+    if managed:
+        return None
     if existing is not None and existing.app == owner and existing.namespace_id:
         return existing.namespace_id
     return new_namespace_id()
@@ -136,12 +146,19 @@ async def id_held_for(prefix: str) -> str | None:
 
 
 async def after_namespace_deleted(prefix: str) -> None:
-    """A reservation that outlives its namespace is for a new one."""
-    result = await RuntimeReservation.get_motor_collection().update_one(
-        {"prefix": prefix}, {"$set": {"namespace_id": new_namespace_id()}},
+    """A runtime reservation that outlives its namespace is for a new one; an
+    install's reservation holds no id again."""
+    collection = RuntimeReservation.get_motor_collection()
+    result = await collection.update_one(
+        {"prefix": prefix, "managed_by": None}, {"$set": {"namespace_id": new_namespace_id()}},
     )
     if result.modified_count:
         logger.info("Namespace '%s' deleted: its reservation now holds a new namespace id", prefix)
+    result = await collection.update_one(
+        {"prefix": prefix, "managed_by": {"$ne": None}}, {"$set": {"namespace_id": None}},
+    )
+    if result.modified_count:
+        logger.info("Namespace '%s' deleted: the install's reservation of it holds no namespace id", prefix)
 
 
 async def migrate_namespace_ids() -> dict[str, int]:
@@ -157,6 +174,8 @@ async def migrate_namespace_ids() -> dict[str, int]:
         counts["namespaces"] += result.modified_count
     async for r in RuntimeReservation.find({"namespace_id": None}):
         ns = await Namespace.find_one(Namespace.prefix == r.prefix)
+        if ns is None and r.managed_by is not None:
+            continue  # an install's reservation of an absent namespace holds none
         value = ns.namespace_id if ns is not None and ns.namespace_id else new_namespace_id()
         result = await RuntimeReservation.get_motor_collection().update_one(
             {"_id": r.id, "namespace_id": None}, {"$set": {"namespace_id": value}},
