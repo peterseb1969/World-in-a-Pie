@@ -199,6 +199,7 @@ Codes defined by document-store's create, delete and file writes (`PATCH` above 
 | `invalid_request` | The request item cannot be carried out as sent (`document_id_mismatch`: a `document_id` without `version` that is not the document the identity resolves to) | `document_id_mismatch` |
 | `already_exists` | A pinned version (`document_id` + `version`) is already taken | `version_taken` |
 | `identity_hash_stale` | Migrate: the document's stored identity hash is not the one its identity produces under the target version; `details.stored` / `details.expected` | — |
+| `concurrency_conflict` | A concurrent write won: the version slot stayed taken after retries, or a `versioned: false` row was written, deleted or revived meanwhile. Send the item again | — |
 | `internal_error` | A fault on the server's side | — |
 
 Registry results keep their reason statuses (`already_exists`, `not_found`, `already_active`, …) — callers branch on them by value. An item whose status is `error` also carries a code:

@@ -129,3 +129,84 @@ async def test_versioned_templates_keep_version_as_their_token(client, auth_head
     assert patched["status"] == "updated" and patched["version"] == patched["revision"] == 2
     doc = await _get(client, auth_headers, created["document_id"])
     assert doc["revision"] == doc["version"] == 2
+
+
+async def _delete(client: AsyncClient, headers: dict, doc_id: str) -> dict:
+    resp = await client.request(
+        "DELETE", f"{API}/documents", headers=headers, json=[{"id": doc_id}],
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["results"][0]
+
+
+@pytest.mark.asyncio
+async def test_a_delete_between_the_check_and_the_write_is_not_undone(
+    client, auth_headers, monkeypatch,
+):
+    """A soft delete sets the row inactive without moving its revision. A
+    PATCH that read the row active and writes after the delete must not
+    bring it back: the Registry entry is retired, the row would be live."""
+    created = await _create(client, auth_headers, "N-1279-A", "v0")
+    doc_id = created["document_id"]
+
+    original = DocumentService._relationship_refusal
+    fired = {"done": False}
+
+    async def interleave(self, *args, **kwargs):
+        if not fired["done"]:
+            fired["done"] = True
+            assert (await _delete(client, auth_headers, doc_id))["status"] == "deleted"
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(DocumentService, "_relationship_refusal", interleave)
+    held = await _patch(client, auth_headers, doc_id, "stale writer", if_match=1)
+    assert held["status"] == "error" and held["error_code"] == "concurrency_conflict", held
+    doc = await _get(client, auth_headers, doc_id)
+    assert doc["status"] == "inactive" and doc["data"]["body"] == "v0", doc
+
+
+@pytest.mark.asyncio
+async def test_a_delete_keeps_an_in_place_write_that_landed_after_its_read(
+    client, auth_headers, monkeypatch,
+):
+    """The delete writes only the status fields of the row as it is now, so
+    an in-place write between its read and its write keeps its data and
+    revision."""
+    created = await _create(client, auth_headers, "N-1279-B", "v0")
+    doc_id = created["document_id"]
+
+    original = DocumentService._record_lifecycle
+    fired = {"done": False}
+
+    async def interleave(*args, **kwargs):  # a staticmethod
+        if not fired["done"]:
+            fired["done"] = True
+            assert (await _patch(client, auth_headers, doc_id, "landed"))["status"] == "updated"
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(DocumentService, "_record_lifecycle", staticmethod(interleave))
+    assert (await _delete(client, auth_headers, doc_id))["status"] == "deleted"
+    doc = await _get(client, auth_headers, doc_id)
+    assert doc["status"] == "inactive"
+    assert doc["data"]["body"] == "landed" and doc["revision"] == 2, doc
+
+
+@pytest.mark.asyncio
+async def test_the_version_history_carries_the_token(client, auth_headers):
+    """GET /documents/{id}/versions is the read an app uses to pick the
+    current row; it serves each row's revision, the if_match token."""
+    created = await _create(client, auth_headers, "N-1279-C", "v0")
+    doc_id = created["document_id"]
+    assert (await _patch(client, auth_headers, doc_id, "v1"))["revision"] == 2
+
+    resp = await client.get(f"{API}/documents/{doc_id}/versions", headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    (row,) = resp.json()["versions"]
+    assert (row["version"], row["revision"]) == (1, 2)
+
+
+@pytest.mark.asyncio
+async def test_a_patch_row_names_the_template_version(client, auth_headers):
+    created = await _create(client, auth_headers, "N-1279-D", "v0")
+    patched = await _patch(client, auth_headers, created["document_id"], "v1")
+    assert patched["template_version"] == created["template_version"] is not None, patched

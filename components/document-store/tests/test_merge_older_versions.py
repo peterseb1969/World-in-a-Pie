@@ -184,6 +184,38 @@ class TestOlderVersions:
         assert row["revision"] == 2
 
     @pytest.mark.asyncio
+    async def test_versioned_false_keeps_a_write_that_landed_during_the_merge(
+        self, mongo, monkeypatch,
+    ):
+        """The replace is conditional on the revision the merge read: a write
+        on the target in between is kept, said so, and not counted replaced."""
+        from document_store.services.backup_engine import DirectRestoreEngine
+
+        await _seed_target(mongo, versioned=False)
+        archive = _archive({
+            "templates": [_template(versioned=False)],
+            "documents": [_doc(1, NEW, {"n": 2})],
+        })
+        original = DirectRestoreEngine._full_target_heads
+
+        async def then_a_write_lands(self, collection, *args, **kwargs):
+            heads = await original(self, collection, *args, **kwargs)
+            await collection.update_one(
+                {"namespace": NAMESPACE, "document_id": "D1"},
+                {"$set": {"data": {"n": 9}, "revision": 2}},
+            )
+            return heads
+
+        monkeypatch.setattr(DirectRestoreEngine, "_full_target_heads", then_a_write_lands)
+        events: list = []
+        await _run_merge(mongo, archive, events, on_clash="overwrite")
+
+        assert await _versions(mongo) == [(1, "active", {"n": 9})]
+        messages = [getattr(e, "message", "") or "" for e in events]
+        assert any("0 replaced in place" in m for m in messages), messages
+        assert any("written on the target while the merge ran" in m for m in messages), messages
+
+    @pytest.mark.asyncio
     async def test_an_unknown_value_is_refused(self, mongo):
         await _seed_target(mongo)
 

@@ -222,6 +222,8 @@ export interface BulkValidationResponse {
 export interface DocumentVersionSummary {
   document_id: string
   version: number
+  /** if_match token of this row: its version, except on a versioned:false row overwritten in place. */
+  revision: number
   status: DocumentStatus
   created_at: string
   created_by: string | null

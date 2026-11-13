@@ -684,6 +684,7 @@ def _patch_result(
         document_id=doc.document_id,
         identity_hash=doc.identity_hash,
         version=doc.version,
+        template_version=doc.template_version,
         revision=current_revision(doc) if revision else None,
         is_new=False,
         warnings=warnings,
@@ -1741,7 +1742,11 @@ class DocumentService:
                         rule="version_taken",
                     ) from exc
                 if attempt >= max_retries - 1:
-                    raise
+                    raise DocumentStoreError(
+                        f"Failed after {max_retries} retries due to concurrent "
+                        f"writers of document '{document_id}'",
+                        "concurrency_conflict",
+                    ) from exc
                 # Re-query the latest version and retry
                 logger.info(
                     "DuplicateKeyError on %s v%d, retrying (attempt %d/%d)",
@@ -1854,8 +1859,12 @@ class DocumentService:
                 request, existing, validation_result, document_id, namespace,
                 synonym_warnings, actor, lifecycle_warnings,
             )
-        except BaseException:
+        except BaseException as exc:
             await self._undo_revival(document_id, revival, namespace, actor)
+            if isinstance(exc, DocumentStoreError):
+                # A lost write race (concurrency_conflict) is this item's
+                # answer, as on the bulk path, not a 500.
+                return None, error_fields(exc)
             raise
         if not isinstance(written, Document):
             # Overwritten in place (a versioned=false template): done.
@@ -1891,11 +1900,19 @@ class DocumentService:
             warnings=validation_result.warnings + synonym_warnings + lifecycle_warnings
         ), None
 
-    async def _write_in_place(self, doc: Document, read_revision: int | None) -> bool:
+    async def _write_in_place(
+        self, doc: Document, read_revision: int | None, read_status: DocumentStatus,
+    ) -> bool:
         """Write ``doc`` over its row only if the row still holds the revision
-        that was read (None: the row has never been overwritten), moving the
-        revision on in the same operation. True if written; False if another
-        write landed first, in which case ``doc`` keeps its old revision.
+        and the status that were read (revision None: the row has never been
+        overwritten), moving the revision on in the same operation. True if
+        written; False if another write landed first, in which case ``doc``
+        keeps its old revision.
+
+        The status is part of the condition because a soft delete changes it
+        without moving the revision: a write that read the row active must
+        not land after the delete and bring the row back, while its Registry
+        entry stays retired.
 
         One conditional replace, so it is atomic on a standalone mongod: the
         token a caller holds can only pass for the write it was read for.
@@ -1906,12 +1923,45 @@ class DocumentService:
         doc.revision = new_revision
         try:
             await Document.find_one(
-                {"_id": doc.id, "revision": read_revision}
+                {"_id": doc.id, "revision": read_revision, "status": read_status.value}
             ).replace_one(doc)
         except DocumentNotFound:
             doc.revision = read_revision
             return False
         return True
+
+    @staticmethod
+    async def _reread_for_overwrite(existing: Document, first_status: DocumentStatus) -> Document:
+        """The row again, for an in-place overwrite's next attempt. Refused
+        (concurrency_conflict) when it is gone, or when it was deleted or
+        revived meanwhile: the caller decided revive-or-update (and told the
+        Registry) from the status it first read."""
+        fresh = await Document.get(existing.id)
+        if fresh is None:
+            raise DocumentStoreError(
+                "Document disappeared during an in-place overwrite",
+                "concurrency_conflict",
+            )
+        if fresh.status != first_status:
+            raise DocumentStoreError(
+                "The document was deleted or revived during an in-place "
+                "overwrite; send the write again",
+                "concurrency_conflict",
+            )
+        return fresh
+
+    async def _announce_update(
+        self, doc: Document, actor: str,
+        deferred_events: list[tuple[EventType, dict]] | None,
+    ) -> None:
+        """Publish DOCUMENT_UPDATED for an in-place overwrite, or, for a bulk
+        create (deferred_events given), add it to the batch's events, so a
+        document its auto-synonym stage rolls back is never announced."""
+        event = (EventType.DOCUMENT_UPDATED, await self._document_to_event_payload(doc))
+        if deferred_events is not None:
+            deferred_events.append(event)
+        else:
+            await publish_document_event(*event, changed_by=actor)
 
     async def _overwrite_in_place(
         self,
@@ -1921,6 +1971,7 @@ class DocumentService:
         namespace: str,
         extra_warnings: list[str] | None = None,
         max_retries: int = 3,
+        deferred_events: list[tuple[EventType, dict]] | None = None,
     ) -> tuple[DocumentCreateResponse, dict[str, Any] | None]:
         """Phase-3 overwrite: update the existing document's data and
         references without creating a new version. Used when the
@@ -1938,17 +1989,13 @@ class DocumentService:
         """
         actor = get_identity_string()
         all_warnings = validation_result.warnings + (extra_warnings or [])
+        first_status = existing.status
 
         for attempt in range(max_retries):
             if attempt:
-                fresh = await Document.get(existing.id)
-                if fresh is None:
-                    raise DocumentStoreError(
-                        "Document disappeared during an in-place overwrite",
-                        "concurrency_conflict",
-                    )
-                existing = fresh
+                existing = await self._reread_for_overwrite(existing, first_status)
             read_revision = existing.revision
+            read_status = existing.status
             now = datetime.now(UTC)
 
             # A deleted document overwritten in place comes back; its old
@@ -1972,7 +2019,7 @@ class DocumentService:
             existing.status = DocumentStatus.ACTIVE
             existing.updated_at = now
             existing.updated_by = actor
-            if await self._write_in_place(existing, read_revision):
+            if await self._write_in_place(existing, read_revision, read_status):
                 break
         else:
             raise DocumentStoreError(
@@ -1984,11 +2031,7 @@ class DocumentService:
         # subscribers) sees the change. Same event type / payload as
         # _create_new_version — the only observable difference is the
         # version stays at its prior value.
-        await publish_document_event(
-            EventType.DOCUMENT_UPDATED,
-            await self._document_to_event_payload(existing),
-            changed_by=actor,
-        )
+        await self._announce_update(existing, actor, deferred_events)
 
         # File-ref counts: subtract the old set, add the new set.
         await self._update_file_reference_counts(previous_file_refs, delta=-1)
@@ -2726,6 +2769,7 @@ class DocumentService:
                 DocumentVersionSummary(
                     document_id=v.document_id,
                     version=v.version,
+                    revision=current_revision(v),
                     status=v.status,
                     created_at=v.created_at,
                     created_by=v.created_by,
@@ -2833,15 +2877,17 @@ class DocumentService:
         # record is not written.
         lifecycle_warnings = await self._record_lifecycle(document_id, retired=True, actor=actor)
         try:
-            document.status = DocumentStatus.INACTIVE
-            document.updated_at = datetime.now(UTC)
-            document.updated_by = actor
-            await document.save()
+            retired = await self._retire_row(document, actor)
         except BaseException:
             await undo_entry_lifecycle(
                 get_registry_client(), [document_id], retired=True, actor=actor,
             )
             raise
+        if retired is None:
+            # Retired by a concurrent delete between the read and this write;
+            # the Registry entry is retired either way.
+            return False
+        document = retired
         if warnings is not None:
             warnings.extend(lifecycle_warnings)
 
@@ -2857,6 +2903,23 @@ class DocumentService:
             document.file_references, delta=-1
         )
         return True
+
+    @staticmethod
+    async def _retire_row(document: Document, actor: str) -> Document | None:
+        """Set the row inactive as it is now, not as it was read: only the
+        status fields are written, so an in-place write that landed after the
+        read keeps its data, and the row returned (what the event and the
+        file-reference counts use) is the one retired. None when the row was
+        no longer active."""
+        from pymongo import ReturnDocument
+
+        raw = await Document.get_motor_collection().find_one_and_update(
+            {"_id": document.id, "status": DocumentStatus.ACTIVE.value},
+            {"$set": {"status": DocumentStatus.INACTIVE.value,
+                      "updated_at": datetime.now(UTC), "updated_by": actor}},
+            return_document=ReturnDocument.AFTER,
+        )
+        return None if raw is None else Document.model_validate(raw)
 
     async def _hard_delete_document(
         self,
@@ -3969,15 +4032,16 @@ class DocumentService:
         # forbids.
         if await self._is_template_versioned(item.template_id):
             return None
+        deferred: list[tuple[EventType, dict]] = []
         response, _ = await self._overwrite_in_place(
             item, existing, validation_result, namespace,
-            extra_warnings=synonym_warnings,
+            extra_warnings=synonym_warnings, deferred_events=deferred,
         )
         # existing_by_doc_id already holds this Document object, mutated in
         # place — later same-identity items in the batch see the fresh data.
-        # No pending event: _overwrite_in_place publishes DOCUMENT_UPDATED
-        # itself, which is equivalent to the deferred batch publish (deferred
-        # events carry no ordering guarantee either).
+        # Its event is the batch's pending one, published after the
+        # auto-synonym stage, which drops it if that stage rolls the
+        # document back.
         return _ItemOutcome(
             BulkResultItem(
                 index=i,
@@ -3990,7 +4054,7 @@ class DocumentService:
                 is_new=False,
                 warnings=response.warnings,
             ),
-            None,
+            deferred[0] if deferred else None,
             "updated",
         )
 
@@ -4474,10 +4538,26 @@ class DocumentService:
     ) -> list[tuple[EventType, dict]]:
         """Register the batch's auto-synonyms; a document whose synonym was
         refused is rolled back (its Registry entry too, when ``minted`` says
-        this batch created it), and its event is not published."""
-        rolled_back = await self._register_bulk_auto_synonyms(
-            results, validation_results, namespace, actor, minted,
-        )
+        this batch created it), and its event is not published.
+
+        The documents are written before this runs, so an unexpected failure
+        here is not the batch's answer (a 500 would hide what was written):
+        each new document's row carries a warning that its auto-synonym's
+        state is unknown, and its event is published as written."""
+        try:
+            rolled_back = await self._register_bulk_auto_synonyms(
+                results, validation_results, namespace, actor, minted,
+            )
+        except Exception as e:
+            logger.exception("Auto-synonym registration of a bulk create failed")
+            note = (
+                f"Auto-synonym registration did not complete ({e}); the document "
+                "is written, but whether it resolves by its identity synonym is unknown"
+            )
+            for result in results:
+                if result.status == "created" and result.version == 1:
+                    result.warnings = [*(result.warnings or []), note]
+            return pending_events
         if not rolled_back:
             return pending_events
         return [
@@ -5580,6 +5660,19 @@ class DocumentService:
             new_val = IdentityService._get_nested_value(merged_data, field_path)
             if old_val == new_val or _same_referent(field_path, stored_feed, validation_result):
                 continue
+            if stored_feed is None and field_path in validation_result.referent_identity_fields:
+                # The stored version holds no resolution to compare by
+                # referent, so only the spelling was compared: say that, not
+                # that the change names another entity.
+                raise PatchError(
+                    "identity_field_change",
+                    f"Cannot patch identity field '{field_path}': its spelling "
+                    "changed and the stored version holds no resolution of it "
+                    "(namespace validation reports this as "
+                    "identity_resolution_missing), so the change cannot be "
+                    "shown to name the same entity. A document's identity "
+                    "cannot change.",
+                )
             raise PatchError(
                 "identity_field_change",
                 f"Cannot patch identity field '{field_path}': the change "
@@ -5644,6 +5737,7 @@ class DocumentService:
         itself, not only at step 3. None when it lost that race without a
         token (re-read and re-merge onto the winner)."""
         previous_file_refs = list(current.file_references)
+        read_status = current.status
         current.data = merged_data
         current.term_references = validation_result.term_references
         current.references = validation_result.references
@@ -5655,7 +5749,7 @@ class DocumentService:
         )
         current.updated_at = now
         current.updated_by = actor
-        if not await self._write_in_place(current, read_revision):
+        if not await self._write_in_place(current, read_revision, read_status):
             if item.if_match is not None:
                 # The caller's token was current at step 3 and is not
                 # now: another write landed in between.

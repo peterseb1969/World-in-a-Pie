@@ -89,6 +89,17 @@ def qualified_synonym_values(
     return {SYSTEM_QUALIFIER_KEY: template_value, **submitted_values}
 
 
+def _result_rows(response: Any) -> list[Any] | None:
+    """A bulk answer's result rows, or None when the body is not a readable
+    bulk answer (not JSON, or no list of rows)."""
+    try:
+        data = response.json()
+    except ValueError:
+        return None
+    rows = data.get("results", data) if isinstance(data, dict) else data
+    return rows if isinstance(rows, list) else None
+
+
 class RegistryClient(RegistryClientBase):
     """document-store-facing Registry client.
 
@@ -436,9 +447,8 @@ class RegistryClient(RegistryClientBase):
                 f"Failed to register auto-synonym: {response.status_code} - {response.text}"
             )
             return [reason] * len(documents)
-        data = response.json()
-        rows = data.get("results", data) if isinstance(data, dict) else data
-        if not isinstance(rows, list) or len(rows) != len(documents):
+        rows = _result_rows(response)
+        if rows is None or len(rows) != len(documents):
             return ["Failed to register auto-synonym: unreadable Registry response"] * len(
                 documents
             )

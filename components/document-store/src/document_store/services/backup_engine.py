@@ -428,6 +428,9 @@ class _OverwriteTally:
     identical: int = 0
     undecidable: int = 0
     retired: int = 0
+    # A versioned:false row written on the target between the merge's read
+    # and its replace: the target's copy is kept.
+    changed_meanwhile: int = 0
 
 
 def _clash_heads(
@@ -5776,8 +5779,10 @@ class DirectRestoreEngine:
             retire_archived_row(row)
 
             if _is_unversioned(versioned, clash):
-                await self._replace_unversioned(collection, namespace, row, target_head, full_head)
-                tally.replaced += 1
+                if await self._replace_unversioned(collection, namespace, row, target_head, full_head):
+                    tally.replaced += 1
+                else:
+                    tally.changed_meanwhile += 1
                 continue
             row["version"] = target_head.get("version", 1) + 1
             new_rows.append(row)
@@ -5832,8 +5837,10 @@ class DirectRestoreEngine:
         row: dict[str, Any],
         target_head: dict[str, Any],
         full_head: dict[str, Any] | None,
-    ) -> None:
-        """Replace the single row of a versioned:false document in place."""
+    ) -> bool:
+        """Replace the single row of a versioned:false document in place, only
+        if it still holds the revision the merge read. False when another
+        write landed on it meanwhile (or it is gone): nothing is replaced."""
         row["version"] = target_head.get("version", 1)
         # Replacing the row in place is a write like any other: its
         # if_match token moves on, so a writer still holding the old
@@ -5845,14 +5852,16 @@ class DirectRestoreEngine:
         # Archive rows carry ISO strings; the services store dates.
         # _insert_batch re-hydrates for every other write path.
         _rehydrate_timestamps(row)
-        await collection.replace_one(
+        result = await collection.replace_one(
             {
                 "namespace": namespace,
                 "document_id": row["document_id"],
                 "version": row["version"],
+                "revision": head_revision,
             },
             row,
         )
+        return result.matched_count > 0
 
     async def _flush_overwrites(
         self,
@@ -5900,6 +5909,13 @@ class DirectRestoreEngine:
             summary += f", {tally.identical} left alone because the archive's copy is identical"
         self._emit("phase_documents", summary)
 
+        if tally.changed_meanwhile:
+            self._emit(
+                "warning",
+                f"[{namespace}] {tally.changed_meanwhile} versioned:false document(s) "
+                "were written on the target while the merge ran — the target's "
+                "copy was kept for those.",
+            )
         if tally.ties:
             self._emit(
                 "warning",

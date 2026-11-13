@@ -357,6 +357,13 @@ class DocumentVersionSummary(BaseModel):
 
     document_id: str
     version: int
+    revision: int = Field(
+        description=(
+            "Token to send as if_match on a PATCH of this document, when this "
+            "is its active version; equal to version except on a row "
+            "overwritten in place (versioned:false), where it counts the writes"
+        ),
+    )
     status: DocumentStatus
     created_at: datetime
     created_by: str | None

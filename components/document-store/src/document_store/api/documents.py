@@ -958,8 +958,9 @@ active one unless include_inactive is set).
 
 An identity hash is unique only within a template and namespace. When the
 filters leave several readable documents matching, the answer is 409 with
-error_code `ambiguous` and the candidates — pass namespace and template_id
-to name one. template_id accepts the canonical ID or any synonym (e.g. the
+error_code `ambiguous_reference` and the candidates (`detail.candidates`,
+`detail.total`), the platform's shape for an identifier that names several
+entities. Pass namespace and template_id to name one. template_id accepts the canonical ID or any synonym (e.g. the
 template's value).
 """,
 )
@@ -989,9 +990,19 @@ async def get_document_by_identity(
             namespace_filter=ns_filter.query,
         )
     except DocumentStoreError as e:
+        # The platform's one shape for "this identifier names several
+        # entities" (wip_auth.fastapi_helpers._ambiguous_409).
+        candidates = (e.details or {}).get("candidates", [])
         raise HTTPException(
             status_code=409,
-            detail={"error": str(e), "error_code": e.code, **(e.details or {})},
+            detail={
+                "error": "ambiguous",
+                "error_code": "ambiguous_reference",
+                "message": str(e),
+                "identifier": identity_hash,
+                "candidates": candidates,
+                "total": len(candidates),
+            },
         ) from e
 
     if not document:

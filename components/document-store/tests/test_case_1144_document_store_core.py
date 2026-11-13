@@ -158,7 +158,9 @@ async def test_by_identity_refuses_to_pick_between_documents(client, auth_header
     )
     assert resp.status_code == 409, resp.text
     detail = resp.json()["detail"]
-    assert detail["error_code"] == "ambiguous"
+    # The platform's shape for an identifier naming several entities.
+    assert (detail["error"], detail["error_code"]) == ("ambiguous", "ambiguous_reference")
+    assert detail["identifier"] == created["identity_hash"] and detail["total"] == 2
     assert {c["document_id"] for c in detail["candidates"]} == {
         created["document_id"], twin.document_id,
     }
@@ -353,3 +355,24 @@ async def test_patch_accepts_another_alias_of_the_identity_term(client, auth_hea
     result = await _patch(client, auth_headers, created["document_id"], {"category": "F"})
     assert result["status"] == "error"
     assert result["error_code"] == "identity_field_change"
+
+
+@pytest.mark.asyncio
+async def test_patch_without_a_stored_resolution_does_not_claim_another_entity(
+    client, auth_headers,
+):
+    """A version stored without its identity term's resolution can only be
+    compared by spelling. The refusal says so instead of asserting that the
+    respelling names a different entity, which was never established."""
+    from document_store.models.document import Document
+
+    created = (await _post(client, auth_headers, [
+        _item({"category": "M", "note": "a"}, template_id="TERM_IDENTITY"),
+    ]))[0]
+    await Document.get_motor_collection().update_many(
+        {"document_id": created["document_id"]}, {"$set": {"term_references": []}},
+    )
+    result = await _patch(client, auth_headers, created["document_id"], {"category": "m"})
+    assert result["status"] == "error" and result["error_code"] == "identity_field_change"
+    assert "holds no resolution" in result["error"], result
+    assert "names a different entity" not in result["error"], result

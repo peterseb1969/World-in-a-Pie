@@ -500,8 +500,10 @@ const bulk = await client.documents.createDocuments([
 // Document versions
 const versions = await client.documents.getVersions('my-document-id')
 
-// Look up by identity hash
-const byIdentity = await client.documents.getDocumentByIdentity('abc123hash')
+// Look up by identity hash. A hash is unique only within a template and
+// namespace: pass both (templateId takes a value or id), or a hash several
+// documents share answers 409 (WipConflictError) with the candidates.
+const byIdentity = await client.documents.getDocumentByIdentity('abc123hash', false, 'my-ns', 'PATIENT')
 
 // Delete (soft-delete); re-posting the document's full data brings it back
 await client.documents.deleteDocument('my-document-id', 'user@example.com')
@@ -544,7 +546,7 @@ const results = await client.documents.queryDocuments(
 )
 ```
 
-`getDocument(id, version?, namespace?)` and `getDocumentByIdentity(hash, includeInactive?, namespace?)` take the same optional trailing argument. A **single-namespace key** derives the namespace automatically, so you can omit it.
+`getDocument(id, version?, namespace?)` and `getDocumentByIdentity(hash, includeInactive?, namespace?, templateId?)` take the same optional namespace argument. A **single-namespace key** derives the namespace automatically, so you can omit it.
 
 ### Table View & CSV Export
 

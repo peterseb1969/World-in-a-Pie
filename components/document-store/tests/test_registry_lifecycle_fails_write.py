@@ -125,10 +125,11 @@ async def test_a_failed_delete_write_undoes_the_registry_change(
     [created] = await _post(client, auth_headers, "710000004")
     document_id = created["document_id"]
 
-    async def failing_save(self, *args, **kwargs):
+    async def failing_retire(*args, **kwargs):
         raise RuntimeError("mongo write failed")
 
-    monkeypatch.setattr(Document, "save", failing_save)
+    # The delete's write: the row's status fields, set on the row as it is now.
+    monkeypatch.setattr(DocumentService, "_retire_row", staticmethod(failing_retire))
     with pytest.raises(RuntimeError, match="mongo write failed"):
         await DocumentService().delete_document(document_id)
     assert registry.calls == {"deactivate": [[document_id]], "reactivate": [[document_id]]}
