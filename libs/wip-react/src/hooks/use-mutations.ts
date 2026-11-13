@@ -2,6 +2,9 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import type { UseMutationOptions } from '@tanstack/react-query'
 import type {
   NamespaceDeletionResult,
+  SynonymResult,
+  MergeResult,
+  DeactivateEntryResult,
   BulkResultItem,
   BulkResponse,
   CreateTerminologyRequest,
@@ -393,6 +396,19 @@ export function useDeleteDocument(
 // FILE HOOKS
 // ============================================================================
 
+/** A file id, or the id with the namespace resolving it and `force` (delete although documents reference it). */
+export interface DeleteFileVariables {
+  fileId: string
+  namespace?: string
+  force?: boolean
+}
+
+export interface DeleteFilesVariables {
+  fileIds: string[]
+  namespace?: string
+  force?: boolean
+}
+
 export function useUploadFile(
   options?: Omit<
     UseMutationOptions<
@@ -436,14 +452,17 @@ export function useUpdateFileMetadata(
 }
 
 export function useDeleteFile(
-  options?: Omit<UseMutationOptions<BulkResultItem, Error, string>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<BulkResultItem, Error, string | DeleteFileVariables>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: (fileId: string) => client.files.deleteFile(fileId),
+    mutationFn: (vars: string | DeleteFileVariables) => {
+      const { fileId, namespace, force } = typeof vars === 'string' ? { fileId: vars } : vars
+      return client.files.deleteFile(fileId, namespace, { force })
+    },
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
       onSuccess?.(...args)
@@ -452,14 +471,17 @@ export function useDeleteFile(
 }
 
 export function useDeleteFiles(
-  options?: Omit<UseMutationOptions<BulkResponse, Error, string[]>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<BulkResponse, Error, string[] | DeleteFilesVariables>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
-    mutationFn: (fileIds: string[]) => client.files.deleteFiles(fileIds),
+    mutationFn: (vars: string[] | DeleteFilesVariables) => {
+      const { fileIds, namespace, force } = Array.isArray(vars) ? { fileIds: vars } : vars
+      return client.files.deleteFiles(fileIds, namespace, { force })
+    },
     onSuccess: (...args) => {
       queryClient.invalidateQueries({ queryKey: wipKeys.files.all })
       onSuccess?.(...args)
@@ -628,7 +650,7 @@ export function useDeleteNamespace(
 // ============================================================================
 
 export function useAddSynonym(
-  options?: Omit<UseMutationOptions<{ status: string; registry_id?: string; error?: string }, Error, AddSynonymRequest>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<SynonymResult, Error, AddSynonymRequest>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
@@ -644,7 +666,7 @@ export function useAddSynonym(
 }
 
 export function useRemoveSynonym(
-  options?: Omit<UseMutationOptions<{ status: string; registry_id?: string; error?: string }, Error, RemoveSynonymRequest>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<SynonymResult, Error, RemoveSynonymRequest>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
@@ -660,7 +682,7 @@ export function useRemoveSynonym(
 }
 
 export function useMergeEntries(
-  options?: Omit<UseMutationOptions<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }, Error, MergeRequest>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<MergeResult, Error, MergeRequest>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()
@@ -676,7 +698,7 @@ export function useMergeEntries(
 }
 
 export function useDeactivateEntry(
-  options?: Omit<UseMutationOptions<{ status: string }, Error, { entryId: string; updatedBy?: string }>, 'mutationFn'>,
+  options?: Omit<UseMutationOptions<DeactivateEntryResult, Error, { entryId: string; updatedBy?: string }>, 'mutationFn'>,
 ) {
   const { onSuccess, ...restOptions } = options ?? {}
   const client = useWipClient()

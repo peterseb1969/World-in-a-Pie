@@ -61,6 +61,16 @@ function refuseErrorBody<T>(body: T): T {
   return body
 }
 
+/** Options of deleteDocument: `version` and `force` only with `hardDelete: true`. */
+export type DeleteDocumentOptions = {
+  updatedBy?: string
+  /** Resolves a synonym id; required for a key that can read several namespaces. */
+  namespace?: string
+} & (
+  | { hardDelete: true; version?: number; force?: boolean }
+  | { hardDelete?: false; version?: never; force?: never }
+)
+
 export class DocumentStoreService extends BaseService {
   constructor(transport: import('../http.js').FetchTransport) {
     super(transport, '/api/document-store')
@@ -158,18 +168,17 @@ export class DocumentStoreService extends BaseService {
    * document (any namespace, any version or status): the item fails with
    * error_code `invalid_state`, `details.rule: 'referenced'`, and
    * `details.referrers` grouped by namespace and template. `force` deletes it
-   * anyway and lists the referrers in `details.broken_references`. `force`
-   * only applies with `hardDelete`; without it the item fails with
-   * `force_unsupported`.
+   * anyway and lists the referrers in `details.broken_references`.
+   *
+   * `force` and `version` exist only with `hardDelete: true`: a soft delete
+   * always retires the newest active version (a `version` would be ignored and
+   * the newest retired), and `force` without `hardDelete` is refused
+   * (`force_unsupported`).
    */
-  async deleteDocument(id: string, options?: {
-    updatedBy?: string
-    hardDelete?: boolean
-    version?: number
-    force?: boolean
-    /** Resolves a synonym id; required for a key that can read several namespaces. */
-    namespace?: string
-  }): Promise<BulkResultItem> {
+  async deleteDocument(id: string, options?: DeleteDocumentOptions): Promise<BulkResultItem> {
+    if (options && !options.hardDelete && (options.version !== undefined || options.force)) {
+      throw new WipValidationError('version and force apply only with hardDelete: true')
+    }
     return this.bulkWriteOne('/documents', {
       id,
       updated_by: options?.updatedBy,

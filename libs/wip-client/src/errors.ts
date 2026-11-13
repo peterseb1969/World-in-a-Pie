@@ -72,16 +72,22 @@ export class WipBulkItemError extends WipError {
 }
 
 /**
- * The machine-readable `error_code` a WIP HTTP error carries in its body
- * (`{detail, error_code}`), e.g. MANAGED_BY_DEPLOYER or SALT_MISMATCH;
- * undefined when there is none.
+ * The machine-readable `error_code` of any WIP error, e.g. `already_exists`,
+ * MANAGED_BY_DEPLOYER or SALT_MISMATCH: a bulk item's code, or the one an HTTP
+ * error body carries (top-level or nested under `detail`); undefined when
+ * there is none.
  */
 export function wipErrorCode(error: unknown): string | undefined {
   if (!(error instanceof WipError)) return undefined
+  if (error instanceof WipBulkItemError) return error.errorCode
+  // Two body shapes carry the code: top-level {detail, error_code}, and
+  // FastAPI's nested {detail: {..., error_code}}.
   const body = error.detail
-  if (body && typeof body === 'object' && 'error_code' in body) {
-    const code = (body as Record<string, unknown>).error_code
-    return typeof code === 'string' ? code : undefined
-  }
-  return undefined
+  if (!body || typeof body !== 'object') return undefined
+  const record = body as Record<string, unknown>
+  const nested = record.detail
+  const code =
+    record.error_code ??
+    (nested && typeof nested === 'object' ? (nested as Record<string, unknown>).error_code : undefined)
+  return typeof code === 'string' ? code : undefined
 }

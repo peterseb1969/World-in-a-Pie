@@ -870,8 +870,21 @@ describe('useDeleteFile', () => {
     })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(mockClient.files.deleteFile).toHaveBeenCalledWith('f1')
+    expect(mockClient.files.deleteFile).toHaveBeenCalledWith('f1', undefined, { force: undefined })
     expect(invalidateSpy).toHaveBeenCalled()
+  })
+
+  it('passes namespace and force when given an object', async () => {
+    const mockClient = createMockClient()
+    const { Wrapper } = createWrapper(mockClient)
+    const { result } = renderHook(() => useDeleteFile(), { wrapper: Wrapper })
+
+    await act(async () => {
+      result.current.mutate({ fileId: 'f1', namespace: 'media', force: true })
+    })
+    await waitFor(() => expect(result.current.isSuccess).toBe(true))
+
+    expect(mockClient.files.deleteFile).toHaveBeenCalledWith('f1', 'media', { force: true })
   })
 })
 
@@ -886,7 +899,7 @@ describe('useDeleteFiles', () => {
     })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(mockClient.files.deleteFiles).toHaveBeenCalledWith(['f1', 'f2', 'f3'])
+    expect(mockClient.files.deleteFiles).toHaveBeenCalledWith(['f1', 'f2', 'f3'], undefined, { force: undefined })
   })
 })
 

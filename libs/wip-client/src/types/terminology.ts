@@ -193,14 +193,56 @@ export interface ImportTerminologyRequest {
     /** @deprecated Not read by the import. */
     target_terminology_value?: string
   }>
+  /** Sent as query parameters, which is where the import route reads them. */
   options?: {
     skip_duplicates?: boolean
     update_existing?: boolean
+    /** Terms per MongoDB batch (default 1000). */
+    batch_size?: number
+    /** Terms per Registry call (default 100); lower it if large imports time out. */
+    registry_batch_size?: number
+  }
+}
+
+/**
+ * The terminology an import created or extended — a summary, not the full
+ * terminology. `status` is `created`, or `exists` when the import added terms
+ * to an existing terminology; `differs` then lists the flags the file sets
+ * differently (reported, not applied).
+ */
+export interface ImportedTerminologySummary {
+  terminology_id: string
+  value: string
+  label: string
+  status: 'created' | 'exists'
+  differs?: Record<string, { file: unknown; stored: unknown }>
+}
+
+/**
+ * The terminology as an export describes it: its definition, not its stored
+ * state (no id, status, term count or timestamps). Import accepts it back.
+ */
+export interface ExportedTerminology {
+  value: string
+  label: string
+  description?: string | null
+  namespace: string
+  case_sensitive: boolean
+  allow_multiple: boolean
+  mutable: boolean
+  unique_names: boolean
+  /** Present with includeMetadata. */
+  metadata?: {
+    source?: string | null
+    source_url?: string | null
+    version?: string | null
+    language?: string | null
+    custom?: Record<string, unknown>
   }
 }
 
 export interface ExportTerminologyResponse {
-  terminology: Terminology
+  terminology: ExportedTerminology
   terms: ExportedTerm[]
   export_date: string
   // Wire fields from def-store's _export_json (import_export.py): the format

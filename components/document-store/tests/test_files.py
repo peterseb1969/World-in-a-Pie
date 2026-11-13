@@ -1,5 +1,6 @@
 """Tests for file operations (upload, list, metadata, delete, orphans, integrity)."""
 
+import json
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -417,6 +418,40 @@ async def test_upload_file(file_client: AsyncClient, auth_headers: dict):
     assert data["metadata"]["description"] == "A test file"
     assert data["metadata"]["tags"] == ["test", "upload"]
     assert data["metadata"]["category"] == "testing"
+
+
+async def _upload_with(file_client, auth_headers, extra: dict):
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"results": [{"status": "created", "registry_id": "FILE-CUSTOM01"}]}
+    with patch('document_store.services.file_service.httpx.AsyncClient') as MockHttpx:
+        mock_http_client = AsyncMock()
+        mock_http_client.post = AsyncMock(return_value=mock_response)
+        mock_http_client.__aenter__ = AsyncMock(return_value=mock_http_client)
+        mock_http_client.__aexit__ = AsyncMock(return_value=False)
+        MockHttpx.return_value = mock_http_client
+        return await file_client.post(
+            "/api/document-store/files",
+            headers=auth_headers,
+            files={"file": ("c.txt", b"custom", "text/plain")},
+            data={"namespace": "wip", **extra},
+        )
+
+
+@pytest.mark.asyncio
+async def test_upload_stores_custom_metadata(file_client: AsyncClient, auth_headers: dict):
+    """custom, a JSON object form field, lands in metadata.custom."""
+    response = await _upload_with(file_client, auth_headers, {"custom": json.dumps({"source": "scanner", "page": 3})})
+    assert response.status_code == 200, response.text
+    assert response.json()["metadata"]["custom"] == {"source": "scanner", "page": 3}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("custom", ["not json", "[1, 2]", '"text"'])
+async def test_upload_refuses_custom_that_is_not_a_json_object(file_client: AsyncClient, auth_headers: dict, custom):
+    response = await _upload_with(file_client, auth_headers, {"custom": custom})
+    assert response.status_code == 422
+    assert "custom" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

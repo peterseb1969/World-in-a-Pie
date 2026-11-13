@@ -72,16 +72,20 @@ export class TemplateStoreService extends BaseService {
   }
 
   /**
-   * Create a single template.
+   * Create a template, or version it: template create is an upsert keyed on
+   * (namespace, value), so a re-run bootstrap is safe.
    *
-   * @param data - The template definition.
-   * @param options - Optional behavior flags.
-   * @param options.onConflict - How to handle a value collision in the same
-   *   namespace. `'error'` (default) treats it as an error. `'validate'` makes
-   *   the call idempotent for app bootstrap: identical schema returns
-   *   `status='unchanged'`; compatible (added optional fields only) bumps to
-   *   version N+1; incompatible throws `WipBulkItemError` with
-   *   `errorCode='incompatible_schema'` and a structured `details` diff.
+   * - A new value is `created` (version 1).
+   * - An identical re-post is `unchanged` (the existing id and version).
+   * - Any other difference is `updated`: version N+1, with the schema diff
+   *   in `details` (`added_optional`, `added_required`, `removed`, ...).
+   * - Refused, as a thrown `WipBulkItemError`: a different identity_fields
+   *   (`identity_fields_immutable`; changing identity is a new template
+   *   value), a changed usage / versioned / reporting table name / edge
+   *   endpoints (`immutable_property`), and a draft onto an existing value
+   *   (`already_exists`).
+   *
+   * @param options.onConflict - Deprecated: accepted, but both values upsert.
    */
   async createTemplate(
     data: CreateTemplateRequest,

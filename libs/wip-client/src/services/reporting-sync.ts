@@ -134,9 +134,8 @@ export class ReportingSyncService extends BaseService {
   }
 
   /**
-   * Read a registered view's rows with structured filters — the read path
-   * for namespace-scoped keys (requires only READ on the namespace, unlike
-   * runQuery's admin/service gate). No SQL: filters are (column, op, value)
+   * Read a registered view's rows with structured filters (requires READ on
+   * the namespace). No SQL: filters are (column, op, value)
    * triples validated against the view's actual columns and bound as
    * parameters; `limit`/`offset` page through; the result is shaped exactly
    * like runQuery's (columns, rows as objects keyed by column, row_count,
@@ -424,7 +423,8 @@ export class ReportingSyncService extends BaseService {
    * unqualified table names resolve in that namespace's schema (as in
    * `runQuery`); omit it and schema-qualify for cross-namespace SQL. An
    * invalid statement or unknown relation is a 400, never an empty file.
-   * Requires an admin or service key.
+   * Any key may call it: a platform admin or service key reads every schema,
+   * any other key only the namespaces it can read (as with runQuery).
    */
   async exportQueryCsv(
     sql: string,

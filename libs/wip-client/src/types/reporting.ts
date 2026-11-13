@@ -113,13 +113,32 @@ export interface ReportTableSchema {
 
 // ── Sync Status types ──
 
+/** An event the sync worker gave up on after its last delivery attempt. */
+export interface DroppedEvent {
+  event_type: string
+  entity_id: string | null
+  namespace: string | null
+  error: string
+  /** Delivery attempts made before the event was dropped. */
+  deliveries: number
+  dropped_at: string
+}
+
 export interface SyncStatus {
   running: boolean
   connected_to_nats: boolean
   connected_to_postgres: boolean
+  /** True once the service runs on its own unprivileged PostgreSQL roles; null before the first connection. */
+  postgres_service_roles_ok: boolean | null
   last_event_processed: string | null
   events_processed: number
+  /** Every failed attempt, retries that later succeed included. */
   events_failed: number
+  /** Terminal losses only: events that exhausted their retries and will never be applied. */
+  events_dropped: number
+  recent_drops: DroppedEvent[]
+  /** Events for a namespace deleted while they were in flight; expected after a deletion. */
+  events_skipped_deleted_namespace: number
   tables_managed: number
 }
 
@@ -252,6 +271,16 @@ export interface BatchSyncJob {
   documents_failed: number
   current_page: number
   error_message: string | null
+  /** Where the job's time went, in milliseconds. */
+  fetch_ms: number
+  upsert_ms: number
+  sibling_ms: number
+  /** Physical row upserts (one per document version written). */
+  rows_written: number
+  /** True when a duplicate trigger joined this running job instead of starting one (a force was then not applied). */
+  deduplicated: boolean
+  /** Relations a force rebuild removed before this job synced (schema-qualified). */
+  dropped_relations: string[]
 }
 
 export interface BatchSyncResponse {

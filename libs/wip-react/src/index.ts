@@ -78,6 +78,8 @@ export {
   useUpdateFileMetadata,
   useDeleteFile,
   useDeleteFiles,
+  type DeleteFileVariables,
+  type DeleteFilesVariables,
   useHardDeleteFile,
   // Ontology / Term-Relations (renamed from "Relationships" in CASE-67/167)
   useCreateTermRelations,

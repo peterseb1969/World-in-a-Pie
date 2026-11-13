@@ -26,6 +26,11 @@ export interface RetryConfig {
 const DEFAULT_TIMEOUT = 30_000
 const DEFAULT_RETRY: RetryConfig = { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000 }
 
+/** The request's own timeout (or the caller's signal) aborted it. */
+function isAbort(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError'
+}
+
 export class FetchTransport {
   private baseUrl: string
   private auth?: AuthProvider
@@ -132,6 +137,9 @@ export class FetchTransport {
         await new Promise((r) => setTimeout(r, delay))
       }
 
+      // The timeout covers the whole request, body included: it is cleared
+      // only once the body has been read (the finally below), so a response
+      // whose body stalls is aborted like one whose headers never arrive.
       const controller = new AbortController()
       const timeoutMs = options?.timeout ?? this.timeout
       const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
@@ -139,15 +147,10 @@ export class FetchTransport {
 
       try {
         const response = await fetch(url, fetchOptions)
-        clearTimeout(timeoutId)
 
         if (!response.ok) {
           const error = await this.mapResponseError(response)
-          if (error instanceof WipAuthError) {
-            // Invalidate cached auth headers on auth error
-            this.cachedAuthHeaders = null
-            if (this.onAuthError) this.onAuthError()
-          }
+          if (error instanceof WipAuthError) this.handleAuthError(error)
           // Retry on 502/503/504 for GET
           if (isRetryable && attempt < maxAttempts - 1 && response.status >= 502) {
             lastError = error
@@ -172,11 +175,11 @@ export class FetchTransport {
         // Fall back gracefully if body is empty (some proxies return 200 with no body)
         try {
           return (await response.json()) as T
-        } catch {
+        } catch (err) {
+          if (isAbort(err)) throw err
           return undefined as T
         }
       } catch (err) {
-        clearTimeout(timeoutId)
         if (err instanceof WipError) {
           if (isRetryable && attempt < maxAttempts - 1 && err instanceof WipServerError) {
             lastError = err
@@ -184,7 +187,7 @@ export class FetchTransport {
           }
           throw err
         }
-        if (err instanceof DOMException && err.name === 'AbortError') {
+        if (isAbort(err)) {
           lastError = new WipNetworkError(`Request timed out after ${timeoutMs}ms`)
           if (attempt < maxAttempts - 1) continue
           throw lastError
@@ -195,6 +198,8 @@ export class FetchTransport {
         )
         if (attempt < maxAttempts - 1) continue
         throw lastError
+      } finally {
+        clearTimeout(timeoutId)
       }
     }
 
@@ -234,14 +239,22 @@ export class FetchTransport {
 
     if (!response.ok) {
       const error = await this.mapResponseError(response)
-      if (error instanceof WipAuthError) {
-        this.cachedAuthHeaders = null
-        if (this.onAuthError) this.onAuthError()
-      }
+      if (error instanceof WipAuthError) this.handleAuthError(error)
       throw error
     }
 
     return response
+  }
+
+  /**
+   * A 401 or 403 drops the cached auth headers (a revoked grant should stop
+   * being replayed). Only a 401 — the credentials themselves were refused —
+   * calls onAuthError: a 403 is an authorization refusal that signing in
+   * again cannot change.
+   */
+  private handleAuthError(error: WipAuthError): void {
+    this.cachedAuthHeaders = null
+    if (error.statusCode === 401 && this.onAuthError) this.onAuthError()
   }
 
   private buildUrl(path: string, params?: Record<string, unknown>): string {
@@ -271,7 +284,8 @@ export class FetchTransport {
     try {
       const text = await response.text()
       detail = text ? JSON.parse(text) : undefined
-    } catch {
+    } catch (err) {
+      if (isAbort(err)) throw err
       detail = undefined
     }
 

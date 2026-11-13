@@ -107,7 +107,7 @@ export interface ValidationRule {
   error_message?: string
 }
 
-export type SyncStrategy = 'latest_only' | 'all_versions'
+export type SyncStrategy = 'latest_only' | 'all_versions' | 'disabled'
 
 /**
  * How a template's documents are intended to be used.

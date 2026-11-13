@@ -139,7 +139,8 @@ const client = createWipClient({
   // Optional: retry config for GET requests (default: 2 retries with exponential backoff)
   retry: { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000 },
 
-  // Optional: called on 401/403 responses (e.g., redirect to login)
+  // Optional: called on 401 — the credentials were refused (e.g., redirect to login).
+  // Not on 403: that refuses an action to a valid identity, and signing in again cannot help.
   onAuthError: () => { window.location.href = '/login' },
 })
 
@@ -157,7 +158,7 @@ client.setAuth(new OidcAuthProvider(() => oidcManager.getAccessToken()))
 
 The `OidcAuthProvider` takes a callback, not a static token. It calls your function on every request, so token refresh is handled by your OIDC library. The provider has **zero OIDC dependencies** — bring your own library (oidc-client-ts, Auth0, etc.).
 
-API key auth headers are cached internally for performance (the key is static; the cache clears on a 401/403 or `setAuth()`). OIDC headers call your `getToken` callback fresh on every request, so a token your OIDC library rotates is always current — the transport never pins a stale bearer.
+API key auth headers are cached internally for performance (the key is static; the cache clears on a 401/403 or `setAuth()`). To rotate a key on a live client, call `client.setAuth(new ApiKeyAuthProvider(newKey))`. OIDC headers call your `getToken` callback fresh on every request, so a token your OIDC library rotates is always current — the transport never pins a stale bearer.
 
 ---
 

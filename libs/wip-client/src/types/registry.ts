@@ -15,7 +15,8 @@ export interface Namespace {
   deletion_mode: 'retain' | 'full'
   allowed_external_refs: string[]
   id_config: Record<string, IdAlgorithmConfig>
-  status: 'active' | 'archived' | 'deleted'
+  /** `locked` while a deletion is under way (shown to platform admins). */
+  status: 'active' | 'archived' | 'deleted' | 'locked'
   created_at: string
   created_by: string | null
   updated_at: string
@@ -138,6 +139,36 @@ export interface RegistryByTermHit {
   matched_entity_type: string
   matched_composite_key: Record<string, unknown>
   all_synonyms: RegistrySynonym[]
+}
+
+/**
+ * The per-item answer of the Registry's single-item mutations (synonym add and
+ * remove, merge, entry deactivation). The client returns it only on success;
+ * any other status is thrown as a WipBulkItemError carrying error_code and
+ * details.
+ */
+export interface RegistryItemResult {
+  index: number
+  status: string
+  error?: string | null
+  error_code?: string | null
+  details?: Record<string, unknown> | null
+}
+
+/** `added`, or `already_exists` when the entry already holds the synonym. */
+export interface SynonymResult extends RegistryItemResult {
+  registry_id?: string | null
+}
+
+/** `merged`. */
+export interface MergeResult extends RegistryItemResult {
+  preferred_id?: string | null
+  deprecated_id?: string | null
+}
+
+/** `deactivated` or `deleted`. */
+export interface DeactivateEntryResult extends RegistryItemResult {
+  entry_id?: string | null
 }
 
 /**

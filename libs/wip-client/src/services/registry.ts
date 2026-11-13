@@ -10,6 +10,10 @@ import type {
   RegistryByTermHit,
   NamespaceDeletionResult,
   NamespaceDeletionJournal,
+  RegistryItemResult,
+  SynonymResult,
+  MergeResult,
+  DeactivateEntryResult,
   RegistryEntryFull,
   RegistryBrowseParams,
   RegistrySearchResponse,
@@ -46,6 +50,25 @@ import type {
   SystemRestoreOptions,
   SystemRestoreReport,
 } from '../types/registry.js'
+
+/**
+ * The Registry's single-item mutations answer 200 with a per-item status that
+ * may be a refusal (`error`, `forbidden`, `not_found`, `target_not_found`, ...),
+ * not only `error`. Anything outside the call's success statuses is thrown.
+ */
+function expectStatus<T extends RegistryItemResult>(result: T | undefined, ok: string[]): T {
+  if (!result) throw new WipBulkItemError('The Registry returned no result', 0, 'missing')
+  if (!ok.includes(result.status)) {
+    throw new WipBulkItemError(
+      result.error || `Registry refused the change: ${result.status}`,
+      result.index ?? 0,
+      result.status,
+      result.error_code ?? undefined,
+      result.details ?? undefined,
+    )
+  }
+  return result
+}
 
 export class RegistryService extends BaseService {
   constructor(transport: import('../http.js').FetchTransport) {
@@ -207,20 +230,16 @@ export class RegistryService extends BaseService {
 
   // ---- Mutations ----
 
-  async addSynonym(request: AddSynonymRequest): Promise<{ status: string; registry_id?: string; error?: string }> {
-    const resp = await this.post<{ results: Array<{ status: string; registry_id?: string; error?: string }> }>(
-      '/synonyms/add',
-      [request],
-    )
-    return resp.results[0]
+  /** Resolves on `added` or `already_exists` (the entry holds it already); throws otherwise. */
+  async addSynonym(request: AddSynonymRequest): Promise<SynonymResult> {
+    const resp = await this.post<{ results: SynonymResult[] }>('/synonyms/add', [request])
+    return expectStatus(resp.results[0], ['added', 'already_exists'])
   }
 
-  async removeSynonym(request: RemoveSynonymRequest): Promise<{ status: string; registry_id?: string; error?: string }> {
-    const resp = await this.post<{ results: Array<{ status: string; registry_id?: string; error?: string }> }>(
-      '/synonyms/remove',
-      [request],
-    )
-    return resp.results[0]
+  /** Resolves on `removed`; throws otherwise (`not_found`, `forbidden`, `error`). */
+  async removeSynonym(request: RemoveSynonymRequest): Promise<SynonymResult> {
+    const resp = await this.post<{ results: SynonymResult[] }>('/synonyms/remove', [request])
+    return expectStatus(resp.results[0], ['removed'])
   }
 
   /**
@@ -229,20 +248,23 @@ export class RegistryService extends BaseService {
    * `defStore.mergeTerms`, which also moves the absorbed term's value and
    * names, so they resolve to the survivor in validation too.
    */
-  async mergeEntries(request: MergeRequest): Promise<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }> {
-    const resp = await this.post<{ results: Array<{ status: string; preferred_id?: string; deprecated_id?: string; error?: string }> }>(
-      '/synonyms/merge',
-      [request],
-    )
-    return resp.results[0]
+  async mergeEntries(request: MergeRequest): Promise<MergeResult> {
+    const resp = await this.post<{ results: MergeResult[] }>('/synonyms/merge', [request])
+    return expectStatus(resp.results[0], ['merged'])
   }
 
-  async deactivateEntry(entryId: string, updatedBy?: string): Promise<{ status: string }> {
-    const resp = await this.del<{ results: Array<{ status: string }> }>(
+  /**
+   * Soft-delete a Registry entry: it goes inactive and its canonical id,
+   * primary key and synonyms stop resolving. (The resolution-preserving
+   * retirement is a privileged service-to-service route, not offered here.)
+   * Resolves on `deactivated` or `deleted`; throws otherwise.
+   */
+  async deactivateEntry(entryId: string, updatedBy?: string): Promise<DeactivateEntryResult> {
+    const resp = await this.del<{ results: DeactivateEntryResult[] }>(
       '/entries',
       [{ entry_id: entryId, updated_by: updatedBy }],
     )
-    return resp.results[0]
+    return expectStatus(resp.results[0], ['deactivated', 'deleted'])
   }
 
   // ---- Grants ----

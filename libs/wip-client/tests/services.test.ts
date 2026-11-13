@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createWipClient } from '../src/client'
 import type { WipClient } from '../src/client'
-import { WipBulkItemError } from '../src/errors'
+import { WipBulkItemError, wipErrorCode } from '../src/errors'
 import type { BackupProgressMessage as BackupProgressMessageType } from '../src/types/backup'
 
 describe('Service classes via createWipClient', () => {
@@ -64,6 +64,29 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('POST')
       const body = JSON.parse(options.body)
       expect(body).toEqual([{ value: 'GENDER', label: 'Gender' }])
+    })
+
+    it('createTerm carries error_code and details onto the thrown error', async () => {
+      mockJsonResponse({
+        results: [{ index: 0, status: 'error', error: 'Term exists', error_code: 'already_exists', details: { value: 'GB' } }],
+        total: 1, succeeded: 0, failed: 1,
+      })
+
+      const err = await client.defStore.createTerm('COUNTRY', { value: 'GB' } as never, { namespace: 'wip' }).catch((e) => e)
+
+      expect(err).toBeInstanceOf(WipBulkItemError)
+      expect(err.errorCode).toBe('already_exists')
+      expect(err.details).toEqual({ value: 'GB' })
+      expect(wipErrorCode(err)).toBe('already_exists')
+      expect(fetchMock.mock.calls[0][0]).toContain('namespace=wip')
+    })
+
+    it('wipErrorCode reads a code nested under FastAPI\'s detail object', async () => {
+      mockJsonResponse({ detail: { message: 'Ambiguous', error_code: 'ambiguous_reference' } }, 422)
+
+      const err = await client.defStore.getTerminology('X').catch((e) => e)
+
+      expect(wipErrorCode(err)).toBe('ambiguous_reference')
     })
 
     it('createTerminology throws WipBulkItemError on error result', async () => {
@@ -241,7 +264,7 @@ describe('Service classes via createWipClient', () => {
       // Recorded shape of POST /import-export/import (import_export.py) when
       // the payload carried relations: the stats key is `relations_result`.
       mockJsonResponse({
-        terminology: { terminology_id: 'LOV-1', value: 'COUNTRY', label: 'Country', status: 'active' },
+        terminology: { terminology_id: 'LOV-1', value: 'COUNTRY', label: 'Country', status: 'created' },
         terms_result: { results: [], total: 0, succeeded: 0, skipped: 0, failed: 0 },
         relations_result: { total: 1, created: 1, skipped: 0, errors: 0, error_samples: [] },
       })
@@ -253,6 +276,23 @@ describe('Service classes via createWipClient', () => {
 
       expect(res.relations_result?.created).toBe(1)
       expect(res.relations_result?.error_samples).toEqual([])
+      expect(res.terminology.status).toBe('created')
+    })
+
+    it('importTerminology sends its options as query parameters, where the route reads them', async () => {
+      mockJsonResponse({ terminology: {}, terms_result: { results: [] } })
+
+      await client.defStore.importTerminology({
+        terminology: { value: 'COUNTRY', label: 'Country' },
+        terms: [],
+        options: { skip_duplicates: false, update_existing: true, registry_batch_size: 50 },
+      })
+
+      const [url, init] = fetchMock.mock.calls[0]
+      expect(url).toContain('skip_duplicates=false')
+      expect(url).toContain('update_existing=true')
+      expect(url).toContain('registry_batch_size=50')
+      expect('options' in JSON.parse(init.body)).toBe(false)
     })
   })
 
@@ -625,6 +665,16 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('PATCH')
       const body = JSON.parse(options.body)
       expect(body).toEqual([{ document_id: 'D-001', patch: { score: 92 } }])
+    })
+
+    it('deleteDocument refuses version or force without hardDelete before sending', async () => {
+      await expect(
+        client.documents.deleteDocument('D-1', { version: 3 } as never),
+      ).rejects.toThrow('only with hardDelete')
+      await expect(
+        client.documents.deleteDocument('D-1', { force: true } as never),
+      ).rejects.toThrow('only with hardDelete')
+      expect(fetchMock).not.toHaveBeenCalled()
     })
 
     it('PATCH and DELETE pass a namespace for synonym ids; POST never sends one', async () => {
@@ -1801,6 +1851,36 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('POST')
     })
 
+    it('addSynonym resolves on already_exists (the entry holds the synonym)', async () => {
+      mockJsonResponse({ results: [{ index: 0, status: 'already_exists', registry_id: 'E-001' }] })
+
+      const result = await client.registry.addSynonym({ entry_id: 'E-001' } as never)
+
+      expect(result.status).toBe('already_exists')
+    })
+
+    it.each([
+      ['addSynonym', 'target_not_found'],
+      ['removeSynonym', 'not_found'],
+      ['mergeEntries', 'forbidden'],
+      ['deactivateEntry', 'not_found'],
+    ] as const)('%s throws a %s refusal with its error_code and details', async (method, status) => {
+      mockJsonResponse({
+        results: [{ index: 0, status, error: `refused: ${status}`, error_code: status, details: { why: 'x' } }],
+      })
+
+      const call = method === 'deactivateEntry'
+        ? client.registry.deactivateEntry('E-001')
+        : (client.registry[method] as (r: never) => Promise<unknown>)({} as never)
+      const err = await call.catch((e) => e)
+
+      expect(err).toBeInstanceOf(WipBulkItemError)
+      expect(err.message).toBe(`refused: ${status}`)
+      expect(err.itemStatus).toBe(status)
+      expect(err.errorCode).toBe(status)
+      expect(err.details).toEqual({ why: 'x' })
+    })
+
     it('removeSynonym sends POST and unwraps result', async () => {
       mockJsonResponse({
         results: [{ status: 'removed', registry_id: 'E-001' }],
@@ -1960,6 +2040,31 @@ describe('Service classes via createWipClient', () => {
       expect(options.method).toBe('PATCH')
       const body = JSON.parse(options.body)
       expect(body).toEqual([{ description: 'Updated desc', file_id: 'F-001' }])
+    })
+
+    it('deleteFile and deleteFiles send force in each item when asked', async () => {
+      fetchMock.mockImplementation(() => Promise.resolve(new Response(JSON.stringify({
+        results: [{ index: 0, status: 'deleted', id: 'F-1' }],
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })))
+
+      await client.files.deleteFile('F-1', undefined, { force: true })
+      await client.files.deleteFiles(['F-1', 'F-2'], 'media', { force: true })
+      await client.files.deleteFile('F-1')
+
+      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual([{ id: 'F-1', force: true }])
+      expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual([{ id: 'F-1', force: true }, { id: 'F-2', force: true }])
+      expect(fetchMock.mock.calls[1][0]).toContain('namespace=media')
+      expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual([{ id: 'F-1' }])
+    })
+
+    it('uploadFile sends custom metadata as JSON and an empty description', async () => {
+      mockJsonResponse({ file_id: 'F-1' })
+
+      await client.files.uploadFile(new Blob(['x']), 'x.txt', { description: '', custom: { source: 'scanner' } }, 'docs')
+
+      const form = fetchMock.mock.calls[0][1].body as FormData
+      expect(form.get('description')).toBe('')
+      expect(JSON.parse(form.get('custom') as string)).toEqual({ source: 'scanner' })
     })
 
     it('deleteFile sends DELETE with body', async () => {

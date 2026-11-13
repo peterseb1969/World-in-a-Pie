@@ -185,6 +185,40 @@ describe('FetchTransport', () => {
     expect(onAuthError).toHaveBeenCalledOnce()
   })
 
+  it('calls onAuthError only on 401: a 403 is a refusal signing in again cannot change', async () => {
+    const onAuthError = vi.fn()
+    const authedTransport = new FetchTransport({
+      baseUrl: 'http://localhost:8001',
+      onAuthError,
+      retry: { maxRetries: 0 },
+    })
+
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ detail: 'Requires admin access to namespace' }), { status: 403 }),
+    )
+
+    await expect(authedTransport.request('GET', '/api/test')).rejects.toThrow(WipAuthError)
+    expect(onAuthError).not.toHaveBeenCalled()
+  })
+
+  it('times out a response whose body stalls after the headers arrived', async () => {
+    // A real fetch errors the body stream when its signal aborts; the mock does the same.
+    fetchMock.mockImplementation((_url: string, init: RequestInit) => {
+      const body = new ReadableStream({
+        start(controller) {
+          init.signal?.addEventListener('abort', () =>
+            controller.error(new DOMException('The operation was aborted.', 'AbortError')),
+          )
+        },
+      })
+      return Promise.resolve(new Response(body, { status: 200 }))
+    })
+    const slow = new FetchTransport({ baseUrl: 'http://localhost:8001', timeout: 50, retry: { maxRetries: 0 } })
+
+    await expect(slow.request('GET', '/api/test')).rejects.toThrow('Request timed out after 50ms')
+    await expect(slow.request('GET', '/api/test', { responseType: 'text' })).rejects.toThrow('timed out')
+  })
+
   it('handles empty response body (204)', async () => {
     fetchMock.mockResolvedValue(new Response(null, { status: 204 }))
 

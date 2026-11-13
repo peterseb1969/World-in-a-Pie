@@ -20,6 +20,10 @@ function ns(namespace?: string): Record<string, unknown> | undefined {
   return namespace ? { namespace } : undefined
 }
 
+function withForce(item: { id: string }, options?: { force?: boolean }): { id: string; force?: boolean } {
+  return options?.force ? { ...item, force: true } : item
+}
+
 export class FileStoreService extends BaseService {
   constructor(transport: import('../http.js').FetchTransport) {
     super(transport, '/api/document-store/files')
@@ -48,9 +52,13 @@ export class FileStoreService extends BaseService {
     }
 
     formData.append('namespace', namespace)
-    if (metadata?.description) formData.append('description', metadata.description)
+    // Sent whenever set, so an empty description or category reaches the service.
+    if (metadata?.description !== undefined) formData.append('description', metadata.description)
     if (metadata?.tags?.length) formData.append('tags', metadata.tags.join(','))
-    if (metadata?.category) formData.append('category', metadata.category)
+    if (metadata?.category !== undefined) formData.append('category', metadata.category)
+    if (metadata?.custom && Object.keys(metadata.custom).length) {
+      formData.append('custom', JSON.stringify(metadata.custom))
+    }
     if (metadata?.allowed_templates?.length) {
       formData.append('allowed_templates', metadata.allowed_templates.join(','))
     }
@@ -85,12 +93,17 @@ export class FileStoreService extends BaseService {
     return this.bulkWriteOne('', { ...data, file_id: fileId }, 'PATCH', ns(namespace))
   }
 
-  async deleteFile(fileId: string, namespace?: string): Promise<BulkResultItem> {
-    return this.bulkWriteOne('', { id: fileId }, 'DELETE', ns(namespace))
+  /**
+   * Soft-delete a file. A file documents still reference is refused
+   * (`invalid_state`, rule `referenced`) unless `force`. A forced delete keeps
+   * the references, so hardDeleteFile still refuses the file until they are gone.
+   */
+  async deleteFile(fileId: string, namespace?: string, options?: { force?: boolean }): Promise<BulkResultItem> {
+    return this.bulkWriteOne('', withForce({ id: fileId }, options), 'DELETE', ns(namespace))
   }
 
-  async deleteFiles(fileIds: string[], namespace?: string): Promise<BulkResponse> {
-    return this.bulkWrite('', fileIds.map(id => ({ id })), 'DELETE', ns(namespace))
+  async deleteFiles(fileIds: string[], namespace?: string, options?: { force?: boolean }): Promise<BulkResponse> {
+    return this.bulkWrite('', fileIds.map(id => withForce({ id }, options)), 'DELETE', ns(namespace))
   }
 
   /**

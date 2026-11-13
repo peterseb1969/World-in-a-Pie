@@ -1,5 +1,4 @@
 import { BaseService } from './base.js'
-import { WipBulkItemError } from '../errors.js'
 import type { BulkResponse, BulkResultItem } from '../types/common.js'
 import type {
   Terminology,
@@ -12,6 +11,7 @@ import type {
   UpdateTermRequest,
   DeprecateTermRequest,
   ImportTerminologyRequest,
+  ImportedTerminologySummary,
   ExportTerminologyResponse,
   ValidateValueRequest,
   ValidateValueResponse,
@@ -151,20 +151,10 @@ export class DefStoreService extends BaseService {
     data: CreateTermRequest,
     options: { namespace: string },
   ): Promise<BulkResultItem> {
-    const resp = await this.post<BulkResponse>(
-      `/terminologies/${terminologyId}/terms`,
-      [data],
-      { namespace: options.namespace },
-    )
-    const result = resp.results[0]
-    if (result.status === 'error') {
-      throw new WipBulkItemError(
-        result.error || 'Operation failed',
-        result.index,
-        result.status,
-      )
-    }
-    return result
+    // bulkWriteOne carries error_code and details (e.g. already_exists) onto the thrown error.
+    return this.bulkWriteOne(`/terminologies/${terminologyId}/terms`, data, 'POST', {
+      namespace: options.namespace,
+    })
   }
 
   async createTerms(
@@ -235,9 +225,7 @@ export class DefStoreService extends BaseService {
   // ---- Import/Export ----
 
   async importTerminology(data: ImportTerminologyRequest): Promise<{
-    /** `differs` lists the flags the file sets differently from an
-     * existing terminology the import extends (reported, not applied). */
-    terminology: Terminology & { differs?: Record<string, { file: unknown; stored: unknown }> }
+    terminology: ImportedTerminologySummary
     terms_result: BulkResponse
     // The wire key is `relations_result` (import_export.py sets it only when
     // the payload carried relations), matching the platform's post-2eeb872
@@ -255,7 +243,10 @@ export class DefStoreService extends BaseService {
       deprecated: number; deactivated: number; errors: Array<{ value: string; error: string }>
     }
   }> {
-    return this.post('/import-export/import', data)
+    // The route reads the options from query parameters only; in the body they
+    // would be ignored.
+    const { options, ...body } = data
+    return this.post('/import-export/import', body, options)
   }
 
   async exportTerminology(

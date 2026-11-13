@@ -1,6 +1,7 @@
 """File API endpoints for binary file storage."""
 
 import asyncio
+import json
 import logging
 import math
 from typing import Any, Literal
@@ -103,6 +104,19 @@ def require_file_storage():
         )
 
 
+def _parse_custom(custom: str | None) -> dict[str, Any]:
+    """The upload's custom metadata: a JSON object, or 422."""
+    if custom is None or not custom.strip():
+        return {}
+    try:
+        value = json.loads(custom)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=422, detail=f"custom is not valid JSON: {e}") from None
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=422, detail="custom must be a JSON object")
+    return value
+
+
 @router.post(
     "",
     response_model=FileResponse,
@@ -117,6 +131,7 @@ Metadata can be provided as form fields:
 - description: Human-readable description
 - tags: Comma-separated tags (e.g., "invoice,2024,important")
 - category: Classification category
+- custom: A JSON object of custom metadata fields (e.g. {"source": "scanner"})
 - allowed_templates: Comma-separated templates whose documents may use this file. Each names a
   template (value, NS:VALUE, id or synonym) and is stored as its canonical id; one that names no
   template is refused (400).
@@ -133,6 +148,7 @@ async def upload_file(
     allowed_templates: str | None = Form(
         None, description="Comma-separated templates (value, NS:VALUE, id or synonym), stored as ids",
     ),
+    custom: str | None = Form(None, description="Custom metadata fields as a JSON object"),
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Upload a file to storage."""
@@ -156,6 +172,7 @@ async def upload_file(
         description=description,
         tags=[t.strip() for t in tags.split(",")] if tags else [],
         category=category,
+        custom=_parse_custom(custom),
         allowed_templates=[t.strip() for t in allowed_templates.split(",")] if allowed_templates else None,
     )
 

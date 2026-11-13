@@ -416,8 +416,8 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 |------|-------|---------|-------------|
 | `useUploadFile()` | `{ file, filename?, metadata?, namespace? }` | `FileEntity` | `files.all` |
 | `useUpdateFileMetadata()` | `{ fileId, data }` | `BulkResultItem` | `files.all` |
-| `useDeleteFile()` | `string` | `BulkResultItem` | `files.all` |
-| `useDeleteFiles()` | `string[]` | `BulkResponse` | `files.all` |
+| `useDeleteFile()` | `string`, or `{ fileId, namespace?, force? }` (`force` deletes a file documents still reference) | `BulkResultItem` | `files.all` |
+| `useDeleteFiles()` | `string[]`, or `{ fileIds, namespace?, force? }` | `BulkResponse` | `files.all` |
 | `useHardDeleteFile()` | `string` | `void` | `files.all` |
 
 **Namespaces & Registry**
@@ -429,10 +429,10 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | `useArchiveNamespace()` | `{ prefix, archivedBy? }` | `Namespace` | `registry.all` |
 | `useRestoreNamespace()` | `{ prefix, restoredBy? }` | `Namespace` | `registry.all` |
 | `useDeleteNamespace()` | `{ prefix, deletedBy?, force? }` | `NamespaceDeletionResult` — `status` is `in_progress` while a step is deferred; only `completed` / `completed_with_warnings` mean done | `registry.all` |
-| `useAddSynonym()` | `AddSynonymRequest` | `{ status, registry_id?, error? }` | `registry.all` |
-| `useRemoveSynonym()` | `RemoveSynonymRequest` | `{ status, registry_id?, error? }` | `registry.all` |
-| `useMergeEntries()` | `MergeRequest` | `{ status, preferred_id?, deprecated_id?, error? }` | `registry.all` |
-| `useDeactivateEntry()` | `{ entryId, updatedBy? }` | `{ status }` | `registry.all` |
+| `useAddSynonym()` | `AddSynonymRequest` | `SynonymResult` (`added` / `already_exists`; any refusal is a `WipBulkItemError`) | `registry.all` |
+| `useRemoveSynonym()` | `RemoveSynonymRequest` | `SynonymResult` (`removed`; any refusal is a `WipBulkItemError`) | `registry.all` |
+| `useMergeEntries()` | `MergeRequest` | `MergeResult` (`merged`; any refusal is a `WipBulkItemError`) | `registry.all` |
+| `useDeactivateEntry()` | `{ entryId, updatedBy? }` | `DeactivateEntryResult` (`deactivated` / `deleted`; the entry stops resolving) | `registry.all` |
 
 **Reporting & Sync**
 

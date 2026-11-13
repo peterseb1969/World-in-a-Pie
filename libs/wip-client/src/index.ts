@@ -23,7 +23,7 @@ export { FetchTransport, type FetchTransportConfig, type RetryConfig } from './h
 // Service classes (for advanced usage)
 export { DefStoreService } from './services/def-store.js'
 export { TemplateStoreService } from './services/template-store.js'
-export { DocumentStoreService } from './services/document-store.js'
+export { DocumentStoreService, type DeleteDocumentOptions } from './services/document-store.js'
 export { FileStoreService } from './services/file-store.js'
 export { RegistryService } from './services/registry.js'
 export { ReportingSyncService } from './services/reporting-sync.js'
