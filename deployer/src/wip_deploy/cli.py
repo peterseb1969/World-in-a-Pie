@@ -1701,6 +1701,9 @@ def verify(
             if canary_key_file is not None
             else read_canary_key(resolved_dir, previous)
         )
+        # A self-signed k8s install's trust anchor is the certificate in its
+        # TLS Secret, read with kubectl from the cluster the install records.
+        _select_cluster_or_exit(previous, mutating=False)
         with _install_trust(previous) as verify:
             if isinstance(verify, Untrusted):
                 from wip_deploy.check_app import CheckResult
