@@ -22,7 +22,7 @@ Every runtime name an install holds on the host carries the install's name
 | volumes | `<install>_wip-<svc>-<storage>` | the compose project prefix |
 | dev images | `<image>:dev-<install>` | built from the install's own checkout |
 | install dir | `~/.wip-deploy/<install>/` | spec, secrets, rendered compose |
-| ports | `--https-port`, `--http-port` | one pair per install |
+| ports | `--https-port` | one per install |
 
 Inside its network every service is still reachable as `wip-<svc>`
 (`http://wip-registry:8001`): that name is a network alias, so a service's
@@ -46,7 +46,7 @@ for n in 1 2 3; do
   cd ~/Development/WIP-TC0$n
   wip-deploy install --target dev --name tc0$n \
     --hostname wip-tc0$n.localhost \
-    --https-port 844$((n+2)) --http-port 808$((n-1)) \
+    --https-port 844$((n+2)) \
     --repo-root ~/Development/WIP-TC0$n
   WIP_INSTALL=tc0$n scripts/setup-backend-agent.sh   # binds the clone
 done

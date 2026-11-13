@@ -54,7 +54,6 @@ def _make_deployment(
     hostname: str = "wip.localhost",
     tls: str = "internal",
     https_port: int = 8443,
-    http_port: int = 8080,
     registry: str | None = None,
     auth_mode: str = "api-key-only",
     apps: list[tuple[str, bool]] | None = None,
@@ -84,7 +83,6 @@ def _make_deployment(
                 hostname=hostname,
                 tls=tls,
                 https_port=https_port,
-                http_port=http_port,
             ),
             images=ImagesSpec(registry=registry),
             platform=PlatformSpec(compose=ComposePlatform(data_dir=data_dir)),
@@ -136,19 +134,16 @@ class TestDiffSpecForIdentityDrift:
             hostname="wip.example.com",
             tls="letsencrypt",
             https_port=443,
-            http_port=80,
         )
         curr = _make_deployment(
             hostname="wip.example.com",
             tls="internal",
             https_port=8443,
-            http_port=8080,
         )
         fields = {f for f, _, _ in _diff_spec_for_identity_drift(prev, curr)}
         assert fields == {
             "network.tls",
             "network.https_port",
-            "network.http_port",
         }
 
     def test_auth_mode_change_is_drift(self) -> None:

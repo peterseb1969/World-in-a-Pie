@@ -144,7 +144,6 @@ class NetworkSpec(BaseModel):
     hostname: str                          # e.g., "wip.local", "wip-kubi.local"
     tls: Literal["internal", "letsencrypt", "external", "self-signed"]  # self-signed is k8s-only, guarded
     https_port: int = 8443                 # compose only; k8s uses 443 via Ingress
-    http_port: int = 8080
 
 class ImagesSpec(BaseModel):
     registry: str | None = None            # None = build from source (compose/dev)

@@ -25,8 +25,9 @@ v2.1.0:
   and Garage's key material come from the same source and every
   re-render is deterministic.
 
-The rendered garage.toml carries the rpc secret and admin token, so the
-renderers write it 0600 — same posture as .env.
+The rendered garage.toml carries the rpc secret and admin token, so compose
+and dev write it 0600 (as .env), and k8s renders it as a Secret, not a
+ConfigMap.
 """
 
 from __future__ import annotations

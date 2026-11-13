@@ -120,6 +120,26 @@ from wip_deploy.spec.component import Component
 # ────────────────────────────────────────────────────────────────────
 
 
+def conditional_config_paths() -> tuple[str, ...]:
+    """The config files compose and dev render only while their component is
+    active. A render that leaves one out marks it obsolete, so a component
+    switched off does not leave its file — Garage's and Dex's carry secrets —
+    in the install directory."""
+    return (
+        "config/dex/config.yaml",
+        "config/garage/garage.toml",
+        MONGO_ENTRYPOINT_RENDER_PATH,
+        NATS_CONFIG_RENDER_PATH,
+        "config/router/Caddyfile",
+    )
+
+
+def mark_unrendered_obsolete(tree: FileTree) -> None:
+    """Add every conditional config file this render did not write to
+    `tree.obsolete`."""
+    tree.obsolete.update(Path(p) for p in conditional_config_paths())
+
+
 def render_compose(
     deployment: Deployment,
     components: list[Component],
@@ -210,6 +230,7 @@ def render_compose(
             render_router_caddyfile(router_cfg),
         )
 
+    mark_unrendered_obsolete(tree)
     check_caddy_upstreams(tree)
     return tree
 
@@ -504,6 +525,12 @@ def _healthcheck_block(owner: Component | App) -> dict[str, Any] | None:
     arrays through a shell anyway, breaking commands whose arguments
     contain shell metacharacters (e.g. `db.runCommand('ping').ok`).
     CMD-SHELL + shlex.join keeps everything quoted correctly regardless.
+
+    A `command` check runs under `timeout <timeout_seconds>`, as the HTTP
+    probe bounds itself: compose's `timeout` field only marks a run
+    unhealthy and does not stop it, so an unbounded check against a service
+    that hangs would leave one more process every interval. Every image that
+    declares a command check carries `timeout` (coreutils or busybox).
     """
     import shlex as _shlex
 
@@ -512,7 +539,7 @@ def _healthcheck_block(owner: Component | App) -> dict[str, Any] | None:
         return None
 
     if hc.command is not None:
-        shell_cmd = _shlex.join(hc.command)
+        shell_cmd = _shlex.join(["timeout", str(hc.timeout_seconds), *hc.command])
     else:
         port = _resolve_check_port(owner, hc.port)
         assert hc.endpoint is not None  # enforced by HealthcheckSpec validator

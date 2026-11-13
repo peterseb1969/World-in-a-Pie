@@ -46,7 +46,7 @@ def _k8s_deployment(pull_policy: str = "if-not-present") -> Deployment:
             apps=[AppRef(name="react-console", enabled=True)],
             auth=AuthSpec(mode="oidc", gateway=True),
             network=NetworkSpec(
-                hostname="wip-kubi.local", https_port=443, http_port=80
+                hostname="wip-kubi.local", https_port=443
             ),
             images=ImagesSpec(
                 registry="ghcr.io/test", tag="test", pull_policy=pull_policy

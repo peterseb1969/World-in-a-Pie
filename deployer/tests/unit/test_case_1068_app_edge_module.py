@@ -79,7 +79,9 @@ def test_the_validator_refuses_it_without_the_gateway(discovery: Discovery) -> N
     d = _minimal_compose(modules=EDGE_MODULES)
     d.spec.auth.gateway = False
     d.spec.auth.mode = "api-key-only"
-    msgs = [m for m in _errors(d, discovery) if APP_EDGE_MODULE in m]
+    # The module rule names the cause and the remedy; the edge's required
+    # env from the gateway is refused by name as well.
+    msgs = [m for m in _errors(d, discovery) if m.startswith(f"module {APP_EDGE_MODULE!r}")]
     assert len(msgs) == 1
     assert "auth gateway" in msgs[0] and "remove-module app-edge" in msgs[0]
 

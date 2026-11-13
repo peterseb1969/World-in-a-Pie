@@ -87,8 +87,8 @@ def _render(target: str, tmp_path: Path, disc: Discovery) -> tuple[dict[str, dic
             }
             for doc in docs if doc["kind"] in ("Deployment", "StatefulSet")
         }
-        cm = next(x for x in docs if x["kind"] == "ConfigMap" and x["metadata"]["name"] == "wip-dex-config")
-        return envs, yaml.safe_load(cm["data"]["config.yaml"])
+        cm = next(x for x in docs if x["kind"] == "Secret" and x["metadata"]["name"] == "wip-dex-config")
+        return envs, yaml.safe_load(cm["stringData"]["config.yaml"])
     if target == "dev":
         tree = render_dev_simple(d, disc.components, disc.apps, s, repo_root=REPO_ROOT)
     else:

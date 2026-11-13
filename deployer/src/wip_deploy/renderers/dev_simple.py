@@ -98,6 +98,7 @@ from wip_deploy.renderers.compose import (
     _environment_block,
     _healthcheck_block,
     _render_dotenv,
+    mark_unrendered_obsolete,
 )
 from wip_deploy.renderers.compose_caddy import render_caddyfile
 from wip_deploy.renderers.compose_dex import (
@@ -452,6 +453,7 @@ def render_dev_simple(
             render_router_caddyfile(router_cfg),
         )
 
+    mark_unrendered_obsolete(tree)
     check_caddy_upstreams(tree)
     return tree
 

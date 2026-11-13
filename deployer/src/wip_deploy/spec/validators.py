@@ -185,6 +185,46 @@ def _validate_env_from_component_resolvable(
     return errs
 
 
+def _spec_context_paths() -> set[str]:
+    """Every dotted path `from_spec` can name: the string leaves of SpecContext."""
+    import dataclasses
+    import typing
+
+    from wip_deploy.config_gen import spec_context
+
+    paths: set[str] = set()
+
+    def walk(cls: type, prefix: str) -> None:
+        hints = typing.get_type_hints(cls, vars(spec_context))
+        for f in dataclasses.fields(cls):
+            hint = hints[f.name]
+            path = f"{prefix}{f.name}"
+            if dataclasses.is_dataclass(hint):
+                walk(hint, f"{path}.")
+            else:
+                paths.add(path)
+
+    walk(spec_context.SpecContext, "")
+    return paths
+
+
+def _validate_from_spec_paths(
+    components: list[Component], apps: list[App]
+) -> list[ValidationError]:
+    """Every `from_spec` names a value the spec context provides. Left to the
+    render, an unknown path raised KeyError there, a traceback."""
+    known = _spec_context_paths()
+    return [
+        ValidationError(
+            f"{owner.metadata.name!r} env {env_var.name!r} reads from_spec "
+            f"{env_var.source.from_spec!r}, which the spec context does not provide"
+        )
+        for owner in (*components, *apps)
+        for env_var in (*owner.spec.env.required, *owner.spec.env.optional)
+        if env_var.source.from_spec is not None and env_var.source.from_spec not in known
+    ]
+
+
 def _validate_required_env_targets_active(
     deployment: Deployment, components: list[Component], apps: list[App]
 ) -> list[ValidationError]:
@@ -487,6 +527,7 @@ def validate_all(
     report.errors.extend(_validate_depends_on_resolvable(components, apps))
     report.errors.extend(_validate_env_from_component_resolvable(components, apps))
     report.errors.extend(_validate_required_env_targets_active(deployment, components, apps))
+    report.errors.extend(_validate_from_spec_paths(components, apps))
     report.errors.extend(
         _validate_oidc_client_ids_unique(components, apps, deployment)
     )

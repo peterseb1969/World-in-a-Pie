@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError as PydanticValidationError
 
@@ -146,9 +148,9 @@ class TestOidcClient:
 
 
 class TestImageRef:
-    def test_build_from_source(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
-        i = ImageRef(name="wip-foo", build_context=tmp_path)
-        assert i.build_context == tmp_path
+    def test_build_from_source(self) -> None:
+        i = ImageRef(name="wip-foo", build_context=Path("."))
+        assert i.build_context == Path(".")
 
     def test_pre_built_image(self) -> None:
         i = ImageRef(name="wip-foo")

@@ -1143,6 +1143,7 @@ def verify_live(
     *,
     canary_key: str | None = None,
     app_keys: list[Any] | None = None,
+    verify: bool | str = True,
     transport: Any = None,
 ) -> list[CheckResult]:
     """Run the live checks against the install's public base URL.
@@ -1156,14 +1157,10 @@ def verify_live(
     from wip_deploy.verify_app_keys import check_app_keys
 
     base_url = _public_base(deployment)
-    # Only a letsencrypt install reliably presents a certificate this machine
-    # trusts: internal and self-signed ones never do, and an external
-    # terminator may use a private CA. This check is about authentication,
-    # not transport trust (check_tls_hostname_sanity covers that), so it does
-    # not let an untrusted certificate stop the probes.
-    verify_tls = deployment.spec.network.tls == "letsencrypt"
+    # `verify` is the install's own trust anchor (tls_trust.trust_anchor): the
+    # probes carry the master key, so they never go out unverified.
     with httpx.Client(
-        transport=transport, verify=verify_tls, timeout=10.0, follow_redirects=False
+        transport=transport, verify=verify, timeout=10.0, follow_redirects=False
     ) as client:
         return [
             check_key_file_imported(base_url, client),
@@ -1179,6 +1176,7 @@ def check_key_rotation(
     new_key: str,
     old_key: str | None,
     *,
+    verify: bool | str = True,
     transport: Any = None,
     attempts: int = 30,
     delay_seconds: float = 2.0,
@@ -1197,10 +1195,9 @@ def check_key_rotation(
     from wip_deploy.config_gen.spec_context import _public_base
 
     url = f"{_public_base(deployment)}/api/registry/namespaces"
-    verify_tls = deployment.spec.network.tls == "letsencrypt"
     problems: list[str] = []
     with httpx.Client(
-        transport=transport, verify=verify_tls, timeout=10.0, follow_redirects=False
+        transport=transport, verify=verify, timeout=10.0, follow_redirects=False
     ) as client:
 
         def status(key: str) -> int | None:

@@ -48,7 +48,6 @@ class BuildInputs:
     # None → target-aware defaults: 443 for k8s (nginx-ingress LoadBalancer),
     # 8443 for compose/dev (Caddy as non-root). Explicit ports pass through.
     https_port: int | None = None
-    http_port: int | None = None
 
     # Spec-declared API keys (parsed dicts, one per --api-key JSON
     # value). Persist in the install's state like everything else, so
@@ -165,7 +164,6 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
     # k8s uses the LB's 443/80; compose/dev uses 8443/8080 so Caddy
     # doesn't need privileged ports.
     default_https = 443 if inputs.target == "k8s" else 8443
-    default_http = 80 if inputs.target == "k8s" else 8080
     # Target-aware TLS: for k8s, auto-upgrade tls=internal (the default)
     # to tls=self-signed so the install pre-flight generates a cert + Secret.
     # On compose/dev, tls=internal means Caddy-managed self-signed and
@@ -177,7 +175,6 @@ def build_deployment(inputs: BuildInputs) -> Deployment:
         "hostname": inputs.hostname,
         "tls": tls,
         "https_port": inputs.https_port if inputs.https_port is not None else default_https,
-        "http_port": inputs.http_port if inputs.http_port is not None else default_http,
     }
     # Images
     if inputs.registry is not None:

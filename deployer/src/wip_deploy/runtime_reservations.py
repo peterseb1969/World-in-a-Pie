@@ -97,9 +97,13 @@ def check_runtime_reservations(
     apps: list[App],
     admin_key: str | None,
     *,
+    verify: bool | str = True,
     transport: Any = None,
     timeout: float = 5.0,
 ) -> RuntimeReservationCheck:
+    """`verify` is the trust anchor for the install's certificate
+    (tls_trust.trust_anchor): the request carries the master key, so it is
+    never sent unverified."""
     rendered = namespace_reservations_json(deployment, apps)
     file_reservations = json.loads(rendered)["reservations"] if rendered else []
     if not file_reservations:
@@ -114,12 +118,9 @@ def check_runtime_reservations(
     from wip_deploy.config_gen.spec_context import _public_base
 
     url = f"{_public_base(deployment)}/api/registry/reservations?source=runtime"
-    # Same trust rule as the live verify checks: only a letsencrypt install
-    # reliably presents a certificate this machine trusts.
-    verify_tls = deployment.spec.network.tls == "letsencrypt"
     try:
         with httpx.Client(
-            transport=transport, verify=verify_tls, timeout=timeout, follow_redirects=False
+            transport=transport, verify=verify, timeout=timeout, follow_redirects=False
         ) as client:
             resp = client.get(url, headers={"X-API-Key": admin_key})
     except httpx.HTTPError as e:

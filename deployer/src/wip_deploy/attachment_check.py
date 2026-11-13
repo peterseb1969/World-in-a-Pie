@@ -45,9 +45,12 @@ def check_attachment_collisions(
     apps: list[App],
     admin_key: str | None,
     *,
+    verify: bool | str = True,
     transport: Any = None,
     timeout: float = 5.0,
 ) -> AttachmentCheck:
+    """`verify` is the trust anchor for the install's certificate
+    (tls_trust.trust_anchor): the request carries the master key."""
     names = app_route_names(deployment, apps)
     if not names:
         return AttachmentCheck()
@@ -59,12 +62,11 @@ def check_attachment_collisions(
     from wip_deploy.config_gen.spec_context import _public_base
 
     url = f"{_public_base(deployment)}/api/registry/attachments"
-    verify_tls = deployment.spec.network.tls == "letsencrypt"
     attachments: list[dict[str, Any]] = []
     page = 1
     try:
         with httpx.Client(
-            transport=transport, verify=verify_tls, timeout=timeout, follow_redirects=False
+            transport=transport, verify=verify, timeout=timeout, follow_redirects=False
         ) as client:
             while True:
                 resp = client.get(

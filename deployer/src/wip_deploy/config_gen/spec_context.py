@@ -19,7 +19,6 @@ from wip_deploy.spec.component import Component
 class SpecContextNetwork:
     hostname: str
     cors_origins: str
-    internal_base_url: str  # URL the gateway/apps use to reach Caddy internally
     # This install's public URL (`https://<hostname>:<https_port>`, with
     # default-port stripping): the WIP its apps talk to. Apps reach it via
     # `from_spec: network.external_base_url`.
@@ -203,19 +202,10 @@ def _compute_network(deployment: Deployment) -> SpecContextNetwork:
         localhost_origin = _format_url("localhost", net.https_port)
         cors = f"{external},{localhost_origin}"
 
-    # Internal base URL — apps proxying API calls server-side point
-    # WIP_BASE_URL at the wip-router component. The concrete URL is
-    # resolved via `from_component: wip-router` in each app's env, so
-    # there's no target-specific string hardcoded here. This field
-    # remains for back-compat with the few callers that still use
-    # `from_spec: network.internal_base_url` — they should migrate.
-    internal_base = "http://wip-router:8080"
-
     return SpecContextNetwork(
         public_base_url=external,
         hostname=net.hostname,
         cors_origins=cors,
-        internal_base_url=internal_base,
         external_base_url=external,
     )
 

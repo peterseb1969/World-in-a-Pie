@@ -361,7 +361,7 @@ class TestK8sRender:
                     mode="oidc", gateway=True, api_keys=api_keys
                 ),
                 network=NetworkSpec(
-                    hostname="wip-kubi.local", https_port=443, http_port=80
+                    hostname="wip-kubi.local", https_port=443
                 ),
                 images=ImagesSpec(registry="ghcr.io/test", tag="test"),
                 platform=PlatformSpec(k8s=K8sPlatform()),

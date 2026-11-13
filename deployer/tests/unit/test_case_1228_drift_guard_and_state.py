@@ -93,7 +93,7 @@ def _deployment(
     api-key-only install provisions none, so pass `users=[]` to match what
     `install` really produces.
     """
-    network = NetworkSpec(hostname=hostname, tls="internal", https_port=8443, http_port=8080)
+    network = NetworkSpec(hostname=hostname, tls="internal", https_port=8443)
     return Deployment(
         metadata=DeploymentMetadata(name="guard"),
         spec=DeploymentSpec(

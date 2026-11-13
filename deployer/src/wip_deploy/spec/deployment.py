@@ -421,7 +421,6 @@ class NetworkSpec(WIPModel):
     hostname: str = Field(min_length=1)
     tls: TLSMode = "internal"
     https_port: int = Field(default=8443, ge=1, le=65535)
-    http_port: int = Field(default=8080, ge=1, le=65535)
 
     @model_validator(mode="after")
     def letsencrypt_requires_public_hostname(self) -> NetworkSpec:

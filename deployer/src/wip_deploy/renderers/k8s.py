@@ -574,9 +574,11 @@ def _render_configmaps(
     ns: str,
     secrets: ResolvedSecrets,
 ) -> str:
-    """Render the Dex config ConfigMap, if Dex is active, and the other
-    per-component ConfigMaps. There is no shared env ConfigMap: every
-    variable is set inline on its container."""
+    """Render the per-component config files: Dex's and Garage's as Secrets
+    (they carry password hashes, connector client secrets, Garage's rpc
+    secret and admin token — material compose keeps 0600), the rest as
+    ConfigMaps. There is no shared env ConfigMap: every variable is set
+    inline on its container."""
     docs: list[dict[str, Any]] = []
 
     # Dex config
@@ -584,28 +586,30 @@ def _render_configmaps(
     if dex_yaml is not None:
         docs.append({
             "apiVersion": "v1",
-            "kind": "ConfigMap",
+            "kind": "Secret",
             "metadata": {
                 "name": "wip-dex-config",
                 "namespace": ns,
                 "labels": {_LABELS_PART_OF: "wip"},
             },
-            "data": {"config.yaml": dex_yaml},
+            "type": "Opaque",
+            "stringData": {"config.yaml": dex_yaml},
         })
 
-    # Garage config — carries secrets; lives in a ConfigMap like dex's
-    # (the cluster boundary is the namespace, matching the compose
-    # posture where the file sits 0600 in the install dir).
+    # Garage config — carries its rpc secret and admin token, so a Secret
+    # like Dex's: RBAC, `kubectl get cm` and cluster backups that keep
+    # ConfigMaps treat Secrets apart.
     if garage_component(deployment, components) is not None:
         docs.append({
             "apiVersion": "v1",
-            "kind": "ConfigMap",
+            "kind": "Secret",
             "metadata": {
                 "name": "wip-garage-config",
                 "namespace": ns,
                 "labels": {_LABELS_PART_OF: "wip"},
             },
-            "data": {"garage.toml": render_garage_toml(secrets)},
+            "type": "Opaque",
+            "stringData": {"garage.toml": render_garage_toml(secrets)},
         })
 
     # MongoDB start script — no secrets (passwords are env references).
@@ -774,7 +778,7 @@ def _render_component(
         })
         volumes.append({
             "name": "config",
-            "configMap": {"name": "wip-dex-config"},
+            "secret": {"secretName": "wip-dex-config"},
         })
     elif name == "garage":
         volume_mounts.append({
@@ -785,7 +789,7 @@ def _render_component(
         })
         volumes.append({
             "name": "config",
-            "configMap": {"name": "wip-garage-config"},
+            "secret": {"secretName": "wip-garage-config"},
         })
     elif name == MONGODB_COMPONENT:
         volume_mounts.append({

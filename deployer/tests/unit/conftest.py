@@ -35,6 +35,17 @@ def _no_live_registry_reservations() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _no_live_trust_anchor() -> Iterator[None]:
+    """A request carrying the install's keys first reads the install's CA
+    (from its Caddy container, or its k8s TLS Secret). Unit tests must never
+    reach a container or a cluster for it, so the anchor is the system store.
+    (Tests of tls_trust import trust_anchor directly, which this patch does
+    not replace.)"""
+    with patch("wip_deploy.tls_trust.trust_anchor", return_value=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _no_live_registry_attachments() -> Iterator[None]:
     """Every apply asks the running Registry for its app attachments, so an
     app cannot take a route one owns. Unit tests must never reach a real

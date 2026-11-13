@@ -117,7 +117,7 @@ def _v4_state(*, suppress_core: bool = False, remote: str | None = None,
 
 def test_a_full_installs_defaults_are_dropped(tmp_path: Path) -> None:
     out = _upgrade_state_payload(_v4_state())
-    assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION == 5
+    assert out["wip_deploy_format_version"] == _DEPLOYMENT_JSON_VERSION
     assert "suppress_core" not in out["deployment"]["spec"]["modules"]
     assert not {"remote_wip_url", "external_ca_mount"} & set(out["deployment"]["spec"]["network"])
     (tmp_path / "deployment.deployer-state").write_text(json.dumps(_v4_state()))

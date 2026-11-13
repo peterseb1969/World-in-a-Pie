@@ -59,7 +59,7 @@ def k8s_deployment() -> Deployment:
             target="k8s",
             modules={"optional": ["mcp-server"]},  # type: ignore[arg-type]
             auth=AuthSpec(mode="oidc", gateway=True),
-            network=NetworkSpec(hostname="wip-kubi.local", https_port=443, http_port=80),
+            network=NetworkSpec(hostname="wip-kubi.local", https_port=443),
             images=ImagesSpec(registry="ghcr.io/test", tag="test"),
             platform=PlatformSpec(k8s=K8sPlatform()),
             secrets=SecretsSpec(backend="k8s-secret"),
@@ -83,7 +83,7 @@ def maximal_k8s_deployment(real_discovery: Discovery) -> Deployment:
             modules={"optional": optional},  # type: ignore[arg-type]
             apps=[AppRef(name=n) for n in app_names],
             auth=AuthSpec(mode="oidc", gateway=True),
-            network=NetworkSpec(hostname="wip-kubi.local", https_port=443, http_port=80),
+            network=NetworkSpec(hostname="wip-kubi.local", https_port=443),
             images=ImagesSpec(registry="ghcr.io/test", tag="test"),
             platform=PlatformSpec(k8s=K8sPlatform()),
             secrets=SecretsSpec(backend="k8s-secret"),

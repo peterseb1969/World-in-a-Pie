@@ -203,13 +203,12 @@ def test_admin_key_is_read_from_the_file_backend(tmp_path: Path):
     assert read_admin_key(tmp_path, deployment) == "from-backend"
 
 
-def test_certificates_are_only_verified_for_letsencrypt(tmp_path: Path, monkeypatch):
-    """Internal and self-signed installs present certificates this machine
-    does not trust; the live check is about authentication and must still
-    run against them (found against a real self-signed k8s install)."""
-    import wip_deploy.verify_security as vs
-
-    seen: list[bool] = []
+def test_the_live_checks_verify_against_the_anchor_they_are_given(tmp_path: Path, monkeypatch):
+    """The probes carry the master key, so they never go out unverified: an
+    internal or self-signed install is verified against its own CA, which the
+    CLI resolves (tls_trust.trust_anchor) and passes in; by default, the
+    system trust store."""
+    seen: list[object] = []
     real_client = httpx.Client
 
     def recording_client(*args, **kwargs):
@@ -217,14 +216,8 @@ def test_certificates_are_only_verified_for_letsencrypt(tmp_path: Path, monkeypa
         return real_client(*args, **kwargs)
 
     monkeypatch.setattr(httpx, "Client", recording_client)
-    base = _deployment(tmp_path)
-    for tls in ("internal", "self-signed"):
-        # model_copy skips validation: self-signed is a k8s-only mode, and
-        # only the TLS mode matters to this check.
-        network = base.spec.network.model_copy(update={"tls": tls})
-        deployment = base.model_copy(
-            update={"spec": base.spec.model_copy(update={"network": network})}
-        )
-        vs.verify_live(deployment, ALL, ADMIN,
-                       transport=httpx.MockTransport(_secure_install))
-    assert seen == [False, False]
+    deployment = _deployment(tmp_path)
+    verify_live(deployment, ALL, ADMIN, verify="/tmp/install-ca.crt",
+                transport=httpx.MockTransport(_secure_install))
+    verify_live(deployment, ALL, ADMIN, transport=httpx.MockTransport(_secure_install))
+    assert seen == ["/tmp/install-ca.crt", True]

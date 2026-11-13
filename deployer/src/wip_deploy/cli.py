@@ -6,12 +6,13 @@ There is no `upgrade` verb by design: re-applying a changed spec is
 
 from __future__ import annotations
 
+import contextlib
 import functools
 import json
 import re
 import subprocess
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -86,6 +87,7 @@ from wip_deploy.spec.deployment import (
     SpecAPIKey,
 )
 from wip_deploy.spec.validators import validate_all
+from wip_deploy.tls_trust import Untrusted
 
 app = typer.Typer(
     help="WIP declarative deployer (v2).",
@@ -353,10 +355,6 @@ def _tls_opt() -> typer.models.OptionInfo:
 
 def _https_port_opt() -> typer.models.OptionInfo:
     return typer.Option("--https-port", help="External HTTPS port (compose).")
-
-
-def _http_port_opt() -> typer.models.OptionInfo:
-    return typer.Option("--http-port", help="External HTTP port (compose).")
 
 
 def _data_dir_opt() -> typer.models.OptionInfo:
@@ -705,7 +703,6 @@ def validate(
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
-    http_port: Annotated[int | None, _http_port_opt()] = None,
     data_dir: Annotated[Path | None, _data_dir_opt()] = None,
     namespace: Annotated[str, _namespace_opt()] = "wip",
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
@@ -753,7 +750,6 @@ def validate(
         hostname=hostname,
         tls=tls,
         https_port=https_port,
-        http_port=http_port,
         data_dir=data_dir,
         namespace=namespace,
         storage_class=storage_class,
@@ -831,7 +827,6 @@ def show_spec(
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
-    http_port: Annotated[int | None, _http_port_opt()] = None,
     data_dir: Annotated[Path | None, _data_dir_opt()] = None,
     namespace: Annotated[str, _namespace_opt()] = "wip",
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
@@ -881,7 +876,6 @@ def show_spec(
         hostname=hostname,
         tls=tls,
         https_port=https_port,
-        http_port=http_port,
         data_dir=data_dir,
         namespace=namespace,
         storage_class=storage_class,
@@ -932,7 +926,6 @@ def render(
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
-    http_port: Annotated[int | None, _http_port_opt()] = None,
     data_dir: Annotated[Path | None, _data_dir_opt()] = None,
     namespace: Annotated[str, _namespace_opt()] = "wip",
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
@@ -991,7 +984,6 @@ def render(
         hostname=hostname,
         tls=tls,
         https_port=https_port,
-        http_port=http_port,
         data_dir=data_dir,
         namespace=namespace,
         storage_class=storage_class,
@@ -1085,7 +1077,6 @@ def install(
     hostname: Annotated[str | None, _hostname_opt()] = None,
     tls: Annotated[str, _tls_opt()] = "internal",
     https_port: Annotated[int | None, _https_port_opt()] = None,
-    http_port: Annotated[int | None, _http_port_opt()] = None,
     data_dir: Annotated[Path | None, _data_dir_opt()] = None,
     namespace: Annotated[str, _namespace_opt()] = "wip",
     storage_class: Annotated[str, _storage_class_opt()] = "rook-ceph-block",
@@ -1205,7 +1196,6 @@ def install(
         hostname=hostname,
         tls=tls,
         https_port=https_port,
-        http_port=http_port,
         data_dir=data_dir,
         namespace=namespace,
         storage_class=storage_class,
@@ -1711,12 +1701,23 @@ def verify(
             if canary_key_file is not None
             else read_canary_key(resolved_dir, previous)
         )
-        report.results.extend(
-            verify_live(
-                previous, active, admin_key, canary_key=canary_key,
-                app_keys=app_keys(resolved_dir, previous, discovery.apps),
-            )
-        )
+        with _install_trust(previous) as verify:
+            if isinstance(verify, Untrusted):
+                from wip_deploy.check_app import CheckResult
+
+                report.results.append(CheckResult(
+                    "live checks", False,
+                    f"not run: {verify.why}; they send the admin key, which is never "
+                    "sent unverified",
+                ))
+            else:
+                report.results.extend(
+                    verify_live(
+                        previous, active, admin_key, canary_key=canary_key,
+                        app_keys=app_keys(resolved_dir, previous, discovery.apps),
+                        verify=verify,
+                    )
+                )
 
     typer.echo(f"Security verification: {resolved_dir}")
     typer.echo(
@@ -3703,10 +3704,15 @@ def rotate_key(
     # on k8s waits for the kubelet to refresh the mount (about a minute
     # measured), so its probe gets a longer window than a restart needs. The
     # probe asks the Registry; other services follow within one key sync.
-    problems = check_key_rotation(
-        deployment, new_plaintext, old_plaintext,
-        attempts=75 if key_name is not None else 30,
-    )
+    with _install_trust(deployment) as verify:
+        problems = (
+            [f"not checked: {verify.why}; the keys are never sent unverified"]
+            if isinstance(verify, Untrusted)
+            else check_key_rotation(
+                deployment, new_plaintext, old_plaintext,
+                attempts=75 if key_name is not None else 30, verify=verify,
+            )
+        )
     if problems:
         typer.echo(
             typer.style("✗ post-rotation check failed:", fg=typer.colors.RED, bold=True),
@@ -6207,7 +6213,6 @@ def _assemble(
     hostname: str,
     tls: str,
     https_port: int | None,
-    http_port: int | None,
     data_dir: Path | None,
     namespace: str,
     storage_class: str,
@@ -6350,7 +6355,6 @@ def _assemble(
         hostname=hostname,
         tls=tls,
         https_port=https_port,
-        http_port=http_port,
         compose_data_dir=data_dir,
         k8s_namespace=namespace,
         k8s_storage_class=storage_class,
@@ -6581,7 +6585,7 @@ def _run_preflight_or_exit(deployment: Deployment, install_dir: Path) -> None:
         check_ports_free,
     )
 
-    ports = [deployment.spec.network.https_port, deployment.spec.network.http_port]
+    ports = [deployment.spec.network.https_port]
     try:
         check_ports_free(ports, install_dir=install_dir)
     except PreflightError as e:
@@ -6610,7 +6614,7 @@ def _default_install_dir(name: str) -> Path:
 # Version 2: the app edge became an optional module. A version-1 file is
 # upgraded on load (`_upgrade_state_payload`) and written as version 2 by the
 # next persist, so each step runs once per install.
-_DEPLOYMENT_JSON_VERSION = 5
+_DEPLOYMENT_JSON_VERSION = 6
 
 
 def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -6625,7 +6629,26 @@ def _upgrade_state_payload(payload: dict[str, Any]) -> dict[str, Any]:
         payload = _state_v3_to_v4(payload)
     if payload.get("wip_deploy_format_version") == 4:
         payload = _state_v4_to_v5(payload)
+    if payload.get("wip_deploy_format_version") == 5:
+        payload = _state_v5_to_v6(payload)
     return _drop_wip_namespace_access(payload)
+
+
+def _state_v5_to_v6(payload: dict[str, Any]) -> dict[str, Any]:
+    """Version 5 saved `network.http_port`, a port no target binds or reads
+    (only preflight reserved it and the drift guard compared it). It is gone;
+    every saved state carries it, and the step drops it."""
+    try:
+        network = dict(payload["deployment"]["spec"]["network"])
+    except (KeyError, TypeError):
+        return {**payload, "wip_deploy_format_version": 6}
+    network.pop("http_port", None)
+    spec = {**payload["deployment"]["spec"], "network": network}
+    return {
+        **payload,
+        "deployment": {**payload["deployment"], "spec": spec},
+        "wip_deploy_format_version": 6,
+    }
 
 
 class RetiredInstallShape(ValueError):
@@ -7212,7 +7235,6 @@ def _diff_spec_for_identity_drift(
         ("network.hostname", prev.network.hostname, curr.network.hostname),
         ("network.tls", prev.network.tls, curr.network.tls),
         ("network.https_port", prev.network.https_port, curr.network.https_port),
-        ("network.http_port", prev.network.http_port, curr.network.http_port),
         ("images.registry", prev.images.registry, curr.images.registry),
         ("auth.mode", prev.auth.mode, curr.auth.mode),
         # The security posture is identity as much as the hostname is: `variant`
@@ -7465,6 +7487,22 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
         raise typer.Exit(result.returncode)
 
 
+@contextlib.contextmanager
+def _install_trust(deployment: Deployment) -> Iterator[bool | str | Untrusted]:
+    """The trust anchor for a request carrying the install's keys
+    (tls_trust.trust_anchor), with the temporary CA file it may write removed
+    afterwards."""
+    from wip_deploy.tls_trust import anchor_path, trust_anchor
+
+    verify = trust_anchor(deployment)
+    try:
+        yield verify
+    finally:
+        path = anchor_path(verify)
+        if path is not None:
+            path.unlink(missing_ok=True)
+
+
 def _refuse_runtime_reservation_collisions(
     deployment: Deployment, apps_list: list[App], secrets: ResolvedSecrets
 ) -> None:
@@ -7472,11 +7510,17 @@ def _refuse_runtime_reservation_collisions(
     already claims in the running Registry, and say which runtime
     reservations the install's would replace. See runtime_reservations.py;
     an unreachable Registry is a note, not a stop."""
-    from wip_deploy.runtime_reservations import check_runtime_reservations
+    from wip_deploy.runtime_reservations import RuntimeReservationCheck, check_runtime_reservations
 
-    result = check_runtime_reservations(
-        deployment, apps_list, secrets.values.get("api-key")
-    )
+    with _install_trust(deployment) as verify:
+        result = (
+            RuntimeReservationCheck(note=f"runtime reservations not checked: {verify.why}; "
+                                    "the admin key is never sent unverified")
+            if isinstance(verify, Untrusted)
+            else check_runtime_reservations(
+                deployment, apps_list, secrets.values.get("api-key"), verify=verify,
+            )
+        )
     if result.note:
         typer.echo(f"note: {result.note}", err=True)
     for warning in result.warnings:
@@ -7498,9 +7542,17 @@ def _refuse_attachment_collisions(
     """Stop an apply that would give an app a route an app attachment in the
     running Registry already owns. See attachment_check.py; an unreachable
     Registry is a note, not a stop."""
-    from wip_deploy.attachment_check import check_attachment_collisions
+    from wip_deploy.attachment_check import AttachmentCheck, check_attachment_collisions
 
-    result = check_attachment_collisions(deployment, apps_list, secrets.values.get("api-key"))
+    with _install_trust(deployment) as verify:
+        result = (
+            AttachmentCheck(note=f"app attachments not checked: {verify.why}; the admin "
+                            "key is never sent unverified")
+            if isinstance(verify, Untrusted)
+            else check_attachment_collisions(
+                deployment, apps_list, secrets.values.get("api-key"), verify=verify,
+            )
+        )
     if result.note:
         typer.echo(f"note: {result.note}", err=True)
     if result.errors:
