@@ -711,8 +711,10 @@ export interface SystemArchive {
   format: 'wip-system-backup'
   /**
    * 2: every read a key has is a grant in the archive. 1: made while a
-   * runtime key's namespaces list gave read by itself; a restore writes that
-   * read as grants (the report's `scope_read_grants`).
+   * runtime key's namespaces list gave read by itself (or by an unreleased
+   * develop build of 2026-11-08 to 2026-11-13, which already read through
+   * grants only); a restore writes that read as grants (the report's
+   * `scope_read_grants`).
    */
   version: 1 | 2
   created_at: string
@@ -788,9 +790,17 @@ export type SystemRestoreSkipReason =
   | 'out_of_scope_here'
   /**
    * Version 1 archive: a read grant a key's namespaces list stood in for, on
-   * a namespace the archive records no id for and that is not here.
+   * a namespace the archive records no id for and that is not here (or is
+   * only an install's reservation, which holds no id yet). Restore again
+   * after the namespace is restored.
    */
   | 'scope_namespace_absent'
+  /**
+   * Version 1 archive: a read grant a key's namespaces list stood in for,
+   * for a key the restore does not leave as the archive's (one of this
+   * install's that shares the name).
+   */
+  | 'scope_key_not_restored'
 
 export interface SystemRestoreSkipped {
   /** Key or attachment name, reservation prefix, or 'namespace/subject_type:subject'. */
@@ -849,9 +859,10 @@ export interface SystemRestoreReport {
   /** Mirror only: pass it as `expect` on the apply (see SystemRestoreOptions). */
   plan_digest?: string | null
   /**
-   * Version 1 archives: the read grants a key's namespaces list gave on the
-   * source, restored as grants (also listed under `grants`). Absent from
-   * Registries that predate archive version 2.
+   * Version 1 archives: the read grants written (in a dry run, to be
+   * written) for a key's namespaces list, also listed under `grants` (and
+   * `grants.orphaned` when written orphaned); one not written is under
+   * `grants.skipped`. Absent from Registries that predate archive version 2.
    */
   scope_read_grants?: string[]
   reservations: SystemRestoreRecordReport

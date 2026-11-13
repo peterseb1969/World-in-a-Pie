@@ -915,17 +915,27 @@ in §5.5.
   disaster recovery done with a *fresh* restore (new ids, a copy) leaves the
   grants orphaned: activate them on the copy if they should apply there.
 - **Version 1 archives: key scopes come back as read grants.** Backups write
-  `version: 2`. A `version: 1` archive was made while a runtime key's
+  `version: 2`. A `version: 1` archive was mostly made while a runtime key's
   `namespaces` list gave read by itself, so it holds no grant where a key
   relied on that. The restore writes a `read` grant for each such key and
-  listed namespace, lists them under `scope_read_grants` and warns. Each is
-  restored like any archived grant (orphaned where the name here belongs to
-  another namespace). One whose namespace has no id in the archive is written
-  only where a namespace or reservation of the name is here, and is
-  otherwise skipped (`scope_namespace_absent`). Review the list in the dry
-  run: it also brings back a read the source revoked after the list stopped
-  giving one. A `version: 2` archive gets no such grants. A Registry from
-  before version 2 refuses a version 2 archive.
+  listed namespace, lists those written under `scope_read_grants` and warns.
+  Only a key the restore leaves as the archive's gets one: a key of this
+  install that shares the name (a config key, one wip-deploy manages) is
+  skipped (`scope_key_not_restored`). Where the archive records the
+  namespace's id (a reservation's or an effective grant's), the grant is
+  restored like any archived grant, orphaned where the name here belongs to
+  another namespace. Where it records none, the name places it: effective
+  where a namespace of the name is here; orphaned under the reservation's id
+  where only a reservation is, so it becomes read when that namespace is
+  created; skipped (`scope_namespace_absent`) where nothing of the name is,
+  or only an install's reservation (which holds no id yet). For those, run
+  the system restore again after the namespace's restore. **Not every
+  version 1 archive predates the change:** develop builds of 2026-11-08 to
+  2026-11-13 (in no release) already read only through grants and still
+  wrote version 1, so restoring their archives also gives back any read
+  revoked in that window. Review the list in the dry run. A `version: 2`
+  archive gets no such grants. A Registry from before version 2 refuses a
+  version 2 archive.
 - **Archives without namespace ids are refused**, system and namespace
   archives alike. To bring one forward, restore it on a WIP from before
   namespace ids, start this version (its startup gives every namespace and

@@ -139,7 +139,13 @@ async def system_restore(
     records arrive unmanaged. A record wip-deploy manages here, a grant to a key whose
     grants the key file declares, and a key named like a loaded config key are
     never replaced. A grant on a namespace that neither exists nor is reserved
-    here is written orphaned and gives nothing until activated. User grants
+    here is written orphaned and gives nothing until activated. A version 1
+    archive also gets a read grant for each namespace a runtime key's list
+    named and the archive holds no grant for (scope_read_grants); one whose
+    namespace the archive records no id for is written by name where the
+    namespace is here, orphaned under the reservation's id where only a
+    reservation is, and otherwise skipped (scope_namespace_absent: restore
+    again after the namespace). User grants
     from another OIDC issuer are skipped unless include_user_grants is set.
     Attachments are restored last with their archived status; one whose name
     an app of this install routes under, or whose upstream resolves from here

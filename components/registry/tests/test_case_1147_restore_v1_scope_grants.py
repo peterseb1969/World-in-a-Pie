@@ -1,7 +1,9 @@
 """A system restore of a version 1 archive keeps a key's scope reads.
 
-Version 1 archives were made while a runtime key's namespaces list gave read
-on each namespace it named, with no grant. A key's list is a scope only now,
+Version 1 archives were mostly made while a runtime key's namespaces list gave
+read on each namespace it named, with no grant (develop builds of 2026-11-08 to
+2026-11-13 also wrote version 1 under the new rule). A key's list is a scope
+only now,
 so restoring such an archive as it stands left those keys without the reads
 they had. A version 1 archive's restore writes them as read grants; a
 version 2 archive (what backups write now) gets none, since there a listed

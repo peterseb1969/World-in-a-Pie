@@ -60,15 +60,24 @@ Restore rules:
   written orphaned, and never replaces a grant that is effective here.
 - **A version 1 archive's key scopes become read grants.** Archives are
   version 2 now: a runtime key's namespaces list is a scope only, and every
-  read the key has is a grant in the archive. A version 1 archive was made
-  while the list gave read by itself, so its keys hold no grant where they
-  relied on it. The restore writes a read grant for each such (key, listed
-  namespace) that the archive holds no grant for, listed in
-  `scope_read_grants` and restored like any archived grant: with the id the
-  archive records for the namespace, a namespace of that name here with
-  another id gets it orphaned; with none recorded, it is written only where
-  a namespace or reservation of the name is here. A version 2 archive gets
-  none: there a listed namespace without a grant is access that was ended.
+  read the key has is a grant in the archive. A version 1 archive was mostly
+  made while the list gave read by itself, so its keys hold no grant where
+  they relied on it. Not always: develop builds of 2026-11-08 to 2026-11-13
+  (no release) read only through grants and still wrote version 1, so from
+  their archives this also gives back reads revoked in that window; the dry
+  run lists every one. The restore writes a read grant for each (key,
+  listed namespace) that the archive holds no grant for, to a key the
+  restore leaves as the archive's (never one of this install's that shares
+  the name). With the id the archive records for the namespace (a
+  reservation's or an effective grant's, never an orphan's), it is restored
+  like any archived grant. With none recorded: effective where a namespace
+  of the name is here; orphaned under the reservation's id where only a
+  reservation of the name is here, so it becomes read when that namespace
+  is created; skipped, with a note to restore again after the namespace,
+  where nothing of the name is (or only an install's reservation, which
+  holds no id yet). `scope_read_grants` lists those written. A version 2
+  archive gets none: there a listed namespace without a grant is access that
+  was ended.
 - **Attachments come last,** after keys and grants, so an attached app's key
   exists when its route returns. Each is matched by name and restored with
   its archived status; the attach-time rules hold: a name one of this
@@ -149,9 +158,10 @@ logger = logging.getLogger("registry.system_backup")
 
 ARCHIVE_FORMAT: Final[Literal["wip-system-backup"]] = "wip-system-backup"
 # Version 2: a key's namespaces list is a scope only, so every read a key has
-# is a grant in the archive. Version 1 archives were made while the list
-# itself gave read on each namespace it named; a restore turns that into
-# read grants (SystemArchive._scope_read_grants).
+# is a grant in the archive. Version 1 archives were mostly made while the
+# list itself gave read on each namespace it named; a restore turns that into
+# read grants (SystemArchive._scope_read_grants). Develop builds of 2026-11-08
+# to 2026-11-13 (unreleased) also wrote version 1 under the new rule.
 ARCHIVE_VERSION: Final[Literal[2]] = 2
 BOOTSTRAP_GRANTOR = "system:bootstrap"
 
@@ -321,14 +331,13 @@ def _scope_read_grants(archive: "SystemArchive") -> list[ArchiveGrant]:
     """The read grants a version 1 archive's runtime keys held by their
     namespaces list alone: one per listed namespace the key holds no
     archived grant on (any permission, orphaned included, is the decision
-    that was made there). Keys the source's deployer managed, keys in a
-    stack-wide group and keys a restore would not write are left out, as
-    the one-off backfill of the stacks themselves left them out.
+    that was made there). Keys the source's deployer managed and keys with
+    an invalid name are left out (_scope_gave_read).
 
-    Each carries the id the archive records for its namespace (a grant or
-    reservation of the same prefix), so a namespace of that name here with
-    another id gets it orphaned; with no id recorded, it is written only
-    where the namespace exists here (_restore_grant)."""
+    Each carries the id the archive records for its namespace (a reservation
+    or effective grant of the same prefix), so a namespace of that name here
+    with another id gets it orphaned. With no id recorded it is placed by
+    name at restore (_place_scope_grant)."""
     held = {(g.namespace, g.subject) for g in archive.grants if g.subject_type == "api_key"}
     ids = _archived_namespace_ids(archive)
     return [
@@ -344,24 +353,30 @@ def _scope_read_grants(archive: "SystemArchive") -> list[ArchiveGrant]:
 
 
 def _archived_namespace_ids(archive: "SystemArchive") -> dict[str, str]:
-    """The namespace id the archive records for each prefix: a reservation's,
-    else any grant's."""
+    """The id of the namespace that held each prefix on the source: a
+    reservation's, else an effective grant's. An orphaned grant's id is never
+    used: it names a namespace that was not the one holding the name (one
+    deleted, or another of the same name), so a read placed under it would be
+    orphaned against a namespace that never comes."""
     ids: dict[str, str] = {
         r.prefix: r.namespace_id for r in archive.reservations if r.namespace_id is not None
     }
     for g in archive.grants:
-        if g.namespace_id is not None:
+        if g.namespace_id is not None and not g.orphaned:
             ids.setdefault(g.namespace, g.namespace_id)
     return ids
 
 
 def _scope_gave_read(k: ArchiveKey, scope: ArchiveScope | None) -> bool:
-    """Whether a version 1 key's namespaces list gave it read, and a restore
-    writes the key: a runtime key with a list, in no stack-wide group, not
-    the source deployer's, valid, and inside a scoped archive's scope."""
+    """Whether a version 1 key's namespaces list gave it read: a runtime key
+    with a list, not the source deployer's, with a valid name. As the startup
+    backfill did, a key in a stack-wide group counts too: such a key that is
+    not a platform admin read its listed namespaces through the list as well.
+    A scoped archive holds only keys inside its scope (holds_key, which also
+    leaves out stack-wide keys). Whether the key is written here is decided
+    at restore (_restore_grants), against this install."""
     return (
-        k.managed_by is None and bool(k.namespaces) and not stack_wide(k.groups)
-        and not key_name_error(k.name)
+        k.managed_by is None and bool(k.namespaces) and not key_name_error(k.name)
         and (scope is None or scope.holds_key(k.namespaces, k.groups))
     )
 
@@ -429,8 +444,10 @@ class SystemArchive(BaseModel):
         default=ARCHIVE_VERSION,
         description=(
             "2: every read a key has is a grant in the archive. 1: made while a "
-            "runtime key's namespaces list gave read by itself; a restore writes "
-            "that read as a grant (listed in the report's scope_read_grants)"
+            "runtime key's namespaces list gave read by itself (or by an unreleased "
+            "develop build of 2026-11-08 to 2026-11-13, which read through grants "
+            "only); a restore writes that read as a grant (listed in the report's "
+            "scope_read_grants)"
         ),
     )
     created_at: datetime
@@ -509,6 +526,7 @@ SkipReason = Literal[
     "outside_archive_scope",    # a scoped archive's record outside its own declared scope
     "out_of_scope_here",        # a scoped restore would replace a key that reaches outside the scope here
     "scope_namespace_absent",   # a version 1 key's list named it, the archive has no id, and it is not here
+    "scope_key_not_restored",   # a version 1 key's list named it, and the key here is not the archive's
 ]
 
 
@@ -607,9 +625,11 @@ class SystemRestoreReport(BaseModel):
     )
     scope_read_grants: list[str] = Field(
         default_factory=list,
-        description="Version 1 archives only: the read grants a key's namespaces list "
-        "gave on its source and the archive holds no grant for, as grant ids. They "
-        "are restored as grants, and appear under `grants` like any other",
+        description="Version 1 archives only: the read grants written (or, in a dry "
+        "run, to be written) for a key's namespaces list, where the archive holds no "
+        "grant, as grant ids. They also appear under `grants` (and under "
+        "`grants.orphaned` when written orphaned); one not written is under "
+        "`grants.skipped`",
     )
     reservations: RecordReport = Field(default_factory=RecordReport)
     api_keys: RecordReport = Field(default_factory=RecordReport)
@@ -895,13 +915,6 @@ async def restore_archive(
             "since the backup was taken. Review the lists below before applying."
         )
     report.warnings += _scope_warnings(archive, mode)
-    report.scope_read_grants = sorted(archive._scope_read_grants)
-    if report.scope_read_grants:
-        report.warnings.append(
-            "A version 1 archive: made while a key's namespaces list gave read on its "
-            "own. That read is restored as read grants (scope_read_grants), including "
-            "any the source revoked after it stopped giving read. Review them."
-        )
     if not same_issuer:
         report.warnings.append(_issuer_warning(archive, include_user_grants))
 
@@ -909,7 +922,18 @@ async def restore_archive(
         archive, report, plan, dry_run=dry_run, overwrite=overwrite,
         user_grants=user_grants, config_key_names=config_key_names, restored_by=restored_by,
     )
+    if archive._scope_read_grants:
+        report.warnings.append(_V1_WARNING)
     return report, written_keys, removed_hashes
+
+
+_V1_WARNING = (
+    "A version 1 archive. Its keys' namespaces lists are restored as read grants "
+    "(scope_read_grants lists those written; the rest are under grants.skipped). An "
+    "archive made by a develop build of 2026-11-08 to 2026-11-13 is also version 1, "
+    "though its source already read only through grants: from such an archive this "
+    "also gives back any read the source revoked in that window. Review them."
+)
 
 
 async def _plan_and_refusals(
@@ -1784,32 +1808,91 @@ async def _restore_grants(
     user_grants: bool, planned: dict[str, str], removed_keys: set[str] | None = None,
 ) -> None:
     out = report.grants
+    # The keys this restore leaves as the archive's: a version 1 key's scope
+    # read is given only to them, never to a key of this install's that
+    # merely shares the name (a config key, one the deployer manages here).
+    archive_keys = await _keys_left_as_archived(archive, report.api_keys)
     for g in archive.grants:
         skip = _grant_refusal(g, archive.source.scope, user_grants, removed_keys)
+        if skip is None and archive.is_scope_read_grant(g):
+            placed = await _place_scope_grant(g, planned, archive_keys)
+            if isinstance(placed, SkippedRecord):
+                skip = placed
+            else:
+                g = placed
         if skip is not None:
             out.skipped.append(skip)
             continue
-        if archive.is_scope_read_grant(g) and not await _scope_namespace_here(g, planned):
-            out.skipped.append(_skip_grant(
+        await _restore_grant(g, out, planned, dry_run=dry_run, overwrite=overwrite)
+    # Only the scope reads written count as restored; a skipped one is
+    # under grants.skipped, and an orphaned one also under grants.orphaned.
+    written = set(out.created) | set(out.replaced)
+    report.scope_read_grants = sorted(archive._scope_read_grants & written)
+
+
+async def _keys_left_as_archived(archive: SystemArchive, keys: RecordReport) -> set[str]:
+    """The names of the keys this restore leaves as the archive's key: written,
+    unchanged, or kept as they are here because the record differs (an upsert)
+    while the key itself, its hash, is the archive's."""
+    names = set(keys.created) | set(keys.replaced) | set(keys.unchanged)
+    differs = {s.name for s in keys.skipped if s.reason_code == "differs"}
+    for k in archive.api_keys:
+        if k.name in differs:
+            here = await StoredAPIKey.find_one(StoredAPIKey.name == k.name)
+            if here is not None and here.managed_by is None and here.key_hash == k.key_hash:
+                names.add(k.name)
+    return names
+
+
+_RESTORE_AGAIN = (
+    "Run the system restore again once the namespace is here (after its data "
+    "restore) to give the read."
+)
+
+
+async def _place_scope_grant(
+    g: ArchiveGrant, planned: dict[str, str], archive_keys: set[str],
+) -> ArchiveGrant | SkippedRecord:
+    """Where a read grant a version 1 key's list stood in for is written, or
+    why it is not.
+
+    Only for a key this restore leaves as the archive's. With the namespace's
+    id from the archive, the id decides as for any grant (_grantable).
+    Without one: a namespace of the name here takes it by name, as the list
+    gave it. Where only a reservation of the name is here, it is written
+    orphaned under the reservation's id, so it becomes read when that
+    namespace is created and never for another one taking the name later. An
+    install's reservation that holds no id yet, or nothing of the name, gets
+    nothing: a name-only grant on nothing would give read on whichever
+    namespace takes the name."""
+    if g.subject not in archive_keys:
+        return _skip_grant(
+            g, "scope_key_not_restored",
+            "a version 1 key's namespaces list named it, and the key here is not the "
+            "archive's (see the key's own entry under api_keys)",
+        )
+    if g.namespace_id is not None:
+        return g
+    if await Namespace.find_one({"prefix": g.namespace, "status": {"$in": ["active", "archived"]}}):
+        return g
+    reserved_id = planned.get(g.namespace)
+    if reserved_id is None:
+        res = await RuntimeReservation.find_one(RuntimeReservation.prefix == g.namespace)
+        if res is not None and res.namespace_id is None:
+            return _skip_grant(
                 g, "scope_namespace_absent",
                 "the key's namespaces list named it on the source, the archive records "
-                "no id for it, and no namespace or reservation of that name is here",
-            ))
-            continue
-        await _restore_grant(g, out, planned, dry_run=dry_run, overwrite=overwrite)
-
-
-async def _scope_namespace_here(g: ArchiveGrant, planned: dict[str, str]) -> bool:
-    """For a read grant a version 1 key's list stood in for: whether it may
-    be written. With the namespace's id from the archive, the id decides as
-    for any grant (_grantable). Without one, only a namespace or reservation
-    of the name here takes it; a name-only grant on nothing would give read
-    on whichever namespace takes the name later."""
-    if g.namespace_id is not None or g.namespace in planned:
-        return True
-    if await Namespace.find_one({"prefix": g.namespace, "status": {"$in": ["active", "archived"]}}):
-        return True
-    return await RuntimeReservation.find_one(RuntimeReservation.prefix == g.namespace) is not None
+                "no id for it, and only an install's reservation of that name is here, "
+                "which holds no namespace id yet. " + _RESTORE_AGAIN,
+            )
+        reserved_id = res.namespace_id if res is not None else None
+    if reserved_id is not None:
+        return g.model_copy(update={"namespace_id": reserved_id, "orphaned": True})
+    return _skip_grant(
+        g, "scope_namespace_absent",
+        "the key's namespaces list named it on the source, the archive records no "
+        "id for it, and no namespace or reservation of that name is here. " + _RESTORE_AGAIN,
+    )
 
 
 def _grant_refusal(
@@ -1879,7 +1962,9 @@ def _existing_grant_outcome(
         # effective grant here with it would take access away, or (with a
         # higher permission) hand out what nobody granted.
         return _skip_grant(
-            g, "orphaned_in_archive", "orphaned in the archive, effective here; left as it is",
+            g, "orphaned_in_archive",
+            "orphaned in the archive (or placed under a reservation's id), effective "
+            "here; left as it is",
         )
     if _grant_content(existing) == _grant_content(g, orphaned, g.namespace_id):
         return "unchanged"
