@@ -42,7 +42,7 @@ async def test_template_store_unavailable(pg_pool):
                new=AsyncMock(side_effect=httpx.ConnectError("refused"))):
         result = await check_namespace_parity(pg_pool, "parityns")
     assert result.ok is False
-    assert result.bookkeeping_error == " template-store or document-store unavailable: refused"
+    assert result.bookkeeping_error == " template-store unavailable: refused"
     assert result.templates == []
 
 

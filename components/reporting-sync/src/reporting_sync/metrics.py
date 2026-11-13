@@ -250,11 +250,16 @@ class MetricsCollector:
         consumer_info: ConsumerInfo | None,
         nats_connected: bool,
         postgres_connected: bool,
+        advance_window: bool = True,
     ) -> list[Alert]:
         """
         Check all alert conditions and return any new alerts triggered.
 
-        This should be called periodically by the alert check task.
+        This should be called periodically by the alert check task. A manual
+        check (POST /alerts/test) passes ``advance_window=False``: it reads
+        the error rate over the events since the loop's last check without
+        moving that window, so it neither consumes the loop's samples nor
+        leaves the loop an empty window that skips the error-rate check.
         """
         if not self._alert_config.enabled:
             return []
@@ -299,7 +304,8 @@ class MetricsCollector:
         # failure burst, and keep an old burst alerting for ever.
         processed = self.events_processed - self._rate_window[0]
         failed = self.events_failed - self._rate_window[1]
-        self._rate_window = (self.events_processed, self.events_failed)
+        if advance_window:
+            self._rate_window = (self.events_processed, self.events_failed)
         if processed + failed > 0:
             error_rate = (failed / (processed + failed)) * 100
             new_alerts.append(self._tiered_alert(

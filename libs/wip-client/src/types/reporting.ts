@@ -515,6 +515,9 @@ export interface ActivityItem {
 export interface ActivityResponse {
   activities: ActivityItem[]
   total: number
+  /** Entity types whose source could not be read: their activity is missing
+   * from `activities`. Empty when every requested source answered. */
+  incomplete_sources: string[]
 }
 
 export interface DocumentReference {

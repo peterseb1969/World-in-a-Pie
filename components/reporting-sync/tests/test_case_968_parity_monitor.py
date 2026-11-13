@@ -300,7 +300,7 @@ async def test_a_stale_closure_is_rebuilt_by_the_monitor(pg_pool):
     with ExitStack() as stack:
         for target, value in (
             ("_fetch_namespace_templates", []),
-            ("_fetch_foreign_templates", []),
+            ("_fetch_foreign_templates", ([], [])),
             ("_expected_active_terms", 2),
             ("_expected_active_relations", 1),
         ):

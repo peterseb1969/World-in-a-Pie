@@ -701,7 +701,8 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
         """Parse raw template field dicts (as the template-store API returns
         them) into TemplateField models. The single conversion point shared by
         table creation and the parity check — both must see identical fields
-        or the parity oracle drifts from what sync actually builds."""
+        or the parity oracle drifts from what sync actually builds. A field's
+        name comes back as its column base: dots replaced by underscores."""
         fields: list[TemplateField] = []
         for f in fields_data:
             file_config = None
@@ -715,7 +716,12 @@ CREATE INDEX IF NOT EXISTS "{table_name}_target_ref_id_idx" ON {qualified}(targe
                 semantic_type = SemanticType(f["semantic_type"])
 
             fields.append(TemplateField(
-                name=f["name"],
+                # Dots become underscores, as the transformer names its row
+                # keys: a column made from the dotted name (a template stored
+                # before template-store refused dots) matched no row, and
+                # every document of it failed to sync. An existing table gains
+                # the underscored column on its next ensure.
+                name=f["name"].replace(".", "_"),
                 label=f.get("label"),
                 type=FieldType(f["type"]),
                 mandatory=f.get("mandatory", False),

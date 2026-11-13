@@ -32,7 +32,7 @@ def _stubs(foreign: list, doc_total: int) -> ExitStack:
     stack = ExitStack()
     for target, value in (
         ("_fetch_namespace_templates", []),
-        ("_fetch_foreign_templates", foreign),
+        ("_fetch_foreign_templates", (foreign, [])),
         ("_expected_document_total", doc_total),
         ("_expected_active_terms", 0),
         ("_expected_active_relations", 0),
@@ -62,7 +62,7 @@ async def test_documents_on_a_shared_template_without_its_table_are_a_gap(pg_poo
     with _stubs([SHARED], doc_total=3):
         result = await check_namespace_parity(pg_pool, NS)
     assert result.structural_issues == 1 and result.ok is False
-    assert "template:shared_visit" in _gaps(result)[0]
+    assert "shared_template:wip:shared_visit" in _gaps(result)[0]
 
 
 @pytest.mark.asyncio
@@ -87,8 +87,9 @@ async def test_foreign_templates_come_from_the_namespaces_documents(monkeypatch)
     monkeypatch.setattr(parity.httpx, "AsyncClient",
                         lambda *a, **k: real(*a, transport=httpx.MockTransport(handle), **k))
     owned = [{"template_id": "tpl-own", "value": "own"}]
-    foreign = await parity._fetch_foreign_templates(NS, owned)
+    foreign, unreadable = await parity._fetch_foreign_templates(NS, owned)
     assert [(t["template_id"], t["_foreign_namespace"]) for t in foreign] == [("tpl-shared", "wip")]
+    assert unreadable == []
 
 
 def _result(**kw) -> NamespaceParityResult:
@@ -168,8 +169,12 @@ async def test_an_entity_view_is_counted_as_its_version_tables():
     conn = MagicMock()
     counts = {"visits__v1": 2, "visits__v2": 3}
     conn.fetchval = AsyncMock(side_effect=lambda sql, timeout=None: counts[sql.split('"')[3]])
+    # What each view reads, as the catalog records it: the bare view is a
+    # cross_version_view selecting version 2 only; __entities reads both.
+    reads = {"visits": ["visits__v2"], "visits__entities": ["visits__v1", "visits__v2"]}
+    conn.fetch = AsyncMock(side_effect=lambda sql, schema, view: [{"relname": r} for r in reads.get(view, [])])
     tables = {"visits__v1", "visits__v2", "other__v1"}
-    assert await _relation_count(conn, "ns", "visits", True, tables) == (5, None)
+    assert await _relation_count(conn, "ns", "visits", True, tables) == (3, None)
     assert await _relation_count(conn, "ns", "visits__entities", True, tables) == (5, None)
     count, why = await _relation_count(conn, "ns", "v_report", True, tables)
     assert count is None and "not counted" in why

@@ -259,8 +259,10 @@ class BatchSyncJob(BaseModel):
     # instrumentation rather than one-off profiling: this path's regressions
     # were invisible until an operator timed a 13-minute sync by hand, and a
     # job that reports where its time went makes the next one a read of the
-    # job record. rows_written counts physical row upserts (one per document
-    # version written).
+    # job record. rows_written counts rows physically written: an upsert the
+    # write-counter guard turned into a no-op (the row already holds this or a
+    # newer write) counts 0, so a re-run over current rows reads 0, not N.
+    # documents_synced counts documents processed without error.
     fetch_ms: int = 0
     upsert_ms: int = 0
     sibling_ms: int = 0

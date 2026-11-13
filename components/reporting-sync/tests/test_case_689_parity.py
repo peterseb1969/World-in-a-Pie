@@ -89,7 +89,7 @@ def _patch_http(templates: list[dict], doc_total: int = 0):
 
     return (
         stack(("_fetch_namespace_templates", templates),
-              ("_fetch_foreign_templates", []),
+              ("_fetch_foreign_templates", ([], [])),
               ("_expected_document_total", doc_total)),
         stack(("_expected_active_terms", 0), ("_expected_active_relations", 0)),
     )

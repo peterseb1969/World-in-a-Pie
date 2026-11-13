@@ -1147,7 +1147,9 @@ async def test_alerts() -> dict[str, Any]:
     postgres_ok = await _postgres_live_check()
 
     consumer_info = await get_consumer_info()
-    new_alerts = await metrics.check_alerts(consumer_info, nats_ok, postgres_ok)
+    new_alerts = await metrics.check_alerts(
+        consumer_info, nats_ok, postgres_ok, advance_window=False,
+    )
     enabled = metrics.get_alert_config().enabled
 
     # "checked" is true only when alerting ran; queue lag is checked only
@@ -1996,11 +1998,14 @@ async def get_recent_activity(
 
     Args:
         types: Comma-separated list of entity types (optional)
-               Valid types: terminology, term, template, document
+               Valid types: terminology, term, template, document, file
         limit: Maximum number of activities to return (1-200, default 50)
 
     Returns:
-        ActivityResponse with list of activities sorted by timestamp (newest first)
+        ActivityResponse with list of activities sorted by timestamp (newest
+        first). ``incomplete_sources`` names the entity types whose service
+        could not be read: their activity is missing from the list, which is
+        then not a complete account of what changed.
     """
     # Activity is read from the stores, which answer within the readable
     # namespaces of reporting-sync's own key.
@@ -2088,10 +2093,16 @@ async def get_entity_references(
             detail=f"Invalid entity type: {entity_type}. Must be one of: {valid_types}"
         )
 
-    result = await state.search_service.get_entity_references(
-        entity_type=entity_type,
-        entity_id=entity_id
-    )
+    try:
+        result = await state.search_service.get_entity_references(
+            entity_type=entity_type,
+            entity_id=entity_id
+        )
+    except (UpstreamError, httpx.HTTPError) as e:
+        logger.error("Entity references lookup failed for %s %s: %s", entity_type, entity_id, e)
+        raise HTTPException(
+            status_code=503, detail="Cannot check the entity's references now"
+        ) from e
     # The entity is fetched with the service key, so authorize on the
     # namespace it actually lives in. A caller without read on it is told
     # the entity is not found (an administrator too, on a namespace locked
@@ -2351,17 +2362,40 @@ async def _bounded_count(conn: Any, schema: str, tname: str) -> tuple[int | None
         return None, f"not counted: counting took longer than {_COUNT_TIMEOUT_MS} ms"
 
 
+async def _tables_a_view_reads(conn: Any, schema: str, view: str) -> set[str]:
+    """The base tables a view in ``schema`` selects from directly, from the
+    catalog's record of its rewrite rule."""
+    rows = await conn.fetch(
+        """
+        SELECT DISTINCT t.relname
+        FROM pg_class v
+        JOIN pg_namespace n ON n.oid = v.relnamespace
+        JOIN pg_rewrite r ON r.ev_class = v.oid
+        JOIN pg_depend d ON d.objid = r.oid AND d.classid = 'pg_rewrite'::regclass
+        JOIN pg_class t ON t.oid = d.refobjid AND t.relkind = 'r'
+        WHERE n.nspname = $1 AND v.relname = $2
+        """,
+        schema, view,
+    )
+    return {r["relname"] for r in rows}
+
+
 async def _relation_count(
     conn: Any, schema: str, tname: str, is_view: bool, relations: set[str],
 ) -> tuple[int | None, str | None]:
     """A relation's row count without scanning a view: an entity view
     (``<base>`` or ``<base>__entities``, ``doc_<value>`` or a table_name
-    override) is the union of its version tables ``<base>__vN``, so its
-    count is theirs summed; any other view is not counted."""
+    override) is a UNION ALL of version tables ``<base>__vN``, so its count
+    is theirs summed — of the version tables the view actually reads, as
+    PostgreSQL records them: a bare view under a cross_version_view that
+    selects some versions reads only those. Any other view is not counted."""
     if not is_view:
         return await _bounded_count(conn, schema, tname)
     base = tname[: -len("__entities")] if tname.endswith("__entities") else tname
-    versions = sorted(n for n in relations if re.fullmatch(rf"{re.escape(base)}__v\d+", n))
+    read = await _tables_a_view_reads(conn, schema, tname)
+    versions = sorted(
+        n for n in relations & read if re.fullmatch(rf"{re.escape(base)}__v\d+", n)
+    )
     if not versions:
         return None, "not counted: a view is counted only as the sum of its version tables"
     total = 0

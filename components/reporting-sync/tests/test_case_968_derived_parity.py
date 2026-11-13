@@ -28,7 +28,7 @@ def _patch_http(terms: int | Exception = 0, relations: int | Exception = 0) -> E
     stack = ExitStack()
     for target, value in (
         ("_fetch_namespace_templates", []),
-        ("_fetch_foreign_templates", []),
+        ("_fetch_foreign_templates", ([], [])),
         ("_expected_document_total", 0),
         ("_expected_active_terms", terms),
         ("_expected_active_relations", relations),

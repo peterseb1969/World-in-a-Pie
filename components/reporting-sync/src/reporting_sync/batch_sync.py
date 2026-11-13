@@ -88,6 +88,8 @@ class _BatchRun:
     ns_tables: dict[tuple[str, int], str] = field(default_factory=dict)
     touched_namespaces: set[str] = field(default_factory=set)
     ns_versions_on_disk: dict[str, set[int]] = field(default_factory=dict)
+    # The template has no active version: nothing is ensured eagerly.
+    no_active_version: bool = False
 
 
 @dataclass
@@ -120,6 +122,23 @@ MAX_FINISHED_JOBS = 200
 _FINISHED_STATUSES = (
     BatchSyncStatus.COMPLETED, BatchSyncStatus.FAILED, BatchSyncStatus.CANCELLED,
 )
+
+
+def _rows_in_tag(tag: str) -> int:
+    """The row count a command tag reports ("INSERT 0 1" -> 1, "INSERT 0 0"
+    when the upsert's WHERE kept the row as it was -> 0); 0 if unreadable."""
+    try:
+        return int(str(tag).rsplit(" ", 1)[-1])
+    except ValueError:
+        return 0
+
+
+def _foreign(run: _BatchRun) -> bool:
+    """Whether the job is scoped to a namespace other than its template's:
+    the template's tables there are created lazily, never eagerly or by
+    force."""
+    tpl_ns = run.template.get("namespace") or "wip"
+    return run.job.namespace is not None and run.job.namespace != tpl_ns
 
 
 class BatchSyncService:
@@ -529,7 +548,7 @@ class BatchSyncService:
         )
         job.fetch_ms += int((time.monotonic() - fetch_started) * 1000)
         job.total_documents = total
-        tpl_table = await self._prepare_template_tables(run, force)
+        tpl_table = await self._prepare_template_tables(run, force, total)
 
         if total == 0:
             # A force run dropped this template's views and moved the
@@ -539,7 +558,9 @@ class BatchSyncService:
             job.completed_at = datetime.now(UTC)
             detail = (
                 f"(table {tpl_table} ensured empty)" if tpl_table
-                else "(foreign template — no table created in scope)"
+                else "(foreign template — no table created in scope)" if _foreign(run)
+                else "(no active version — no table to ensure)" if run.no_active_version
+                else "(no table ensured)"
             )
             logger.info(f"No documents to sync for {job.template_value} {detail}")
             return
@@ -617,7 +638,9 @@ class BatchSyncService:
             )
         return run.ns_versions_on_disk[ns]
 
-    async def _prepare_template_tables(self, run: _BatchRun, force: bool) -> str | None:
+    async def _prepare_template_tables(
+        self, run: _BatchRun, force: bool, total: int = 0,
+    ) -> str | None:
         """Drop the template's relations when forced, and ensure its latest
         active version's table eagerly; the table ensured, if any.
 
@@ -633,6 +656,8 @@ class BatchSyncService:
         """
         job = run.job
         tpl_ns = run.template.get("namespace") or "wip"
+        eager = None if _foreign(run) else await self._eager_template(run, tpl_ns)
+        run.no_active_version = eager is None and not _foreign(run)
 
         # Force = drop-and-rebuild: remove the template's existing relations
         # in the target namespace before the sync recreates them from current
@@ -642,16 +667,9 @@ class BatchSyncService:
         # belong to the job's scope: table names derive from the template
         # VALUE, so a foreign same-valued template's job dropping here would
         # race the owning template's rebuild of the identically-named tables.
-        if force and job.namespace is not None and job.namespace == tpl_ns:
-            job.dropped_relations = (
-                await self.schema_manager.drop_relations_for_template(
-                    tpl_ns, job.template_value, run.config
-                )
-            )
+        if force and job.namespace is not None and not _foreign(run):
+            await self._force_drop(run, tpl_ns, total)
 
-        if job.namespace is not None and job.namespace != tpl_ns:
-            return None
-        eager = await self._eager_template(run, tpl_ns)
         if eager is None:
             return None
         eager_template, eager_version = eager
@@ -664,6 +682,22 @@ class BatchSyncService:
             run.ns_tables[(tpl_ns, eager_version)] = tpl_table
             run.touched_namespaces.add(tpl_ns)
         return tpl_table
+
+    async def _force_drop(self, run: _BatchRun, tpl_ns: str, total: int) -> None:
+        """Drop the template's relations in its own namespace for a force
+        rebuild. With no active version and no documents nothing would be
+        rebuilt, so a drop would only destroy (the registered views over
+        these relations included): it is skipped, and the job says so."""
+        job = run.job
+        if run.no_active_version and total == 0:
+            job.error_message = (
+                "force: nothing dropped — the template has no active version "
+                "and no documents here, so nothing would be rebuilt"
+            )
+            return
+        job.dropped_relations = await self.schema_manager.drop_relations_for_template(
+            tpl_ns, job.template_value, run.config
+        )
 
     async def _eager_template(
         self, run: _BatchRun, tpl_ns: str,
@@ -775,8 +809,8 @@ class BatchSyncService:
                         sql, values = transformer.generate_upsert_sql(
                             table_name, row, config.sync_strategy.value
                         )
-                        await conn.execute(sql, *values)
-                        job.rows_written += 1
+                        tag = await conn.execute(sql, *values)
+                        job.rows_written += _rows_in_tag(tag)
                     job.documents_synced += 1
                 except Exception as e:
                     logger.error(

@@ -808,11 +808,14 @@ const activity = await client.reporting.getRecentActivity({
   namespace: 'my-app',
 })
 // activity.activities: [{ type, action, entity_id, timestamp, user, version }]
+// activity.incomplete_sources: entity types whose service could not be read —
+// their activity is missing, not absent. Check it before reading "nothing changed".
 
 // Reference tracking
 const refs = await client.reporting.getEntityReferences('document', 'my-document-id')
 const usedBy = await client.reporting.getReferencedBy('terminology', 'COUNTRY', 50)
-const termDocs = await client.reporting.getTermDocuments('COUNTRY:United States', 100)
+// A term is its id or 'ns:TERMINOLOGY:value' — the 2-part 'COUNTRY:United States' is refused
+const termDocs = await client.reporting.getTermDocuments('my-app:COUNTRY:United States', 100)
 ```
 
 ---

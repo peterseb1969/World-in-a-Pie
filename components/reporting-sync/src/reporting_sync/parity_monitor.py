@@ -125,8 +125,19 @@ def _template_gap(t: Any) -> tuple[str | None, str]:
     if t.error:
         return "operator", f"template_check_failed:{t.template_value}"
     if not t.structural_ok or t.counts_match is False or not t.derived_ok:
+        if t.template_namespace:
+            # A shared template: the repair must find it in its own namespace.
+            return "repairable", f"{_SHARED}{t.template_namespace}:{t.template_value}"
         return "repairable", f"template:{t.template_value}"
     return None, ""
+
+
+# Gap key prefix of a shared template's tables: "shared_template:<its
+# namespace>:<value>". A namespace never contains ':' (the platform's
+# NS:VALUE form splits on the first one), so the first ':' after the prefix
+# separates them.
+_SHARED = "shared_template:"
+_TEMPLATE_KEYS = ("template:", _SHARED)
 
 
 async def _list_namespaces() -> list[str]:
@@ -253,7 +264,7 @@ class ParityMonitor:
 
         confirmed = repairable & previous
         ran: set[str] = set()
-        templates = sorted(k for k in confirmed if k.startswith("template:"))
+        templates = sorted(k for k in confirmed if k.startswith(_TEMPLATE_KEYS))
         for key in [k for k in _ORDER if k in confirmed] + templates:
             if key == "term_closure" and ran & {"terms", "term_relations"}:
                 continue  # those syncs end with a closure rebuild
@@ -273,6 +284,16 @@ class ParityMonitor:
 
         ns_status.not_healing = sorted(reported)
 
+    async def _sync_shared(self, value: str, owner: str, namespace: str) -> Any:
+        """Batch-sync ``namespace``'s documents of a template another
+        namespace owns. The template is read in its own namespace: looked up
+        by value in ``namespace`` it is not there, and the repair would fail
+        on a gap one sync closes."""
+        template = await self.batch_sync._fetch_template_by_value(value, owner)
+        if template is None:
+            raise RuntimeError(f"shared template {owner}:{value} could not be read from template-store")
+        return await self.batch_sync.start_batch_sync(value, namespace=namespace, template=template)
+
     async def _repair(self, namespace: str, key: str, attempt: int) -> None:
         sm = self.batch_sync.schema_manager
         repairs: dict[str, tuple[str, Callable[[], Awaitable[Any]]]] = {
@@ -290,6 +311,12 @@ class ParityMonitor:
                 "template batch sync",
                 lambda: self.batch_sync.start_batch_sync(value, namespace=namespace),
             )
+        elif key.startswith(_SHARED):
+            owner, shared_value = key.removeprefix(_SHARED).split(":", 1)
+            repairs[key] = (
+                "template batch sync",
+                lambda: self._sync_shared(shared_value, owner, namespace),
+            )
         label, run = repairs[key]
         action = ParityAction(
             at=datetime.now(UTC), namespace=namespace, gap=key, action=label, attempt=attempt
@@ -303,7 +330,7 @@ class ParityMonitor:
         else:
             # A template repair only starts a job; the next pass's check is
             # what says whether the gap closed.
-            verb = "triggered" if key.startswith("template:") else "ran"
+            verb = "triggered" if key.startswith(_TEMPLATE_KEYS) else "ran"
             logger.warning(
                 f"Reporting parity repair {verb} in {namespace} ({label}, "
                 f"attempt {attempt}/{self.max_attempts}): {key}"

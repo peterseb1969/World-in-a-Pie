@@ -45,6 +45,8 @@ TEMPLATE = {
 def svc():
     pool = MagicMock()
     conn = AsyncMock()
+    # The command tag of an upsert that wrote its row: rows_written counts it.
+    conn.execute = AsyncMock(return_value="INSERT 0 1")
     acm = AsyncMock()
     acm.__aenter__ = AsyncMock(return_value=conn)
     acm.__aexit__ = AsyncMock(return_value=False)

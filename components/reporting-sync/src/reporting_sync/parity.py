@@ -205,15 +205,21 @@ async def _fetch_namespace_templates(namespace: str) -> list[dict[str, Any]]:
 
 async def _fetch_foreign_templates(
     namespace: str, owned: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    """The templates of OTHER namespaces the namespace's live documents use.
+) -> tuple[list[dict[str, Any]], list[TemplateParity]]:
+    """The templates of OTHER namespaces the namespace's live documents use,
+    and a row with an error for each one that could not be read.
 
     Reporting tables live in the document's namespace schema, so a shared
     template materialises tables here too; the owned listing cannot see it.
     Document Store's template facets name them (live documents, each
     template's own namespace). A foreign template sharing an owned one's
     value is left out: they name the same tables, and the owned template
-    defines them. Each is read at its latest version, resolved."""
+    defines them. Foreign templates sharing a value with each other (two
+    namespaces' ORDER) share their tables too: one is checked, and its count
+    covers the documents of all of them (``_count_template_ids``). Each is
+    read at its latest version, resolved. A facet listing that fails raises
+    (the caller reports the sweep as not done); a template that cannot be
+    read is a row with the reason, so one bad facet hides nothing else."""
     owned_values = {str(t.get("value", "")).lower() for t in owned}
     owned_ids = {t.get("template_id") for t in owned}
     async with httpx.AsyncClient() as client:
@@ -224,25 +230,48 @@ async def _fetch_foreign_templates(
             timeout=30.0,
         )
         response.raise_for_status()
-        foreign: list[dict[str, Any]] = []
+        by_value: dict[str, dict[str, Any]] = {}
+        failed: list[TemplateParity] = []
         for facet in response.json().get("facets", []):
-            if (
-                facet.get("template_id") in owned_ids
-                or not facet.get("document_count")
-                or str(facet.get("template_value") or "").lower() in owned_values
-            ):
+            value = str(facet.get("template_value") or "").lower()
+            if facet.get("template_id") in owned_ids or not facet.get("document_count") or value in owned_values:
                 continue
-            template = await client.get(
-                f"{settings.template_store_url}/api/template-store/templates/"
-                f"{facet['template_id']}",
-                headers={"X-API-Key": settings.api_key},
-                timeout=30.0,
-            )
-            template.raise_for_status()
-            item = template.json()
-            item["_foreign_namespace"] = item.get("namespace") or facet.get("template_namespace")
-            foreign.append(item)
-    return foreign
+            if value in by_value:
+                by_value[value]["_count_template_ids"].append(facet["template_id"])
+                continue
+            item = await _read_foreign_template(client, facet, failed)
+            if item is not None:
+                by_value[value] = item
+    return list(by_value.values()), failed
+
+
+async def _read_foreign_template(
+    client: httpx.AsyncClient, facet: dict[str, Any], failed: list[TemplateParity],
+) -> dict[str, Any] | None:
+    """The facet's template at its latest version, or None with a row in
+    ``failed`` saying why it could not be read."""
+    try:
+        template = await client.get(
+            f"{settings.template_store_url}/api/template-store/templates/{facet['template_id']}",
+            headers={"X-API-Key": settings.api_key},
+            timeout=30.0,
+        )
+        template.raise_for_status()
+    except httpx.HTTPError as e:
+        gone = isinstance(e, httpx.HTTPStatusError) and e.response.status_code == 404
+        failed.append(TemplateParity(
+            template_value=str(facet.get("template_value") or facet["template_id"]),
+            template_namespace=facet.get("template_namespace"),
+            error=(
+                f"template {facet['template_id']} not found, though live documents use it"
+                if gone else f"template-store unavailable: {e}"
+            ),
+        ))
+        return None
+    item = template.json()
+    item["_foreign_namespace"] = item.get("namespace") or facet.get("template_namespace")
+    item["_count_template_ids"] = [facet["template_id"]]
+    return item
 
 
 async def _expected_document_total(template_id: str, namespace: str) -> int:
@@ -464,6 +493,35 @@ async def _derived_table_parity(
     return rows
 
 
+async def _templates_to_check(
+    namespace: str, result: NamespaceParityResult,
+) -> list[dict[str, Any]] | None:
+    """The namespace's own templates and the shared ones its documents use;
+    None when its own cannot be listed (recorded on ``result``).
+
+    The shared templates' sweep can fail on its own: the namespace's own
+    templates are still checked, and the failure is reported on ``result``,
+    never read as "no shared templates". A shared template that cannot be
+    read is a row with the reason."""
+    try:
+        templates = await _fetch_namespace_templates(namespace)
+    except httpx.HTTPError as e:
+        result.bookkeeping_error = (result.bookkeeping_error or "") + (
+            f" template-store unavailable: {e}"
+        )
+        return None
+    try:
+        foreign, unreadable = await _fetch_foreign_templates(namespace, templates)
+    except httpx.HTTPError as e:
+        result.bookkeeping_error = (result.bookkeeping_error or "") + (
+            f" shared templates not checked (document-store unavailable: {e})"
+        )
+        return templates
+    result.templates.extend(unreadable)
+    result.structural_issues += len(unreadable)
+    return templates + foreign
+
+
 async def check_namespace_parity(
     pool: asyncpg.Pool,
     namespace: str,
@@ -475,13 +533,8 @@ async def check_namespace_parity(
     result = await _schema_presence(pool, namespace, schema)
     await _check_bookkeeping(pool, namespace, result)
 
-    try:
-        templates = await _fetch_namespace_templates(namespace)
-        templates += await _fetch_foreign_templates(namespace, templates)
-    except httpx.HTTPError as e:
-        result.bookkeeping_error = (result.bookkeeping_error or "") + (
-            f" template-store or document-store unavailable: {e}"
-        )
+    templates = await _templates_to_check(namespace, result)
+    if templates is None:
         result.ok = False
         return result
 
@@ -682,9 +735,13 @@ async def _template_counts(
     if "all_versions" in strategy:
         row.counts_comparable = False
         return
-    row.expected_documents = await _expected_document_total(
-        template.get("id") or template.get("template_id") or row.template_value,
-        namespace,
+    # Same-valued foreign templates share these tables: count all their
+    # documents (see _fetch_foreign_templates).
+    template_ids = template.get("_count_template_ids") or [
+        template.get("id") or template.get("template_id") or row.template_value
+    ]
+    row.expected_documents = sum(
+        [await _expected_document_total(tid, namespace) for tid in template_ids]
     )
     total_rows = 0
     async with pool.acquire() as conn:

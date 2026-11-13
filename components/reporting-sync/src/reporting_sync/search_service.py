@@ -232,6 +232,14 @@ class ActivityResponse(BaseModel):
 
     activities: list[ActivityItem] = Field(default_factory=list)
     total: int = 0
+    incomplete_sources: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Entity types whose source could not be read (its service down or "
+            "answering an error): their recent activity is missing from "
+            "`activities`. Empty when every requested source answered."
+        ),
+    )
 
 
 class DocumentReference(BaseModel):
@@ -1138,9 +1146,13 @@ class SearchService:
 
         results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
 
+        # A source that could not be read is named, never read as "nothing
+        # happened": the caller cannot otherwise tell it from a quiet system.
+        incomplete: list[str] = []
         for (entity_type, _), result in zip(tasks, results, strict=False):
             if isinstance(result, BaseException):
                 logger.error(f"Activity fetch failed for {entity_type}: {result}")
+                incomplete.append(entity_type)
             else:
                 activities.extend(result)
 
@@ -1149,7 +1161,8 @@ class SearchService:
 
         return ActivityResponse(
             activities=activities[:limit],
-            total=len(activities)
+            total=len(activities),
+            incomplete_sources=incomplete,
         )
 
     async def _get_recent_terminologies(
@@ -1165,7 +1178,7 @@ class SearchService:
                 )
 
                 if response.status_code != 200:
-                    return []
+                    raise UpstreamError(f"{response.url} answered HTTP {response.status_code}")
 
                 items = []
                 for item in response.json().get("items", []):
@@ -1193,7 +1206,7 @@ class SearchService:
                 return items
         except Exception as e:
             logger.error(f"Failed to get recent terminologies: {e}")
-            return []
+            raise
 
     async def _get_recent_terms(
         self, limit: int, namespace: str | None = None
@@ -1213,7 +1226,7 @@ class SearchService:
                 )
 
                 if term_response.status_code != 200:
-                    return []
+                    raise UpstreamError(f"{term_response.url} answered HTTP {term_response.status_code}")
 
                 items = []
                 for terminology in term_response.json().get("items", [])[:10]:
@@ -1226,7 +1239,7 @@ class SearchService:
                     )
 
                     if terms_response.status_code != 200:
-                        continue
+                        raise UpstreamError(f"{terms_response.url} answered HTTP {terms_response.status_code}")
 
                     for term in terms_response.json().get("items", []):
                         updated_at = self._parse_datetime(term.get("updated_at"))
@@ -1253,7 +1266,7 @@ class SearchService:
                 return sorted(items, key=lambda x: x.timestamp, reverse=True)[:limit]
         except Exception as e:
             logger.error(f"Failed to get recent terms: {e}")
-            return []
+            raise
 
     async def _get_recent_templates(
         self, limit: int, namespace: str | None = None
@@ -1268,7 +1281,7 @@ class SearchService:
                 )
 
                 if response.status_code != 200:
-                    return []
+                    raise UpstreamError(f"{response.url} answered HTTP {response.status_code}")
 
                 items = []
                 for item in response.json().get("items", []):
@@ -1298,7 +1311,7 @@ class SearchService:
                 return items
         except Exception as e:
             logger.error(f"Failed to get recent templates: {e}")
-            return []
+            raise
 
     async def _get_recent_documents(
         self, limit: int, namespace: str | None = None
@@ -1314,7 +1327,7 @@ class SearchService:
                 )
 
                 if response.status_code != 200:
-                    return []
+                    raise UpstreamError(f"{response.url} answered HTTP {response.status_code}")
 
                 items = []
                 for item in response.json().get("items", []):
@@ -1345,7 +1358,7 @@ class SearchService:
                 return items
         except Exception as e:
             logger.error(f"Failed to get recent documents: {e}")
-            return []
+            raise
 
     async def get_term_documents(
         self,
@@ -1419,6 +1432,10 @@ class SearchService:
                 return await self._get_file_references(entity_id)
             else:
                 return EntityReferencesResponse(error=f"Unknown entity type: {entity_type}")
+        except (UpstreamError, httpx.HTTPError):
+            # A store that did not answer: the caller gets a 503, not
+            # references reported broken.
+            raise
         except Exception as e:
             logger.error(f"Failed to get entity references: {e}")
             return EntityReferencesResponse(error=str(e))
@@ -1431,6 +1448,7 @@ class SearchService:
                 f"{settings.document_store_url}/api/document-store/documents/{document_id}",
                 headers={"X-API-Key": settings.api_key}
             )
+            _raise_unless_answered(doc_response)
 
             if doc_response.status_code != 200:
                 return EntityReferencesResponse(error=f"Document not found: {document_id}")
@@ -1448,6 +1466,7 @@ class SearchService:
                     f"{settings.template_store_url}/api/template-store/templates/{template_id}",
                     headers={"X-API-Key": settings.api_key}
                 )
+                _raise_unless_answered(tpl_response)
 
                 if tpl_response.status_code == 200:
                     tpl = tpl_response.json()
@@ -1500,6 +1519,7 @@ class SearchService:
                         f"{settings.def_store_url}/api/def-store/terms/{term_id}",
                         headers={"X-API-Key": settings.api_key}
                     )
+                    _raise_unless_answered(term_response)
 
                     field_paths = term_field_map.get(term_id, [])
                     field_path_str = ", ".join(field_paths) if field_paths else None
@@ -1569,6 +1589,7 @@ class SearchService:
                 f"{settings.template_store_url}/api/template-store/templates/{template_id}",
                 headers={"X-API-Key": settings.api_key}
             )
+            _raise_unless_answered(tpl_response)
 
             if tpl_response.status_code != 200:
                 return EntityReferencesResponse(error=f"Template not found: {template_id}")
@@ -1586,6 +1607,7 @@ class SearchService:
                     f"{settings.template_store_url}/api/template-store/templates/{extends}",
                     headers={"X-API-Key": settings.api_key}
                 )
+                _raise_unless_answered(parent_response)
 
                 if parent_response.status_code == 200:
                     parent = parent_response.json()
@@ -1632,6 +1654,7 @@ class SearchService:
                             f"{settings.def_store_url}/api/def-store/terminologies/{term_ref}",
                             headers={"X-API-Key": settings.api_key}
                         )
+                        _raise_unless_answered(term_response)
 
                         if term_response.status_code == 200:
                             terminology = term_response.json()
@@ -1672,6 +1695,7 @@ class SearchService:
                             f"{settings.template_store_url}/api/template-store/templates/{nested_ref}",
                             headers={"X-API-Key": settings.api_key}
                         )
+                        _raise_unless_answered(nested_response)
 
                         if nested_response.status_code == 200:
                             nested = nested_response.json()
@@ -1730,6 +1754,7 @@ class SearchService:
                 f"{settings.def_store_url}/api/def-store/terminologies/{terminology_id}",
                 headers={"X-API-Key": settings.api_key}
             )
+            _raise_unless_answered(response)
 
             if response.status_code != 200:
                 return EntityReferencesResponse(error=f"Terminology not found: {terminology_id}")
@@ -1763,6 +1788,7 @@ class SearchService:
                 f"{settings.def_store_url}/api/def-store/terms/{term_id}",
                 headers={"X-API-Key": settings.api_key}
             )
+            _raise_unless_answered(response)
 
             if response.status_code != 200:
                 return EntityReferencesResponse(error=f"Term not found: {term_id}")
@@ -1780,6 +1806,7 @@ class SearchService:
                     f"{settings.def_store_url}/api/def-store/terminologies/{terminology_id}",
                     headers={"X-API-Key": settings.api_key}
                 )
+                _raise_unless_answered(term_response)
 
                 if term_response.status_code == 200:
                     terminology = term_response.json()
@@ -1893,7 +1920,7 @@ class SearchService:
                 )
 
                 if response.status_code != 200:
-                    return []
+                    raise UpstreamError(f"{response.url} answered HTTP {response.status_code}")
 
                 items = []
                 for item in response.json().get("items", []):
@@ -1924,7 +1951,7 @@ class SearchService:
                 return items
         except Exception as e:
             logger.error(f"Failed to get recent files: {e}")
-            return []
+            raise
 
     async def _get_file_references(self, file_id: str) -> EntityReferencesResponse:
         """Get file details (files don't have outgoing references to other entities)."""
@@ -2375,6 +2402,14 @@ class UpstreamError(RuntimeError):
 def _seg(identifier: str) -> str:
     """An identifier as one URL path segment."""
     return quote(identifier, safe=":")
+
+
+def _raise_unless_answered(response: httpx.Response) -> None:
+    """Raise UpstreamError unless the store answered the read: 200 (found) or
+    404 (not found). Anything else is an outage or a refusal, and reading it
+    as "not found" reports a healthy reference as broken."""
+    if response.status_code not in (200, 404):
+        raise UpstreamError(f"{response.url} answered HTTP {response.status_code}")
 
 
 async def _fetch_target(client: httpx.AsyncClient, url: str) -> dict[str, Any] | None:

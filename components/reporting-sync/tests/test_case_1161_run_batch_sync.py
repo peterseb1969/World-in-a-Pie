@@ -38,6 +38,8 @@ def _doc(i: int, tv: int, data: dict) -> dict:
 def svc():
     pool = MagicMock()
     conn = AsyncMock()
+    # The command tag of an upsert that wrote its row: rows_written counts it.
+    conn.execute = AsyncMock(return_value="INSERT 0 1")
     acm = AsyncMock()
     acm.__aenter__ = AsyncMock(return_value=conn)
     acm.__aexit__ = AsyncMock(return_value=False)
@@ -107,7 +109,9 @@ async def test_no_eager_table_leaves_the_empty_exit_naming_none(svc, caplog):
     with caplog.at_level("INFO"):
         await svc._run_batch_sync(job, _template(1, ["a"]), force=False, page_size=10)
     assert job.status == BatchSyncStatus.COMPLETED and job.total_documents == 0
-    assert "foreign template — no table created in scope" in caplog.text
+    # The template is the job's own and active: not "foreign", which this
+    # message once said for any template without a table.
+    assert "(no table ensured)" in caplog.text and "foreign" not in caplog.text
 
 
 @pytest.mark.asyncio
