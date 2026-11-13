@@ -1642,7 +1642,8 @@ async def create_grant(
             'apikey:' prefix is normalized away), or group name.
         subject_type: 'user' | 'api_key' | 'group'.
         permission: 'read' | 'write' | 'admin'.
-        expires_at: ISO 8601 expiry (None = never).
+        expires_at: ISO 8601 expiry, UTC (a value without an offset is read
+            as UTC; None = never). An expiry already past is refused.
     """
     try:
         item: dict = {
@@ -1705,7 +1706,9 @@ async def create_api_key(
         groups: Authorization groups (e.g., ['wip-users']). Empty = no special privileges.
         namespaces: Namespace scope (e.g., ['wip']). None = unrestricted.
         description: Human-readable description
-        expires_at: ISO 8601 expiry datetime (None = never expires)
+        expires_at: ISO 8601 expiry datetime, UTC (a value without an offset
+            is read as UTC; None = never expires). An expiry already past is
+            refused (422).
         grant_permission: 'read' | 'write' | 'admin' — also create a namespace
             grant for the key on each scoped namespace (requires namespaces).
             Without it a scoped key can READ its namespaces but not WRITE;

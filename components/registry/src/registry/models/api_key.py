@@ -18,6 +18,11 @@ from pymongo import IndexModel
 
 from ..services.reservations import ReservationSettings
 
+KEY_EXPIRES_AT_DESCRIPTION = (
+    "When the key stops authenticating, in UTC; a value without an offset is "
+    "read as UTC. None = never."
+)
+
 
 class StoredAPIKey(Document):
     """An API key persisted in MongoDB: a Console key made through the API,
@@ -36,7 +41,7 @@ class StoredAPIKey(Document):
     groups: list[str] = Field(default_factory=list, description="Authorization groups")
     description: str | None = Field(default=None, description="What this key is for")
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    expires_at: datetime | None = Field(default=None, description="Expiration (None = never)")
+    expires_at: datetime | None = Field(default=None, description=KEY_EXPIRES_AT_DESCRIPTION)
     enabled: bool = Field(default=True, description="Whether the key is active")
     namespaces: list[str] | None = Field(
         default=None, description="Namespace scope (None = unrestricted)"
@@ -130,7 +135,10 @@ class APIKeyCreateRequest(BaseModel):
     owner: str = Field(default="system", description="Owner identifier")
     groups: list[str] = Field(default_factory=list, description="Authorization groups")
     description: str | None = Field(default=None, description="What this key is for")
-    expires_at: datetime | None = Field(default=None, description="Expiration (None = never)")
+    expires_at: datetime | None = Field(
+        default=None,
+        description=KEY_EXPIRES_AT_DESCRIPTION + " An expiry already past is refused (422).",
+    )
     namespaces: list[str] | None = Field(
         default=None, description="Namespace scope (None = unrestricted)"
     )
@@ -186,7 +194,7 @@ class APIKeyResponse(BaseModel):
     groups: list[str]
     description: str | None
     created_at: datetime
-    expires_at: datetime | None
+    expires_at: datetime | None = Field(description=KEY_EXPIRES_AT_DESCRIPTION)
     enabled: bool
     namespaces: list[str] | None
     created_by: str
@@ -250,7 +258,16 @@ class APIKeyUpdateRequest(BaseModel):
     description: str | None = None
     groups: list[str] | None = None
     namespaces: list[str] | None = None
-    expires_at: datetime | None = None
+    expires_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When the key stops authenticating, in UTC; a value without an offset "
+            "is read as UTC. Sent as null, the key never expires; left out, the "
+            "expiry is unchanged; an expiry already past is refused (422) and the "
+            "key is left as it was. The other fields are unchanged when null or "
+            "left out."
+        ),
+    )
     enabled: bool | None = None
 
 

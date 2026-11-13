@@ -572,7 +572,12 @@ export interface UpdateAPIKeyRequest {
   description?: string
   groups?: string[]
   namespaces?: string[] | null
-  expires_at?: string
+  /**
+   * UTC (a value without an offset is read as UTC). `null` removes the
+   * expiry (the key never expires); left out, it is unchanged; a time already
+   * past is refused (422).
+   */
+  expires_at?: string | null
   enabled?: boolean
 }
 

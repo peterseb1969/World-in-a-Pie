@@ -33,7 +33,7 @@ from ..models.api_key import (
     StoredAPIKey,
     generate_plaintext_key,
 )
-from ..models.grant import NamespaceGrant
+from ..models.grant import NamespaceGrant, expiry_passed
 from ..models.reservation import RuntimeReservation
 from ..services import key_import, key_salt, key_shadowing, reservation_store
 from ..services.auth import require_admin_key, require_groups
@@ -276,6 +276,8 @@ async def create_api_key(
     note that the key may not have arrived yet.
     """
     provider = _get_provider()
+
+    _refuse_past_expiry(request.expires_at)
 
     # CASE-450: grant_permission without a namespace scope is meaningless —
     # there is nothing to grant on.
@@ -552,6 +554,7 @@ async def update_api_key(
     if not doc:
         raise HTTPException(status_code=404, detail=f"Runtime key '{name}' not found")
 
+    _refuse_past_expiry(request.expires_at)
     reserved = await _reserved_by(name)
     if request.namespaces is not None:
         _refuse_dropping_reserved(name, reserved, doc.namespaces, request.namespaces)
@@ -563,7 +566,10 @@ async def update_api_key(
         doc.groups = request.groups
     if request.namespaces is not None:
         doc.namespaces = request.namespaces
-    if request.expires_at is not None:
+    if "expires_at" in request.model_fields_set:
+        # Sent, even as null: null removes the expiry (the key never
+        # expires). Only this field clears on null — namespaces null would
+        # mean unrestricted, so the others keep "null leaves it unchanged".
         doc.expires_at = request.expires_at
     if request.enabled is not None:
         doc.enabled = request.enabled
@@ -575,6 +581,20 @@ async def update_api_key(
     logger.info("Updated runtime API key: name=%s by=%s", name, get_identity_string())
 
     return _stored_to_response(doc, reserved)
+
+
+def _refuse_past_expiry(expires_at: datetime | None) -> None:
+    """Refuse an expiry that has already passed (read as UTC without an
+    offset, the rule the key check applies): such a key would never
+    authenticate, and a renewal with it would expire a working key at once.
+    A restore or key-file import carries its expiry as it is; only a request
+    choosing one is checked."""
+    if expires_at is not None and expiry_passed(expires_at):
+        raise HTTPException(
+            status_code=422,
+            detail=f"expires_at {expires_at.isoformat()} has already passed "
+            "(an expiry without an offset is read as UTC)",
+        )
 
 
 def _refuse_dropping_reserved(
