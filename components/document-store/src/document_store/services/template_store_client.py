@@ -6,6 +6,8 @@ from typing import Any, cast
 
 import httpx
 
+from wip_auth import TEMPLATE_STORE_KEY, service_api_key
+
 # How long to cache "latest version" resolution (seconds), and how often a
 # namespace's change-stamp is re-polled. A pinned (template_id, version) pair's
 # SCHEMA is immutable, but its `status` is not (deactivate/reactivate), so the
@@ -46,10 +48,7 @@ class TemplateStoreClient:
             "TEMPLATE_STORE_URL",
             "http://localhost:8003"
         )
-        self.api_key = cast(str, api_key or os.getenv(
-            "TEMPLATE_STORE_API_KEY",
-            "dev_master_key_for_testing"
-        ))
+        self.api_key = api_key or service_api_key(*TEMPLATE_STORE_KEY)
         self.timeout = timeout
 
         # Pinned-version cache: keyed by "template_id:v{version}". The schema is

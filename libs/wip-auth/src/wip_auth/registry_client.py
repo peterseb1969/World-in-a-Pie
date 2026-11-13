@@ -26,6 +26,8 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel
 
+from .service_keys import REGISTRY_KEY, service_api_key
+
 logger = logging.getLogger(__name__)
 
 
@@ -215,7 +217,7 @@ class RegistryClientBase:
         Args:
             base_url: Registry API base URL (default from REGISTRY_URL env).
             api_key: API key (default from REGISTRY_API_KEY env, then
-                API_KEY, then a dev-default for local testing).
+                API_KEY; neither set raises MissingServiceKeyError).
             timeout: Default request timeout in seconds.
         """
         # base_url has a `os.getenv(key, default)` fallback so it's always str
@@ -224,14 +226,7 @@ class RegistryClientBase:
         self.base_url: str = cast(
             str, base_url or os.getenv("REGISTRY_URL", "http://localhost:8001")
         )
-        # api_key falls back to a dev key string literal at the end of the
-        # chain — mypy narrows that one without cast.
-        self.api_key: str = (
-            api_key
-            or os.getenv("REGISTRY_API_KEY")
-            or os.getenv("API_KEY")
-            or "dev_master_key_for_testing"
-        )
+        self.api_key: str = api_key or service_api_key(*REGISTRY_KEY)
         self.timeout: float = timeout
 
     def _get_headers(self) -> dict[str, str]:

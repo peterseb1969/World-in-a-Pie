@@ -33,7 +33,10 @@ from beanie.odm.operators.update.array import Push
 from wip_archive.exceptions import ArchiveError  # noqa: F401  (re-exported for api/backup.py)
 from wip_archive.models import ProgressEvent
 
+from wip_auth import service_api_key
+
 from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
+from .reporting_client import REPORTING_SYNC_KEY
 
 if TYPE_CHECKING:
     from .backup_engine import RestoreRequester
@@ -62,8 +65,8 @@ async def _trigger_reporting_batch_sync(namespace: str) -> None:
     is a convenience layer, not a correctness dependency.
     """
     url = os.getenv("REPORTING_SYNC_URL", "http://wip-reporting-sync:8005")
-    api_key = cast(str, os.getenv("REGISTRY_API_KEY") or os.getenv("WIP_AUTH_LEGACY_API_KEY", ""))
     try:
+        api_key = service_api_key(*REPORTING_SYNC_KEY)
         async with _httpx.AsyncClient(timeout=10) as client:
             # Query parameter, not JSON body — the route reads the query
             # string; a body is silently ignored and the sync degrades to

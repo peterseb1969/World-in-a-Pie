@@ -10,6 +10,8 @@ import os
 import httpx
 from pydantic import BaseModel, Field
 
+from wip_auth import TEMPLATE_STORE_KEY, service_api_key
+
 from ..models.terminology import Terminology
 from .errors import DefStoreError
 
@@ -123,7 +125,7 @@ class DependencyService:
         """
         # Read URL at call time to ensure we have the latest env var
         template_store_url = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
-        template_store_api_key = os.getenv("TEMPLATE_STORE_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
+        template_store_api_key = service_api_key(*TEMPLATE_STORE_KEY)
 
         try:
             # Fetch all templates, 100 per page (the endpoint allows up to 1000)

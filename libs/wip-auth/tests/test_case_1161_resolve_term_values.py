@@ -17,6 +17,14 @@ from wip_auth.term_resolution import resolve_term_values
 from .test_term_resolution import UUID_A, _asked, _fake_def_store
 
 
+@pytest.fixture(autouse=True)
+def _def_store_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The key term resolution presents to Def-Store. There is no stand-in
+    default: without one every resolution refuses, naming the variable."""
+    monkeypatch.setenv("DEF_STORE_API_KEY", "test-def-store-key")
+
+
+
 @pytest.mark.asyncio
 async def test_an_empty_request_asks_nothing():
     fetch = _fake_def_store()

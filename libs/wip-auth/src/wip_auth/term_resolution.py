@@ -32,6 +32,7 @@ from typing import Any, cast
 import httpx
 
 from .resolve import EntityNotFoundError, _looks_like_uuid, resolve_entity_id
+from .service_keys import DEF_STORE_KEY, service_api_key
 
 
 class TermResolutionError(Exception):
@@ -58,7 +59,8 @@ def _get_def_store_url() -> str:
 
 
 def _get_api_key() -> str:
-    return os.getenv("DEF_STORE_API_KEY", os.getenv("API_KEY", "dev_master_key_for_testing"))
+    """The key for Def-Store calls; MissingServiceKeyError when none is set."""
+    return service_api_key(*DEF_STORE_KEY)
 
 
 # Resolutions shared by every document of one write request. Request-scoped by

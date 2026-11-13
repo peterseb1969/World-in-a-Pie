@@ -14,14 +14,14 @@ import pytest
 
 from registry.models.deletion_journal import DeletionStep
 from registry.services.namespace_deletion import (
-    _SERVICE_KEY_VARS,
+    SERVICE_KEY_VARS,
     NamespaceDeletionService,
 )
 
 
 def _only_env(monkeypatch, **values: str) -> None:
     """Clear every service-key variable, then set exactly the given ones."""
-    for var in _SERVICE_KEY_VARS:
+    for var in SERVICE_KEY_VARS:
         monkeypatch.delenv(var, raising=False)
     for var, value in values.items():
         monkeypatch.setenv(var, value)

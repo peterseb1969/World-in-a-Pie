@@ -25,6 +25,9 @@ import pytest_asyncio
 # alone because the live-pipeline availability checks below read it.
 os.environ.setdefault("WIP_AUTH_LEGACY_API_KEY", "rs_test_admin_key")
 os.environ.setdefault("WIP_AUTH_REGISTRY_URL", "http://registry.invalid")
+# The key this service presents to the Registry (RegistryClientBase). There is
+# no stand-in default: without one every Registry call refuses, naming it.
+os.environ.setdefault("REGISTRY_API_KEY", "rs_test_admin_key")
 # Non-admin keys for the authorization matrix. A service asks the Registry
 # for every permission; the _registry_permission_answers fixture below
 # answers each key's declared `grants` as the Registry does once it imported

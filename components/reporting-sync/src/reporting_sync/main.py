@@ -25,7 +25,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from wip_auth import (
+    PERMISSION_KEY,
     PRIVILEGED_GROUPS,
+    REGISTRY_KEY,
     UserIdentity,
     build_metadata,
     check_namespace_permission,
@@ -35,6 +37,7 @@ from wip_auth import (
     is_superadmin,
     require_api_key,
     require_groups,
+    require_service_keys,
     resolve_accessible_namespaces,
     setup_auth,
     setup_key_sync,
@@ -615,11 +618,19 @@ def _start_postgres_work(pool: asyncpg.Pool, read_pool: asyncpg.Pool) -> None:
     logger.info("Sync worker scheduled (runs while NATS is connected)")
 
 
+# Every key this service presents to another service, as the variable chains
+# it reads them from: API_KEY (settings.api_key, for the stores it syncs from),
+# the Registry (its client and key sync) and the Registry's permission doors.
+# The lifespan refuses to start while any is unset.
+OUTBOUND_KEYS = (("API_KEY",), REGISTRY_KEY, PERMISSION_KEY)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
     # Startup — security check first
     check_production_security()
+    require_service_keys(OUTBOUND_KEYS, service="reporting-sync")
     logger.info(f"Starting {settings.service_name} v{__version__}...")
 
     # NATS connects in the background and heals itself, so a NATS that is

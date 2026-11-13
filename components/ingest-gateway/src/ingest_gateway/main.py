@@ -16,12 +16,14 @@ from fastapi.responses import JSONResponse
 from nats.js.errors import NotFoundError
 
 from wip_auth import (
+    KEY_SYNC_KEY,
     APIKeyProvider,
     UserIdentity,
     build_metadata,
     get_auth_config,
     install_liveness,
     require_api_key,
+    require_service_keys,
     setup_auth,
     setup_key_sync,
 )
@@ -105,11 +107,19 @@ async def _run_worker(js: Any) -> None:
     await state.worker.start()
 
 
+# Every key this service presents to another service, as the variable chains
+# it reads them from: key sync's, polling the Registry for runtime keys.
+# (Producer calls carry the producer's own key.) The lifespan refuses to start
+# while any is unset.
+OUTBOUND_KEYS = (KEY_SYNC_KEY,)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan - startup and shutdown."""
     # Refuse to start in a production variant on known-default secrets.
     check_production_security()
+    require_service_keys(OUTBOUND_KEYS, service="ingest-gateway")
     logger.info(f"Starting {settings.service_name} v{__version__}...")
     state.start_time = time.time()
 

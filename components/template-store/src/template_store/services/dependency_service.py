@@ -11,6 +11,8 @@ import httpx
 from beanie.odm.enums import SortDirection
 from pydantic import BaseModel, Field
 
+from wip_auth import DOCUMENT_STORE_KEY, service_api_key
+
 from ..models.template import Template
 from .inheritance_service import InheritanceService
 
@@ -41,7 +43,6 @@ class DependencyService:
 
     # Document Store configuration (from environment)
     DOCUMENT_STORE_URL = os.getenv("DOCUMENT_STORE_URL", "http://localhost:8004")
-    DOCUMENT_STORE_API_KEY = os.getenv("DOCUMENT_STORE_API_KEY", "dev_master_key_for_testing")
 
     @classmethod
     async def check_template_dependencies(
@@ -151,7 +152,7 @@ class DependencyService:
             response = await client.get(
                 f"{cls.DOCUMENT_STORE_URL}/api/document-store/documents",
                 params=params,
-                headers={"X-API-Key": cls.DOCUMENT_STORE_API_KEY},
+                headers={"X-API-Key": service_api_key(*DOCUMENT_STORE_KEY)},
             )
         if response.status_code != 200:
             raise RuntimeError(

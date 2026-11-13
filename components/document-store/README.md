@@ -193,14 +193,16 @@ pytest tests/ -v
 |---------------------|-------------|---------|
 | `MONGO_URI` | MongoDB connection string | `mongodb://localhost:27017/` |
 | `DATABASE_NAME` | Database name | `wip_document_store` |
-| `API_KEY` | API key for authentication | `dev_master_key_for_testing` |
+| `API_KEY` | Fallback for each outbound key below | none |
 | `REGISTRY_URL` | Registry service URL | `http://localhost:8001` |
-| `REGISTRY_API_KEY` | Registry API key | `dev_master_key_for_testing` |
+| `REGISTRY_API_KEY` | Key presented to the Registry | `API_KEY`; **required** |
 | `TEMPLATE_STORE_URL` | Template Store URL | `http://localhost:8003` |
-| `TEMPLATE_STORE_API_KEY` | Template Store API key | `dev_master_key_for_testing` |
+| `TEMPLATE_STORE_API_KEY` | Key presented to Template Store | `API_KEY`; **required** |
 | `DEF_STORE_URL` | Def-Store URL | `http://localhost:8002` |
-| `DEF_STORE_API_KEY` | Def-Store API key | `dev_master_key_for_testing` |
+| `DEF_STORE_API_KEY` | Key presented to Def-Store | `API_KEY`; **required** |
 | `CORS_ORIGINS` | Allowed CORS origins | `*` |
+
+The service refuses to start while a **required** key is unset (neither the variable nor `API_KEY`), naming each missing one.
 
 ## Integration with Other Services
 

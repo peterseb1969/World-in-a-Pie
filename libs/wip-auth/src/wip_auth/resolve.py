@@ -39,6 +39,7 @@ from typing import Any, cast
 import httpx
 
 from .registry_client import registry_unavailable_from
+from .service_keys import REGISTRY_KEY, service_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -180,11 +181,8 @@ def _get_registry_url() -> str:
 
 
 def _get_api_key() -> str:
-    """Get API key for Registry calls."""
-    return os.getenv(
-        "REGISTRY_API_KEY",
-        os.getenv("API_KEY", "dev_master_key_for_testing"),
-    )
+    """The key for Registry calls; MissingServiceKeyError when none is set."""
+    return service_api_key(*REGISTRY_KEY)
 
 
 def _looks_like_uuid(raw_id: str) -> bool:

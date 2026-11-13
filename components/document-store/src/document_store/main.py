@@ -16,7 +16,11 @@ from fastapi.responses import JSONResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 
 from wip_auth import (
+    DEF_STORE_KEY,
+    PERMISSION_KEY,
     PRIVILEGED_GROUPS,
+    REGISTRY_KEY,
+    TEMPLATE_STORE_KEY,
     HealthCache,
     RejectUnknownQueryParamsMiddleware,
     build_metadata,
@@ -25,6 +29,8 @@ from wip_auth import (
     init_beanie_with_retry,
     install_liveness,
     require_groups,
+    require_service_keys,
+    service_api_key,
     setup_auth,
     setup_key_sync,
     setup_rate_limiting,
@@ -53,6 +59,7 @@ from .services.nats_client import (
     start_backpressure_monitor,
 )
 from .services.registry_client import configure_registry_client, get_registry_client
+from .services.reporting_client import REPORTING_SYNC_KEY
 from .services.template_store_client import configure_template_store_client, get_template_store_client
 
 
@@ -62,13 +69,9 @@ class Settings:
 
     MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "wip_document_store")
-    API_KEY: str = os.getenv("API_KEY", "dev_master_key_for_testing")
     REGISTRY_URL: str = os.getenv("REGISTRY_URL", "http://localhost:8001")
-    REGISTRY_API_KEY: str = os.getenv("REGISTRY_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     TEMPLATE_STORE_URL: str = os.getenv("TEMPLATE_STORE_URL", "http://localhost:8003")
-    TEMPLATE_STORE_API_KEY: str = os.getenv("TEMPLATE_STORE_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     DEF_STORE_URL: str = os.getenv("DEF_STORE_URL", "http://localhost:8002")
-    DEF_STORE_API_KEY: str = os.getenv("DEF_STORE_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     NATS_URL: str = os.getenv("NATS_URL", "")  # Empty = disabled
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://localhost:8443").split(",")
     MAX_UPLOAD_SIZE: int = int(os.getenv("WIP_MAX_UPLOAD_SIZE", str(100 * 1024 * 1024)))  # 100MB default
@@ -81,6 +84,15 @@ class Settings:
 
 
 settings = Settings()
+
+# Every key this service presents to another service, as the variable chains
+# it reads them from: the Registry (its client, key sync, synonym resolution
+# and restores), Template-Store, Def-Store (term resolution included),
+# reporting-sync (restore verification) and the Registry's permission doors.
+# The lifespan refuses to start while any is unset.
+OUTBOUND_KEYS = (
+    REGISTRY_KEY, TEMPLATE_STORE_KEY, DEF_STORE_KEY, REPORTING_SYNC_KEY, PERMISSION_KEY,
+)
 
 
 SUPERSEDED_DOCUMENT_INDEXES = (
@@ -107,6 +119,8 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
     # Startup — security check first
     check_production_security()
+    require_service_keys(OUTBOUND_KEYS, service="document-store")
+    registry_api_key = service_api_key(*REGISTRY_KEY)
     print("Starting WIP Document Store Service...")
 
     # Initialize MongoDB connection
@@ -130,21 +144,21 @@ async def lifespan(app: FastAPI):
     # Configure Registry client
     configure_registry_client(
         base_url=settings.REGISTRY_URL,
-        api_key=settings.REGISTRY_API_KEY
+        api_key=registry_api_key
     )
     print(f"Registry client configured for {settings.REGISTRY_URL}")
 
     # Configure Template Store client
     configure_template_store_client(
         base_url=settings.TEMPLATE_STORE_URL,
-        api_key=settings.TEMPLATE_STORE_API_KEY
+        api_key=service_api_key(*TEMPLATE_STORE_KEY)
     )
     print(f"Template Store client configured for {settings.TEMPLATE_STORE_URL}")
 
     # Configure Def-Store client
     configure_def_store_client(
         base_url=settings.DEF_STORE_URL,
-        api_key=settings.DEF_STORE_API_KEY
+        api_key=service_api_key(*DEF_STORE_KEY)
     )
     print(f"Def-Store client configured for {settings.DEF_STORE_URL}")
 
@@ -302,7 +316,7 @@ async def lifespan(app: FastAPI):
     key_sync = await setup_key_sync(
         _providers,
         registry_url=settings.REGISTRY_URL,
-        api_key=settings.REGISTRY_API_KEY,
+        api_key=registry_api_key,
     )
     if key_sync:
         print("Key sync started (polling Registry for runtime API keys).")

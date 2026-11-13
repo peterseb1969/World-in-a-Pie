@@ -18,7 +18,10 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import OperationFailure
 
 from wip_auth import (
+    PERMISSION_KEY,
     PRIVILEGED_GROUPS,
+    REGISTRY_KEY,
+    TEMPLATE_STORE_KEY,
     HealthCache,
     RejectUnknownQueryParamsMiddleware,
     build_metadata,
@@ -26,7 +29,9 @@ from wip_auth import (
     declare_api_key_security,
     init_beanie_with_retry,
     install_liveness,
+    require_service_keys,
     retry_until_done,
+    service_api_key,
     setup_auth,
     setup_key_sync,
     setup_rate_limiting,
@@ -52,14 +57,18 @@ class Settings:
 
     MONGO_URI: str = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
     DATABASE_NAME: str = os.getenv("DATABASE_NAME", "wip_def_store")
-    API_KEY: str = os.getenv("API_KEY", "dev_master_key_for_testing")
     REGISTRY_URL: str = os.getenv("REGISTRY_URL", "http://localhost:8001")
-    REGISTRY_API_KEY: str = os.getenv("REGISTRY_API_KEY") or os.getenv("API_KEY") or "dev_master_key_for_testing"
     NATS_URL: str = os.getenv("NATS_URL", "")
     CORS_ORIGINS: list[str] = os.getenv("CORS_ORIGINS", "https://localhost:8443").split(",")
 
 
 settings = Settings()
+
+# Every key this service presents to another service, as the variable chains
+# it reads them from: the Registry (its client, key sync and synonym
+# resolution), Template-Store (the terminology dependency check) and the
+# Registry's permission doors. The lifespan refuses to start while any is unset.
+OUTBOUND_KEYS = (REGISTRY_KEY, TEMPLATE_STORE_KEY, PERMISSION_KEY)
 
 
 async def _bootstrap_system_terminologies() -> None:
@@ -155,6 +164,8 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
     # Startup — security check first
     check_production_security()
+    require_service_keys(OUTBOUND_KEYS, service="def-store")
+    registry_api_key = service_api_key(*REGISTRY_KEY)
     print("Starting WIP Def-Store Service...")
 
     # Initialize MongoDB connection
@@ -190,7 +201,7 @@ async def lifespan(app: FastAPI):
     # Configure Registry client (no network call — just stores URL/key).
     configure_registry_client(
         base_url=settings.REGISTRY_URL,
-        api_key=settings.REGISTRY_API_KEY
+        api_key=registry_api_key
     )
     print(f"Registry client configured for {settings.REGISTRY_URL}")
 
@@ -217,7 +228,7 @@ async def lifespan(app: FastAPI):
     key_sync = await setup_key_sync(
         _providers,
         registry_url=settings.REGISTRY_URL,
-        api_key=settings.REGISTRY_API_KEY,
+        api_key=registry_api_key,
     )
     if key_sync:
         print("Key sync started (polling Registry for runtime API keys).")

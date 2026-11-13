@@ -20,7 +20,14 @@ from typing import Any, cast
 
 import httpx
 
+from wip_auth import service_api_key
+
 logger = logging.getLogger(__name__)
+
+# The key this service presents to reporting-sync: the Registry key, else its
+# own service key. Read through service_api_key, so neither set is reported as
+# missing rather than sent as an empty X-API-Key.
+REPORTING_SYNC_KEY: tuple[str, ...] = ("REGISTRY_API_KEY", "WIP_AUTH_LEGACY_API_KEY")
 
 
 class ReportingSyncClient:
@@ -28,11 +35,7 @@ class ReportingSyncClient:
 
     def __init__(self) -> None:
         self._base = os.getenv("REPORTING_SYNC_URL", "http://wip-reporting-sync:8005")
-        self._api_key: str = (
-            os.getenv("REGISTRY_API_KEY")
-            or os.getenv("WIP_AUTH_LEGACY_API_KEY")
-            or ""
-        )
+        self._api_key: str = service_api_key(*REPORTING_SYNC_KEY)
 
     def _headers(self) -> dict[str, str]:
         return {"X-API-Key": self._api_key}

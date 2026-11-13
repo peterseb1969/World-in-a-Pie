@@ -62,7 +62,10 @@ class Settings(BaseSettings):
     # Registry API (the namespace list the standing parity check walks)
     registry_url: str = Field(default="http://localhost:8001", alias="REGISTRY_URL")
 
-    api_key: str = Field(default="dev_master_key_for_testing", alias="API_KEY")
+    # The key this service presents to the other services. No default: the
+    # lifespan refuses to start while API_KEY is unset (OUTBOUND_KEYS), so an
+    # empty value never reaches a call.
+    api_key: str = Field(default="", alias="API_KEY")
 
     # Standing parity check: seconds between passes over every namespace
     # (0 turns it off), and how many repairs one gap gets before it is

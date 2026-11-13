@@ -22,6 +22,7 @@ from wip_auth import (
     get_auth_config,
     init_beanie_with_retry,
     install_liveness,
+    require_service_keys,
     setup_auth,
     setup_rate_limiting,
 )
@@ -42,6 +43,7 @@ from .models.reservation import RuntimeReservation
 from .services import key_import, key_shadowing
 from .services.event_bus import start_event_bus, stop_event_bus
 from .services.managed import ManagedRecordRefused, managed_record_refused_handler
+from .services.namespace_deletion import SERVICE_KEY_VARS
 
 
 # Application configuration
@@ -58,11 +60,19 @@ class Settings:
 settings = Settings()
 
 
+# Every key this service presents to another service, as the variable chains
+# it reads them from: the service key namespace deletion presents to the
+# stores and reporting-sync when it cleans up their data. The lifespan refuses
+# to start while any is unset.
+OUTBOUND_KEYS = (SERVICE_KEY_VARS,)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager for startup and shutdown."""
     # Startup — security check first
     check_production_security()
+    require_service_keys(OUTBOUND_KEYS, service="registry")
     print("Starting WIP Registry Service...")
 
     # Initialize MongoDB connection

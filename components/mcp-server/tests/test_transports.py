@@ -652,7 +652,7 @@ async def test_http_key_in_query_string_is_refused():
 
 @pytest.mark.asyncio
 async def test_http_dev_default_key_is_never_accepted():
-    """The outbound fallback key is public; it must not authenticate inbound."""
+    """The publicly documented dev key must not authenticate inbound."""
     import httpx
 
     port = _free_port()

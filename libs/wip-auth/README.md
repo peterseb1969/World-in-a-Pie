@@ -270,7 +270,7 @@ async def list_terms(terminology_id: str, namespace: str = "wip"):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `WIP_AUTH_REGISTRY_URL` | `REGISTRY_URL` or `http://localhost:8001` | Registry URL for resolution |
-| `REGISTRY_API_KEY` | `API_KEY` or `dev_master_key_for_testing` | API key for Registry calls |
+| `REGISTRY_API_KEY` | `API_KEY`; neither set raises `MissingServiceKeyError` | API key for Registry calls |
 
 ### Caching
 

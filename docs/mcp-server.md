@@ -116,7 +116,8 @@ Over **stdio** (and in local tooling), the server authenticates to WIP services 
 2. `MASTER_API_KEY` — set by the deployer via the component manifest (`MASTER_API_KEY: from_secret: api-key`)
 3. `API_KEY` — generic fallback the deployer may set
 4. `WIP_API_KEY_FILE` — path to a file containing the key. A running server re-reads it whenever the file changes, so a rotated key takes effect on the next call with no config change and no reconnect (a key set in 1–3 stays fixed for the life of the process)
-5. Fallback: `dev_master_key_for_testing` (local development only)
+
+There is no fallback: with none of them set, a tool call fails naming `WIP_API_KEY` and the others, instead of sending a stand-in key.
 
 The **HTTP/SSE transports act with each caller's own key**, never with the
 configured one. Every request (except `GET /health`) must carry an

@@ -37,6 +37,7 @@ from wip_archive.models import (
 from wip_archive.referents import ReferentCollector
 from wip_archive.remap import IDRemapper
 
+from wip_auth import REGISTRY_KEY, service_api_key
 from wip_auth.build_info import build_metadata
 from wip_auth.composite_key import compute_composite_key_hash
 
@@ -1689,10 +1690,7 @@ class DirectRestoreEngine:
         self._registry_url = registry_base_url or os.getenv(
             "REGISTRY_URL", "http://localhost:8001"
         )
-        self._registry_api_key = cast(str, registry_api_key or os.getenv(
-            "REGISTRY_API_KEY",
-            os.getenv("API_KEY", "dev_master_key_for_testing"),
-        ))
+        self._registry_api_key = registry_api_key or service_api_key(*REGISTRY_KEY)
         # Reporting verification phases (restore-verification design): when a
         # client is injected AND reporting-sync answers, the restore verifies
         # the reporting layer at phase boundaries. When reporting-sync is

@@ -14,6 +14,8 @@ from typing import Any, cast
 
 import httpx
 
+from wip_auth import DOCUMENT_STORE_KEY, service_api_key
+
 
 class DocumentStoreClient:
     """Read-only client for the Document-Store impact-stats endpoint."""
@@ -28,10 +30,7 @@ class DocumentStoreClient:
             "DOCUMENT_STORE_URL",
             "http://localhost:8004"
         )
-        self.api_key = cast(str, api_key or os.getenv(
-            "DOCUMENT_STORE_API_KEY",
-            "dev_master_key_for_testing"
-        ))
+        self.api_key = api_key or service_api_key(*DOCUMENT_STORE_KEY)
         self.timeout = timeout
 
     def _get_headers(self) -> dict[str, str]:

@@ -146,7 +146,7 @@ def id_counter_filter(prefix: str) -> dict[str, Any]:
 _FIELD_TERMINOLOGY_SLOTS = ("terminology_ref", "array_terminology_ref")
 _FIELD_TEMPLATE_SLOTS = ("template_ref", "array_template_ref")
 
-_SERVICE_KEY_VARS = (
+SERVICE_KEY_VARS = (
     "WIP_AUTH_LEGACY_API_KEY",
     "MASTER_API_KEY",
     "API_KEY",
@@ -156,7 +156,7 @@ _SERVICE_KEY_VARS = (
 
 def _service_api_key() -> str:
     """Return the first non-empty service key from the environment, or ''."""
-    for var in _SERVICE_KEY_VARS:
+    for var in SERVICE_KEY_VARS:
         value = os.getenv(var)
         if value:
             return value
@@ -1108,7 +1108,7 @@ class NamespaceDeletionService:
         if not api_key:
             logger.error(
                 "No service API key configured for the file-storage cleanup "
-                "(checked %s)", ", ".join(_SERVICE_KEY_VARS),
+                "(checked %s)", ", ".join(SERVICE_KEY_VARS),
             )
             step.error = (
                 "no service API key configured for file-storage cleanup; "
@@ -1184,7 +1184,7 @@ class NamespaceDeletionService:
             # cause instead so the journal points at the misconfiguration.
             logger.error(
                 "No service API key configured for the reporting-sync cleanup "
-                "(checked %s)", ", ".join(_SERVICE_KEY_VARS),
+                "(checked %s)", ", ".join(SERVICE_KEY_VARS),
             )
             step.error = (
                 "no service API key configured for reporting-sync cleanup; "

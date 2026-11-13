@@ -31,6 +31,7 @@ from fastapi import HTTPException
 
 from .config import get_auth_config
 from .models import UserIdentity
+from .service_keys import PERMISSION_KEY, service_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +67,12 @@ def _service_api_key() -> str:
 
     WIP_AUTH_LEGACY_API_KEY first (wip-auth copies MASTER_API_KEY or API_KEY
     into it at import when it is unset), then API_KEY. An empty value counts
-    as unset: an empty key is no credential, and reading it as one sent every
-    check with an empty X-API-Key, which the Registry answers 401 and every
-    caller then reported as the Registry being unavailable (503). Blanking
-    the variable to switch the legacy key record off must not do that.
+    as unset, and with neither set the check raises MissingServiceKeyError
+    naming the variable. Sending an empty X-API-Key instead got a 401 from the
+    Registry, which every caller then reported as the Registry being
+    unavailable (503).
     """
-    return os.getenv("WIP_AUTH_LEGACY_API_KEY") or os.getenv("API_KEY") or ""
+    return service_api_key(*PERMISSION_KEY)
 
 
 def is_superadmin(identity: UserIdentity) -> bool:

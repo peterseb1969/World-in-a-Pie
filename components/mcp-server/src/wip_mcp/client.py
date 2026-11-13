@@ -145,15 +145,30 @@ def _read_key_file(path: str) -> str | None:
     return key
 
 
+class MissingApiKeyError(RuntimeError):
+    """This process has no key to call the WIP services with.
+
+    Raised instead of standing in a well-known default. A default was answered
+    401 by every install with generated keys, so a missing setting surfaced as
+    an authentication failure somewhere else rather than as itself."""
+
+    VARIABLES = ("WIP_API_KEY", "MASTER_API_KEY", "API_KEY", "WIP_API_KEY_FILE")
+
+    def __init__(self) -> None:
+        super().__init__(
+            "no API key configured for calls to the WIP services: set "
+            + self.VARIABLES[0]
+            + " (or " + ", ".join(self.VARIABLES[1:]) + ")"
+        )
+
+
 def _resolve_api_key() -> str:
     """The key for outbound calls to the WIP services: `configured_api_key()`,
-    else the development default a local stack accepts.
-
-    Without the deployer's names in `configured_api_key`, an HTTP-transport
-    invocation through the deployed cluster would fall through to the dev
-    default and every upstream call silently 401s (CASE-312 reopen).
-    """
-    return configured_api_key() or "dev_master_key_for_testing"
+    or MissingApiKeyError naming the variables when none is configured."""
+    key = configured_api_key()
+    if key is None:
+        raise MissingApiKeyError()
+    return key
 
 
 # Set by the network transports (server.build_network_app) when they
@@ -225,7 +240,7 @@ class WipClient:
         key its MCP request presented. Otherwise `_resolve_api_key()`:
         WIP_API_KEY, MASTER_API_KEY, API_KEY, then WIP_API_KEY_FILE (re-read
         whenever the file changes, so a rotation needs neither an .mcp.json
-        edit nor a reconnect), then the dev default.
+        edit nor a reconnect); none of them set raises MissingApiKeyError.
       - `verify_tls` → `WIP_VERIFY_TLS`. `false` / `0` / `no` disables
         verification — intended for local dev against a self-signed
         Caddy, never production.

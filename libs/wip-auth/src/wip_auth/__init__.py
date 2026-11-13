@@ -110,6 +110,17 @@ from .resolve import (
     terminology_coordinates_by_id,
 )
 from .security import check_production_security
+from .service_keys import (
+    DEF_STORE_KEY,
+    DOCUMENT_STORE_KEY,
+    KEY_SYNC_KEY,
+    PERMISSION_KEY,
+    REGISTRY_KEY,
+    TEMPLATE_STORE_KEY,
+    MissingServiceKeyError,
+    require_service_keys,
+    service_api_key,
+)
 from .startup import init_beanie_with_retry, retry_async, retry_until_done
 from .term_resolution import (
     TermResolutionError,
@@ -129,8 +140,15 @@ __all__ = [
     "ADMIN_GROUP",
     # Health-probe cache
     "DEFAULT_TTL_SECONDS",
+    # Outbound service keys
+    "DEF_STORE_KEY",
+    "DOCUMENT_STORE_KEY",
+    "KEY_SYNC_KEY",
+    "PERMISSION_KEY",
     "PRIVILEGED_GROUPS",
+    "REGISTRY_KEY",
     "SERVICES_GROUP",
+    "TEMPLATE_STORE_KEY",
     "APIKeyProvider",
     "APIKeyRecord",
     # Synonym resolution
@@ -147,6 +165,7 @@ __all__ = [
     "HealthCache",
     # Key sync
     "KeySyncService",
+    "MissingServiceKeyError",
     "NamespaceFilter",
     "NoAuthProvider",
     "OIDCProvider",
@@ -199,6 +218,7 @@ __all__ = [
     "require_namespace_admin",
     "require_namespace_read",
     "require_namespace_write",
+    "require_service_keys",
     "reset_auth_config",
     "reset_current_identity",
     "resolution_miss",
@@ -213,6 +233,7 @@ __all__ = [
     "resolve_term_values",
     "retry_async",
     "retry_until_done",
+    "service_api_key",
     "set_auth_config",
     "set_current_identity",
     # Setup
@@ -433,6 +454,22 @@ async def registry_unavailable_handler(request, exc: RegistryUnavailableError):
     return JSONResponse(status_code=503, content=content)
 
 
+async def missing_service_key_handler(request, exc: MissingServiceKeyError):
+    """HTTP 500 naming the variable when this service has no key for a
+    service it calls (registered by setup_auth). A configuration error, so
+    it is not answered as the callee being unavailable: nothing was asked."""
+    from fastapi.responses import JSONResponse
+
+    logger.error("%s %s: %s", request.method, request.url.path, exc)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": f"This service is misconfigured: {exc}.",
+            "error_code": "service_key_missing",
+        },
+    )
+
+
 async def dependency_unavailable_handler(request, exc: DependencyUnavailableError):
     """HTTP 503 for a service the request needed that did not answer
     (registered by setup_auth). A Registry outage has its own handler above,
@@ -499,6 +536,8 @@ def setup_auth(
     # request it surfaces — never the 404 or "none" of a definite answer.
     app.add_exception_handler(RegistryUnavailableError, registry_unavailable_handler)
     app.add_exception_handler(DependencyUnavailableError, dependency_unavailable_handler)
+    # A key this service has none of is a misconfiguration, named as such.
+    app.add_exception_handler(MissingServiceKeyError, missing_service_key_handler)
 
     # Added last, so it is outermost: the write flag is set before the auth
     # middleware runs the handler, and resolution in any non-GET request
@@ -524,7 +563,8 @@ async def setup_key_sync(
     Args:
         providers: Provider list returned by setup_auth()
         registry_url: Registry base URL (falls back to REGISTRY_URL env var)
-        api_key: API key for authenticating to Registry (falls back to env vars)
+        api_key: API key for authenticating to Registry (falls back to the
+            KEY_SYNC_KEY variables; none set raises MissingServiceKeyError)
         interval_seconds: Polling interval (default 30s)
 
     Returns:
@@ -536,13 +576,7 @@ async def setup_key_sync(
     if registry_url is None:
         registry_url = os.getenv("REGISTRY_URL", "http://localhost:8001")
     if api_key is None:
-        api_key = (
-            os.getenv("REGISTRY_API_KEY")
-            or os.getenv("WIP_AUTH_LEGACY_API_KEY")
-            or os.getenv("API_KEY")
-            or os.getenv("MASTER_API_KEY")
-            or ""
-        )
+        api_key = service_api_key(*KEY_SYNC_KEY)
 
     api_key_provider = None
     for p in providers:

@@ -37,6 +37,13 @@ UUID_B = "019f0000-0000-7000-8000-00000000000b"
 NS_OF = {UUID_A: "ns-a", UUID_B: "ns-b"}
 
 
+@pytest.fixture(autouse=True)
+def _def_store_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The key term resolution presents to Def-Store. There is no stand-in
+    default: without one every resolution refuses, naming the variable."""
+    monkeypatch.setenv("DEF_STORE_API_KEY", "test-def-store-key")
+
+
 def _fake_def_store():
     """def-store stand-in: each terminology accepts only '<its-ns>-only'."""
     async def resolve_remote(keys, *_args):

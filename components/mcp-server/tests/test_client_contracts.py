@@ -62,7 +62,7 @@ import pytest
 
 import wip_mcp.client as client_module
 import wip_mcp.server as server_module
-from wip_mcp.client import WipClient, _resolve_api_key
+from wip_mcp.client import MissingApiKeyError, WipClient, _resolve_api_key
 
 _CLIENT_SOURCE_PATH = Path(client_module.__file__)
 
@@ -139,9 +139,6 @@ def test_docstring_env_var_drift() -> None:
 # =========================================================================
 
 
-_DEV_DEFAULT = "dev_master_key_for_testing"
-
-
 @pytest.fixture
 def clean_api_key_env(monkeypatch):
     """Ensure none of the api-key-related env vars leak in from the shell."""
@@ -162,18 +159,27 @@ def test_resolve_api_key_reads_WIP_API_KEY_FILE(clean_api_key_env, tmp_path) -> 
     assert _resolve_api_key() == "key-from-file"
 
 
-def test_resolve_api_key_defaults_when_nothing_set(clean_api_key_env) -> None:
-    # No env vars set — fall through to dev default.
-    assert _resolve_api_key() == _DEV_DEFAULT
+def test_resolve_api_key_refuses_when_nothing_set(clean_api_key_env) -> None:
+    """No key configured is reported as such, naming the variables to set.
+    A well-known default used to stand in; every install with generated keys
+    answered it 401, so the missing setting surfaced as an auth failure."""
+    with pytest.raises(MissingApiKeyError, match="set WIP_API_KEY"):
+        _resolve_api_key()
+
+
+def test_resolve_api_key_refuses_an_empty_key_file(clean_api_key_env, tmp_path) -> None:
+    key_file = tmp_path / "api.key"
+    key_file.write_text("  \n")
+    clean_api_key_env.setenv("WIP_API_KEY_FILE", str(key_file))
+    with pytest.raises(MissingApiKeyError):
+        _resolve_api_key()
 
 
 def test_resolve_api_key_reads_MASTER_API_KEY(clean_api_key_env) -> None:
     """CASE-312 reopen: when wip_mcp runs as the deployer's container, the env
     var the deployer sets is MASTER_API_KEY (per the component manifest's
     `MASTER_API_KEY: from_secret: api-key`). Without honouring it, the
-    HTTP-transport invocation falls through to the dev default, the upstream
-    httpx client sends `X-API-Key: dev_master_key_for_testing`, and every tool
-    call returns 401 Unauthorized — silently breaking askBar end-to-end.
+    container would have no key for its own calls.
 
     The original 2026-04-24 stdio config invented a MASTER_API_KEY read; the
     test_docstring_env_var_drift suite caught it and forced its removal. This
@@ -195,8 +201,8 @@ def test_resolve_api_key_reads_API_KEY(clean_api_key_env) -> None:
 
 
 def test_resolve_api_key_priority_order(clean_api_key_env) -> None:
-    """WIP_API_KEY beats MASTER_API_KEY beats API_KEY beats WIP_API_KEY_FILE
-    beats default. Order matters: an app explicitly setting WIP_API_KEY for
+    """WIP_API_KEY beats MASTER_API_KEY beats API_KEY beats WIP_API_KEY_FILE.
+    Order matters: an app explicitly setting WIP_API_KEY for
     its own scoped key should not be overridden by a deployer-set master key
     inherited via the parent process env."""
     clean_api_key_env.setenv("WIP_API_KEY", "wip-key")

@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import httpx
 
+from wip_auth import DEF_STORE_KEY, service_api_key
 from wip_auth.term_resolution import (
     TermResolutionError,
     get_def_store_transport,
@@ -51,10 +52,7 @@ class DefStoreClient:
             "DEF_STORE_URL",
             "http://localhost:8002"
         )
-        self.api_key = cast(str, api_key or os.getenv(
-            "DEF_STORE_API_KEY",
-            "dev_master_key_for_testing"
-        ))
+        self.api_key = api_key or service_api_key(*DEF_STORE_KEY)
         self.timeout = timeout
 
     def _get_headers(self) -> dict[str, str]:
