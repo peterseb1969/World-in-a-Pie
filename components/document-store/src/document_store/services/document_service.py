@@ -113,14 +113,23 @@ def _registry_error_outcome(i: int, registry_result: dict) -> _ItemOutcome:
     )
 
 
+def _retired_stamps(doc: "Document") -> dict[Any, tuple[datetime | None, str | None]]:
+    """What a write that retires ``doc`` must restore if its successor
+    insert fails: the row's _id and its own updated_at / updated_by, when the
+    write takes it from active to inactive. Empty when the row is already
+    inactive (the deleted head of a revival): there is nothing to give back,
+    and reactivating it would undelete the document."""
+    if doc.status != DocumentStatus.ACTIVE:
+        return {}
+    return {doc.id: (doc.updated_at, doc.updated_by)}
+
+
 async def _retire_version(
     existing: "Document", actor: str, now: datetime,
 ) -> dict[Any, tuple[datetime | None, str | None]]:
-    """Mark the version a new one replaces inactive; returns what it held
-    before (its updated_at / updated_by), for a rollback that restores it."""
-    prior: dict[Any, tuple[datetime | None, str | None]] = {
-        existing.id: (existing.updated_at, existing.updated_by),
-    }
+    """Mark the version a new one replaces inactive; returns what a rollback
+    restores (_retired_stamps)."""
+    prior = _retired_stamps(existing)
     existing.status = DocumentStatus.INACTIVE
     existing.updated_at = now
     existing.updated_by = actor
@@ -1552,11 +1561,19 @@ class DocumentService:
         the insert fails, the entity is left with none, which reads as a
         retired document. This reactivates its highest stored version, which
         is either the version the write retired or a successor that did land
-        inactive behind it. ``prior`` maps a retired row's _id to the
-        (updated_at, updated_by) it had before the write stamped it, and those
-        are restored with its status. True when a row was reactivated.
+        inactive behind it. ``prior`` maps each row the write took from active
+        to inactive to the (updated_at, updated_by) it had before the write
+        stamped it, and those are restored with its status. A document none
+        of whose rows is in ``prior`` was not active before the write (a
+        revival of a deleted document), and is left as it is. True when a row
+        was reactivated.
         """
         coll = Document.get_motor_collection()
+        if prior is not None and not await coll.find_one(
+            {"_id": {"$in": list(prior)}, "namespace": namespace, "document_id": document_id},
+            {"_id": 1},
+        ):
+            return False
         if await coll.find_one(
             {"namespace": namespace, "document_id": document_id,
              "status": DocumentStatus.ACTIVE.value},
@@ -2022,7 +2039,7 @@ class DocumentService:
             return overwritten, err
 
         # Deactivate old version
-        prior = {existing.id: (existing.updated_at, existing.updated_by)}
+        prior = _retired_stamps(existing)
         existing.status = DocumentStatus.INACTIVE
         existing.updated_at = datetime.now(UTC)
         existing.updated_by = actor
@@ -3709,7 +3726,9 @@ class DocumentService:
         }
         if not failed:
             return
-        prior = {key: (doc.updated_at, doc.updated_by) for key, doc in retiring.items()}
+        prior: dict[Any, tuple[datetime | None, str | None]] = {}
+        for doc in retiring.values():
+            prior.update(_retired_stamps(doc))
         for document_id in sorted(failed):
             await self._reactivate_if_orphaned(namespace, document_id, prior)
 
@@ -5567,7 +5586,7 @@ class DocumentService:
         the version race and another attempt is left."""
         from pymongo.errors import DuplicateKeyError
 
-        prior = {current.id: (current.updated_at, current.updated_by)}
+        prior = _retired_stamps(current)
         current.status = DocumentStatus.INACTIVE
         current.updated_at = now
         current.updated_by = actor

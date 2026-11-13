@@ -213,3 +213,63 @@ async def test_a_failed_revival_write_undoes_the_registry_change(
         await _post(client, auth_headers, "720000005")
     assert registry.calls == {"reactivate": [[document_id]], "deactivate": [[document_id]]}
     assert not await _active(document_id)
+
+
+# The repair that gives an entity its active version back after a failed
+# successor insert must only restore a row this write took from active. A
+# revival "retires" the deleted head, which was already inactive; putting it
+# back would undelete the document while the caller is told the write
+# failed, and the Registry entry the revival recorded would stay revived.
+# Only the insert fails here, so the repair runs as in production.
+
+
+async def _failing_insert(self, *args, **kwargs):
+    raise RuntimeError("mongo write failed")
+
+
+async def _deleted(client, auth_headers, registry, national_id: str) -> str:
+    [created] = await _post(client, auth_headers, national_id)
+    document_id = created["document_id"]
+    await _delete(client, auth_headers, document_id)
+    registry.calls["deactivate"].clear()
+    registry.calls["reactivate"].clear()
+    return document_id
+
+
+@pytest.mark.asyncio
+async def test_a_failed_revival_insert_leaves_the_document_deleted(
+    client: AsyncClient, auth_headers: dict, registry, monkeypatch,
+):
+    document_id = await _deleted(client, auth_headers, registry, "720000011")
+    monkeypatch.setattr(DocumentService, "_insert_with_retry", _failing_insert)
+    with pytest.raises(RuntimeError, match="mongo write failed"):
+        await _post(client, auth_headers, "720000011")
+    assert not await _active(document_id)
+    assert registry.calls == {"reactivate": [[document_id]], "deactivate": [[document_id]]}
+
+
+async def _lost_connection(self, *args, **kwargs):
+    from pymongo.errors import AutoReconnect
+
+    raise AutoReconnect("connection lost")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("query", ["", "?continue_on_error=false"])
+async def test_a_failed_bulk_revival_leaves_the_document_deleted(
+    client: AsyncClient, auth_headers: dict, registry, monkeypatch, query,
+):
+    # A bulk request (two items; one alone takes the single-document path)
+    # writes a revival item by item, in either mode.
+    national_id = "720000012" if query else "720000013"
+    document_id = await _deleted(client, auth_headers, registry, national_id)
+    monkeypatch.setattr(DocumentService, "_insert_with_retry", _lost_connection)
+    resp = await client.post(f"{URL}{query}", headers=auth_headers, json=[
+        {"namespace": "wip", "template_id": PERSON, "data": _person(national_id)},
+        {"namespace": "wip", "template_id": PERSON, "data": _person(national_id[:-1] + "9")},
+    ])
+    assert resp.status_code == 200, resp.text
+    results = sorted(resp.json()["results"], key=lambda r: r["index"])
+    assert results[0]["status"] == "error", resp.text
+    assert not await _active(document_id)
+    assert registry.calls["deactivate"] == [[document_id]]
