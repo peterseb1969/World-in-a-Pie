@@ -10,6 +10,8 @@ construction, a key-file reload, a key sync or an added key).
 """
 
 import asyncio
+import contextvars
+import functools
 import hashlib
 import hmac
 import logging
@@ -38,6 +40,15 @@ _REJECTED_TTL_SECONDS = 60.0
 # key's check moving without letting a flood of unknown values take every
 # thread the loop's executor has.
 _SLOW_PATH_CONCURRENCY = 2
+
+
+def _release_after(semaphore: asyncio.Semaphore, done: "asyncio.Future[Any]") -> None:
+    """Return a slow-path permit once its bcrypt thread has finished, and
+    retrieve the result so a caller that stopped waiting leaves no
+    "exception was never retrieved" behind."""
+    semaphore.release()
+    if not done.cancelled():
+        done.exception()
 
 
 def _monotonic() -> float:
@@ -180,9 +191,12 @@ class APIKeyProvider:
         # SHA-256(plaintext_key) → monotonic expiry, for keys matching nothing.
         self._rejected: OrderedDict[str, float] = OrderedDict()
         # The slow path (bcrypt against every stored key) runs in a worker
-        # thread, at most _SLOW_PATH_CONCURRENCY at a time per event loop,
-        # so a flood of unknown values never blocks the loop. One semaphore
-        # per loop: an asyncio.Semaphore binds to the loop it first waits on.
+        # thread, at most _SLOW_PATH_CONCURRENCY threads at a time per event
+        # loop, so a flood of unknown values never blocks the loop. A permit
+        # is held until its thread finishes, not until its caller stops
+        # waiting: a cancelled request's bcrypt cannot be stopped, so it
+        # keeps its permit. One semaphore per loop: an asyncio.Semaphore
+        # binds to the loop it first waits on.
         self._slow_path: weakref.WeakKeyDictionary[Any, asyncio.Semaphore] = (
             weakref.WeakKeyDictionary()
         )
@@ -490,15 +504,28 @@ class APIKeyProvider:
     ) -> tuple[APIKeyRecord | None, str | None]:
         """_validate_key without blocking the event loop: a value the caches
         know is answered inline; any other runs bcrypt in a worker thread,
-        behind the per-loop semaphore."""
+        behind the per-loop semaphore.
+
+        The cache check and the inline answer take the lock separately: a key
+        sync clearing the caches between them makes that one answer a full
+        scan on the loop. It is bounded by syncs, not by callers."""
         if self._known_to_caches(api_key):
             return self._validate_key(api_key)
         loop = asyncio.get_running_loop()
         semaphore = self._slow_path.get(loop)
         if semaphore is None:
             semaphore = self._slow_path[loop] = asyncio.Semaphore(_SLOW_PATH_CONCURRENCY)
-        async with semaphore:
-            return await asyncio.to_thread(self._validate_key, api_key)
+        await semaphore.acquire()
+        try:
+            work = loop.run_in_executor(
+                None, functools.partial(contextvars.copy_context().run, self._validate_key, api_key),
+            )
+        except BaseException:
+            semaphore.release()
+            raise
+        work.add_done_callback(lambda done: _release_after(semaphore, done))
+        # A cancelled caller stops waiting; the thread, and its permit, run on.
+        return await asyncio.shield(work)
 
     def lookup(
         self, api_key: str, *, raise_unverifiable: bool = False

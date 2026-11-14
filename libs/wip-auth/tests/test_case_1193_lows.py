@@ -104,7 +104,7 @@ async def test_an_unverifiable_proxy_key_is_not_called_spoofing(caplog):
     provider = APIKeyProvider([])
     provider.add_key(proxy)
     provider.expire_runtime_keys()  # the Registry has not confirmed the runtime keys
-    trusted = TrustedHeaderProvider(keys=[proxy], key_provider=provider)
+    trusted = TrustedHeaderProvider(provider)
     request = Request({
         "type": "http", "method": "GET", "path": "/",
         "headers": [(b"x-wip-user", b"someone@wip.local"), (b"x-api-key", b"gw")],

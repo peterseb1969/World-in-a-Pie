@@ -4,6 +4,7 @@ import pytest
 from starlette.requests import Request
 
 from wip_auth import (
+    APIKeyProvider,
     APIKeyRecord,
     AuthConfig,
     TrustedHeaderProvider,
@@ -37,7 +38,7 @@ def api_keys():
 
 @pytest.fixture
 def provider(api_keys):
-    return TrustedHeaderProvider(keys=api_keys)
+    return TrustedHeaderProvider(APIKeyProvider(api_keys))
 
 
 class TestTrustedHeaderProvider:
@@ -235,12 +236,12 @@ class TestOnlyPrivilegedKeysAssertIdentity:
         def key(name, secret, groups):
             return APIKeyRecord(name=name, key_hash=hash_api_key(secret), owner=f"system:{name}", groups=groups)
 
-        return TrustedHeaderProvider(keys=[
+        return TrustedHeaderProvider(APIKeyProvider([
             key("admin-proxy", "admin_secret", ["wip-admins"]),
             key("service", "service_secret", ["wip-services"]),
             key("scoped-app", "scoped_secret", []),
             key("editor", "editor_secret", ["wip-editors"]),
-        ])
+        ]))
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("secret", ["admin_secret", "service_secret"])

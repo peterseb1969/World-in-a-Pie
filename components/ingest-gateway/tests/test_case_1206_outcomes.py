@@ -324,3 +324,31 @@ async def test_queued_messages_are_kept_alive_while_one_is_slow(
 
     assert all(m.ack.await_count == 1 for m in batch)
     assert batch[2].in_progress.await_count >= 2  # waited through two slow ones
+
+
+# ── CASE-1086 (review of ea219d56, R3): a coroutine identifier ──────────
+# The gateway's real identify_producer is a coroutine (identify_key_async);
+# the tests above inject sync callables, so the awaitable branch of
+# IngestWorker._identify was never taken.
+
+
+@pytest.mark.asyncio
+async def test_identify_awaits_a_coroutine_identifier():
+    async def identify(key: str) -> str | None:
+        await asyncio.sleep(0)
+        return "apikey:producer" if key == "good" else None
+
+    worker = _worker(MagicMock(), MagicMock(), identify)
+    assert await worker._identify("good") == ("apikey:producer", None)
+    submitted_by, refusal = await worker._identify("bad")
+    assert submitted_by is None and refusal is not None and refusal[0] == 401
+
+
+@pytest.mark.asyncio
+async def test_identify_maps_a_coroutines_unverifiable_to_503():
+    async def identify(key: str) -> str | None:
+        raise KeysUnverifiable("not confirmed yet")
+
+    worker = _worker(MagicMock(), MagicMock(), identify)
+    submitted_by, refusal = await worker._identify("k")
+    assert submitted_by is None and refusal is not None and refusal[0] == 503

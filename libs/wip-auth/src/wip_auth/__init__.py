@@ -294,11 +294,9 @@ def create_providers_from_config(
         # matching keys through the API-key provider's caches.
         if config.trust_proxy_headers and keys:
             providers.append(TrustedHeaderProvider(
-                keys=keys,
-                header_name=config.api_key_header,
-                hash_salt=config.api_key_hash_salt,
-                default_groups=config.default_groups,
                 key_provider=api_key_provider,
+                header_name=config.api_key_header,
+                default_groups=config.default_groups,
             ))
 
         providers.append(api_key_provider)
@@ -339,13 +337,11 @@ def create_providers_from_config(
 
         # Trusted header provider runs first (checks X-WIP-User + API key),
         # matching keys through the API-key provider's caches.
-        if config.trust_proxy_headers and keys:
+        if config.trust_proxy_headers and dual_key_provider is not None:
             providers.append(TrustedHeaderProvider(
-                keys=keys,
-                header_name=config.api_key_header,
-                hash_salt=config.api_key_hash_salt,
-                default_groups=config.default_groups,
                 key_provider=dual_key_provider,
+                header_name=config.api_key_header,
+                default_groups=config.default_groups,
             ))
 
         # JWT is checked next because Bearer token is more explicit

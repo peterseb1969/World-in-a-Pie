@@ -9,14 +9,13 @@ proxy's, and the groups an asserted identity carries are taken as given — so
 accepting it would let its holder claim any group, wip-admins included.
 """
 
-import asyncio
 import logging
 
 from fastapi import Request
 
 from ..groups import PRIVILEGED_GROUPS
 from ..models import APIKeyRecord, UserIdentity
-from .api_key import APIKeyProvider, KeysUnverifiable, verify_api_key
+from .api_key import APIKeyProvider, KeysUnverifiable
 
 logger = logging.getLogger("wip_auth.trusted_header")
 
@@ -38,24 +37,23 @@ class TrustedHeaderProvider:
         X-WIP-User: User email (e.g., "admin@wip.local")
         X-WIP-Groups: Comma-separated group list (e.g., "wip-admins,wip-editors")
         X-API-Key: Valid service API key (proves request came through trusted proxy)
+
+    The key is matched through ``key_provider``, the service's API-key
+    provider: its config and synced runtime keys, each under its own salt,
+    its caches, and its bounded off-loop bcrypt. There is no second key list
+    here: one would be frozen at construction, miss every runtime key and
+    every key sync, and check bcrypt with neither caches nor a cap.
     """
 
     def __init__(
         self,
-        keys: list[APIKeyRecord],
+        key_provider: APIKeyProvider,
         header_name: str = "X-API-Key",
-        hash_salt: str = "wip_auth_salt",
         default_groups: list[str] | None = None,
-        key_provider: APIKeyProvider | None = None,
     ):
-        self._keys = [k for k in keys if k.enabled]
-        self.header_name = header_name
-        self.hash_salt = hash_salt
-        self.default_groups = default_groups or ["wip-users"]
-        # When given, keys are matched through the API-key provider's caches
-        # (bcrypt costs ~170 ms per stored hash; every request with identity
-        # headers checks its key). Without one, the key list is walked.
         self._key_provider = key_provider
+        self.header_name = header_name
+        self.default_groups = default_groups or ["wip-users"]
 
     async def _proxy_key(self, api_key: str) -> APIKeyRecord | None:
         """The matching, unexpired key record if it may assert identities.
@@ -68,22 +66,10 @@ class TrustedHeaderProvider:
         Raises KeysUnverifiable when the key cannot be verified now (the
         Registry has not confirmed the runtime keys): that is an outage, not
         a key that may not assert identities."""
-        if self._key_provider is not None:
-            record = await self._key_provider.lookup_async(api_key, raise_unverifiable=True)
-        else:
-            record = await asyncio.to_thread(self._walk_keys, api_key)
+        record = await self._key_provider.lookup_async(api_key, raise_unverifiable=True)
         if record is None or not PROXY_KEY_GROUPS.intersection(record.groups):
             return None
         return record
-
-    def _walk_keys(self, api_key: str) -> APIKeyRecord | None:
-        return next(
-            (
-                r for r in self._keys
-                if verify_api_key(api_key, r.key_hash, self.hash_salt) and not r.is_expired()
-            ),
-            None,
-        )
 
     async def authenticate(self, request: Request) -> UserIdentity | None:
         """Authenticate via trusted proxy headers + API key.

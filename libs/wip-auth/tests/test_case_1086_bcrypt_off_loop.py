@@ -4,8 +4,8 @@ A value the provider has not seen is checked with bcrypt against every
 stored key (about 170 ms each at cost 12). authenticate ran that on the event
 loop, so a client sending a fresh random X-API-Key on every request stalled
 the whole service for N x 170 ms per request. The slow path now runs in a
-worker thread, at most two at a time per event loop; values the caches
-already know are still answered inline.
+worker thread, at most two threads at a time per event loop; values the
+caches already know are still answered inline.
 
 bcrypt's check is replaced by a 50 ms sleep: the cost is what matters here,
 and real hashes at cost 12 would make the test slow.
@@ -151,7 +151,7 @@ async def test_a_flood_with_identity_headers_leaves_the_loop_responsive(slow_che
 
     keys = [_key(f"k{i}") for i in range(4)]
     key_provider = APIKeyProvider(keys)
-    provider = TrustedHeaderProvider(keys, key_provider=key_provider)
+    provider = TrustedHeaderProvider(key_provider)
     stop = asyncio.Event()
     watcher = asyncio.create_task(_max_loop_stall(stop))
 
@@ -167,24 +167,6 @@ async def test_a_flood_with_identity_headers_leaves_the_loop_responsive(slow_che
 
 
 @pytest.mark.asyncio
-async def test_the_key_list_walk_runs_off_the_loop_too(slow_checks, monkeypatch):
-    from wip_auth.providers import trusted_header
-    from wip_auth.providers.trusted_header import TrustedHeaderProvider
-
-    # The walk calls its own import of verify_api_key: slow that one too.
-    monkeypatch.setattr(trusted_header, "verify_api_key", api_key_module.verify_api_key)
-
-    provider = TrustedHeaderProvider([_key(f"k{i}") for i in range(4)])
-    stop = asyncio.Event()
-    watcher = asyncio.create_task(_max_loop_stall(stop))
-    await asyncio.sleep(0.02)  # the watcher is measuring before the check starts
-    assert await provider.authenticate(_identity_request("random")) is None
-    stop.set()
-    assert len(slow_checks) == 4
-    assert await watcher < CHECK_SECONDS
-
-
-@pytest.mark.asyncio
 async def test_a_privileged_key_still_asserts_an_identity(slow_checks):
     from wip_auth.providers.trusted_header import TrustedHeaderProvider
 
@@ -193,7 +175,7 @@ async def test_a_privileged_key_still_asserts_an_identity(slow_checks):
         groups=["wip-services"],
     )
     key_provider = APIKeyProvider([proxy, _key("app")])
-    provider = TrustedHeaderProvider([proxy], key_provider=key_provider)
+    provider = TrustedHeaderProvider(key_provider)
 
     identity = await provider.authenticate(_identity_request("secret-gateway"))
     assert identity is not None and identity.user_id == "someone@example.org"
@@ -214,3 +196,60 @@ async def test_identify_key_async_leaves_the_loop_responsive(slow_checks):
     assert results == [None] * 4
     assert known is not None and known.user_id == "apikey:k2"
     assert stall < CHECK_SECONDS, f"the loop stalled {stall * 1000:.0f} ms"
+
+
+# --- The review of the fix (ea219d56) -------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_real_bcrypt_leaves_the_loop(monkeypatch):
+    """The tests above stand in time.sleep, which releases the GIL whatever
+    happens; this one runs bcrypt's own check, which must release it too, or
+    the worker thread would hold the loop anyway."""
+    monkeypatch.undo()  # real hashes, at a cost that takes measurable time
+    original = bcrypt.gensalt
+    monkeypatch.setattr(bcrypt, "gensalt", lambda rounds=11, prefix=b"2b": original(11, prefix))
+    provider = APIKeyProvider([_key(f"k{i}") for i in range(2)])
+
+    started = time.monotonic()
+    assert api_key_module.verify_api_key("x", provider._keys[0].key_hash) is False
+    one_check = time.monotonic() - started
+
+    stop = asyncio.Event()
+    watcher = asyncio.create_task(_max_loop_stall(stop))
+    await asyncio.sleep(0.02)
+    assert await _attempt(provider, "random") == "401"
+    stop.set()
+    stall = await watcher
+    assert stall < one_check / 2, (
+        f"the loop stalled {stall * 1000:.0f} ms against a {one_check * 1000:.0f} ms check"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_check_keeps_its_permit_until_its_thread_ends(monkeypatch):
+    """Two at a time bounds threads, not waiters: a caller that stops
+    waiting cannot stop its bcrypt, so its permit stays taken until the
+    thread finishes, and replacements wait for it."""
+    running = 0
+    peak = 0
+    original = api_key_module.verify_api_key
+
+    def tracked(key, key_hash, salt="wip_auth_salt"):
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        time.sleep(0.2)
+        running -= 1
+        return original(key, key_hash, salt)
+
+    monkeypatch.setattr(api_key_module, "verify_api_key", tracked)
+    provider = APIKeyProvider([_key("k0")])
+    first = [asyncio.create_task(_attempt(provider, f"gone-{i}")) for i in range(2)]
+    await asyncio.sleep(0.05)
+    for task in first:
+        task.cancel()
+    await asyncio.gather(*first, return_exceptions=True)
+    # Their threads still run; two more requests must wait for the permits.
+    assert await asyncio.gather(*(_attempt(provider, f"next-{i}") for i in range(2))) == ["401"] * 2
+    assert peak <= 2, f"{peak} bcrypt threads ran at once"

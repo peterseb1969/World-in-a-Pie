@@ -126,7 +126,7 @@ def test_a_rejection_expires(monkeypatch, checks):
 @pytest.mark.asyncio
 async def test_trusted_headers_use_the_shared_cache(checks):
     api_provider = APIKeyProvider([key("proxy", "sp", ["wip-admins"])])
-    trusted = TrustedHeaderProvider(keys=[], key_provider=api_provider)
+    trusted = TrustedHeaderProvider(api_provider)
     headers = {"X-WIP-User": "u@wip.local", "X-WIP-Groups": "wip-viewers", "X-API-Key": "sp"}
 
     assert await trusted.authenticate(request(headers)) is not None
