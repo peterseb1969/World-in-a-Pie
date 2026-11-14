@@ -200,6 +200,121 @@ _ARRAY_ITEM_FIELD_VALIDATORS: dict[str, str] = {
 }
 
 
+# The rule types whose target is one named field.
+_RULE_TYPES_NEEDING_TARGET = frozenset({
+    "conditional_required", "conditional_value", "dependency", "pattern", "range",
+})
+
+# A canonical id: 8-4-4-4-12 hex digits, version 7.
+_UUID7 = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+
+
+def _terminology_miss_message(value: str, namespace: str | None) -> str:
+    """The refusal for a terminology_ref that resolved to nothing: where it was
+    looked for and, for a bare value, how to name another namespace's copy. A
+    bare value resolves in the document's own namespace only, so "not found"
+    can mean an under-specified name rather than a missing vocabulary — the
+    distinction the resolve layer draws (EntityNotFoundError), spelled for a
+    field value. A qualified name and a canonical id are not under-specified,
+    so neither gets that hint."""
+    if not namespace:
+        return f"Terminology '{value}' not found"
+    message = f"Terminology '{value}' not found in namespace '{namespace}'"
+    if ":" in value or _UUID7.match(value.lower()):
+        return message
+    return message + (
+        f". A bare value resolves in '{namespace}' only; to reference another"
+        " namespace's terminology, name it as 'ns:VALUE' or by its terminology_id"
+    )
+
+
+def _condition_shape_error(rule: dict[str, Any]) -> str | None:
+    """A condition that cannot be evaluated: not an object, or an 'in' /
+    'not_in' whose value is not a list (a string would read as a substring
+    test)."""
+    for condition in rule.get("conditions") or []:
+        if not isinstance(condition, dict):
+            return f"a condition must be an object, got {type(condition).__name__}"
+        operator = condition.get("operator")
+        if operator in ("in", "not_in") and not isinstance(condition.get("value"), list):
+            return (
+                f"condition on '{condition.get('field')}' with operator "
+                f"'{operator}' needs a list value"
+            )
+    return None
+
+
+def _conditional_value_shape_error(rule: dict[str, Any]) -> str | None:
+    return None if rule.get("allowed_values") else "allowed_values is required"
+
+
+def _dependency_shape_error(rule: dict[str, Any]) -> str | None:
+    if rule.get("conditions"):
+        return None
+    return "conditions are required: they name what the target depends on"
+
+
+def _mutual_exclusion_shape_error(rule: dict[str, Any]) -> str | None:
+    if len(rule.get("target_fields") or []) >= 2:
+        return None
+    return "target_fields must name at least two fields"
+
+
+def _pattern_shape_error(rule: dict[str, Any]) -> str | None:
+    pattern = rule.get("pattern")
+    if not pattern:
+        return "pattern is required"
+    try:
+        re.compile(pattern)
+    except re.error as e:
+        return f"pattern does not compile: {e}"
+    return None
+
+
+def _range_shape_error(rule: dict[str, Any]) -> str | None:
+    """A range needs one finite bound, and the two must not cross."""
+    bounds = [b for b in (rule.get("minimum"), rule.get("maximum")) if b is not None]
+    if not bounds:
+        return "minimum or maximum is required"
+    if not all(
+        isinstance(b, (int, float)) and not isinstance(b, bool) and math.isfinite(b)
+        for b in bounds
+    ):
+        return "minimum and maximum must be finite numbers"
+    if len(bounds) == 2 and bounds[0] > bounds[1]:
+        return "minimum is greater than maximum"
+    return None
+
+
+_RULE_TYPE_SHAPE_CHECKS: dict[str, Any] = {
+    "conditional_value": _conditional_value_shape_error,
+    "dependency": _dependency_shape_error,
+    "mutual_exclusion": _mutual_exclusion_shape_error,
+    "pattern": _pattern_shape_error,
+    "range": _range_shape_error,
+}
+
+
+def _rule_shape_error(rule: dict[str, Any]) -> str | None:
+    """Why this rule cannot be evaluated, or None when it can.
+
+    The shapes template-store refuses at template write time
+    (``services/rule_shape.py``), read here from the stored dict. A rule that
+    reaches validation with one of them comes from a template stored before
+    that check, and its evaluation would either pass any document (no bounds,
+    no fields, no allowed values) or crash: a constraint the platform quietly
+    ignores is a guardrail that holds only sometimes, so it is refused per
+    document instead."""
+    rule_type = rule.get("type")
+    if rule_type in _RULE_TYPES_NEEDING_TARGET and not rule.get("target_field"):
+        return "target_field is required"
+    why = _condition_shape_error(rule)
+    if why:
+        return why
+    check = _RULE_TYPE_SHAPE_CHECKS.get(rule_type)
+    return check(rule) if check else None
+
+
 def _reference_item_shape_error(item: Any, reference_type: str | None) -> str | None:
     """What a reference item must be, when it is not; None when it passes.
 
@@ -472,8 +587,9 @@ class ValidationService:
             return False
 
         # JSON parsing accepts NaN and ±Infinity, but no JSON response can
-        # carry them: a stored NaN reads back as null, so the write would be
-        # accepted and its value silently changed. NaN also passes every
+        # carry them: serialising one fails (Starlette's JSONResponse refuses
+        # out-of-range floats), so a document that stored a NaN answers a read
+        # with an error instead of its value. NaN also passes every
         # minimum/maximum check, because every comparison with it is false.
         # Refused anywhere in the data, typed fields, untyped objects and
         # arrays alike.
@@ -760,11 +876,14 @@ class ValidationService:
     def _validate_enum(
         value: Any, field_path: str, validation: dict[str, Any], result: ValidationResult
     ) -> None:
-        """A declared enum holds for every scalar type, not only strings."""
-        if validation.get("enum") and value not in validation["enum"]:
+        """A declared enum holds for every scalar type, not only strings. An
+        enum declared empty admits nothing: it is a whitelist with no entries,
+        not a way of spelling 'no constraint' (omit the key for that)."""
+        allowed = validation.get("enum")
+        if allowed is not None and value not in allowed:
             result.add_error(
                 code="invalid_enum",
-                message=f"Field '{field_path}' must be one of {validation['enum']}",
+                message=f"Field '{field_path}' must be one of {allowed}",
                 field=field_path
             )
 
@@ -796,16 +915,20 @@ class ValidationService:
         result: ValidationResult,
         validation: dict[str, Any]
     ):
-        """Validate date field."""
+        """Validate date field: a date, or a YYYY-MM-DD string, and its enum
+        when the field declares one."""
         if isinstance(value, date) and not isinstance(value, datetime):
+            self._validate_enum(value, field_path, validation, result)
             return  # Already a date object
 
         if isinstance(value, str):
             try:
                 datetime.strptime(value, "%Y-%m-%d")
-                return
             except ValueError:
                 pass
+            else:
+                self._validate_enum(value, field_path, validation, result)
+                return
 
         result.add_error(
             code="invalid_type",
@@ -822,11 +945,14 @@ class ValidationService:
         result: ValidationResult,
         validation: dict[str, Any]
     ):
-        """Validate datetime field."""
+        """Validate datetime field: a datetime, or an ISO 8601 string, and its
+        enum when the field declares one."""
         if isinstance(value, datetime):
+            self._validate_enum(value, field_path, validation, result)
             return  # Already a datetime object
 
         if isinstance(value, str) and _is_iso_datetime(value):
+            self._validate_enum(value, field_path, validation, result)
             return
 
         result.add_error(
@@ -1019,9 +1145,25 @@ class ValidationService:
             return
 
         # An array that declares no item type has untyped items: they are not
-        # checked one by one. (The key is always present, so a .get default
-        # never applied; the field model documents no default type.)
+        # checked one by one. A stored field row carries the key (null when
+        # undeclared) and an inline candidate may omit it; both read as
+        # untyped, because the field model declares no default item type.
         item_type = field.get("array_item_type")
+        if item_type == "file":
+            # An array of files is multiple by nature, so its own config
+            # carries the cap: array_file_config.max_files, the counterpart of
+            # a file field's file_config.max_files.
+            max_files = (field.get("array_file_config") or {}).get("max_files")
+            if max_files is not None and len(value) > max_files:
+                result.add_error(
+                    code="max_files",
+                    message=(
+                        f"Field '{field_path}' holds at most {max_files} file(s), "
+                        f"got {len(value)}"
+                    ),
+                    field=field_path,
+                    details={"max_files": max_files, "count": len(value)},
+                )
         for i, item in enumerate(value):
             await self._validate_array_item(
                 item, item_type, field, f"{field_path}[{i}]", template, result,
@@ -2741,9 +2883,10 @@ class ValidationService:
                     "def-store", f"terminology {value!r} for {field_path!r}", e,
                 ) from e
 
+        searched = _terminology_miss_message(value, namespace)
         result.add_error(
             code="invalid_terminology_reference",
-            message=f"Terminology '{value}' not found",
+            message=searched,
             field=field_path
         )
         return None
@@ -2789,10 +2932,7 @@ class ValidationService:
 
     def _is_uuid7(self, value: str) -> bool:
         """Check if a value looks like a UUID7."""
-        import re
-        # UUID format: 8-4-4-4-12 hex digits
-        uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
-        return bool(re.fullmatch(uuid_pattern, value.lower()))
+        return bool(_UUID7.match(value.lower()))
 
     async def _collect_reference_values(
         self,
@@ -2864,27 +3004,37 @@ class ValidationService:
         # can still carry one, and its writes fail here, per document,
         # instead of crashing the request.
         for index, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                self._refuse_rule(
+                    result, index, None,
+                    f"a rule must be an object, got {type(rule).__name__}",
+                )
+                continue
             rule_type = rule.get("type")
             evaluator = evaluators.get(rule_type)
             if evaluator is None:
-                self._refuse_rule(result, index, rule, f"unknown rule type {rule_type!r}")
+                self._refuse_rule(result, index, rule_type, f"unknown rule type {rule_type!r}")
+                continue
+            why = _rule_shape_error(rule)
+            if why:
+                self._refuse_rule(result, index, rule_type, why)
                 continue
             try:
                 evaluator(data, rule, result)
             except (TypeError, AttributeError, KeyError, re.error) as e:
-                self._refuse_rule(result, index, rule, f"cannot be evaluated: {e}")
+                self._refuse_rule(result, index, rule_type, f"cannot be evaluated: {e}")
 
     @staticmethod
     def _refuse_rule(
-        result: ValidationResult, index: int, rule: dict[str, Any], reason: str
+        result: ValidationResult, index: int, rule_type: Any, reason: str
     ) -> None:
         result.add_error(
             code="invalid_rule",
             message=(
-                f"Template rule {index} ({rule.get('type')}) {reason}; "
+                f"Template rule {index} ({rule_type}) {reason}; "
                 "fix the template's rules"
             ),
-            details={"rule_index": index, "rule_type": rule.get("type")},
+            details={"rule_index": index, "rule_type": rule_type},
         )
 
     def _evaluate_pattern(
@@ -3063,7 +3213,10 @@ class ValidationService:
         rule: dict[str, Any],
         result: ValidationResult
     ):
-        """Evaluate mutual_exclusion rule."""
+        """Evaluate mutual_exclusion rule: when its conditions hold (none =
+        always), at most one of its target_fields has a value."""
+        if not self._check_conditions(data, rule.get("conditions") or []):
+            return
         target_fields = rule.get("target_fields") or []
 
         fields_with_values = [

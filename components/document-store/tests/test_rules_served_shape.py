@@ -64,18 +64,20 @@ def test_conditional_required_explicit_false_does_not_fire():
     assert evaluate({"source_type": "web_import"}, rule).valid
 
 
-def test_conditional_value_with_null_allowed_values_does_not_raise():
+def test_conditional_value_with_null_allowed_values_is_refused_not_raised():
     rule = served({
         "type": "conditional_value",
         "conditions": [{"field": "a", "operator": "exists"}],
         "target_field": "b",
     })
-    assert codes(evaluate({"a": 1, "b": 2}, rule)) == ["conditional_value"]
+    # A rule with no allowed values cannot be evaluated: template-store
+    # refuses it at write time, so its documents are refused too.
+    assert codes(evaluate({"a": 1, "b": 2}, rule)) == ["invalid_rule"]
 
 
-def test_mutual_exclusion_with_null_target_fields_does_not_raise():
+def test_mutual_exclusion_with_null_target_fields_is_refused_not_raised():
     rule = served({"type": "mutual_exclusion"})
-    assert evaluate({"a": 1, "b": 2}, rule).valid
+    assert codes(evaluate({"a": 1, "b": 2}, rule)) == ["invalid_rule"]
 
 
 def test_null_conditions_and_rules_do_not_raise():
