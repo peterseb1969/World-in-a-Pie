@@ -29,14 +29,15 @@ Endpoints
     Verify a namespace's referential and identity integrity as a job. Started
     automatically after every restore, and available on demand.
 * ``GET  /backup/jobs/{job_id}``
-    Latest persisted snapshot for a job.
+    Latest persisted snapshot for a job: read on every namespace whose data
+    the job holds (see ``_check_job_permission``).
 * ``GET  /backup/jobs/{job_id}/events``
     Server-Sent Events stream of :class:`BackupProgressMessage` envelopes.
     **Guardrail 2:** the wire type is ``BackupProgressMessage``, never
     ``wip_archive.models.ProgressEvent``.
 * ``GET  /backup/jobs/{job_id}/download``
-    Stream a job's retained archive. Backup jobs: their COMPLETE output
-    (read permission, as before). Restore jobs: their input archive —
+    Stream a job's retained archive. Backup jobs: their COMPLETE output,
+    to read on every namespace the backup covers. Restore jobs: their input archive —
     valid regardless of job outcome, but it carries the archive's
     namespaces' data, so admin is required on every namespace the job writes
     and every one the archive holds; a fresh restore's input only to the key
@@ -44,11 +45,18 @@ Endpoints
 * ``POST /backup/jobs/{job_id}/restore``
     Restore from a job's retained archive without re-uploading it. The new
     restore job gets its OWN archive copy so deleting either job never
-    pulls the archive out from under the other.
+    pulls the archive out from under the other. Reading the source job's
+    archive needs what downloading it needs.
 * ``GET  /backup/jobs``
-    List recent jobs, optionally filtered by namespace and/or status.
+    List recent jobs the caller can read every namespace of, optionally
+    filtered by a namespace whose data they hold and/or status.
 * ``DELETE /backup/jobs/{job_id}``
-    Delete a terminal job record and its archive, wherever it lives.
+    Delete a terminal job record and its archive, wherever it lives: admin
+    on every namespace whose data the job holds.
+
+A platform admin keeps all of these on a job spanning a namespace locked for
+deletion, which is otherwise closed to everyone, so a backup taken before the
+deletion can still be pulled or removed while it runs.
 
 Archive storage
 ---------------
@@ -1061,9 +1069,23 @@ async def _check_job_permission(
     all the same, so ``archive_access`` (downloading it, deleting it) is
     further limited to the key that created the job and platform admins.
     Refusals answer 404, as a missing job does.
+
+    A platform admin is admin on every namespace but one locked for
+    deletion, which the Registry closes to everyone. Backup jobs are the
+    exception: a job spanning a locked namespace (an instance-wide backup
+    taken before the deletion, say) stays readable, downloadable and
+    deletable by a platform admin, or no one could reach it until the
+    deletion ends. The Registry is still asked, so an outage stays a 503.
     """
+    superadmin = is_superadmin(identity)
     for ns in dict.fromkeys([*(job.namespaces or [job.namespace]), *job.source_namespaces]):
-        await check_namespace_permission(identity, ns, permission)
+        try:
+            await check_namespace_permission(identity, ns, permission)
+        except HTTPException as exc:
+            # The Registry answers a platform admin "none" (a 404) only on a
+            # namespace locked for deletion.
+            if not (superadmin and exc.status_code == 404):
+                raise
     if archive_access and _is_fresh_restore(job) and not (
         job.created_by == identity.identity_string or is_superadmin(identity)
     ):
@@ -1142,14 +1164,24 @@ async def list_restore_provenance(
     summary="List recent backup/restore jobs",
 )
 async def list_jobs(
-    namespace: str | None = Query(None, description="Filter by namespace"),
+    namespace: str | None = Query(
+        None,
+        description="Only jobs holding this namespace's data: their anchor, a "
+                    "namespace they span, or an archive source of a restore",
+    ),
     status: BackupJobStatus | None = Query(None, description="Filter by status"),
     limit: int = Query(50, ge=1, le=500),
     identity: UserIdentity = Depends(require_api_key),
 ) -> list[BackupJobSnapshot]:
     query: dict = {}
     if namespace is not None:
-        query["namespace"] = namespace
+        # Every namespace the permission check covers, not the anchor alone:
+        # a job spanning the namespace is listed under it.
+        query["$or"] = [
+            {"namespace": namespace},
+            {"namespaces": namespace},
+            {"source_namespaces": namespace},
+        ]
     if status is not None:
         query["status"] = status
     cursor = BackupJob.find(query).sort([("created_at", SortDirection.DESCENDING)]).limit(limit)
@@ -1402,11 +1434,13 @@ async def restore_from_job(
     The new restore job receives its OWN archive copy (a server-side object
     copy in the bucket, or a plain scratch copy with its own age), so deleting either job
     never removes the archive out from under the other. Authorization is
-    two-layered: admin on every namespace the SOURCE job spans (reading the
-    archive is download-equivalent), then the same per-namespace admin
-    checks the upload restore runs, over the namespaces the restore will
-    write (the manifest's list, or the zip's namespaces/ tree when the
-    manifest lists none).
+    two-layered. Reading the SOURCE job's archive needs what downloading it
+    needs: admin on every namespace whose data that job holds (the ones it
+    writes and, for an uploaded restore or merge, the archive's own), and a
+    fresh restore's input only to the key that created it or a platform
+    admin. Then the same per-namespace admin checks the upload restore runs,
+    over the namespaces the restore will write (the manifest's list, or the
+    zip's namespaces/ tree when the manifest lists none).
     """
     if request.mode not in ("restore", "merge"):
         raise HTTPException(
@@ -1429,8 +1463,7 @@ async def restore_from_job(
     if src is None:
         raise HTTPException(status_code=404, detail=f"Backup job {job_id} not found")
 
-    for ns in src.namespaces or [src.namespace]:
-        await check_namespace_permission(identity, ns, "admin")
+    await _check_job_permission(identity, src, "admin", archive_access=True)
 
     if src.kind == BackupJobKind.BACKUP and src.status != BackupJobStatus.COMPLETE:
         raise HTTPException(

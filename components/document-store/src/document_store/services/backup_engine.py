@@ -50,7 +50,11 @@ from .document_chains import (
     iter_chains,
     transformed_chains,
 )
-from .file_storage_client import FileStorageClient
+from .file_storage_client import (
+    FileStorageClient,
+    FileStorageError,
+    FileStorageUnavailableError,
+)
 from .merge_definitions import (
     DEFINITION_TYPES,
     DefinitionsPlan,
@@ -183,6 +187,9 @@ _RECOUNT_BATCH = 500
 _REFERENT_WARNING_CAP = 20
 # Referencing (document, field) pairs kept per unresolved referent.
 _REFERENCE_SAMPLE_CAP = 20
+# Files named in one job warning about files without their bytes; the rest
+# are counted. A namespace-wide problem is one warning, not one per file.
+_FILE_WARNING_SAMPLE = 20
 _EDGE_ENDPOINT_FIELDS = ("source_ref", "target_ref")
 
 
@@ -572,6 +579,22 @@ class BackupEngineError(Exception):
     """Raised when the backup engine encounters a fatal error."""
 
 
+def _named_files(file_ids: list[str]) -> str:
+    """The first _FILE_WARNING_SAMPLE file ids, and how many more there are."""
+    shown = ", ".join(file_ids[:_FILE_WARNING_SAMPLE])
+    more = len(file_ids) - _FILE_WARNING_SAMPLE
+    return shown + (f" and {more} more" if more > 0 else "")
+
+
+def _file_shortfall_warnings(prefix: str, by_reason: dict[str, list[str]]) -> list[str]:
+    """One warning per reason files are without their bytes, naming a
+    sample of them: ``by_reason`` maps the reason's wording to the file ids."""
+    return [
+        f"{prefix}{len(ids)} file(s) {reason}: {_named_files(sorted(ids))}"
+        for reason, ids in by_reason.items() if ids
+    ]
+
+
 def _names_foreign_namespace(key: Any, namespace: str) -> bool:
     """Whether a composite key names a namespace other than `namespace` — the
     Registry's key-scope rule: a key carrying `ns` must carry its entry's,
@@ -805,6 +828,7 @@ class DirectBackupEngine:
         writer = ArchiveWriter(archive_path, tmp_dir=tmp_dir)
         referents = ReferentCollector()
         processed = 0
+        without_bytes: dict[str, list[str]] = {}
 
         try:
             for ns in namespaces:
@@ -812,6 +836,7 @@ class DirectBackupEngine:
                     writer, referents, ns, archive_path, left_out.get(ns, []),
                     per_ns_counts[ns], processed, total_entities,
                     include_files=include_files, skip_documents=skip_documents,
+                    without_bytes=without_bytes,
                 )
 
             await self._warn_if_changed_while_read(
@@ -830,6 +855,7 @@ class DirectBackupEngine:
                 writer, namespaces,
                 include_files=bool(include_files and self._storage),
                 referent_count=len(referent_rows),
+                without_bytes=without_bytes,
             )
 
             self._emit("phase_finalize", "Writing archive", percent=95)
@@ -939,9 +965,12 @@ class DirectBackupEngine:
         *,
         include_files: bool,
         skip_documents: bool,
+        without_bytes: dict[str, list[str]] | None = None,
     ) -> int:
         """Write one namespace's entities, in BACKUP_ENTITY_ORDER, and its file
-        blobs when asked. Returns the running count of entities processed."""
+        blobs when asked. Returns the running count of entities processed;
+        the files the archive carries without their bytes go into
+        ``without_bytes`` under the namespace."""
         for entity_type in BACKUP_ENTITY_ORDER:
             if skip_documents and entity_type == "documents":
                 continue
@@ -954,7 +983,9 @@ class DirectBackupEngine:
         # Blobs (per namespace; file_ids are globally unique so the
         # archive's flat blobs/ dir never collides across namespaces)
         if include_files and self._storage:
-            await self._backup_blobs(writer, ns, archive_path, processed, total_entities)
+            dropped = await self._backup_blobs(writer, ns, archive_path, processed, total_entities)
+            if dropped and without_bytes is not None:
+                without_bytes[ns] = dropped
         return processed
 
     async def _backup_entity_type(
@@ -1011,9 +1042,11 @@ class DirectBackupEngine:
         *,
         include_files: bool,
         referent_count: int,
+        without_bytes: dict[str, list[str]] | None = None,
     ) -> Manifest:
         """The archive's manifest: one entry per namespace (its config,
-        counts and provenance) plus the aggregate counts."""
+        counts, provenance and the files it carries without their bytes)
+        plus the aggregate counts."""
         ns_entries: list[NamespaceEntry] = []
         agg: dict[str, int] = {et: 0 for et in BACKUP_ENTITY_ORDER}
         for ns in namespaces:
@@ -1026,6 +1059,7 @@ class DirectBackupEngine:
                     namespace_config=await self._read_namespace_config(ns),
                     counts=counts,
                     provenance=await self._read_provenance(ns),
+                    files_without_bytes=sorted((without_bytes or {}).get(ns, [])) or None,
                 )
             )
             for et in BACKUP_ENTITY_ORDER:
@@ -1175,8 +1209,20 @@ class DirectBackupEngine:
         archive_path: Path,
         processed: int,
         total_entities: int,
-    ) -> None:
-        """Stream file blobs from the object store into the archive."""
+    ) -> list[str]:
+        """Stream file blobs from the object store into the archive.
+
+        The bytes are hashed as they stream and checked against the file's
+        record. A blob the store could not serve, or whose bytes are not the
+        file's, is dropped from the archive: an archive without the bytes
+        says so, one with partial bytes would restore them as the file. The
+        backup still completes with every other file in it, and the dropped
+        files are named on the job (one warning per reason) and returned,
+        for the manifest. An object store that cannot be reached at all, or
+        a scratch disk the archive cannot be written to, fails the backup
+        instead: completed, it would be an archive of file records without
+        their files.
+        """
         assert self._storage is not None
         self._emit(
             "phase_blobs",
@@ -1187,43 +1233,67 @@ class DirectBackupEngine:
         files_db = self._mongo[_DB_DOCUMENT_STORE]["files"]
         query = {"namespace": namespace, "status": {"$ne": "deleted"}}
         count = 0
+        unreadable: list[str] = []
+        mismatched: list[str] = []
         projection = {"file_id": 1, "storage_key": 1, "checksum": 1}
         async for file_doc in files_db.find(query, projection):
             file_id = file_doc.get("file_id") or str(file_doc.get("_id"))
-            storage_key = file_doc.get("storage_key", file_id)
-            # The bytes are hashed as they stream and checked against the
-            # file's record. A blob that failed partway, or is not the file's,
-            # is dropped from the archive and named on the job: an archive
-            # without the bytes says so, one with partial bytes would restore
-            # them as the file. The backup still completes; every other file
-            # is in it.
-            digest = hashlib.sha256()
             try:
-                with writer.open_blob(file_id) as fh:
-                    async for chunk in self._storage.download_stream(storage_key):
-                        fh.write(chunk)
-                        digest.update(chunk)
-            except Exception as exc:
+                digest = await self._stage_blob(
+                    writer, namespace, file_id, file_doc.get("storage_key", file_id),
+                )
+            except FileStorageError:
                 logger.warning("Failed to download blob for file %s", file_id, exc_info=True)
                 writer.discard_blob(file_id)
-                self._emit(
-                    "warning",
-                    f"[{namespace}] file {file_id}: its bytes could not be read from "
-                    f"storage ({exc}); the backup carries no bytes for it",
-                )
+                unreadable.append(file_id)
                 continue
             expected = file_doc.get("checksum")
-            if expected and digest.hexdigest() != expected:
+            if expected and digest != expected:
                 writer.discard_blob(file_id)
-                self._emit(
-                    "warning",
-                    f"[{namespace}] file {file_id}: the bytes in storage do not match "
-                    f"its checksum; the backup carries no bytes for it",
-                )
+                mismatched.append(file_id)
                 continue
             count += 1
 
+        for warning in _file_shortfall_warnings(f"[{namespace}] ", {
+            "could not be read from the object store; the backup carries no bytes "
+            "for them": unreadable,
+            "have bytes in the object store that do not match their checksum; the "
+            "backup carries no bytes for them": mismatched,
+        }):
+            self._emit("warning", warning)
         logger.info("Backed up %d blobs for namespace %s", count, namespace)
+        return unreadable + mismatched
+
+    async def _stage_blob(
+        self, writer: ArchiveWriter, namespace: str, file_id: str, storage_key: str,
+    ) -> str:
+        """Stream one file's bytes into the archive; their SHA-256, hex.
+
+        A FileStorageError (the object is missing, or the store refused it)
+        is the caller's to record. An unreachable store and a failed write to
+        the archive's scratch space stop the backup, each named as what it is.
+        """
+        assert self._storage is not None
+        digest = hashlib.sha256()
+        try:
+            with writer.open_blob(file_id) as fh:
+                async for chunk in self._storage.download_stream(storage_key):
+                    fh.write(chunk)
+                    digest.update(chunk)
+        except FileStorageUnavailableError as exc:
+            writer.discard_blob(file_id)
+            raise BackupEngineError(
+                f"[{namespace}] the object store could not be reached while reading "
+                f"file {file_id} ({exc}); the backup stops rather than complete "
+                "without its files. Retry once the store is back."
+            ) from exc
+        except OSError as exc:
+            writer.discard_blob(file_id)
+            raise BackupEngineError(
+                f"[{namespace}] file {file_id}'s bytes could not be written to the "
+                f"archive's scratch space ({exc}); the backup is stopped"
+            ) from exc
+        return digest.hexdigest()
 
     async def _read_referents(self, entry_ids: list[str]) -> list[dict[str, Any]]:
         """The Registry entries of referenced entities the archive does not
@@ -2391,6 +2461,8 @@ class DirectRestoreEngine:
                 tgt, entry.namespace_config if entry else manifest.namespace_config,
                 dry_run=True,
             )
+        if not skip_files and self._storage:
+            await self._dry_run_blob_report(reader)
         self._dry_run_report(
             reader, targets, entry_by_prefix, restore_order,
             skip_documents=skip_documents, skip_files=skip_files, dropped=dropped,
@@ -3575,23 +3647,48 @@ class DirectRestoreEngine:
         The storage key follows the file id, so re-minting the id means the
         bytes need a new home rather than a second reference to the old one —
         which would leave two files sharing one object and either one able to
-        delete it.
+        delete it. A file the archive carries no bytes for has none under its
+        new id either, and is named on the job with the ones whose bytes do
+        not match their checksum.
         """
         assert self._storage is not None
         if not file_id_map:
             return
         self._emit("phase_blobs", f"Copying {len(file_id_map)} blob(s)")
-        checksums = self._archive_file_checksums(reader)
-        report_missing = self._archive_includes_files(reader)
+        checksums = await self._off_loop(self._archive_file_checksums, reader)
+        blobs = set(reader.list_blobs())
+        without: dict[str, list[str]] = {
+            "missing": [new for old, new in file_id_map.items() if old not in blobs],
+            "mismatched": [],
+        }
+        carried = {old: new for old, new in file_id_map.items() if old in blobs}
+        copied = await self._copy_blobs_under_new_ids(reader, carried, checksums, without)
+        self._emit_restored_without_bytes(reader, without)
+        logger.info("Copied %d blob(s) under new ids", copied)
+
+    async def _copy_blobs_under_new_ids(
+        self,
+        reader: ArchiveReader,
+        carried: dict[str, str],
+        checksums: dict[str, str | None],
+        without: dict[str, list[str]],
+    ) -> int:
+        """Upload each carried blob (old id → new id) under its new id; the
+        ones not uploaded for a reason go into ``without`` by their new id.
+        Returns how many were uploaded."""
+        assert self._storage is not None
         present = await self._blob_keys_holding_archive_bytes(
-            reader, {new_id: old_id for old_id, new_id in file_id_map.items()},
+            reader, {new_id: old_id for old_id, new_id in carried.items()},
         )
         copied = 0
-        for old_id, new_id in file_id_map.items():
+        for old_id, new_id in carried.items():
             if new_id in present:
                 continue
-            data = self._checked_blob(reader, old_id, checksums.get(old_id), report_missing)
+            data, reason = await self._off_loop(
+                self._checked_blob, reader, old_id, checksums.get(old_id),
+            )
             if data is None:
+                without[reason or "missing"].append(new_id)
                 continue
             await self._storage.upload(
                 storage_key=new_id,
@@ -3599,7 +3696,7 @@ class DirectRestoreEngine:
                 content_type="application/octet-stream",
             )
             copied += 1
-        logger.info("Copied %d blob(s) under new ids", copied)
+        return copied
 
     async def _activate_entries(
         self, namespace: str, items: list[dict[str, Any]]
@@ -6674,12 +6771,6 @@ class DirectRestoreEngine:
                 "(plus rebuilt composite-key claims)",
             )
 
-        if not skip_files and self._storage:
-            self._emit(
-                "phase_dry_run",
-                f"dry run — would upload {len(reader.list_blobs())} file blob(s)",
-            )
-
         self._emit(
             "complete",
             "Dry run complete — preconditions passed, no changes made",
@@ -7220,10 +7311,12 @@ class DirectRestoreEngine:
             if entity_type == "documents":
                 retire_archived_row(row)
             # A file's bytes live under its file id: every upload writes them
-            # there, and every restore uploads the archive's blob there (a
-            # fresh restore under the re-minted id). The row must point at the
-            # same key, or it serves another file's bytes (the source's, on
-            # the same install) or none, and deleting it deletes the other's.
+            # there, and a restore uploads the archive's blob there when the
+            # archive carries one (a fresh restore under the re-minted id; a
+            # file it carries none for is named on the job). The row must
+            # point at the same key, or it serves another file's bytes (the
+            # source's, on the same install), and deleting it deletes the
+            # other's.
             if entity_type == "files" and row.get("file_id"):
                 row["storage_key"] = row["file_id"]
             # The Registry answers value searches from search_values, which
@@ -7265,36 +7358,57 @@ class DirectRestoreEngine:
 
     @staticmethod
     def _archive_includes_files(reader: ArchiveReader) -> bool:
-        """Whether the backup was made with its files: only then is a file
-        row without a blob a file that lost its bytes."""
+        """Whether the backup was made with its files: it then carries the
+        bytes of every file it could read, and a file row without them is a
+        file that lost its bytes, rather than one left out on request."""
         return bool(getattr(reader.read_manifest(), "include_files", False))
 
+    @staticmethod
     def _checked_blob(
-        self, reader: ArchiveReader, file_id: str, expected: str | None, report_missing: bool
-    ) -> bytes | None:
-        """The archive's bytes for a file, or None when there are none to
-        restore. Bytes that do not match the file's recorded checksum are not
-        restored: a file without bytes is honest, one with wrong bytes is not.
-        Each file restored without its bytes is named on the job."""
+        reader: ArchiveReader, file_id: str, expected: str | None,
+    ) -> tuple[bytes | None, str | None]:
+        """The archive's bytes for a file, or None and why there are none to
+        restore: ``missing`` (the archive carries none) or ``mismatched``
+        (they do not match the file's recorded checksum: a file without bytes
+        is honest, one with wrong bytes is not). It reads and hashes a whole
+        blob, so it runs off the event loop, and emits nothing: the caller
+        names the files on the job."""
         data: bytes | None = reader.read_blob(file_id)
         if data is None:
-            if report_missing:
-                self._emit(
-                    "warning",
-                    f"file {file_id}: the archive carries no bytes for it; "
-                    f"the file is restored without them",
-                )
             logger.warning("Blob %s missing from archive; skipped", file_id)
-            return None
+            return None, "missing"
         if expected and hashlib.sha256(data).hexdigest() != expected:
-            self._emit(
-                "warning",
-                f"file {file_id}: the archive's bytes do not match its checksum; "
-                f"the file is restored without them",
-            )
             logger.warning("Blob %s does not match its checksum; not uploaded", file_id)
-            return None
-        return data
+            return None, "mismatched"
+        return data, None
+
+    def _emit_restored_without_bytes(
+        self, reader: ArchiveReader, without: dict[str, list[str]], *, dry_run: bool = False,
+    ) -> None:
+        """Name, one warning per reason, the files a restore writes without
+        their bytes. Every file row is written whether its bytes come or
+        not, so a file without them downloads as nothing until its bytes are
+        uploaded again."""
+        restored = "would be restored" if dry_run else "are restored"
+        missing = (
+            "the archive carries no bytes for them"
+            if self._archive_includes_files(reader)
+            else "the archive was made without files, so it carries no bytes for them"
+        )
+        for warning in _file_shortfall_warnings("", {
+            f"{restored} without content: {missing}": without.get("missing", []),
+            f"{restored} without content: the archive's bytes do not match their "
+            "checksum": without.get("mismatched", []),
+        }):
+            self._emit("warning", warning)
+
+    async def _without_objects(self, file_ids: set[str]) -> list[str]:
+        """Of the files an archive carries no bytes for, the ones with no
+        object under their id here either. A plain restore or merge keeps a
+        file's id, so an object this install still holds under it (one a
+        deletion left in the store, say) still serves the file."""
+        assert self._storage is not None
+        return [file_id for file_id in sorted(file_ids) if not await self._storage.exists(file_id)]
 
     async def _blob_keys_holding_archive_bytes(
         self, reader: ArchiveReader, keys: dict[str, str],
@@ -7356,22 +7470,37 @@ class DirectRestoreEngine:
 
         ``only`` narrows the upload to specific file ids — a merge uploads
         bytes for the files it inserted and leaves the ones the target already
-        had alone.
+        had alone. Every file restored without its bytes is named on the job:
+        one the archive carries none for (it was made without files, or lost
+        them), and one whose bytes do not match its checksum.
         """
         assert self._storage is not None
-        checksums = self._archive_file_checksums(reader)
-        report_missing = self._archive_includes_files(reader)
-        wanted = set(reader.list_blobs())
-        # A backup made with its files carries a blob for every file row: a
-        # row without one is a file restored without its bytes, and is named.
-        if report_missing:
-            wanted |= set(checksums)
+        checksums = await self._off_loop(self._archive_file_checksums, reader)
+        blobs = set(reader.list_blobs())
+        rows = set(checksums)
         if only is not None:
-            wanted &= only
-        blob_ids = sorted(wanted)
-        if not blob_ids:
-            return
+            blobs &= only
+            rows &= only
+        without: dict[str, list[str]] = {
+            "missing": await self._without_objects(rows - blobs),
+            "mismatched": [],
+        }
+        blob_ids = sorted(blobs)
+        if blob_ids:
+            await self._upload_archive_blobs(reader, blob_ids, checksums, without)
+        self._emit_restored_without_bytes(reader, without)
+        logger.info("Restored %d blobs for namespace %s", len(blob_ids), namespace)
 
+    async def _upload_archive_blobs(
+        self,
+        reader: ArchiveReader,
+        blob_ids: list[str],
+        checksums: dict[str, str | None],
+        without: dict[str, list[str]],
+    ) -> None:
+        """Upload the archive's blobs under their own ids; the ones not
+        uploaded for a reason go into ``without``."""
+        assert self._storage is not None
         present = await self._blob_keys_holding_archive_bytes(
             reader, {file_id: file_id for file_id in blob_ids},
         )
@@ -7383,8 +7512,11 @@ class DirectRestoreEngine:
         for i, file_id in enumerate(blob_ids):
             if file_id in present:
                 continue
-            data = self._checked_blob(reader, file_id, checksums.get(file_id), report_missing)
+            data, reason = await self._off_loop(
+                self._checked_blob, reader, file_id, checksums.get(file_id),
+            )
             if data is None:
+                without[reason or "missing"].append(file_id)
                 continue
             # Use application/octet-stream as default; the File metadata
             # in MongoDB has the real content_type.
@@ -7401,7 +7533,29 @@ class DirectRestoreEngine:
                     total=len(blob_ids),
                 )
 
-        logger.info("Restored %d blobs for namespace %s", len(blob_ids), namespace)
+    async def _dry_run_blob_report(self, reader: ArchiveReader) -> None:
+        """What a plain restore's blob phase would upload: only the bytes
+        that match their file's checksum, so they are read and checked as the
+        real run checks them. The files it would restore without their bytes
+        are named, as the real run names them."""
+        assert self._storage is not None
+        checksums = await self._off_loop(self._archive_file_checksums, reader)
+        blobs = set(reader.list_blobs())
+        without: dict[str, list[str]] = {
+            "missing": await self._without_objects(set(checksums) - blobs),
+            "mismatched": [],
+        }
+        uploadable = 0
+        for file_id in sorted(blobs):
+            data, reason = await self._off_loop(
+                self._checked_blob, reader, file_id, checksums.get(file_id),
+            )
+            if data is None:
+                without[reason or "missing"].append(file_id)
+            else:
+                uploadable += 1
+        self._emit("phase_dry_run", f"dry run — would upload {uploadable} file blob(s)")
+        self._emit_restored_without_bytes(reader, without, dry_run=True)
 
     def _emit(
         self,

@@ -1216,3 +1216,91 @@ class TestRestoreRequester:
         req = _restore_requester(self._request(bearer="tok"), self._identity("jwt", [admin_group]))
         assert req.platform_admin is True
         assert not req.service
+
+
+@pytest.mark.asyncio
+async def test_restoring_from_a_fresh_restores_input_needs_what_downloading_it_needs(
+    client: AsyncClient, auth_headers: dict,
+):
+    """Restoring from a job reads its archive: another admin of a fresh
+    restore's target cannot copy its input into a job of their own (and then
+    download that) any more than download it; its creator can."""
+    job = await _restore_job("fresh", created_by="apikey:someone-else")
+    url = f"/api/document-store/backup/jobs/{job.job_id}/restore"
+    body = {"mode": "merge", "dry_run": True}
+    resp = await client.post(url, json=body, headers=WIP_ADMIN)
+    assert resp.status_code == 404, resp.text
+    # A platform admin is past the check: the archive itself is gone (410).
+    assert (await client.post(url, json=body, headers=auth_headers)).status_code == 410
+
+    own = await _restore_job("fresh", created_by="apikey:test-wip-admin")
+    own_url = f"/api/document-store/backup/jobs/{own.job_id}/restore"
+    assert (await client.post(own_url, json=body, headers=WIP_ADMIN)).status_code == 410
+
+
+@pytest.mark.asyncio
+async def test_restoring_from_a_redirected_merge_needs_its_sources(client: AsyncClient):
+    job = await _restore_job("merge", sources=["xns-closed"])
+    url = f"/api/document-store/backup/jobs/{job.job_id}/restore"
+    resp = await client.post(url, json={"mode": "merge"}, headers=WIP_ADMIN)
+    assert resp.status_code == 404, resp.text
+
+
+def _locked_namespace(monkeypatch) -> str:
+    """A namespace locked for deletion: the Registry answers "none" on it to
+    everyone, a platform admin included (its first resolution step). This
+    suite's Registry answers are stated, not asked, so the test states it."""
+    from wip_auth import permissions
+
+    prefix = f"locked-{uuid.uuid4().hex[:8]}"
+    answer = permissions._fetch_permission_from_registry
+
+    async def registry(identity, namespace):
+        return "none" if namespace == prefix else await answer(identity, namespace)
+
+    monkeypatch.setattr(permissions, "_fetch_permission_from_registry", registry)
+    permissions.clear_permission_cache()
+    return prefix
+
+
+@pytest.mark.asyncio
+async def test_a_platform_admin_keeps_a_job_spanning_a_locked_namespace(
+    client: AsyncClient, auth_headers: dict, monkeypatch,
+):
+    """A namespace locked for deletion is closed to everyone, but a backup
+    spanning it stays readable, downloadable and deletable by a platform
+    admin; nobody else gets more than before."""
+    locked = _locked_namespace(monkeypatch)
+    job = await _make_persisted_job(
+        namespace="wip", status=BackupJobStatus.COMPLETE, archive_path="/tmp/no-such-archive.zip",
+    )
+    job.namespaces = ["wip", locked]
+    await job.save()
+    base = f"/api/document-store/backup/jobs/{job.job_id}"
+
+    assert (await client.get(base, headers=WIP_ADMIN)).status_code == 404
+    assert (await client.get(base, headers=auth_headers)).status_code == 200
+    listed = await client.get("/api/document-store/backup/jobs", headers=auth_headers)
+    assert job.job_id in {j["job_id"] for j in listed.json()}
+    # Past the permission check: the archive itself is gone, which is a 410.
+    assert (await client.get(base + "/download", headers=auth_headers)).status_code == 410
+    assert (await client.delete(base, headers=WIP_ADMIN)).status_code == 404
+    assert (await client.delete(base, headers=auth_headers)).status_code == 204
+
+
+@pytest.mark.asyncio
+async def test_listing_by_namespace_finds_the_jobs_spanning_it(
+    client: AsyncClient, auth_headers: dict,
+):
+    """``?namespace=`` matches every namespace a job holds data of, not only
+    its anchor: a backup spanning it, and a merge whose archive came from it."""
+    backup = await _spanning_backup()
+    merge = await _restore_job("merge", sources=["xns-closed"])
+    other = await _make_persisted_job(namespace="wip", status=BackupJobStatus.COMPLETE)
+    resp = await client.get(
+        "/api/document-store/backup/jobs", params={"namespace": "xns-closed"}, headers=auth_headers,
+    )
+    assert resp.status_code == 200, resp.text
+    listed = {j["job_id"] for j in resp.json()}
+    assert {backup.job_id, merge.job_id} <= listed
+    assert other.job_id not in listed

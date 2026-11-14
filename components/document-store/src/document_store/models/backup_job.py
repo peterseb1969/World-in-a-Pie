@@ -199,6 +199,10 @@ class BackupJob(BeanieDocument):
             IndexModel([("job_id", 1)], unique=True, name="backup_job_id_unique_idx"),
             # Namespace + status filter (for dashboards / list endpoints)
             IndexModel([("namespace", 1), ("status", 1)], name="backup_ns_status_idx"),
+            # The list endpoint's namespace filter also matches every
+            # namespace a job spans and every archive source it carries.
+            IndexModel([("namespaces", 1)], name="backup_namespaces_idx"),
+            IndexModel([("source_namespaces", 1)], name="backup_source_namespaces_idx"),
             # Cleanup cron scans by created_at
             IndexModel([("created_at", DESCENDING)], name="backup_created_at_idx"),
             # Audit: who created it

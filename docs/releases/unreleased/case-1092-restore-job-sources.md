@@ -18,7 +18,19 @@ target alone could download and delete another namespace's full export.
   install and have no grants here, can be downloaded and deleted only by the
   key that created the job or a platform admin, on top of admin on its
   targets. Admins of the target can still see the job.
+- **Restoring from a retained job** (`POST /backup/jobs/{job_id}/restore`)
+  reads the source job's archive under the same rule as downloading it. It
+  used to ask only admin on the namespaces the source job writes, so an admin
+  of a fresh restore's target who also held admin on its source namespace
+  could restore its input in merge mode (a dry run is enough) into a new job
+  of their own, and download that copy, without being its creator.
 
-**Action:** none for new jobs. Redirected merges uploaded before this change
-carry no `source_namespaces`; their download and delete keep the
-target-only check until the job's archive is swept.
+**Action:** review redirected merges uploaded before this change. They carry
+no `source_namespaces`, so their download and delete keep the target-only
+check for as long as the job exists: nothing expires a job
+record, and with file storage an archive in the bucket is never swept. List
+the restore jobs (`GET /backup/jobs`) and find those whose `options.mode` is
+`merge`, whose `options.target_namespace` is set and whose `source_namespaces`
+is empty; delete any whose archive the target's admins must not read.
+Without file storage their inputs were deleted when the jobs finished, and
+there is nothing to do.

@@ -572,6 +572,9 @@ class _Storage:
     async def download(self, storage_key):
         return self.objects[storage_key]
 
+    async def delete(self, storage_key):
+        self.objects.pop(storage_key, None)
+
 
 class TestRestoredFilesOwnTheirBytes:
     """A fresh restore re-mints every file id and copies the bytes under the
@@ -615,6 +618,38 @@ class TestRestoredFilesOwnTheirBytes:
         )
         (row,) = await _rows(live_registry, "files")
         assert storage.objects.get(row["storage_key"]) == self.ORIGINAL
+
+    @pytest.mark.asyncio
+    async def test_downloading_and_deleting_the_restored_file_leaves_the_source_alone(
+        self, live_registry,
+    ):
+        """Same install: the restored file downloads its own copy, and hard-
+        deleting it removes that copy only; the source file still reads back."""
+        from document_store.models.file import File
+        from document_store.services.file_service import FileService
+
+        storage = _Storage({"OLD-FILE": self.ORIGINAL})
+        await _run_remap(
+            live_registry, {"files": [self._file()]},
+            storage=storage, blobs={"OLD-FILE": self.ORIGINAL},
+        )
+        (row,) = await _rows(live_registry, "files")
+        row.pop("_id", None)
+        restored = File(**{**row, "reference_count": 0})
+        await restored.insert()
+        service = "document_store.services.file_service"
+        try:
+            with patch(f"{service}.get_file_storage_client", return_value=storage), \
+                    patch(f"{service}.is_file_storage_enabled", return_value=True):
+                content, _ = await FileService().download_file(restored.file_id)
+                assert content == self.ORIGINAL
+                restored.status = "inactive"
+                await restored.save()
+                assert await FileService().hard_delete_file(restored.file_id) is True
+        finally:
+            await File.find({"file_id": restored.file_id}).delete()
+        assert restored.file_id not in storage.objects
+        assert storage.objects["OLD-FILE"] == self.ORIGINAL
 
 
 class TestOutOfArchiveReferents:

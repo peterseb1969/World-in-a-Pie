@@ -39,14 +39,18 @@ async def test_listing_jobs_during_an_authorization_outage_is_a_503(
 
 
 @pytest.mark.asyncio
-async def test_listing_jobs_still_hides_refused_ones(client: AsyncClient, auth_headers: dict):
+async def test_listing_jobs_still_hides_refused_ones(client: AsyncClient):
+    # Not a platform admin: the Registry answers one "none" only on a
+    # namespace locked for deletion, where a job spanning it stays theirs.
     await _job(namespaces=["wip"])
 
     async def refused(identity, namespace, required):
         raise HTTPException(404, "Namespace not found")
 
     with patch(API, side_effect=refused):
-        resp = await client.get("/api/document-store/backup/jobs", headers=auth_headers)
+        resp = await client.get(
+            "/api/document-store/backup/jobs", headers={"X-API-Key": "test_wip_admin_key"},
+        )
     assert resp.status_code == 200, resp.text
     assert resp.json() == []
 

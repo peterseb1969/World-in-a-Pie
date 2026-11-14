@@ -78,6 +78,11 @@ class NamespaceEntry(BaseModel):
     # the archive predates the field (an additive field: readers ignore
     # unknown keys, so format_version is unchanged).
     provenance: list[dict[str, Any]] | None = None
+    # File ids whose rows the archive carries without their bytes although it
+    # was made with files: the object could not be read, or did not match the
+    # file's checksum. None when every file's bytes are in it, or the archive
+    # predates the field (additive, like provenance).
+    files_without_bytes: list[str] | None = None
 
 
 class Manifest(BaseModel):
