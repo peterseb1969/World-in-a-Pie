@@ -608,6 +608,10 @@ async def start_restore(
 
     The archive is streamed to disk at ``$WIP_BACKUP_DIR/{job_id}.zip`` so
     multi-GB uploads don't buffer in RAM.
+
+    One restore or merge, of any mode, runs at a time on an instance: while
+    another one is running this answers 409 naming it, and keeps nothing of
+    the upload. A dry run writes nothing and is not held back.
     """
     effective_target = target_namespace or namespace
     # A fresh restore given only a namespace_map writes the map's targets,
@@ -686,7 +690,11 @@ async def start_restore(
         options=options,
         created_by=identity.identity_string if hasattr(identity, "identity_string") else str(identity),
     )
-    await job.insert()
+    try:
+        await backup_service.insert_restore_job(job)
+    except backup_service.RestoreAlreadyRunningError as exc:
+        archive_path.unlink(missing_ok=True)
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     runner = backup_service.make_direct_restore_runner(
         archive_path=archive_path,
@@ -1412,9 +1420,11 @@ async def _insert_restore_from_job(
             options=options,
             created_by=identity.identity_string if hasattr(identity, "identity_string") else str(identity),
         )
-        await job.insert()
-    except Exception:
+        await backup_service.insert_restore_job(job)
+    except Exception as exc:
         await store.discard_materialized(new_job_id, object_copied)
+        if isinstance(exc, backup_service.RestoreAlreadyRunningError):
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         raise
     return job
 
@@ -1444,6 +1454,9 @@ async def restore_from_job(
     only to the key that created it or a platform admin. Then the same per-namespace admin checks the upload restore runs,
     over the namespaces the restore will write (the manifest's list, or the
     zip's namespaces/ tree when the manifest lists none).
+
+    One restore or merge runs at a time on an instance: while another one is
+    running this answers 409 naming it. A dry run is not held back.
     """
     if request.mode not in ("restore", "merge"):
         raise HTTPException(

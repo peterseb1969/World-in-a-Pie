@@ -47,6 +47,8 @@ from .dependencies import (
     require_namespace_write,
 )
 from .fastapi_helpers import (
+    AmbiguousItem,
+    AmbiguousItems,
     field_unresolved_detail,
     miss_detail,
     resolution_miss,
@@ -146,7 +148,6 @@ __all__ = [
     "KEY_SYNC_KEY",
     "PERMISSION_KEY",
     "PRIVILEGED_GROUPS",
-    "privileged_scope_error",
     "REGISTRY_KEY",
     "SERVICES_GROUP",
     "TEMPLATE_STORE_KEY",
@@ -154,6 +155,8 @@ __all__ = [
     "APIKeyRecord",
     # Synonym resolution
     "AmbiguousEntityError",
+    "AmbiguousItem",
+    "AmbiguousItems",
     # Config
     "AuthConfig",
     # Middleware
@@ -209,6 +212,7 @@ __all__ = [
     "miss_detail",
     "optional_identity",
     "permission_sufficient",
+    "privileged_scope_error",
     "require_admin",
     "require_admin_identity",
     "require_api_key",

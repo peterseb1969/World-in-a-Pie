@@ -54,8 +54,9 @@ _RESUMABLE = ("in_progress", "failed", "completed_with_warnings")
 # has steps it has not run yet (in progress, or stopped on a failed step).
 # Once the prefix exists again those steps would keep the new namespace's
 # data, so the old namespace's stored files and reporting rows would never
-# be removed. A deletion that completed with warnings ran every step; it
-# does not hold the prefix.
+# be removed. A deletion that completed with warnings ran every step (some
+# recorded an error); it does not hold the prefix, because holding the name
+# on it would block an app's bootstrap on a state only a resume clears.
 _HOLDS_PREFIX = ("in_progress", "failed")
 
 

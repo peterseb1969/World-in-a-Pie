@@ -123,7 +123,7 @@ def _bypass_kwarg(spy: AsyncMock) -> bool:
 async def test_document_write_doors_bypass_cache(
     client: AsyncClient, auth_headers: dict, method: str, path: str, body: list
 ):
-    spy = AsyncMock(return_value=None)
+    spy = AsyncMock(return_value={})  # no item ambiguous
     with patch("document_store.api.documents.resolve_bulk_ids", spy):
         await client.request(method, path, headers=auth_headers, json=body)
     assert _bypass_kwarg(spy), f"{method} {path} resolves without bypass_cache"
@@ -154,7 +154,7 @@ async def test_migrate_door_bypasses_cache(client: AsyncClient, auth_headers: di
 async def test_file_write_doors_bypass_cache(
     client: AsyncClient, auth_headers: dict, method: str, body: list
 ):
-    spy = AsyncMock(return_value=None)
+    spy = AsyncMock(return_value={})  # no item ambiguous
     with (
         # The delete door is gated on file storage being enabled; the gate
         # fires before the handler, so open it for the spy to be reachable.

@@ -42,7 +42,9 @@ class BulkResultItemBase(BaseModel):
             "name_collision, identity_fields_immutable, immutable_property, "
             "cross_namespace_reference, invalid_state, invalid_request, "
             "registry_error, synonym_conflict, registry_entry_not_removed, "
-            "cross_namespace_relationship, archived_relationship_endpoint."
+            "cross_namespace_relationship, archived_relationship_endpoint, "
+            "ambiguous_reference (an identifier the item names is borne by "
+            "several entities; details.field, details.candidates)."
         ),
     )
     details: dict[str, Any] | None = Field(

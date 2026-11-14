@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pymongo.errors import OperationFailure
 
 from wip_auth import (
+    AmbiguousItems,
     UserIdentity,
     check_namespace_permission,
     is_superadmin,
@@ -82,13 +83,20 @@ async def create_documents(
     # namespace=None is correct here — each item carries its own namespace field,
     # and resolve_bulk_ids reads it per-item. bypass_cache: this is a write
     # door — after a hard-delete + re-create under the same value, the cache
-    # serves the dead template id for up to its TTL.
-    await resolve_bulk_ids(
-        items, "template_id", "template", namespace=None, bypass_cache=True
+    # serves the dead template id for up to its TTL. A value several
+    # templates bear is answered per item as ambiguous.
+    held = AmbiguousItems(
+        items,
+        await resolve_bulk_ids(
+            items, "template_id", "template", namespace=None, bypass_cache=True
+        ),
+        stop_at_first=not continue_on_error,
     )
 
     service = get_document_service()
 
+    # The bulk path takes an empty list (every item held) as well.
+    items = held.items
     if len(items) == 1:
         # Single item — use direct create path
         response, error = await service.create_document(items[0], namespace=items[0].namespace)
@@ -125,7 +133,7 @@ async def create_documents(
         result = await _bulk_create_per_namespace(service, items, continue_on_error)
 
     await asyncio.sleep(get_throttle_delay())
-    return result
+    return held.answer(result)
 
 
 def _namespace_batches(
@@ -242,10 +250,12 @@ async def patch_documents(
     """Apply JSON Merge Patches to documents (bulk-first)."""
     # Resolve document_id synonyms in place. Resolution failures are silently
     # left as-is so the per-item flow returns 'not_found' rather than aborting
-    # the whole batch. bypass_cache: write door.
-    await resolve_bulk_ids(
+    # the whole batch. bypass_cache: write door. A value several documents
+    # bear is answered per item as ambiguous.
+    held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "document_id", "document", namespace=namespace, bypass_cache=True
-    )
+    ))
+    items = held.items
 
     # Write permission on each document's own namespace, asked before any
     # item is patched: a refused item is reported on its row and the rest of
@@ -266,11 +276,11 @@ async def patch_documents(
 
     rows = await _patch_allowed(items, allowed, results)
     await asyncio.sleep(get_throttle_delay())
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=rows, total=len(items),
         succeeded=sum(1 for r in rows if r.status != "error"),
         failed=sum(1 for r in rows if r.status == "error"),
-    )
+    ))
 
 
 async def _batch_write_refusals(
@@ -860,9 +870,11 @@ async def delete_documents(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Delete one or more documents."""
-    await resolve_bulk_ids(
+    # A value several documents bear is answered per item as ambiguous.
+    held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "id", "document", namespace=namespace, bypass_cache=True
-    )
+    ))
+    items = held.items
 
     service = get_document_service()
     # Write permission on each document's own namespace, asked before any item
@@ -916,11 +928,11 @@ async def delete_documents(
             # that item (nothing written for it); the items before it stand.
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.post(

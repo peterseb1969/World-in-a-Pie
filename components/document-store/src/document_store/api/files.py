@@ -19,7 +19,7 @@ from wip_auth import (
     resolve_accessible_namespaces,
     resolve_namespace_filter,
 )
-from wip_auth.fastapi_helpers import miss_detail, resolve_bulk_ids, resolve_or_404
+from wip_auth.fastapi_helpers import AmbiguousItems, miss_detail, resolve_bulk_ids, resolve_or_404
 
 from ..models.api_models import (
     MAX_BULK_ITEMS,
@@ -373,9 +373,11 @@ async def update_files_metadata(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Update metadata for one or more files."""
-    await resolve_bulk_ids(
+    # A value several files bear is answered per item as ambiguous.
+    held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "file_id", "file", namespace=namespace, bypass_cache=True
-    )
+    ))
+    items = held.items
 
     from ..models.file import File as FileModel
     service = get_file_service()
@@ -401,11 +403,11 @@ async def update_files_metadata(
         except FileServiceError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.file_id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.delete(
@@ -422,9 +424,11 @@ async def delete_files(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Soft-delete one or more files."""
-    await resolve_bulk_ids(
+    # A value several files bear is answered per item as ambiguous.
+    held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "id", "file", namespace=namespace, bypass_cache=True
-    )
+    ))
+    items = held.items
 
     from ..models.file import File as FileModel
     service = get_file_service()
@@ -450,11 +454,11 @@ async def delete_files(
         except FileServiceError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.post(
@@ -485,9 +489,11 @@ async def reactivate_files(
     identity: UserIdentity = Depends(require_api_key)
 ):
     """Reactivate one or more soft-deleted files."""
-    await resolve_bulk_ids(
+    # A value several files bear is answered per item as ambiguous.
+    held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "id", "file", namespace=namespace, bypass_cache=True
-    )
+    ))
+    items = held.items
 
     from ..models.file import File as FileModel
     service = get_file_service()
@@ -516,11 +522,11 @@ async def reactivate_files(
         except FileServiceError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
     await asyncio.sleep(get_throttle_delay())
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.get(

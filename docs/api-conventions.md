@@ -142,6 +142,8 @@ Standard `BulkResponse`, HTTP 200. Per-item `status` values:
 
 Bulk-first endpoints extend `BulkResultItem` with an optional `error_code: str | None` field. It is set **only** when `status == "error"`, and it carries a machine-readable code so callers can branch on failure type without parsing message strings.
 
+An identifier in a bulk item that several entities bear (a term, terminology, template, document or file value) is answered on every bulk door that resolves identifiers with `error_code: ambiguous_reference`, never written and never taken as "not found": `details.field` names the item's field, and `details.identifier`, `details.candidates`, `details.total` and `details.truncated` are what the 409 of a single-entity door carries. The rest of the batch proceeds; a document create with `continue_on_error=false` stops there as at any failing item.
+
 Codes defined by `PATCH /documents`:
 
 | `error_code` | When |

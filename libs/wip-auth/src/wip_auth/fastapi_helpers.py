@@ -18,6 +18,9 @@ Usage:
 """
 
 import logging
+import typing
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, cast
 
 from fastapi import HTTPException
@@ -367,7 +370,7 @@ async def resolve_bulk_ids(
     bypass_cache: bool = False,
     terminology: str | None = None,
     terminology_field: str | None = None,
-) -> None:
+) -> dict[int, "AmbiguousItem"]:
     """Batch-resolve IDs on bulk request items, mutating in place.
 
     For each item, resolves ``getattr(item, id_field)`` from any identifier
@@ -380,6 +383,12 @@ async def resolve_bulk_ids(
     in the BulkResponse). The exception is the ambiguous 2-part term
     shorthand, which is a request-shape error and raises 422 for the whole
     request (like a body-validation failure), before any item resolves.
+
+    An identifier that names several entities is left unresolved too, never
+    picked, and is returned: the items it was found on, by their position in
+    ``items``. The door holds those items out of its write and answers each
+    as ambiguous, naming the candidates (``AmbiguousItems``); passed on, the
+    store would report the value as not found.
 
     Args:
         items: List of request items (Pydantic models or dicts).
@@ -443,10 +452,10 @@ async def resolve_bulk_ids(
     # 400 resolve calls); the batch door with in-request dedup collapses
     # that to one list call per namespace, and a hierarchy that names the
     # same broad term many times resolves it once.
-    string_door: list[tuple[Any, str, str]] = []  # (item, raw_id, ns)
-    field_door: list[tuple[Any, str, str, str]] = []  # (item, raw_id, ns, terminology)
+    string_door: list[tuple[int, Any, str, str]] = []  # (index, item, raw_id, ns)
+    field_door: list[tuple[int, Any, str, str, str]] = []  # (index, item, raw_id, ns, terminology)
 
-    for item in items:
+    for index, item in enumerate(items):
         raw_id, item_ns, item_terminology = _item_context(item)
 
         if not raw_id:
@@ -461,9 +470,9 @@ async def resolve_bulk_ids(
             continue
 
         if item_terminology and not _looks_like_uuid(raw_id):
-            field_door.append((item, raw_id, item_ns, item_terminology))
+            field_door.append((index, item, raw_id, item_ns, item_terminology))
         else:
-            string_door.append((item, raw_id, item_ns))
+            string_door.append((index, item, raw_id, item_ns))
 
     def _write_back(item: Any, resolved: str) -> None:
         if isinstance(item, dict):
@@ -471,44 +480,157 @@ async def resolve_bulk_ids(
         else:
             setattr(item, id_field, resolved)
 
-    # String door: one batched, deduped resolve per namespace. Non-strict —
-    # a miss leaves the item's id untouched (the downstream service reports
-    # it per item in the BulkResponse), exactly the old per-item semantics,
-    # fallback door included.
+    ambiguous = await _resolve_string_door(string_door, entity_type, bypass_cache, _write_back)
+    ambiguous.update(await _resolve_field_door(field_door, entity_type, bypass_cache, _write_back))
+    return {index: AmbiguousItem(id_field, error) for index, error in ambiguous.items()}
+
+
+async def _resolve_string_door(
+    string_door: list[tuple[int, Any, str, str]],
+    entity_type: str,
+    bypass_cache: bool,
+    write_back: Callable[[Any, str], None],
+) -> dict[int, AmbiguousEntityError]:
+    """resolve_bulk_ids' string door: one batched, deduped resolve per
+    namespace. Non-strict — a miss leaves the item's id untouched (the
+    downstream service reports it per item in the BulkResponse), fallback
+    door included. Returns the ambiguous items by index."""
     ids_by_ns: dict[str, list[str]] = {}
-    for _item, raw_id, item_ns in string_door:
+    for _index, _item, raw_id, item_ns in string_door:
         ids_by_ns.setdefault(item_ns, []).append(raw_id)
     resolved_by_ns: dict[str, dict[str, str]] = {}
+    ambiguous_by_ns: dict[str, dict[str, AmbiguousEntityError]] = {}
     # A Registry that does not answer raises RegistryUnavailableError out of
     # here (503): items are never passed on unverified because of an outage.
     for item_ns, ns_ids in ids_by_ns.items():
+        ambiguous_by_ns[item_ns] = {}
         resolved_by_ns[item_ns] = await resolve_entity_ids(
             ns_ids, entity_type, item_ns,
-            bypass_cache=bypass_cache, strict=False,
+            bypass_cache=bypass_cache, strict=False, ambiguous=ambiguous_by_ns[item_ns],
         )
+    ambiguous: dict[int, AmbiguousEntityError] = {}
     warned: set[tuple[str, str]] = set()
-    for item, raw_id, item_ns in string_door:
+    for index, item, raw_id, item_ns in string_door:
         resolved = resolved_by_ns[item_ns].get(raw_id)
         if resolved is not None:
-            _write_back(item, resolved)
+            write_back(item, resolved)
+        elif (error := ambiguous_by_ns[item_ns].get(raw_id)) is not None:
+            ambiguous[index] = error
         elif (item_ns, raw_id) not in warned:
             warned.add((item_ns, raw_id))
             logger.warning(
                 "Could not resolve %s '%s' in namespace '%s' — passing through",
                 entity_type, raw_id, item_ns,
             )
+    return ambiguous
 
-    # Field door: per item, as before — the structured tuple door has no
-    # batch Registry endpoint yet. If a profile ever shows it hot on a bulk
-    # path, batching it is a Registry endpoint addition, not a loop change.
-    for item, raw_id, item_ns, item_terminology in field_door:
+
+async def _resolve_field_door(
+    field_door: list[tuple[int, Any, str, str, str]],
+    entity_type: str,
+    bypass_cache: bool,
+    write_back: Callable[[Any, str], None],
+) -> dict[int, AmbiguousEntityError]:
+    """resolve_bulk_ids' field door: per item — the structured tuple door
+    has no batch Registry endpoint yet. If a profile ever shows it hot on a
+    bulk path, batching it is a Registry endpoint addition, not a loop
+    change. Returns the ambiguous items by index."""
+    ambiguous: dict[int, AmbiguousEntityError] = {}
+    for index, item, raw_id, item_ns, item_terminology in field_door:
         try:
             resolved = await resolve_term_by_fields(
                 raw_id, item_terminology, item_ns, bypass_cache=bypass_cache,
             )
-            _write_back(item, resolved)
+            write_back(item, resolved)
+        except AmbiguousEntityError as error:
+            # A subclass of the miss: caught first, so it is reported as
+            # ambiguous rather than passed on as a value nothing bears.
+            ambiguous[index] = error
         except EntityNotFoundError:
             logger.warning(
                 "Could not resolve %s '%s' in namespace '%s' — passing through",
                 entity_type, raw_id, item_ns,
             )
+    return ambiguous
+
+
+@dataclass(frozen=True)
+class AmbiguousItem:
+    """A bulk item whose ``field`` holds an identifier several entities bear."""
+
+    field: str
+    error: AmbiguousEntityError
+
+    def result_fields(self) -> dict[str, Any]:
+        """The item's per-item error: the 409 a single door gives, as fields."""
+        return {
+            "error": f"{self.field}: {self.error}",
+            "error_code": "ambiguous_reference",
+            "details": {
+                "field": self.field,
+                "identifier": self.error.identifier,
+                "candidates": self.error.candidates,
+                "total": self.error.total,
+                "truncated": self.error.truncated,
+            },
+        }
+
+
+class AmbiguousItems:
+    """A bulk request's items split by what resolve_bulk_ids found ambiguous.
+
+    ``items`` are the rest, to be written as the request's items would be;
+    ``answer`` turns the BulkResponse for those back into the response for
+    the whole request: every result at its own item's index, and each held
+    item answered as ambiguous (status error, code ambiguous_reference).
+    An item ambiguous in several fields is answered for the first.
+
+    ``stop_at_first`` is for a request that stops at its first failing item
+    (continue_on_error=false): only the items before the first ambiguous one
+    are written, and every item after it is skipped — as is the ambiguous
+    one itself when an item before it failed.
+    """
+
+    def __init__(
+        self, items: list, *found: dict[int, AmbiguousItem], stop_at_first: bool = False,
+    ):
+        held: dict[int, AmbiguousItem] = {}
+        for ambiguities in found:
+            for index, ambiguity in ambiguities.items():
+                held.setdefault(index, ambiguity)
+        self.skipped: list[int] = []
+        self._stop_at_first = stop_at_first
+        if stop_at_first and held:
+            first = min(held)
+            self.skipped = list(range(first + 1, len(items)))
+            held = {first: held[first]}
+            self.positions = list(range(first))
+        else:
+            self.positions = [i for i in range(len(items)) if i not in held]
+        self.held = held
+        self.items = [items[i] for i in self.positions]
+
+    def answer(self, response: Any) -> Any:
+        """``response`` (for ``items``) as the response for every item."""
+        if not self.held:
+            return response
+        item_model = typing.get_args(type(response).model_fields["results"].annotation)[0]
+        results = list(response.results)
+        stopped = self._stop_at_first and any(r.status in ("error", "skipped") for r in results)
+        for result in results:
+            result.index = self.positions[result.index]
+        skipped = self.skipped + (list(self.held) if stopped else [])
+        results += [
+            item_model(index=index, status="skipped", error="Stopped due to previous error")
+            for index in skipped
+        ]
+        if not stopped:
+            results += [
+                item_model(index=index, status="error", **ambiguity.result_fields())
+                for index, ambiguity in self.held.items()
+            ]
+            response.failed += len(self.held)
+        results.sort(key=lambda result: result.index)
+        response.results = results
+        response.total += len(self.held) + len(self.skipped)
+        return response

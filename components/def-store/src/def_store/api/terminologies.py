@@ -6,6 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
+    AmbiguousItems,
     UserIdentity,
     check_entity_permission,
     check_namespace_permission,
@@ -204,7 +205,11 @@ async def update_terminologies(
     If a value changes, a synonym will be added in the Registry to allow
     lookups by both old and new values.
     """
-    await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=namespace)
+    # A value several terminologies bear is answered per item as ambiguous.
+    held = AmbiguousItems(
+        items, await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=namespace),
+    )
+    items = held.items
 
     # CASE-384 — enforce write permission on each item's actual namespace.
     # Batched lookup: one Mongo query over all terminology_ids, then
@@ -240,11 +245,11 @@ async def update_terminologies(
                 results.append(BulkResultItem(index=i, status="updated", id=item.terminology_id))
         except (ValueError, RegistryError) as e:
             results.append(BulkResultItem(index=i, status="error", id=item.terminology_id, **error_fields(e)))
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.get(
@@ -403,7 +408,11 @@ async def delete_terminologies(
     references the terminology, or when that cannot be verified; force does
     not apply to it.
     """
-    await resolve_bulk_ids(items, "id", "terminology", namespace=namespace)
+    # A value several terminologies bear is answered per item as ambiguous.
+    held = AmbiguousItems(
+        items, await resolve_bulk_ids(items, "id", "terminology", namespace=namespace),
+    )
+    items = held.items
 
     # CASE-384 — batched namespace lookup + permission check, same shape
     # as update_terminologies above.
@@ -458,8 +467,8 @@ async def delete_terminologies(
             # RegistryEntryNotRemovedError: the terminology IS deleted; its
             # Registry entry is not — error_fields says so with its own code.
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))

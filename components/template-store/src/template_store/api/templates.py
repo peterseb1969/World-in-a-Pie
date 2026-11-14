@@ -8,6 +8,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
+    AmbiguousItems,
     can_read,
     check_entity_permission,
     check_namespace_permission,
@@ -475,7 +476,11 @@ async def update_templates(
     The template_id is stable across versions — updates create a new version
     document with the same template_id but incremented version number.
     """
-    await resolve_bulk_ids(items, "template_id", "template", namespace=namespace)
+    # A value several templates bear is answered per item as ambiguous.
+    held = AmbiguousItems(
+        items, await resolve_bulk_ids(items, "template_id", "template", namespace=namespace),
+    )
+    items = held.items
 
     # CASE-386 — gate write on each template's actual namespace. One batched
     # lookup over all template_ids, then a per-item refusal (admin keys bypass
@@ -525,11 +530,11 @@ async def update_templates(
         await _item_result(i, item.template_id, "update", update_one(i, item))
         for i, item in enumerate(items)
     ]
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.get("/{template_id}/dependencies", response_model=TemplateDependencies)
@@ -577,7 +582,11 @@ async def delete_templates(
     none; force does not apply to it. Templates that other templates extend
     cannot be deleted either way.
     """
-    await resolve_bulk_ids(items, "id", "template", namespace=namespace)
+    # A value several templates bear is answered per item as ambiguous.
+    held = AmbiguousItems(
+        items, await resolve_bulk_ids(items, "id", "template", namespace=namespace),
+    )
+    items = held.items
 
     # CASE-386 — gate write on each template's actual namespace (batched
     # lookup + per-id check; admin keys bypass via superadmin).
@@ -721,11 +730,11 @@ async def delete_templates(
         await _item_result(i, item.id, "delete", delete_one(i, item))
         for i, item in enumerate(items)
     ]
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.post("/{template_id}/validate", response_model=ValidateTemplateResponse)

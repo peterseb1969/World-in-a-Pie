@@ -12,8 +12,9 @@ created a new namespace under it, and the resumed deletion then kept the
 new namespace's data and with it the old namespace's stored files and
 reporting rows, for good. Both creates (dry runs included) now answer 409
 while a deletion journal for the prefix is `in_progress` or `failed`. A
-deletion that `completed_with_warnings` ran every step and does not hold
-the name.
+deletion that `completed_with_warnings` ran every step (some recorded an
+error) and does not hold the name: holding it would block an app's
+bootstrap on a state only a resume clears.
 
 Also, a runtime reservation owner's upsert of a namespace locked for
 deletion answered 200 (writing nothing); it now gets 409 like every other

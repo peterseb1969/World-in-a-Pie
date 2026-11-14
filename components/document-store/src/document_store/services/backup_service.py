@@ -30,12 +30,18 @@ from typing import TYPE_CHECKING, Any, cast
 
 import httpx as _httpx
 from beanie.odm.operators.update.array import Push
+from pymongo.errors import DuplicateKeyError
 from wip_archive.exceptions import ArchiveError  # noqa: F401  (re-exported for api/backup.py)
 from wip_archive.models import ProgressEvent
 
 from wip_auth import service_api_key
 
-from ..models.backup_job import BackupJob, BackupJobKind, BackupJobStatus
+from ..models.backup_job import (
+    RUNNING_RESTORE_INDEX,
+    BackupJob,
+    BackupJobKind,
+    BackupJobStatus,
+)
 from .reporting_client import REPORTING_SYNC_KEY
 
 if TYPE_CHECKING:
@@ -174,6 +180,7 @@ def _complete_fields(job: BackupJob, event: ProgressEvent) -> dict[Any, Any]:
         BackupJob.status: BackupJobStatus.COMPLETE,
         BackupJob.percent: 100.0,
         BackupJob.completed_at: datetime.now(UTC),
+        BackupJob.running_restore: None,
     }
     # A structured outcome rides on the terminal event rather than being
     # written separately afterwards. Saving it in a second pass raced this
@@ -244,6 +251,7 @@ def _error_fields(event: ProgressEvent) -> dict[Any, Any]:
         BackupJob.status: BackupJobStatus.FAILED,
         BackupJob.error: event.message,
         BackupJob.completed_at: datetime.now(UTC),
+        BackupJob.running_restore: None,
     }
     if event.details and event.details.get("result_kind"):
         fields[BackupJob.result] = {k: v for k, v in event.details.items() if k != "type"}
@@ -319,6 +327,7 @@ async def _mark_failed(job_id: str, error: str) -> None:
         BackupJob.error: error,
         BackupJob.phase: "error",
         BackupJob.completed_at: datetime.now(UTC),
+        BackupJob.running_restore: None,
     })
 
 
@@ -401,7 +410,10 @@ async def reconcile_orphaned_jobs() -> int:
     ended, and that data is in MongoDB unsynced and unverified; this is the
     last point anything knows it. Its reporting sync and validation are
     started here, and its error says what started. A PENDING job never
-    began writing and owes nothing."""
+    began writing and owes nothing.
+
+    Failing it also frees the instance for the next restore: a restore the
+    process left running no longer counts as one (running_restore)."""
     jobs = await BackupJob.find(
         {"status": {"$in": [BackupJobStatus.RUNNING, BackupJobStatus.PENDING]}},
     ).to_list()
@@ -414,8 +426,51 @@ async def reconcile_orphaned_jobs() -> int:
             BackupJob.status: BackupJobStatus.FAILED,
             BackupJob.error: error,
             BackupJob.completed_at: datetime.now(UTC),
+            BackupJob.running_restore: None,
         })
     return len(jobs)
+
+
+class RestoreAlreadyRunningError(Exception):
+    """Another restore is writing on this instance (one at a time)."""
+
+    def __init__(self, running_job_id: str | None):
+        self.running_job_id = running_job_id
+        if running_job_id:
+            which = f"Restore job {running_job_id}"
+            status = f" (GET /api/document-store/backup/jobs/{running_job_id} shows its status)"
+        else:
+            which, status = "Another restore job", ""
+        super().__init__(
+            f"{which} is running on this instance, and one restore or merge runs "
+            f"at a time: start this one when it has finished{status}. A dry run "
+            "is not held back."
+        )
+
+
+async def insert_restore_job(job: BackupJob) -> None:
+    """Insert a restore job's record, refusing while another restore writes.
+
+    One restore or merge (any mode) writes at a time on an instance: two at
+    once can each find a file key free and then both write it, the later
+    write replacing the earlier one's bytes. A restore that writes carries
+    ``running_restore`` from this insert until its record turns terminal,
+    and a partial unique index lets only one record carry it, so the check
+    and the claim are one atomic write. A dry run writes nothing and claims
+    nothing.
+
+    Raises:
+        RestoreAlreadyRunningError: another restore holds the claim.
+    """
+    if not job.options.get("dry_run"):
+        job.running_restore = True
+    try:
+        await job.insert()
+    except DuplicateKeyError as exc:
+        if RUNNING_RESTORE_INDEX not in str(exc):
+            raise
+        running = await BackupJob.find_one({"running_restore": True})
+        raise RestoreAlreadyRunningError(running.job_id if running else None) from exc
 
 
 async def _load_job(job_id: str) -> BackupJob | None:

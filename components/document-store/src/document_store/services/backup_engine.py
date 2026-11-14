@@ -1532,6 +1532,14 @@ def _sample_ids(results: list[dict[str, Any]]) -> str:
     )
 
 
+def _left_as_is(present: set[str]) -> str:
+    """The clause a blob phase's message adds for keys it does not write
+    because they already hold the same bytes."""
+    if not present:
+        return ""
+    return f"; {len(present)} key(s) already holding the same bytes are left as they are"
+
+
 def _skipped_types(skip_documents: bool, skip_files: bool) -> set[str]:
     """The entity types a restore's skip flags leave out."""
     skipped = {"documents"} if skip_documents else set()
@@ -2254,7 +2262,12 @@ class DirectRestoreEngine:
             processed = 0
             skipped = _skipped_types(skip_documents, skip_files)
 
-            # Every target namespace is created first: the Registry's
+            # The file keys are checked before anything is written (the
+            # check only reads), so a key held by another file, or a store
+            # that cannot say, refuses the restore with nothing written.
+            present = await self._plain_restore_blob_keys(reader, skip_files=skip_files)
+
+            # Then every target namespace is created: the Registry's
             # refusal of a namespace is the last one a restore can meet
             # before it writes, so a refused restore has written no bytes.
             for src, tgt in targets:
@@ -2274,8 +2287,8 @@ class DirectRestoreEngine:
             # at most bytes no record points at yet (left as they are by a
             # retry that brings the same bytes), never a file record whose
             # bytes are missing. No key that holds other bytes is written.
-            if not skip_files and self._storage:
-                await self._restore_blobs(reader, targets[0][1])
+            if present is not None:
+                await self._restore_blobs(reader, targets[0][1], present=present)
 
             for src, tgt in targets:
                 processed = await self._restore_one_namespace(
@@ -3700,7 +3713,6 @@ class DirectRestoreEngine:
         assert self._storage is not None
         if not file_id_map:
             return
-        self._emit("phase_blobs", f"Copying {len(file_id_map)} blob(s)")
         checksums = await self._off_loop(self._archive_file_checksums, reader)
         blobs = set(reader.list_blobs())
         without: dict[str, list[str]] = {
@@ -3725,6 +3737,9 @@ class DirectRestoreEngine:
         assert self._storage is not None
         present = await self._blob_keys_holding_archive_bytes(
             reader, {new_id: old_id for old_id, new_id in carried.items()},
+        )
+        self._emit(
+            "phase_blobs", f"Copying {len(carried) - len(present)} blob(s){_left_as_is(present)}",
         )
         copied = 0
         for old_id, new_id in carried.items():
@@ -4490,8 +4505,10 @@ class DirectRestoreEngine:
             ]
             await self._check_staged_references(staged)
 
-            if not dry_run and not skip_files:
-                await self._upload_merge_blobs(reader, staged, targets[0][1])
+            if not skip_files:
+                # A dry run checks the file keys as the real run does, and
+                # uploads nothing.
+                await self._upload_merge_blobs(reader, staged, targets[0][1], dry_run=dry_run)
 
             if dry_run:
                 self._emit(
@@ -4975,11 +4992,13 @@ class DirectRestoreEngine:
 
     async def _upload_merge_blobs(
         self, reader: ArchiveReader, staged: list[_StagedMerge], namespace: str,
+        *, dry_run: bool = False,
     ) -> None:
         """Bytes before the records that need them: only for files the merge
         inserts (a file the target already has keeps its bytes), and all of
         them before any namespace is written, so a write that fails never
-        leaves a file record without its bytes."""
+        leaves a file record without its bytes. A dry run only checks the
+        keys they would go under, refusing what the real run refuses."""
         if not self._storage:
             return
         inserting = {
@@ -4988,8 +5007,13 @@ class DirectRestoreEngine:
             for f in stage.built.get("files", EntityPlan(entity_type="files")).to_insert
             if f.get("file_id")
         }
-        if inserting:
-            await self._restore_blobs(reader, namespace, only=inserting)
+        if not inserting:
+            return
+        if dry_run:
+            carried = sorted(inserting & set(reader.list_blobs()))
+            await self._blob_keys_holding_archive_bytes(reader, {f: f for f in carried})
+            return
+        await self._restore_blobs(reader, namespace, only=inserting)
 
     async def _apply_staged_merge(
         self,
@@ -7480,7 +7504,7 @@ class DirectRestoreEngine:
         unchecked: list[str] = []
         for start in range(0, len(ids), _BLOB_CHECK_BATCH):
             batch = ids[start:start + _BLOB_CHECK_BATCH]
-            for file_id, there in zip(batch, await asyncio.gather(*map(held, batch))):
+            for file_id, there in zip(batch, await asyncio.gather(*map(held, batch)), strict=True):
                 if there is None:
                     unchecked.append(file_id)
                 elif not there:
@@ -7508,25 +7532,19 @@ class DirectRestoreEngine:
         bytes (left by a failed run of the same restore, say) is left as it
         is — there is nothing to write. Existence is asked with a HEAD rather
         than relied on from a conditional PUT, which a store may ignore.
+
+        A store that cannot answer for a key (unreachable, or refusing the
+        HEAD or the read) refuses the restore too, naming the key: whether
+        the key is free is then unknown.
         """
         assert self._storage is not None
         present: set[str] = set()
         taken: list[str] = []
         for storage_key, file_id in keys.items():
-            if not await self._storage.exists(storage_key):
-                continue
-            # Reading the archive and hashing run on a worker thread, as
-            # every other pass over the archive's bytes does.
-            archived = await self._off_loop(_archived_blob_digest, reader, file_id)
-            if archived is None:
-                continue  # nothing would be written under this key
-            if await self._key_has_file_record(storage_key):
-                taken.append(storage_key)
-                continue
-            stored = await self._storage.download(storage_key)
-            if await asyncio.to_thread(_sha256_digest, stored) == archived:
+            holding = await self._key_holding(reader, storage_key, file_id)
+            if holding == "same":
                 present.add(storage_key)
-            else:
+            elif holding == "taken":
                 taken.append(storage_key)
         if taken:
             shown = ", ".join(taken[:10]) + (f" and {len(taken) - 10} more" if len(taken) > 10 else "")
@@ -7536,6 +7554,33 @@ class DirectRestoreEngine:
                 "writes over an existing file's bytes; nothing was uploaded."
             )
         return present
+
+    async def _key_holding(self, reader: ArchiveReader, storage_key: str, file_id: str) -> str:
+        """What ``storage_key`` holds against the archived file ``file_id``'s
+        bytes: "free" (nothing, or the archive has no bytes to write there),
+        "same" (the same bytes, and no file record uses it) or "taken"."""
+        assert self._storage is not None
+        try:
+            if not await self._storage.exists(storage_key):
+                return "free"
+            # Reading the archive and hashing run on a worker thread, as
+            # every other pass over the archive's bytes does.
+            archived = await self._off_loop(_archived_blob_digest, reader, file_id)
+            if archived is None:
+                return "free"  # nothing would be written under this key
+            if await self._key_has_file_record(storage_key):
+                return "taken"
+            stored = await self._storage.download(storage_key)
+        except FileStorageNotFoundError:
+            return "free"  # gone between the HEAD and the read
+        except (FileStorageError, FileStorageUnavailableError) as exc:
+            raise RestoreEngineError(
+                f"The object store could not say whether file key {storage_key} is "
+                f"free ({exc}); a restore never writes a key it has not checked, "
+                "so nothing was written. Retry once the store answers."
+            ) from exc
+        same = await asyncio.to_thread(_sha256_digest, stored) == archived
+        return "same" if same else "taken"
 
     async def _key_has_file_record(self, storage_key: str) -> bool:
         """Whether any file record, in any namespace, uses this storage key."""
@@ -7550,12 +7595,16 @@ class DirectRestoreEngine:
         namespace: str,
         *,
         only: set[str] | None = None,
+        present: set[str] | None = None,
     ) -> None:
         """Upload file blobs from the archive to the object store.
 
         ``only`` narrows the upload to specific file ids — a merge uploads
         bytes for the files it inserted and leaves the ones the target already
-        had alone. Every file restored without its bytes is named on the job:
+        had alone. ``present`` is the keys already checked to hold the same
+        bytes (_blob_keys_holding_archive_bytes), when the caller checked
+        them before writing anything; otherwise they are checked here. Every
+        file restored without its bytes is named on the job:
         one the archive carries none for (it was made without files, or lost
         them), and one whose bytes do not match its checksum.
         """
@@ -7571,10 +7620,13 @@ class DirectRestoreEngine:
             "missing": missing, "mismatched": [], "unchecked": unchecked,
         }
         blob_ids = sorted(blobs)
+        uploaded = 0
         if blob_ids:
-            await self._upload_archive_blobs(reader, blob_ids, checksums, without)
+            uploaded = await self._upload_archive_blobs(
+                reader, blob_ids, checksums, without, present=present,
+            )
         self._emit_restored_without_bytes(reader, without)
-        logger.info("Restored %d blobs for namespace %s", len(blob_ids), namespace)
+        logger.info("Uploaded %d blob(s) for namespace %s", uploaded, namespace)
 
     async def _upload_archive_blobs(
         self,
@@ -7582,21 +7634,25 @@ class DirectRestoreEngine:
         blob_ids: list[str],
         checksums: dict[str, str | None],
         without: dict[str, list[str]],
-    ) -> None:
+        *,
+        present: set[str] | None = None,
+    ) -> int:
         """Upload the archive's blobs under their own ids; the ones not
-        uploaded for a reason go into ``without``."""
+        uploaded for a reason go into ``without``. Returns how many were
+        uploaded."""
         assert self._storage is not None
-        present = await self._blob_keys_holding_archive_bytes(
-            reader, {file_id: file_id for file_id in blob_ids},
-        )
+        if present is None:
+            present = await self._blob_keys_holding_archive_bytes(
+                reader, {file_id: file_id for file_id in blob_ids},
+            )
+        to_write = [file_id for file_id in blob_ids if file_id not in present]
 
         # No percent: the bytes go up before the records, so the step sits
         # early in the job and a figure here would make the bar jump back.
-        self._emit("phase_blobs", f"Uploading {len(blob_ids)} file blobs")
+        self._emit("phase_blobs", f"Uploading {len(to_write)} file blob(s){_left_as_is(present)}")
 
-        for i, file_id in enumerate(blob_ids):
-            if file_id in present:
-                continue
+        uploaded = 0
+        for i, file_id in enumerate(to_write):
             data, reason = await self._off_loop(
                 self._checked_blob, reader, file_id, checksums.get(file_id),
             )
@@ -7610,20 +7666,37 @@ class DirectRestoreEngine:
                 content=data,
                 content_type="application/octet-stream",
             )
+            uploaded += 1
             if (i + 1) % 100 == 0:
                 self._emit(
                     "phase_blobs",
-                    f"Uploaded {i + 1}/{len(blob_ids)} blobs",
+                    f"Uploaded {uploaded} of {len(to_write)} blobs",
                     current=i + 1,
-                    total=len(blob_ids),
+                    total=len(to_write),
                 )
+        return uploaded
+
+    async def _plain_restore_blob_keys(
+        self, reader: ArchiveReader, *, skip_files: bool = False,
+    ) -> set[str] | None:
+        """The keys a plain restore's blob phase would write that already
+        hold the same bytes; refuses (RestoreEngineError) on a taken key.
+        None when the restore uploads no blobs (files skipped, no store)."""
+        if skip_files or self._storage is None:
+            return None
+        return await self._blob_keys_holding_archive_bytes(
+            reader, {file_id: file_id for file_id in sorted(reader.list_blobs())},
+        )
 
     async def _dry_run_blob_report(self, reader: ArchiveReader) -> None:
         """What a plain restore's blob phase would upload: only the bytes
         that match their file's checksum, so they are read and checked as the
-        real run checks them. The files it would restore without their bytes
-        are named, as the real run names them."""
+        real run checks them, under keys checked free as the real run checks
+        them (a taken key refuses the dry run as it refuses the restore). The
+        files it would restore without their bytes are named, as the real run
+        names them."""
         assert self._storage is not None
+        present = await self._plain_restore_blob_keys(reader) or set()
         checksums = await self._off_loop(self._archive_file_checksums, reader)
         blobs = set(reader.list_blobs())
         missing, unchecked = await self._without_objects(set(checksums) - blobs)
@@ -7631,7 +7704,7 @@ class DirectRestoreEngine:
             "missing": missing, "mismatched": [], "unchecked": unchecked,
         }
         uploadable = 0
-        for file_id in sorted(blobs):
+        for file_id in sorted(blobs - present):
             data, reason = await self._off_loop(
                 self._checked_blob, reader, file_id, checksums.get(file_id),
             )
@@ -7639,7 +7712,10 @@ class DirectRestoreEngine:
                 without[reason or "missing"].append(file_id)
             else:
                 uploadable += 1
-        self._emit("phase_dry_run", f"dry run — would upload {uploadable} file blob(s)")
+        self._emit(
+            "phase_dry_run",
+            f"dry run — would upload {uploadable} file blob(s){_left_as_is(present)}",
+        )
         self._emit_restored_without_bytes(reader, without, dry_run=True)
 
     def _emit(

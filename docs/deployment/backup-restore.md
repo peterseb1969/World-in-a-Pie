@@ -44,6 +44,13 @@ namespace drops its postgres schema, but the global sync bookkeeping tables
 are not namespace-owned and survive — with whatever shape the code that
 created them had. Only the volume wipe (or an explicit migration) renews them.
 
+**Restores run one at a time.** One restore or merge, of any mode, runs on an
+instance at a time: starting another while one is running answers 409 naming
+the running job. Restore several archives one after another, waiting for each
+job to finish. Dry runs, backups and validations are not held back. A restore
+a crashed process left running is failed when document-store next starts,
+which frees the instance for the next one.
+
 ---
 
 ## Taking the backup: stop the writers first
@@ -274,7 +281,7 @@ every difference the target won, and the document counts. Documents the
 target already holds are counted as `not_compared`, not as unchanged or
 clashing: the plan does not read their content, and a real run compares each
 one when it writes, leaving an identical copy alone. It still fails on
-everything a real run would refuse.
+everything a real run would refuse, a file key another file holds included.
 
 ```bash
 # See what would happen, decide, then run it

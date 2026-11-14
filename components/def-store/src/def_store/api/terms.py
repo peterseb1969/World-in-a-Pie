@@ -6,6 +6,7 @@ from typing import Any, Literal, cast
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from wip_auth import (
+    AmbiguousItems,
     UserIdentity,
     can_read,
     check_entity_permission,
@@ -69,6 +70,41 @@ router = APIRouter(tags=["Terms"])
 # TERM CRUD
 # =============================================================================
 
+async def _create_one_term(terminology_id: str, item: CreateTermRequest, on_conflict: str) -> list[BulkResultItem]:
+    """The single-item create path: the one item's result."""
+    try:
+        collision_warnings: list[dict] = []
+        result = await TerminologyService.create_term(
+            terminology_id, item, collision_out=collision_warnings
+        )
+        return [BulkResultItem(
+            index=0, status="created", id=result.term_id,
+            value=item.value,
+            details={"name_collisions": collision_warnings}
+            if collision_warnings else None,
+        )]
+    except EntityExistsError as e:
+        return [conflict_result(0, e, on_conflict, value=item.value)]
+    except NameCollisionError as e:
+        return [BulkResultItem(
+            index=0, status="error", value=item.value,
+            error=str(e), error_code="name_collision",
+            details={"name_collisions": e.collisions},
+        )]
+    except TermNameError as e:
+        # Same machine-readable code the bulk path emits for a names
+        # rule violation — callers branch on the code, not the message
+        return [BulkResultItem(
+            index=0, status="error", value=item.value,
+            error=str(e), error_code="invalid_names",
+        )]
+    except (ValueError, RegistryError) as e:
+        fields = error_fields(e)
+        if fields["error_code"] == "not_found":
+            raise HTTPException(status_code=404, detail=fields["error"]) from None
+        return [BulkResultItem(index=0, status="error", value=item.value, **fields)]
+
+
 @router.post(
     "/terminologies/{terminology_id}/terms",
     response_model=BulkResponse,
@@ -129,6 +165,7 @@ async def create_terms(
 
     # Look up terminology to get namespace for permission check
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
+    held = AmbiguousItems(items)
     if term_parent:
         await check_entity_permission(identity, term_parent.namespace, "write", miss_detail(
             raw_id, "terminology", namespace, f"Terminology '{terminology_id}' not found",
@@ -137,47 +174,21 @@ async def create_terms(
         # A parent is a term of this terminology: resolve it there (a value
         # is that terminology's value, never colon-parsed; a UUID passes).
         # Write door — the id is persisted, so the cache is bypassed. What
-        # does not resolve is refused per item by the service.
+        # does not resolve is refused per item by the service; a value
+        # several terms bear is answered per item as ambiguous.
         from wip_auth import resolve_bulk_ids
-        await resolve_bulk_ids(
+        held = AmbiguousItems(items, await resolve_bulk_ids(
             items, "parent_term_id", "term", namespace=term_parent.namespace,
             terminology=terminology_id, bypass_cache=True,
-        )
+        ))
 
-    if len(items) == 1:
+    # The request's size picks the path, whatever is held out of it.
+    single = len(items) == 1
+    items = held.items
+    if single and items:
         # Single item — use direct create path
-        try:
-            collision_warnings: list[dict] = []
-            result = await TerminologyService.create_term(
-                terminology_id, items[0], collision_out=collision_warnings
-            )
-            results = [BulkResultItem(
-                index=0, status="created", id=result.term_id,
-                value=items[0].value,
-                details={"name_collisions": collision_warnings}
-                if collision_warnings else None,
-            )]
-        except EntityExistsError as e:
-            results = [conflict_result(0, e, on_conflict, value=items[0].value)]
-        except NameCollisionError as e:
-            results = [BulkResultItem(
-                index=0, status="error", value=items[0].value,
-                error=str(e), error_code="name_collision",
-                details={"name_collisions": e.collisions},
-            )]
-        except TermNameError as e:
-            # Same machine-readable code the bulk path emits for a names
-            # rule violation — callers branch on the code, not the message
-            results = [BulkResultItem(
-                index=0, status="error", value=items[0].value,
-                error=str(e), error_code="invalid_names",
-            )]
-        except (ValueError, RegistryError) as e:
-            fields = error_fields(e)
-            if fields["error_code"] == "not_found":
-                raise HTTPException(status_code=404, detail=fields["error"]) from None
-            results = [BulkResultItem(index=0, status="error", value=items[0].value, **fields)]
-    else:
+        results = await _create_one_term(terminology_id, items[0], on_conflict)
+    elif items:
         # Bulk path — uses batch Registry calls and insert_many
         try:
             results = await TerminologyService.create_terms_bulk(
@@ -198,10 +209,14 @@ async def create_terms(
             else:
                 status_code = 404 if fields["error_code"] == "not_found" else 400
                 raise HTTPException(status_code=status_code, detail=fields["error"]) from None
+    else:
+        results = []
 
     succeeded = sum(1 for r in results if r.status != "error")
     failed = sum(1 for r in results if r.status == "error")
-    return BulkResponse(results=results, total=len(results), succeeded=succeeded, failed=failed)
+    return held.answer(
+        BulkResponse(results=results, total=len(results), succeeded=succeeded, failed=failed),
+    )
 
 
 @router.post(
@@ -485,16 +500,21 @@ async def update_terms(
     from wip_auth import resolve_bulk_ids
     # Write door: resolution must ask Registry, not the read cache — the
     # resolved id selects which term the mutation lands on.
-    await resolve_bulk_ids(
-        items, "term_id", "term", namespace=namespace,
-        terminology=terminology, bypass_cache=True,
-    )
     # parent_term_id is persisted too; what does not resolve is refused per
-    # item by the service
-    await resolve_bulk_ids(
-        items, "parent_term_id", "term", namespace=namespace,
-        terminology=terminology, bypass_cache=True,
+    # item by the service. A value several terms bear is answered per item
+    # as ambiguous.
+    held = AmbiguousItems(
+        items,
+        await resolve_bulk_ids(
+            items, "term_id", "term", namespace=namespace,
+            terminology=terminology, bypass_cache=True,
+        ),
+        await resolve_bulk_ids(
+            items, "parent_term_id", "term", namespace=namespace,
+            terminology=terminology, bypass_cache=True,
+        ),
     )
+    items = held.items
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
@@ -545,11 +565,11 @@ async def update_terms(
             ))
         except (ValueError, RegistryError) as e:
             results.append(BulkResultItem(index=i, status="error", id=item.term_id, **error_fields(e)))
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.post(
@@ -582,14 +602,19 @@ async def deprecate_terms(
     # Write door: bypass the read cache — replaced_by_term_id is persisted
     # as a durable pointer, and a stale cached id would pin a dead
     # reference into the term record.
-    await resolve_bulk_ids(
-        items, "term_id", "term", namespace=namespace,
-        terminology=terminology, bypass_cache=True,
+    # A value several terms bear is answered per item as ambiguous.
+    held = AmbiguousItems(
+        items,
+        await resolve_bulk_ids(
+            items, "term_id", "term", namespace=namespace,
+            terminology=terminology, bypass_cache=True,
+        ),
+        await resolve_bulk_ids(
+            items, "replaced_by_term_id", "term", namespace=namespace,
+            terminology=terminology, bypass_cache=True,
+        ),
     )
-    await resolve_bulk_ids(
-        items, "replaced_by_term_id", "term", namespace=namespace,
-        terminology=terminology, bypass_cache=True,
-    )
+    items = held.items
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
@@ -622,11 +647,11 @@ async def deprecate_terms(
                 results.append(BulkResultItem(index=i, status="updated", id=item.term_id))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.term_id, **error_fields(e)))
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.delete(
@@ -658,11 +683,13 @@ async def delete_terms(
     """
     from wip_auth import resolve_bulk_ids
     # Write door: resolution must ask Registry, not the read cache — the
-    # resolved id selects which term gets deleted.
-    await resolve_bulk_ids(
+    # resolved id selects which term gets deleted. A value several terms
+    # bear is answered per item as ambiguous.
+    held = AmbiguousItems(items, await resolve_bulk_ids(
         items, "id", "term", namespace=namespace,
         terminology=terminology, bypass_cache=True,
-    )
+    ))
+    items = held.items
 
     # CASE-384 — batched namespace lookup + permission check.
     from ..models.term import Term as _Term
@@ -704,11 +731,11 @@ async def delete_terms(
             ))
         except ValueError as e:
             results.append(BulkResultItem(index=i, status="error", id=item.id, **error_fields(e)))
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 @router.post(
@@ -738,11 +765,15 @@ async def merge_terms(
     """
     from wip_auth import resolve_bulk_ids
     # Write door: both ids are persisted (replaced_by_term_id, merged entry).
-    for field in ("survivor_term_id", "absorbed_term_id"):
+    # A value several terms bear is answered per item as ambiguous.
+    held = AmbiguousItems(items, *[
         await resolve_bulk_ids(
             items, field, "term", namespace=namespace,
             terminology=terminology, bypass_cache=True,
         )
+        for field in ("survivor_term_id", "absorbed_term_id")
+    ])
+    items = held.items
 
     ids = [i for item in items for i in (item.survivor_term_id, item.absorbed_term_id) if i]
     refused: dict[str, tuple[str, str]] = {}
@@ -781,11 +812,11 @@ async def merge_terms(
         if collisions:
             details["name_collisions"] = collisions
         results.append(BulkResultItem(index=i, status="updated", id=item.survivor_term_id, details=details))
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results, total=len(items),
         succeeded=sum(1 for r in results if r.status != "error"),
         failed=sum(1 for r in results if r.status == "error"),
-    )
+    ))
 
 
 def _merge_refusal(item: Any, refused: dict[str, tuple[str, str]]) -> tuple[str, str] | None:

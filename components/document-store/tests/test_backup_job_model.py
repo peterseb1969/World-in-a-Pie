@@ -226,7 +226,10 @@ class TestBackupJobSnapshot:
         snap_fields = set(BackupJobSnapshot.model_fields.keys())
         # archive_path is intentionally hidden from the API snapshot
         # (it's a server-local filesystem path; downloads go via the /download endpoint)
-        expected_hidden = {"archive_path"}
+        # running_restore is the one-restore-at-a-time claim, an index key:
+        # a running restore that is not a dry run holds it, which the
+        # snapshot already says (kind, status, options.dry_run).
+        expected_hidden = {"archive_path", "running_restore"}
         assert job_fields - snap_fields == expected_hidden
 
 

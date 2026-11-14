@@ -826,6 +826,7 @@ async def resolve_entity_ids(
     *,
     bypass_cache: bool = False,
     strict: bool = True,
+    ambiguous: dict[str, AmbiguousEntityError] | None = None,
 ) -> dict[str, str]:
     """Batch resolve multiple identifiers via Registry.
 
@@ -845,6 +846,10 @@ async def resolve_entity_ids(
             alike. When False (the bulk WRITE doors), it is simply ABSENT
             from the returned map; the caller's downstream BulkResponse
             reports it per item.
+        ambiguous: Non-strict mode only. When given, each identifier that
+            names several entities is recorded here with its error (the
+            candidates), so the caller can report it as ambiguous rather
+            than as a miss. It is still absent from the returned map.
 
     Returns:
         Dict mapping each raw_id to its canonical ID (misses absent in
@@ -870,7 +875,7 @@ async def resolve_entity_ids(
         for i, resolve_result in enumerate(answers):
             raw_id = chunk[i]
             canonical_id = await _settle_batch_resolution(
-                raw_id, resolve_result, entity_type, namespace, strict,
+                raw_id, resolve_result, entity_type, namespace, strict, ambiguous,
             )
             if canonical_id is not None:
                 _set_cached(
@@ -939,12 +944,26 @@ async def _post_resolve_chunk(
     return list(response.json().get("results", []))
 
 
+def _unresolved_ambiguity(
+    raw_id: str, error: AmbiguousEntityError, strict: bool,
+    ambiguous: dict[str, AmbiguousEntityError] | None,
+) -> None:
+    """A batch identifier several entities bear: refused in strict mode;
+    otherwise left unresolved, never picked, and recorded in ``ambiguous``
+    when the caller passed one."""
+    if strict:
+        raise error
+    if ambiguous is not None:
+        ambiguous[raw_id] = error
+
+
 async def _settle_batch_resolution(
     raw_id: str,
     resolve_result: dict[str, Any],
     entity_type: str,
     namespace: str,
     strict: bool,
+    ambiguous: dict[str, AmbiguousEntityError] | None = None,
 ) -> str | None:
     """The canonical id one batch answer gives, or None (non-strict miss).
 
@@ -956,28 +975,26 @@ async def _settle_batch_resolution(
     resolution would silently break exactly those references. Misses are
     rare; the per-miss call does not reintroduce the per-item round-trip
     storm. Strict callers then get the refusal for an ambiguous key or a
-    miss; non-strict, an ambiguous key stays unresolved, never picked.
+    miss; non-strict, an ambiguous key stays unresolved, never picked, and
+    is recorded in ``ambiguous`` when the caller passed one.
     """
     _raise_item_error([resolve_result], "batch resolve", raw_id)
     status = resolve_result.get("status")
     if status == "found":
         return cast(str, resolve_result["entry_id"])
     if status == "ambiguous":
-        if strict:
-            candidates = resolve_result.get("candidates") or []
-            raise AmbiguousEntityError(
-                raw_id, entity_type, candidates, len(candidates), truncated=_truncated(resolve_result),
-            )
+        candidates = resolve_result.get("candidates") or []
+        _unresolved_ambiguity(raw_id, AmbiguousEntityError(
+            raw_id, entity_type, candidates, len(candidates), truncated=_truncated(resolve_result),
+        ), strict, ambiguous)
         return None
     canonical_id: str | None = None
     if entity_type != "term" and not _looks_like_uuid(raw_id):
         ns_prefix, value = split_qualified_value(raw_id)
         try:
             canonical_id = await _post_lookup_by_id(value, ns_prefix or namespace, entity_type)
-        except AmbiguousEntityError:
-            if strict:
-                raise
-            # Non-strict: an ambiguous value stays unresolved, like a miss.
+        except AmbiguousEntityError as error:
+            _unresolved_ambiguity(raw_id, error, strict, ambiguous)
             return None
     if canonical_id is None and strict:
         # Same reasoning as the single-resolve path: a per-item miss is a

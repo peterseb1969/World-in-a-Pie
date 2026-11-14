@@ -6,6 +6,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, Depends, Query
 
 from wip_auth import (
+    AmbiguousItems,
     UserIdentity,
     check_namespace_permission,
     resolve_bulk_ids,
@@ -58,24 +59,30 @@ async def create_term_relations(
     # resolution must ask Registry, not the read cache. Items carrying
     # source_terminology / target_terminology resolve their id as an
     # opaque value through the field door.
-    await resolve_bulk_ids(
-        items, "source_term_id", "term", namespace,
-        terminology_field="source_terminology", bypass_cache=True,
+    # An endpoint several terms bear is answered per item as ambiguous,
+    # never written.
+    held = AmbiguousItems(
+        items,
+        await resolve_bulk_ids(
+            items, "source_term_id", "term", namespace,
+            terminology_field="source_terminology", bypass_cache=True,
+        ),
+        await resolve_bulk_ids(
+            items, "target_term_id", "term", namespace,
+            terminology_field="target_terminology", bypass_cache=True,
+        ),
     )
-    await resolve_bulk_ids(
-        items, "target_term_id", "term", namespace,
-        terminology_field="target_terminology", bypass_cache=True,
-    )
+    items = held.items
 
     results = await OntologyService.create_term_relations(namespace, items)
     # A duplicate relation is "skipped", which counts as succeeded
     succeeded = sum(1 for r in results if r.status in ("created", "skipped"))
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results,
         total=len(results),
         succeeded=succeeded,
         failed=len(results) - succeeded,
-    )
+    ))
 
 
 @router.get(
@@ -150,23 +157,29 @@ async def delete_term_relations(
     # Write door: the resolved pair selects which edge gets deleted —
     # resolution must ask Registry, not the read cache. Field-scoped
     # items resolve their id as an opaque value.
-    await resolve_bulk_ids(
-        items, "source_term_id", "term", namespace,
-        terminology_field="source_terminology", bypass_cache=True,
+    # An endpoint several terms bear is answered per item as ambiguous,
+    # never written.
+    held = AmbiguousItems(
+        items,
+        await resolve_bulk_ids(
+            items, "source_term_id", "term", namespace,
+            terminology_field="source_terminology", bypass_cache=True,
+        ),
+        await resolve_bulk_ids(
+            items, "target_term_id", "term", namespace,
+            terminology_field="target_terminology", bypass_cache=True,
+        ),
     )
-    await resolve_bulk_ids(
-        items, "target_term_id", "term", namespace,
-        terminology_field="target_terminology", bypass_cache=True,
-    )
+    items = held.items
 
     results = await OntologyService.delete_term_relations(namespace, items)
     succeeded = sum(1 for r in results if r.status in ("deleted", "skipped"))
-    return BulkResponse(
+    return held.answer(BulkResponse(
         results=results,
         total=len(results),
         succeeded=succeeded,
         failed=len(results) - succeeded,
-    )
+    ))
 
 
 @router.get(

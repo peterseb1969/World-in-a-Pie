@@ -46,6 +46,10 @@ class BackupJobStatus(StrEnum):
     FAILED = "failed"        # Aborted with an error
 
 
+# The index that lets one restore write at a time (BackupJob.running_restore).
+RUNNING_RESTORE_INDEX = "backup_one_running_restore_idx"
+
+
 class BackupJob(BeanieDocument):
     """
     A long-running backup, restore or validation job.
@@ -199,6 +203,16 @@ class BackupJob(BeanieDocument):
         description="identity_string of the caller who created the job"
     )
 
+    # One restore writes at a time on an instance: two restores running at
+    # once can both find a file key free and then both write it. True from
+    # the insert of a restore that writes (not a dry run) until the job is
+    # terminal; the partial unique index below lets only one record carry
+    # it, so the insert of a second one is refused atomically.
+    running_restore: bool | None = Field(
+        default=None,
+        description="Set while this restore writes; at most one job carries it",
+    )
+
     class Settings:
         name = "backup_jobs"
         indexes: ClassVar[list[IndexModel]] = [
@@ -214,6 +228,10 @@ class BackupJob(BeanieDocument):
             IndexModel([("created_at", DESCENDING)], name="backup_created_at_idx"),
             # Audit: who created it
             IndexModel([("created_by", 1)], name="backup_created_by_idx", sparse=True),
+            IndexModel(
+                [("running_restore", 1)], unique=True, name=RUNNING_RESTORE_INDEX,
+                partialFilterExpression={"running_restore": True},
+            ),
         ]
 
 
