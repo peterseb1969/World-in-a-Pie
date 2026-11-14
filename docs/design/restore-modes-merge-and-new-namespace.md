@@ -280,18 +280,24 @@ value-based, so it survives re-minting — unless an identity field itself
 holds a canonical id that just changed; those documents are rehashed and
 counted in the plan (`rehashed_documents`).
 
-**Crash behaviour: reserved, then one activation.** Provisioned entries are
-*reserved*, and reserved entries do not resolve. A job that dies partway
-leaves an invisible, reconcilable namespace rather than a half-live one;
-one activation step at the end makes the whole set visible at once. The
-flip side: a failed remap leaves reserved identities holding their
-composite keys, so retrying into the same target collides — use a fresh
-target or reconcile first; there is no automatic cleanup. Provisioning is
-chunked at 1,000 keys per Registry call, and target namespaces are created
-(upserted) BEFORE provisioning — the Registry mints per the target's
-`id_config` and 404s for a namespace it does not know. A dry run cannot
-catch that ordering: its stand-in provisioner never asks the Registry
-anything.
+**Crash behaviour: reserved, then activated.** Provisioned entries are
+*reserved*, and reserved entries do not resolve. A job that dies before
+activation leaves an invisible, reconcilable namespace rather than a
+half-live one. Activation runs after every target is written, target by
+target, in batches of 500, and is not atomic: a batch that fails leaves the
+batches before it (and the targets before it) active. The job then fails
+naming, for every target, how many identities are active, failed and not
+activated, and that the synonym carry-over and the restore provenance,
+which follow activation, did not run. The flip side: a failed remap leaves
+reserved identities holding their composite keys, so retrying into the
+same target collides — delete the targets or reconcile first; there is no
+automatic cleanup. Provisioning is chunked at 1,000 keys per Registry call,
+and target namespaces are created (upserted) BEFORE provisioning — the
+Registry mints per the target's `id_config` and 404s for a namespace it
+does not know. A dry run asks the Registry the namespace upsert with its
+dry_run flag, so it meets every refusal the real upsert would, but it
+provisions with a stand-in that asks the Registry nothing: it does not
+exercise the provisioning itself.
 
 **Result shape.** `result.namespace_map` carries the mapping;
 `result.planned` is keyed per source namespace with per-type counts;

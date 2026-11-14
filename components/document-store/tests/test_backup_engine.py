@@ -935,6 +935,33 @@ class TestUpsertNamespaceAsRequester:
         assert put["headers"]["X-API-Key"] == "holder-key"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("served_prefix, warned", [("AX-", False), ("OTHER-", True)])
+    async def test_a_dry_run_compares_id_config_with_what_the_registry_would_create(
+        self, served_prefix, warned,
+    ):
+        """A dry run creates no namespace, so there is no stored id_config to
+        read back: it compares with the Registry's dry-run answer (served
+        form, defaults merged in) on the archive's own keys, instead of with
+        {} — which warned "NOT applied" for every archived id_config."""
+        events: list = []
+        config = self.CONFIG.model_copy(update={"id_config": {
+            "terminologies": {"algorithm": "prefixed", "prefix": "AX-", "pad": 6},
+        }})
+        served = {**self.LIVE, "id_config": {
+            "terminologies": {"algorithm": "prefixed", "prefix": served_prefix, "pad": 6,
+                              "length": 21, "pattern": None},
+            "documents": {"algorithm": "uuid7", "prefix": None, "pad": 6,
+                          "length": 21, "pattern": None},
+        }}
+        engine = self._engine(RestoreRequester({"X-API-Key": "holder-key"}, platform_admin=False), events)
+        with self._registry(get=_response(404), put=_response(200, served)):
+            await engine._upsert_namespace("aa-x", config, dry_run=True)
+        id_warnings = [w for w in self._warnings(events) if "id_config" in w]
+        assert bool(id_warnings) is warned
+        if warned:
+            assert "OTHER-" in id_warnings[0]
+
+    @pytest.mark.asyncio
     async def test_a_dry_run_meets_the_real_refusal(self):
         """The case the dry run used to pass: a requester the Registry will
         not let create the namespace."""
@@ -1267,7 +1294,8 @@ class TestRestoreRedirectGuard:
 
 class TestRunRestoreDryRun:
     """dry_run runs every precondition, reports would-restore counts, and
-    writes nothing: no namespace upsert, no inserts, no blobs."""
+    writes nothing: the namespace upsert goes to the Registry as a dry run,
+    and there are no inserts and no blobs."""
 
     def _reader(self):
         manifest = Manifest(

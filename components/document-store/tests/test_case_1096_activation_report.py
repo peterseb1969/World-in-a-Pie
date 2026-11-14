@@ -128,3 +128,75 @@ async def test_a_registry_failure_alone_names_no_duplicate():
         await engine._activate_entries("kb-copy", _items(1))
 
     assert "duplicate" not in str(refused.value)
+
+
+@pytest.mark.asyncio
+async def test_a_target_written_but_not_yet_activated_is_named():
+    """Every target is written before any is activated: a failure in the
+    first names the later ones too, as not activated and to delete."""
+    engine = _engine()
+    engine._write_remapped = _noop
+    engine._rewritten_synonyms = MagicMock(return_value={})
+    engine._remap_activation_items = MagicMock(
+        side_effect=lambda target, *a: _items(3 if target == "first" else 2)
+    )
+    client = _client_answering(_Response(500, text="boom"))
+    with patch("httpx.AsyncClient", client), pytest.raises(RestoreEngineError) as refused:
+        await engine._write_and_activate_remapped(
+            MagicMock(), {"a": "first", "b": "second"}, ["first", "second"],
+            {"a": None, "b": None}, 500,
+        )
+
+    message = str(refused.value)
+    assert "'second': 0 of 2 active, 2 not activated" in message
+    assert "'first', 'second'" in message
+    assert refused.value.details["activation"]["second"] == {"total": 2, "active": 0, "failed": 0}
+
+
+async def _noop(*args, **kwargs):
+    return None
+
+
+@pytest.mark.asyncio
+async def test_a_transport_error_or_an_unreadable_answer_reports_what_is_live():
+    import httpx
+
+    class _Failing:
+        def __init__(self, *a, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def post(self, url, json, headers):
+            raise httpx.ConnectError("refused")
+
+    engine = _engine()
+    with patch("httpx.AsyncClient", _Failing), pytest.raises(RestoreEngineError) as refused:
+        await engine._activate_entries("kb-copy", _items(3))
+    assert "could not be reached" in str(refused.value)
+    assert refused.value.details["activation"]["kb-copy"] == {"total": 3, "active": 0, "failed": 0}
+
+    class _NotJson(_Response):
+        def json(self):
+            raise ValueError("not json")
+
+    engine = _engine()
+    with patch("httpx.AsyncClient", _client_answering(_NotJson(200, text="<html>"))), \
+            pytest.raises(RestoreEngineError) as refused:
+        await engine._activate_entries("kb-copy", _items(3))
+    assert "was not a result object" in str(refused.value)
+    assert refused.value.details["result_kind"] == "activation_failed"
+
+
+@pytest.mark.asyncio
+async def test_the_report_names_the_steps_the_abort_skipped():
+    engine = _engine()
+    with patch("httpx.AsyncClient", _client_answering(_Response(500))), pytest.raises(RestoreEngineError) as refused:
+        await engine._activate_entries("kb-copy", _items(1))
+    message = str(refused.value)
+    assert "synonyms were not carried over" in message
+    assert "no restore provenance was recorded" in message

@@ -209,7 +209,7 @@ dry-run assert is ever wanted on the P-CLI side.
 | F-02 | C | R-ID with `target_namespace` ≠ archive ns: "cannot re-namespace" refusal |
 | F-03 | C | R-FRN map errors: unmapped ns / stranger ns / empty target / multi-ns without map — each refusal names the problem |
 | F-04 | C | Stale reporting schema present: refused without `drop_stale_reporting`, proceeds with it |
-| F-05 | L | Kill the engine mid-fresh-restore (or fault-inject provisioning): reserved entries do NOT resolve; target invisible; a re-run converges (the crash-behaviour promise in remap_restore's docstring) |
+| F-05 | L | Kill the engine mid-fresh-restore before activation (or fault-inject provisioning): reserved entries do NOT resolve; target invisible; a re-run converges. Fail an activation batch: earlier batches and targets stay active, and the job names per target what is active, failed and not activated (activation is batched, not atomic) |
 | F-06 | L | Restore with reporting-sync stopped: completes with warnings, never fails (operator ruling); PL-REP backfills after `force` rebuild (CASE-738) |
 | F-07 | C | Permission: non-admin key refused per namespace on backup, restore, download — per-item/early, nothing partial |
 | F-08 | C | `continue_on_error` tombstone: setting it is a loud 400 naming the param (the engine has no per-item tolerance; a silent no-op would misreport what ran) |

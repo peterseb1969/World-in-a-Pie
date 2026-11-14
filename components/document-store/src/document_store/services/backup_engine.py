@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, NamedTuple, TypeVar, cast
+from typing import Any, NamedTuple, NoReturn, TypeVar, cast
 
 from motor.motor_asyncio import AsyncIOMotorClient
 from wip_archive.archive import ArchiveReader, ArchiveWriter
@@ -2067,6 +2067,21 @@ def _merge_added(definitions_added: int) -> str:
     )
 
 
+def _served_on_archived_keys(
+    archived: dict[str, Any], served: dict[str, Any],
+) -> dict[str, Any]:
+    """A served id_config (every entity type, every field, defaults merged
+    in) cut to the entity types and fields an archived, as-stored id_config
+    names, so the two compare like with like. An entity type the archive
+    does not name is left out, so a reservation's setting for one is not
+    compared in a dry run."""
+    return {
+        entity_type: {k: (served.get(entity_type) or {}).get(k) for k in config}
+        for entity_type, config in archived.items()
+        if isinstance(config, dict)
+    }
+
+
 def _definitions_added(plans: dict[str, EntityPlan]) -> int:
     """How many terminologies, terms and templates a merge plan inserts."""
     return sum(
@@ -2246,8 +2261,10 @@ class DirectRestoreEngine:
 
         With ``dry_run`` the engine runs every precondition (archive format,
         empty targets, reporting schema) and reports what it *would* restore
-        from the manifest, then completes without writing anything — no
-        namespace upsert, no inserts, no blobs, no reporting sync.
+        from the manifest, then completes without writing anything. It asks
+        the Registry the namespace upsert with the Registry's own dry_run (so
+        it meets every refusal the real upsert would) and writes no namespace,
+        no inserts, no blobs and no reporting sync.
         """
         with ArchiveReader(archive_path) as reader:
             manifest = reader.read_manifest()
@@ -2945,15 +2962,23 @@ class DirectRestoreEngine:
             src: self._rewritten_synonyms(reader, src, target, plans[src])
             for src, target in mapping.items()
         }
-        for target in targets:
-            # Documents were reserved with a deferred claim; their FINAL
-            # composite key (built from the rewritten + rehashed row) is
-            # claimed now, at activation (CASE-787), together with their
-            # synonyms. An identity-less doc has an empty key — it stays
-            # keyless (opts out of dedup). Other entity types were already
-            # claimed at provision, so they activate keyless (a bare status
-            # flip) and get their synonyms afterwards.
-            items = self._remap_activation_items(target, mapping, plans, rewritten)
+        # Documents were reserved with a deferred claim; their FINAL
+        # composite key (built from the rewritten + rehashed row) is claimed
+        # now, at activation, together with their synonyms. An identity-less
+        # doc has an empty key — it stays keyless (opts out of dedup). Other
+        # entity types were already claimed at provision, so they activate
+        # keyless (a bare status flip) and get their synonyms afterwards.
+        items_by_target = {
+            target: self._remap_activation_items(target, mapping, plans, rewritten)
+            for target in targets
+        }
+        # Every target is written by now: an activation that fails in one
+        # reports each, the ones it has not reached included.
+        for target, items in items_by_target.items():
+            self._activation.setdefault(
+                target, {"total": len(items), "active": 0, "failed": 0}
+            )
+        for target, items in items_by_target.items():
             await self._activate_entries(target, items)
         return rewritten
 
@@ -3797,11 +3822,12 @@ class DirectRestoreEngine:
     async def _activate_entries(
         self, namespace: str, items: list[dict[str, Any]]
     ) -> None:
-        """Make the provisioned entries resolvable, in one step.
+        """Make the provisioned entries resolvable, in batches of 500.
 
         Until this runs the namespace is invisible: reserved entries do not
-        resolve. That is the property that makes a failed remap recoverable
-        rather than half-live.
+        resolve. It is not atomic: batches already activated stay active when
+        a later one fails, so a failure here leaves the namespace partly
+        live, and the error says how much (_raise_activation_failure).
 
         Each item is ``{entry_id, composite_key?}``. A document carries its
         FINAL composite key here — its claim was deferred at provision and is
@@ -3832,14 +3858,7 @@ class DirectRestoreEngine:
         async with httpx.AsyncClient(timeout=120.0) as client:
             for start in range(0, len(items), 500):
                 batch = items[start:start + 500]
-                resp = await client.post(url, json=batch, headers=headers)
-                if resp.status_code != 200:
-                    self._raise_activation_failure(
-                        namespace,
-                        f"the Registry answered {resp.status_code} for a batch of "
-                        f"{len(batch)} — {resp.text[:300]}",
-                    )
-                body = resp.json()
+                body = await self._activation_answer(client, url, headers, namespace, batch)
                 results = body.get("results", [])
                 live = sum(
                     1 for r in results if r.get("status") in ("activated", "already_active")
@@ -3853,7 +3872,39 @@ class DirectRestoreEngine:
                     progress["failed"] += len(failed)
                     self._raise_activation_failure(namespace, _activation_failure_cause(failed))
 
-    def _raise_activation_failure(self, namespace: str, cause: str) -> None:
+    async def _activation_answer(
+        self, client: Any, url: str, headers: dict[str, str],
+        namespace: str, batch: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """The Registry's answer to one activation batch; any failure to get
+        one is reported like a refused batch, with what is live."""
+        import httpx
+
+        try:
+            resp = await client.post(url, json=batch, headers=headers)
+        except httpx.HTTPError as exc:
+            self._raise_activation_failure(
+                namespace, f"the Registry could not be reached for a batch of "
+                f"{len(batch)} ({type(exc).__name__}: {exc})",
+            )
+        if resp.status_code != 200:
+            self._raise_activation_failure(
+                namespace,
+                f"the Registry answered {resp.status_code} for a batch of "
+                f"{len(batch)} — {resp.text[:300]}",
+            )
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict):
+            self._raise_activation_failure(
+                namespace, f"the Registry's answer for a batch of {len(batch)} "
+                f"was not a result object — {resp.text[:300]}",
+            )
+        return cast(dict[str, Any], body)
+
+    def _raise_activation_failure(self, namespace: str, cause: str) -> NoReturn:
         """Stop a fresh restore whose activation failed, saying what is live.
 
         Activation is the step that makes restored identities resolvable, and
@@ -3873,8 +3924,10 @@ class DirectRestoreEngine:
         raise RestoreEngineError(
             f"Activation failed in '{namespace}': {cause}. What is live now — "
             f"{'; '.join(lines)}. Restored identities that are active resolve; "
-            f"the rest do not. Delete the target namespace(s) ({targets}) and "
-            "retry the restore.",
+            "the rest do not. In every target, active or not, the steps after "
+            "activation did not run: the archive's other synonyms were not "
+            "carried over and no restore provenance was recorded. Delete the "
+            f"target namespace(s) ({targets}) and retry the restore.",
             details={
                 "result_kind": "activation_failed",
                 "namespace": namespace,
@@ -7291,13 +7344,9 @@ class DirectRestoreEngine:
                     f"Failed to read namespace '{namespace}': {resp.status_code} — {resp.text}"
                 )
         if "id_config" in body:
-            # The archive holds id_config as stored; the Registry serves it
-            # with every entity type's default merged in. Compare like with
-            # like: the stored form, as the archive itself was read.
-            stored = await self._mongo[_DB_REGISTRY]["namespaces"].find_one(
-                {"prefix": namespace}, {"id_config": 1}
-            )
-            live = {**live, "id_config": (stored or {}).get("id_config") or {}}
+            live = {**live, "id_config": await self._comparable_id_config(
+                namespace, body["id_config"], live, dry_run=dry_run,
+            )}
         self._check_identity(namespace, body.get("namespace_id"), live)
         for field in _NAMESPACE_SETTINGS:
             if field in body and body[field] != live.get(field):
@@ -7306,6 +7355,24 @@ class DirectRestoreEngine:
                     f"was NOT applied (it is {live.get(field)!r} here); only a platform "
                     "admin changes a namespace's settings"
                 ))
+
+    async def _comparable_id_config(
+        self, namespace: str, archived: dict[str, Any], live: dict[str, Any], *, dry_run: bool,
+    ) -> dict[str, Any]:
+        """The namespace's id_config in the form the archive holds it, to
+        compare with the archived one.
+
+        The archive holds id_config as stored; the Registry serves it with
+        every entity type's default merged in, so the stored form is read
+        back. A dry run created nothing to read back: it compares with what
+        the Registry said it would create, served form, on the archive's own
+        keys."""
+        stored = await self._mongo[_DB_REGISTRY]["namespaces"].find_one(
+            {"prefix": namespace}, {"id_config": 1}
+        )
+        if stored is None and dry_run:
+            return _served_on_archived_keys(archived, live.get("id_config") or {})
+        return cast(dict[str, Any], (stored or {}).get("id_config") or {})
 
     def _warn_without_namespace_config(self, namespace: str, ns_config: NamespaceConfig | None) -> None:
         """An archive backed up while its namespace had no Registry record
