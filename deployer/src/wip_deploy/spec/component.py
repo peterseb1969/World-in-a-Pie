@@ -591,6 +591,13 @@ class ComponentSpec(WIPModel):
     namespaces: list[AppNamespace] = Field(default_factory=list)
     namespace_access: list[NamespaceAccess] = Field(default_factory=list)
     privileged_key: bool = False
+    # The component runs as one process per install and never two at once,
+    # also not for a moment during an update: it holds state that a second
+    # process would take for a crashed one's (document-store's startup
+    # recovery fails every running job). On k8s its Deployment replaces the
+    # pod with the Recreate strategy instead of rolling a second one up
+    # first; compose and dev run one container already.
+    single_process: bool = False
 
     @model_validator(mode="after")
     def namespaces_well_formed(self) -> ComponentSpec:

@@ -108,10 +108,18 @@ Template writes use: validation_failed, not_found, already_exists,
 reference_violation, cross_namespace_reference, identity_fields_immutable,
 immutable_property, invalid_state, invalid_request, registry_error; where one
 code covers several rules, details.rule names the one that failed.
-On any bulk write, an item that names an entity or term by a key several of
-them carry is answered error_code ambiguous_reference, with the candidates in
-details.candidates, and the request still answers 200. Address it by
-canonical ID or a qualified value.
+On a bulk write, an item whose identifier field (the id of the entity the
+item updates or deletes, a term relation's source or target) names it by a
+key several entities carry is answered error_code ambiguous_reference, and
+the request still answers 200. details.candidates lists the bearers (at most
+10); details.total and details.truncated say when there are more. Address it
+by canonical ID or a qualified value. The identifier is resolved in the
+item's namespace: with none known (no namespace given, a key not scoped to
+one) it is passed through as sent and a value reads as not_found. A term
+name inside a document's data follows the term rule instead (wip://data-model):
+on an identity field an ambiguous name fails the item as validation_failed
+with code ambiguous_term in details.errors, on any other field it resolves to
+the first bearer with a warning.
 
 ## Partial Updates: update_document (PATCH)
 The update_document tool applies an RFC 7396 JSON Merge Patch to an existing

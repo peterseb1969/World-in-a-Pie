@@ -53,7 +53,9 @@ which frees the instance for the next one.
 
 That recovery assumes document-store runs as **one process** per install
 (one replica, one uvicorn worker), which is what wip-deploy renders and what
-its tests hold it to. Do not scale document-store out by hand: on start, a
+its tests hold it to. On Kubernetes its Deployment uses the `Recreate`
+strategy, so an update stops the old pod before it starts the new one: a
+rolling update would run both for a moment. Do not scale document-store out by hand: on start, a
 second process would fail the first one's running backups and restores and
 release the restore claim while that restore is still writing.
 

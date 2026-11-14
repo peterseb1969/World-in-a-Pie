@@ -2555,6 +2555,16 @@ class DirectRestoreEngine:
                 percent=0,
             )
 
+            # The file keys are checked before anything is written or dropped
+            # (the check only reads), so a key held by another file, or a
+            # store that cannot say, refuses the restore with nothing written
+            # and no stale reporting schema dropped. A dry run checks them in
+            # _restore_dry_run.
+            present = (
+                None if dry_run
+                else await self._plain_restore_blob_keys(reader, skip_files=skip_files)
+            )
+
             # Phase 1: validate ALL targets empty before writing anything.
             # The reporting precondition runs alongside: the namespace's
             # reporting schema must be absent/empty too, or stale tables
@@ -2585,11 +2595,6 @@ class DirectRestoreEngine:
             total = sum(getattr(manifest.counts, et, 0) for et in restore_order)
             processed = 0
             skipped = _skipped_types(skip_documents, skip_files)
-
-            # The file keys are checked before anything is written (the
-            # check only reads), so a key held by another file, or a store
-            # that cannot say, refuses the restore with nothing written.
-            present = await self._plain_restore_blob_keys(reader, skip_files=skip_files)
 
             # The Registry accounts for every entry id the restore will write
             # before anything is: the entries go straight to the database, so

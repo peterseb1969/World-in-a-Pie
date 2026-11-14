@@ -416,12 +416,14 @@ async def reconcile_orphaned_jobs() -> int:
     process left running no longer counts as one (running_restore).
 
     This is only right because document-store runs as ONE process per
-    install (one replica, one uvicorn worker): a job no worker here holds
-    can then only belong to a process that is gone. With a second process,
-    one process's start would fail the other's live jobs and free the
-    restore claim while that restore still writes. The deployer's tests
-    keep the install at one process; running more needs an owner and
-    heartbeat lease here first."""
+    install (one replica, one uvicorn worker, and on k8s the Recreate
+    strategy, so an update stops the old pod before it starts the new one):
+    a job no worker here holds can then only belong to a process that is
+    gone. With a second process, one process's start would fail the other's
+    live jobs and free the restore claim while that restore still writes.
+    The component declares single_process and the deployer's tests keep the
+    install at one process; running more needs an owner and heartbeat lease
+    here first."""
     jobs = await BackupJob.find(
         {"status": {"$in": [BackupJobStatus.RUNNING, BackupJobStatus.PENDING]}},
     ).to_list()

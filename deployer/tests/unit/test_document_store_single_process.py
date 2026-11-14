@@ -94,6 +94,10 @@ def test_k8s_renders_one_document_store_replica(tmp_path: Path, discovery: Disco
         and doc["metadata"]["name"] == "wip-document-store"
     ]
     assert workload["spec"]["replicas"] == 1, WHY
+    # A rolling update would run the new pod beside the old one: two
+    # processes for a moment, the new one's startup recovery failing the old
+    # one's running restore.
+    assert workload["kind"] == "StatefulSet" or workload["spec"].get("strategy") == {"type": "Recreate"}, WHY
     for container in workload["spec"]["template"]["spec"]["containers"]:
         assert _no_workers_flag(container.get("command")), WHY
         assert _no_workers_flag(container.get("args")), WHY

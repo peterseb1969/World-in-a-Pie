@@ -207,7 +207,9 @@ async def update_terminologies(
     """
     # A value several terminologies bear is answered per item as ambiguous.
     held = AmbiguousItems(
-        items, await resolve_bulk_ids(items, "terminology_id", "terminology", namespace=namespace),
+        items, await resolve_bulk_ids(
+            items, "terminology_id", "terminology", namespace=namespace, bypass_cache=True,
+        ),
     )
     items = held.items
 
@@ -410,7 +412,9 @@ async def delete_terminologies(
     """
     # A value several terminologies bear is answered per item as ambiguous.
     held = AmbiguousItems(
-        items, await resolve_bulk_ids(items, "id", "terminology", namespace=namespace),
+        items, await resolve_bulk_ids(
+            items, "id", "terminology", namespace=namespace, bypass_cache=True,
+        ),
     )
     items = held.items
 

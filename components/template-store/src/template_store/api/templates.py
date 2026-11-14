@@ -478,7 +478,9 @@ async def update_templates(
     """
     # A value several templates bear is answered per item as ambiguous.
     held = AmbiguousItems(
-        items, await resolve_bulk_ids(items, "template_id", "template", namespace=namespace),
+        items, await resolve_bulk_ids(
+            items, "template_id", "template", namespace=namespace, bypass_cache=True,
+        ),
     )
     items = held.items
 
@@ -584,7 +586,9 @@ async def delete_templates(
     """
     # A value several templates bear is answered per item as ambiguous.
     held = AmbiguousItems(
-        items, await resolve_bulk_ids(items, "id", "template", namespace=namespace),
+        items, await resolve_bulk_ids(
+            items, "id", "template", namespace=namespace, bypass_cache=True,
+        ),
     )
     items = held.items
 

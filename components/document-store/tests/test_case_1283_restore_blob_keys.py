@@ -192,3 +192,30 @@ async def test_a_key_another_file_uses_is_refused_even_with_the_same_bytes(mongo
         await _plain_restore(mongo, storage)
     assert storage.puts == []
     assert await _files(mongo, NAMESPACE) == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_restore_drops_no_stale_reporting_schema(mongo):
+    """The key check ran after the empty-namespace phase, which drops a
+    stale reporting schema when drop_stale_reporting is set: a restore
+    refused for a held key had already dropped it. The check now runs first."""
+    reporting = MagicMock()
+    reporting.parity = AsyncMock(return_value={
+        "schema_present": True, "table_count": 3, "schema_name": NAMESPACE,
+        "bookkeeping_tables_ok": True,
+    })
+    reporting.drop_namespace_schema = AsyncMock(return_value=True)
+    storage = _Store({"F1": VICTIM})
+    engine = DirectRestoreEngine(mongo, storage, lambda e: None)
+    engine._reporting = reporting
+    engine._upsert_namespace = AsyncMock()
+
+    with patch("document_store.services.backup_engine.ArchiveReader", return_value=_file_archive()), \
+            pytest.raises(RestoreEngineError, match="never writes over an existing file's bytes"):
+        await engine.run_restore(
+            MagicMock(), NAMESPACE, allow_missing_identity=True, drop_stale_reporting=True,
+        )
+
+    reporting.drop_namespace_schema.assert_not_called()
+    engine._upsert_namespace.assert_not_called()
+    assert storage.puts == []

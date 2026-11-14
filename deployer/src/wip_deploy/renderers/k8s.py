@@ -868,6 +868,11 @@ def _render_component(
     # StatefulSet needs serviceName
     if workload_kind == "StatefulSet":
         workload["spec"]["serviceName"] = svc_name
+    elif owner.spec.single_process:
+        # A rolling update starts the new pod while the old one still runs:
+        # two processes at once. Recreate stops the old pod first. (A
+        # StatefulSet of one replica replaces its pod in that order already.)
+        workload["spec"]["strategy"] = {"type": "Recreate"}
 
     # A changed secret or key file must roll the pods that read it at start;
     # the hash makes that content change a template change (config_hash).

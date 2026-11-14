@@ -18,6 +18,11 @@ spec:
 
   command: [uvicorn, document_store.main:app, --host, 0.0.0.0, --port, "8004"]
 
+  # One process per install, never two at once: startup recovery fails
+  # every restore job still marked running and frees the one-restore-at-a-
+  # time claim, which is right only when no other process runs one.
+  single_process: true
+
   env:
     required:
       - {name: MONGO_URI, source: {from_component: mongodb}}
