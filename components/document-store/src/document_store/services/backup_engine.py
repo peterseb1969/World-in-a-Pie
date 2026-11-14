@@ -7475,6 +7475,8 @@ class DirectRestoreEngine:
             # as written.
             if entity_type == "registry_entries" and "search_values" in row:
                 row["search_values"] = registry_search_values(row)
+        if entity_type == "registry_entries":
+            await self._advance_registry_counters(batch)
         try:
             await collection.insert_many(batch, ordered=False)
         except BulkWriteError as exc:
@@ -7490,6 +7492,43 @@ class DirectRestoreEngine:
                 f"{n_errors} errors out of {len(batch)} documents. "
                 f"First error: {exc.details['writeErrors'][0].get('errmsg', 'unknown')}"
             ) from exc
+
+    async def _advance_registry_counters(self, rows: list[dict[str, Any]]) -> None:
+        """Have the Registry raise its prefix counters past the IDs of these
+        entries before they are written.
+
+        A restore writes the entries it carries straight to the database, so
+        the Registry never sees their IDs: a prefix it had already counted
+        from (it reads a prefix's highest ID once per process) would mint them
+        again, and a mint that collides with a restored ID fails. Raising a
+        counter too far only skips numbers, so this runs first, and a Registry
+        that cannot do it stops the write (the Registry is the identity
+        authority: an ID it has not accounted for is not written).
+        """
+        import httpx
+
+        ids = [str(r["entry_id"]) for r in rows if r.get("entry_id")]
+        if not ids:
+            return
+        url = f"{self._registry_url}/api/registry/entries/advance-counters"
+        headers = {"X-API-Key": self._registry_api_key, "Content-Type": "application/json"}
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                resp = await client.post(
+                    url, json=[{"entry_id": i} for i in ids], headers=headers,
+                )
+        except httpx.HTTPError as exc:
+            raise RestoreEngineError(
+                f"The Registry could not be reached to account for {len(ids)} "
+                f"restored entry ID(s) ({type(exc).__name__}); nothing of this "
+                "batch was written. Run the restore again once the Registry answers."
+            ) from exc
+        if resp.status_code != 200:
+            raise RestoreEngineError(
+                f"The Registry answered {resp.status_code} when asked to account "
+                f"for {len(ids)} restored entry ID(s) — {resp.text[:300]}; nothing "
+                "of this batch was written."
+            )
 
     @staticmethod
     def _archive_file_checksums(reader: ArchiveReader) -> dict[str, str | None]:

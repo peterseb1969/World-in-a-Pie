@@ -9,10 +9,13 @@ entity type whose IDs WIP is expected to mint fails at generation time with an
 actionable error (see IdGenerator.generate).
 
 Where caller IDs are checked against the config: /entries/reserve validates
-each one. /entries/register does not: it is how a restore writes back the IDs
-it backed up, and a namespace's entries keep the IDs minted under earlier
-configs when its id_config changes. A prefixed ID written either way raises
-its prefix's counter (services/id_generator.py), so it is never minted again.
+each one. /entries/register does not: its callers write back IDs they already
+hold (a document created with its own document_id, a term or file registered
+under its existing id), and a namespace's entries keep the IDs minted under
+earlier configs when its id_config changes. A prefixed ID written either way
+raises its prefix's counter (services/id_generator.py), so it is never minted
+again; so does one a restore or merge writes straight to the database, through
+/entries/advance-counters.
 """
 
 import re

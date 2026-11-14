@@ -38,6 +38,21 @@ from document_store.services.remap_restore import (
 from registry.models.entry import RegistryEntry
 from wip_auth.document_identity import compute_hash, resolved_identity_values
 
+
+@pytest.fixture(autouse=True)
+def _registry_counters(monkeypatch):
+    """These restores run without a Registry: the counter advance a restore
+    asks of it before writing entries is recorded, not sent. Its own tests are
+    in test_case_1297_restored_ids_advance_counters.py."""
+    advanced: list[str] = []
+
+    async def record(self, rows):
+        advanced.extend(str(r.get("entry_id")) for r in rows)
+
+    monkeypatch.setattr(DirectRestoreEngine, "_advance_registry_counters", record)
+    return advanced
+
+
 TERM_FIELD = {"name": "kind", "type": "term", "terminology_ref": "KIND"}
 
 

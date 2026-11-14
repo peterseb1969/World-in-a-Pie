@@ -21,6 +21,9 @@ from ..models.api_models import (
     ActivateItem,
     ActivateItemResponse,
     ActivateSynonym,
+    AdvanceCountersBulkResponse,
+    AdvanceCountersItem,
+    AdvanceCountersItemResponse,
     BrowseEntriesResponse,
     BrowseEntryItem,
     BulkDeleteResponse,
@@ -127,6 +130,31 @@ def _insert_failure(e: Exception) -> dict[str, Any]:
         "error": f"Batch insert failed ({type(e).__name__}); see the Registry log",
         "error_code": "internal_error",
     }
+
+
+def _unwritten_failure(
+    pos: int, written: int | None, failure: dict[str, Any], failed_index: int | None,
+) -> dict[str, Any]:
+    """Error fields for the unwritten item at ``pos`` of an ordered batch
+    insert that wrote the first ``written`` entries: the insert's failure for
+    the entry it failed on, and "not attempted" for those after it, whose own
+    IDs and keys may be free (the insert stops at its first failure). When how
+    far it got is unknown, every unwritten item carries the failure."""
+    if written is None or pos == written:
+        return failure
+    return {
+        "error": (
+            "Not written: the batch insert stopped at an earlier item "
+            f"(index {failed_index}); this item was not attempted, so retry it"
+        ),
+        "error_code": "internal_error",
+        "details": {"rule": "batch_stopped", "failed_index": failed_index},
+    }
+
+
+def _failed_index(indices: list[int], written: int | None) -> int | None:
+    """The request index of the item an ordered insert failed on."""
+    return indices[written] if written is not None and written < len(indices) else None
 
 
 async def _written_prefix(entries: list[RegistryEntry]) -> int | None:
@@ -515,7 +543,8 @@ async def register_keys(
     existing_by_hash, existing_by_entry_id = await _existing_for_register(items, hashes)
     laps.lap("2_find_existing")
 
-    # Phase 2.5: IDs the caller sets (a restore re-registering its IDs) raise
+    # Phase 2.5: IDs the caller sets (a document created with its own id, a
+    # term or file registered under its existing id) raise
     # their prefix's counter first, so nothing minted below — in this batch or
     # later — repeats one of them.
     await IdGeneratorService.advance_for_ids(
@@ -860,7 +889,9 @@ async def _insert_and_answer(
                 identity_hash=identity_hashes[idx],
             )
         else:
-            results[idx] = RegisterKeyResponse(index=idx, status="error", **failure)
+            results[idx] = RegisterKeyResponse(index=idx, status="error", **_unwritten_failure(
+                pos, written, failure, _failed_index(gated_indices, written),
+            ))
 
 
 def _register_response(
@@ -1210,6 +1241,45 @@ async def provision_ids(
 
 
 @router.post(
+    "/advance-counters",
+    response_model=AdvanceCountersBulkResponse,
+    summary="Raise prefix counters past IDs written without the Registry",
+)
+async def advance_counters(
+    items: list[AdvanceCountersItem] = Body(...),
+    identity: UserIdentity = Depends(require_privileged_key),
+) -> AdvanceCountersBulkResponse:
+    """Raise each prefixed sequence's counter to at least the highest of these
+    IDs it numbers, so the Registry never mints one of them again.
+
+    For a service that writes Registry entries straight to the database (a
+    restore or a merge writes the entries an archive carries): register and
+    reserve do this for the IDs they are given, and this route does it for
+    IDs written otherwise. Call it before writing the entries: raising a
+    counter too far only skips numbers. Every prefix any namespace configures
+    is considered, and a number above the range a counter mints is skipped,
+    since no mint reaches it. Idempotent.
+    """
+    numbered = await IdGeneratorService.advance_for_ids([item.entry_id for item in items])
+    results: list[AdvanceCountersItemResponse] = []
+    for i, item in enumerate(items):
+        if item.entry_id not in numbered:
+            status, details = "skipped", {"rule": "not_prefixed"}
+        elif numbered[item.entry_id] is None:
+            status, details = "skipped", {"rule": "beyond_sequence_range"}
+        else:
+            status, details = "advanced", {"prefix": numbered[item.entry_id]}
+        results.append(AdvanceCountersItemResponse(
+            index=i, status=status, entry_id=item.entry_id, details=details,
+        ))
+    advanced = sum(1 for r in results if r.status == "advanced")
+    return AdvanceCountersBulkResponse(
+        results=results, total=len(results), advanced=advanced,
+        skipped=len(results) - advanced,
+    )
+
+
+@router.post(
     "/reserve",
     response_model=ReserveBulkResponse,
     summary="Reserve client-provided IDs"
@@ -1333,7 +1403,9 @@ async def reserve_ids(
                 )
                 reserved_count += 1
             else:
-                results[idx] = ReserveItemResponse(index=idx, status="error", **failure)
+                results[idx] = ReserveItemResponse(index=idx, status="error", **_unwritten_failure(
+                    pos, written, failure, _failed_index(gated_indices, written),
+                ))
                 error_count += 1
 
     return ReserveBulkResponse(

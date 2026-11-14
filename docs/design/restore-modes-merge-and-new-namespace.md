@@ -34,7 +34,9 @@ each with its `namespace_config` and per-type counts.
 
 **The Registry is the identity authority.** No mode mints an id locally.
 Fresh provisions ids from the Registry per the TARGET namespace's
-`id_config`; restore and merge re-register the archived ids. Composite keys
+`id_config`; restore and merge write the archived ids' entries themselves,
+after the Registry has raised its prefix counters past them
+(`/entries/advance-counters`), so it never mints one again. Composite keys
 must match what each owning service would have registered — the shapes live
 in `remap_restore.composite_key_for` and cite their source clients, because
 a wrong-shaped key does not fail: it silently creates an identity nothing

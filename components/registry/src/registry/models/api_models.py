@@ -402,6 +402,37 @@ class ReserveItemResponse(BaseModel):
     details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
 
 
+class AdvanceCountersItem(StrictModel):
+    """An entry ID written without the Registry minting it."""
+
+    entry_id: str = Field(..., description="An entry ID written to the install")
+
+
+class AdvanceCountersItemResponse(BaseModel):
+    """Whether an ID numbers a prefixed sequence.
+
+    status: ``advanced`` — it does, and that prefix's counter is now at least
+    its number, so the prefix never mints it; ``skipped`` — it numbers no
+    prefixed sequence (details.rule ``not_prefixed``), or its number is beyond
+    the range a counter mints (details.rule ``beyond_sequence_range``), so no
+    mint can reach it.
+    """
+
+    index: int
+    status: str  # advanced, skipped
+    entry_id: str
+    details: dict[str, Any] | None = Field(default=None, description=ITEM_ERROR_DETAILS_DESCRIPTION)
+
+
+class AdvanceCountersBulkResponse(BaseModel):
+    """Response model for advancing prefix counters."""
+
+    results: list[AdvanceCountersItemResponse]
+    total: int
+    advanced: int
+    skipped: int
+
+
 class ReserveBulkResponse(BaseModel):
     """Response model for bulk reservation."""
 

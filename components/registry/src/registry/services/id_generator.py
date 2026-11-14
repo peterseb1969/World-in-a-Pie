@@ -8,20 +8,28 @@ type continues its sequence instead of restarting at 1, and two namespaces
 still sharing a prefix from before that rule draw from one counter.
 
 The counter's only input would otherwise be its own increments, while IDs
-also arrive already set: a restore re-registers the IDs it backed up, and a
-caller may supply one. So:
+also arrive already set: a restore or merge writes the IDs it backed up, and
+a caller may supply one. So:
 
 - an entry written with its own prefixed ID raises its prefix's counter to at
   least that number (`advance_for_ids`, called by register and reserve);
+- an ID written straight to the database (a restore or merge writes the
+  entries it carries itself) is sent to /entries/advance-counters, which
+  raises the counters the same way;
 - the first time a process mints from a prefix, the counter is raised above
   the highest ID that prefix already has (`_ensure_floor`), which also repairs
   a counter that fell behind before this rule.
 
-Raising is a MongoDB `$max`, so it never moves a counter back.
+Raising is a MongoDB `$max`, so it never moves a counter back. A number above
+MAX_SEQUENCE never moves a counter: a counter is a 64-bit integer, and one
+raised to the edge of that range could not mint again; no mint reaches such a
+number, so it cannot collide either.
 """
 
 import re
 from typing import cast
+
+from bson.decimal128 import Decimal128
 
 from ..models.entry import RegistryEntry
 from ..models.id_algorithm import IdAlgorithmConfig, IdGenerator
@@ -33,6 +41,8 @@ from ..models.namespace import Namespace
 # deletion clears by the "^{namespace}:" pattern.
 PREFIX_COUNTER = "@prefix:"
 _DIGITS = re.compile("[0-9]+")
+# The highest number a counter is raised to (see the module docstring).
+MAX_SEQUENCE = 2**62
 
 
 def prefix_counter_key(prefix: str) -> str:
@@ -45,13 +55,18 @@ async def _highest_existing(prefix: str) -> int:
     highest = 0
     rows = RegistryEntry.get_motor_collection().aggregate([
         {"$match": {"entry_id": {"$regex": f"^{re.escape(prefix)}[0-9]+$"}}},
-        # Longest first, then highest: an ID past its pad width still counts.
-        {"$project": {"entry_id": 1, "n": {"$strLenCP": "$entry_id"}}},
-        {"$sort": {"n": -1, "entry_id": -1}},
+        # By number, not by spelling: IDs minted under different pad widths
+        # are ordered neither by length nor as strings.
+        {"$project": {"n": {"$convert": {
+            "input": {"$substrCP": ["$entry_id", len(prefix), {"$strLenCP": "$entry_id"}]},
+            "to": "decimal", "onError": None,
+        }}}},
+        {"$match": {"n": {"$ne": None, "$lte": Decimal128(str(MAX_SEQUENCE))}}},
+        {"$sort": {"n": -1}},
         {"$limit": 1},
     ])
     async for row in rows:
-        highest = int(row["entry_id"][len(prefix):])
+        highest = int(row["n"].to_decimal())
     legacy = IdCounter.get_motor_collection().find(
         {"counter_key": {"$regex": f"^[^@][^:]*:[^:]*:{re.escape(prefix)}$"}},
         {"seq": 1},
@@ -59,6 +74,16 @@ async def _highest_existing(prefix: str) -> int:
     async for row in legacy:
         highest = max(highest, int(row.get("seq") or 0))
     return highest
+
+
+async def _configured_prefixes() -> set[str]:
+    """Every prefix a namespace's id_config mints with."""
+    prefixes: set[str] = set()
+    async for ns in Namespace.get_motor_collection().find({}, {"id_config": 1}):
+        for cfg in (ns.get("id_config") or {}).values():
+            if isinstance(cfg, dict) and cfg.get("algorithm") == "prefixed" and cfg.get("prefix"):
+                prefixes.add(cfg["prefix"])
+    return prefixes
 
 
 class IdGeneratorService:
@@ -115,26 +140,32 @@ class IdGeneratorService:
         cls._floored.add(prefix)
 
     @classmethod
-    async def advance_for_ids(cls, entry_ids: list[str]) -> None:
+    async def advance_for_ids(cls, entry_ids: list[str]) -> dict[str, str | None]:
         """Raise each prefix's counter to the highest of ``entry_ids`` it
-        numbers, so a later mint never hands out an ID written here.
+        numbers, so a later mint never hands out an ID written here. Returns
+        the IDs that number a prefixed sequence: each with its prefix, or
+        None when its number is above MAX_SEQUENCE.
 
         Every prefix any namespace configures is considered, not only the
         writing namespace's: an ID numbers a prefix's sequence wherever it is
-        stored. Raising a counter too far only skips numbers.
+        stored. Raising a counter too far only skips numbers, up to
+        MAX_SEQUENCE; a number above it is left out.
         """
+        numbered: dict[str, str | None] = {}
         if not entry_ids:
-            return
-        prefixes: set[str] = set()
-        async for ns in Namespace.get_motor_collection().find({}, {"id_config": 1}):
-            for cfg in (ns.get("id_config") or {}).values():
-                if isinstance(cfg, dict) and cfg.get("algorithm") == "prefixed" and cfg.get("prefix"):
-                    prefixes.add(cfg["prefix"])
+            return numbered
+        prefixes = await _configured_prefixes()
         highest: dict[str, int] = {}
         for entry_id in entry_ids:
             for prefix in prefixes:
                 rest = entry_id[len(prefix):]
                 if entry_id.startswith(prefix) and _DIGITS.fullmatch(rest):
-                    highest[prefix] = max(highest.get(prefix, 0), int(rest))
+                    n = int(rest)
+                    if n > MAX_SEQUENCE:
+                        numbered.setdefault(entry_id, None)
+                        continue
+                    numbered[entry_id] = prefix
+                    highest[prefix] = max(highest.get(prefix, 0), n)
         for prefix, n in highest.items():
             await IdCounter.set_if_higher(prefix_counter_key(prefix), n)
+        return numbered

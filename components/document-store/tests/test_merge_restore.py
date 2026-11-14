@@ -39,6 +39,21 @@ from document_store.services.backup_engine import (
     RestoreEngineError,
 )
 
+
+@pytest.fixture(autouse=True)
+def _registry_counters(monkeypatch):
+    """These restores run without a Registry: the counter advance a restore
+    asks of it before writing entries is recorded, not sent. Its own tests are
+    in test_case_1297_restored_ids_advance_counters.py."""
+    advanced: list[str] = []
+
+    async def record(self, rows):
+        advanced.extend(str(r.get("entry_id")) for r in rows)
+
+    monkeypatch.setattr(DirectRestoreEngine, "_advance_registry_counters", record)
+    return advanced
+
+
 # A namespace of this suite's own, so a merge test never sees (or deletes)
 # another suite's rows in the shared test databases.
 NAMESPACE = "merge-test-ns"

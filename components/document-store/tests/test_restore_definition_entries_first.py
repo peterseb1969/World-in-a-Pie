@@ -31,6 +31,21 @@ from document_store.services.backup_engine import (
 from tests.test_case_689_restore_phases import CLEAN, _engine, _reporting_stub
 from tests.test_case_942_restore_provenance import NAMESPACE, TERMINOLOGY, _http, _reader
 
+
+@pytest.fixture(autouse=True)
+def _registry_counters(monkeypatch):
+    """These restores run without a Registry: the counter advance a restore
+    asks of it before writing entries is recorded, not sent. Its own tests are
+    in test_case_1297_restored_ids_advance_counters.py."""
+    advanced: list[str] = []
+
+    async def record(self, rows):
+        advanced.extend(str(r.get("entry_id")) for r in rows)
+
+    monkeypatch.setattr(DirectRestoreEngine, "_advance_registry_counters", record)
+    return advanced
+
+
 TEMPLATE = {
     "template_id": "TPL-DEFS-1", "namespace": NAMESPACE, "value": "THING",
     "label": "Thing", "version": 1, "status": "active", "fields": [],
