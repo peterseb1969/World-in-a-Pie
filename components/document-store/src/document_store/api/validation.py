@@ -126,6 +126,11 @@ Reference values inside the candidate (terminology_ref etc.) should be
 canonical IDs or resolvable synonyms — an unresolvable reference surfaces as
 a per-document validation error, exactly as it would on a real write.
 
+A file's own `allowed_templates` restriction is not checked here: a candidate
+is not a stored template, so the comparison has no canonical subject. File
+existence, status, size and type are checked, and the live write enforces the
+restriction.
+
 Declared renames are honored: a candidate carrying `renames`
 (`{new_field: old_field}`) validates each document as-if re-keyed — the
 same semantics an applied migration uses — so a declared rename does not

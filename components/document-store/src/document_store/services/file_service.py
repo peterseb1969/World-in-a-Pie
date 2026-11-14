@@ -13,6 +13,7 @@ from beanie.odm.enums import SortDirection
 from beanie.odm.utils.encoder import Encoder
 from pymongo import ReturnDocument
 
+from wip_auth import RegistryUnavailableError
 from wip_auth.resolve import resolve_entity_ids
 
 # Import identity helper from wip-auth
@@ -27,6 +28,7 @@ from ..models.api_models import (
     UpdateFileMetadataRequest,
 )
 from ..models.file import File, FileMetadata, FileReference, FileStatus
+from .errors import dependency_unavailable
 from .file_storage_client import (
     FileStorageError,
     FileStorageNotFoundError,
@@ -54,16 +56,121 @@ async def resolve_allowed_templates(
     wanted = [e.strip() for e in entries or [] if e and e.strip()]
     if not wanted:
         return None
+    ambiguous: dict[str, Any] = {}
     resolved = await resolve_entity_ids(
-        wanted, "template", namespace, bypass_cache=True, strict=False,
+        wanted, "template", namespace, bypass_cache=True, strict=False, ambiguous=ambiguous,
     )
     missing = [e for e in wanted if e not in resolved]
     if missing:
         raise FileServiceError(
-            f"allowed_templates: {missing} name no template in namespace '{namespace}'",
+            _unresolved_allowed_templates(missing, ambiguous, namespace),
             "validation_failed", rule="unresolved_template",
         )
     return list(dict.fromkeys(resolved[e] for e in wanted))
+
+
+def _unresolved_allowed_templates(
+    missing: list[str], ambiguous: dict[str, Any], namespace: str,
+) -> str:
+    """Why the list was refused, per entry. An entry naming several templates
+    gets the resolver's own refusal, with its candidates: nothing picks one, and
+    "name no template" would send the reader to look for a template that is
+    there. The rest genuinely resolve to nothing in this namespace — an unknown
+    name, or one whose template is no longer active, which the resolver answers
+    alike."""
+    amb = [e for e in missing if e in ambiguous]
+    plain = [e for e in missing if e not in amb]
+    parts = [str(ambiguous[e]) for e in amb]
+    if plain:
+        parts.append(
+            f"allowed_templates {plain} name no template in namespace '{namespace}' "
+            "(unknown, or a template that is no longer active)"
+        )
+    return ". ".join(parts)
+
+
+async def _refuse_unmet_restriction(existing: File, wanted: list[str] | None) -> None:
+    """Refuse a re-upload of stored bytes whose requested restriction the
+    stored file does not carry.
+
+    Identical bytes are one file per namespace, so an upload that finds them
+    stored returns that file instead of writing again. If the caller asked for
+    ``allowed_templates`` and the file it gets back is open to more templates
+    than that, the restriction it stated did not take effect — and reporting
+    the upload as successful would say it did. So the mismatch is refused
+    (the safe default: a stated restriction either holds or the write fails).
+    ``allowed_templates`` None means the upload did not address the
+    restriction, and the file is returned as it stands.
+    """
+    if wanted is None:
+        return
+    stored = await stored_allowed_templates(existing) or []
+    if set(wanted) == set(stored):
+        return
+    raise FileServiceError(
+        f"These bytes are already stored in namespace '{existing.namespace}' as file "
+        f"{existing.file_id}, whose allowed_templates is "
+        f"{stored or 'open (no restriction)'}; this upload asked for {wanted}. "
+        f"Reference {existing.file_id} as it stands, or upload without "
+        "allowed_templates to take it unchanged.",
+        "invalid_state", rule="restriction_mismatch",
+    )
+
+
+async def _restriction_refusal(
+    file_doc: File, template_id: str | None, check: bool,
+) -> str | None:
+    """Why this document may not use the file, or None when it may.
+
+    check False skips the comparison entirely: a validation whose subject is
+    not a stored template has no canonical id for the file's list to name.
+    """
+    if not check:
+        return None
+    allowed = await stored_allowed_templates(file_doc)
+    if allowed is None or template_id in allowed:
+        return None
+    return (
+        f"File {file_doc.file_id} may only be used by templates {allowed}; "
+        f"this document's template is {template_id}"
+    )
+
+
+async def stored_allowed_templates(file_doc: File) -> list[str] | None:
+    """A stored file's ``allowed_templates`` as canonical template ids.
+
+    A row written by a current upload or PATCH holds ids; one stored before
+    that, or restored from an older archive, can still hold values. Comparing
+    such a row against a document's canonical id by spelling would refuse the
+    very template the entry names, so the entries are resolved here as well —
+    through the Registry, in the file's namespace — and the repaired list is
+    written back, conditional on the list it replaces. The startup conversion
+    is a single background task; this is what makes a row that missed it
+    enforce what it means the first time it is used.
+
+    An entry that resolves to nothing keeps its spelling: it then matches no
+    template, so the file stays restricted instead of opening up. A Registry
+    that cannot answer is an outage, never an answer about the file.
+    """
+    entries = file_doc.allowed_templates
+    wanted = [e.strip() for e in entries or [] if e and e.strip()]
+    if not wanted:
+        return None
+    try:
+        resolved = await resolve_entity_ids(
+            wanted, "template", file_doc.namespace, strict=False,
+        )
+    except RegistryUnavailableError as e:
+        raise dependency_unavailable(
+            "registry", f"allowed_templates of file {file_doc.file_id}", e,
+        ) from e
+    ids = list(dict.fromkeys(resolved.get(e, e) for e in wanted))
+    if ids != entries:
+        await File.find(
+            {"file_id": file_doc.file_id, "allowed_templates": entries}
+        ).set({"allowed_templates": ids})
+        file_doc.allowed_templates = ids
+    return ids
 
 
 class FileServiceError(Exception):
@@ -207,6 +314,7 @@ class FileService:
                     return await self._revive_from_upload(
                         existing, content, metadata, allowed_templates, actor,
                     )
+                await _refuse_unmet_restriction(existing, allowed_templates)
                 return self._to_response(existing)
             # Fallback: Registry has the entry but Mongo does not (e.g. after
             # a partial failure or data loss). Fall through and re-create the
@@ -859,6 +967,7 @@ class FileService:
         *,
         template_id: str | None,
         is_refused: Callable[[str | None, str | None], Awaitable[bool]] | None = None,
+        check_template_restriction: bool = True,
     ) -> tuple[bool, str | None, FileReference | None]:
         """
         Validate that a file meets field constraints.
@@ -871,6 +980,11 @@ class FileService:
                 the file. Required, so no caller can skip the file's template
                 restriction by leaving it out; a restricted file is refused when
                 it is None.
+            check_template_restriction: False skips the file's own
+                `allowed_templates` comparison - for a validation whose subject
+                is not a stored template (the inline-candidate dry run), where no
+                canonical id exists to compare against. The file's existence,
+                status, size and type are still checked.
 
         Returns:
             Tuple of (is_valid, error_message, file_reference)
@@ -897,12 +1011,12 @@ class FileService:
             return False, f"File type '{file_doc.content_type}' not allowed. Allowed: {allowed_types}", None
 
         # The file's own restriction: the canonical ids of the templates whose
-        # documents may use it (None = any).
-        if file_doc.allowed_templates is not None and template_id not in file_doc.allowed_templates:
-            return False, (
-                f"File {file_id} may only be used by templates {file_doc.allowed_templates}; "
-                f"this document's template is {template_id}"
-            ), None
+        # documents may use it (None = any). The stored entries are read as ids
+        # even on a row that still holds values, so the restriction means the
+        # same whatever the row's spelling (stored_allowed_templates).
+        refused = await _restriction_refusal(file_doc, template_id, check_template_restriction)
+        if refused is not None:
+            return False, refused, None
 
         # Create file reference
         file_ref = FileReference(

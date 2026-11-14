@@ -303,7 +303,11 @@ async def lifespan(app: FastAPI):
         try:
             summary = await convert_allowed_templates_to_ids()
             if summary["converted"] or summary["unresolved"]:
-                logger.info(f"allowed_templates stored as template ids: {summary}")
+                logger.info(
+                    "allowed_templates ids: %s of %s file(s) rewritten, %s kept an "
+                    "entry that names no template",
+                    summary["converted"], summary["checked"], summary["unresolved"],
+                )
         except Exception as e:
             logger.warning(f"Converting files' allowed_templates to template ids failed: {e}")
 

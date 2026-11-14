@@ -493,6 +493,7 @@ class ValidationService:
         # Stage 2: Template resolution (skipped for an inline candidate)
         start = time.perf_counter()
         template: dict[str, Any] | None
+        check_file_restriction = True
         if template_override is not None:
             # The candidate exists nowhere, so nothing worked out which of its
             # identity paths name a referent; a stored version carries that
@@ -503,6 +504,14 @@ class ValidationService:
                 template["referent_identity_paths"] = await self._candidate_referent_paths(
                     template
                 )
+                check_file_restriction = await self._names_stored_template(
+                    template.get("template_id")
+                )
+                if not check_file_restriction:
+                    result.warnings.append(
+                        "the candidate names no stored template, so each file's "
+                        "allowed_templates restriction was not checked"
+                    )
         else:
             template = await self._resolve_template(template_id, result, version=template_version)
         result.timing["2_template_resolution"] = (time.perf_counter() - start) * 1000
@@ -543,6 +552,7 @@ class ValidationService:
         start = time.perf_counter()
         await self._validate_files(
             data, template, result, template_id=template.get("template_id") or template_id,
+            check_template_restriction=check_file_restriction,
         )
         result.timing["5b_file_validation"] = (time.perf_counter() - start) * 1000
         if not result.valid:
@@ -1731,6 +1741,29 @@ class ValidationService:
 
         return leaves
 
+    @staticmethod
+    async def _names_stored_template(declared: Any) -> bool:
+        """Whether a candidate's declared template_id names a stored template.
+
+        A what-if dry run of a new version declares the id that version keeps,
+        so a file's allowed_templates has its subject here and the door predicts
+        the live write. A definition of a brand-new template declares a
+        placeholder, and nothing holds a canonical id for it yet; comparing that
+        would refuse files the template may well be allowed to use once it
+        exists, so the comparison is not made. A store that cannot answer is an
+        outage, not a placeholder."""
+        if not isinstance(declared, str) or not declared:
+            return False
+        try:
+            template = await get_template_store_client().get_template_resolved(declared)
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable(
+                    "template-store", f"the candidate's template_id {declared!r}", e,
+                ) from e
+            return False
+        return template is not None
+
     async def _composed_candidate(
         self, candidate: dict[str, Any], result: ValidationResult,
     ) -> dict[str, Any] | None:
@@ -2110,6 +2143,7 @@ class ValidationService:
         result: ValidationResult,
         *,
         template_id: str | None,
+        check_template_restriction: bool = True,
     ):
         """
         Stage 5b: File validation.
@@ -2117,7 +2151,12 @@ class ValidationService:
         Validates all file fields by checking:
         - File exists
         - File meets field constraints (allowed_types, max_size_mb)
-        - The file's allowed_templates, if set, names the document's template
+        - The file's allowed_templates, if set, names the document's template.
+          Every file the data names is checked, including one the document
+          already carried: a restriction added since is meant to bind the
+          document, so the write stays refused until it is resolved (the safe
+          default, accepted). Skipped only for an inline candidate, which has
+          no canonical template id to compare against.
         - Builds file_references array for storage
         """
         from .file_service import FileServiceError, get_file_service
@@ -2152,6 +2191,7 @@ class ValidationService:
                     max_size_mb=max_size_mb,
                     template_id=template_id,
                     is_refused=gate_refuses if current_gate() is not None else None,
+                    check_template_restriction=check_template_restriction,
                 )
 
                 if not is_valid:
