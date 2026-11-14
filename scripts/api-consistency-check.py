@@ -141,6 +141,17 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     "resolve_accessible_namespaces",
     "_is_superadmin",
     "is_superadmin",                # wip_auth.groups: the public platform-admin check
+    # wip_auth.permissions helpers built on the ones above.
+    "check_entity_permission",      # wip_auth: can_read, then check_namespace_permission
+    "entity_write_refusals",        # wip_auth: write_refusals for the namespaces of the entities a bulk write names
+    "can_read",                     # wip_auth: resolve_permission + permission_sufficient. Generic name;
+                                    # the walker matches attribute calls too, so any .can_read(...) counts.
+    # A name here counts as a gate wherever the call sits in the function —
+    # under an `if`, in a try, in a comprehension. The rule checks that the
+    # function calls a gate, NOT that every return path reaches it: a gate
+    # inside `if existing:` passes even when the other branch answers without
+    # one. Such a branch must end in not-found or an empty answer; this checker
+    # does not verify that.
     # Local helper wrappers that delegate to the canonical helpers.
     # When a new wrapper lands, add the name here so the AST walker
     # treats the wrapper-call as a valid gate without needing to
@@ -151,6 +162,8 @@ PERMISSION_ENFORCEMENT_NAMES = frozenset({
     "write_refusals",               # document_store.api.auth: write on every namespace a bulk write spans
     "_batch_write_refusals",        # document_store.api.documents: write_refusals for the documents a batch names
     "_require_write_on_template",   # template_store.api.templates: write on the template row's own namespace
+    "_audited_namespace",           # def_store.api.audit: can_read on the audited entity's namespace
+    "_bulk_item_terminology",       # def_store.api.terms: can_read (via _visible_terminology) + resolve_accessible_namespaces
 })
 
 # Names that count as valid permission gates when they appear as the
@@ -191,9 +204,8 @@ def _is_depends_gate(gate: ast.expr) -> bool:
 # these are exempt from the permission-enforcement rule. The categories:
 #
 #   - Stateless utilities that don't touch namespaced data: /preview
-#     (parses operator-uploaded files), /validate (now gated, but kept
-#     here as a fallback because some validate endpoints in other
-#     services may be stateless).
+#     (parses operator-uploaded files). /validate endpoints are not
+#     exempt; they are gated like any other.
 #   - Service health/info: /health, /stats, /count.
 #   - Bootstrap/initialisation: /initialize.
 #
@@ -667,9 +679,11 @@ class EndpointVisitor(ast.NodeVisitor):
 
         Looks for any Call node in the function body whose function name
         matches PERMISSION_ENFORCEMENT_NAMES, or a Depends(...) on a
-        function in PERMISSION_DEPENDS_NAMES. Walks the full subtree so
-        the helper can be nested inside conditionals, try blocks, or
-        comprehensions — anywhere FastAPI would reach it during a request.
+        function in PERMISSION_DEPENDS_NAMES. Walks the full subtree, so
+        a helper nested inside a conditional, try block or comprehension
+        counts. The match is by name only: it does not check that every
+        return path reaches the helper, so a gate under an `if` passes
+        even when another branch answers ungated.
 
         Exemption mechanisms:
           1. Component-level: PERMISSION_EXEMPT_SERVICES (e.g., registry).
