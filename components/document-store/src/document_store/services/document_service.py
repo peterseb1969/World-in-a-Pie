@@ -94,9 +94,11 @@ _REPAIR_CONCURRENCY = 8
 class _ItemOutcome(NamedTuple):
     """Result of applying one validated item in bulk_create's Stage 4.
 
-    counter is one of "created" | "updated" | "unchanged" | "failed" — tells
-    the coordinator which tally to bump. pending_event is the deferred NATS
-    event (published after the loop) or None.
+    counter is one of "created" | "updated" | "unchanged" | "failed";
+    "failed" marks a write _repair_failed_writes must settle (the document
+    gets an active version back). The response's counts come from the result
+    rows, not from this. pending_event is the deferred NATS event (published
+    after the loop) or None.
     """
 
     result: "BulkResultItem"
@@ -527,8 +529,9 @@ async def _can_read_namespace(identity: Any, ns: str, cache: dict[str, str]) -> 
 
 
 async def _projection_paths_by_template(template_ids: set[str]) -> dict[str, list[str]]:
-    """Each peer template's projection paths; an unreadable template gets
-    the legacy compact default."""
+    """Each peer template's projection paths. A template that is missing or
+    that template-store cannot serve — an outage included — gets the legacy
+    compact default: the peer is still shown, with fewer fields."""
     template_client = get_template_store_client()
     paths_by_tid: dict[str, list[str]] = {}
     for tid in template_ids:
@@ -878,8 +881,53 @@ async def _publish_bulk_events(
     timing["5_nats_publish"] = (time.perf_counter() - start) * 1000
 
 
+async def _keep_referenced_file(
+    files: Any, file_service: Any, file_id: str, holders: list[str],
+    deleting: str, deleting_version: int | None,
+) -> None:
+    """A file the reclaim found still referenced goes back to active, its
+    count raised to at least the references the active documents hold."""
+    from ..models.file import FileStatus
+
+    held = await file_service.live_reference_count(
+        file_id, except_document=deleting, except_version=deleting_version,
+    )
+    logger.warning(
+        "File %s has reference count 0 but active documents reference it "
+        "(%s, %d references); kept, and its count raised to match",
+        file_id, ", ".join(holders), held,
+    )
+    await files.update_one(
+        {"file_id": file_id},
+        {"$set": {"status": FileStatus.ACTIVE.value},
+         "$max": {"reference_count": max(held, 1)}},
+    )
+
+
+async def _record_failed_reclaim(files: Any, file_id: str, error: Exception) -> None:
+    """Record on a file left inactive why its bytes were not deleted, so the
+    integrity check reports it (unreclaimed_file) apart from a file
+    soft-deleted on purpose. Best-effort."""
+    from ..models.file import FileStatus
+
+    try:
+        await files.update_one(
+            {"file_id": file_id, "status": FileStatus.INACTIVE.value},
+            {"$set": {"reclaim_failed": str(error) or type(error).__name__}},
+        )
+    except Exception:
+        logger.exception("Could not record the failed reclaim of file %s", file_id)
+
+
+def _failed_outcome(plan: "_PlannedWrite", fields: dict[str, Any]) -> "_ItemOutcome":
+    """The outcome of a planned row that was not written."""
+    return _ItemOutcome(
+        BulkResultItem(index=plan.item_index, status="error", **fields), None, "failed",
+    )
+
+
 def _collect_outcome(
-    outcome: Any, results: list[Any], pending_events: list[tuple[Any, dict]],
+    outcome: "_ItemOutcome", results: list["BulkResultItem"], pending_events: list[tuple[Any, dict]],
 ) -> None:
     """One written item's result row, and its event when it has one."""
     results.append(outcome.result)
@@ -1588,19 +1636,17 @@ class DocumentService:
                     document_id,
                 )
                 await document.delete()
+                # Its file references were counted by the insert.
+                await self._update_file_reference_counts(document.file_references, delta=-1)
                 await self._release_entry_if_minted(document_id, minted=is_new_entry)
                 return None, error_fields(e)
 
-        # Publish document created event
+        # Publish document created event (its file references were counted
+        # by the insert)
         await publish_document_event(
             EventType.DOCUMENT_CREATED,
             await self._document_to_event_payload(document),
             changed_by=actor
-        )
-
-        # Update file reference counts (increment for new document)
-        await self._update_file_reference_counts(
-            validation_result.file_references, delta=1
         )
 
         return DocumentCreateResponse(
@@ -1843,7 +1889,21 @@ class DocumentService:
                 namespace, document_id,
             )
 
-    async def _insert_with_retry(
+    async def _insert_with_retry(self, files_counted: bool = False, **insert: Any) -> "Document":
+        """_insert_attempts, with the document's file references counted
+        before the insert (_hold_file_references) and released again when it
+        fails. ``files_counted`` says the caller counted them already (and
+        releases them itself)."""
+        if not files_counted:
+            await self._hold_file_references(insert["file_references"])
+        try:
+            return await self._insert_attempts(**insert)
+        except BaseException:
+            if not files_counted:
+                await self._update_file_reference_counts(insert["file_references"], delta=-1)
+            raise
+
+    async def _insert_attempts(
         self,
         namespace: str,
         document_id: str,
@@ -1951,7 +2011,7 @@ class DocumentService:
                     version = latest[0].version + 1
                 else:
                     version += 1
-        raise RuntimeError(f"_insert_with_retry exhausted {max_retries} retries without returning or raising")
+        raise RuntimeError(f"_insert_attempts exhausted {max_retries} retries without returning or raising")
 
     async def _is_template_versioned(self, template_id: str) -> bool:
         """Read template.versioned. Defaults to True (legacy v1.x behaviour)
@@ -2067,11 +2127,11 @@ class DocumentService:
             changed_by=actor
         )
 
-        # Update file reference counts. A deleted predecessor's references
-        # were already released by the delete.
+        # The new version's file references were counted by its insert;
+        # release the predecessor's, unless it was deleted, whose references
+        # the delete already released.
         if not revival:
             await self._update_file_reference_counts(existing.file_references, delta=-1)
-        await self._update_file_reference_counts(validation_result.file_references, delta=1)
 
         return DocumentCreateResponse(
             document_id=document_id,
@@ -2102,19 +2162,28 @@ class DocumentService:
 
         One conditional replace, so it is atomic on a standalone mongod: the
         token a caller holds can only pass for the write it was read for.
+
+        ``doc``'s file references are counted before the replace
+        (_hold_file_references) and released again when it does not land; the
+        caller releases the references of the version it replaced.
         """
         from beanie.exceptions import DocumentNotFound
 
+        await self._hold_file_references(doc.file_references)
         new_revision = (read_revision if read_revision is not None else doc.version) + 1
         doc.revision = new_revision
+        landed = False
         try:
             await Document.find_one(
                 {"_id": doc.id, "revision": read_revision, "status": read_status.value}
             ).replace_one(doc)
+            landed = True
         except DocumentNotFound:
             doc.revision = read_revision
-            return False
-        return True
+        finally:
+            if not landed:
+                await self._update_file_reference_counts(doc.file_references, delta=-1)
+        return landed
 
     @staticmethod
     async def _reread_for_overwrite(existing: Document, first_status: DocumentStatus) -> Document:
@@ -2220,9 +2289,9 @@ class DocumentService:
         # version stays at its prior value.
         await self._announce_update(existing, actor, deferred_events)
 
-        # File-ref counts: subtract the old set, add the new set.
+        # File-ref counts: the new set was counted by the write; release the
+        # old one.
         await self._update_file_reference_counts(previous_file_refs, delta=-1)
-        await self._update_file_reference_counts(validation_result.file_references, delta=1)
 
         if written is not None:
             # The row as written: after a retry, a re-read object, not the
@@ -2617,9 +2686,12 @@ class DocumentService:
         filter the query is narrowed to the edge types among its matches.
 
         When include_peers=True, each item is decorated with the peer
-        entity at the OTHER end of the edge — direction-agnostic, latest
-        active version, projected to {document_id, namespace, template_value,
-        template_id, status, data: {title?, doc_status?}}. Closes the N+1
+        entity at the OTHER end of the edge — direction-agnostic, its latest
+        version whatever its status (an inactive peer comes back with status
+        'inactive'), projected to {document_id, namespace, template_value,
+        template_id, status} plus the paths _projection_paths picks for its
+        template (its header_fields, else its identity fields, else
+        {title, doc_status}). Closes the N+1
         fetch loop the relationships sidebar would otherwise pay (CASE-303).
         Cross-namespace peers respect read permission: a peer in a
         namespace the caller cannot read reports peer_error_code='not_found'
@@ -3033,8 +3105,10 @@ class DocumentService:
             hard_delete: Permanently remove (requires namespace deletion_mode='full')
             version: Specific version to hard-delete (None = all). Ignored for soft-delete.
             warnings: When given, receives the warnings of a soft delete whose
-                retirement did not fully reach the Registry, and of a forced
-                hard delete that broke references.
+                retirement did not fully reach the Registry, of a forced
+                hard delete that broke references, and of a hard delete that
+                left a file it released inactive because its bytes could not
+                be deleted.
             force: Hard-delete even while other documents reference it.
             deleted_with: Documents hard-deleted (all versions) in the same
                 request; their references do not block this delete.
@@ -3427,8 +3501,10 @@ class DocumentService:
         first, guarded on its count still being 0 — from then on a write that
         validates against it refuses it — and only then are referrers looked
         for. One that turns up returns the file to active, its count raised to
-        the referrers found. A file whose bytes the store refused to delete
-        stays recorded (inactive) and is named in ``warnings``.
+        at least the references the active documents hold
+        (live_reference_count). A file whose bytes the store refused to delete
+        stays recorded (inactive), is named in ``warnings`` and is marked
+        ``reclaim_failed`` for the integrity check.
         """
         from ..models.file import File, FileStatus
         from ..services.file_storage_client import is_file_storage_enabled
@@ -3451,15 +3527,8 @@ class DocumentService:
                     file_id, except_document=deleting, except_version=deleting_version,
                 )
                 if holders:
-                    logger.warning(
-                        "File %s has reference count 0 but active documents %s reference it; "
-                        "kept, and its count raised to match",
-                        file_id, holders,
-                    )
-                    await files.update_one(
-                        {"file_id": file_id},
-                        {"$set": {"status": FileStatus.ACTIVE.value},
-                         "$max": {"reference_count": len(holders)}},
+                    await _keep_referenced_file(
+                        files, file_service, file_id, holders, deleting, deleting_version,
                     )
                     continue
                 await file_service.hard_delete_file(
@@ -3469,6 +3538,7 @@ class DocumentService:
                 logger.warning(f"Failed to hard-delete orphaned file {file_id}: {e}")
                 if warnings is not None:
                     warnings.append(f"File {file_id} was left inactive, not deleted: {e}")
+                await _record_failed_reclaim(files, file_id, e)
 
     async def query_documents(
         self,
@@ -3680,13 +3750,12 @@ class DocumentService:
         namespace: str,
         continue_on_error: bool,
         timing: dict[str, float],
-    ) -> tuple[list, list[BulkResultItem], int]:
+    ) -> tuple[list, list[BulkResultItem]]:
         """Stage 1 of bulk_create: validate items.
 
-        Returns (validation_results, results, failed):
+        Returns (validation_results, results):
         - validation_results: (i, item, validation_result) for each VALID item
         - results: error/skipped BulkResultItems accumulated during validation
-        - failed: count of error rows
 
         continue_on_error=True validates every item concurrently, collecting
         per-item errors. continue_on_error=False validates sequentially and
@@ -3700,7 +3769,6 @@ class DocumentService:
         start = time.perf_counter()
         validation_results: list = []
         results: list[BulkResultItem] = []
-        failed = 0
 
         validation_semaphore = asyncio.Semaphore(10)
         # Shared cache for document reference lookups across the batch —
@@ -3731,7 +3799,6 @@ class DocumentService:
 
             for task_idx, entry in enumerate(settled):
                 if isinstance(entry, BaseException):
-                    failed += 1
                     results.append(BulkResultItem(
                         index=task_idx, status="error", **error_fields(entry)
                     ))
@@ -3740,7 +3807,6 @@ class DocumentService:
                     if validation_result.valid:
                         validation_results.append((i, item, validation_result))
                     else:
-                        failed += 1
                         results.append(BulkResultItem(
                             index=i,
                             status="error",
@@ -3762,7 +3828,6 @@ class DocumentService:
                     if validation_result.valid:
                         validation_results.append((i, item, validation_result))
                     else:
-                        failed += 1
                         results.append(BulkResultItem(
                             index=i,
                             status="error",
@@ -3773,7 +3838,6 @@ class DocumentService:
                         results.extend(_skipped_rows(i))
                         break
                 except Exception as e:
-                    failed += 1
                     results.append(BulkResultItem(
                         index=i, status="error", **error_fields(e)
                     ))
@@ -3781,7 +3845,7 @@ class DocumentService:
                     break
 
         timing["1_validation"] = (time.perf_counter() - start) * 1000
-        return validation_results, results, failed
+        return validation_results, results
 
     async def _per_item_document_ids(
         self,
@@ -3965,67 +4029,31 @@ class DocumentService:
         """Stage 4b-c of _write_planned: insert the planned rows and append one
         outcome per row to ``outcomes``, in order. ``retried`` receives the rows
         a duplicate-key retry retired (_insert_with_retry)."""
-        from pymongo.errors import BulkWriteError
-
         start = time.perf_counter()
-        refused: dict[int, dict] = {}
-        for first in range(0, len(planned), BULK_WRITE_CHUNK):
-            chunk = planned[first:first + BULK_WRITE_CHUNK]
-            try:
-                await Document.insert_many([p.document for p in chunk], ordered=False)
-            except BulkWriteError as e:
-                for err in e.details.get("writeErrors", []):
-                    refused[first + err["index"]] = err
-            except Exception as exc:
-                refused.update(await self._refuse_unlanded(namespace, chunk, first, exc))
+        # Each row's file references are counted before it is written
+        # (_hold_file_references); a row whose file went away is not written.
+        unheld = await self._hold_planned_files(planned)
+        to_insert = [pos for pos in range(len(planned)) if pos not in unheld]
+        refused = await self._insert_chunks(namespace, planned, to_insert)
         timing["4b_insert_documents"] = (time.perf_counter() - start) * 1000
 
         for pos, plan in enumerate(planned):
             document = plan.document
+            if pos in unheld:
+                outcomes.append(_failed_outcome(plan, error_fields(unheld[pos])))
+                continue
             err = refused.get(pos)
             if err is not None:
-                if err.get("code") != 11000:
-                    outcomes.append(_ItemOutcome(
-                        BulkResultItem(
-                            index=plan.item_index, status="error", error_code="internal_error",
-                            error=f"Document write failed: {err.get('errmsg', err)}",
-                        ),
-                        None,
-                        "failed",
-                    ))
+                written = await self._write_refused_row(plan, err, namespace, actor, now, retried)
+                if isinstance(written, _ItemOutcome):
+                    outcomes.append(written)
                     continue
-                try:
-                    document = await self._insert_with_retry(
-                        namespace=namespace,
-                        document_id=document.document_id,
-                        template_id=document.template_id,
-                        template_version=document.template_version,
-                        template_value=plan.validation_result.template_value,
-                        identity_hash=document.identity_hash,
-                        version=document.version,
-                        data=document.data,
-                        term_references=document.term_references,
-                        references=document.references,
-                        file_references=document.file_references,
-                        metadata=document.metadata,
-                        actor=actor,
-                        now=now,
-                        entity_created_at=document.created_at,
-                        retired=retried,
-                    )
-                except Exception as exc:
-                    outcomes.append(_ItemOutcome(
-                        BulkResultItem(index=plan.item_index, status="error", **error_fields(exc)),
-                        None,
-                        "failed",
-                    ))
-                    continue
+                document = written
 
             is_new = document.version == 1
             event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
             if plan.existing is not None:
                 await self._update_file_reference_counts(plan.existing.file_references, delta=-1)
-            await self._update_file_reference_counts(document.file_references, delta=1)
             outcomes.append(_ItemOutcome(
                 BulkResultItem(
                     index=plan.item_index,
@@ -4052,11 +4080,86 @@ class DocumentService:
                 "created" if is_new else "updated",
             ))
 
+    async def _insert_chunks(
+        self, namespace: str, planned: list["_PlannedWrite"], to_insert: list[int],
+    ) -> dict[int, dict]:
+        """One unordered insert per BULK_WRITE_CHUNK of the rows at
+        ``to_insert``; the write error of each row that did not land, by its
+        position in ``planned``."""
+        from pymongo.errors import BulkWriteError
+
+        refused: dict[int, dict] = {}
+        for first in range(0, len(to_insert), BULK_WRITE_CHUNK):
+            positions = to_insert[first:first + BULK_WRITE_CHUNK]
+            chunk = [planned[pos] for pos in positions]
+            try:
+                await Document.insert_many([p.document for p in chunk], ordered=False)
+            except BulkWriteError as e:
+                for err in e.details.get("writeErrors", []):
+                    refused[positions[err["index"]]] = err
+            except Exception as exc:
+                unlanded = await self._refuse_unlanded(namespace, chunk, exc)
+                refused.update({positions[i]: err for i, err in unlanded.items()})
+        return refused
+
+    async def _write_refused_row(
+        self, plan: "_PlannedWrite", err: dict, namespace: str, actor: str, now: datetime,
+        retried: dict[Any, tuple[datetime | None, str | None]],
+    ) -> "Document | _ItemOutcome":
+        """A planned row the bulk insert refused: written again through
+        _insert_with_retry when a concurrent writer took its version (a
+        duplicate key; ``retried`` receives the rows that retry retired), else
+        its failure. Its file references were counted before the insert; a row
+        that is not written releases them."""
+        document = plan.document
+        if err.get("code") == 11000:
+            try:
+                return await self._insert_with_retry(
+                    namespace=namespace,
+                    document_id=document.document_id,
+                    template_id=document.template_id,
+                    template_version=document.template_version,
+                    template_value=plan.validation_result.template_value,
+                    identity_hash=document.identity_hash,
+                    version=document.version,
+                    data=document.data,
+                    term_references=document.term_references,
+                    references=document.references,
+                    file_references=document.file_references,
+                    metadata=document.metadata,
+                    actor=actor,
+                    now=now,
+                    entity_created_at=document.created_at,
+                    files_counted=True,
+                    retired=retried,
+                )
+            except Exception as exc:
+                fields = error_fields(exc)
+        else:
+            fields = {"error_code": "internal_error",
+                      "error": f"Document write failed: {err.get('errmsg', err)}"}
+        await self._update_file_reference_counts(document.file_references, delta=-1)
+        return _failed_outcome(plan, fields)
+
+    async def _hold_planned_files(
+        self, planned: list["_PlannedWrite"],
+    ) -> dict[int, Exception]:
+        """Count each planned row's file references before the insert; the
+        rows that could not be counted (a file went away since validation),
+        by position, with the refusal."""
+        unheld: dict[int, Exception] = {}
+        for pos, plan in enumerate(planned):
+            try:
+                await self._hold_file_references(plan.document.file_references)
+            except Exception as exc:
+                unheld[pos] = exc
+        return unheld
+
     async def _refuse_unlanded(
-        self, namespace: str, chunk: list["_PlannedWrite"], first: int, exc: Exception,
+        self, namespace: str, chunk: list["_PlannedWrite"], exc: Exception,
     ) -> dict[int, dict]:
         """The rows of a chunk whose insert_many raised (connection, step-down,
-        timeout) that are not stored, keyed by position in the write, each
+        timeout) that are not stored, keyed by position in the chunk, each
         refused with the failure: which rows landed is unknown, so ask. A row
         landed when the row this write planned, by its own _id, is stored: a
         row another write stored at the same (document_id, version) is not
@@ -4079,12 +4182,12 @@ class DocumentService:
                 "Could not read which of %d documents a failed bulk insert stored", len(chunk),
             )
             return {
-                first + offset: {"errmsg": f"{exc}; whether this document was stored "
+                offset: {"errmsg": f"{exc}; whether this document was stored "
                                            "is unknown, read it before sending it again"}
                 for offset in range(len(chunk))
             }
         return {
-            first + offset: {"errmsg": str(exc)}
+            offset: {"errmsg": str(exc)}
             for offset, plan in enumerate(chunk)
             if plan.document.id not in landed
         }
@@ -4416,9 +4519,9 @@ class DocumentService:
         """The deferred event of a written item.
 
         The event is published concurrently after the loop. The written
-        version's file references are counted, and the replaced version's
-        released — unless it was deleted, whose references the delete already
-        released.
+        version's file references were counted by its insert; the replaced
+        version's are released — unless it was deleted, whose references the
+        delete already released.
         """
         is_new = document.version == 1
         event_type = EventType.DOCUMENT_CREATED if is_new else EventType.DOCUMENT_UPDATED
@@ -4426,7 +4529,6 @@ class DocumentService:
 
         if not is_new and existing and not revival:
             await self._update_file_reference_counts(existing.file_references, delta=-1)
-        await self._update_file_reference_counts(validation_result.file_references, delta=1)
         return pending_event
 
     async def _refuse_document_id_mismatches(
@@ -4630,16 +4732,15 @@ class DocumentService:
         placements: dict[str, str] | None,
         continue_on_error: bool,
         results: list[BulkResultItem],
-    ) -> tuple[list, int]:
+    ) -> list:
         """Stage 1b over the validated items: the ones the reference gates let
-        through, and how many they refused (their rows go into ``results``).
+        through (the refused items' rows go into ``results``).
         Without continue_on_error the first refusal stops the stage, as stages
         1 and 4 stop: the items before it are still written, the later ones
         are reported skipped.
         """
         template_client = get_template_store_client()
         checked: list = []
-        refused = 0
         for pos, entry in enumerate(validation_results):
             idx, req, vr = entry
             refusal = await self._gate_refusal(
@@ -4648,7 +4749,6 @@ class DocumentService:
             if refusal is None:
                 checked.append(entry)
                 continue
-            refused += 1
             results.append(refusal)
             if not continue_on_error:
                 results.extend(
@@ -4657,7 +4757,7 @@ class DocumentService:
                     for later, _, _ in validation_results[pos + 1:]
                 )
                 break
-        return checked, refused
+        return checked
 
     async def _bulk_create(
         self,
@@ -4704,7 +4804,7 @@ class DocumentService:
         # validation_results and proceed to creation (CASE-413, Option 2); the
         # failing item's error row and the trailing skipped rows are already in
         # results.
-        validation_results, results, _ = await self._validate_batch(
+        validation_results, results = await self._validate_batch(
             items, namespace, continue_on_error, timing
         )
         _add_validation_timing(validation_results, timing)
@@ -4717,7 +4817,7 @@ class DocumentService:
         # {namespace, status}, so this reuses _validate_relationship_constraints.
         start = time.perf_counter()
         placements = await self._place_batch_references(namespace, validation_results)
-        validation_results, _ = await self._apply_reference_gates(
+        validation_results = await self._apply_reference_gates(
             validation_results, namespace, placements, continue_on_error, results,
         )
         timing["1b_reference_gates"] = (time.perf_counter() - start) * 1000
@@ -5002,9 +5102,9 @@ class DocumentService:
         namespace: str,
         actor: str,
         now: datetime,
-        per_item_ids: Any,
+        per_item_ids: set[str] | None,
         retiring: dict[Any, Document],
-    ) -> Any:
+    ) -> "_PlannedWrite | _ItemOutcome":
         """One validated item: planned for the bulk write when it is eligible
         (a _PlannedWrite, or the outcome the plan settled), else written on
         its own."""
@@ -5319,6 +5419,43 @@ class DocumentService:
             is_latest_version=is_latest,
             latest_version=latest_version,
         )
+
+    async def _hold_file_references(self, file_references: list[dict[str, Any]]) -> None:
+        """Count a write's file references BEFORE its document is written.
+
+        Raises DocumentStoreError (validation_failed) when a file went inactive
+        or disappeared since the write validated it, with every count this call
+        raised lowered again. A hard delete that reclaims a file's bytes first
+        marks the file inactive, guarded on its count being 0: counted first, a
+        write either makes that guard miss (the file is kept) or finds the file
+        inactive here and is refused. Counting after the write left a window in
+        which the bytes went while a document was being written that uses them.
+        A caller whose write then does not land lowers the counts again
+        (_update_file_reference_counts with -1).
+        """
+        if not file_references or not is_file_storage_enabled():
+            return
+        from ..models.file import FileStatus
+        from .file_service import get_file_service
+
+        file_service = get_file_service()
+        held: list[dict[str, Any]] = []
+        try:
+            for ref in file_references:
+                file_id = ref.get("file_id")
+                if not file_id:
+                    continue
+                stored = await file_service.update_reference_count(file_id, 1)
+                if stored is not None:
+                    held.append(ref)
+                if stored is None or stored.status == FileStatus.INACTIVE:
+                    raise DocumentStoreError(
+                        f"File has been deleted: {file_id}", "validation_failed",
+                        rule="file_deleted",
+                    )
+        except BaseException:
+            await self._update_file_reference_counts(held, delta=-1)
+            raise
 
     async def _update_file_reference_counts(
         self,
@@ -6035,8 +6172,8 @@ class DocumentService:
             await self._document_to_event_payload(current),
             changed_by=actor,
         )
+        # The new references were counted by the write; release the old ones.
         await self._update_file_reference_counts(previous_file_refs, delta=-1)
-        await self._update_file_reference_counts(validation_result.file_references, delta=1)
         return _patch_result(index, current, "updated", validation_result.warnings)
 
     async def _patch_new_version(
@@ -6115,13 +6252,10 @@ class DocumentService:
             changed_by=actor,
         )
 
-        # 11. File reference counts: decrement the old version's refs,
-        #     increment the new ones. Same as _create_new_version.
+        # 11. File reference counts: the new version's were counted by its
+        #     insert; release the old version's. Same as _create_new_version.
         await self._update_file_reference_counts(
             current.file_references, delta=-1
-        )
-        await self._update_file_reference_counts(
-            validation_result.file_references, delta=1
         )
         return _patch_result(index, new_doc, "updated", validation_result.warnings, revision=False)
 

@@ -82,20 +82,21 @@ class FileServiceError(Exception):
 def _content_type_filter(content_type: str | None) -> Any:
     """The ``content_type`` condition of a file listing, or None for none.
 
-    "*/*" (the platform's any-type spelling) and "*" filter nothing. A value
-    ending in "*" is a prefix, by the allowlist's rule (content_type_matches):
-    "image/*" lists image/png. Anything else is that type exactly. As in
-    content_type_matches, case is ignored, and a stored type's parameters
-    ("; charset=utf-8") are not part of it. The value is caller text landing
-    in a pattern — escaped so a stray metacharacter can neither 500 the query
-    nor widen the match (same literal-text rule as term search).
+    "*/*" (the platform's any-type spelling) and "*" filter nothing. Otherwise
+    a stored type matches by the allowlist's rule (content_type_matches): a
+    value ending in "*" is a prefix ("image/*" lists image/png), any other is
+    the type exactly, case ignored and parameters ("; charset=utf-8") not part
+    of it on either side — an upload stores the type as sent. The value is
+    caller text landing in a pattern, escaped so a stray metacharacter can
+    neither 500 the query nor widen the match (same literal-text rule as term
+    search).
     """
-    pattern = (content_type or "").strip().lower()
-    if not pattern or pattern in ("*", "*/*"):
+    wanted = (content_type or "").split(";")[0].strip()
+    if not wanted or wanted in ("*", "*/*"):
         return None
-    if pattern.endswith("*"):
-        return {"$regex": f"^{re.escape(pattern[:-1])}", "$options": "i"}
-    return {"$regex": f"^{re.escape(pattern)}\\s*(;|$)", "$options": "i"}
+    if wanted.endswith("*"):
+        return {"$regex": f"^\\s*{re.escape(wanted[:-1])}", "$options": "i"}
+    return {"$regex": f"^\\s*{re.escape(wanted)}\\s*(;|$)", "$options": "i"}
 
 
 def _integrity_status(issues: list, summary: dict[str, int]) -> str:
@@ -159,8 +160,10 @@ class FileService:
         # Sanitise filename (L2 — prevent header injection, path traversal)
         from .file_validation import blocked_extension, sanitize_filename
         filename = sanitize_filename(filename)
-        # The route refuses this with a 415 already; this keeps the invariant
-        # for every caller: no file is stored under a blocked extension.
+        # The route refuses this with a 415 already; this keeps the check for
+        # every caller of upload_file. A restore or merge copies File records
+        # as archived and does not judge their names again, so a file stored
+        # before the blocklist applied can still carry a blocked extension.
         ext = blocked_extension(filename)
         if ext:
             raise FileServiceError(
@@ -518,6 +521,7 @@ class FileService:
                    for f in ("metadata", "allowed_templates", "updated_at", "updated_by")},
                 "status": {"$cond": [{"$gt": ["$reference_count", 0]},
                                      FileStatus.ACTIVE.value, FileStatus.ORPHAN.value]},
+                "reclaim_failed": None,
             }}],
             return_document=ReturnDocument.AFTER,
         )
@@ -821,6 +825,35 @@ class FileService:
         ids = await Document.get_motor_collection().distinct("document_id", query)
         return sorted(ids)[:limit]
 
+    async def live_reference_count(
+        self,
+        file_id: str,
+        *,
+        except_document: str | None = None,
+        except_version: int | None = None,
+    ) -> int:
+        """How many references active documents hold to the file — the value
+        its reference count should have: a document counts once per field
+        that references the file, as its writes count it. Leaves out the
+        document being deleted as ``live_referrers`` does."""
+        from ..models.document import Document, DocumentStatus
+
+        match: dict[str, Any] = {
+            "file_references.file_id": file_id, "status": DocumentStatus.ACTIVE.value,
+        }
+        if except_document is not None:
+            excluded: dict[str, Any] = {"document_id": except_document}
+            if except_version is not None:
+                excluded["version"] = except_version
+            match["$nor"] = [excluded]
+        rows = await Document.get_motor_collection().aggregate([
+            {"$match": match},
+            {"$unwind": "$file_references"},
+            {"$match": {"file_references.file_id": file_id}},
+            {"$count": "n"},
+        ]).to_list(1)
+        return rows[0]["n"] if rows else 0
+
     async def _set_fields(self, file_doc: File, fields: tuple[str, ...]) -> None:
         """Write only ``fields`` of ``file_doc``: a whole-record save would
         write back the reference count it read and undo a concurrent change."""
@@ -956,7 +989,8 @@ class FileService:
 
     async def check_integrity(self) -> FileIntegrityResponse:
         """
-        Check file integrity (orphans, missing storage, broken references).
+        Check file integrity (orphans, missing storage, broken references,
+        files a document hard delete could not reclaim).
 
         The storage sweep says how much it checked: ``storage_checked``
         objects answered, ``storage_check_failed`` the store refused to answer
@@ -973,6 +1007,7 @@ class FileService:
             "orphan_file": 0,
             "missing_storage": 0,
             "inactive_referenced": 0,
+            "unreclaimed_file": 0,
             "storage_checked": 0,
             "storage_check_failed": 0,
             "storage_not_checked": 0,
@@ -992,6 +1027,24 @@ class FileService:
         # Check for files with storage issues (if storage is enabled)
         if is_file_storage_enabled():
             await self._sweep_storage(summary, issues)
+
+        # Files a document hard delete released but whose bytes the store
+        # refused to delete: inactive, recorded, and retried by nothing.
+        unreclaimed = await File.find({
+            "status": FileStatus.INACTIVE.value,
+            "reclaim_failed": {"$ne": None},
+        }).limit(100).to_list()
+        for file_doc in unreclaimed:
+            summary["unreclaimed_file"] += 1
+            issues.append(FileIntegrityIssue(
+                type="unreclaimed_file",
+                severity="warning",
+                file_id=file_doc.file_id,
+                message=(
+                    f"File {file_doc.filename} was left inactive when its bytes could not be "
+                    f"deleted ({file_doc.reclaim_failed}); hard-delete it again to reclaim them"
+                ),
+            ))
 
         # Check for inactive files still being referenced
         inactive_referenced = await File.find({

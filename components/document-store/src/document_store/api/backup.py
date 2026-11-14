@@ -792,7 +792,8 @@ def _refuse_retired_restore_options(*, continue_on_error: bool) -> None:
 
 async def _stream_upload(archive: UploadFile, archive_path: Path, job_id: str) -> None:
     """Stream the upload to disk without buffering the whole thing in memory;
-    a failed write leaves no file behind."""
+    a failed or aborted write (the request cancelled mid-upload included)
+    leaves no file behind."""
     try:
         with archive_path.open("wb") as fh:
             while True:
@@ -804,6 +805,9 @@ async def _stream_upload(archive: UploadFile, archive_path: Path, job_id: str) -
         archive_path.unlink(missing_ok=True)
         logger.exception("Failed to stream restore upload for %s", job_id)
         raise HTTPException(status_code=500, detail=f"Upload failed: {exc}") from exc
+    except BaseException:
+        archive_path.unlink(missing_ok=True)
+        raise
     finally:
         await archive.close()
 
@@ -827,7 +831,11 @@ async def _authorize_restore_targets(
         # may have nothing to do with. Given only a namespace_map, its
         # targets are what it writes, admin-checked as the map was parsed.
         if not map_only:
-            await check_namespace_permission(identity, effective_target, "admin")
+            try:
+                await check_namespace_permission(identity, effective_target, "admin")
+            except HTTPException:
+                archive_path.unlink(missing_ok=True)
+                raise
         return [], effective_target
     try:
         prefixes, effective_target = await _authorize_archive_restore(
@@ -929,11 +937,11 @@ def _restore_write_targets(
     # The manifest's prefixes are the namespaces this restore writes; a
     # single-namespace archive derives prefixes == [effective_target], so
     # this one expression covers both the single- and multi-namespace
-    # paths. prefixes is never empty here: _authorize_archive_restore
-    # refuses an archive that names no namespace (400) and one it cannot
-    # read. The scalar `namespace` stays the URL auth anchor here — each
-    # archived namespace restores into itself, so no single one of them IS
-    # the job.
+    # paths. _authorize_archive_restore refuses an archive that names no
+    # namespace, so prefixes is never empty here. The job's scalar name is
+    # the target, or the URL ``namespace`` for a multi-namespace archive
+    # (effective_target ''): each archived namespace restores into itself,
+    # so no single one of them IS the job.
     return prefixes, effective_target or namespace
 
 
@@ -1416,8 +1424,8 @@ async def _insert_restore_from_job(
             job_id=new_job_id,
             kind=BackupJobKind.RESTORE,
             namespace=effective_target or src.namespace,
-            # The namespaces it writes, as for the upload restore: never
-            # empty, _authorize_archive_restore refuses an archive naming none.
+            # The manifest's prefixes, as the upload restore records them
+            # (_authorize_archive_restore refuses an archive naming none).
             namespaces=prefixes,
             archive_path=f"{new_job_id}.zip" if object_copied else str(scratch),
             archive_backend=BACKEND_MINIO if object_copied else "local",

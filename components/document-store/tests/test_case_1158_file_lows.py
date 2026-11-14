@@ -40,8 +40,44 @@ async def test_the_any_type_filter_filters_nothing(file_client, auth_headers, an
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("wanted", ["text/csv", "TEXT/CSV", "text/*", "Text/*", "text/csv; charset=utf-8"])
+async def test_the_type_filter_matches_as_the_allowlist_does(file_client, auth_headers, wanted):  # noqa: F811
+    # Stored as sent: case and parameters are not part of the type.
+    await _insert_file(content_type="Text/CSV; charset=utf-8")
+    await _insert_file(content_type="text/csvx")
+    await _insert_file(content_type="image/png")
+
+    resp = await file_client.get(FILES, headers=auth_headers,
+                                 params={"namespace": "wip", "content_type": wanted})
+
+    types = sorted(f["content_type"] for f in resp.json()["items"])
+    expected = ["Text/CSV; charset=utf-8", "text/csvx"] if wanted.endswith("*") else ["Text/CSV; charset=utf-8"]
+    assert types == expected, resp.text
+
+
+@pytest.mark.asyncio
 async def test_get_file_checks_the_namespace_of_the_record_it_read(file_client):  # noqa: F811
     doc = await _insert_file(namespace="xns-closed")
+    resp = await file_client.get(f"{FILES}/{doc.file_id}", headers={"X-API-Key": "test_xns_writer_key"})
+    assert resp.status_code == 404, resp.text
+
+
+@pytest.mark.asyncio
+async def test_get_file_checks_a_file_hard_deleted_after_it_was_read(file_client, monkeypatch):  # noqa: F811
+    """The route used to read the record a second time for the check, and
+    skipped the check when that read missed: a file hard-deleted in between
+    was served to a caller who cannot read its namespace."""
+    from document_store.services.file_service import FileService
+
+    doc = await _insert_file(namespace="xns-closed")
+    real = FileService.get_file
+
+    async def read_then_hard_delete(self, file_id):
+        found = await real(self, file_id)
+        await File.get_motor_collection().delete_one({"file_id": file_id})
+        return found
+
+    monkeypatch.setattr(FileService, "get_file", read_then_hard_delete)
     resp = await file_client.get(f"{FILES}/{doc.file_id}", headers={"X-API-Key": "test_xns_writer_key"})
     assert resp.status_code == 404, resp.text
 
@@ -104,8 +140,9 @@ async def test_an_outage_mid_download_leaves_no_partial_file(tmp_path):
 
 
 class _Bucket:
-    def __init__(self, code=None):
+    def __init__(self, code=None, may_create=True):
         self.code = code
+        self.may_create = may_create
         self.created = False
 
     async def head_bucket(self, Bucket):
@@ -113,6 +150,8 @@ class _Bucket:
             raise ClientError({"Error": {"Code": self.code}}, "HeadBucket")
 
     async def create_bucket(self, Bucket):
+        if not self.may_create:
+            raise ClientError({"Error": {"Code": "AccessDenied"}}, "CreateBucket")
         self.created = True
 
 
@@ -124,10 +163,19 @@ async def test_health_refused_credentials_are_unhealthy_and_logged(caplog):
 
 
 @pytest.mark.asyncio
-async def test_health_creates_a_missing_bucket_like_the_first_write_would():
+async def test_health_creates_a_missing_bucket_when_the_key_may():
     s3 = _Bucket("NoSuchBucket")
     assert await _client(s3).health_check() is True
     assert s3.created
+
+
+@pytest.mark.asyncio
+async def test_health_of_a_missing_bucket_the_key_may_not_create(caplog):
+    # A wip-deploy install's key: the deployer creates the buckets, the key
+    # cannot. A missing bucket there is unhealthy, with the refusal logged.
+    with caplog.at_level(logging.WARNING):
+        assert await _client(_Bucket("NoSuchBucket", may_create=False)).health_check() is False
+    assert "AccessDenied" in caplog.text
 
 
 @pytest.mark.asyncio

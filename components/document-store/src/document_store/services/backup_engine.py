@@ -5267,6 +5267,11 @@ class DirectRestoreEngine:
             await self._off_loop(
                 _drain, transformed_chains(reader, src, chain_transform)
             )
+            # The drain read every archived chain, the ones this merge drops
+            # included: only the documents it keeps count as rehashed.
+            kept = {str(head.get("document_id")) for head in entities}
+            for document_id in set(rehash.new_hash) - kept:
+                del rehash.new_hash[document_id]
             entities = [
                 {**head, "identity_hash": rehash.new_hash[str(head.get("document_id"))]}
                 if str(head.get("document_id")) in rehash.new_hash else head

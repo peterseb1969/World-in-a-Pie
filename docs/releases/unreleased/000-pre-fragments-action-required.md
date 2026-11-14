@@ -1625,8 +1625,10 @@ and document-store now follow it too, through one shared rule in wip-auth.
 - A download into a local file (archive materialization) removes the partial
   file when the store becomes unreachable mid-download, too.
 - The object-store health check probes the configured bucket (creating it when
-  missing, as the first write would) and logs why it failed: a missing bucket
-  reported `connected`, and refused credentials looked like an outage.
+  missing and the key may create buckets, as the first write would; a
+  wip-deploy install's key may not, and there a missing bucket is unhealthy)
+  and logs why it failed: a missing bucket reported `connected`, and refused
+  credentials looked like an outage.
 
 ### A file's bytes are never reclaimed while a document uses them; a refused delete is not reported as done (@wip/client 0.98.0)
 

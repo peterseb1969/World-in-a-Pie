@@ -696,8 +696,10 @@ const refs = await client.files.getFileDocuments('FILE-001')
 const orphans = await client.files.listOrphans({ older_than_hours: 24 })
 const dupes = await client.files.findByChecksum('sha256hash')
 const integrity = await client.files.checkIntegrity()
-// integrity.status: 'healthy' | 'warning' | 'error'
-// integrity.issues: [{ type: 'orphan_file' | 'missing_storage' | 'broken_reference', ... }]
+// integrity.status: 'healthy' | 'warning' | 'error' | 'incomplete'
+//   (incomplete: some stored objects could not be checked, nothing worse found)
+// integrity.issues: [{ type: 'orphan_file' | 'missing_storage' | 'broken_reference'
+//                           | 'unreclaimed_file', ... }]
 ```
 
 ---

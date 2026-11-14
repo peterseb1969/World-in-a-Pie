@@ -392,7 +392,7 @@ Templates are the schema for entity documents. **Edge types** — schemas for re
 | `upload_file(file_path, namespace?, description?, tags?, category?)` | Upload a file from a local path. Auto-detects content type. Tags are comma-separated. |
 | `delete_file(file_id, force?)` | Soft-delete a file. Blocked if referenced by documents unless `force=true`. |
 | `reactivate_file(file_id)` | Bring a soft-deleted file back under the same id (`orphan`, or `active` if still referenced). Refused with `storage_missing` when the bytes are gone — re-upload them instead. |
-| `hard_delete_file(file_id)` | Permanently remove from object storage. File must be soft-deleted first. Irreversible. |
+| `hard_delete_file(file_id)` | Permanently remove from object storage. File must be soft-deleted first. Irreversible. Refused while a document still references the file, and when the object store refuses the delete (the record is kept, inactive). |
 | `get_file_documents(file_id)` | Find which documents reference a file — document IDs, templates, and field paths. |
 
 ### Reporting & SQL (3 tools)

@@ -143,3 +143,51 @@ async def test_downloading_a_non_latin1_name_sends_rfc5987(file_client, auth_hea
     assert resp.status_code == 200, resp.text
     disposition = resp.headers["content-disposition"]
     assert unquote(disposition.split("filename*=UTF-8''", 1)[1]) == "報告.pdf"
+
+
+# ── Names that are not text, names that are too long, names outside latin-1 ──
+
+
+def test_a_name_that_is_not_valid_text_is_made_safe():
+    from document_store.services.file_validation import sanitize_filename
+
+    stored = sanitize_filename("a\udcff.pdf")  # an undecodable byte, as Python surrogate-escapes it
+    assert stored == "a_.pdf"
+    content_disposition(stored)  # encodes without raising
+
+
+def test_a_long_name_is_cut_to_the_limit_keeping_its_extension():
+    from document_store.services.file_validation import MAX_FILENAME_LENGTH, sanitize_filename
+
+    stored = sanitize_filename("報" * 2000 + ".pdf")
+    assert len(stored) == MAX_FILENAME_LENGTH
+    assert stored.endswith(".pdf")
+    assert blocked_extension(sanitize_filename("x" * 2000 + ".exe")) == ".exe"
+
+
+@pytest.mark.asyncio
+async def test_uploading_a_non_latin1_name_through_the_api_keeps_it(file_client, auth_headers):  # noqa: F811
+    from unittest.mock import MagicMock, patch
+
+    import document_store.services.file_service as fs_mod
+
+    registry_answer = MagicMock(status_code=200)
+    registry_answer.json.return_value = {"results": [{"status": "created", "registry_id": "FILE-UTF8"}]}
+    registry = AsyncMock()
+    registry.post = AsyncMock(return_value=registry_answer)
+    registry.__aenter__ = AsyncMock(return_value=registry)
+    registry.__aexit__ = AsyncMock(return_value=False)
+    with patch("document_store.services.file_service.httpx.AsyncClient", return_value=registry):
+        resp = await file_client.post(
+            "/api/document-store/files", headers=auth_headers,
+            files={"file": ("報告 2026.pdf", b"%PDF-1.4", "application/pdf")},
+            data={"namespace": "wip"},
+        )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["filename"] == "報告 2026.pdf"
+    stored = await File.find_one({"file_id": "FILE-UTF8"})
+    assert stored.filename == "報告 2026.pdf"
+    # The name reaches the object store as upload metadata, which the storage
+    # client percent-encodes (test_upload_metadata_is_header_safe_for_any_name).
+    upload = fs_mod.get_file_storage_client().upload
+    assert any("報告 2026.pdf" in str(call) for call in upload.call_args_list)

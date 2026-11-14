@@ -619,7 +619,11 @@ async def get_file_documents(
     description="""
 Permanently delete a file from storage and database.
 
-Only works on files with status 'inactive'. Use soft-delete first.
+Only works on files with status 'inactive'. Use soft-delete first. Refused
+with 409 while the file is not inactive, or while a document still references
+it (the documents are named). Refused with 502 when the object store refuses
+to delete the bytes: the file record is kept, still inactive, and nothing is
+reported as deleted.
     """,
     dependencies=[Depends(require_file_storage)]
 )

@@ -735,7 +735,8 @@ install_liveness(app)
 
 # Rate limiting (WIP_RATE_LIMIT) per client address on requests through the
 # proxy; internal calls and probes are exempt — see wip_auth.ratelimit. After
-# setup_auth so it runs before authentication, before CORS so preflights pass.
+# setup_auth so it runs before authentication (this service installs no CORS
+# middleware).
 setup_rate_limiting(app)
 
 router = APIRouter(

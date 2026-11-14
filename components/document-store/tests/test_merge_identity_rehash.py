@@ -168,6 +168,30 @@ async def test_an_in_memory_merge_rehashes_a_repointed_identity(live_registry): 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("held", [False, True], ids=["streamed", "held"])
+async def test_a_dropped_document_is_not_counted_as_rehashed(live_registry, held):  # noqa: F811
+    """The streamed path found the new hashes by reading every archived
+    chain, the dropped ones included, and counted them all: the job record
+    said the merge re-hashed a document it never wrote."""
+    from unittest.mock import AsyncMock
+
+    await _repointed(live_registry)
+    entities = _entities()
+    with patch.object(
+        DirectRestoreEngine, "_report_unresolved_references",
+        AsyncMock(return_value={(SOURCE, "DOC-1")}),
+    ):
+        engine = await _merge(live_registry, _unsorted(entities) if held else entities)
+
+    assert await _doc(live_registry, "DOC-1") is None
+    written = await live_registry[COLLECTION_MAP["documents"][0]][COLLECTION_MAP["documents"][1]].count_documents(
+        {"document_id": {"$ne": "DOC-1"}, "identity_hash": {"$ne": None}}
+    )
+    assert engine.result["namespaces"][SOURCE]["rehashed_documents"] <= written
+    assert engine.result["namespaces"][SOURCE]["rehashed_documents"] == (1 if held else 0)
+
+
+@pytest.mark.asyncio
 async def test_a_merge_that_maps_nothing_writes_the_rows_as_archived(live_registry):  # noqa: F811
     """On the install the archive came from, every referent resolves to
     itself: the identity feed does not change and nothing is rehashed."""

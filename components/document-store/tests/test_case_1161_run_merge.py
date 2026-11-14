@@ -53,11 +53,12 @@ async def test_a_dropped_document_is_left_out_streamed_or_held(mongo, sorted_by_
 
 
 @pytest.mark.asyncio
-async def test_a_redirected_merge_rescopes_held_documents(mongo):  # noqa: F811
+@pytest.mark.parametrize("sorted_by_id", [True, False], ids=["streamed", "held"])
+async def test_a_redirected_merge_rescopes_documents_streamed_or_held(mongo, sorted_by_id):  # noqa: F811
     await _clear_other(mongo)
     await _seed_namespace(mongo)
     await _seed(mongo, "templates", [_template()])
-    docs = [{**row, "namespace": OTHER_NAMESPACE} for row in _docs(sorted_by_id=False)]
+    docs = [{**row, "namespace": OTHER_NAMESPACE} for row in _docs(sorted_by_id)]
     template = {**_template(), "namespace": OTHER_NAMESPACE}
     engine = DirectRestoreEngine(mongo, None, lambda e: None)
     with patch("document_store.services.backup_engine.ArchiveReader",

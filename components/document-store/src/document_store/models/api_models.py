@@ -1016,7 +1016,11 @@ class FileIntegrityIssue(BaseModel):
 
     type: str = Field(
         ...,
-        description="Issue type: orphan_file, missing_storage, broken_reference"
+        description=(
+            "Issue type: orphan_file, missing_storage, broken_reference, or "
+            "unreclaimed_file (left inactive when a document hard delete could "
+            "not delete its bytes)"
+        )
     )
     severity: str = Field(
         ...,

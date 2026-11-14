@@ -668,7 +668,7 @@ For details, see `docs/design/universal-synonym-resolution.md`.
 | **404** | Entity not found (GET by ID) |
 | **409** | An identifier in the path or query names several entities (`detail.candidates`) |
 | **422** | Invalid request body (validation error from FastAPI) |
-| **502** | The Registry refused an operation a route depends on (`Registry error: …`, e.g., Template-Store, Def-Store) |
+| **502** | The Registry refused an operation a route depends on (`Registry error: …`, e.g., Template-Store, Def-Store), or the object store refused a file hard delete (the file record is kept) |
 | **503** | The Registry did not answer (`error_code: "registry_unavailable"`), or the authorization check could not be made — retry |
 
 **Note:** 201 is never returned, and write results are communicated via `BulkResponse.results[i].status`: a per-item failure never changes the HTTP status. A 409 or 503 refuses the request as a whole.
@@ -695,7 +695,7 @@ All endpoints (except `/health`) require authentication:
 
 Data is never physically deleted. All delete operations set `status: "inactive"`. Entities can be restored via dedicated restore endpoints (e.g., `POST /terminologies/{id}/restore`).
 
-**Exception: Files.** Binary files stored in the object store (Garage) support a two-step purge: soft-delete (`DELETE /files` → sets status to `inactive`) followed by hard-delete (`DELETE /files/{id}/hard` → permanently removes from storage and database). Hard-delete only works on files already in `inactive` status. This exists because binary storage has real cost, unlike soft-deleted MongoDB documents which are negligible.
+**Exception: Files.** Binary files stored in the object store (Garage) support a two-step purge: soft-delete (`DELETE /files` → sets status to `inactive`) followed by hard-delete (`DELETE /files/{id}/hard` → permanently removes from storage and database). Hard-delete only works on files already in `inactive` status, and is refused (409) while a document still references the file and (502) when the object store refuses to delete the bytes — the record is then kept, inactive. This exists because binary storage has real cost, unlike soft-deleted MongoDB documents which are negligible.
 
 **Files come back two ways.** `POST /files/reactivate` (bulk, `[{id}]`) returns soft-deleted files to service under the same `file_id`: per item `reactivated`, or `unchanged` for a file that was not inactive; `invalid_state` with `details.rule: storage_missing` when the object store no longer holds the bytes. Uploading a soft-deleted file's bytes again (`POST /files`) revives it too — the bytes are written again and the metadata fields the upload sends with a value replace the stored ones (a field sent empty reads as not sent and keeps its value; `PATCH /files` clears one). A revived file is `active` while documents still reference it (a force-delete keeps the count), `orphan` otherwise.
 

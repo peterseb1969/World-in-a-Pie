@@ -16,6 +16,7 @@ from httpx import AsyncClient
 
 from document_store.services.reference_validator import ReferenceValidator
 from document_store.services.registry_client import RegistryClient, RegistryError
+from tests.test_bulk_isolation import _holder, setup  # noqa: F401 — fixture
 from wip_auth.registry_client import RegistryUnavailableError
 
 URL = "/api/document-store/documents"
@@ -70,11 +71,17 @@ async def test_one_registry_error_fails_only_its_item(
 
 @pytest.mark.asyncio
 async def test_an_unreachable_placement_lookup_falls_back_per_item(
-    client: AsyncClient, auth_headers: dict, monkeypatch,
+    client: AsyncClient, auth_headers: dict, monkeypatch, setup,  # noqa: F811 — fixture
 ):
+    """In a strict namespace the batch's references are placed with one
+    lookup. When it cannot be asked, each item is placed on its own: the
+    item referencing another namespace is still refused and its neighbour
+    referencing its own namespace still written. Without the fallback both
+    would be judged alike."""
     async def unavailable(*_args, **_kwargs):
         raise RegistryUnavailableError("registry unreachable")
 
     monkeypatch.setattr(ReferenceValidator, "place_references", unavailable)
-    results = await _post(client, auth_headers, [_person("116100021"), _person("116100022")])
-    assert [r["status"] for r in results] == ["created", "created"]
+    results = await _post(client, auth_headers, [_holder(setup["foreign"]), _holder(setup["own"])])
+    assert [r["status"] for r in results] == ["error", "created"], results
+    assert results[0]["error_code"] == "reference_violation"

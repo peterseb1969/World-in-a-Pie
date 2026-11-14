@@ -116,12 +116,20 @@ def validate_upload_content_type(content_type: str, filename: str) -> None:
         )
 
 
+#: The longest stored filename, in characters. The name travels in download
+#: headers (twice, as an ASCII fallback and percent-encoded) and in presigned
+#: URLs; 255 is what filesystems allow for one name.
+MAX_FILENAME_LENGTH = 255
+
+
 def sanitize_filename(filename: str) -> str:
     """Sanitise a filename for safe storage and download headers (L2).
 
     Strips path separators, null bytes, control characters, and
-    potentially dangerous sequences. Returns a safe filename that
-    preserves the original extension.
+    potentially dangerous sequences, replaces what is not valid Unicode text
+    (lone surrogates from an undecodable name), and shortens a name longer
+    than MAX_FILENAME_LENGTH. Returns a safe filename that preserves the
+    original extension.
     """
     if not filename:
         return "unnamed"
@@ -132,6 +140,11 @@ def sanitize_filename(filename: str) -> str:
 
     # Remove null bytes and control characters
     filename = re.sub(r"[\x00-\x1f\x7f]", "", filename)
+
+    # A name that is not valid text (lone surrogates) cannot be encoded for
+    # the headers it is served in: each such character becomes "?", replaced
+    # below like any other unsafe character.
+    filename = filename.encode("utf-8", "replace").decode("utf-8")
 
     # Remove characters problematic in HTTP headers and filesystems
     filename = re.sub(r'[<>:"|?*]', "_", filename)
@@ -146,7 +159,17 @@ def sanitize_filename(filename: str) -> str:
     if not filename:
         return "unnamed"
 
-    return filename
+    return _shortened(filename)
+
+
+def _shortened(filename: str) -> str:
+    """The name cut to MAX_FILENAME_LENGTH, keeping a short extension."""
+    if len(filename) <= MAX_FILENAME_LENGTH:
+        return filename
+    stem, dot, ext = filename.rpartition(".")
+    if dot and stem and len(ext) <= 32:
+        return stem[:MAX_FILENAME_LENGTH - len(ext) - 1].rstrip(". ") + "." + ext
+    return filename[:MAX_FILENAME_LENGTH].rstrip(". ")
 
 
 def content_disposition(filename: str, disposition: str = "attachment") -> str:

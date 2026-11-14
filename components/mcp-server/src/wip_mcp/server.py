@@ -4394,6 +4394,9 @@ async def hard_delete_file(file_id: str) -> str:
 
     The file must already be soft-deleted (inactive). This is irreversible
     and reclaims storage. Use delete_file first, then hard_delete_file.
+    Refused while a document still references the file (the documents are
+    named), and when the object store refuses to delete the bytes: the file
+    then stays recorded, inactive, and is not deleted.
 
     Args:
         file_id: File ID to permanently remove.

@@ -104,6 +104,15 @@ class File(BeanieDocument):
         description="Number of active documents referencing this file"
     )
 
+    # Why the bytes of this file stayed when a document hard delete released
+    # it: the object store refused the delete. The file stays inactive and the
+    # integrity check reports it (unreclaimed_file) until an operator
+    # hard-deletes or reactivates it.
+    reclaim_failed: str | None = Field(
+        default=None,
+        description="Why a document hard delete that released this file could not delete its bytes"
+    )
+
     # Optional: restrict which templates' documents can use this file
     allowed_templates: list[str] | None = Field(
         default=None,
@@ -159,6 +168,14 @@ class File(BeanieDocument):
             # namespace-deletion storage cleanup).
             IndexModel([("file_id", 1)], name="file_id_idx"),
             IndexModel([("storage_key", 1)], name="file_storage_key_idx"),
+            # The namespace-less admin scans that lead with status: the
+            # orphan listing (status, count 0, upload age) and the
+            # integrity check (inactive files still counted, and those left
+            # inactive and uncounted).
+            IndexModel(
+                [("status", 1), ("reference_count", 1), ("uploaded_at", 1)],
+                name="file_status_refcount_idx",
+            ),
         ]
 
 

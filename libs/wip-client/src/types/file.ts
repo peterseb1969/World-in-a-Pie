@@ -55,7 +55,9 @@ export interface FileDownloadResponse {
 }
 
 export interface FileIntegrityIssue {
-  type: 'orphan_file' | 'missing_storage' | 'broken_reference'
+  /** `unreclaimed_file`: left inactive when a document hard delete could not
+   * delete its bytes (the object store refused); hard-delete it again. */
+  type: 'orphan_file' | 'missing_storage' | 'broken_reference' | 'unreclaimed_file'
   severity: 'warning' | 'error'
   file_id: string | null
   document_id: string | null

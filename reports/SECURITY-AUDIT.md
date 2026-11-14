@@ -115,10 +115,10 @@ A comprehensive security audit was performed on the World In a Pie (WIP) project
 ### Production Readiness Check
 
 ```bash
-./scripts/security/production-check.sh
+./scripts/security/production-check.sh   # retired — see the tooling note at the top
 ```
 
-Validates: CORS, rate limiting, upload limits, API key strength, MongoDB auth, MinIO/NATS port exposure, security headers, file permissions, TLS, and deployment variant.
+Validated, while it existed: CORS, rate limiting, upload limits, API key strength, MongoDB auth, MinIO/NATS port exposure, security headers, file permissions, TLS, and deployment variant. It no longer exists, so nothing in this list is checked by it any more. Rate limiting (C3) is covered only by the library's own test, `libs/wip-auth/tests/test_case_1160_rate_limit.py`, which mounts the limiter as the services do; no check runs against a deployed service.
 
 ### Security Dependencies
 

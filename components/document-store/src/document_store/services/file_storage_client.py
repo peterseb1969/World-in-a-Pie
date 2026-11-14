@@ -504,10 +504,12 @@ class FileStorageClient:
 
         Probes the bucket itself (head_bucket): listing the account's buckets
         succeeded with the bucket missing or unusable. A missing bucket is
-        created, as the first write would create it — a fresh install is
-        healthy before its first upload. A failure is logged with its reason:
-        credentials refused and store unreachable both answer False, and only
-        the log tells them apart.
+        created when the key may create buckets, as the first write would. A
+        wip-deploy install's key may not — the deployer creates the buckets
+        itself — so there a missing bucket is unhealthy, logged with the
+        store's refusal. A failure is logged with its reason: credentials
+        refused and store unreachable both answer False, and only the log
+        tells them apart.
         """
         try:
             async with self._get_client(_HEALTH_CONFIG) as client:
