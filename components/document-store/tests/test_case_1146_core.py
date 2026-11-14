@@ -126,7 +126,7 @@ async def test_a_reporting_refusal_is_logged(monkeypatch, caplog):
 @pytest.mark.asyncio
 async def test_a_hidden_document_answers_as_a_missing_one(client, auth_headers):
     resp = await client.post(f"{API}/documents", headers=auth_headers, json=[{
-        "namespace": "xns-closed", "template_id": "PERSON",
+        "namespace": "xns-closed", "template_id": "wip:PERSON",
         "data": {"national_id": "114630001", "first_name": "Hid", "last_name": "Den"},
     }])
     hidden = resp.json()["results"][0]["document_id"]

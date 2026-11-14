@@ -258,6 +258,7 @@ def template_definition(template: dict[str, Any]) -> dict[str, Any]:
         "referent_paths": template.get("referent_identity_paths"),
         "extends": template.get("extends"),
         "extends_version": template.get("extends_version"),
+        "status": template.get("status"),
     }
 
 
@@ -292,6 +293,13 @@ class TemplateDefinitions:
 
     archived: dict[DefinitionKey, dict[str, Any]] = field(default_factory=dict)
     external: dict[DefinitionKey, dict[str, Any]] = field(default_factory=dict)
+    # Lookups run once per document row: the versions held per template, and
+    # each (template, version) answer, are kept rather than scanned again.
+    # Built on first use, after ``external`` is filled.
+    _versions: dict[tuple[int, str], list[int]] | None = field(default=None, repr=False)
+    _memo: dict[tuple[str, int | None], dict[str, Any] | None] = field(
+        default_factory=dict, repr=False,
+    )
 
     @classmethod
     def of_templates(cls, templates: Iterable[dict[str, Any]]) -> TemplateDefinitions:
@@ -304,25 +312,50 @@ class TemplateDefinitions:
                 )
         return cls(archived=archived)
 
+    def set_external(self, external: dict[DefinitionKey, dict[str, Any]]) -> None:
+        """Set the templates read from this install; lookups made before
+        are forgotten."""
+        self.external = dict(external)
+        self._versions = None
+        self._memo.clear()
+
     def template_ids(self) -> set[str]:
         return {template_id for template_id, _version in self.archived}
 
     def lookup(self, document: dict[str, Any]) -> dict[str, Any] | None:
         """The definition for an ARCHIVED document row, or None."""
-        return self._resolved(
-            str(document.get("template_id")), int(document.get("template_version") or 1),
-        )
+        key = (str(document.get("template_id")), int(document.get("template_version") or 1))
+        if key not in self._memo:
+            self._memo[key] = self._resolved(*key)
+        return self._memo[key]
+
+    def _held_versions(self, source_index: int, template_id: str) -> list[int]:
+        if self._versions is None:
+            self._versions = {}
+            for i, source in enumerate((self.archived, self.external)):
+                for tid, v in source:
+                    self._versions.setdefault((i, tid), []).append(v)
+        return self._versions.get((source_index, template_id), [])
 
     def _held(self, template_id: str, version: int | None) -> tuple[dict[str, Any], bool] | None:
         """(definition, composed) at the version, else at the highest version
         held of the template; ``composed`` is False for an archived row."""
-        for source, composed in ((self.archived, False), (self.external, True)):
+        sources = ((self.archived, False), (self.external, True))
+        for source, composed in sources:
             if version is not None and (template_id, version) in source:
                 return source[(template_id, version)], composed
-        for source, composed in ((self.archived, False), (self.external, True)):
-            versions = [v for tid, v in source if tid == template_id]
+        for i, (source, composed) in enumerate(sources):
+            versions = self._held_versions(i, template_id)
             if versions:
-                return source[(template_id, max(versions))], composed
+                # The highest version that is not a draft and carries its
+                # stored referent paths (a draft's stay unset), else the
+                # highest held.
+                stamped = [
+                    v for v in versions
+                    if source[(template_id, v)].get("status") != "draft"
+                    and source[(template_id, v)].get("referent_paths") is not None
+                ]
+                return source[(template_id, max(stamped or versions))], composed
         return None
 
     def _resolved(self, template_id: str, version: int | None) -> dict[str, Any] | None:
@@ -335,7 +368,9 @@ class TemplateDefinitions:
             seen.add(current[0])
             held = self._held(*current)
             if held is None:
-                return None  # a template or parent known nowhere
+                # A template or parent known nowhere. The rows found may still
+                # say everything the hash needs (_self_sufficient).
+                return _compose(chain) if _self_sufficient(chain) else None
             definition, composed = held
             chain.append(definition)
             parent = definition.get("extends")
@@ -343,6 +378,19 @@ class TemplateDefinitions:
                 str(parent), definition.get("extends_version"),
             )
         return _compose(chain)
+
+
+def _self_sufficient(chain: list[dict[str, Any]]) -> bool:
+    """Whether a chain cut short by a missing parent still defines the
+    identity: some row in it declares identity_fields (the nearest declared
+    wins, so what lies above cannot change it), and the child row carries its
+    stored referent paths, which make the parents' fields unnecessary (they
+    are read only to classify identity fields when no paths are stored)."""
+    return bool(
+        chain
+        and chain[0].get("referent_paths") is not None
+        and any(d["identity_fields"] for d in chain)
+    )
 
 
 def _compose(chain: list[dict[str, Any]]) -> dict[str, Any]:

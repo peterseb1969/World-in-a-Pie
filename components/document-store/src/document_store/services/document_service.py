@@ -124,16 +124,122 @@ def _retired_stamps(doc: "Document") -> dict[Any, tuple[datetime | None, str | N
     return {doc.id: (doc.updated_at, doc.updated_by)}
 
 
+def _auto_synonym_candidates(
+    results: list[Any], validation_results: list[tuple[int, Any, Any]],
+) -> list[tuple[int, Any, Any]]:
+    """(result position, item, validation result) of each document a bulk
+    create made new and registers an auto-synonym for: reported created at
+    version 1, not pinned to a version (a restore carries its archived
+    synonyms instead) — the rule of _create_new_document."""
+    by_index = {i: (item, vr) for i, item, vr in validation_results}
+    candidates: list[tuple[int, Any, Any]] = []
+    for pos, result in enumerate(results):
+        if result.status != "created" or result.version != 1 or not result.document_id:
+            continue
+        item, vr = by_index[result.index]
+        if item.document_id and item.version is not None:
+            continue
+        candidates.append((pos, item, vr))
+    return candidates
+
+
+async def _retire_as_read(doc: "Document", actor: str, now: datetime) -> bool:
+    """Set ``doc``'s row inactive only if it still holds the status ``doc`` was
+    read with; False when another write changed it meanwhile.
+
+    A successor version is written after its predecessor is retired. A soft
+    delete landing between the read and the retire sets the row inactive
+    and retires the Registry entry; retiring unconditionally and inserting
+    v+1 active would bring the document back while its entry stays retired.
+    Only the status fields are written, never the stale read. A revival
+    reads the row inactive and is conditioned on that, so it still writes.
+    """
+    result = await Document.get_motor_collection().update_one(
+        {"_id": doc.id, "status": doc.status.value},
+        {"$set": {"status": DocumentStatus.INACTIVE.value,
+                  "updated_at": now, "updated_by": actor}},
+    )
+    if result.matched_count == 0:
+        return False
+    doc.status = DocumentStatus.INACTIVE
+    doc.updated_at = now
+    doc.updated_by = actor
+    return True
+
+
+_RETIRED_MEANWHILE = (
+    "The document was deleted or written concurrently while this write ran; "
+    "send it again"
+)
+
+
+async def _retire_planned_as_read(
+    retiring: dict[Any, "Document"], actor: str, now: datetime,
+) -> set[Any]:
+    """Retire a bulk write's predecessors, each only if it still holds the
+    status it was read with (_retire_as_read, in one update per status).
+    Returns the ids this write did not retire: another write changed them
+    meanwhile, so their successors must not be written."""
+    coll = Document.get_motor_collection()
+    by_status: dict[str, list[Any]] = {}
+    for row_id, row in retiring.items():
+        by_status.setdefault(row.status.value, []).append(row_id)
+    for status, ids in by_status.items():
+        await coll.update_many(
+            {"_id": {"$in": ids}, "status": status},
+            {"$set": {"status": DocumentStatus.INACTIVE.value,
+                      "updated_at": now, "updated_by": actor}},
+        )
+    # Which rows carry this write's stamp: the others were changed by
+    # another write and keep what it wrote. MongoDB keeps datetimes to the
+    # millisecond (the driver truncates), so the stamp is compared so.
+    stamp = now.replace(microsecond=now.microsecond // 1000 * 1000)
+    ours = {
+        row["_id"]
+        async for row in coll.find(
+            {"_id": {"$in": list(retiring)}, "updated_at": stamp, "updated_by": actor},
+            {"_id": 1},
+        )
+    }
+    return set(retiring) - ours
+
+
+def _drop_lost_successors(
+    planned: list["_PlannedWrite"], lost: set[Any],
+) -> tuple[list["_PlannedWrite"], list["_ItemOutcome"]]:
+    """The planned rows still to write, and a concurrency_conflict outcome for
+    each one whose predecessor another write changed meanwhile, or that
+    builds on such a row earlier in the batch (it would skip a version)."""
+    if not lost:
+        return planned, []
+    kept: list[_PlannedWrite] = []
+    conflicts: list[_ItemOutcome] = []
+    dropped: set[int] = set()
+    for plan in planned:
+        existing = plan.existing
+        if existing is not None and (existing.id in lost or id(existing) in dropped):
+            dropped.add(id(plan.document))
+            conflicts.append(_ItemOutcome(
+                BulkResultItem(
+                    index=plan.item_index, status="error",
+                    error=_RETIRED_MEANWHILE, error_code="concurrency_conflict",
+                ),
+                None,
+                "failed",
+            ))
+            continue
+        kept.append(plan)
+    return kept, conflicts
+
+
 async def _retire_version(
     existing: "Document", actor: str, now: datetime,
 ) -> dict[Any, tuple[datetime | None, str | None]]:
     """Mark the version a new one replaces inactive; returns what a rollback
-    restores (_retired_stamps)."""
+    restores (_retired_stamps). A row changed meanwhile is concurrency_conflict."""
     prior = _retired_stamps(existing)
-    existing.status = DocumentStatus.INACTIVE
-    existing.updated_at = now
-    existing.updated_by = actor
-    await existing.save()
+    if not await _retire_as_read(existing, actor, now):
+        raise DocumentStoreError(_RETIRED_MEANWHILE, "concurrency_conflict")
     return prior
 
 
@@ -792,9 +898,10 @@ async def _exception_rows(base: dict[str, Any], exceptions: list[dict]) -> tuple
     return hidden_active, latest_inactive
 
 
-# How many documents a "latest version" filter names by id (those whose
-# latest row is not simply their one active row). Kept well under the size
-# a query document may reach.
+# How many rows a "latest version" filter names by id (the rows of the
+# documents whose latest row is not simply their one active row), and so how
+# many such documents it reads. Kept well under the size a query document may
+# reach.
 MAX_LATEST_EXCEPTIONS = 200_000
 
 
@@ -1788,12 +1895,12 @@ class DocumentService:
                     {"namespace": namespace, "document_id": document_id}
                 ).sort([("version", SortDirection.DESCENDING)]).limit(1).to_list()
                 if latest:
-                    # Deactivate the current active version if it's not ours
-                    if latest[0].status == DocumentStatus.ACTIVE:
-                        latest[0].status = DocumentStatus.INACTIVE
-                        latest[0].updated_at = now
-                        latest[0].updated_by = actor
-                        await latest[0].save()
+                    # Deactivate the current active version if it's not ours,
+                    # only while it is still active (a delete meanwhile stands).
+                    if latest[0].status == DocumentStatus.ACTIVE and not await _retire_as_read(
+                        latest[0], actor, now,
+                    ):
+                        raise DocumentStoreError(_RETIRED_MEANWHILE, "concurrency_conflict") from exc
                     version = latest[0].version + 1
                 else:
                     version += 1
@@ -2160,12 +2267,9 @@ class DocumentService:
                 overwritten.warnings += lifecycle_warnings
             return overwritten, err
 
-        # Deactivate old version
-        prior = _retired_stamps(existing)
-        existing.status = DocumentStatus.INACTIVE
-        existing.updated_at = datetime.now(UTC)
-        existing.updated_by = actor
-        await existing.save()
+        # Deactivate old version, only as it was read (a delete meanwhile
+        # stands: concurrency_conflict, the caller undoes any revival).
+        prior = await _retire_version(existing, actor, datetime.now(UTC))
 
         # Create new version with SAME document_id (stable).
         # metadata=None carries the existing custom metadata forward (the
@@ -2909,14 +3013,14 @@ class DocumentService:
         # record is not written.
         lifecycle_warnings = await self._record_lifecycle(document_id, retired=True, actor=actor)
         try:
-            retired = await self._retire_row(document, actor)
+            retired = await self._retire_latest(document, document_id, actor)
         except BaseException:
             await undo_entry_lifecycle(
                 get_registry_client(), [document_id], retired=True, actor=actor,
             )
             raise
         if retired is None:
-            # Retired by a concurrent delete between the read and this write;
+            # No active version is left: a concurrent delete retired it, and
             # the Registry entry is retired either way.
             return False
         document = retired
@@ -2935,6 +3039,29 @@ class DocumentService:
             document.file_references, delta=-1
         )
         return True
+
+    async def _retire_latest(
+        self, document: Document, document_id: str, actor: str, attempts: int = 3,
+    ) -> Document | None:
+        """Retire the document's active version, starting from the one read.
+        A successor version written meanwhile leaves that row inactive and a
+        new one active: the delete is the later request, so it retires the
+        new one. None when no active version is left (a concurrent delete);
+        concurrency_conflict when successors keep landing."""
+        current: Document | None = document
+        for _ in range(attempts):
+            if current is None:
+                return None
+            retired = await self._retire_row(current, actor)
+            if retired is not None:
+                return retired
+            current = await Document.find_one(
+                {"document_id": document_id, "status": DocumentStatus.ACTIVE.value},
+                sort=[("version", SortDirection.DESCENDING)],
+            )
+        if current is None:
+            return None
+        raise DocumentStoreError(_RETIRED_MEANWHILE, "concurrency_conflict")
 
     @staticmethod
     async def _retire_row(document: Document, actor: str) -> Document | None:
@@ -3757,13 +3884,13 @@ class DocumentService:
         if not planned:
             return []
         start = time.perf_counter()
-        if retiring:
-            await Document.get_motor_collection().update_many(
-                {"_id": {"$in": list(retiring)}},
-                {"$set": {"status": DocumentStatus.INACTIVE.value,
-                          "updated_at": now, "updated_by": actor}},
-            )
+        # A row this batch plans may already be named in ``retiring`` (a
+        # later item of its identity replaces it); it is not written yet, so
+        # it cannot be retired, and nothing else can have changed it.
+        own = {plan.document.id for plan in planned if plan.document.id is not None}
+        lost = await _retire_planned_as_read(retiring, actor, now) - own if retiring else set()
         timing["4a_retire_versions"] = (time.perf_counter() - start) * 1000
+        planned, conflicts = _drop_lost_successors(planned, lost)
 
         start = time.perf_counter()
         refused: dict[int, dict] = {}
@@ -3850,7 +3977,7 @@ class DocumentService:
                 "created" if is_new else "updated",
             ))
         await self._repair_failed_writes(namespace, planned, outcomes, retiring)
-        return outcomes
+        return outcomes + conflicts
 
     async def _refuse_unlanded(
         self, namespace: str, chunk: list["_PlannedWrite"], first: int, exc: Exception,
@@ -4269,15 +4396,7 @@ class DocumentService:
         (its row deleted, its file references released) and its result turns
         into a ``registry_error`` item. Returns the rolled-back document ids.
         """
-        by_index = {i: (item, vr) for i, item, vr in validation_results}
-        candidates: list[tuple[int, DocumentCreateRequest, Any]] = []
-        for pos, result in enumerate(results):
-            if result.status != "created" or result.version != 1 or not result.document_id:
-                continue
-            item, vr = by_index[result.index]
-            if item.document_id and item.version is not None:
-                continue
-            candidates.append((pos, item, vr))
+        candidates = _auto_synonym_candidates(results, validation_results)
         if not candidates:
             return set()
 
@@ -4586,9 +4705,8 @@ class DocumentService:
                 f"Auto-synonym registration did not complete ({e}); the document "
                 "is written, but whether it resolves by its identity synonym is unknown"
             )
-            for result in results:
-                if result.status == "created" and result.version == 1:
-                    result.warnings = [*(result.warnings or []), note]
+            for pos, _item, _vr in _auto_synonym_candidates(results, validation_results):
+                results[pos].warnings = [*(results[pos].warnings or []), note]
             return pending_events
         if not rolled_back:
             return pending_events
@@ -4980,6 +5098,12 @@ class DocumentService:
             )
 
         hidden_active, latest_inactive = await _exception_rows(base, exceptions)
+        if len(hidden_active) + len(latest_inactive) > MAX_LATEST_EXCEPTIONS:
+            # A document can name several rows (several active versions).
+            raise ValueError(
+                f"The filter would name more than {MAX_LATEST_EXCEPTIONS} rows by "
+                "id. List with status=active, or narrow by namespace or template."
+            )
 
         live: dict[str, Any] = {"status": active}
         if hidden_active:
@@ -5700,9 +5824,10 @@ class DocumentService:
                 raise PatchError(
                     "identity_field_change",
                     f"Cannot patch identity field '{field_path}': its spelling "
-                    "changed and the stored version holds no resolution of it "
-                    "(namespace validation reports this as "
-                    "identity_resolution_missing), so the change cannot be "
+                    "changed, and the stored version's identity cannot be "
+                    "re-derived from its resolutions (an identity value or "
+                    "resolution is missing; namespace validation reports this "
+                    "as identity_resolution_missing), so the change cannot be "
                     "shown to name the same entity. A document's identity "
                     "cannot change.",
                 )
@@ -5820,10 +5945,12 @@ class DocumentService:
         from pymongo.errors import DuplicateKeyError
 
         prior = _retired_stamps(current)
-        current.status = DocumentStatus.INACTIVE
-        current.updated_at = now
-        current.updated_by = actor
-        await current.save()
+        if not await _retire_as_read(current, actor, now):
+            # Deleted or written meanwhile: re-read (a deleted document then
+            # answers not_found), as for a lost version race.
+            if last_attempt:
+                raise PatchError("concurrency_conflict", _RETIRED_MEANWHILE)
+            return None
 
         # Carry the merged custom metadata (identical to the current
         # version's when no metadata_patch was supplied). Warnings come
@@ -5855,9 +5982,12 @@ class DocumentService:
                 # when v1 was written, not now (CASE-802).
                 entity_created_at=current.created_at,
             )
-        except DuplicateKeyError:
+        except (DuplicateKeyError, DocumentStoreError) as exc:
             # Lost the version race even after _insert_with_retry's internal
-            # retries. Try the whole read-merge-write cycle again.
+            # retries (it reports that as concurrency_conflict). Try the whole
+            # read-merge-write cycle again. Any other refusal is the item's.
+            if isinstance(exc, DocumentStoreError) and exc.code != "concurrency_conflict":
+                raise
             if last_attempt:
                 raise PatchError(
                     "concurrency_conflict",

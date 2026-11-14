@@ -9,9 +9,15 @@ packages: [wip-client]
 - **A delete stays a delete.** A soft delete changes a document's status without
   moving its `revision`. A PATCH or POST that read the row before the delete
   could still write it back as active, while its Registry entry stayed retired.
-  An in-place write now also requires the status it read, so it fails with
-  `concurrency_conflict` instead. A POST retry that finds the document deleted
-  or revived meanwhile is refused the same way and must be sent again.
+  Every write now changes a row only if it still holds the status it read:
+  an in-place write (`versioned: false`) and the retirement of the version a
+  new one replaces, on single and bulk writes alike. A POST that loses this
+  way answers `concurrency_conflict` and must be sent again. A PATCH re-reads
+  the document, and a deleted one answers `not_found`.
+- **A delete that loses to a new version retires that one.** A version written
+  between a delete's read and its write left the delete matching nothing; it
+  answered `not_found` for a document live at the new version, whose Registry
+  entry it had already retired. It now retires the new version.
 - **A delete keeps a concurrent write.** The delete rewrote the whole row from
   its own earlier read, which could drop an in-place write that landed in
   between. It now changes only the status of the row as it is now.

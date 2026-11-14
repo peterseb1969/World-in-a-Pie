@@ -1732,8 +1732,11 @@ class _IdentityRehash:
             for src in sources
             for template in reader.read_entities("templates", namespace=src)
         )
-        self._templates.external = dict(external or {})
+        self._templates.set_external(external or {})
         self.new_hash: dict[str, str] = {}
+        # Keyed rows whose rewrite fed the hash but could not be rehashed:
+        # no definition, or identity values or resolutions unreadable.
+        self.unrehashable = 0
 
     def rehash(self, archived: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
         """``row`` is ``archived`` after the reference rewrite; recompute its
@@ -1746,10 +1749,13 @@ class _IdentityRehash:
         ):
             return row
         template = self._templates.lookup(archived)
-        if template and rehash_document_row(
+        changed = rehash_document_row(
             row, template["identity_fields"], template["fields"], template["referent_paths"]
-        ):
+        ) if template else None
+        if changed:
             self.new_hash[str(row.get("document_id"))] = row["identity_hash"]
+        elif changed is None and row.get("identity_hash"):
+            self.unrehashable += 1
         return row
 
     def rekey(self, entry: dict[str, Any]) -> dict[str, Any]:
@@ -1795,6 +1801,10 @@ class _PlainRestoreRewrite:
     @property
     def rehashed_documents(self) -> int:
         return len(self._rehash.new_hash)
+
+    @property
+    def unrehashable_documents(self) -> int:
+        return self._rehash.unrehashable
 
     def rewrite(
         self, entity_type: str, entity: dict[str, Any], engine: DirectRestoreEngine
@@ -2117,6 +2127,22 @@ class DirectRestoreEngine:
 
         self._finish_plain_restore(targets, referents, remapper, repoint)
 
+    def _report_unrehashable(self, where: str, count: int, result: dict[str, Any]) -> None:
+        """Record and warn about rows a merge or plain restore rewrote but
+        could not rehash, as a fresh restore does."""
+        if not count:
+            return
+        result["unrehashable_documents"] = count
+        self._emit(
+            "warning",
+            f"[{where}] {count} document(s) keep their archived identity hash: "
+            "their template (or a parent it extends) is in neither the archive nor "
+            "this install, or their identity values or resolutions cannot be read. "
+            "If an identity field names a term or document this restore repointed, "
+            "rehash the namespace (POST /api/document-store/maintenance/"
+            "rehash-identities) once their template exists.",
+        )
+
     def _finish_plain_restore(
         self, targets: list[tuple[str, str]], referents: Any, remapper: IDRemapper, repoint: Any,
     ) -> None:
@@ -2124,6 +2150,10 @@ class DirectRestoreEngine:
         self.result["referents"] = referents
         self.result["repointed_referents"] = remapper.total_mappings
         self.result["rehashed_documents"] = repoint.rehashed_documents if repoint else 0
+        self._report_unrehashable(
+            ", ".join(tgt for _, tgt in targets),
+            repoint.unrehashable_documents if repoint else 0, self.result,
+        )
         self.result["reporting_synced"] = list(self._reporting_synced)
         self._finish_reporting_verification(
             [tgt for _, tgt in targets], "reporting was not verified for this namespace"
@@ -2649,9 +2679,9 @@ class DirectRestoreEngine:
         targets = ", ".join(dict.fromkeys(mapping.values()))
         remapper = IDRemapper(namespace_map=dict(mapping))
         referents = await self._map_external_referents(reader, manifest, remapper, targets)
-        definitions.external = await self._external_template_definitions(
+        definitions.set_external(await self._external_template_definitions(
             reader, manifest, remapper, definitions.template_ids(),
-        )
+        ))
         dropped = await self._report_unresolved_references(
             reader, list(mapping), remapper, referents, targets,
             drop_edges=drop_unresolved_edges,
@@ -3064,7 +3094,11 @@ class DirectRestoreEngine:
             versions: list[int | None] = list(await client.get_template_version_numbers(here))
         except Exception as exc:  # fall back to the latest version below
             logger.warning("Versions of template %s not listable for the rehash: %s", here, exc)
-            versions = [None]
+            versions = []
+        # Nothing listed (an error, or a template store without the versions
+        # route answering 404): the latest version is read once before the
+        # template is taken as unknown.
+        versions = versions or [None]
         found: dict[int, dict[str, Any]] = {}
         for version in versions:
             try:
@@ -4675,6 +4709,8 @@ class DirectRestoreEngine:
         self._emit_merge_plan(tgt, built, on_clash=on_clash, dry_run=dry_run)
         self.result.setdefault("mode", "merge")
         self.result["dry_run"] = dry_run
+        # The count is in this namespace's report below; the warning is the job's.
+        self._report_unrehashable(f"{src} → {tgt}", rehash.unrehashable, {})
         self.result.setdefault("namespaces", {})[tgt] = {
             # Record where this data came from, so a redirected merge
             # (src != tgt) is legible on the job record — parity with the
@@ -4683,6 +4719,7 @@ class DirectRestoreEngine:
             "source_namespace": src,
             "referents": referents,
             "rehashed_documents": len(rehash.new_hash),
+            **({"unrehashable_documents": rehash.unrehashable} if rehash.unrehashable else {}),
             "definitions": definitions.summary(),
             "incompatibilities": len(definitions.incompatibilities),
             "target_wins": len(definitions.target_wins),
@@ -5966,6 +6003,9 @@ class DirectRestoreEngine:
                 "document_id": row["document_id"],
                 "version": row["version"],
                 "revision": head_revision,
+                # A soft delete moves no revision: the status the merge read
+                # must hold too, or a delete landing meanwhile is undone.
+                "status": (full_head or target_head).get("status", "active"),
             },
             row,
         )
@@ -6021,8 +6061,8 @@ class DirectRestoreEngine:
             self._emit(
                 "warning",
                 f"[{namespace}] {tally.changed_meanwhile} versioned:false document(s) "
-                "were written on the target while the merge ran — the target's "
-                "copy was kept for those.",
+                "were written, deleted or removed on the target while the merge "
+                "ran — the target's state was kept for those.",
             )
         if tally.ties:
             self._emit(

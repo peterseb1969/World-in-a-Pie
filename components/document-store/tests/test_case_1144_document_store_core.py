@@ -374,5 +374,5 @@ async def test_patch_without_a_stored_resolution_does_not_claim_another_entity(
     )
     result = await _patch(client, auth_headers, created["document_id"], {"category": "m"})
     assert result["status"] == "error" and result["error_code"] == "identity_field_change"
-    assert "holds no resolution" in result["error"], result
+    assert "cannot be re-derived" in result["error"], result
     assert "names a different entity" not in result["error"], result

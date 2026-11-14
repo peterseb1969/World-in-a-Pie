@@ -2235,10 +2235,11 @@ have this done with document-store's own Registry key, so the Registry could
 not tell who asked. Now:
 
 - **An OIDC login's bearer token is passed on**, as an API key always was.
-  The Registry validates it and judges the caller. A login that holds
-  `admin` on a reserved prefix can now also create that namespace by
-  restore, as reserved, which used to need an API key. Owning a runtime
-  reservation stays an API key's: the key that made it.
+  The Registry validates it and judges the caller. A platform-admin login
+  creates and configures namespaces by restore. Any other login is refused
+  a namespace that does not exist yet: creating a reserved one needs
+  `admin` on a prefix with no namespace, which only the API key that owns
+  its runtime reservation holds.
 - **A login a gateway forwarded is refused** wherever the restore would
   create or configure a namespace: its request carries the gateway's key,
   not the user's, so it has no credential to pass on. That covers every
@@ -3888,8 +3889,8 @@ Now:
 - **Anyone else's restore never changes a namespace's settings.** An
   existing namespace keeps its own. A namespace that does not exist is
   created with the requester's own credential, so the Registry applies its
-  normal rules: a reservation's holder gets the reservation's settings,
-  anyone else is refused. Every archive setting that is not applied is a
+  normal rules: the API key that owns the prefix's runtime reservation gets
+  the reservation's settings, anyone else is refused. Every archive setting that is not applied is a
   warning on the job.
 - **Creating a namespace by restore needs the requester's own credential**
   — see "A restore acts as its requester at the Registry" above for what

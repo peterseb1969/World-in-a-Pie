@@ -190,3 +190,19 @@ async def test_an_archived_reservation_with_settings_the_api_refuses_is_skipped(
     assert skipped[prefix]["reason_code"] == "invalid_record", skipped.get(prefix)
     assert "deletion_mode" in skipped[prefix]["reason"]
     assert await _reserved(prefix) is None
+
+
+@pytest.mark.asyncio
+async def test_an_archived_reservation_with_an_id_config_the_api_refuses_is_skipped(
+    client, auth_headers,
+):
+    prefix = _p("badidcfg")
+    archive = (await client.post(BACKUP, headers=auth_headers)).json()
+    archive["reservations"].append({
+        "prefix": prefix, "app": "someone", "namespace_id": _uuid(),
+        "settings": {"id_config": {"not_an_entity_type": {"algorithm": "uuid7"}}},
+    })
+    resp = await client.post(RESTORE, json=archive, params={"dry_run": "false"}, headers=auth_headers)
+    assert resp.status_code == 200, resp.text
+    skipped = {s["prefix"]: s for s in resp.json()["reservations"]["skipped"]}
+    assert skipped[prefix]["reason_code"] == "invalid_record", skipped.get(prefix)

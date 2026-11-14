@@ -1598,23 +1598,25 @@ class ValidationService:
         repeat a parent's (the template store refuses it), so nothing is
         overridden. None, with the error on ``result``, when the parent
         cannot be read."""
+        if not await self._candidate_refs_readable(candidate, result):
+            return None
         parent_ref = candidate.get("extends")
         if not parent_ref:
             return candidate
-        try:
-            parent = await get_template_store_client().get_template_resolved(
-                parent_ref, version=candidate.get("extends_version"),
-            )
-        except TemplateStoreError as e:
-            if e.unavailable:
-                raise dependency_unavailable(
-                    "template-store", f"parent template {parent_ref!r}", e,
-                ) from e
-            parent = None
-        if parent is None:
+        if candidate.get("extends_version") is None:
+            # The template store refuses a parent without a pinned version, so
+            # the dry run does not stand in the latest one.
             result.add_error(
                 code="template_unresolvable",
-                message=f"The candidate's parent template '{parent_ref}' cannot be read",
+                message="The candidate extends a template without extends_version; it is required",
+            )
+            return None
+        parent = await self._gated_template(parent_ref, candidate.get("extends_version"))
+        if parent is None:
+            # Missing, or in a namespace the caller may not reference: one answer.
+            result.add_error(
+                code="template_not_found",
+                message=f"The candidate's parent template '{parent_ref}' not found",
             )
             return None
         candidate["fields"] = [*(parent.get("fields") or []), *(candidate.get("fields") or [])]
@@ -1622,6 +1624,54 @@ class ValidationService:
         if not candidate.get("identity_fields"):
             candidate["identity_fields"] = list(parent.get("identity_fields") or [])
         return candidate
+
+    async def _gated_template(
+        self, template_ref: str, version: int | None,
+    ) -> dict[str, Any] | None:
+        """A template a candidate names, composed, or None when the store has
+        none or the inbound gate refuses its namespace (_resolve_template's
+        rule): a candidate is checked under the caller's reference rights,
+        and a template the caller may not reference answers as missing, so
+        validation errors never show another namespace's fields or rules."""
+        try:
+            template = await get_template_store_client().get_template_resolved(
+                template_ref, version=version,
+            )
+        except TemplateStoreError as e:
+            if e.unavailable:
+                raise dependency_unavailable(
+                    "template-store", f"template {template_ref!r}", e,
+                ) from e
+            return None
+        if template is not None and await gate_refuses(
+            template.get("namespace"), template.get("template_id") or template_ref,
+        ):
+            return None
+        return template
+
+    async def _candidate_refs_readable(
+        self, candidate: dict[str, Any], result: ValidationResult,
+    ) -> bool:
+        """Whether every nested template the candidate's own fields name
+        passes the inbound gate (as a missing one fails). A stored template's
+        nested references passed the template store's gates when it was
+        written; a candidate's never did. The parent's fields come from a
+        gated stored template, and templates nested deeper are stored ones."""
+        refs = [
+            (f[ref_key], f.get(ver_key))
+            for f in candidate.get("fields") or []
+            for ref_key, ver_key in (("template_ref", "template_ref_version"),
+                                     ("array_template_ref", "array_template_ref_version"))
+            if f.get(ref_key)
+        ]
+        for ref, version in refs:
+            if await self._gated_template(ref, version) is None:
+                result.add_error(
+                    code="template_not_found",
+                    message=f"Template '{ref}' named by the candidate not found",
+                )
+                return False
+        return True
 
     async def _candidate_referent_paths(
         self, template: dict[str, Any]

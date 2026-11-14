@@ -80,8 +80,9 @@ class CompositeKeyClaim(Document):
                     "deletes only claims carrying its own token, so it never "
                     "deletes a claim its entry held before the request, nor one "
                     "another request on the same entry has taken over (taking "
-                    "over clears the token). None on every confirmed claim "
-                    "and on claims taken over."
+                    "over clears the token). Cleared when a claim is confirmed "
+                    "and when it is taken over; a claim confirmed before that "
+                    "rule may still carry one."
     )
 
     class Settings:

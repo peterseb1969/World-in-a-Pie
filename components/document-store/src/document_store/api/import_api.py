@@ -194,8 +194,9 @@ def _import_response(outcome: _ImportOutcome) -> dict[str, Any]:
 
 # The import side of the CSV formula escape (wip_auth.csv_cells).
 _UNESCAPE_NOTE = (
-    "A text cell that starts with an apostrophe followed by =, +, -, @, tab, "
-    "carriage return or another apostrophe loses that one apostrophe: it is the "
+    "In a CSV file (not XLSX), a text cell that starts with an apostrophe "
+    "followed by =, +, -, @, tab, carriage return or another apostrophe loses "
+    "that one apostrophe: it is the "
     "escape WIP's CSV exports write so a spreadsheet does not run the cell as a "
     "formula. To import such a value literally, double the apostrophe."
 )

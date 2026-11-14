@@ -213,7 +213,7 @@ class TestOlderVersions:
         assert await _versions(mongo) == [(1, "active", {"n": 9})]
         messages = [getattr(e, "message", "") or "" for e in events]
         assert any("0 replaced in place" in m for m in messages), messages
-        assert any("written on the target while the merge ran" in m for m in messages), messages
+        assert any("on the target while the merge ran" in m for m in messages), messages
 
     @pytest.mark.asyncio
     async def test_an_unknown_value_is_refused(self, mongo):

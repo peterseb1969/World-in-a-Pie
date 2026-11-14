@@ -158,8 +158,11 @@ async def _bulk_create_per_namespace(
     identity registration and the existing-document lookup are all scoped to
     it). With ``continue_on_error`` (the default) the items are grouped by
     namespace, in submission order within each: one batch per namespace the
-    request names, however its items interleave (namespaces do not share
-    documents, so their order between them changes nothing). Without it the
+    request names, however its items interleave, in the order each namespace
+    first appears. Namespaces do not share documents, but an item can
+    reference a document another namespace's item creates: when that item's
+    namespace is written first, the reference fails for that item (send the
+    referenced documents first, or set continue_on_error=false). Without it the
     request stops at its first failing item, as a single batch does, so it
     is taken in runs of consecutive items that share a namespace, in
     submission order: every item after the failure is skipped, whichever

@@ -262,7 +262,7 @@ export class DocumentStoreService extends BaseService {
   /**
    * The latest version of the document with this identity hash. An identity
    * hash is unique only within a template and namespace: when several
-   * readable documents match, the server answers 409 (`ambiguous`) with the
+   * readable documents match, the server answers 409 (`ambiguous_reference`) with the
    * candidates — pass namespace and templateId (ID or value) to name one.
    */
   async getDocumentByIdentity(

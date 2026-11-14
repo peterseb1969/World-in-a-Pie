@@ -14,8 +14,9 @@ A. The order is now:
 2. the item's own namespace;
 3. the key's single namespace, only for an item that names none.
 
-Only an API key's scope derives a namespace. An OIDC token carrying a
-`namespaces` claim no longer does.
+In these bulk doors (`resolve_bulk_ids`) and wip-auth's other id
+resolvers, only an API key's scope derives a namespace. An OIDC token
+carrying a `namespaces` claim no longer does.
 
 A caller that relied on the old order must name a shared template the way the
 conventions say: `wip:PATIENT` (or its id) for an item outside `wip`. A bare
@@ -43,8 +44,11 @@ value always resolves in the item's own namespace.
   They used to point to `query_by_template`, which asks the same gate.
 - **Mixed-namespace bulk creates.** A bulk create whose items interleave
   namespaces writes one batch per namespace, instead of one per run of
-  consecutive items. With `continue_on_error=false` it keeps the runs, so it
-  still stops at the first failing item.
+  consecutive items, in the order each namespace first appears. An item that
+  references a document another namespace's item creates in the same request
+  fails if its namespace is written first: send the referenced documents
+  first, or set `continue_on_error=false`. That keeps consecutive runs, and
+  stops at the first failing item.
 
 ### Candidates and CSV
 
@@ -53,6 +57,12 @@ value always resolves in the item's own namespace.
   rules, identity). Documents carrying the parent's fields used to fail as
   unknown fields. An identity path into a nested template with no pinned
   version names no referent, as in the template store.
+  - The parent, and every template the candidate's own fields nest, pass
+    the inbound gate as the candidate's own template does. A template the
+    caller may not reference answers `template_not_found`, like a missing
+    one, so validation errors never show another namespace's fields.
+  - A candidate that extends without `extends_version` is refused
+    (`template_unresolvable`), as the template store refuses to save it.
 - **Toolkit `export-csv --json`.** Output schema 1.1 reports each file's
   `header` as written, with column names formula-escaped like cells, beside
   the unescaped `columns`.
@@ -60,4 +70,4 @@ value always resolves in the item's own namespace.
   import strip one leading apostrophe before `=`, `+`, `-`, `@`, tab, carriage
   return or another apostrophe. That is the escape WIP's exports write, and
   the import descriptions now say so. To import such a value literally,
-  double the apostrophe.
+  double the apostrophe. XLSX cells are read as they are.

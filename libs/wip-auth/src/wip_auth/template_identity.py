@@ -25,9 +25,11 @@ def effective_identity_fields(
 
     ``rows`` maps template_id to (stored identity_fields, extends). A
     template or ancestor missing from ``rows`` ends the walk with no fields,
-    as does a cycle: such a template cannot be judged. Every caller that
-    judges a document by its template's identity uses this, so two of them
-    cannot disagree about the same template.
+    as does a cycle: such a template cannot be judged. The Registry's
+    synonym doors and the restore's archive pre-check use this, so they
+    cannot disagree about the same template. document-store's restore
+    rehash walks the chain by pinned version instead (it also needs each
+    version's fields), with the same nearest-declared rule.
     """
     seen: set[str] = set()
     tid: str | None = template_id

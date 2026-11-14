@@ -4792,10 +4792,11 @@ async def import_documents_csv(
     documents in bulk. If column_mapping is omitted, columns are
     auto-mapped to template fields by matching names (case-insensitive).
     Term fields take human-readable values in the file, as in create_document.
-    A text cell that starts with an apostrophe followed by =, +, -, @, tab,
-    carriage return or another apostrophe loses that one apostrophe: it is
-    the escape WIP's CSV exports write so a spreadsheet does not run the cell
-    as a formula. To import such a value literally, double the apostrophe.
+    In a CSV file (not XLSX), a text cell that starts with an apostrophe
+    followed by =, +, -, @, tab, carriage return or another apostrophe loses
+    that one apostrophe: it is the escape WIP's CSV exports write so a
+    spreadsheet does not run the cell as a formula. To import such a value
+    literally, double the apostrophe.
 
     Args:
         file_path: Path to a CSV or XLSX file.

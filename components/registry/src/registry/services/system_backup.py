@@ -578,10 +578,14 @@ def _invalid_reservation_settings(settings: dict[str, Any]) -> str | None:
     API would refuse: such a reservation fails on every later read."""
     from pydantic import ValidationError
 
+    from ..models.id_algorithm import validate_id_config_write
     from .reservations import ReservationSettings
 
     try:
         ReservationSettings(**settings)
+        # id_config is typed loosely there; a namespace write checks it so.
+        if settings.get("id_config") is not None:
+            validate_id_config_write(settings["id_config"])
     except ValidationError as e:
         problems = "; ".join(
             f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors()

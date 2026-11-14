@@ -5,10 +5,12 @@ cases: [1279]
 
 ### Registry claims and inserts say what they did
 
-- **A failed batch insert that does not say where it stopped**
-  (`register`, `reserve`, `provision`) is read back. The entries it did write
-  answer `created` with their claims confirmed, and the rest lose theirs. It
-  used to answer every entry `error` and leave every claim pending.
+- **A failed batch insert that does not say where it stopped** is read back,
+  and the claims are settled by what it wrote: the written entries' are
+  confirmed, the rest released. `register` and `reserve` answer the written
+  entries `created`/`reserved` instead of `error`. `provision` still fails as
+  a whole, as before, with its claims settled the same way. Before, every
+  claim stayed pending.
 - **Activating a reservation under another key** gives back the claim on the
   key the reservation was made with. That key used to stay claimed by the
   entry, so nothing else could register it.

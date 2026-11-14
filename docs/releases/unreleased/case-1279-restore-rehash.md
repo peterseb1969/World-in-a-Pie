@@ -13,18 +13,25 @@ document:
 - **Inherited identity.** An archived template that extends another stores
   neither its inherited fields nor, unless it declares its own, its identity
   fields. The rehash read the stored row and saw no identity. It now
-  composes the template along its pinned parents, as template-store does.
+  composes the template along its pinned parents, as template-store does. A
+  parent held nowhere stops the composition only when the rows found do not
+  define the identity on their own (a declared `identity_fields` and the
+  child's stored referent paths do).
 - **Templates the archive does not carry** were read from this install at
   their latest version. Now every version the install holds is read, and
   each document uses the version it is pinned to. A merge into several
   targets reads each version once.
 - **A pinned version the archive does not carry** left the document
   unrehashed. Identity fields cannot change between versions, so another
-  version of the same template now stands in.
+  version of the same template now stands in: the highest one that is not a
+  draft and carries its stored referent paths, else the highest held. A
+  template store whose versions route answers nothing has the template read
+  at its latest version.
 - **A row whose identity values or resolutions cannot be read** kept its hash
-  silently. It is now counted with the other unrehashable documents. The
-  restore's warning names both causes: a template (or a parent it extends)
-  held nowhere, and an unreadable row.
+  silently. It is now counted with the other unrehashable documents, by
+  fresh, merge and plain restores alike (`unrehashable_documents` in the
+  result). The restore's warning names both causes: a template (or a parent
+  it extends) held nowhere, and an unreadable row.
 
 ### A restore's credentials, as documented
 

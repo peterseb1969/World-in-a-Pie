@@ -210,10 +210,14 @@ async def import_terminology(
 
     target_namespace = namespace or body_namespace
     if target_namespace is None:
-        # Platform convention: a key scoped to exactly one namespace
-        # implies it; multi-namespace keys must say where the import goes.
-        key_namespaces = (identity.raw_claims or {}).get("namespaces")
-        if isinstance(key_namespaces, list) and len(key_namespaces) == 1:
+        # Platform convention: an API key scoped to exactly one namespace
+        # implies it (only a key's record carries a scope; another
+        # identity's namespaces claim is not one); multi-namespace keys
+        # must say where the import goes.
+        from wip_auth.permissions import _key_scope
+
+        key_namespaces = _key_scope(identity)
+        if key_namespaces is not None and len(key_namespaces) == 1:
             target_namespace = key_namespaces[0]
 
     if target_namespace is None:

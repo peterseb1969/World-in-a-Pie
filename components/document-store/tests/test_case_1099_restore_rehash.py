@@ -340,3 +340,50 @@ async def test_an_unreadable_identity_is_counted_not_passed():
          "documents": [_term_doc("D", "T", "THING", "X", "archived")]}, "t",
     )
     assert plan.summary()["unrehashable_documents"] == 1
+
+
+def test_a_self_sufficient_child_is_rehashed_without_its_parent():
+    """A child that declares its own identity_fields and carries its stored
+    referent paths needs nothing from a parent the archive and this install
+    lack (CASE-1279 reopen, 71b8dc71 R1)."""
+    child = {"template_id": "C", "version": 1, "identity_fields": ["kind"], "extends": "GONE",
+             "extends_version": 1, "fields": [TERM_FIELD], "referent_identity_paths": ["kind"]}
+    rehash = _IdentityRehash(_reader([child]), ["src"])
+    archived = _term_doc("D", "C", "CHILD", "OLD", _hash("OLD"))
+    row = rehash.rehash(archived, _term_doc("D", "C", "CHILD", "NEW", _hash("OLD")))
+    assert row["identity_hash"] == _hash("NEW")
+
+
+def test_a_merge_rehash_counts_rows_it_cannot_rehash():
+    """71b8dc71 R2: merge and plain restores count them, as fresh does."""
+    rehash = _IdentityRehash(_reader([]), ["src"])
+    archived = _term_doc("D", "T-NOWHERE", "THING", "OLD", _hash("OLD"))
+    rehash.rehash(archived, _term_doc("D", "T-NOWHERE", "THING", "NEW", _hash("OLD")))
+    assert rehash.unrehashable == 1
+
+
+def test_the_stand_in_version_prefers_a_stamped_one():
+    """71b8dc71 R6: a draft (no stored referent paths) never stands in when a
+    stamped version is held."""
+    stamped = {"template_id": "T", "version": 2, "identity_fields": ["kind"],
+               "fields": [TERM_FIELD], "referent_identity_paths": ["kind"], "status": "active"}
+    draft = {"template_id": "T", "version": 5, "identity_fields": ["kind"],
+             "fields": [{"name": "kind", "type": "string"}], "status": "draft"}
+    definitions = TemplateDefinitions.of_templates([stamped, draft])
+    assert definitions.lookup({"template_id": "T", "template_version": 9})["referent_paths"] == ["kind"]
+
+
+@pytest.mark.asyncio
+async def test_an_empty_version_listing_falls_back_to_the_latest():
+    """71b8dc71 R5: a template store answering the versions route with
+    nothing (404) still has the template read at its latest version."""
+    engine = DirectRestoreEngine(MagicMock(), None, lambda _e: None)
+    client = MagicMock()
+    client.get_template_version_numbers = AsyncMock(return_value=[])
+    client.get_template_resolved = AsyncMock(return_value={
+        "template_id": "HERE", "version": 3, "identity_fields": ["kind"], "fields": [TERM_FIELD],
+    })
+    with patch("document_store.services.backup_engine.get_template_store_client", return_value=client):
+        found = await engine._external_template_versions("HERE")
+    assert list(found) == [3]
+    client.get_template_resolved.assert_awaited_once_with("HERE", version=None)

@@ -37,6 +37,7 @@ def get_deletion_service() -> NamespaceDeletionService:
     responses={
         400: {"description": "Refused: inbound references need force, or the namespace may not be deleted"},
         404: {"description": "No such namespace"},
+        409: {"description": "The namespace is locked: a deletion is in progress"},
         503: {"description": "The deletion could not be started (its journal could not be "
               "stored); nothing was deleted and the namespace is unlocked again"},
     },
