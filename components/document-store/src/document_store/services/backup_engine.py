@@ -53,6 +53,7 @@ from .document_chains import (
 from .file_storage_client import (
     FileStorageClient,
     FileStorageError,
+    FileStorageNotFoundError,
     FileStorageUnavailableError,
 )
 from .merge_definitions import (
@@ -181,6 +182,11 @@ _DOCUMENT_KEY_FIELDS = ("document_id", "template_id", "identity_hash", "version"
 _REFERENT_LOOKUP_BATCH = 1000
 # Ids per $in in the merge's file reference recount.
 _RECOUNT_BATCH = 500
+# How many object-store HEADs a restore runs at once when it checks, for the
+# files an archive carries no bytes for, whether the store still holds them;
+# and how many it checks between progress lines.
+_BLOB_CHECK_CONCURRENCY = 16
+_BLOB_CHECK_BATCH = 500
 
 # Unresolved referents named individually on a restore job; the rest are
 # counted in one more warning.
@@ -1258,6 +1264,7 @@ class DirectBackupEngine:
         count = 0
         unreadable: list[str] = []
         mismatched: list[str] = []
+        refused = 0  # store errors other than "no such object"
         projection = {"file_id": 1, "storage_key": 1, "checksum": 1}
         async for file_doc in files_db.find(query, projection):
             file_id = file_doc.get("file_id") or str(file_doc.get("_id"))
@@ -1265,10 +1272,11 @@ class DirectBackupEngine:
                 digest = await self._stage_blob(
                     writer, namespace, file_id, file_doc.get("storage_key", file_id),
                 )
-            except FileStorageError:
+            except FileStorageError as exc:
                 logger.warning("Failed to download blob for file %s", file_id, exc_info=True)
                 writer.discard_blob(file_id)
                 unreadable.append(file_id)
+                refused += not isinstance(exc, FileStorageNotFoundError)
                 continue
             expected = file_doc.get("checksum")
             if expected and digest != expected:
@@ -1284,6 +1292,16 @@ class DirectBackupEngine:
             "backup carries no bytes for them": mismatched,
         }):
             self._emit("warning", warning)
+        if refused and count == 0:
+            # Not one file read, and the store answered errors rather than
+            # "not there": a store that refuses everything, which an archive
+            # with files would hide as files without bytes.
+            raise BackupEngineError(
+                f"[{namespace}] the object store refused every file it was asked for "
+                f"({refused} error(s), no file read); the backup would carry none of "
+                "the namespace's file bytes. Check the object store and retry, or back "
+                "up without files."
+            )
         logger.info("Backed up %d blobs for namespace %s", count, namespace)
         return unreadable + mismatched
 
@@ -1561,6 +1579,17 @@ def _archived_template_rows(reader: Any, sources: list[str]) -> dict[str, Templa
                     (template.get("identity_fields") or [], template.get("extends")),
                 )
     return rows
+
+
+def _sha256_digest(data: bytes) -> bytes:
+    return hashlib.sha256(data).digest()
+
+
+def _archived_blob_digest(reader: Any, file_id: str) -> bytes | None:
+    """The SHA-256 of an archived blob's bytes, or None when the archive
+    carries none for it."""
+    data = reader.read_blob(file_id)
+    return None if data is None else _sha256_digest(data)
 
 
 def _left_out_types(*, skip_documents: bool, skip_files: bool) -> set[str]:
@@ -7416,16 +7445,53 @@ class DirectRestoreEngine:
             f"{restored} without content: {missing}": without.get("missing", []),
             f"{restored} without content: the archive's bytes do not match their "
             "checksum": without.get("mismatched", []),
+            f"{restored} without content in the archive, and the object store did not "
+            "answer whether it still holds their bytes": without.get("unchecked", []),
         }):
             self._emit("warning", warning)
 
-    async def _without_objects(self, file_ids: set[str]) -> list[str]:
+    async def _without_objects(self, file_ids: set[str]) -> tuple[list[str], list[str]]:
         """Of the files an archive carries no bytes for, the ones with no
-        object under their id here either. A plain restore or merge keeps a
-        file's id, so an object this install still holds under it (one a
-        deletion left in the store, say) still serves the file."""
+        object under their id here either, and the ones the store could not
+        be asked about. A plain restore or merge keeps a file's id, so an
+        object this install still holds under it (one a deletion left in the
+        store, say) still serves the file.
+
+        For an archive made without files that is every file row, so the
+        objects are asked about _BLOB_CHECK_CONCURRENCY at a time, with a
+        progress line per batch. A store error on one object (anything but a
+        plain "not there") does not stop the restore or its dry run: the file
+        is named as unchecked."""
         assert self._storage is not None
-        return [file_id for file_id in sorted(file_ids) if not await self._storage.exists(file_id)]
+        storage = self._storage
+        ids = sorted(file_ids)
+        if not ids:
+            return [], []
+        gate = asyncio.Semaphore(_BLOB_CHECK_CONCURRENCY)
+
+        async def held(file_id: str) -> bool | None:
+            async with gate:
+                try:
+                    return await storage.exists(file_id)
+                except FileStorageError:
+                    return None
+
+        missing: list[str] = []
+        unchecked: list[str] = []
+        for start in range(0, len(ids), _BLOB_CHECK_BATCH):
+            batch = ids[start:start + _BLOB_CHECK_BATCH]
+            for file_id, there in zip(batch, await asyncio.gather(*map(held, batch))):
+                if there is None:
+                    unchecked.append(file_id)
+                elif not there:
+                    missing.append(file_id)
+            if len(ids) > _BLOB_CHECK_BATCH:
+                done = min(start + _BLOB_CHECK_BATCH, len(ids))
+                self._emit(
+                    "phase_blobs", f"Checked {done}/{len(ids)} files the archive has no bytes for",
+                    current=done, total=len(ids),
+                )
+        return missing, unchecked
 
     async def _blob_keys_holding_archive_bytes(
         self, reader: ArchiveReader, keys: dict[str, str],
@@ -7449,14 +7515,16 @@ class DirectRestoreEngine:
         for storage_key, file_id in keys.items():
             if not await self._storage.exists(storage_key):
                 continue
-            data = reader.read_blob(file_id)
-            if data is None:
+            # Reading the archive and hashing run on a worker thread, as
+            # every other pass over the archive's bytes does.
+            archived = await self._off_loop(_archived_blob_digest, reader, file_id)
+            if archived is None:
                 continue  # nothing would be written under this key
             if await self._key_has_file_record(storage_key):
                 taken.append(storage_key)
                 continue
             stored = await self._storage.download(storage_key)
-            if hashlib.sha256(stored).digest() == hashlib.sha256(data).digest():
+            if await asyncio.to_thread(_sha256_digest, stored) == archived:
                 present.add(storage_key)
             else:
                 taken.append(storage_key)
@@ -7498,9 +7566,9 @@ class DirectRestoreEngine:
         if only is not None:
             blobs &= only
             rows &= only
+        missing, unchecked = await self._without_objects(rows - blobs)
         without: dict[str, list[str]] = {
-            "missing": await self._without_objects(rows - blobs),
-            "mismatched": [],
+            "missing": missing, "mismatched": [], "unchecked": unchecked,
         }
         blob_ids = sorted(blobs)
         if blob_ids:
@@ -7558,9 +7626,9 @@ class DirectRestoreEngine:
         assert self._storage is not None
         checksums = await self._off_loop(self._archive_file_checksums, reader)
         blobs = set(reader.list_blobs())
+        missing, unchecked = await self._without_objects(set(checksums) - blobs)
         without: dict[str, list[str]] = {
-            "missing": await self._without_objects(set(checksums) - blobs),
-            "mismatched": [],
+            "missing": missing, "mismatched": [], "unchecked": unchecked,
         }
         uploadable = 0
         for file_id in sorted(blobs):

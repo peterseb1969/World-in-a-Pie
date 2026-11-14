@@ -29,6 +29,7 @@ from document_store.services.backup_engine import (
 )
 from document_store.services.file_storage_client import (
     FileStorageError,
+    FileStorageNotFoundError,
     FileStorageUnavailableError,
 )
 
@@ -166,6 +167,48 @@ async def test_a_file_whose_object_is_still_here_is_not_named():
     assert "F-GOOD" not in warning and "2 file(s)" in warning
 
 
+class _FlakyStore(_Storage):
+    """A store whose HEAD for F-CORRUPT answers an error, not "not there"."""
+
+    async def exists(self, storage_key):
+        if storage_key == "F-CORRUPT":
+            raise FileStorageError("HeadObject: InternalError")
+        return await super().exists(storage_key)
+
+
+@pytest.mark.asyncio
+async def test_a_store_error_on_one_check_names_the_file_and_stops_nothing():
+    """The existence check runs for every file of an archive made without
+    files; one object the store errs on is named unchecked, and neither the
+    restore nor its dry run stops (CASE-1287, 24b7df2f R1)."""
+    for dry_run in (False, True):
+        storage, events = _FlakyStore(), []
+        engine = DirectRestoreEngine(MagicMock(), storage, events.append)
+        reader = _reader(ROWS, {}, include_files=False)
+        if dry_run:
+            await engine._dry_run_blob_report(reader)
+        else:
+            await engine._restore_blobs(reader, "ns")
+        warnings = _warnings(events)
+        assert any("did not answer" in w and "F-CORRUPT" in w for w in warnings), warnings
+        assert any("2 file(s)" in w and "made without files" in w for w in warnings), warnings
+
+
+@pytest.mark.asyncio
+async def test_many_files_are_checked_in_batches_with_progress(monkeypatch):
+    from document_store.services import backup_engine
+
+    monkeypatch.setattr(backup_engine, "_BLOB_CHECK_BATCH", 2)
+    storage, events = _Storage(), []
+    engine = DirectRestoreEngine(MagicMock(), storage, events.append)
+    await engine._restore_blobs(_reader(ROWS, {}, include_files=False), "ns")
+    progress = [e.message for e in events if e.phase == "phase_blobs" and "Checked" in e.message]
+    assert progress == [
+        "Checked 2/3 files the archive has no bytes for",
+        "Checked 3/3 files the archive has no bytes for",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_a_fresh_restore_from_an_archive_without_files_names_every_file():
     """A fresh restore writes each file under a new id, where no object can
@@ -231,6 +274,43 @@ async def test_an_unreachable_object_store_fails_the_backup(namespace, tmp_path)
     with pytest.raises(BackupEngineError, match="could not be reached"):
         await engine._backup_blobs(writer, ns, tmp_path / "down.zip", 0, 3)
     assert _warnings(events) == []
+
+
+class _RefusingStorage(_Storage):
+    """A store that answers every read with an S3 error, or a plain miss."""
+
+    def __init__(self, missing: bool = False):
+        super().__init__()
+        self.missing = missing
+
+    async def download_stream(self, key, chunk_size=64 * 1024):
+        if self.missing:
+            raise FileStorageNotFoundError(f"File not found: {key}")
+        raise FileStorageError("Failed to download file: AccessDenied")
+        yield b""  # pragma: no cover - makes this an async generator
+
+
+@pytest.mark.asyncio
+async def test_a_store_refusing_every_file_fails_the_backup(namespace, tmp_path):
+    """No file read and only store errors: completed, the archive would
+    claim files and carry none (CASE-1287, 24b7df2f R2)."""
+    client, ns = namespace
+    writer = ArchiveWriter(tmp_path / "refused.zip", default_namespace=ns)
+    engine = DirectBackupEngine(client, _RefusingStorage(), [].append)
+    with pytest.raises(BackupEngineError, match="refused every file"):
+        await engine._backup_blobs(writer, ns, tmp_path / "refused.zip", 0, 3)
+
+
+@pytest.mark.asyncio
+async def test_objects_that_are_only_missing_still_complete_the_backup(namespace, tmp_path):
+    """Files whose objects are gone are files without bytes, named on the job;
+    that is not a store refusing to answer."""
+    client, ns = namespace
+    events: list = []
+    writer = ArchiveWriter(tmp_path / "missing.zip", default_namespace=ns)
+    engine = DirectBackupEngine(client, _RefusingStorage(missing=True), events.append)
+    dropped = await engine._backup_blobs(writer, ns, tmp_path / "missing.zip", 0, 3)
+    assert sorted(dropped) == ["F-BROKEN", "F-GOOD", "F-WRONG"]
 
 
 class _FullDiskWriter:

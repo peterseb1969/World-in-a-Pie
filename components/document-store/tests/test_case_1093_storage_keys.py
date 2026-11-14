@@ -31,6 +31,9 @@ class _Storage:
             raise FileStorageUnavailableError("unreachable")
         return storage_key in self.objects
 
+    async def download(self, storage_key):
+        return self.objects[storage_key]
+
     async def copy_object(self, source_key, dest_key):
         self.objects[dest_key] = self.objects[source_key]
 
@@ -69,6 +72,26 @@ async def test_a_row_without_its_own_object_gets_a_copy_and_no_longer_aliases(fi
     assert await repair_storage_keys(files, storage) == (1, 1, [])
     assert (await files.find_one({"file_id": "NEW"}))["storage_key"] == "NEW"
     assert storage.objects["NEW"] == storage.objects["OLD"] == b"bytes of OLD"
+
+
+@pytest.mark.asyncio
+async def test_the_alias_is_copied_only_when_its_bytes_are_the_files(files):
+    """The row's checksum decides: bytes that are not the file's are never
+    copied in as its own (CASE-1287, 24b7df2f R8)."""
+    import hashlib
+
+    await files.insert_many([
+        {"file_id": "GOOD", "storage_key": "OLD",
+         "checksum": hashlib.sha256(b"bytes of OLD").hexdigest()},
+        {"file_id": "BAD", "storage_key": "OLD",
+         "checksum": hashlib.sha256(b"what was uploaded").hexdigest()},
+        {"file_id": "OLD", "storage_key": "OLD"},
+    ])
+    storage = _Storage({"OLD"})
+    assert await repair_storage_keys(files, storage) == (2, 1, [])
+    assert storage.objects["GOOD"] == b"bytes of OLD"
+    assert "BAD" not in storage.objects
+    assert (await files.find_one({"file_id": "BAD"}))["storage_key"] == "BAD"
 
 
 @pytest.mark.asyncio

@@ -275,7 +275,7 @@ class FileStorageClient:
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "")
             if error_code == "NoSuchKey":
-                raise FileStorageError(f"File not found: {storage_key}") from e
+                raise FileStorageNotFoundError(f"File not found: {storage_key}") from e
             raise FileStorageError(f"Failed to download file: {e}") from e
 
     async def upload_file(

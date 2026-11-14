@@ -26,9 +26,10 @@ packages: [wip-archive]
   A fresh restore from such an archive writes each file under a new id with
   nothing there; a plain restore or merge does not name a file whose object
   this install still holds under its id.
-- **A restore's dry run checks the bytes** as the real run does: "would
-  upload N file blob(s)" counts only bytes that match their checksum, and
-  the files it would restore without content are named.
+- **A plain restore's dry run checks the bytes** as the real run does:
+  "would upload N file blob(s)" counts only bytes that match their checksum,
+  and the files it would restore without content are named. A merge's or a
+  fresh restore's dry run does not report blobs yet.
 - A restore reads and hashes each blob on a worker thread, so a large file
   no longer stalls the service's other requests and health checks.
 

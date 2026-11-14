@@ -11,7 +11,10 @@ before that.
 Every such row ends pointing at its own file id. When no object is there yet
 (the restore's archive carried no bytes for the file), the object its old key
 names is copied there first, so the file keeps serving what it served and no
-longer shares an object another file can delete. A row whose old key names no
+longer shares an object another file can delete — but only when those bytes
+match the row's checksum: bytes that are not the file's are never copied in as
+its own, and such a row is re-pointed without them (it served another file's
+bytes; it now serves none) and named in the log. A row whose old key names no
 object is re-pointed as it is: it had no bytes either way. A row the object
 store could not be asked about, or the copy failed for, is left as it is,
 counted and named in the log, and retried at the next start.
@@ -32,6 +35,8 @@ logger = logging.getLogger("document_store.file_storage_keys")
 
 class _Store(Protocol):
     async def exists(self, storage_key: str) -> bool: ...
+
+    async def download(self, storage_key: str) -> bytes: ...
 
     async def copy_object(self, source_key: str, dest_key: str) -> None: ...
 
@@ -57,12 +62,20 @@ async def repair_storage_keys(
         "file_id": {"$exists": True},
         "$expr": {"$ne": ["$storage_key", "$file_id"]},
     }
-    async for row in collection.find(query, {"file_id": 1, "storage_key": 1}):
+    async for row in collection.find(query, {"file_id": 1, "storage_key": 1, "checksum": 1}):
         file_id, old_key = row["file_id"], row.get("storage_key")
         try:
             if old_key and not await storage.exists(file_id) and await storage.exists(old_key):
-                await storage.copy_object(old_key, file_id)
-                copied += 1
+                if await _holds_the_files_bytes(storage, old_key, row.get("checksum")):
+                    await storage.copy_object(old_key, file_id)
+                    copied += 1
+                else:
+                    logger.warning(
+                        "File %s: the object its storage_key %r names does not match "
+                        "its checksum, so it is not copied in as the file's own; the "
+                        "row is re-pointed at its id and serves no bytes",
+                        file_id, old_key,
+                    )
             await collection.update_one(
                 {"_id": row["_id"]}, {"$set": {"storage_key": file_id}}
             )
@@ -76,3 +89,16 @@ async def repair_storage_keys(
             continue
         repaired += 1
     return StorageKeyRepair(repaired, copied, failed)
+
+
+async def _holds_the_files_bytes(storage: _Store, key: str, checksum: Any) -> bool:
+    """Whether the object under ``key`` is the file's bytes by its recorded
+    SHA-256 (hex). A row that records no checksum cannot be checked, and is
+    taken as it served."""
+    if not checksum:
+        return True
+    import asyncio
+    import hashlib
+
+    data = await storage.download(key)
+    return await asyncio.to_thread(lambda: hashlib.sha256(data).hexdigest()) == checksum

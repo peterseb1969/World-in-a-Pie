@@ -46,7 +46,9 @@ Endpoints
     Restore from a job's retained archive without re-uploading it. The new
     restore job gets its OWN archive copy so deleting either job never
     pulls the archive out from under the other. Reading the source job's
-    archive needs what downloading it needs.
+    archive needs admin on every namespace whose data it holds (a download
+    needs read), and a fresh restore's input only to its creator or a
+    platform admin.
 * ``GET  /backup/jobs``
     List recent jobs the caller can read every namespace of, optionally
     filtered by a namespace whose data they hold and/or status.
@@ -1071,11 +1073,12 @@ async def _check_job_permission(
     Refusals answer 404, as a missing job does.
 
     A platform admin is admin on every namespace but one locked for
-    deletion, which the Registry closes to everyone. Backup jobs are the
-    exception: a job spanning a locked namespace (an instance-wide backup
-    taken before the deletion, say) stays readable, downloadable and
-    deletable by a platform admin, or no one could reach it until the
-    deletion ends. The Registry is still asked, so an outage stays a 503.
+    deletion, which the Registry closes to everyone. This job API is the
+    exception, for jobs of either kind: a job spanning a locked namespace
+    (an instance-wide backup taken before the deletion, or a restore into
+    it) stays readable, downloadable and deletable by a platform admin, or
+    no one could reach it until the deletion ends. The Registry is still
+    asked, so an outage stays a 503.
     """
     superadmin = is_superadmin(identity)
     for ns in dict.fromkeys([*(job.namespaces or [job.namespace]), *job.source_namespaces]):
@@ -1434,11 +1437,11 @@ async def restore_from_job(
     The new restore job receives its OWN archive copy (a server-side object
     copy in the bucket, or a plain scratch copy with its own age), so deleting either job
     never removes the archive out from under the other. Authorization is
-    two-layered. Reading the SOURCE job's archive needs what downloading it
-    needs: admin on every namespace whose data that job holds (the ones it
-    writes and, for an uploaded restore or merge, the archive's own), and a
-    fresh restore's input only to the key that created it or a platform
-    admin. Then the same per-namespace admin checks the upload restore runs,
+    two-layered. Reading the SOURCE job's archive needs admin on every
+    namespace whose data that job holds (the ones it writes and, for an
+    uploaded restore or merge, the archive's own) — more than a download,
+    which needs read: restoring from it writes — and a fresh restore's input
+    only to the key that created it or a platform admin. Then the same per-namespace admin checks the upload restore runs,
     over the namespaces the restore will write (the manifest's list, or the
     zip's namespaces/ tree when the manifest lists none).
     """
