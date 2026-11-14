@@ -2359,6 +2359,34 @@ def read_live_secrets(ns: str) -> dict[str, str] | None:
         ) from e
 
 
+def remove_live_secret_value(ns: str, name: str) -> bool:
+    """Remove one value from the live `wip-secrets` Secret. Returns whether
+    it was there to remove.
+
+    An apply cannot do this itself: the Secret is rendered as stringData,
+    and a value the render no longer names stays in the live object. Only
+    `name` is removed (a JSON patch on that one key), never the Secret or
+    any other value. Raises `LiveSecretReadUnavailable` when the cluster
+    could not be read or refused the patch.
+    """
+    live = read_live_secrets(ns)
+    if live is None or name not in live:
+        return False
+    pointer = "/data/" + name.replace("~", "~0").replace("/", "~1")
+    proc = subprocess.run(
+        [*kubectl(), "patch", "secret", "wip-secrets", "-n", ns, "--type=json",
+         "-p", json.dumps([{"op": "remove", "path": pointer}])],
+        capture_output=True, text=True, check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or "").strip() or f"kubectl exited {proc.returncode}"
+        raise LiveSecretReadUnavailable(
+            f"kubectl could not remove {name} from secret wip-secrets in "
+            f"namespace {ns!r}: {detail}"
+        )
+    return True
+
+
 def _is_not_found(kubectl_stderr: str) -> bool:
     """Whether kubectl's failure is the API server saying "no such object".
 

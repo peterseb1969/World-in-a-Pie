@@ -112,6 +112,40 @@ def _key_scope(identity: UserIdentity) -> list[str] | None:
     return scope
 
 
+async def implied_namespace(identity: UserIdentity) -> str | None:
+    """The namespace an API key implies when the caller names none, or None.
+
+    A key implies a namespace when its scope is exactly that one namespace,
+    or exactly that one plus the platform's ``wip`` namespace held read-only:
+    a key that browses the shared vocabularies carries ``wip`` beside its own
+    namespace, and reading ``wip`` leaves only one namespace it can write. A
+    key that holds write or admin on ``wip`` implies nothing, since omitting
+    the namespace would then pick between two namespaces it can write.
+
+    The scope is the key's record (``_key_scope``: another identity's
+    ``namespaces`` claim, an OIDC token's for one, implies nothing). The
+    key's permission on ``wip`` is the Registry's answer, a grant made
+    through the API included, asked only for a scope of exactly one
+    namespace plus ``wip`` and cached as every permission read is. Raises
+    HTTP 503 when the Registry could not be asked: the answer is never a
+    guess.
+    """
+    from .reference_policy import WIP_NAMESPACE
+
+    scope = _key_scope(identity)
+    if scope is None:
+        return None
+    if len(scope) == 1:
+        return scope[0]
+    others = [ns for ns in scope if ns != WIP_NAMESPACE]
+    if len(scope) != 2 or len(others) != 1:
+        return None
+    permission = await resolve_permission(identity, WIP_NAMESPACE)
+    if permission == PERMISSION_UNAVAILABLE:
+        raise HTTPException(503, _UNAVAILABLE_DETAIL)
+    return others[0] if permission == "read" else None
+
+
 def _registry_question(
     identity: UserIdentity, namespace: str | None = None
 ) -> tuple[dict[str, str], dict[str, str]]:

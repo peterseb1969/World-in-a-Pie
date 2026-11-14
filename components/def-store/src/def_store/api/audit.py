@@ -114,11 +114,11 @@ async def get_term_audit_log(
             term_id, terminology, namespace, param_name="term_id"
         )
         miss: HTTPException | None = HTTPException(
-            404, field_unresolved_detail(raw_id, terminology, namespace, "term_id"),
+            404, await field_unresolved_detail(raw_id, terminology, namespace, "term_id"),
         )
     else:
         term_id = await resolve_or_404(term_id, "term", namespace=namespace, param_name="term_id")
-        miss = resolution_miss(raw_id, "term", namespace, "term_id")
+        miss = await resolution_miss(raw_id, "term", namespace, "term_id")
 
     from ..models.term import Term as _Term
     existing = await _Term.find_one({"term_id": term_id})
@@ -155,7 +155,7 @@ async def get_terminology_audit_log(
     existing = await _T.find_one(lookup)
     ns = await _audited_namespace(
         identity, existing.namespace if existing else None, "terminology_id", terminology_id,
-        resolution_miss(raw_id, "terminology", namespace, "terminology_id"),
+        await resolution_miss(raw_id, "terminology", namespace, "terminology_id"),
     )
     if ns is None:
         return _empty(page, page_size)

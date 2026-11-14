@@ -9,6 +9,7 @@ from wip_auth import (
     AmbiguousItems,
     UserIdentity,
     check_namespace_permission,
+    implied_namespace,
     is_superadmin,
     resolve_accessible_namespaces,
     resolve_bulk_ids,
@@ -361,6 +362,11 @@ async def migrate_documents(
     elif len(nsf.namespaces) == 1 and not is_superadmin(identity):
     # A key that can read one namespace has it implied; an administrator names it.
         ns = nsf.namespaces[0]
+    elif not is_superadmin(identity) and (
+        (implied := await implied_namespace(identity)) in nsf.namespaces
+    ):
+        # So does a key whose scope implies one (its own beside a read-only wip).
+        ns = implied
     else:
         raise HTTPException(
             status_code=422,
@@ -428,6 +434,10 @@ async def get_template_impact_stats(
         ns = namespace
     elif len(nsf.namespaces) == 1 and not is_superadmin(identity):
         ns = nsf.namespaces[0]
+    elif not is_superadmin(identity) and (
+        (implied := await implied_namespace(identity)) in nsf.namespaces
+    ):
+        ns = implied
     else:
         raise HTTPException(
             status_code=422,
@@ -478,6 +488,10 @@ async def get_template_facets(
         ns = namespace
     elif len(nsf.namespaces) == 1 and not is_superadmin(identity):
         ns = nsf.namespaces[0]
+    elif not is_superadmin(identity) and (
+        (implied := await implied_namespace(identity)) in nsf.namespaces
+    ):
+        ns = implied
     else:
         raise HTTPException(
             status_code=422,
@@ -573,7 +587,7 @@ async def get_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_readable(identity, document.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+    await check_readable(identity, document.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
 
     return document
 
@@ -602,7 +616,7 @@ async def get_document_versions(
     # Check namespace — fetch the document to get its namespace
     doc = await service.get_document(document_id)
     if doc:
-        await check_readable(identity, doc.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+        await check_readable(identity, doc.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
 
     return versions
 
@@ -629,7 +643,7 @@ async def get_document_version(
     if not document:
         raise HTTPException(status_code=404, detail="Document version not found")
 
-    await check_readable(identity, document.namespace, miss_detail(raw_document_id, "document", namespace, "Document version not found", "document_id"))
+    await check_readable(identity, document.namespace, await miss_detail(raw_document_id, "document", namespace, "Document version not found", "document_id"))
 
     return document
 
@@ -660,7 +674,7 @@ async def get_latest_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_readable(identity, document.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+    await check_readable(identity, document.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
 
     return document
 
@@ -741,7 +755,7 @@ async def get_document_relationships(
     if not seed:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_readable(identity, seed.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+    await check_readable(identity, seed.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
 
@@ -807,7 +821,7 @@ async def traverse_document_relationships(
     if not seed:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    await check_readable(identity, seed.namespace, miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
+    await check_readable(identity, seed.namespace, await miss_detail(raw_document_id, "document", namespace, "Document not found", "document_id"))
     if namespace:
         await check_namespace_permission(identity, namespace, "read")
 

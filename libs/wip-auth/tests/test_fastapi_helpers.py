@@ -131,29 +131,35 @@ async def registry():
 class TestDeriveNamespaceFromIdentity:
     """Tests for _derive_namespace_from_identity (pure unit tests)."""
 
-    def test_single_namespace_key(self):
+    @pytest.mark.asyncio
+    async def test_single_namespace_key(self):
         set_current_identity(_make_identity(namespaces=["my-app"]))
-        assert _derive_namespace_from_identity() == "my-app"
+        assert await _derive_namespace_from_identity() == "my-app"
 
-    def test_multi_namespace_key_returns_none(self):
+    @pytest.mark.asyncio
+    async def test_multi_namespace_key_returns_none(self):
         set_current_identity(_make_identity(namespaces=["ns-a", "ns-b"]))
-        assert _derive_namespace_from_identity() is None
+        assert await _derive_namespace_from_identity() is None
 
-    def test_empty_namespace_list_returns_none(self):
+    @pytest.mark.asyncio
+    async def test_empty_namespace_list_returns_none(self):
         set_current_identity(_make_identity(namespaces=[]))
-        assert _derive_namespace_from_identity() is None
+        assert await _derive_namespace_from_identity() is None
 
-    def test_null_namespaces_returns_none(self):
+    @pytest.mark.asyncio
+    async def test_null_namespaces_returns_none(self):
         set_current_identity(_make_identity(namespaces=None))
-        assert _derive_namespace_from_identity() is None
+        assert await _derive_namespace_from_identity() is None
 
-    def test_no_identity_returns_none(self):
+    @pytest.mark.asyncio
+    async def test_no_identity_returns_none(self):
         set_current_identity(None)
-        assert _derive_namespace_from_identity() is None
+        assert await _derive_namespace_from_identity() is None
 
-    def test_jwt_identity_with_no_namespaces(self):
+    @pytest.mark.asyncio
+    async def test_jwt_identity_with_no_namespaces(self):
         set_current_identity(_make_identity(namespaces=None, auth_method="jwt"))
-        assert _derive_namespace_from_identity() is None
+        assert await _derive_namespace_from_identity() is None
 
 
 class TestResolveOr404NamespaceDerivation:

@@ -9,6 +9,7 @@ from wip_auth import (
     UserIdentity,
     check_namespace_permission,
     check_readable,
+    implied_namespace,
     miss_detail,
     resolve_accessible_namespaces,
     resolve_or_404,
@@ -50,7 +51,7 @@ async def export_terminology(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        await check_readable(identity, existing.namespace, miss_detail(
+        await check_readable(identity, existing.namespace, await miss_detail(
             raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
         ))
 
@@ -210,15 +211,10 @@ async def import_terminology(
 
     target_namespace = namespace or body_namespace
     if target_namespace is None:
-        # Platform convention: an API key scoped to exactly one namespace
-        # implies it (only a key's record carries a scope; another
-        # identity's namespaces claim is not one); multi-namespace keys
-        # must say where the import goes.
-        from wip_auth.permissions import _key_scope
-
-        key_namespaces = _key_scope(identity)
-        if key_namespaces is not None and len(key_namespaces) == 1:
-            target_namespace = key_namespaces[0]
+        # Platform convention: an API key that implies one namespace (its
+        # scope is that one, or that one beside a read-only wip) imports
+        # there; any other caller must say where the import goes.
+        target_namespace = await implied_namespace(identity)
 
     if target_namespace is None:
         raise HTTPException(

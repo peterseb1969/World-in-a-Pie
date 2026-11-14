@@ -96,24 +96,15 @@ def _reject_ambiguous_term_form(raw_id: str, param_name: str | None) -> None:
         )
 
 
-def _derive_namespace_from_identity() -> str | None:
-    """Derive namespace from the current identity's scope.
-
-    If the authenticated API key is scoped to exactly one namespace,
-    return it. Otherwise return None (caller must provide namespace
-    explicitly). Only an API key's record carries a scope (the rule of
-    ``permissions._key_scope``): another identity's ``namespaces`` claim,
-    an OIDC token's for one, derives nothing.
-    """
-    from .permissions import _key_scope
+async def _derive_namespace_from_identity() -> str | None:
+    """The namespace the current request's API key implies, or None (the
+    caller must name one). The rule is ``permissions.implied_namespace``."""
+    from .permissions import implied_namespace
 
     identity = get_current_identity()
     if identity is None:
         return None
-    namespaces = _key_scope(identity)
-    if namespaces is not None and len(namespaces) == 1:
-        return namespaces[0]
-    return None
+    return await implied_namespace(identity)
 
 
 async def resolve_or_404(
@@ -174,7 +165,7 @@ async def resolve_or_404(
         _reject_ambiguous_term_form(raw_id, param_name)
 
     if namespace is None:
-        namespace = _derive_namespace_from_identity()
+        namespace = await _derive_namespace_from_identity()
 
     if namespace is None and ":" in raw_id and not _looks_like_uuid(raw_id):
         # A qualified identifier carries its own namespace context — the
@@ -242,11 +233,11 @@ async def resolve_or_404(
     except EntityNotFoundError:
         raise HTTPException(
             status_code=404,
-            detail=unresolved_detail(raw_id, entity_type, namespace, param_name),
+            detail=await unresolved_detail(raw_id, entity_type, namespace, param_name),
         ) from None
 
 
-def unresolved_detail(
+async def unresolved_detail(
     raw_id: str,
     entity_type: str,
     namespace: str | None,
@@ -260,7 +251,7 @@ def unresolved_detail(
     caller passed (None derives it as resolve_or_404 does).
     """
     if namespace is None:
-        namespace = _derive_namespace_from_identity()
+        namespace = await _derive_namespace_from_identity()
     label = param_name or entity_type
     return f"Could not resolve {label} '{raw_id}' in namespace '{namespace}'"
 
@@ -282,7 +273,7 @@ async def resolve_term_by_fields_or_404(
     neither, the answer is 422, not a silent miss.
     """
     if namespace is None:
-        namespace = _derive_namespace_from_identity()
+        namespace = await _derive_namespace_from_identity()
     try:
         return await resolve_term_by_fields(value, terminology, namespace)
     except TermNamespaceRequiredError:
@@ -300,11 +291,11 @@ async def resolve_term_by_fields_or_404(
     except EntityNotFoundError:
         raise HTTPException(
             status_code=404,
-            detail=field_unresolved_detail(value, terminology, namespace, param_name),
+            detail=await field_unresolved_detail(value, terminology, namespace, param_name),
         ) from None
 
 
-def field_unresolved_detail(
+async def field_unresolved_detail(
     value: str, terminology: str, namespace: str | None, param_name: str = "term",
 ) -> str:
     """The 404 detail resolve_term_by_fields_or_404 gives a value that names
@@ -314,7 +305,7 @@ def field_unresolved_detail(
     text cannot know, and "namespace 'None'" would name one that does not
     exist."""
     if namespace is None:
-        namespace = _derive_namespace_from_identity()
+        namespace = await _derive_namespace_from_identity()
     where = f" (namespace '{namespace}')" if namespace is not None else ""
     return (
         f"Could not resolve {param_name} value '{value}' in "
@@ -322,7 +313,7 @@ def field_unresolved_detail(
     )
 
 
-def resolution_miss(
+async def resolution_miss(
     raw_id: str,
     entity_type: str,
     namespace: str | None,
@@ -339,15 +330,15 @@ def resolution_miss(
     door passed to resolve_or_404.
     """
     if namespace is None:
-        namespace = _derive_namespace_from_identity()
+        namespace = await _derive_namespace_from_identity()
     if namespace is None:
         return None
     return HTTPException(
-        status_code=404, detail=unresolved_detail(raw_id, entity_type, namespace, param_name),
+        status_code=404, detail=await unresolved_detail(raw_id, entity_type, namespace, param_name),
     )
 
 
-def miss_detail(
+async def miss_detail(
     raw_id: str,
     entity_type: str,
     namespace: str | None,
@@ -357,7 +348,7 @@ def miss_detail(
     """The 404 text an unknown id gets on a door whose own miss is the 404
     ``own``: resolve_or_404's text when it resolves in a namespace, else
     ``own`` (see resolution_miss)."""
-    miss = resolution_miss(raw_id, entity_type, namespace, param_name)
+    miss = await resolution_miss(raw_id, entity_type, namespace, param_name)
     return own if miss is None else str(miss.detail)
 
 
@@ -415,7 +406,7 @@ async def resolve_bulk_ids(
     """
     # A namespace the caller names outranks each item's own; one derived
     # from a single-namespace key only fills in for an item that names none.
-    derived = _derive_namespace_from_identity() if namespace is None else None
+    derived = await _derive_namespace_from_identity() if namespace is None else None
 
     def _item_context(item: object) -> tuple[str | None, str | None, str | None]:
         if isinstance(item, dict):

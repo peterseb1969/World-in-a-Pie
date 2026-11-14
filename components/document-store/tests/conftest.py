@@ -95,6 +95,15 @@ os.environ.setdefault("WIP_AUTH_API_KEYS_JSON", json.dumps([{
     "namespaces": ["wip", "xns-closed"],
     "grants": {"wip": "write"},
 }, {
+    # Shaped like a deployer-derived app key: admin on its own namespace,
+    # read on 'wip' (the scope's read), nothing else.
+    "name": "test-app-shaped",
+    "key": "test_app_shaped_key",
+    "owner": "app:test",
+    "groups": [],
+    "namespaces": ["xns-closed", "wip"],
+    "grants": {"xns-closed": "admin"},
+}, {
     "name": "test-xns-writer",
     "key": "test_xns_writer_key",
     "owner": "test-xns-writer",

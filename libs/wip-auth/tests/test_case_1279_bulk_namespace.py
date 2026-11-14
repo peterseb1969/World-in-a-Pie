@@ -52,9 +52,10 @@ async def test_an_explicit_namespace_still_outranks_the_items(asked):
     assert asked == {"given": ["A"]}
 
 
-def test_an_oidc_namespaces_claim_derives_nothing():
+@pytest.mark.asyncio
+async def test_an_oidc_namespaces_claim_derives_nothing():
     set_current_identity(_identity(["claimed"], auth_method="jwt"))
     try:
-        assert _derive_namespace_from_identity() is None
+        assert await _derive_namespace_from_identity() is None
     finally:
         set_current_identity(None)

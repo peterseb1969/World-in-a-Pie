@@ -111,13 +111,13 @@ async def _template_in(template_id: str, namespace: str | None) -> str:
     return await resolve_or_404(template_id, "template", namespace, param_name="template_id")
 
 
-def _template_not_found(template_id: str, namespace: str | None) -> str:
+async def _template_not_found(template_id: str, namespace: str | None) -> str:
     """The 404 detail of a template this route cannot find: with
     ``namespace``, the resolver's (the identifier is resolved there first),
     else the route's own. A template in a namespace the caller cannot read
     answers with it too, so the answer does not confirm the template exists."""
     if namespace:
-        return unresolved_detail(template_id, "template", namespace, "template_id")
+        return await unresolved_detail(template_id, "template", namespace, "template_id")
     return "Template not found"
 
 
@@ -395,7 +395,7 @@ async def get_table_view(
     if not ns:
         raise HTTPException(status_code=500, detail="Template response missing namespace")
     # A template the caller cannot read answers as one that does not exist.
-    await check_readable(identity, ns, _template_not_found(template_id, namespace))
+    await check_readable(identity, ns, await _template_not_found(template_id, namespace))
 
     # Extract column definitions and identify array fields
     columns = _extract_columns_from_template(template)
@@ -538,7 +538,7 @@ async def export_table_csv(
     if not ns:
         raise HTTPException(status_code=500, detail="Template response missing namespace")
     # A template the caller cannot read answers as one that does not exist.
-    await check_readable(identity, ns, _template_not_found(template_id, namespace))
+    await check_readable(identity, ns, await _template_not_found(template_id, namespace))
 
     # Extract column definitions and identify array fields
     columns = _extract_columns_from_template(template)

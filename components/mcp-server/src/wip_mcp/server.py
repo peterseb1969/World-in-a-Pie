@@ -418,13 +418,21 @@ never scoped: creating or updating one with a `namespaces` list is refused (422)
 **Single-namespace keys** get automatic namespace derivation: when the caller
 omits the `namespace` parameter, WIP derives it from the key's single namespace.
 This means synonym resolution works without passing `namespace` on every request.
+A key whose `namespaces` list is one namespace plus `wip` counts as
+single-namespace when it holds only read on `wip` (the Registry's answer,
+grants included): its own namespace is derived. A key that may write or
+administer `wip` derives nothing, so omitting `namespace` never picks between
+two namespaces it can write. When the Registry cannot be asked, the answer is
+503.
 
 **Multi-namespace keys** must provide `namespace` explicitly on every call.
 Omitting it means WIP cannot determine context for synonym resolution, and raw
 values pass through unresolved.
 
-This matters for apps: use a single-namespace key scoped to your app's namespace,
-and you can skip the `namespace` parameter on all API and MCP tool calls.
+This matters for apps: the key wip-deploy gives each app is scoped to the
+namespaces the app owns or is granted, plus read on `wip`, so an app whose key
+reaches one namespace besides `wip` can skip the `namespace` parameter on all
+API and MCP tool calls.
 
 **A key's access is its grants.** The `namespaces` list caps where a key may
 act and gives nothing itself; creating a key writes a grant on each listed

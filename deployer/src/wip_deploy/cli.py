@@ -29,10 +29,12 @@ from wip_deploy.apply import (
     apply_k8s,
     changed_outside_scope,
     read_live_secrets,
+    remove_live_secret_value,
 )
 from wip_deploy.build import BuildInputs, build_deployment
 from wip_deploy.config_gen.api_keys import (
     DuplicateKeyName,
+    app_api_key,
     app_key_secrets,
     effective_api_keys,
     shared_api_key_values,
@@ -2858,6 +2860,9 @@ def add_app(
     for apps whose images are built on their own cadence and don't
     exist at the install's base tag.
 
+    An app the install does not already run gets a new key of its own
+    (`app-<name>`), never the one an earlier enablement had.
+
     Examples:
 
       wip-deploy add-app react-console --name wip-dev-local
@@ -2915,6 +2920,13 @@ def add_app(
             f"⊙ app {app_name!r} is already enabled in this install — no change."
         )
         return
+    # An app the install does not run yet gets a key of its own made for it
+    # now, never one an earlier enablement left in the store.
+    fresh_key = (
+        _app_key_secret(apps_list, app_name)
+        if existing is None or not existing.enabled
+        else None
+    )
     if existing is None:
         deployment.spec.apps.append(AppRef(name=app_name, enabled=True, privileged=privileged))
     else:
@@ -2934,6 +2946,14 @@ def add_app(
             raise typer.Exit(2)
         deployment.spec.platform.dev.app_sources[app_name] = source
 
+    if fresh_key is not None:
+        # Safe before the apply: the saved spec does not enable the app, so
+        # the install runs no value of this secret. On k8s the live Secret
+        # may still carry the value of an earlier removal (an apply cannot
+        # drop a key from its stringData); `regenerate` lets the new value
+        # replace it instead of stopping the apply as drift.
+        _forget_secret(deployment, fresh_key)
+
     _apply_and_persist_mutation(
         deployment,
         components,
@@ -2944,6 +2964,7 @@ def add_app(
         # config changed; leave everything else genuinely untouched.
         services_scope=[app_name],
         repo_root=repo_root,
+        regenerate=frozenset({fresh_key}) if fresh_key is not None else frozenset(),
     )
 
 
@@ -2979,6 +3000,12 @@ def remove_app(
     successful apply, and also after a failed one that had already changed
     the install.
 
+    The app's own key (`app-<name>`) leaves the key file in the same apply,
+    so the Registry revokes it, and its secret is deleted from the store once
+    the spec is saved: adding the app again gives it a new key. An app that
+    holds the master key (`privileged_key`) has no key of its own; the master
+    key is untouched.
+
     Examples:
 
       wip-deploy remove-app clintrial --name wip-dev-local
@@ -2992,6 +3019,7 @@ def remove_app(
         a for a in deployment.spec.apps if a.name != app_name
     ]
     removed = before > len(deployment.spec.apps)
+    key_secret = _app_key_secret(apps_list, app_name) if removed else None
 
     if not removed:
         if _sweep_orphan_app_container(deployment, components, apps_list, app_name):
@@ -3012,8 +3040,6 @@ def remove_app(
     # override is dead state that warns on every later render and, if
     # the app returns months later, silently pins it to a stale tag.
     deployment.spec.images.tag_overrides.pop(app_name, None)
-
-    from wip_deploy.apply import stop_and_remove_container
 
     _apply_and_persist_mutation(
         deployment,
@@ -3036,10 +3062,76 @@ def remove_app(
         # spec as well. A refused validation, secret check or render, or a
         # failure that changed nothing, saves nothing, so the app keeps
         # running, matching the saved spec that still lists it.
-        after_persist=lambda: stop_and_remove_container(
-            deployment.metadata.name, app_name,
+        # The app's key secret goes at the same moment: the saved spec no
+        # longer lists the app, so the applied key file no longer names its
+        # key, and the Registry's next import of that file revokes it.
+        # Adding the app again then generates a new key.
+        after_persist=lambda: _after_app_removal(
+            deployment, app_name, key_secret,
         ),
     )
+
+
+def _app_key_secret(apps_list: list[App], app_name: str) -> str | None:
+    """The secret that holds the app's own key, or None: no such app, or one
+    that holds the install's master key (`privileged_key`) instead."""
+    manifest = next((a for a in apps_list if a.metadata.name == app_name), None)
+    key = app_api_key(manifest) if manifest is not None else None
+    return key.secret_name if key is not None else None
+
+
+def _forget_secret(deployment: Deployment, secret_name: str) -> bool:
+    """Delete one secret from the install's file store. Returns whether the
+    store held it."""
+    location = deployment.spec.secrets.location
+    if deployment.spec.secrets.backend != "file" or location is None:
+        return False
+    backend = FileSecretBackend(Path(location))
+    held = secret_name in backend.list_names()
+    backend.remove(secret_name)
+    return held
+
+
+def _after_app_removal(
+    deployment: Deployment, app_name: str, key_secret: str | None,
+) -> None:
+    """What follows a saved remove-app: the container goes, then the app's
+    key secret, so `add-app` later makes a new key."""
+    from wip_deploy.apply import stop_and_remove_container
+
+    stop_and_remove_container(deployment.metadata.name, app_name)
+    if key_secret is None:
+        return
+    if _forget_secret(deployment, key_secret):
+        typer.echo(
+            f"Deleted {app_name}'s key ({key_secret}) from the secret store: the "
+            "Registry revokes it at its next import of the key file, and adding "
+            "the app again gives it a new key."
+        )
+    _forget_live_secret(deployment, key_secret)
+
+
+def _forget_live_secret(deployment: Deployment, secret_name: str) -> None:
+    """On k8s, take a removed app's key value out of the live `wip-secrets`,
+    which an apply leaves holding it. The key is already revoked, so a
+    cluster that cannot be patched only warns: the value stays until the
+    next add-app of the app replaces it."""
+    k8s = deployment.spec.platform.k8s
+    if deployment.spec.target != "k8s" or k8s is None:
+        return
+    try:
+        removed = remove_live_secret_value(k8s.namespace, secret_name)
+    except LiveSecretReadUnavailable as e:
+        typer.echo(
+            f"warning: {secret_name} is still in the live wip-secrets ({e}). The "
+            "Registry has revoked the key; remove the value with `kubectl patch "
+            f"secret wip-secrets -n {k8s.namespace} --type=json -p "
+            f"'[{{\"op\":\"remove\",\"path\":\"/data/{secret_name}\"}}]'`.",
+            err=True,
+        )
+        return
+    if removed:
+        typer.echo(f"Removed {secret_name} from the live wip-secrets.")
 
 
 def _sweep_orphan_app_container(

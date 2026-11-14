@@ -83,6 +83,7 @@ from .permissions import (
     check_readable,
     clear_permission_cache,
     entity_write_refusals,
+    implied_namespace,
     is_superadmin,
     permission_sufficient,
     resolve_accessible_namespaces,
@@ -204,6 +205,7 @@ __all__ = [
     "get_identity_owner",
     "get_identity_string",
     "hash_api_key",
+    "implied_namespace",
     # Startup retry helpers
     "init_beanie_with_retry",
     # Liveness endpoint

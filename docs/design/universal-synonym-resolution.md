@@ -166,7 +166,7 @@ Terms have no 2-part string form — `"STATUS:approved"` is rejected (see D6).
 
 Documents and files are not typically referenced by synonym string in API calls — they use canonical IDs or are found by search. Their synonyms exist for migration portability.
 
-**Where `<current>` namespace comes from:** The namespace for composite key construction is determined in order: (1) explicitly from the `namespace` query parameter, (2) implicitly from single-namespace API keys (when `namespace` is omitted, the server derives it from the key's sole namespace scope), (3) if neither source is available, resolution is skipped and the raw value passes through to downstream validation.
+**Where `<current>` namespace comes from:** The namespace for composite key construction is determined in order: (1) explicitly from the `namespace` query parameter, (2) implicitly from single-namespace API keys (when `namespace` is omitted, the server derives it from the key's sole namespace scope, or from the one namespace beside `wip` when the key holds only read on `wip`), (3) if neither source is available, resolution is skipped and the raw value passes through to downstream validation.
 
 ### Documents without identity fields
 

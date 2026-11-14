@@ -258,7 +258,7 @@ async def get_file(
     # The namespace of the record just read: one read, and the check always
     # runs (a second read could miss a file hard-deleted in between and skip it).
     await check_readable(
-        identity, file_response.namespace, miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"),
+        identity, file_response.namespace, await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"),
     )
     return file_response
 
@@ -292,7 +292,7 @@ async def get_download_url(
     file_doc = await FileModel.find_one({"file_id": file_id})
     if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
-    await check_readable(identity, file_doc.namespace, miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
+    await check_readable(identity, file_doc.namespace, await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
 
     try:
         response = await service.get_download_url(file_id, expires_in)
@@ -330,7 +330,7 @@ async def download_file_content(
         raise HTTPException(status_code=409, detail="File has been deleted")
 
     # Check namespace permission
-    await check_readable(identity, file_doc.namespace, miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
+    await check_readable(identity, file_doc.namespace, await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
 
     # Stream chunks directly from the object store → browser (no full buffering).
     # The first chunk is read before the response starts: once the status line
@@ -559,7 +559,7 @@ async def get_file_documents(
     if not file_doc:
         raise HTTPException(status_code=404, detail="File not found")
 
-    await check_readable(identity, file_doc.namespace, miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
+    await check_readable(identity, file_doc.namespace, await miss_detail(raw_file_id, "file", namespace, "File not found", "file_id"))
 
     # Query documents with this file_id in file_references. A document in
     # another namespace may reference the file; list only those the caller

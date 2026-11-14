@@ -230,7 +230,7 @@ async def get_template(
     # Resolve synonym if not canonical UUID (e.g., "PATIENT" → UUID)
     resolved_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
     # An id in a namespace the caller cannot see answers as one that names nothing.
-    not_found = miss_detail(template_id, "template", namespace, "Template not found", "template_id")
+    not_found = await miss_detail(template_id, "template", namespace, "Template not found", "template_id")
 
     try:
         template = await TemplateService.get_template(template_id=resolved_id, version=version)
@@ -275,7 +275,7 @@ async def get_template_raw(
     """
     resolved_id = await resolve_or_404(template_id, "template", namespace, param_name="template_id")
     # An id in a namespace the caller cannot see answers as one that names nothing.
-    not_found = miss_detail(template_id, "template", namespace, "Template not found", "template_id")
+    not_found = await miss_detail(template_id, "template", namespace, "Template not found", "template_id")
 
     template = await TemplateService.get_template(
         template_id=resolved_id, version=version, resolve_inheritance=False
@@ -556,7 +556,7 @@ async def get_template_dependencies(template_id: str, namespace: str | None = Qu
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
     if existing:
-        await check_readable(identity, existing.namespace, miss_detail(
+        await check_readable(identity, existing.namespace, await miss_detail(
             raw_id, "template", namespace, f"Template {template_id} not found", "template_id",
         ))
 
@@ -761,7 +761,7 @@ async def validate_template(
     if existing and not await can_read(identity, existing.namespace):
         # Answered as for an id that names nothing: the resolution 404 of
         # this request when ids resolve, else the not_found validation.
-        if (miss := resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+        if (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
             raise miss
         return TemplateService.template_not_found_validation(template_id)
 
@@ -815,7 +815,7 @@ async def _require_write_on_template(template_id: str, raw_id: str, namespace: s
     """
     hidden = HTTPException(
         status_code=404,
-        detail=unresolved_detail(raw_id, "template", namespace, param_name="template_id"),
+        detail=await unresolved_detail(raw_id, "template", namespace, param_name="template_id"),
     )
     row = await Template.find_one({"template_id": template_id})
     if row is None:
@@ -881,7 +881,7 @@ async def cascade_template(template_id: str, namespace: str | None = Query(None,
     identity = require_current_identity()
     existing = await Template.find_one({"template_id": template_id})
     if existing:
-        await check_entity_permission(identity, existing.namespace, "write", miss_detail(
+        await check_entity_permission(identity, existing.namespace, "write", await miss_detail(
             raw_id, "template", namespace, f"Template '{template_id}' not found", "template_id",
         ))
 
@@ -939,7 +939,7 @@ async def get_template_children(template_id: str, namespace: str | None = Query(
     # One the caller cannot see answers as an id that names nothing: the
     # resolution 404 of this request when ids resolve, else an empty list.
     hidden = existing is not None and not await can_read(identity, existing.namespace)
-    if hidden and (miss := resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+    if hidden and (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
         raise miss
     children = [] if hidden else await InheritanceService.get_children(template_id)
     templates = [TemplateService._to_template_response(t) for t in children]
@@ -964,7 +964,7 @@ async def get_template_descendants(template_id: str, namespace: str | None = Que
     # One the caller cannot see answers as an id that names nothing: the
     # resolution 404 of this request when ids resolve, else an empty list.
     hidden = existing is not None and not await can_read(identity, existing.namespace)
-    if hidden and (miss := resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
+    if hidden and (miss := await resolution_miss(raw_id, "template", namespace, "template_id")) is not None:
         raise miss
     descendants = [] if hidden else await InheritanceService.get_descendants(template_id)
     templates = [TemplateService._to_template_response(t) for t in descendants]

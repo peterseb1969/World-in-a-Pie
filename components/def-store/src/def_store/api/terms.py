@@ -14,6 +14,7 @@ from wip_auth import (
     check_readable,
     entity_write_refusals,
     field_unresolved_detail,
+    implied_namespace,
     is_superadmin,
     miss_detail,
     resolution_miss,
@@ -167,7 +168,7 @@ async def create_terms(
     term_parent = await Terminology.find_one({"terminology_id": terminology_id})
     held = AmbiguousItems(items)
     if term_parent:
-        await check_entity_permission(identity, term_parent.namespace, "write", miss_detail(
+        await check_entity_permission(identity, term_parent.namespace, "write", await miss_detail(
             raw_id, "terminology", namespace, f"Terminology '{terminology_id}' not found",
             "terminology_id",
         ))
@@ -252,7 +253,7 @@ async def reconcile_terminology(
     if not terminology:
         raise HTTPException(status_code=404, detail="Terminology not found")
 
-    await check_entity_permission(identity, terminology.namespace, "write", miss_detail(
+    await check_entity_permission(identity, terminology.namespace, "write", await miss_detail(
         raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
     ))
 
@@ -297,7 +298,7 @@ async def list_terms(
         if not terminology:
             raise HTTPException(status_code=404, detail="Terminology not found")
     # One in a namespace the caller cannot see answers as an unknown id.
-    await check_readable(identity, terminology.namespace, miss_detail(
+    await check_readable(identity, terminology.namespace, await miss_detail(
         raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
     ))
 
@@ -394,6 +395,12 @@ async def search_terms(
     implied = len(ns_filter.namespaces) == 1 and not is_superadmin(identity)
     if namespace or implied:
         search_namespace = ns_filter.namespaces[0]
+    elif not is_superadmin(identity) and (
+        (key_namespace := await implied_namespace(identity)) in ns_filter.namespaces
+    ):
+        # A key whose scope implies one namespace (its own beside a
+        # read-only wip) searches there.
+        search_namespace = key_namespace
     else:
         raise HTTPException(
             status_code=400,
@@ -418,7 +425,7 @@ async def search_terms(
             terminology_id = parent.terminology_id
         # An id resolves wherever it lives; one in a namespace the caller
         # cannot see answers as an id that names nothing.
-        await check_readable(identity, parent.namespace, miss_detail(
+        await check_readable(identity, parent.namespace, await miss_detail(
             terminology, "terminology", search_namespace, "Terminology not found", "terminology",
         ))
 
@@ -461,11 +468,11 @@ async def get_term(
         term_id = await resolve_term_by_fields_or_404(
             term_id, terminology, namespace, param_name="term_id"
         )
-        not_found = field_unresolved_detail(raw_id, terminology, namespace, "term_id")
+        not_found = await field_unresolved_detail(raw_id, terminology, namespace, "term_id")
     else:
         # Resolve synonym — supports colon notation for terms
         term_id = await resolve_or_404(term_id, "term", namespace, param_name="term_id")
-        not_found = miss_detail(raw_id, "term", namespace, "Term not found", "term_id")
+        not_found = await miss_detail(raw_id, "term", namespace, "Term not found", "term_id")
 
     result = await TerminologyService.get_term(term_id=term_id)
     if not result:
@@ -901,7 +908,7 @@ async def _visible_terminology(
         return terminology, None
     if terminology is None or not raw_id:
         return None, None
-    return None, resolution_miss(raw_id, "terminology", None, "terminology_id")
+    return None, await resolution_miss(raw_id, "terminology", None, "terminology_id")
 
 
 async def _terminology_by_id(item: Any, terminologies: dict[str, Any]) -> Any:

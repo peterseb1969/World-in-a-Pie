@@ -184,8 +184,11 @@ class TestResolveOr404QualifiedContext:
     @pytest.fixture(autouse=True)
     def no_identity(self, monkeypatch):
         from wip_auth import fastapi_helpers
+        async def no_namespace() -> None:
+            return None
+
         monkeypatch.setattr(
-            fastapi_helpers, "_derive_namespace_from_identity", lambda: None
+            fastapi_helpers, "_derive_namespace_from_identity", no_namespace
         )
 
     @pytest.mark.asyncio

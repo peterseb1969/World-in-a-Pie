@@ -186,7 +186,7 @@ async def get_terminology(
     # Read on the entity's own namespace; one the caller cannot see answers
     # exactly as an id that names nothing, so the 404 does not confirm that
     # the terminology exists, or where.
-    await check_readable(identity, result.namespace, miss_detail(
+    await check_readable(identity, result.namespace, await miss_detail(
         raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
     ))
 
@@ -282,7 +282,7 @@ async def get_terminology_dependencies(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        await check_readable(identity, existing.namespace, miss_detail(
+        await check_readable(identity, existing.namespace, await miss_detail(
             raw_id, "terminology", None, f"Terminology {terminology_id} not found", "terminology_id",
         ))
 
@@ -316,7 +316,7 @@ async def restore_terminology(
     from ..models.terminology import Terminology as _T
     existing = await _T.find_one({"terminology_id": terminology_id})
     if existing:
-        await check_entity_permission(identity, existing.namespace, "write", miss_detail(
+        await check_entity_permission(identity, existing.namespace, "write", await miss_detail(
             raw_id, "terminology", namespace, "Terminology not found", "terminology_id",
         ))
 

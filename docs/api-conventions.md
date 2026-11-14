@@ -687,7 +687,7 @@ All endpoints (except `/health`) require authentication:
 
 **Namespace scoping:** API keys for non-privileged accounts must include a `namespaces` field listing accessible namespace prefixes. Keys without namespace scoping that are not in `wip-admins` or `wip-services` groups have no access — all namespaces appear as 404 (the namespace's existence is not leaked). See `docs/authentication.md` for details.
 
-**Implicit namespace derivation:** When an API key is scoped to exactly one namespace and the caller omits the `namespace` query parameter, the server derives namespace from the key's scope automatically. This enables synonym resolution without requiring `namespace` on every request. Multi-namespace keys must still provide `namespace` explicitly; omitting it means synonym resolution cannot determine context and raw values pass through unresolved.
+**Implicit namespace derivation:** When an API key is scoped to exactly one namespace and the caller omits the `namespace` query parameter, the server derives namespace from the key's scope automatically. A key scoped to exactly one namespace plus `wip` derives that one namespace when its permission on `wip` is read; the services ask the Registry (cached like any permission read, 503 when it cannot answer), so a grant made through the API counts. A key holding write or admin on `wip` derives nothing: omitting `namespace` would otherwise pick between two namespaces it can write. This enables synonym resolution without requiring `namespace` on every request. Multi-namespace keys must still provide `namespace` explicitly; omitting it means synonym resolution cannot determine context and raw values pass through unresolved.
 
 ---
 
