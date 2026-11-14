@@ -99,6 +99,19 @@ def endpoint_lookups(items: list[Any] | None) -> list[str]:
 _RESERVED_TABLE_SUFFIX = re.compile(r"__v[0-9]+$")
 # Characters that would split a NATS subject token or make it a wildcard.
 _SUBJECT_UNSAFE = re.compile(r"[.*>\s]")
+# The by-value routes address a template value as one URL path segment
+# (/templates/by-value/<value>), and '%2F' is percent-decoded to '/' before
+# routing, so '/' inside a value can never be sent back on that door.
+_PATH_SPLITTING_CHAR = "/"
+
+
+def _path_splitting_reason(value: str, what: str) -> str:
+    return (
+        f"{what} {value!r} contains {_PATH_SPLITTING_CHAR!r}: the value is one "
+        "URL path segment on the by-value routes, and a percent-encoded %2F "
+        "is decoded back to '/' before routing — such a value could never be "
+        "read back by value"
+    )
 
 
 def _reject_reserved_suffix(value: str, what: str) -> str:
@@ -234,6 +247,8 @@ class CreateTemplateRequest(StrictModel):
                 "(wip.templates.<value>.<event>), which those would split or "
                 "turn into a wildcard"
             )
+        if _PATH_SPLITTING_CHAR in v:
+            raise ValueError(_path_splitting_reason(v, "Template value"))
         return _reject_reserved_suffix(v, "Template value")
 
     @field_validator("rules", mode="before")
