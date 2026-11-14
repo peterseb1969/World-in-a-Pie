@@ -1,6 +1,7 @@
 """A restore reports the archive's export time only when the archive
-recorded one; the manifest model fills a missing one with the moment it is
-read, which is the restore's own time. Provenance: CASE-1194 (3-R13)."""
+recorded one, never the moment it read the manifest. Provenance: CASE-1194
+(3-R13); the manifest field is empty when the archive does not say since
+CASE-1294."""
 
 from datetime import UTC, datetime
 
@@ -19,7 +20,7 @@ def test_a_recorded_export_time_is_reported():
 
 def test_a_missing_export_time_is_unrecorded_not_now():
     manifest = Manifest.model_validate({"namespace": "ns", "counts": {}})
-    assert manifest.exported_at is not None  # the model's fill
+    assert manifest.exported_at is None
     assert _recorded_export_time(manifest) is None
 
 

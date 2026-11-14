@@ -40,7 +40,7 @@ def _render_header(model: ArchiveModel, console: Console) -> None:
     table.add_column("Value")
     table.add_row("Format version", str(summary["format_version"]))
     table.add_row("Tool version", str(summary["tool_version"] or "unknown"))
-    table.add_row("Exported at", str(summary["exported_at"]))
+    table.add_row("Exported at", str(summary["exported_at"] or "unknown"))
     table.add_row("Source host", str(summary["source_host"]))
     table.add_row("Namespaces", ", ".join(summary["namespaces"]) or "(none)")
     table.add_row("Includes files", str(summary["include_files"]))

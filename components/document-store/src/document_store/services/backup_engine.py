@@ -793,8 +793,9 @@ class DirectBackupEngine:
 
         Inactive template versions nothing in the archive needs are left out
         unless ``include_inactive_templates`` (see
-        ``_template_versions_to_leave_out``); every other entity is carried in
-        every status.
+        ``_template_versions_to_leave_out``), and ``skip_documents`` leaves out
+        the documents and their Registry entries; every other entity is
+        carried in every status.
 
         Each namespace is read independently and written to its own
         ``namespaces/<prefix>/`` subtree of the v3 archive; the manifest carries
@@ -839,10 +840,6 @@ class DirectBackupEngine:
                     without_bytes=without_bytes,
                 )
 
-            await self._warn_if_changed_while_read(
-                namespaces, per_ns_counts, writer, skip_documents, left_out,
-            )
-
             self._emit(
                 "phase_referents",
                 "Recording referenced entities the archive does not carry",
@@ -851,11 +848,17 @@ class DirectBackupEngine:
             referent_rows = await self._read_referents(referents.external_ids())
             writer.write_referents_file(referent_rows)
 
+            # After the last read of MongoDB, so the recount covers every read.
+            await self._warn_if_changed_while_read(
+                namespaces, per_ns_counts, writer, skip_documents, left_out,
+            )
+
             manifest = await self._backup_manifest(
                 writer, namespaces,
                 include_files=bool(include_files and self._storage),
                 referent_count=len(referent_rows),
                 without_bytes=without_bytes,
+                include_documents=not skip_documents,
             )
 
             self._emit("phase_finalize", "Writing archive", percent=95)
@@ -901,14 +904,30 @@ class DirectBackupEngine:
         compared. Matching counts do not prove the archive consistent (an
         update, or a create and a delete of the same type, leaves them
         equal); a mismatch proves something changed.
+
+        The check only adds a warning, so a failure to recount does not fail
+        the backup, whose archive is complete by then: it is a warning that
+        the check did not run.
         """
+        after: dict[str, dict[str, int]] = {}
+        try:
+            for ns in namespaces:
+                after[ns] = await self._pre_count(ns, skip_documents, left_out.get(ns, []))
+        except Exception as exc:
+            logger.warning("Backup write-detection recount failed: %s", exc)
+            self._emit(
+                "warning",
+                "Could not count the namespace(s) again after reading them "
+                f"({exc}), so the backup cannot tell whether anything wrote to "
+                "them while it read.",
+            )
+            return
         changed: list[str] = []
         for ns in namespaces:
-            after = await self._pre_count(ns, skip_documents, left_out.get(ns, []))
             for entity_type in BACKUP_ENTITY_ORDER:
                 if skip_documents and entity_type == "documents":
                     continue
-                pre, post = before[ns].get(entity_type, 0), after.get(entity_type, 0)
+                pre, post = before[ns].get(entity_type, 0), after[ns].get(entity_type, 0)
                 read = writer.entity_count(entity_type, namespace=ns)
                 if not pre == read == post:
                     changed.append(
@@ -1043,10 +1062,13 @@ class DirectBackupEngine:
         include_files: bool,
         referent_count: int,
         without_bytes: dict[str, list[str]] | None = None,
+        include_documents: bool = True,
     ) -> Manifest:
         """The archive's manifest: one entry per namespace (its config,
         counts, provenance and the files it carries without their bytes)
-        plus the aggregate counts."""
+        plus the aggregate counts. ``include_documents`` False (a
+        ``skip_documents`` backup) records that the archive carries no
+        document versions at all."""
         ns_entries: list[NamespaceEntry] = []
         agg: dict[str, int] = {et: 0 for et in BACKUP_ENTITY_ORDER}
         for ns in namespaces:
@@ -1079,9 +1101,10 @@ class DirectBackupEngine:
                 "hash_version": 1,
             },
             include_files=include_files,
-            # Every version of every document is carried: the backup has no
+            # Every version of every document is carried, unless the backup
+            # skipped documents and carries none: the backup has no
             # latest-only export (the API refuses latest_only).
-            include_all_versions=True,
+            include_all_versions=include_documents,
             counts=EntityCounts(**agg),
             referents=referent_count,
         )
@@ -1604,14 +1627,8 @@ def _would_restore(
 
 
 def _recorded_export_time(manifest: Any) -> datetime | None:
-    """When the archive was exported, as its manifest recorded it, or None.
-
-    The manifest model fills a missing ``exported_at`` with the time it is
-    read, which would report the restore's own time as the export's.
-    """
-    fields_set = getattr(manifest, "model_fields_set", None)
-    if fields_set is not None and "exported_at" not in fields_set:
-        return None
+    """When the archive was exported, as its manifest recorded it, or None
+    when the archive does not say."""
     exported = getattr(manifest, "exported_at", None)
     return exported if isinstance(exported, datetime) else None
 
@@ -5863,7 +5880,7 @@ class DirectRestoreEngine:
             if recount:
                 try:
                     await self._recount_file_references(namespace)
-                except Exception as exc:  # noqa: BLE001 — the merge's error is the one to raise
+                except Exception as exc:  # the merge's error is the one to raise
                     self._emit(
                         "warning",
                         f"[{namespace}] the file reference recount after the failed "
@@ -7598,5 +7615,6 @@ class DirectRestoreEngine:
     def _pct(done: int, total: int) -> float:
         if total == 0:
             return 10.0
-        # 10-90% for entity inserts, 90-98% for blobs, 98-100% for finalize
+        # Entity inserts map onto 10-90%. Blob uploads emit no percent, and
+        # completion emits 100.
         return min(round(10 + done / total * 80, 1), 90.0)

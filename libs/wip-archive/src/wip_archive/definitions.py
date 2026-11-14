@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from wip_archive.archive import ArchiveReader
+from wip_archive.exceptions import RowVersionError
 
 # Template-store's limit (template_store/services/inheritance_service.py).
 MAX_INHERITANCE_DEPTH = 10
@@ -68,6 +69,33 @@ class ResolvedTemplate:
         resolved["rules"] = [dict(r) for r in self.rules]
         resolved["identity_fields"] = list(self.identity_fields)
         return resolved
+
+
+def row_version(row: dict[str, Any], *, name: str | None = None) -> int:
+    """A template or document row's version, as every reader of an archive
+    counts it: a missing, null, empty or zero version is version 1, and a
+    numeric string or float is its integer. One definition, so a pass that
+    selects rows by version (latest-only, migrate, export-csv) keys them
+    exactly as the model counted them; a pass that compared the raw value
+    dropped the rows the model had counted under the coerced one.
+
+    Any other version raises RowVersionError naming the row (``name``, else
+    the row's document or template id), since no reader can tell which
+    version it is."""
+    raw = row.get("version", 1)
+    try:
+        return int(raw or 1)
+    except (TypeError, ValueError):
+        raise RowVersionError(
+            f"{name or _row_name(row)} has version {raw!r}, which is not a number"
+        ) from None
+
+
+def _row_name(row: dict[str, Any]) -> str:
+    for key, kind in (("document_id", "document"), ("template_id", "template")):
+        if row.get(key):
+            return f"{kind} {row[key]}"
+    return "a row with no document or template id"
 
 
 def term_names(row: dict[str, Any]) -> tuple[str, ...]:
@@ -131,7 +159,7 @@ class DefinitionIndex:
     def add_template(self, row: dict[str, Any]) -> None:
         template_id = row.get("template_id")
         if template_id:
-            self.templates[(template_id, int(row.get("version", 1) or 1))] = row
+            self.templates[(template_id, row_version(row))] = row
 
     def add_referents(self, rows: Iterable[dict[str, Any]]) -> None:
         for row in rows:
@@ -211,6 +239,6 @@ class DefinitionIndex:
             rules=tuple(rules),
             identity_fields=identity,
             chain=tuple(
-                (t.get("template_id", ""), int(t.get("version", 1) or 1)) for t in chain
+                (t.get("template_id", ""), row_version(t)) for t in chain
             ),
         )

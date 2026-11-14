@@ -2,8 +2,11 @@
 
 Tracks long-running backup, restore and validation jobs, run in-process by
 document-store's own engines. Created when a caller POSTs to
-/namespaces/{ns}/backup, /namespaces/{ns}/restore or a job's restore; updated
-as the engine emits progress events; read by the SSE and status endpoints.
+/api/document-store/backup/namespaces/{ns}/backup, .../restore or
+.../validate, or to /api/document-store/backup/jobs/{id}/restore, and by a
+restore that wrote data, which starts a validation job per namespace it wrote;
+updated as the engine emits progress events; read by the SSE and status
+endpoints.
 
 The MongoDB-persisted record is the durable source of truth for progress so a
 service restart or a second uvicorn worker can still report a sensible last-known
@@ -78,9 +81,13 @@ class BackupJob(BeanieDocument):
         default_factory=list,
         description="All namespaces this job spans. For a backup: the exported "
                     "set (1 for a single-namespace backup). For a restore: the "
-                    "namespaces the archive writes into, read from its manifest "
-                    "(the scalar namespace when the manifest was unreadable — "
-                    "never blank on new records; legacy records may be empty).",
+                    "namespaces it writes into — for restore and merge the "
+                    "archive's own, read from its manifest (the scalar "
+                    "namespace when the manifest was unreadable), for a fresh "
+                    "restore the namespace map's targets, for a redirected "
+                    "merge its target_namespace. For a validation: the "
+                    "namespace validated. Never blank on new records; legacy "
+                    "records may be empty.",
     )
     source_namespaces: list[str] = Field(
         default_factory=list,

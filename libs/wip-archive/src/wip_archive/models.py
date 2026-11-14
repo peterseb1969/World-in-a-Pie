@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -110,7 +110,10 @@ class Manifest(BaseModel):
     # exporter, document-store's backup engine). Empty when the archive does
     # not say: a constant default here once made every archive claim 0.5.0.
     tool_version: str = ""
-    exported_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    # When the archive was written. None when the archive does not say: a
+    # "now" default here once made every reader report the moment it read
+    # the archive as its export time. Every writer sets it.
+    exported_at: datetime | None = None
     source_host: str = ""
     # v3: the authoritative list of namespaces in this archive.
     namespaces: list[NamespaceEntry] = Field(default_factory=list)
@@ -166,8 +169,13 @@ class ProgressEvent(BaseModel):
 
     Conventions:
     - ``phase`` names come from two producers with different vocabularies.
-      Both begin with ``"start"`` and end with ``"complete"`` (or ``"error"``),
-      and both use ``"warning"`` for a non-fatal finding. In between, the
+      Both begin with ``"start"`` and end with ``"complete"``; a
+      document-store job that fails ends with ``"error"`` (the toolkit's
+      exporter raises instead). A non-fatal finding is ``"warning"`` from
+      document-store's engines and ``"warning_<kind>"`` from the toolkit's
+      exporter (``"warning_version_history_skipped"``,
+      ``"warning_files_skipped"``); only the exact ``"warning"`` phase is
+      recorded in a backup job's ``warnings``. In between, the
       toolkit's exporter emits numbered phases (``"phase_1a_entities"``,
       ``"phase_1b_documents"``, ``"phase_3_finalize"``, ...), while
       document-store's backup and restore engines emit named ones

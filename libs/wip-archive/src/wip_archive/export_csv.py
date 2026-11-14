@@ -40,7 +40,7 @@ from typing import Any
 from .archive import ArchiveReader
 from .csv_cells import escape_cell
 from .definitions import UnresolvableTemplate
-from .model import ArchiveModel
+from .model import ArchiveModel, row_version
 from .paths import safe_segment
 
 _BASE = ("document_id", "version", "status")
@@ -182,7 +182,7 @@ def export_csv(
         if all_versions:
             return True
         entry = model.documents.get(row.get("document_id") or "")
-        return entry is not None and row.get("version") == entry.max_version
+        return entry is not None and row_version(row) == entry.max_version
 
     # Pass 1: which files, their row counts and their columns.
     files: dict[tuple[str, str], CsvFile] = {}

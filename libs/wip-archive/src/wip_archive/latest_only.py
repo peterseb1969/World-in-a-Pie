@@ -54,6 +54,9 @@ class LatestOnlyPlan:
 
 
 def _pinned(row: dict[str, Any]) -> set[tuple[str, int]]:
+    """The (document_id, version) pairs the row's pinned references name. A
+    pin whose version is not a number raises RowVersionError naming the
+    pinning row and the document it pins."""
     out: set[tuple[str, int]] = set()
     for ref in row.get("references") or ():
         if ref.get("reference_type") != "document" or ref.get("version_strategy") != "pinned":
@@ -61,7 +64,9 @@ def _pinned(row: dict[str, Any]) -> set[tuple[str, int]]:
         resolved = ref.get("resolved") or {}
         doc_id = resolved.get("document_id")
         if isinstance(doc_id, str) and resolved.get("version") is not None:
-            out.add((doc_id, row_version(resolved)))
+            name = (f"document {row.get('document_id')} v{row.get('version')}'s "
+                    f"pinned reference to document {doc_id}")
+            out.add((doc_id, row_version(resolved, name=name)))
     return out
 
 

@@ -740,3 +740,30 @@ class TestManifestVersionHonesty:
 
         manifest = mock_writer.write.call_args[0][0]
         assert manifest.include_all_versions is expected
+
+
+class TestManifestExportTime:
+    """The exporter records when it wrote the archive: the manifest no
+    longer fills a missing export time in."""
+
+    @patch(f"{EXPORTER}.ArchiveWriter")
+    @patch(f"{EXPORTER}.compute_closure")
+    @patch(f"{EXPORTER}.EntityCollector")
+    def test_the_export_records_its_time(
+        self, MockCollector, mock_closure, MockWriter, mock_client,
+        mock_collector, mock_writer,
+    ):
+        from datetime import UTC, datetime
+
+        MockCollector.return_value = mock_collector
+        MockWriter.return_value = mock_writer
+        mock_closure.return_value = ([], [], [], [])
+
+        from wip_toolkit.export.exporter import run_export
+        before = datetime.now(UTC)
+        run_export(mock_client, "wip", "/tmp/export.zip", non_interactive=True)
+
+        manifest = mock_writer.write.call_args[0][0]
+        # Set by the exporter, not filled in by the model's default.
+        assert "exported_at" in manifest.model_fields_set
+        assert manifest.exported_at is not None and manifest.exported_at >= before

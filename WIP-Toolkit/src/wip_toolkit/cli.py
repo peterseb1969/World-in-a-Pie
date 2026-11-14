@@ -11,6 +11,7 @@ import click
 from rich.console import Console
 from rich.table import Table
 from wip_archive.archive import ArchiveReader
+from wip_archive.exceptions import RowVersionError
 from wip_archive.model import AmbiguousNameError, ArchiveModel
 
 from .backfill import backfill_synonyms
@@ -38,7 +39,19 @@ def _get_version() -> str:
         return "unknown"
 
 
-@click.group()
+class _ToolkitGroup(click.Group):
+    """Turns a malformed archive's typed error into a message and exit 1,
+    for every command that reads an archive, instead of a traceback."""
+
+    def invoke(self, ctx: click.Context) -> object:
+        try:
+            return super().invoke(ctx)
+        except RowVersionError as e:
+            console.print(f"[red]Unreadable archive:[/red] {e}")
+            sys.exit(1)
+
+
+@click.group(cls=_ToolkitGroup)
 @click.version_option(_get_version(), prog_name="wip-toolkit")
 @click.option("--host", default="localhost", help="WIP host (default: localhost)")
 @click.option("--proxy", is_flag=True, help="Route through Caddy/Ingress reverse proxy")

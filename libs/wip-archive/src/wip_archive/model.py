@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar, TypeVar
 
 from .archive import ENTITY_FILES, ArchiveReader
-from .definitions import DefinitionIndex, term_names
+from .definitions import DefinitionIndex, row_version, term_names
 from .document_check import DocumentCheck
 from .models import Manifest
 
@@ -65,16 +65,6 @@ _DEFINITION_REFERENCE = {
     "template": ("template_id", "templates", "template_use"),
     "terminology": ("terminology_id", "terminologies", "terminology_use"),
 }
-
-
-def row_version(row: dict[str, Any]) -> int:
-    """A template or document row's version, as every reader of an archive
-    counts it: a missing, null, empty or zero version is version 1, and a
-    numeric string or float is its integer. One definition, so a pass that
-    selects rows by version (latest-only, migrate) keys them exactly as the
-    model counted them; a pass that compared the raw value dropped the rows
-    the model had counted under the coerced one."""
-    return int(row.get("version", 1) or 1)
 
 
 def _carried_ids(reader: Any, namespaces: list[str]) -> dict[str, frozenset[str]]:
@@ -1739,7 +1729,9 @@ class ArchiveModel:
         return {
             "format_version": self.manifest.format_version,
             "tool_version": self.manifest.tool_version,
-            "exported_at": str(self.manifest.exported_at),
+            "exported_at": (
+                str(self.manifest.exported_at) if self.manifest.exported_at is not None else None
+            ),
             "source_host": self.manifest.source_host,
             "namespaces": list(self.namespaces),
             "include_files": self.manifest.include_files,

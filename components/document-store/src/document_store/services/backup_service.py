@@ -444,7 +444,8 @@ async def start_async_job(
             event reaches it after the event is persisted; a terminal event
             ('complete' or 'error') reaches it BEFORE, so whatever the hook
             settles is settled by the time the record turns terminal. Every
-            job wires it: the archive store settles a job's archive on its
+            backup and restore job wires it (validation jobs hold no archive
+            and pass none): the archive store settles a job's archive on its
             terminal event (archive_lifecycle_hook) — an upload that can take
             minutes. While it runs the record still reads RUNNING, which
             DELETE refuses; settled after the terminal write instead, a DELETE

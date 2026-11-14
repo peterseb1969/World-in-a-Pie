@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import sys
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -398,6 +399,7 @@ def run_export(
         percent=95.0,
     ))
     manifest = Manifest(
+        exported_at=datetime.now(UTC),
         source_host=client.config.host,
         tool_version=f"wip-toolkit {__version__}",
         namespaces=[

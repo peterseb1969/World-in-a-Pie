@@ -90,11 +90,10 @@ class TestManifest:
         assert m.closure.external_templates == []
         assert m.closure.iterations == 0
 
-    def test_exported_at_is_set_automatically(self):
-        before = datetime.now(UTC)
-        m = Manifest()
-        after = datetime.now(UTC)
-        assert before <= m.exported_at <= after
+    def test_exported_at_is_empty_unless_set(self):
+        assert Manifest().exported_at is None
+        when = datetime.now(UTC)
+        assert Manifest(exported_at=when).exported_at == when
 
     def test_namespace_config_default_none(self):
         m = Manifest()

@@ -44,3 +44,8 @@ class EntityParseError(ArchiveError):
 class UnsafePathError(ArchiveError):
     """A name the archive supplies — a namespace prefix, a file id, a template
     value, a ZIP member name — cannot be used safely as a path segment."""
+
+
+class RowVersionError(ArchiveError):
+    """A row's ``version`` is not a number, so no reader can tell which
+    version of its entity the row is. The message names the row."""
