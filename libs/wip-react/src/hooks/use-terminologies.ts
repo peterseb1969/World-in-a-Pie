@@ -18,16 +18,22 @@ export function useTerminologies(
   })
 }
 
+/**
+ * Fetch one terminology by UUID or value. `namespace` scopes a value for a
+ * key that can see several namespaces.
+ */
 export function useTerminology(
   id: string,
-  options?: Omit<UseQueryOptions<Terminology>, 'queryKey' | 'queryFn'>,
+  options?: { namespace?: string } & Omit<UseQueryOptions<Terminology>, 'queryKey' | 'queryFn'>,
 ) {
   const client = useWipClient()
+  const { namespace, ...queryOptions } = options ?? {}
   return useQuery({
-    queryKey: wipKeys.terminologies.detail(id),
-    queryFn: () => client.defStore.getTerminology(id),
+    // Under detail(id), so invalidating detail(id) covers every scope.
+    queryKey: [...wipKeys.terminologies.detail(id), { namespace: namespace ?? null }] as const,
+    queryFn: () => client.defStore.getTerminology(id, namespace === undefined ? undefined : { namespace }),
     staleTime: STALE_TIMES.terminologies,
     enabled: !!id,
-    ...options,
+    ...queryOptions,
   })
 }

@@ -34,11 +34,12 @@ export function useBulkImport<T>(options: UseBulkImportOptions<T>) {
         continueOnError: options.continueOnError,
         onProgress: setProgress,
       }),
-    onSuccess: () => {
+    onSettled: () => {
+      // On failure too: a batch that throws rejects the run after the
+      // batches before it were written, and the cache must show them.
       const keys = options.invalidateKeys ?? wipKeys.all
       queryClient.invalidateQueries({ queryKey: keys as unknown[] })
-    },
-    onSettled: () => {
+
       // Keep progress visible for a moment, then clear
       cancelClear()
       clearTimer.current = setTimeout(() => {

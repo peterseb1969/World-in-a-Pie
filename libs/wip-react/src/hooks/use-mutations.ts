@@ -660,16 +660,19 @@ export function useDeleteNamespace(
     'mutationFn'
   >,
 ) {
-  const { onSuccess, ...restOptions } = options ?? {}
+  const { onSettled, ...restOptions } = options ?? {}
   const client = useWipClient()
   const queryClient = useQueryClient()
   return useMutation({
     ...restOptions,
     mutationFn: ({ prefix, deletedBy, force }: { prefix: string; deletedBy?: string; force?: boolean }) =>
       client.registry.deleteNamespace(prefix, deletedBy, { force }),
-    onSuccess: (...args) => {
-      queryClient.invalidateQueries({ queryKey: wipKeys.registry.all })
-      onSuccess?.(...args)
+    // Every entity cache, not only the registry's: the namespace's
+    // terminologies, templates, documents, files and reporting rows go with
+    // it. On settle, since a deletion that fails partway has removed some.
+    onSettled: (...args) => {
+      queryClient.invalidateQueries({ queryKey: wipKeys.all })
+      onSettled?.(...args)
     },
   })
 }

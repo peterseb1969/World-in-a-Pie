@@ -81,6 +81,16 @@ describe('Service classes via createWipClient', () => {
       expect(fetchMock.mock.calls[0][0]).toContain('namespace=wip')
     })
 
+    it('getTerminology scopes a value-form id by namespace when given one', async () => {
+      mockJsonResponse({ terminology_id: 'T1' })
+      await client.defStore.getTerminology('COUNTRY', { namespace: 'ns-a' })
+      expect(fetchMock.mock.calls[0][0]).toContain('/terminologies/COUNTRY?namespace=ns-a')
+
+      mockJsonResponse({ terminology_id: 'T1' })
+      await client.defStore.getTerminology('COUNTRY')
+      expect(fetchMock.mock.calls[1][0]).not.toContain('namespace=')
+    })
+
     it('wipErrorCode reads a code nested under FastAPI\'s detail object', async () => {
       mockJsonResponse({ detail: { message: 'Ambiguous', error_code: 'ambiguous_reference' } }, 422)
 

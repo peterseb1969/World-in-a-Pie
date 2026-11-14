@@ -137,7 +137,7 @@ describe('Query hooks', () => {
       const { result } = renderHook(() => useTerminology('t1'), { wrapper: Wrapper })
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
-      expect(mockClient.defStore.getTerminology).toHaveBeenCalledWith('t1')
+      expect(mockClient.defStore.getTerminology).toHaveBeenCalledWith('t1', undefined)
     })
 
     it('is disabled when id is empty string', () => {
@@ -195,7 +195,7 @@ describe('Query hooks', () => {
       const { result } = renderHook(() => useTerm('term1'), { wrapper: Wrapper })
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
-      expect(mockClient.defStore.getTerm).toHaveBeenCalledWith('term1')
+      expect(mockClient.defStore.getTerm).toHaveBeenCalledWith('term1', undefined)
     })
 
     it('is disabled when id is empty string', () => {
@@ -322,7 +322,7 @@ describe('Query hooks', () => {
       const { result } = renderHook(() => useDocument('doc1'), { wrapper: Wrapper })
 
       await waitFor(() => expect(result.current.isSuccess).toBe(true))
-      expect(mockClient.documents.getDocument).toHaveBeenCalledWith('doc1')
+      expect(mockClient.documents.getDocument).toHaveBeenCalledWith('doc1', undefined, undefined)
     })
 
     it('is disabled when id is empty string', () => {

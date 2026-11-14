@@ -75,7 +75,7 @@ describe('useQueryDocuments runs any query the server takes', () => {
     const { Wrapper } = createWrapper(client)
     const { result } = renderHook(() => useQueryDocuments({ status: 'active', page_size: 50 }), { wrapper: Wrapper })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
-    expect(client.documents.queryDocuments).toHaveBeenCalledWith({ status: 'active', page_size: 50 })
+    expect(client.documents.queryDocuments).toHaveBeenCalledWith({ status: 'active', page_size: 50 }, undefined)
   })
 
   it('a query naming a template it does not have yet waits', () => {

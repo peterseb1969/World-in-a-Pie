@@ -51,8 +51,12 @@ export class DefStoreService extends BaseService {
     return this.get('/terminologies', params)
   }
 
-  async getTerminology(id: string): Promise<Terminology> {
-    return this.get(`/terminologies/${seg(id)}`)
+  /**
+   * `namespace` scopes a value-form identifier (the terminology's value) for
+   * a key that can see several namespaces; a UUID needs none.
+   */
+  async getTerminology(id: string, options?: { namespace?: string }): Promise<Terminology> {
+    return this.get(`/terminologies/${seg(id)}`, options?.namespace !== undefined ? { namespace: options.namespace } : undefined)
   }
 
   async createTerminology(data: CreateTerminologyRequest): Promise<BulkResultItem> {

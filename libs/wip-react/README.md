@@ -237,9 +237,13 @@ All read hooks return TanStack Query's `UseQueryResult<T>` with `data`, `isLoadi
 | Hook | Returns | Stale Time | Enabled |
 |------|---------|-----------|---------|
 | `useTerminologies(params?)` | `TerminologyListResponse` | 5min | always |
-| `useTerminology(id)` | `Terminology` | 5min | when `id` is truthy |
-| `useTerms(terminologyId, params?)` | `TermListResponse` | 5min | when `terminologyId` is truthy |
-| `useTerm(id)` | `Term` | 5min | when `id` is truthy |
+| `useTerminology(id, { namespace? })` | `Terminology` | 5min | when `id` is truthy |
+| `useTerms(terminologyId, params?)` (params take `namespace`) | `TermListResponse` | 5min | when `terminologyId` is truthy |
+| `useTerm(id, { namespace?, terminology? })` | `Term` | 5min | when `id` is truthy |
+
+`namespace` scopes a value-form identifier for a key that can see several
+namespaces; a single-namespace key's namespace is derived by the server, and a
+UUID needs none.
 
 ```tsx
 // List terminologies with pagination
@@ -252,8 +256,10 @@ const { data: terminology } = useTerminology('COUNTRY')
 // List terms under a terminology with search
 const { data: terms } = useTerms('COUNTRY', { search: 'united', page: 1 })
 
-// Get single term
-const { data: term } = useTerm('COUNTRY:United States')
+// Get single term: a UUID, 'ns:terminology:value', or the raw value with
+// `terminology` set. The 2-part 'COUNTRY:United States' shorthand is refused (422).
+const { data: term } = useTerm('wip:COUNTRY:United States')
+const { data: same } = useTerm('United States', { terminology: 'COUNTRY' })
 ```
 
 ### Templates
@@ -282,8 +288,8 @@ const { data: template } = useTemplateByValue('PATIENT_RECORD', { namespace: 'cl
 | Hook | Returns | Stale Time | Enabled |
 |------|---------|-----------|---------|
 | `useDocuments(params?)` | `DocumentListResponse` | 30s | always |
-| `useDocument(id)` | `Document` | 30s | when `id` is truthy |
-| `useQueryDocuments(query)` | `DocumentListResponse` | 30s | when `query.template_id` or `query.filters.length > 0` |
+| `useDocument(id, { version?, namespace? })` | `Document` | 30s | when `id` is truthy |
+| `useQueryDocuments(query, { namespace? })` | `DocumentListResponse` | 30s | when `query.template_id` or `query.filters.length > 0` |
 | `useDocumentVersions(id)` | `DocumentVersionResponse` | 30s | when `id` is truthy |
 | `useTableView(templateId, params?)` | `TableViewResponse` | 30s | when `templateId` is truthy |
 | `useDocumentRelationships(id, params?)` | `DocumentListResponse` | 30s | when `id` is truthy |
@@ -351,7 +357,7 @@ const { data: results } = useRegistrySearch({
 |------|---------|-----------|---------|
 | `useIntegrityCheck(params?)` | `IntegrityCheckResult` | 1min | always |
 | `useActivity(params?)` | `ActivityResponse` | 1min | always |
-| `useReportQuery(sql, params?)` | `ReportQueryResult` | 10s | always |
+| `useReportQuery(sql, params?)` | `ReportQueryResult` | 10s | always — at most `maxRows` rows (server default 1000); `truncated` says when rows were cut |
 | `useSyncStatus()` | `SyncStatus` | 1min | always |
 | `useBatchJobs()` | `BatchSyncJob[]` | 0 (live) | always |
 | `useBatchJob(jobId)` | `BatchSyncJob` | 0 (live) | when `jobId` is truthy |
@@ -372,7 +378,8 @@ const { data: activity } = useActivity({ types: 'document,template', limit: 20 }
 All mutations return TanStack Query's `UseMutationResult` with `mutate`, `mutateAsync`, `isPending`, `error`, `data`, etc. Every hook accepts an optional parameter to override TanStack Query mutation options (`onSuccess`, `onError`, `onSettled`, etc.).
 
 The tables below list every exported mutation hook and the query keys each one
-invalidates on success. Rows are grouped by resource. (`useBulkImport` is a
+invalidates on success (`useDeleteNamespace` and `useBulkImport` invalidate on
+settle, failure included). Rows are grouped by resource. (`useBulkImport` is a
 mutation too, documented under [Specialized Hooks](#usebulkimport).)
 
 **Terminologies & Terms**
@@ -428,7 +435,7 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 | `useUpdateNamespace()` | `{ prefix, data }` | `Namespace` | `registry.all` |
 | `useArchiveNamespace()` | `{ prefix, archivedBy? }` | `Namespace` | `registry.all` |
 | `useRestoreNamespace()` | `{ prefix, restoredBy? }` | `Namespace` | `registry.all` |
-| `useDeleteNamespace()` | `{ prefix, deletedBy?, force? }` | `NamespaceDeletionResult` — `status` is `in_progress` while a step is deferred; only `completed` / `completed_with_warnings` mean done | `registry.all` |
+| `useDeleteNamespace()` | `{ prefix, deletedBy?, force? }` | `NamespaceDeletionResult` — `status` is `in_progress` while a step is deferred; only `completed` / `completed_with_warnings` mean done | `wipKeys.all` (every cache: the namespace's entities go with it), on settle |
 | `useAddSynonym()` | `AddSynonymRequest` | `SynonymResult` (`added` / `already_exists`; any refusal is a `WipBulkItemError`) | `registry.all` |
 | `useRemoveSynonym()` | `RemoveSynonymRequest` | `SynonymResult` (`removed`; any refusal is a `WipBulkItemError`) | `registry.all` |
 | `useMergeEntries()` | `MergeRequest` | `MergeResult` (`merged`; any refusal is a `WipBulkItemError`) | `registry.all` |
@@ -438,7 +445,7 @@ mutation too, documented under [Specialized Hooks](#usebulkimport).)
 
 | Hook | Input | Returns | Invalidates |
 |------|-------|---------|-------------|
-| `useTriggerBatchSyncAll()` | `BatchSyncAllVars` | `BatchSyncResponse[]` | `reporting.batchJobs` |
+| `useTriggerBatchSyncAll()` | `BatchSyncAllVars` (`force?`, `page_size?`, `namespace?` — required with `force`) | `BatchSyncResponse[]` | `reporting.batchJobs` |
 | `useTriggerBatchSync()` | `BatchSyncVars` (`template_value`, `force?`, `page_size?`, `namespace?` — required with `force`) | `BatchSyncResponse` | `reporting.batchJobs` |
 | `useTriggerTerminologySync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
 | `useTriggerTermSync()` | `EntitySyncVars` | `BatchEntitySyncResult` | — (backend sync; no local cache) |
@@ -638,8 +645,8 @@ function ImportTerms({ terminologyId }: { terminologyId: string }) {
 **Options:**
 - `writeFn: (batch: T[]) => Promise<BulkResponse>` — the API call for each batch
 - `batchSize?: number` — items per batch (default: 100)
-- `continueOnError?: boolean` — keep processing after errors (default: false)
-- `invalidateKeys?: readonly unknown[]` — query keys to invalidate on success (default: `wipKeys.all`)
+- `continueOnError?: boolean` — keep processing batches after items fail (default: true). A batch whose request fails (a transport error) always stops the run
+- `invalidateKeys?: readonly unknown[]` — query keys to invalidate when the run settles, failure included: batches written before a failure stay written (default: `wipKeys.all`)
 
 **Returns** (extends `UseMutationResult`):
 - `progress: BulkImportProgress | null` — live progress: `{ processed, total, succeeded, failed }`

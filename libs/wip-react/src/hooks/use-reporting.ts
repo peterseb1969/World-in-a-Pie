@@ -43,6 +43,10 @@ const REPORT_QUERY_STALE_TIME = 10_000 // 10s — report data is eventually cons
  *   ['BLACKWOOD_MANOR']
  * )
  *
+ * A query returns at most `maxRows` rows (the server's default is 1000, its
+ * ceiling 50000). `data.truncated` is true when rows were cut: read it before
+ * treating `data.rows` as the whole result.
+ *
  * The cache key is the hook's own (SQL, params and namespace). A caller that
  * needs another key uses `useQuery` with `client.reporting.runQuery` directly.
  */
@@ -180,7 +184,8 @@ export function useBatchJob(
   })
 }
 
-type BatchSyncAllVars = { force?: boolean; page_size?: number } | void
+/** `force` requires `namespace` (the server refuses it without one, 400). */
+type BatchSyncAllVars = { force?: boolean; page_size?: number; namespace?: string } | void
 
 /** Trigger a batch sync for all templates with sync_enabled=true. */
 export function useTriggerBatchSyncAll(

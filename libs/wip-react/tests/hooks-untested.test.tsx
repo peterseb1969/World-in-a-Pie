@@ -561,11 +561,12 @@ describe('useTriggerBatchSyncAll', () => {
 
     const { result } = renderHook(() => useTriggerBatchSyncAll(), { wrapper: Wrapper })
     await act(async () => {
-      result.current.mutate({ force: true })
+      // force needs a namespace: the server refuses it without one (400).
+      result.current.mutate({ force: true, namespace: 'ns-a' })
     })
     await waitFor(() => expect(result.current.isSuccess).toBe(true))
 
-    expect(mockClient.reporting.triggerBatchSyncAll).toHaveBeenCalledWith({ force: true })
+    expect(mockClient.reporting.triggerBatchSyncAll).toHaveBeenCalledWith({ force: true, namespace: 'ns-a' })
     expect(invalidateSpy).toHaveBeenCalled()
   })
 

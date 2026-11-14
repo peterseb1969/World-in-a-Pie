@@ -29,34 +29,47 @@ export function useDocuments(
   })
 }
 
+/**
+ * Fetch one document: its latest version, or `version`. `namespace` scopes a
+ * value-form identifier for a key that can see several namespaces (a single-
+ * namespace key's namespace is derived by the server; a UUID needs none).
+ */
 export function useDocument(
   id: string,
-  options?: Omit<UseQueryOptions<Document>, 'queryKey' | 'queryFn'>,
+  options?: { version?: number; namespace?: string } & Omit<UseQueryOptions<Document>, 'queryKey' | 'queryFn'>,
 ) {
   const client = useWipClient()
+  const { version, namespace, ...queryOptions } = options ?? {}
   return useQuery({
-    queryKey: wipKeys.documents.detail(id),
-    queryFn: () => client.documents.getDocument(id),
+    // Under detail(id), so invalidating detail(id) covers every scope.
+    queryKey: [...wipKeys.documents.detail(id), { version: version ?? null, namespace: namespace ?? null }] as const,
+    queryFn: () => client.documents.getDocument(id, version, namespace),
     staleTime: STALE_TIMES.documents,
     enabled: !!id,
-    ...options,
+    ...queryOptions,
   })
 }
 
+/**
+ * Run a document query. `namespace` scopes the query's template_id (and any
+ * value-form identifiers) for a key that can see several namespaces; it
+ * cannot ride in the body, which refuses unknown fields.
+ */
 export function useQueryDocuments(
   query: DocumentQueryRequest,
-  options?: Omit<UseQueryOptions<DocumentListResponse>, 'queryKey' | 'queryFn'>,
+  options?: { namespace?: string } & Omit<UseQueryOptions<DocumentListResponse>, 'queryKey' | 'queryFn'>,
 ) {
   const client = useWipClient()
+  const { namespace, ...queryOptions } = options ?? {}
   return useQuery({
-    queryKey: [...wipKeys.documents.all, 'query', query] as const,
-    queryFn: () => client.documents.queryDocuments(query),
+    queryKey: [...wipKeys.documents.all, 'query', query, namespace ?? null] as const,
+    queryFn: () => client.documents.queryDocuments(query, namespace),
     staleTime: STALE_TIMES.documents,
     // Any query the server takes runs, a status- or sort-only one included.
     // A query that names template_id but has none yet (a template still
     // loading) waits for it; pass `enabled` to gate otherwise.
     enabled: !('template_id' in query) || !!query.template_id,
-    ...options,
+    ...queryOptions,
   })
 }
 
