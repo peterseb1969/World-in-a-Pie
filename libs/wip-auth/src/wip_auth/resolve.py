@@ -857,6 +857,10 @@ async def resolve_entity_ids(
 
     Raises:
         EntityNotFoundError: strict mode only — an identifier not found.
+        AmbiguousEntityError: strict mode only — an identifier names
+            several entities (a subclass of EntityNotFoundError).
+        RegistryUnavailableError: the Registry did not answer, or answered
+            an item with an error — never reported as a miss.
     """
     result, to_resolve = _cached_resolutions(
         raw_ids, entity_type, namespace, include_statuses, bypass_cache,

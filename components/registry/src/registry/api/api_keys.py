@@ -331,8 +331,9 @@ async def create_api_key(
 
     # The reservations are written before the key, each conditional on its
     # holder: a prefix taken since the check refuses the request with
-    # nothing else written, and a later failure undoes what this request
-    # reserved.
+    # nothing else written, and a key that is then not stored (for any
+    # reason) undoes what this request reserved. Once the key is stored the
+    # reservations are its own, and a later step's failure leaves them with it.
     new_reservations = await _save_reservations(request.name, reserve)
 
     # Generate, hash and store under one salt: a restore cannot adopt
@@ -356,6 +357,9 @@ async def create_api_key(
         raise HTTPException(
             status_code=409, detail=f"Runtime key '{request.name}' already exists"
         ) from e
+    except BaseException:
+        await _drop_new_reservations(request.name, new_reservations)
+        raise
 
     # Add to local provider so it works immediately. A plaintext the Registry
     # generated cannot already be a config key's; a config key that takes it
@@ -685,13 +689,22 @@ async def add_key_namespace(
         await _check_reservation(prefix, request.reserve, name)
         # Written first and conditional on its holder: a prefix taken since
         # the check refuses the widen before the scope or the grant changes.
-        await _save_reservation(prefix, request.reserve, name)
+        created = await _save_reservation(prefix, request.reserve, name)
+    else:
+        created = False
 
-    if prefix not in doc.namespaces:
-        doc.namespaces = [*doc.namespaces, prefix]
-        await doc.save()
-        await _refresh_provider(doc)
-    await _set_grant(name, prefix, permission)
+    try:
+        if prefix not in doc.namespaces:
+            doc.namespaces = [*doc.namespaces, prefix]
+            await doc.save()
+            await _refresh_provider(doc)
+        await _set_grant(name, prefix, permission)
+    except BaseException:
+        # A widen that did not land keeps no reservation it made; one the
+        # key held before stays (the widen re-reserved it).
+        if created:
+            await _drop_new_reservations(name, [prefix])
+        raise
     await access_changed()
     logger.info(
         "Widened runtime key %s to %s (permission=%s, reserved=%s) by=%s",

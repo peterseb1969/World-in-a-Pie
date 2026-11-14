@@ -3625,10 +3625,14 @@ class DirectRestoreEngine:
         - **Out of archive** — no map entry can exist (the entity was never
           re-registered), so the lookup half is the only mechanism: check it
           resolves on the target install, and repair the resolved half to the
-          target's canonical id. If it does not resolve, the resolved half is
-          cleared and a warning lands on the job — a stale source-install id
-          kept in a fresh namespace is a leak, and enforcement still runs
-          from the lookup half (the `latest` strategy resolves it per write).
+          target's canonical id. If the Registry answers that it does not
+          resolve, or that it names several templates, the resolved half is
+          cleared and a warning lands on the job (naming which) — a stale
+          source-install id kept in a fresh namespace is a leak, and
+          enforcement still runs from the lookup half (the `latest` strategy
+          resolves it per write). If the Registry does not answer, nothing
+          is cleared and the restore fails ("did not answer"); the target
+          must be deleted before a retry.
         """
         new_ids = set(remapper.template_map.values())
 

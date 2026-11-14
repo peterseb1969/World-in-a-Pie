@@ -78,7 +78,7 @@ Every write endpoint returns HTTP 200 with:
 | `status` | `str` | `"created"`, `"updated"`, `"unchanged"`, `"deleted"`, `"skipped"`, `"error"` |
 | `id` | `str?` | Generated or existing entity ID |
 | `error` | `str?` | Error message (when `status == "error"`) |
-| `error_code` | `str?` | Machine-readable error code (when `status == "error"`). See the PATCH section below for the canonical code set. |
+| `error_code` | `str?` | Machine-readable error code: always on an error row; a `skipped` row may carry one saying why it was skipped (e.g. `already_exists`). See the PATCH section below for the canonical code set. |
 
 Services extend `BulkResultItem` with extra fields:
 
@@ -140,7 +140,7 @@ Standard `BulkResponse`, HTTP 200. Per-item `status` values:
 
 ### Per-item `error_code`
 
-Bulk-first endpoints extend `BulkResultItem` with an optional `error_code: str | None` field. It is set **only** when `status == "error"`, and it carries a machine-readable code so callers can branch on failure type without parsing message strings.
+Bulk-first endpoints extend `BulkResultItem` with an optional `error_code: str | None` field. It is always set when `status == "error"`, and it carries a machine-readable code so callers can branch on failure type without parsing message strings. A `skipped` row may carry one too, saying why it was skipped (`already_exists`): a skip is a success, so branch on `status`, never on whether `error_code` is present.
 
 An identifier in a bulk item that several entities bear (a term, terminology, template, document or file value) is answered on every bulk door that resolves identifiers with `error_code: ambiguous_reference`, never written and never taken as "not found": `details.field` names the item's field, and `details.identifier`, `details.candidates`, `details.total` and `details.truncated` are what the 409 of a single-entity door carries. The rest of the batch proceeds; a document create with `continue_on_error=false` stops there as at any failing item.
 

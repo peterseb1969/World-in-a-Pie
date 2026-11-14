@@ -8,50 +8,42 @@ answer (or an error text telling reachable hosts from unreachable ones).
 `fetch_source_data` is therefore not a lookup option: both lookup routes
 refuse it (422, the request models forbid unknown fields), and a lookup
 without it returns the entry, endpoint_url included, and no source_data.
+The spy asserts the entries module holds no HTTP client and records any
+client created during a request (CASE-1266, 06668a40 R2: the former spy
+patched a module attribute that does not exist, so it could see nothing).
 """
 
 import uuid
-from typing import ClassVar
 
+import httpx
 import pytest
 
 from registry.api import entries as entries_api
 
 
-class _SpyClient:
-    """Stands in for httpx.AsyncClient in the entries module: records every
-    outbound GET the lookup routes make."""
-
-    asked: ClassVar[list[str]] = []
-
-    def __init__(self, *a, **kw):
-        pass
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-    async def get(self, url):
-        _SpyClient.asked.append(url)
-
-        class _R:
-            def raise_for_status(self):
-                return None
-
-            def json(self):
-                return {"internal": "answer"}
-
-        return _R()
-
-
 @pytest.fixture
 def spy(monkeypatch):
-    _SpyClient.asked = []
-    if hasattr(entries_api, "httpx"):
-        monkeypatch.setattr(entries_api.httpx, "AsyncClient", _SpyClient)
-    return _SpyClient
+    """Records every httpx client created while a test runs.
+
+    The entries module imports no HTTP client at all (asserted here: the
+    Registry has nothing to call an endpoint_url with), and any client made
+    anywhere during the request is recorded by name of its constructor. The
+    test's own client exists before the fixture patches, so it is not
+    counted."""
+    assert not hasattr(entries_api, "httpx")
+    created: list[tuple] = []
+    original = httpx.AsyncClient.__init__
+
+    def recording_init(self, *args, **kwargs):
+        created.append((args, kwargs))
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.AsyncClient, "__init__", recording_init)
+
+    class _Spy:
+        asked = created
+
+    return _Spy
 
 
 async def _register(client, headers, tag: str) -> str:

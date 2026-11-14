@@ -134,6 +134,7 @@ async def resolve_term_values(
     _stats["values"] += len(items)
     batch = _batch.get()
     plan = await _plan_term_resolution(items, namespace, batch)
+    _share_keys_published_meanwhile(plan, batch)
     if plan.pending:
         keys = list(plan.pending)
         resolved = await _resolve_keys(
@@ -196,6 +197,23 @@ async def _plan_term_resolution(
             continue
         plan.pending.setdefault(key, []).append(index)
     return plan
+
+
+def _share_keys_published_meanwhile(
+    plan: _TermPlan, batch: dict[_TermKey, asyncio.Future[dict[str, Any]]] | None,
+) -> None:
+    """Wait on a key another caller in the batch published while this plan
+    was made, instead of asking for it again and replacing its future.
+
+    Planning awaits the Registry for value-form terminology refs, so a key
+    found absent from the batch early in the plan can be in it by the end.
+    Nothing awaits between this check and _resolve_keys publishing the rest,
+    so each key is asked once per batch."""
+    if batch is None:
+        return
+    for key in [k for k in plan.pending if k in batch]:
+        _stats["batch_reused"] += 1
+        plan.shared.extend((index, batch[key]) for index in plan.pending.pop(key))
 
 
 async def _resolve_keys(

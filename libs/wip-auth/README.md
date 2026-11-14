@@ -237,9 +237,9 @@ id_map = await resolve_entity_ids(["STATUS", "GENDER"], "terminology", "wip")
 # Returns: {"STATUS": "019abc...", "GENDER": "019def..."}
 ```
 
-**`resolve_entity_id(raw_id, entity_type, namespace)`** — Returns `raw_id` unchanged if it's already a UUID. Otherwise, resolves via the Registry's `POST /resolve` endpoint. Raises `EntityNotFoundError` if the Registry answers "not found", `AmbiguousEntityError` (a subclass) if the value names several entities, and `RegistryUnavailableError` if the Registry does not answer (unreachable, timeout, error status).
+**`resolve_entity_id(raw_id, entity_type, namespace)`** — Resolves via the Registry's `POST /resolve` endpoint; a UUID is verified there too (there is no format-based bypass). An answer is cached for 30 seconds (`_CACHE_TTL`); writes pass `bypass_cache=True`. Raises `EntityNotFoundError` if the Registry answers "not found", `AmbiguousEntityError` (a subclass) if the value names several entities, and `RegistryUnavailableError` if the Registry does not answer (unreachable, timeout, error status).
 
-**`resolve_entity_ids(raw_ids, entity_type, namespace)`** — Batch variant. UUIDs pass through, cached results are reused, remaining IDs are resolved in a single Registry call. Returns `{raw_id: canonical_id}` dict.
+**`resolve_entity_ids(raw_ids, entity_type, namespace)`** — Batch variant. Cached results are reused; the rest, UUIDs included, are resolved through the Registry in chunks of 200 ids per call (`_RESOLVE_CHUNK`). Returns `{raw_id: canonical_id}` dict.
 
 **`EntityNotFoundError`** — Raised when the Registry answers that nothing matches. Has `.identifier` and `.entity_type` attributes.
 

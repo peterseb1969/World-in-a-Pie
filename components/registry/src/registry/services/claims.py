@@ -230,9 +230,9 @@ async def claim_keys_pending_bulk(
     round trip. Only a key that hits the unique index goes the per-key way:
     a key its own owner already holds is fine, a stale holder is healed and
     the key retried once, a genuine owner blocks the group. Blocked groups
-    are then released. A group blocked only by another group of the same
-    batch that was itself rolled back is claimed again, pair by pair: taken
-    one at a time, as before, it would have found the key free.
+    are then released. A group whose recorded blocker is another group of
+    the same batch that was itself rolled back is tried again, pair by pair
+    (_reclaim_blocked_by_rollback); the retry may still be blocked.
     """
     token = token or new_claim_token()
     docs, doc_group = _pending_claim_docs(groups, token)
@@ -303,9 +303,12 @@ async def _reclaim_blocked_by_rollback(
     groups: Sequence[Sequence[ClaimKey]], blocked: list[str | None],
     failed: list[int], token: str,
 ) -> None:
-    """Claim again, pair by pair, each released group whose only blocker was
+    """Retry, pair by pair, each released group whose RECORDED blocker is
     another group of the batch that was itself rolled back: taken one at a
-    time, it would have found the key free. Updates ``blocked`` in place."""
+    time, it might have found the key free. Only the first blocker of a
+    group is recorded (the bulk pass stops asking at it), so a group may
+    have had others; the retry can still fail, and then the blocker it
+    meets replaces the recorded one. Updates ``blocked`` in place."""
     rolled_back = {key[3] for gi in failed for key in groups[gi]}
     for gi in failed:
         own = {key[3] for key in groups[gi]}

@@ -1,8 +1,9 @@
 """Batch term resolution, pinned before resolve_term_values' refactor.
 
-Provenance: CASE-1161. The suite never reached these branches: an empty
-request asks nothing, and one terminology ref repeated across items is
-resolved through the Registry once. Also pinned: a mixed request keeps item
+Provenance: CASE-1161. wip-auth's own suite never reached these branches:
+an empty request asks nothing, and one value-form terminology ref repeated
+across items is resolved through the Registry once (document-store's
+test_term_prefetch drives the repeated-ref case with a UUID ref). Also pinned: a mixed request keeps item
 order — an unresolved terminology's error, a repeated value asked once, each
 result stamped with its terminology id.
 """

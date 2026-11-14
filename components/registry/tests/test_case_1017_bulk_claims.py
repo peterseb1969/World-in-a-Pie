@@ -128,6 +128,23 @@ async def test_a_group_blocked_by_a_rolled_back_group_of_the_batch_is_claimed_ag
 
 
 @pytest.mark.asyncio
+async def test_a_retry_after_a_rollback_can_still_be_blocked_and_says_by_whom(client):
+    """The recorded blocker is only the first: e2 is also held on "taken2"
+    by a genuine owner, so the retry after e1's rollback still fails, and
+    the blocker it met replaces the recorded one (CASE-1266, ee817580 R2)."""
+    await _genuine_owner("taken")
+    await _genuine_owner("taken2", "outsider2")
+
+    blocked = await claim_keys_pending_bulk([
+        [_key("shared", "e1"), _key("taken", "e1", "synonym")],
+        [_key("shared", "e2"), _key("taken2", "e2", "synonym")],
+    ])
+
+    assert blocked == ["outsider", "outsider2"]
+    assert await _claim_doc("shared") is None
+
+
+@pytest.mark.asyncio
 async def test_confirm_names_exact_claims_never_an_owners_other_pending_claims(client):
     # Another request holds a pending claim on the same entry, still in flight.
     await CompositeKeyClaim.claim(NS, ET, _h("theirs"), "e1", "synonym", state="pending")

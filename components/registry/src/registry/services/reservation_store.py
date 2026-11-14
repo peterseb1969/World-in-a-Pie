@@ -201,6 +201,7 @@ async def save_reservation(
                     409, f"namespace '{prefix}' was reserved while this key was created",
                 ) from None
             await _refuse_taken(prefix, owner)
+        await _yield_to_an_earlier_claim(doc)
         return doc, True
     result = await RuntimeReservation.get_motor_collection().update_one(
         {"prefix": prefix, "app": owner, "managed_by": None},
@@ -210,6 +211,32 @@ async def save_reservation(
         await _refuse_taken(prefix, owner)
     doc.settings, doc.namespace_id = stored, namespace_id
     return doc, False
+
+
+async def _yield_to_an_earlier_claim(doc: RuntimeReservation) -> None:
+    """Refuse a reservation just written that claims an ID prefix another
+    reservation also claims, if that one was written first.
+
+    check_new_reservation refuses a claimed prefix, but two requests can
+    check at once and both write: one ID prefix would then name two
+    namespaces' sequences. So each writer looks again once its own record
+    is stored, and the later one (by record id, which orders inserts)
+    removes its reservation and is refused, whichever process wrote it.
+    """
+    mine = set(claimed_prefixes(_as_reservation(doc).effective_settings()["id_config"]))
+    if not mine:
+        return
+    for other in await RuntimeReservation.find(RuntimeReservation.prefix != doc.prefix).to_list():
+        claimed = claimed_prefixes(_as_reservation(other).effective_settings()["id_config"])
+        clash = sorted(mine & set(claimed))
+        if clash and other.id < doc.id:
+            await RuntimeReservation.find_one(RuntimeReservation.id == doc.id).delete()
+            raise ReservationRefused(
+                409,
+                f"id_config prefix {', '.join(repr(c) for c in clash)} was reserved for "
+                f"namespace '{other.prefix}' while this reservation was written; a prefix "
+                "names one ID sequence on the install",
+            )
 
 
 async def _refuse_taken(prefix: str, owner: str) -> None:

@@ -353,7 +353,7 @@ This is implemented in `wip-auth`'s `resolve_entity_id()` function, called at th
 
 ### Caching
 
-Resolved synonyms are cached in-process with a 5-minute TTL to avoid repeated Registry calls. The cache is keyed by `namespace:entity_type:raw_id`. Batch resolution (`resolve_entity_ids()`) uses a single Registry call for all unresolved IDs.
+Resolved synonyms are cached in-process for 30 seconds (`_CACHE_TTL`) to avoid repeated Registry calls; a resolve whose result will be written passes `bypass_cache=True`. The cache is keyed by `namespace:entity_type:raw_id`. Batch resolution (`resolve_entity_ids()`) resolves the uncached IDs, UUIDs included, in chunks of 200 per Registry call.
 
 ### Auto-Synonym Registration
 

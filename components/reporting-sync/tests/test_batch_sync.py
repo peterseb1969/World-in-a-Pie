@@ -235,7 +235,7 @@ class TestBatchSyncTerminologies:
             await service.batch_sync_terminologies()
 
         args = conn.execute.call_args[0]
-        # $11 = term_count (index 11)
+        # $10 = term_count (index 10)
         assert isinstance(args[10], int), f"term_count should be int, got {type(args[10])}"
 
     @pytest.mark.asyncio

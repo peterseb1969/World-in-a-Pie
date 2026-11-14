@@ -253,3 +253,35 @@ async def test_a_shared_answer_is_not_changed_by_its_readers():
         second = await _one(UUID_A, "ns-a-only")
     assert second["terminology_id"] == UUID_A
     assert len(_asked(fetch)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_key_published_while_a_plan_awaits_the_registry_is_asked_once():
+    """CASE-1266 bfda2dc3 R1: a plan that finds a key absent, then awaits the
+    Registry for a value-form ref, must not ask for the key again (and
+    replace the future) when another caller published it meanwhile."""
+    fetch = _fake_def_store()
+    release = asyncio.Event()
+
+    async def slow_registry(ref, entity_type, namespace):
+        await release.wait()
+        return UUID_B
+
+    async def planner_b():
+        return await resolve_term_values([
+            {"terminology_ref": UUID_A, "value": "ns-a-only"},
+            {"terminology_ref": "LOV_B", "value": "ns-b-only"},
+        ], "ns-b")
+
+    async def caller_a():
+        await asyncio.sleep(0)  # B has planned its first key and is waiting
+        result = await _one(UUID_A, "ns-a-only", "ns-a")
+        release.set()
+        return result
+
+    with patch.object(term_resolution, "_resolve_remote", fetch), \
+            patch.object(term_resolution, "resolve_entity_id", slow_registry), \
+            term_resolution_batch():
+        b, a = await asyncio.gather(planner_b(), caller_a())
+    assert a["valid"] and b[0]["valid"] and b[1]["valid"]
+    assert _asked(fetch).count((UUID_A, "ns-a-only")) == 1
