@@ -2620,13 +2620,14 @@ def _apply_and_persist_mutation(
     the whole tree.
 
     `removes_workloads`: the mutation drops workloads from the render
-    (remove-app). On k8s they go only through the full apply's prune —
-    the app's Deployment or StatefulSet and its Service; a volume claim it
-    declared is kept and named, never pruned — so such a mutation always
-    applies the whole tree there, however its scope was widened, and says
-    so: a widened scope is a scoped apply, which never prunes, and the
-    removed app kept running. That apply waits for every workload, as any
-    whole-tree apply does.
+    (remove-app, remove-module). On k8s they go only through the full apply's
+    prune — the removed Deployment or StatefulSet and its Service — so such a
+    mutation always applies the whole tree there, however its scope was widened
+    and whether it arrived scoped at all, and says so: a widened scope is a
+    scoped apply, which never prunes, and the removed workload kept running.
+    That apply waits for every workload, as any whole-tree apply does. A volume
+    claim is never in the prune, removal or not: the claims the render no longer
+    names stay, and the apply names each with the command that deletes it.
 
     A scope is widened, never trusted blindly: services outside it whose
     rendered configuration changed (a secret they read, the router's
@@ -2669,6 +2670,7 @@ def _apply_and_persist_mutation(
         )
         raise typer.Exit(2) from e
 
+    whole_tree_announced = False
     if services_scope is not None and _k8s_render_predates_front_door(
         deployment, target_dir
     ):
@@ -2681,13 +2683,18 @@ def _apply_and_persist_mutation(
             + (", ".join(services_scope) or "the shared configuration") + "."
         )
         services_scope = None
+        whole_tree_announced = True
 
-    if removes_workloads and deployment.spec.target == "k8s" and services_scope is not None:
-        typer.echo(
-            "Applying the whole install (with prune): on k8s that is how the "
-            "removed workloads are deleted. Volume claims are kept. It waits for "
-            "every workload and re-runs the post-install hooks."
-        )
+    if removes_workloads and deployment.spec.target == "k8s":
+        # A removal may arrive scoped (remove-app's config-only scope) or
+        # unscoped (remove-module passes no scope at all); either way this is
+        # the whole install here, and the operator hears it beforehand.
+        if not whole_tree_announced:
+            typer.echo(
+                "Applying the whole install (with prune): on k8s that is how the "
+                "removed workloads are deleted. Volume claims are kept. It waits "
+                "for every workload and re-runs the post-install hooks."
+            )
         services_scope = None
 
     if services_scope is not None:
@@ -2705,9 +2712,6 @@ def _apply_and_persist_mutation(
     apply_kwargs: dict[str, Any] = {}
     if deployment.spec.target != "k8s" or services_scope is not None:
         apply_kwargs["services_scope"] = services_scope
-    if removes_workloads and deployment.spec.target == "k8s":
-        # A removal never deletes a volume: the claims stay, named.
-        apply_kwargs["prune_volume_claims"] = False
     try:
         result = apply_fn(
             deployment=deployment,
@@ -5515,6 +5519,13 @@ def remove_module(
         target_dir,
         f"Removed module {module_name!r} from {resolved_name}",
         repo_root=repo_root,
+        # Disabling a module drops its workloads from the render, so on k8s this
+        # is a removal like remove-app: the whole-tree prune is what deletes
+        # them, and the verb says so beforehand. The module's volume claim stays
+        # with its data — no prune reaches a claim — and the apply names it with
+        # the `kubectl delete pvc` command that removes it, which is what this
+        # command's promise "without dropping anything" means.
+        removes_workloads=True,
     )
 
     # Only once the apply succeeded: a validation or render failure leaves

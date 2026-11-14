@@ -324,6 +324,8 @@ class TestRolloutAsksEveryWorkload:
         with (
             patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/kubectl"),
             patch("wip_deploy.apply._kubectl_run"),
+            patch("wip_deploy.apply.subprocess.run",
+                  return_value=MagicMock(returncode=0, stdout="")),
             patch("wip_deploy.apply._wait_k8s_rollout",
                   return_value=["deployment/wip-registry: Error from server (Forbidden): no"]),
             pytest.raises(ApplyError) as exc,
@@ -437,7 +439,7 @@ def test_a_k8s_removal_keeps_volume_claims_and_names_them(
         patch("wip_deploy.apply._kubectl_run") as kubectl_run,
     ):
         apply_k8s(deployment=deployment, components=[], apps=[], tree=tree,
-                  install_dir=tmp_path, prune_volume_claims=False)
+                  install_dir=tmp_path)
     full = kubectl_run.call_args_list[-1].args[0]
     assert "--prune" in full
     assert "core/v1/PersistentVolumeClaim" not in full
@@ -446,21 +448,38 @@ def test_a_k8s_removal_keeps_volume_claims_and_names_them(
     assert "wip-mongodb-data" not in err
 
 
-def test_remove_app_on_k8s_asks_to_keep_claims() -> None:
-    kwargs = t1229.TestRemovalPrunesOnK8s()._run("k8s", removes=True, widened=["caddy"])
-    assert kwargs["prune_volume_claims"] is False
-    # A config-only k8s verb and a compose removal do not ask.
-    assert "prune_volume_claims" not in t1229.TestRemovalPrunesOnK8s()._run("k8s", removes=False, widened=[])
-    assert "prune_volume_claims" not in t1229.TestRemovalPrunesOnK8s()._run("compose", removes=True, widened=[])
-
-
-def test_install_still_prunes_volume_claims(tmp_path: Path) -> None:
+def test_a_full_apply_prunes_every_kind_but_claims(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An install, whose apply never carried the removal signal, prunes the same
+    kinds a removal does — and no more: a claim is off the allowlist for every
+    verb, not only for the one that asked, and is reported as kept."""
     from . import test_scoped_k8s_apply as tk8s
 
+    tree = tk8s._synthetic_tree({})
+    tree.add(
+        "infrastructure/mongodb.yaml",
+        "kind: PersistentVolumeClaim\nmetadata:\n  name: wip-mongodb-data\n---\nkind: StatefulSet\n",
+    )
     with (
         patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/kubectl"),
+        patch("wip_deploy.apply.kubectl", return_value=["kubectl"]),
         patch("wip_deploy.apply._kubectl_run") as kubectl_run,
+        patch("wip_deploy.apply.subprocess.run",
+              return_value=MagicMock(returncode=0, stdout="wip-mongodb-data wip-garage-data")),
     ):
         apply_k8s(deployment=tk8s._k8s_deployment(apps=[]), components=[], apps=[],
-                  tree=tk8s._synthetic_tree({}), install_dir=tmp_path)
-    assert "core/v1/PersistentVolumeClaim" in kubectl_run.call_args_list[-1].args[0]
+                  tree=tree, install_dir=tmp_path)
+    full = kubectl_run.call_args_list[-1].args[0]
+    assert "--prune" in full
+    for kind in (
+        "core/v1/Secret", "core/v1/ConfigMap", "core/v1/Service",
+        "apps/v1/Deployment", "apps/v1/StatefulSet",
+        "networking.k8s.io/v1/Ingress", "networking.k8s.io/v1/NetworkPolicy",
+    ):
+        assert kind in full
+    assert "core/v1/PersistentVolumeClaim" not in full
+    err = capsys.readouterr().err
+    assert "kept volume claim 'wip-garage-data'" in err
+    assert "kubectl delete pvc wip-garage-data" in err
+    assert "wip-mongodb-data" not in err

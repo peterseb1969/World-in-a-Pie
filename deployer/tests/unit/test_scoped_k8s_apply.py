@@ -208,6 +208,10 @@ class TestApplyK8sScoped:
         with (
             patch("wip_deploy.apply.shutil.which", return_value="/usr/bin/kubectl"),
             patch("wip_deploy.apply._kubectl_run") as mock_run,
+            # The whole-tree apply names the claims its render left behind; this
+            # cluster holds none.
+            patch("wip_deploy.apply.subprocess.run",
+                  return_value=MagicMock(returncode=0, stdout="")),
         ):
             apply_k8s(
                 deployment=deployment,

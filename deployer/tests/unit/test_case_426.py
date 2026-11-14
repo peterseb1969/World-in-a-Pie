@@ -117,6 +117,7 @@ class TestSkippedPostInstallLabels:
 
 
 class TestApplyK8sPostInstallGating:
+    @patch("wip_deploy.apply._claims_left_out", return_value=[])
     @patch("wip_deploy.apply._run_post_install_k8s")
     @patch("wip_deploy.apply._count_k8s_workloads", return_value=1)
     @patch("wip_deploy.apply._kubectl_apply_tree")
@@ -127,6 +128,7 @@ class TestApplyK8sPostInstallGating:
         _apply: MagicMock,
         _count: MagicMock,
         run_hooks: MagicMock,
+        _kept: MagicMock,
         tmp_path: Path,
     ) -> None:
         disc = _discovery()
@@ -143,6 +145,7 @@ class TestApplyK8sPostInstallGating:
         assert result.healthy is True
         assert REGISTRY_HOOK_LABEL in result.post_install_skipped
 
+    @patch("wip_deploy.apply._claims_left_out", return_value=[])
     @patch("wip_deploy.apply._run_post_install_k8s")
     @patch("wip_deploy.apply._wait_k8s_rollout", return_value=[])
     @patch("wip_deploy.apply._count_k8s_workloads", return_value=1)
@@ -155,6 +158,7 @@ class TestApplyK8sPostInstallGating:
         _count: MagicMock,
         _wait: MagicMock,
         run_hooks: MagicMock,
+        _kept: MagicMock,
         tmp_path: Path,
     ) -> None:
         result = apply_k8s(
@@ -168,6 +172,7 @@ class TestApplyK8sPostInstallGating:
         assert result.healthy is True
         assert result.post_install_skipped == []
 
+    @patch("wip_deploy.apply._claims_left_out", return_value=[])
     @patch("wip_deploy.apply._run_post_install_k8s")
     @patch("wip_deploy.apply._wait_k8s_rollout", return_value=["deployment/wip-registry: timed out"])
     @patch("wip_deploy.apply._count_k8s_workloads", return_value=1)
@@ -180,6 +185,7 @@ class TestApplyK8sPostInstallGating:
         _count: MagicMock,
         _wait: MagicMock,
         run_hooks: MagicMock,
+        _kept: MagicMock,
         tmp_path: Path,
     ) -> None:
         # A wait that runs out always fails the apply; health was never
