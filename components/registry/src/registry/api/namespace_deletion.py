@@ -31,13 +31,39 @@ def get_deletion_service() -> NamespaceDeletionService:
     return _deletion_service
 
 
+async def _start_deletion(prefix: str, force: bool, deleted_by: str | None):
+    """Start the deletion, its refusals answered as HTTP errors."""
+    try:
+        return await _deletion_service.start_deletion(
+            prefix=prefix,
+            force=force,
+            requested_by=get_identity_string(),
+            requested_note=deleted_by,
+        )
+    except DeletionNotStarted as e:
+        raise HTTPException(503, str(e)) from None
+    except DeletionRefused as e:
+        # Each refusal answers with its own status (a namespace deleted
+        # meanwhile is 404, one locked meanwhile 409), as the checks above.
+        raise HTTPException(e.status, str(e)) from None
+    except DeletionAlreadyRunning as e:
+        # Another run deletes this namespace (or took this run's journal
+        # over): 409, as resume-delete answers it.
+        raise HTTPException(409, str(e)) from None
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+
+
 @router.delete(
     "/{prefix}",
     summary="Delete namespace (with journal)",
     responses={
         400: {"description": "Refused: inbound references need force, or the namespace may not be deleted"},
         404: {"description": "No such namespace"},
-        409: {"description": "The namespace is locked: a deletion is in progress"},
+        409: {"description": "A deletion of the namespace is in progress (it is locked, "
+              "or another run holds or took over its deletion), or an earlier "
+              "deletion of the name stopped on a failed step and must be finished "
+              "with resume-delete first"},
         503: {"description": "The deletion could not be started (its journal could not be "
               "stored); nothing was deleted and the namespace is unlocked again"},
     },
@@ -80,21 +106,7 @@ async def delete_namespace(
         _rule, message, status = refusals[0]
         raise HTTPException(status, message)
 
-    try:
-        journal = await _deletion_service.start_deletion(
-            prefix=prefix,
-            force=force,
-            requested_by=get_identity_string(),
-            requested_note=deleted_by,
-        )
-    except DeletionNotStarted as e:
-        raise HTTPException(503, str(e)) from None
-    except DeletionRefused as e:
-        # Each refusal answers with its own status (a namespace deleted
-        # meanwhile is 404, one locked meanwhile 409), as the checks above.
-        raise HTTPException(e.status, str(e)) from None
-    except ValueError as e:
-        raise HTTPException(400, str(e)) from None
+    journal = await _start_deletion(prefix, force, deleted_by)
 
     # Both terminal-success states carry the summary; completed_with_warnings
     # additionally means a best-effort object-store/PostgreSQL step degraded — the

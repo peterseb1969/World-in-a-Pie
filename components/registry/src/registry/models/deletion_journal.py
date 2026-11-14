@@ -4,12 +4,29 @@ A DeletionJournal tracks every step of a namespace deletion, enabling
 idempotent resumption after crashes and serving as an audit trail.
 """
 
+import logging
 from datetime import UTC, datetime
 from typing import Any, ClassVar, Literal
 
 from beanie import Document
 from pydantic import BaseModel, Field, field_validator
 from pymongo import IndexModel
+from pymongo.errors import OperationFailure
+
+# The statuses in which a journal holds its prefix: a deletion running, or
+# stopped on a failed step and waiting for a resume. At most one journal per
+# prefix may be in one of them.
+OPEN_STATUSES = ("in_progress", "failed")
+
+# One open journal per prefix, enforced by the store: two would be two runs
+# deleting one namespace. Built at startup (ensure_one_open_journal_index),
+# not by Beanie, so an install that already holds two still starts.
+ONE_OPEN_JOURNAL_INDEX = IndexModel(
+    [("namespace", 1)],
+    name="one_open_journal_per_namespace_idx",
+    unique=True,
+    partialFilterExpression={"status": {"$in": list(OPEN_STATUSES)}},
+)
 
 
 class DeletionStep(BaseModel):
@@ -139,3 +156,41 @@ class DeletionJournal(Document):
             IndexModel([("namespace", 1)], name="namespace_idx"),
             IndexModel([("status", 1)], name="status_idx"),
         ]
+
+
+async def ensure_one_open_journal_index() -> list[dict[str, Any]]:
+    """Build the one-open-journal-per-prefix index; idempotent.
+
+    It cannot be built while two open journals share a prefix (left by a
+    deletion and a resume that ran together before the index existed).
+    Startup then carries on without it and logs the prefixes at CRITICAL:
+    refusing to start would take the Registry down over data an operator has
+    to resolve by hand (finish one journal's deletion, mark the other
+    failed-and-superseded or remove it). Returns the duplicate groups found,
+    empty when the constraint holds.
+    """
+    collection = DeletionJournal.get_motor_collection()
+    try:
+        await collection.create_indexes([ONE_OPEN_JOURNAL_INDEX])
+    except OperationFailure as e:
+        if e.code != 11000:  # anything but a duplicate key is a real fault
+            raise
+        duplicates: list[dict[str, Any]] = await collection.aggregate([
+            {"$match": {"status": {"$in": list(OPEN_STATUSES)}}},
+            {"$group": {
+                "_id": "$namespace",
+                "journal_ids": {"$push": {"$toString": "$_id"}},
+                "statuses": {"$push": "$status"},
+                "n": {"$sum": 1},
+            }},
+            {"$match": {"n": {"$gt": 1}}},
+            {"$limit": 20},
+        ]).to_list(None)
+        logging.getLogger("registry.startup").critical(
+            "Index %s not built: these namespaces have more than one open deletion "
+            "journal, so a namespace can still be deleted by two runs at once. "
+            "Resolve them and restart. First %d groups: %s",
+            ONE_OPEN_JOURNAL_INDEX.document["name"], len(duplicates), duplicates,
+        )
+        return duplicates
+    return []

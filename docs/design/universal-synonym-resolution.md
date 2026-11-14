@@ -234,7 +234,9 @@ async def resolve_entity_id(
     if not canonical:
         raise EntityNotFound(f"No entity found for identifier: {raw_id}")
 
-    _resolution_cache.set(cache_key, canonical, ttl=300)
+    # Cached for _CACHE_TTL (30 s), and dropped at once when the Registry
+    # announces the entity's change (a merge, a retirement, a deletion).
+    _set_cached(cache_key, canonical, epoch)
     return canonical
 
 

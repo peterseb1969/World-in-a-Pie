@@ -2439,8 +2439,9 @@ and document counts. Now:
 - **Platform admins see a locked namespace** in `GET /namespaces/{prefix}`
   and in listings, as `status: locked`, so a stuck deletion is visible.
   Nobody gets access to its data.
-- **Large namespaces**: stored-file keys are split into steps of 1,000, so
-  the journal stays under MongoDB's document size limit.
+- **Large namespaces**: stored-file keys are kept in batch documents of
+  1,000 beside the journal, not on its steps, so the journal stays under
+  MongoDB's document size limit.
 - **Retries**: a connection reset or any transport error from
   document-store or reporting-sync defers the step for retry instead of
   recording it as degraded; an unreadable 200 from document-store is a

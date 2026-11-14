@@ -88,6 +88,12 @@ async def lifespan(app: FastAPI):
     )
     print("MongoDB connection and Beanie initialization successful.")
 
+    # One open deletion journal per prefix, enforced by the store. Built here,
+    # not by Beanie, so an install already holding two still starts (and
+    # logs them at CRITICAL).
+    from .models.deletion_journal import ensure_one_open_journal_index
+    await ensure_one_open_journal_index()
+
     # Store client in app state
     app.state.mongodb_client = client
 

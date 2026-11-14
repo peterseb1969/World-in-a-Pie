@@ -36,15 +36,10 @@ packages: [wip-client]
   deletes to what it deleted before, and the summary counts every step that
   ran, including one later left undone. It now says what the whole
   deletion removed.
-- **`resume-delete` takes `force`.** Building a journal for a namespace
-  locked with none checks the inbound references again, and high-severity
-  ones need `force=true` (400 without it), as for `DELETE`. The journal
-  records the caller as the requester, not "resume-delete". Its 400, 404,
-  409 and 503 answers, and `DELETE`'s 503, are declared in the OpenAPI spec.
-  `@wip/client`'s `resumeDeletion(prefix, { force })` passes it, and
-  `NamespaceDeletionJournal` carries the reference counts.
+- **`resume-delete` records the caller as the requester**, not
+  "resume-delete". Its answers, and `DELETE`'s 503, are declared in the
+  OpenAPI spec, and `NamespaceDeletionJournal` carries the reference counts.
+  Its new refusals are under action-required (`case-1286-one-open-deletion`).
 
-These supersede two passages in the earlier unreleased notes: stored-file
-keys are not kept on the step for new journals (they are in the batch
-documents), and splitting the keys across steps did not by itself keep the
-journal under the size limit.
+The earlier unreleased note on large namespaces is corrected to match:
+stored-file keys are in the batch documents, not on the steps.

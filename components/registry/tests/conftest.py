@@ -75,6 +75,10 @@ async def client() -> AsyncGenerator[AsyncClient, None]:
     await Namespace.delete_all()
     await IdCounter.delete_all()
     await DeletionJournal.delete_all()
+    # The startup-built index, as the service has it (built after the clear,
+    # so leftovers of an earlier test cannot block it).
+    from registry.models.deletion_journal import ensure_one_open_journal_index
+    await ensure_one_open_journal_index()
     await StoredAPIKey.delete_all()
     await CompositeKeyClaim.delete_all()
     await RuntimeReservation.delete_all()

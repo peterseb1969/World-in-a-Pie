@@ -27,11 +27,13 @@ from typing import Any, cast
 import httpx
 from bson import ObjectId
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from wip_auth.cache_events import announce_namespace_deleted
 from wip_auth.startup import retry_until_done
 
 from ..models.deletion_journal import (
+    OPEN_STATUSES,
     DeletionJournal,
     DeletionStep,
     InboundReference,
@@ -57,7 +59,8 @@ _RESUMABLE = ("in_progress", "failed", "completed_with_warnings")
 # be removed. A deletion that completed with warnings ran every step (some
 # recorded an error); it does not hold the prefix, because holding the name
 # on it would block an app's bootstrap on a state only a resume clears.
-_HOLDS_PREFIX = ("in_progress", "failed")
+# The same statuses the store keeps to one journal per prefix.
+_HOLDS_PREFIX = OPEN_STATUSES
 
 
 async def unfinished_deletion(prefix: str) -> str | None:
@@ -355,6 +358,24 @@ async def _drop_batches(batch_ids: list[str]) -> None:
         await _key_batches().delete_many({"_id": {"$in": [ObjectId(b) for b in batch_ids]}})
 
 
+async def _undo_start(
+    prefix: str, batches: list[str], ns: Namespace, prior_status: str,
+) -> None:
+    """Give a namespace whose deletion did not start back as it was: its key
+    batches dropped, its lock released, every service told. Runs on the
+    failure path, so a failure here is logged, never raised over the error
+    that brought the caller here."""
+    try:
+        await _drop_batches(batches)
+        await _unlock(ns, prior_status)
+        await access_changed(keys=False)
+    except Exception:
+        logger.exception(
+            "Namespace '%s': undoing a deletion that did not start failed; it may "
+            "stay locked until resume-delete is run", prefix,
+        )
+
+
 async def _unlock(ns: Namespace, status: str) -> None:
     """Give a namespace locked by a deletion that did not start its prior
     status back, while it is still that namespace and still locked."""
@@ -402,24 +423,29 @@ async def _claim(journal: DeletionJournal, statuses: tuple[str, ...]) -> Deletio
     status is one of ``statuses`` and no live run holds it (no token, or a
     heartbeat older than the lease). Sets it in progress. Returns the journal
     as stored after the claim, the copy the run works from, or None when the
-    claim was not taken."""
+    claim was not taken: another run holds it, or another journal of the
+    prefix is open (the store keeps one, and refuses setting this one in
+    progress beside it)."""
     now = datetime.now(UTC)
-    doc = await DeletionJournal.get_motor_collection().find_one_and_update(
-        {
-            "_id": journal.id,
-            "status": {"$in": list(statuses)},
-            "$or": [
-                {"run_token": None},
-                {"run_heartbeat": None},
-                {"run_heartbeat": {"$lt": now - _CLAIM_LEASE}},
-            ],
-        },
-        {"$set": {
-            "status": "in_progress", "completed_at": None,
-            "run_token": uuid.uuid4().hex, "run_heartbeat": now,
-        }},
-        return_document=ReturnDocument.AFTER,
-    )
+    try:
+        doc = await DeletionJournal.get_motor_collection().find_one_and_update(
+            {
+                "_id": journal.id,
+                "status": {"$in": list(statuses)},
+                "$or": [
+                    {"run_token": None},
+                    {"run_heartbeat": None},
+                    {"run_heartbeat": {"$lt": now - _CLAIM_LEASE}},
+                ],
+            },
+            {"$set": {
+                "status": "in_progress", "completed_at": None,
+                "run_token": uuid.uuid4().hex, "run_heartbeat": now,
+            }},
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        return None
     return None if doc is None else DeletionJournal.model_validate(doc)
 
 
@@ -448,6 +474,40 @@ async def _write_step(journal: DeletionJournal, i: int, status: str | None = Non
     if status is not None:
         fields["status"] = status
     await _write_journal(journal, fields)
+
+
+# How often a run refreshes its claim's heartbeat while it works: well
+# inside the lease, so a step that runs long (one delete_many over a large
+# namespace, many file batches) is never taken for a dead run's.
+_HEARTBEAT_INTERVAL = _CLAIM_LEASE / 5
+
+
+async def _keep_claim(journal: DeletionJournal) -> None:
+    """Refresh the run's heartbeat until cancelled, while the run still holds
+    the claim; a lost claim ends the refreshing (the run learns at its next
+    write)."""
+    while True:
+        await asyncio.sleep(_HEARTBEAT_INTERVAL.total_seconds())
+        result = await DeletionJournal.get_motor_collection().update_one(
+            {"_id": journal.id, "run_token": journal.run_token},
+            {"$set": {"run_heartbeat": datetime.now(UTC)}},
+        )
+        if result.matched_count == 0:
+            return
+
+
+async def _why_not_claimed(journal: DeletionJournal) -> Exception:
+    """The answer to a resume whose claim was not taken, read again: a
+    deletion that finished since the resume read it is not running."""
+    current = await DeletionJournal.get(journal.id)
+    if current is not None and current.status == "completed":
+        return ValueError(
+            f"No unfinished deletion found for namespace '{journal.namespace}': "
+            "it finished"
+        )
+    return DeletionAlreadyRunning(
+        f"The deletion of namespace '{journal.namespace}' is running already"
+    )
 
 
 async def _release(journal: DeletionJournal) -> None:
@@ -807,10 +867,13 @@ class NamespaceDeletionService:
             journal.requested_note = requested_note
             _claimed_at_creation(journal)
             await journal.create()
-        except Exception as e:
+        except DuplicateKeyError:
+            # Another journal of this prefix is open (the store allows one):
+            # this run deletes nothing.
             await _drop_batches(batches)
-            await _unlock(ns, prior_status)
-            await access_changed(keys=False)
+            raise await self._lost_to_open_journal(prefix, ns, prior_status) from None
+        except Exception as e:
+            await _undo_start(prefix, batches, ns, prior_status)
             logger.exception("Deletion of namespace '%s' could not be started", prefix)
             raise DeletionNotStarted(
                 f"The deletion of namespace '{prefix}' could not be started "
@@ -854,17 +917,45 @@ class NamespaceDeletionService:
                 logger.warning(
                     "Resuming the %s deletion of namespace '%s'", journal.status, prefix,
                 )
+            # A run of this journal in this process holds it even when its
+            # heartbeat looks old: never take the claim from under it.
+            if str(journal.id) in self._running:
+                raise DeletionAlreadyRunning(
+                    f"The deletion of namespace '{prefix}' is running already"
+                )
             # The claim is the gate and the status write in one: a resume
             # that loses it to a running deletion writes nothing.
             claimed = await _claim(journal, _RESUMABLE)
             if claimed is None:
-                raise DeletionAlreadyRunning(
-                    f"The deletion of namespace '{prefix}' is running already"
-                )
+                raise await _why_not_claimed(journal)
             journal = claimed
 
         await self._execute_journal(journal)
         return journal
+
+    async def _lost_to_open_journal(
+        self, prefix: str, ns: Namespace, prior_status: str,
+    ) -> Exception:
+        """The refusal of a deletion whose journal the store refused because
+        another of the prefix is open. A running one (a resume that built it
+        while this deletion was building its own) holds the lock this
+        deletion took, so the lock stays. One stopped on a failed step is an
+        earlier deletion of the name: the namespace is given back as it was,
+        and that deletion is the one to finish."""
+        other = await DeletionJournal.find_one(
+            {"namespace": prefix, "status": {"$in": list(OPEN_STATUSES)}}
+        )
+        if other is not None and other.status == "in_progress":
+            return DeletionAlreadyRunning(
+                f"The deletion of namespace '{prefix}' is running already"
+            )
+        await _undo_start(prefix, [], ns, prior_status)
+        return DeletionRefused(
+            f"An earlier deletion of namespace '{prefix}' stopped on a failed step "
+            f"and is not finished; finish it first (POST "
+            f"/api/registry/namespaces/{prefix}/resume-delete). Nothing was deleted.",
+            409,
+        )
 
     async def _journal_for_lock(
         self, prefix: str, force: bool, requested_by: str | None,
@@ -890,6 +981,13 @@ class NamespaceDeletionService:
             journal.namespace_id = ns.namespace_id
             _claimed_at_creation(journal)
             await journal.create()
+        except DuplicateKeyError:
+            # Another run stored this prefix's journal first (a deletion that
+            # was still building it, or another resume): it is that run's.
+            await _drop_batches(batches)
+            raise DeletionAlreadyRunning(
+                f"The deletion of namespace '{prefix}' is running already"
+            ) from None
         except Exception as e:
             await _drop_batches(batches)
             logger.exception("Deletion journal of namespace '%s' could not be built", prefix)
@@ -1267,10 +1365,13 @@ class NamespaceDeletionService:
         """Execute all pending steps in the journal."""
         journal_id = str(journal.id)
         if journal_id in self._running:
+            # Claimed, but a run in this process has it: give the claim up.
+            await _release(journal)
             raise DeletionAlreadyRunning(
                 f"The deletion of namespace '{journal.namespace}' is running already"
             )
         self._running.add(journal_id)
+        heartbeat = asyncio.create_task(_keep_claim(journal))
         try:
             await self._run_steps(journal)
         except _ClaimLost:
@@ -1280,6 +1381,9 @@ class NamespaceDeletionService:
             )
             raise
         finally:
+            heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await heartbeat
             self._running.discard(journal_id)
             await _release(journal)
             # After every run, finished or not: whatever it removed may sit in
@@ -1362,8 +1466,10 @@ class NamespaceDeletionService:
             step.status = "failed"
             step.error = str(e)
             journal.status = "failed"
-            await _write_step(journal, i, status="failed")
+            # Logged before the journal write: a write refused because another
+            # run took the journal over would otherwise lose the step's error.
             logger.error("Step %d failed: %s — %s", step.order, step.detail, e)
+            await _write_step(journal, i, status="failed")
             raise
         # Best-effort executors (object store/PostgreSQL) record a swallowed
         # failure on step.error instead of raising — surface it as a
