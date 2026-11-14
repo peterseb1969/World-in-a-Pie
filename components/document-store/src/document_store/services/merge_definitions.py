@@ -1158,42 +1158,93 @@ class DefinitionsPlanner:
             )
             aligned[archive_id] = (rows, targets)
 
-        # Version references between templates (extends_version, a field's
-        # template_ref_version) compare through the referenced template's
-        # alignment, so the mapping is refined until it stops changing.
-        remapper = self._remapper(plan)
-        unsettled: set[str] = set()
-        for _ in range(len(aligned) + 1):
-            unsettled = set()
-            for archive_id, (rows, targets) in aligned.items():
-                alignment = plan.alignment[archive_id]
-                for row in rows:
-                    version = int(row.get("version") or 1)
-                    result = self._align_version(row, targets, remapper, plan)
-                    if alignment.versions.get(version) != result:
-                        alignment.versions[version] = result
-                        unsettled.add(alignment.value)
-            if not unsettled:
-                break
-        if unsettled:
-            # Still changing after a round per template: the mapping depends
-            # on itself in a way that does not settle. Refused rather than
-            # used: documents would be re-pinned by a mapping that is not
-            # stable.
-            plan.incompatibilities.append(Incompatibility(
-                entity_type="templates",
-                name=", ".join(sorted(unsettled)),
-                reason=(
-                    "the version alignment of templates that reference each "
-                    f"other's versions did not settle in {len(aligned) + 1} "
-                    "rounds, so no mapping can be trusted; merge them without "
-                    "align_templates after reshaping the archive with "
-                    "wip-toolkit migrate"
-                ),
-            ))
+        self._map_aligned_versions(aligned, plan)
         for archive_id, (rows, targets) in aligned.items():
             self._count_aligned(plan, plan.alignment[archive_id], rows, targets)
         return unmatched
+
+    def _map_aligned_versions(
+        self,
+        aligned: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]],
+        plan: DefinitionsPlan,
+    ) -> None:
+        """Map every aligned archive version onto a target version.
+
+        A version's schema can name another aligned template's version (an
+        extends_version, a field's template_ref_version), and that number only
+        compares once the other template's versions are mapped. Templates can
+        reference each other's versions, or their own, so no order maps them
+        one after another. Instead each version starts with every target
+        version its schema matches with those references left aside
+        (_version_candidates); a candidate is dropped while a reference it
+        pins is not a candidate of the version referenced (_narrow); then
+        each version takes its preferred candidate, versions it references
+        first, and the choice is narrowed into the rest (_choose). The result
+        is checked by the same rule as a single version (_confirm).
+        """
+        remapper = self._remapper(plan)
+        aligned_ids = {
+            plan.alignment[archive_id].target_template_id: archive_id
+            for archive_id in aligned
+        }
+        rows_by_key: dict[_VersionKey, dict[str, Any]] = {}
+        targets_of: dict[str, dict[int, dict[str, Any]]] = {}
+        candidates: dict[_VersionKey, list[int]] = {}
+        for archive_id, (rows, targets) in aligned.items():
+            targets_of[archive_id] = {int(t.get("version") or 1): t for t in targets}
+            for row in rows:
+                key = (archive_id, int(row.get("version") or 1))
+                rows_by_key[key] = with_defaults("templates", remapper.remap_template(row))
+                candidates[key] = _version_candidates(rows_by_key[key], targets, aligned_ids)
+        pins = {key: _aligned_pins(row, aligned_ids) for key, row in rows_by_key.items()}
+        context = _AlignmentContext(aligned_ids, targets_of, pins)
+        _narrow(candidates, context)
+        chosen = _choose(candidates, context)
+        for key, row in rows_by_key.items():
+            alignment = plan.alignment[key[0]]
+            target_version = chosen.get(key)
+            if target_version is None:
+                alignment.versions[key[1]] = self._align_version(
+                    row, list(targets_of[key[0]].values()), remapper, plan,
+                )
+            else:
+                alignment.versions[key[1]] = VersionAlignment(
+                    archive_version=key[1], target_version=target_version, reason="",
+                )
+        self._confirm(rows_by_key, targets_of, plan)
+
+    def _confirm(
+        self,
+        rows_by_key: dict[_VersionKey, dict[str, Any]],
+        targets_of: dict[str, dict[int, dict[str, Any]]],
+        plan: DefinitionsPlan,
+    ) -> None:
+        """Check each mapped version against its target version by the rule
+        a single version is aligned by, with every other version's mapping
+        in place. One that fails is left unplaceable, which can fail a
+        version referencing it, so the check repeats until nothing fails;
+        it only ever unmaps, so it ends."""
+        latest = {
+            archive_id: int(_preferred_targets(list(targets.values()))[0].get("version") or 1)
+            for archive_id, targets in targets_of.items()
+        }
+        changed = True
+        while changed:
+            changed = False
+            for (archive_id, version), row in rows_by_key.items():
+                alignment = plan.alignment[archive_id]
+                current = alignment.versions[version]
+                if current.target_version is None:
+                    continue
+                checked = _checked_alignment(
+                    self._with_aligned_version_refs(row, plan),
+                    targets_of[archive_id][current.target_version],
+                    version,
+                    latest[archive_id],
+                )
+                if checked != current:
+                    alignment.versions[version] = checked
+                    changed = changed or checked.target_version != current.target_version
 
     @staticmethod
     def _count_aligned(
@@ -1434,3 +1485,206 @@ def _compatibility(
         if old != new:
             return f"field '{name}' changed", []
     return None, sorted(set(a_fields) - set(t_fields))
+
+
+# --- align_templates: versions that reference other aligned versions --------
+
+# An aligned archive template version: (archive template_id, version).
+_VersionKey = tuple[str, int]
+# Where a template names another template's version: "extends", or a field
+# name with the reference kind ("template_ref" / "array_template_ref").
+_PinSlot = str | tuple[str, str]
+_VERSION_REFS = (("template_ref", "template_ref_version"),
+                 ("array_template_ref", "array_template_ref_version"))
+
+
+@dataclass
+class _AlignmentContext:
+    # target template_id -> archive template_id, for the aligned templates
+    aligned_ids: dict[str, str]
+    # archive template_id -> {target version: target row}
+    targets_of: dict[str, dict[int, dict[str, Any]]]
+    # each archive version's references to aligned templates' versions
+    pins: dict[_VersionKey, dict[_PinSlot, tuple[str, int | None]]]
+
+
+def _as_version(value: Any) -> int | None:
+    return None if value is None else int(value)
+
+
+def _aligned_pins(
+    template: dict[str, Any], aligned_ids: dict[str, str]
+) -> dict[_PinSlot, tuple[str, int | None]]:
+    """The versions this template names of aligned templates, by where it
+    names them: slot -> (archive template_id of the referenced template, the
+    version it pins, None when it pins none). The template's ids must be the
+    target's (an archive row after the id remap, or a target row)."""
+    pins: dict[_PinSlot, tuple[str, int | None]] = {}
+    extends = template.get("extends")
+    if extends and str(extends) in aligned_ids:
+        pins["extends"] = (aligned_ids[str(extends)], _as_version(template.get("extends_version")))
+    for f in template.get("fields") or []:
+        if not isinstance(f, dict):
+            continue
+        for ref, ref_version in _VERSION_REFS:
+            if f.get(ref) and str(f[ref]) in aligned_ids:
+                pins[(str(f.get("name")), ref)] = (
+                    aligned_ids[str(f[ref])], _as_version(f.get(ref_version)),
+                )
+    return pins
+
+
+def _without_aligned_version_refs(
+    template: dict[str, Any], aligned_ids: dict[str, str]
+) -> dict[str, Any]:
+    """The template with every version it names of an aligned template left
+    out, so two schemas compare on everything else."""
+    result = dict(template)
+    if result.get("extends") and str(result["extends"]) in aligned_ids:
+        result["extends_version"] = None
+    fields = []
+    for f in result.get("fields") or []:
+        if isinstance(f, dict):
+            f = dict(f)
+            for ref, ref_version in _VERSION_REFS:
+                if f.get(ref) and str(f[ref]) in aligned_ids:
+                    f[ref_version] = None
+        fields.append(f)
+    result["fields"] = fields
+    return result
+
+
+def _preferred_targets(targets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Target versions in the order a mapping prefers them: active before
+    inactive, then the highest version first."""
+    filled = (with_defaults("templates", t) for t in targets)
+    return sorted(
+        filled,
+        key=lambda t: (t.get("status") == "active", int(t.get("version") or 1)),
+        reverse=True,
+    )
+
+
+def _version_candidates(
+    archive: dict[str, Any], targets: list[dict[str, Any]], aligned_ids: dict[str, str]
+) -> list[int]:
+    """The target versions an archive version could map onto, preferred
+    first, with its references to aligned templates' versions left aside:
+    every version whose schema is the same, then the preferred version when
+    the archive version is compatible with it."""
+    blank = _without_aligned_version_refs(archive, aligned_ids)
+    schema = _schema(blank)
+    preferred = _preferred_targets(targets)
+    candidates = [
+        int(t.get("version") or 1) for t in preferred
+        if _schema(_without_aligned_version_refs(t, aligned_ids)) == schema
+    ]
+    latest = preferred[0]
+    problem, _removed = _compatibility(blank, _without_aligned_version_refs(latest, aligned_ids))
+    if problem is None and int(latest.get("version") or 1) not in candidates:
+        candidates.append(int(latest.get("version") or 1))
+    return candidates
+
+
+def _consistent(
+    key: _VersionKey,
+    target_version: int,
+    candidates: dict[_VersionKey, list[int]],
+    context: _AlignmentContext,
+) -> bool:
+    """Whether every aligned version the target version pins, where the
+    archive version names one, is still a candidate of the archive version
+    it stands for (or, for an archive version the archive does not carry,
+    the same number)."""
+    target = context.targets_of[key[0]][target_version]
+    target_pins = _aligned_pins(target, context.aligned_ids)
+    for slot, (referenced, version) in context.pins[key].items():
+        if slot not in target_pins:
+            continue  # a field the target version lacks
+        target_referenced, pinned = target_pins[slot]
+        if target_referenced != referenced:
+            return False
+        ref_key = (referenced, version) if version is not None else None
+        if ref_key is not None and ref_key in candidates:
+            if pinned not in candidates[ref_key]:
+                return False
+        elif pinned != version:
+            return False
+    return True
+
+
+def _narrow(candidates: dict[_VersionKey, list[int]], context: _AlignmentContext) -> None:
+    """Drop every candidate whose pinned versions are not candidates of the
+    versions they stand for, until nothing is dropped. Candidates only
+    shrink, so this ends."""
+    changed = True
+    while changed:
+        changed = False
+        for key, versions in candidates.items():
+            kept = [v for v in versions if _consistent(key, v, candidates, context)]
+            if kept != versions:
+                candidates[key] = kept
+                changed = True
+
+
+def _next_to_choose(
+    undecided: list[_VersionKey], context: _AlignmentContext, decided: set[_VersionKey],
+) -> _VersionKey:
+    """The undecided version to choose for next: one whose referenced
+    versions are all decided (or not in the archive), so a template's choice
+    follows the versions it names as when nothing references back; in a
+    cycle, the first in a fixed order."""
+    pending = set(undecided)
+    for key in undecided:
+        referenced = {
+            (ref, version) for ref, version in context.pins[key].values()
+            if version is not None
+        }
+        if not (referenced & pending) - {key} - decided:
+            return key
+    return undecided[0]
+
+
+def _choose(
+    candidates: dict[_VersionKey, list[int]], context: _AlignmentContext
+) -> dict[_VersionKey, int]:
+    """One target version per archive version that has a candidate: its
+    preferred one, each choice narrowed into the others before the next."""
+    decided: set[_VersionKey] = set()
+    while True:
+        undecided = sorted(k for k, v in candidates.items() if v and k not in decided)
+        if not undecided:
+            break
+        key = _next_to_choose(undecided, context, decided)
+        candidates[key] = candidates[key][:1]
+        decided.add(key)
+        _narrow(candidates, context)
+    return {key: candidates[key][0] for key in sorted(decided) if candidates[key]}
+
+
+def _checked_alignment(
+    archive: dict[str, Any], target: dict[str, Any], version: int, latest_version: int,
+) -> VersionAlignment:
+    """An archive version (references in the target's numbering) checked
+    against the target version it was mapped onto: the same schema, or, onto
+    the preferred target version, compatible with it."""
+    target = with_defaults("templates", target)
+    target_version = int(target.get("version") or 1)
+    if _schema(target) == _schema(archive):
+        return VersionAlignment(
+            archive_version=version, target_version=target_version,
+            reason=f"same schema as target v{target_version}",
+        )
+    problem, removed = _compatibility(archive, target)
+    if problem is None and target_version == latest_version:
+        return VersionAlignment(
+            archive_version=version, target_version=target_version,
+            reason=f"compatible with target v{target_version}", removed_fields=removed,
+        )
+    return VersionAlignment(
+        archive_version=version, target_version=None,
+        reason=(
+            f"not compatible with target v{target_version}: "
+            f"{problem or 'its version references do not line up with the other templates'}"
+        ),
+    )

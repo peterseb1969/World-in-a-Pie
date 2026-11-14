@@ -375,30 +375,3 @@ class TestAlignedReport:
         messages = [e.message for e in events]
         assert any("1 version(s) aligned onto a target version" in m for m in messages)
         assert any("PATIENT v2 (as v1)': target's label kept" in m for m in messages)
-
-
-class TestUnsettledAlignment:
-    @pytest.mark.asyncio
-    async def test_an_alignment_that_does_not_settle_refuses(self, mongo, monkeypatch):
-        """CASE-1297 (0bbef660 R9): the refinement for templates that
-        reference each other's versions stopped after its last round whether
-        or not the mapping had settled, and nothing said so."""
-        from document_store.services import merge_definitions
-
-        rounds = iter(range(1000))
-
-        def flapping(self, row, targets, remapper, plan):
-            n = next(rounds)
-            return merge_definitions.VersionAlignment(
-                archive_version=int(row.get("version") or 1),
-                target_version=1 if n % 2 else None, reason=f"round {n}",
-            )
-
-        monkeypatch.setattr(merge_definitions.DefinitionsPlanner, "_align_version", flapping)
-        await _target(mongo, _tpl("B-tpl", 1, [AGE_INT]))
-        archive = _archive({"templates": [_tpl("A-tpl", 2, [AGE_INT])]})
-        with pytest.raises(RestoreEngineError) as refused:
-            await _run_merge(mongo, archive, align_templates=True)
-        [issue] = refused.value.details["incompatibilities"]
-        assert "did not settle" in issue["reason"]
-        assert issue["name"] == "PATIENT"

@@ -42,9 +42,6 @@ Also fixed, for `align_templates`:
   "already identical" (`unchanged`). A label, description or other cosmetic
   field that differs from the target version they land on is reported as
   "target's … kept".
-- A version alignment between templates that reference each other's versions
-  and that does not settle now refuses the merge instead of being used as it
-  stood.
 
 **Corrections to the earlier `align_templates` note** in this release:
 - The command that reshapes documents is `wip-toolkit migrate`, not

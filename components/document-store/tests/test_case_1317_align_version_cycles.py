@@ -1,0 +1,144 @@
+"""align_templates maps versions that reference each other's versions.
+
+A template version can name another template's version (a field's
+template_ref_version, an extends_version), and under align_templates that
+number compares only once the other template's versions are mapped. Mapping
+one template after another left every version in a cycle unplaceable: each
+waited for the other. A template that pins its own version is a cycle of
+one. Versions now start from every target version their schema matches with
+those references left aside, and keep only the candidates whose references
+agree.
+"""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+import pytest_asyncio
+from motor.motor_asyncio import AsyncIOMotorClient
+
+from document_store.services.backup_engine import COLLECTION_MAP
+from document_store.services.merge_definitions import DefinitionsPlanner
+
+NAMESPACE = "align-1317-ns"
+
+
+@pytest_asyncio.fixture
+async def db():
+    client = AsyncIOMotorClient(os.environ.get("MONGO_URI", "mongodb://localhost:27017/"))
+
+    async def _clear():
+        for db_name, coll_name in COLLECTION_MAP.values():
+            await client[db_name][coll_name].delete_many({"namespace": NAMESPACE})
+
+    await _clear()
+    yield client
+    await _clear()
+    client.close()
+
+
+def _tpl(tid: str, value: str, version: int, *fields: dict, **extra) -> dict:
+    return {
+        "template_id": tid, "namespace": NAMESPACE, "value": value, "label": value,
+        "version": version, "status": "active", "identity_fields": ["code"],
+        "fields": [{"name": "code", "type": "string"}, *fields], **extra,
+    }
+
+
+def _ref(name: str, template_id: str, version: int) -> dict:
+    return {"name": name, "type": "object", "template_ref": template_id,
+            "template_ref_version": version}
+
+
+async def _plan(db, target: list[dict], archive: list[dict]):
+    db_name, coll_name = COLLECTION_MAP["templates"]
+    await db[db_name][coll_name].insert_many([dict(t) for t in target])
+    planner = DefinitionsPlanner(db, COLLECTION_MAP, align_templates=True)
+    return await planner.plan({"templates": archive}, NAMESPACE)
+
+
+def _mapped(plan, archive_id: str) -> dict[int, int | None]:
+    return {v: a.target_version for v, a in plan.alignment[archive_id].versions.items()}
+
+
+@pytest.mark.asyncio
+async def test_two_templates_that_reference_each_others_versions_are_mapped(db):
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "ALPHA", 3, _ref("beta", "T-b", 5)),
+                _tpl("T-b", "BETA", 5, _ref("alpha", "T-a", 3))],
+        archive=[_tpl("A-a", "ALPHA", 1, _ref("beta", "A-b", 1)),
+                 _tpl("A-b", "BETA", 1, _ref("alpha", "A-a", 1))],
+    )
+
+    assert plan.compatible, plan.incompatibilities
+    assert _mapped(plan, "A-a") == {1: 3}
+    assert _mapped(plan, "A-b") == {1: 5}
+    assert plan.alignment["A-a"].versions[1].reason == "same schema as target v3"
+
+
+@pytest.mark.asyncio
+async def test_a_template_that_pins_its_own_version_is_mapped(db):
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "NODE", 3, _ref("parent", "T-a", 3))],
+        archive=[_tpl("A-a", "NODE", 1, _ref("parent", "A-a", 1))],
+    )
+
+    assert _mapped(plan, "A-a") == {1: 3}
+
+
+@pytest.mark.asyncio
+async def test_a_cycle_whose_references_disagree_stays_unplaceable(db):
+    # The target's ALPHA v3 pins BETA v5, but BETA v5 pins ALPHA v4, which
+    # the archive's ALPHA v1 does not match: no mapping is consistent.
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "ALPHA", 3, _ref("beta", "T-b", 5)),
+                _tpl("T-a", "ALPHA", 4, _ref("beta", "T-b", 5),
+                     {"name": "extra", "type": "string", "mandatory": True}),
+                _tpl("T-b", "BETA", 5, _ref("alpha", "T-a", 4))],
+        archive=[_tpl("A-a", "ALPHA", 1, _ref("beta", "A-b", 1)),
+                 _tpl("A-b", "BETA", 1, _ref("alpha", "A-a", 1))],
+    )
+
+    assert _mapped(plan, "A-a") == {1: None}
+    assert _mapped(plan, "A-b") == {1: None}
+
+
+@pytest.mark.asyncio
+async def test_two_target_versions_differing_only_in_a_pinned_version_pick_the_one_that_agrees(db):
+    # BETA v2 and v3 differ only in the ALPHA version they pin. The archive's
+    # ALPHA v1 matches the target's ALPHA v1, so BETA v1 must map onto v2,
+    # not onto the preferred (highest) v3.
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "ALPHA", 1),
+                _tpl("T-a", "ALPHA", 2, {"name": "note", "type": "string"}),
+                _tpl("T-b", "BETA", 2, _ref("alpha", "T-a", 1)),
+                _tpl("T-b", "BETA", 3, _ref("alpha", "T-a", 2))],
+        archive=[_tpl("A-a", "ALPHA", 1),
+                 _tpl("A-b", "BETA", 1, _ref("alpha", "A-a", 1))],
+    )
+
+    assert _mapped(plan, "A-a") == {1: 1}
+    assert _mapped(plan, "A-b") == {1: 2}
+
+
+@pytest.mark.asyncio
+async def test_a_cycle_through_a_compatible_version_is_mapped(db):
+    # The target's ALPHA v3 has an optional field the archive's ALPHA v1
+    # lacks: compatible, not the same schema, and still in the cycle.
+    plan = await _plan(
+        db,
+        target=[_tpl("T-a", "ALPHA", 3, _ref("beta", "T-b", 5),
+                     {"name": "note", "type": "string"}),
+                _tpl("T-b", "BETA", 5, _ref("alpha", "T-a", 3))],
+        archive=[_tpl("A-a", "ALPHA", 1, _ref("beta", "A-b", 1)),
+                 _tpl("A-b", "BETA", 1, _ref("alpha", "A-a", 1))],
+    )
+
+    assert _mapped(plan, "A-a") == {1: 3}
+    assert _mapped(plan, "A-b") == {1: 5}
+    assert plan.alignment["A-a"].versions[1].reason == "compatible with target v3"

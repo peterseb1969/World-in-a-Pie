@@ -133,4 +133,14 @@ These follow from the decisions above; the design did not spell them out.
 - **Version references inside templates follow the alignment.** A template's
   `extends_version` and a field's `template_ref_version` /
   `array_template_ref_version` name versions of another template; they are
-  compared through that template's alignment, not as raw numbers.
+  compared through that template's alignment, not as raw numbers. Templates
+  can name each other's versions, or their own, so they are not mapped one
+  after another. Each archive version starts with every target version its
+  schema matches with those references left aside (the same schema, or the
+  target's preferred version when compatible). A candidate is dropped while
+  a version it pins is not a candidate of the archive version it stands for,
+  until nothing is dropped. Each version then takes its preferred candidate,
+  the versions it names first (in a cycle, a fixed order), and every choice
+  is narrowed into the rest. A mapped version is checked once more against
+  its target version with the other mappings in place; a version left
+  without a consistent target version is unplaceable.
