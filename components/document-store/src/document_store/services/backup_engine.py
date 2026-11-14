@@ -1470,18 +1470,42 @@ def _archived_template_rows(reader: Any, sources: list[str]) -> dict[str, Templa
     return rows
 
 
+def _left_out_types(*, skip_documents: bool, skip_files: bool) -> set[str]:
+    """The entity types a restore with these flags does not write."""
+    return {t for t, skip in (("documents", skip_documents), ("files", skip_files)) if skip}
+
+
+def _foreign_keys(entry: dict[str, Any], src: str) -> list[Any]:
+    """An archived entry's live synonym keys that name a namespace other
+    than its own (``src``)."""
+    return [
+        syn.get("composite_key") for syn in _live_synonyms(entry)
+        if _names_foreign_namespace(syn.get("composite_key"), src)
+    ]
+
+
+def _live_synonyms(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """An archived entry's synonyms that are still keys: not inactive."""
+    return [
+        syn for syn in entry.get("synonyms") or []
+        if isinstance(syn, dict) and syn.get("status") != "inactive"
+    ]
+
+
 def _bare_identity_synonyms(
     entries: list[tuple[str, dict[str, Any]]], identity: dict[str, set[str]],
 ) -> tuple[dict[str, int], list[str]]:
     """Per namespace, how many document entries carry a synonym whose keys
-    are exactly their template's identity; and examples ("<entry> <key>")."""
+    are exactly their template's identity; and examples ("<entry> <key>").
+    An inactive synonym (released when its entity retired) is not restored
+    as a key, so it does not count, as in _refuse_foreign_scoped_keys."""
     counts: dict[str, int] = {}
     examples: list[str] = []
     for src, entry in entries:
         keys = identity.get(_entry_template_id(entry) or "")
         bare = [
-            syn["composite_key"] for syn in entry.get("synonyms") or []
-            if keys and isinstance(syn, dict) and set(syn.get("composite_key") or {}) == keys
+            syn["composite_key"] for syn in _live_synonyms(entry)
+            if keys and set(syn.get("composite_key") or {}) == keys
         ]
         if bare:
             counts[src] = counts.get(src, 0) + 1
@@ -2587,7 +2611,12 @@ class DirectRestoreEngine:
             # target is created or anything reserved: found later, it left a
             # half-provisioned target that a retry refused as not empty.
             await self._off_loop(check_collisions_before_writing, remap_sources)
-            self._refuse_foreign_scoped_keys(reader, mapping)
+            # Off the event loop, as the collision pass above: it reads every
+            # source's registry entries.
+            await self._off_loop(
+                self._refuse_foreign_scoped_keys, reader, mapping,
+                _left_out_types(skip_documents=skip_documents, skip_files=skip_files),
+            )
 
             # The namespaces have to exist before anything is provisioned: the
             # Registry mints ids per the TARGET namespace's id_config, and
@@ -3715,9 +3744,13 @@ class DirectRestoreEngine:
                         )
         return by_new
 
-    def _refuse_foreign_scoped_keys(self, reader: Any, mapping: dict[str, str]) -> None:
+    def _refuse_foreign_scoped_keys(
+        self, reader: Any, mapping: dict[str, str], skipped_types: set[str] | None = None,
+    ) -> None:
         """Refuse, before anything is provisioned, an archive carrying a
-        synonym key that names a namespace other than its entry's.
+        synonym key that names a namespace other than its entry's. The
+        entries of a type the restore leaves out (``skipped_types``:
+        documents or files) are not restored, so their keys do not count.
 
         The Registry refuses such a key (a key's `ns` must be its entry's
         namespace, unless the key is system-qualified with an `@` member).
@@ -3725,13 +3758,13 @@ class DirectRestoreEngine:
         synonym step, it failed the restore after the target was written and
         activated. A dry run reports it too.
         """
-        foreign: list[str] = []
-        for src in mapping:
-            for entry in reader.read_entities("registry_entries", namespace=src):
-                for syn in entry.get("synonyms") or []:
-                    key = syn.get("composite_key") if isinstance(syn, dict) else None
-                    if _names_foreign_namespace(key, src) and syn.get("status") != "inactive":
-                        foreign.append(f"{entry.get('entry_id')}: {key}")
+        foreign = [
+            f"{entry.get('entry_id')}: {key}"
+            for src in mapping
+            for entry in reader.read_entities("registry_entries", namespace=src)
+            if entry.get("entity_type") not in (skipped_types or ())
+            for key in _foreign_keys(entry, src)
+        ]
         if foreign:
             raise RestoreEngineError(
                 f"{len(foreign)} archived synonym key(s) name a namespace other than "

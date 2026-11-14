@@ -654,4 +654,7 @@ async def test_dependency_check_when_template_store_unavailable(
     # has_dependencies is null (unknown) — never false
     assert data["template_count"] == -1
     assert data["has_dependencies"] is None
+    # The delete refuses an unverifiable terminology, forced or not
+    # (CASE-1266 adb8ddea R3), so the answer must not promise otherwise.
+    assert data["can_deactivate"] is False
     assert "unavailable" in data["warning_message"].lower()

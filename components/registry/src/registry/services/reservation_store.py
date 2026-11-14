@@ -162,7 +162,8 @@ async def check_new_reservation(
 
 
 async def save_reservation(
-    prefix: str, settings: ReservationSettings, owner: str, actor: str
+    prefix: str, settings: ReservationSettings, owner: str, actor: str,
+    *, create_only: bool = False,
 ) -> tuple[RuntimeReservation, bool]:
     """Create or replace `owner`'s runtime reservation of `prefix`; returns
     the record and whether this call created it.
@@ -171,10 +172,19 @@ async def save_reservation(
     in the request is never acted on stale: a prefix the install's file took
     meanwhile raises ManagedRecordRefused, one another key took raises
     ReservationRefused (409), and another key's settings are never replaced.
+    ``create_only`` (a key being created): a reservation already held under
+    the key's name is refused (409), never replaced. It is another request's
+    (a concurrent create of the same name) or a key of that name's before,
+    and a refused create undoes only what it wrote.
     """
     stored = settings.model_dump(exclude_none=True)
     doc = await RuntimeReservation.find_one(RuntimeReservation.prefix == prefix)
     _refuse_holder(prefix, doc, owner)
+    if create_only and doc is not None:
+        raise ReservationRefused(
+            409, f"namespace '{prefix}' is already reserved under the name '{owner}'; "
+            "a key being created reserves only namespaces nobody holds",
+        )
     from .namespace_identity import reservation_namespace_id
 
     namespace_id = await reservation_namespace_id(prefix, owner, doc)
@@ -186,6 +196,10 @@ async def save_reservation(
         try:
             await doc.insert()
         except DuplicateKeyError:
+            if create_only:
+                raise ReservationRefused(
+                    409, f"namespace '{prefix}' was reserved while this key was created",
+                ) from None
             await _refuse_taken(prefix, owner)
         return doc, True
     result = await RuntimeReservation.get_motor_collection().update_one(

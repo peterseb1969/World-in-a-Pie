@@ -178,6 +178,10 @@ APP_EDGE_KEY_NAME = "wip-app-edge"
 # names: the key file would name a key twice, and the Registry refuses the
 # whole file, importing none of it.
 SYSTEM_KEY_NAMES = (CANARY_KEY_NAME, APP_EDGE_KEY_NAME)
+# The name every service gives the install's master key
+# (WIP_AUTH_LEGACY_API_KEY; wip_auth.config). A key-file key of this name
+# would replace the master key's record, so no spec key may take it.
+MASTER_KEY_NAME = "legacy"
 
 
 class SpecAPIKey(WIPModel):
@@ -378,6 +382,11 @@ class AuthSpec(WIPModel):
             raise ValueError(
                 f"api key name(s) {reserved} reserved: the deployer provisions "
                 "a key of that name itself"
+            )
+        if MASTER_KEY_NAME in names:
+            raise ValueError(
+                f"api key name {MASTER_KEY_NAME!r} reserved: it is the master "
+                "key's name, which a key of the key file would replace"
             )
         return self
 

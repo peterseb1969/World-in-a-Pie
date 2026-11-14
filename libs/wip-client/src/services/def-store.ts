@@ -98,7 +98,10 @@ export class DefStoreService extends BaseService {
    * plan (created / updated with changed fields / deprecated / errors;
    * unchanged terms counted, not listed); pass dry_run: false to apply.
    * Absent active terms are deprecated (never deleted) only under
-   * on_missing: 'deprecate'. Reconcile never clears a field and never
+   * on_missing: 'deprecate'. label and names are authoritative;
+   * description and parent_term_id change only when an item names them
+   * (an explicit null clears them, omitted keeps them), and sort_order only
+   * when an item names it (0 included; it takes no null). Reconcile never
    * reactivates retired terms.
    */
   async reconcileTerminology(
@@ -118,8 +121,8 @@ export class DefStoreService extends BaseService {
    * every name; each hit carries the matched string, where it matched
    * (with the name's type for alias hits) and a rank (exact > prefix >
    * word-start > substring, then value > label > preferred name > name).
-   * Always case-insensitive and literal. Exact mode returns ALL
-   * candidates (the ambiguity-inspection surface); rollup 'root' replaces
+   * Always case-insensitive and literal. Exact mode returns every
+   * candidate up to `limit` (the ambiguity-inspection surface); rollup 'root' replaces
    * each hit with its root is_a ancestor so a trade name returns the
    * molecule.
    */

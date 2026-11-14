@@ -36,8 +36,9 @@ class TerminologyDependencies(BaseModel):
 
     # Summary. None = unknown (the check did not complete).
     has_dependencies: bool | None = False
-    # Deactivation is always possible (force=true overrides the guard);
-    # the delete endpoint decides what a non-forced delete may do.
+    # Whether a soft delete can deactivate it: yes when the check completed
+    # (force=true overrides referencing templates), no when it did not —
+    # the delete refuses an unverifiable terminology whatever force says.
     can_deactivate: bool = True
     warning_message: str | None = None
 
@@ -100,8 +101,9 @@ class DependencyService:
         elif result.template_count == -1:
             result.warning_message = "Could not check template dependencies (Template Store unavailable)"
 
-        # Can deactivate but with warning
-        result.can_deactivate = True
+        # Referenced: a forced delete still deactivates (with the warning).
+        # Unknown: every delete is refused until the Template Store answers.
+        result.can_deactivate = result.template_count != -1
 
         return result
 

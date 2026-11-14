@@ -458,7 +458,8 @@ class ValidateValueResponse(BaseModel):
         description="Why the value is not valid, for callers to branch on: term_not_found "
                     "(no active term bears it), not_found (no such terminology), "
                     "ambiguous_terminology (the terminology value names several), "
-                    "invalid_request (no terminology given)",
+                    "invalid_request (no terminology given; a bulk item only — the "
+                    "single POST /validate refuses that request with HTTP 400)",
     )
 
 

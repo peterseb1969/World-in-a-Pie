@@ -2097,8 +2097,8 @@ async def delete_terminology(
 
     Soft-delete deactivates the active terms (deprecated terms stay
     deprecated). It is refused while active templates reference the
-    terminology, or when that cannot be verified — force=true deactivates
-    anyway. Hard-delete — which every delete of a mutable terminology is —
+    terminology (force=true deactivates anyway), and always when that cannot
+    be verified (the Template Store does not answer; retry). Hard-delete — which every delete of a mutable terminology is —
     is refused while any template of any status references it, or when that
     cannot be verified; force does not apply to hard-delete.
 

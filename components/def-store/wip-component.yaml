@@ -36,8 +36,8 @@ spec:
       - {name: WIP_VARIANT, source: {from_spec: security.variant}}
       # Outbound call used by the terminology-delete guard: it lists
       # templates to refuse deleting a terminology that templates still
-      # reference. Unset, the check cannot run and every non-forced
-      # delete is refused (the guard fails closed).
+      # reference. Unset, the check cannot run and every delete is
+      # refused, forced or not (the guard fails closed).
       - {name: TEMPLATE_STORE_URL, source: {from_component: template-store}}
       - {name: TEMPLATE_STORE_API_KEY, source: {from_secret: api-key}}
     optional:

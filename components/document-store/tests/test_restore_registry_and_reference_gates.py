@@ -141,6 +141,24 @@ async def test_a_key_naming_a_foreign_namespace_is_refused_before_writing(live_r
     assert await RegistryEntry.find({"namespace": TARGET}).count() == 0
 
 
+def test_a_left_out_types_foreign_keys_do_not_refuse_the_restore():
+    """A restore with skip_documents writes no document entries, so a
+    document's foreign-scoped key cannot stop it; another type's still does."""
+    foreign = {"composite_key": {"ns": "some-other-ns", "value": "X"}}
+
+    class Reader:
+        def read_entities(self, entity_type, namespace=None):
+            assert entity_type == "registry_entries"
+            return iter([
+                {"entry_id": "D", "entity_type": "documents", "synonyms": [foreign]},
+            ])
+
+    engine = DirectRestoreEngine(MagicMock(), None, lambda ev: None)
+    engine._refuse_foreign_scoped_keys(Reader(), {SOURCE: TARGET}, {"documents"})
+    with pytest.raises(RestoreEngineError, match="name a namespace other than"):
+        engine._refuse_foreign_scoped_keys(Reader(), {SOURCE: TARGET}, {"files"})
+
+
 # --------------------------------------------------------------------------
 # Merge reference gate
 # --------------------------------------------------------------------------

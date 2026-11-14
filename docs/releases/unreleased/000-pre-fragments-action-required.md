@@ -1084,9 +1084,11 @@ and document-store now follow it too, through one shared rule in wip-auth.
 - A `skipped` row carries `error_code: "already_exists"` and no `error` — a
   skip is a success (bulk term create, term relations).
 - `batch_size` / `registry_batch_size` / `relation_batch_size` are bounded
-  (1–10 000, registry 1–1 000) on every door; `0` used to be a 500.
+  (1–10 000, registry 1–1 000) on every door; `batch_size=0` used to be a 500.
 - `/validate` and `/validate/bulk` carry `error_code`: `term_not_found`,
-  `not_found`, `ambiguous_terminology`, `invalid_request`.
+  `not_found`, `ambiguous_terminology`, and in `/validate/bulk`
+  `invalid_request` for an item naming no terminology (a single `/validate`
+  naming none is refused with HTTP 400).
 - Reconcile counts a create found already done as `skipped` (new count, was
   an error), reports a failed update with its real `error_code`, and reports
   a term that vanished mid-run as `not_found` instead of updated/deprecated.

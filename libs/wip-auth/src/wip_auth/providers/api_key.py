@@ -165,6 +165,9 @@ class APIKeyProvider:
         # reload, so the key sync never mistakes a new config key for a
         # vanished runtime key.
         self._config_names: frozenset[str] = frozenset(k.name for k in keys)
+        # Every config record, a disabled one included: it authenticates
+        # nothing, but a key listing must still show it.
+        self._config_records: tuple[APIKeyRecord, ...] = tuple(keys)
         # Writers run on the event loop (key sync, runtime key API) and on
         # the key-file watcher thread; readers take the current references.
         self._lock = threading.Lock()
@@ -250,6 +253,10 @@ class APIKeyProvider:
             }
             self._rejected.clear()
 
+    def config_records(self) -> tuple[APIKeyRecord, ...]:
+        """Every config key's record, enabled or not, as last loaded."""
+        return self._config_records
+
     def config_key_names(self) -> frozenset[str]:
         """Names of the current config keys (env and key file)."""
         return self._config_names
@@ -288,6 +295,7 @@ class APIKeyProvider:
             ]
             self._keys = [k for k in config_keys if k.enabled] + runtime
             self._config_names = names
+            self._config_records = tuple(config_keys)
             self._rebuild_caches()
             self._warn_legacy_hashes(self._keys)
 

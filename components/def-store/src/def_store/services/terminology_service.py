@@ -84,6 +84,17 @@ def _build_sort(
     return [(field, direction), (tiebreaker, SortDirection.ASCENDING)]
 
 
+
+def _names_error(exc: ValueError) -> dict:
+    """The error fields of a term item whose names were refused: the
+    error's own code for a DefStoreError (name_types_unavailable), else
+    invalid_names."""
+    from .errors import DefStoreError, error_fields
+
+    if isinstance(exc, DefStoreError):
+        return error_fields(exc)
+    return {"error": str(exc), "error_code": "invalid_names"}
+
 class EntityExistsError(ValueError):
     """Duplicate create: the value already exists in scope (CASE-465).
 
@@ -1311,12 +1322,14 @@ class TerminologyService:
                 )
                 validate_names(names, term_req.value, valid_name_types)
             except ValueError as e:
+                # A DefStoreError (the name types could not be read:
+                # name_types_unavailable) keeps its own code; any other
+                # failure here is the names' fault.
                 results[global_idx] = BulkResultItem(
                     index=global_idx,
                     status="error",
                     value=term_req.value,
-                    error=str(e),
-                    error_code="invalid_names",
+                    **_names_error(e),
                 )
                 continue
 

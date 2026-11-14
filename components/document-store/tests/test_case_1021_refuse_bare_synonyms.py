@@ -76,6 +76,17 @@ async def test_qualified_identity_synonyms_and_custom_synonyms_pass():
 
 
 @pytest.mark.asyncio
+async def test_an_inactive_bare_synonym_is_not_counted():
+    """A synonym released when its entity retired is not restored as a key,
+    so it does not refuse the restore (as the foreign-scope gate counts)."""
+    entities = _entities({"code": "X-1"})
+    entities["registry_entries"][0]["synonyms"][0]["status"] = "inactive"
+    reader = _archive(entities)
+
+    await _engine()._refuse_bare_identity_synonyms(reader, reader.read_manifest())
+
+
+@pytest.mark.asyncio
 async def test_a_template_that_inherits_its_identity_is_judged_by_its_parents():
     """A child template stores no identity of its own: its documents are
     hashed by the parent's fields, and a synonym of exactly those is bare."""

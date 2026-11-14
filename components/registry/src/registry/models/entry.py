@@ -17,7 +17,8 @@ class SourceInfo(BaseModel):
     )
     endpoint_url: str | None = Field(
         default=None,
-        description="API endpoint URL for proxied queries"
+        description="An endpoint URL of the source system, stored as data: the "
+        "Registry never requests it"
     )
 
 

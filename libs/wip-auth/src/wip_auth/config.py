@@ -262,6 +262,15 @@ class AuthConfig(BaseSettings):
 
         for key_dict in self._json_key_dicts(logger) + self._file_key_dicts():
             key_record = self._parse_key_dict(key_dict, hash_api_key)
+            if self.legacy_api_key and key_record.name == "legacy":
+                # The master key's name: services authenticate to each other
+                # with it, so a configured key never replaces its record.
+                logger.error(
+                    "API key 'legacy' in WIP_AUTH_API_KEYS_JSON or the key file "
+                    "not loaded: the name is the master key's "
+                    "(WIP_AUTH_LEGACY_API_KEY). Give it another name."
+                )
+                continue
             # Later sources override earlier: a key of the same name goes.
             keys = [k for k in keys if k.name != key_record.name]
             keys.append(key_record)
@@ -349,9 +358,10 @@ def _drop_shared_plaintexts(
     record it matches and that answer is cached, so a value two keys share
     is whichever key a process matched first: services started at different
     times disagree about who the caller is. Refuse the value instead — none
-    of its keys load. The master key is the exception: services authenticate
-    to each other with it, so it stays and the keys sharing its value are
-    dropped.
+    of its keys load. The master key (the key named "legacy", a name no
+    configured key may take while WIP_AUTH_LEGACY_API_KEY is set) is the
+    exception: services authenticate to each other with it, so it stays and
+    the keys sharing its value are dropped.
     """
     dropped = _shared_plaintext_names(plaintexts)
     if not dropped:

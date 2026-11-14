@@ -146,7 +146,8 @@ def _reconcile_diff(
 
     label and names are always authoritative; description, sort_order and
     parent_term_id only when the snapshot sets them — an omitted field is
-    kept, an explicitly submitted null clears it. metadata is caller
+    kept, an explicitly submitted null clears description or
+    parent_term_id (sort_order takes no null). metadata is caller
     context — never diffed. Names compare as a set: the same names in
     another order are no change.
     """
@@ -230,9 +231,13 @@ class TermReconcileService:
                 )
                 validate_names(desired_names, item.value, valid_types)
             except ValueError as e:
+                # name_types_unavailable (a DefStoreError) keeps its code.
+                fields = (
+                    error_fields(e) if isinstance(e, DefStoreError)
+                    else {"error": str(e), "error_code": "invalid_names"}
+                )
                 results.append(BulkResultItem(
-                    index=i, status="error", value=item.value,
-                    error=str(e), error_code="invalid_names",
+                    index=i, status="error", value=item.value, **fields,
                 ))
                 counts.errors += 1
                 continue

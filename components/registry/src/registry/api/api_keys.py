@@ -155,12 +155,14 @@ async def _check_reservation(
         ) from e
 
 
-async def _save_reservation(prefix: str, settings: ReservationSettings, owner: str) -> bool:
+async def _save_reservation(
+    prefix: str, settings: ReservationSettings, owner: str, *, create_only: bool = False,
+) -> bool:
     """Write the reservation (conditional on its holder, see save_reservation)
     as an HTTP error; True when this call created it."""
     try:
         _, created = await reservation_store.save_reservation(
-            prefix, settings, owner, get_identity_string()
+            prefix, settings, owner, get_identity_string(), create_only=create_only,
         )
     except ReservationRefused as e:
         raise HTTPException(status_code=e.status_code, detail=e.detail) from e
@@ -181,7 +183,9 @@ async def _save_reservations(owner: str, reserve: list) -> list[str]:
     created: list[str] = []
     try:
         for r in reserve:
-            if await _save_reservation(r.prefix, r.settings, owner):
+            # A key being created: insert only, so a refused create never
+            # changes a reservation it did not write.
+            if await _save_reservation(r.prefix, r.settings, owner, create_only=True):
                 created.append(r.prefix)
     except BaseException:
         await _drop_new_reservations(owner, created)
@@ -230,8 +234,11 @@ async def _refresh_provider(doc: StoredAPIKey) -> None:
 
 
 def _as_config_key(response: APIKeyResponse) -> APIKeyResponse:
-    """An imported record presented as the config key it is."""
-    return response.model_copy(update={"source": "config", "created_by": "config-file"})
+    """An imported record presented as the config key it is: a config key
+    reserves nothing through the API, so reserved_namespaces is None."""
+    return response.model_copy(update={
+        "source": "config", "created_by": "config-file", "reserved_namespaces": None,
+    })
 
 
 def _config_key_to_response(
@@ -415,9 +422,10 @@ async def list_api_keys(
     runtime_docs = await StoredAPIKey.find_all().to_list()
     managed = {d.name: d for d in runtime_docs if d.managed_by is not None}
 
-    # Config-file keys, marked managed when the Registry holds their import
+    # Config-file keys, a disabled one included, marked managed when the
+    # Registry holds their import
     served: set[str] = set()
-    for record in provider.iter_keys():
+    for record in provider.config_records():
         if record.name in config_names:
             served.add(record.name)
             results.append(_config_key_to_response(record, managed.get(record.name)))
@@ -509,21 +517,11 @@ async def get_api_key(
     """Get metadata for a single API key (config or runtime)."""
     provider = _get_provider()
 
-    # Check config keys first
+    # Check config keys first, a disabled one included
     if _is_config_key(name):
-        for record in provider.iter_keys():
+        for record in provider.config_records():
             if record.name == name:
                 return _config_key_to_response(record, await _managed_doc(name))
-        # A disabled config key is not served, so the provider holds no
-        # record of it: its import, when there is one, describes it.
-        managed_doc = await _managed_doc(name)
-        if managed_doc is not None:
-            declared = await _declared_grants([managed_doc])
-            return _as_config_key(_stored_to_response(managed_doc, [], declared.get(name)))
-        raise HTTPException(
-            status_code=404,
-            detail=f"API key '{name}' is a disabled config-file key; the Registry holds no record of it",
-        )
 
     # Check runtime keys
     doc = await StoredAPIKey.find_one(StoredAPIKey.name == name)
