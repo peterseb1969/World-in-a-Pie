@@ -167,12 +167,81 @@ async def test_a_halted_merge_gate_does_not_say_to_delete_the_namespace():
     ])
     eng = _engine(_reporting_stub(broken), [])
     with pytest.raises(RestoreEngineError) as err:
-        await eng._reporting_phase_structure("ns1", merge=True)
+        await eng._reporting_phase_structure("ns1", merged_definitions=3)
     message = str(err.value)
     assert "halting before merging documents" in message
     assert "Delete the namespace" not in message
     assert "PARTIAL" not in message
     assert "Do not delete the namespace" in message
+    assert "added 3 of the archive's definitions" in message
+
+
+@pytest.mark.asyncio
+async def test_a_halted_merge_that_added_no_definitions_does_not_claim_it_did():
+    broken = dict(CLEAN, structural_issues=1, templates=[
+        {"template_value": "FIRESIDE", "table_present": False, "missing_columns": [], "error": None},
+    ])
+    eng = _engine(_reporting_stub(broken), [])
+    with pytest.raises(RestoreEngineError) as err:
+        await eng._reporting_phase_structure("ns1", merged_definitions=0)
+    message = str(err.value)
+    assert "added none of the archive's definitions" in message
+    assert "added the archive's definitions" not in message
+
+
+def test_a_merge_counts_the_definitions_its_plan_inserts():
+    from document_store.services.backup_engine import _definitions_added
+    from document_store.services.merge_plan import EntityPlan
+
+    def plan(n: int) -> EntityPlan:
+        p = EntityPlan(entity_type="x")
+        p.to_insert = [{}] * n
+        return p
+
+    assert _definitions_added({
+        "terminologies": plan(1), "terms": plan(2), "templates": plan(0),
+        "documents": plan(7),
+    }) == 3
+    assert _definitions_added({"documents": plan(7)}) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_shared_template_with_a_version_table_is_not_blamed():
+    """reporting-sync's structural check needs only a version table for a
+    template another namespace owns (its tables are made per pinned
+    version); the halt must list by the same rule, not by table_present."""
+    broken = dict(CLEAN, structural_issues=1, templates=[
+        {"template_value": "SHARED", "template_namespace": "wip",
+         "table_present": False, "version_tables": [1], "missing_columns": [],
+         "error": None},
+        {"template_value": "GONE", "template_namespace": "wip",
+         "table_present": False, "version_tables": [], "missing_columns": [],
+         "error": None},
+        {"template_value": "OWN", "table_present": False, "version_tables": [1],
+         "missing_columns": [], "error": None},
+    ])
+    eng = _engine(_reporting_stub(broken), [])
+    eng._template_ids_of = AsyncMock(return_value={})
+    with pytest.raises(RestoreEngineError) as err:
+        await eng._reporting_phase_structure("ns1")
+    message = str(err.value)
+    assert "SHARED" not in message
+    assert "GONE: table missing" in message
+    assert "OWN: table missing" in message
+
+
+@pytest.mark.asyncio
+async def test_a_failing_reason_reader_does_not_replace_the_halt():
+    broken = dict(CLEAN, structural_issues=1, templates=[
+        {"template_value": "FIRESIDE", "table_present": False, "missing_columns": [], "error": None},
+    ])
+    stub = _reporting_stub(broken)
+    stub.failed_jobs = AsyncMock(side_effect=KeyError("job_id"))
+    eng = _engine(stub, [])
+    eng._template_ids_of = AsyncMock(return_value={("ns1", "FIRESIDE"): "TPL-F"})
+    with pytest.raises(RestoreEngineError) as err:
+        await eng._reporting_phase_structure("ns1")
+    assert "FIRESIDE: table missing" in str(err.value)
 
 
 @pytest.mark.asyncio
@@ -277,3 +346,17 @@ async def test_the_read_back_is_bounded(monkeypatch):
     begun = loop.time()
     assert await client.failed_jobs("kb", {"TPL-A", "TPL-B"}) == {"TPL-A": "boom"}
     assert loop.time() - begun < 2
+
+
+@pytest.mark.asyncio
+async def test_a_failing_template_id_lookup_does_not_replace_the_halt():
+    """When the ids cannot be read, the halt lists every failing table (it
+    cannot tell which a merge writes) and names no reasons."""
+    broken = dict(CLEAN, structural_issues=1, templates=[
+        {"template_value": "FIRESIDE", "table_present": False, "missing_columns": [], "error": None},
+    ])
+    eng = _engine(_reporting_stub(broken), [])
+    eng._template_ids_of = AsyncMock(side_effect=RuntimeError("mongo gone"))
+    with pytest.raises(RestoreEngineError) as err:
+        await eng._reporting_phase_structure("ns1")
+    assert "FIRESIDE: table missing" in str(err.value)

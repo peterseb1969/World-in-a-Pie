@@ -279,10 +279,16 @@ class BatchSyncJob(BaseModel):
 
 
 class BatchSyncResponse(BaseModel):
-    """Response from starting a batch sync."""
+    """Response from starting a batch sync.
+
+    `template_id` is the job's resolved template id, as on BatchSyncJob: the
+    template list is instance-wide and two namespaces can share a value, so
+    a caller matching an answer to its own template needs the id.
+    """
 
     job_id: str
     template_value: str
+    template_id: str | None = None
     namespace: str | None = None
     status: BatchSyncStatus
     message: str

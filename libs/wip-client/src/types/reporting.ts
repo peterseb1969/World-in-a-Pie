@@ -286,6 +286,9 @@ export interface BatchSyncJob {
 export interface BatchSyncResponse {
   job_id: string
   template_value: string
+  /** The job's resolved template id, as on BatchSyncJob — match a job to a
+   * template by this, since several namespaces can share a value. */
+  template_id?: string | null
   /** Document scope the job was started with (null = all namespaces). */
   namespace?: string | null
   status: BatchSyncStatus

@@ -1492,6 +1492,7 @@ def _batch_sync_response(job, force_requested: bool = False) -> BatchSyncRespons
     return BatchSyncResponse(
         job_id=job.job_id,
         template_value=job.template_value,
+        template_id=job.template_id,
         namespace=job.namespace,
         status=job.status,
         message=message,

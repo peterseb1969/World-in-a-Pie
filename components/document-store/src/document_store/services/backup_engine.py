@@ -2050,20 +2050,47 @@ _RESTORE_STRUCTURE_HALT = (
     "namespace and re-restore after remediating."
 )
 _MERGE_STRUCTURE_HALT = (
-    "NOTE: this merge added the archive's definitions to namespace "
-    "'{namespace}', but none of its documents; the documents the namespace "
-    "already held are untouched. Do not delete the namespace: remediate "
-    "reporting-sync and run the merge again."
+    "NOTE: this merge {added} namespace '{namespace}', but none of its "
+    "documents; the documents the namespace already held are untouched. Do "
+    "not delete the namespace: remediate reporting-sync and run the merge "
+    "again."
 )
+
+
+def _merge_added(definitions_added: int) -> str:
+    """What a halted merge wrote before its documents, for the halt."""
+    if not definitions_added:
+        return "added none of the archive's definitions to"
+    return (
+        f"added {definitions_added} of the archive's definitions "
+        "(terminologies, terms, templates) to"
+    )
+
+
+def _definitions_added(plans: dict[str, EntityPlan]) -> int:
+    """How many terminologies, terms and templates a merge plan inserts."""
+    return sum(
+        len(plans[t].to_insert) for t in _DEFINITION_ENTRY_TYPES if plans.get(t)
+    )
+
+
+def _table_present(template: dict[str, Any]) -> bool:
+    """Whether a parity row's template has the table reporting-sync's
+    structural check needs: its latest version's table for a template the
+    namespace owns; any version table for one another namespace owns, whose
+    tables are made per pinned version as documents arrive."""
+    if template.get("template_namespace"):
+        return bool(template.get("version_tables"))
+    return bool(template.get("table_present"))
 
 
 def _structure_failures(parity: dict[str, Any] | None) -> list[dict[str, Any]]:
     """The parity rows of templates whose reporting table is missing or
-    misshaped."""
+    misshaped, by the rule of reporting-sync's structural check."""
     return [
         t for t in (parity or {}).get("templates", [])
         if not (
-            t.get("table_present")
+            _table_present(t)
             and not t.get("missing_columns")
             and not t.get("legacy_table")
             and not t.get("error")
@@ -2072,18 +2099,26 @@ def _structure_failures(parity: dict[str, Any] | None) -> list[dict[str, Any]]:
 
 
 def _structure_halt(
-    namespace: str, timeout_s: float, issues: list[str], *, merge: bool
+    namespace: str, timeout_s: float, issues: list[str], *,
+    merged_definitions: int | None,
 ) -> str:
     """The message of a halted reporting structure gate: the first five
-    issues, how many more, and the advice for the mode."""
+    issues, how many more, and the advice for the mode. ``merged_definitions``
+    is None for a plain restore, else how many definitions the merge added."""
     more = f" (and {len(issues) - 5} more)" if len(issues) > 5 else ""
-    advice = _MERGE_STRUCTURE_HALT if merge else _RESTORE_STRUCTURE_HALT
+    merge = merged_definitions is not None
+    advice = (
+        _MERGE_STRUCTURE_HALT.format(
+            namespace=namespace, added=_merge_added(merged_definitions or 0)
+        )
+        if merge else _RESTORE_STRUCTURE_HALT.format(namespace=namespace)
+    )
     return (
         f"Reporting tables for namespace '{namespace}' did not verify "
         f"within {timeout_s}s — halting before "
         f"{'merging documents' if merge else 'document restore'}. "
         f"Issues: {'; '.join(issues[:5]) or 'unknown'}{more}. "
-        + advice.format(namespace=namespace)
+        + advice
     )
 
 
@@ -2103,7 +2138,7 @@ def _structure_issue(template: dict[str, Any], sync_error: str | None) -> str:
         problem = str(template["error"])
     elif template.get("legacy_table"):
         problem = "legacy pre-split table shadows the entity view"
-    elif not template.get("table_present"):
+    elif not _table_present(template):
         problem = "table missing"
     else:
         problem = f"missing columns {template.get('missing_columns')}"
@@ -5961,10 +5996,12 @@ class DirectRestoreEngine:
         older_versions: str,
         batch_size: int,
         streamed: _StreamedDocuments | None,
+        definitions_added: int = 0,
     ) -> None:
         """A merge's documents: the reporting structure gate, the inserted
         chains (streamed from the archive, or from ``doc_groups``), then the
-        clashes when the policy overwrites them."""
+        clashes when the policy overwrites them. ``definitions_added`` is how
+        many definitions the merge wrote before them, for the gate's halt."""
         # The structural gate a plain restore runs after templates: the
         # reporting tables the namespace's templates imply must exist and be
         # correctly shaped before any document moves. A merge plans templates
@@ -5976,7 +6013,9 @@ class DirectRestoreEngine:
             for row in [*plan.to_insert, *(c.entity for c in plan.clashes if overwrites)]
             if row.get("template_id")
         }
-        await self._reporting_phase_structure(namespace, merge=True, templates=written)
+        await self._reporting_phase_structure(
+            namespace, merged_definitions=definitions_added, templates=written,
+        )
 
         if streamed is not None:
             await self._merge_insert_streamed(namespace, collection, streamed, batch_size)
@@ -6378,6 +6417,7 @@ class DirectRestoreEngine:
             await self._merge_documents(
                 namespace, collection, plan, doc_groups, on_clash=on_clash,
                 older_versions=older_versions, batch_size=batch_size, streamed=streamed,
+                definitions_added=_definitions_added(plans),
             )
 
     async def _recount_file_references(self, namespace: str) -> None:
@@ -6966,15 +7006,17 @@ class DirectRestoreEngine:
             )
 
     async def _reporting_phase_structure(
-        self, namespace: str, *, merge: bool = False, templates: set[str] | None = None,
+        self, namespace: str, *, merged_definitions: int | None = None,
+        templates: set[str] | None = None,
     ) -> None:
         """Post-templates gate: reporting tables must materialize correctly.
 
         Triggers a namespace batch sync (no documents are restored yet, so
         tables materialize empty) and polls the structure-only parity until
         green. A persistent structural failure HALTS the restore before any
-        document moves. ``merge`` says the namespace held data before this
-        run, which the halt's advice must not tell the operator to delete.
+        document moves. ``merged_definitions`` (a merge: how many
+        definitions it added) says the namespace held data before this run,
+        which the halt's advice must not tell the operator to delete.
         ``templates``: for a merge, the ids of the templates whose documents
         it writes. Only their tables (and unusable bookkeeping) halt it; a
         live namespace's issue with another template's table was there
@@ -7003,7 +7045,8 @@ class DirectRestoreEngine:
             await asyncio.sleep(self._REPORTING_POLL_INTERVAL_S)
         raise RestoreEngineError(_structure_halt(
             namespace, self._REPORTING_STRUCTURE_TIMEOUT_S,
-            await self._structure_issues(namespace, parity, templates), merge=merge,
+            await self._structure_issues(namespace, parity, templates),
+            merged_definitions=merged_definitions,
         ))
 
     async def _structure_issues(
@@ -7015,14 +7058,30 @@ class DirectRestoreEngine:
         template of the same value; a missing table says only that the sync
         did not get there."""
         failing = _structure_failures(parity)
-        ids = await self._template_ids_of(namespace, failing)
-        if templates is not None:
+        ids = await self._halt_template_ids(namespace, failing)
+        if templates is not None and ids is not None:
             failing = [t for t in failing if ids.get(_parity_owner(namespace, t)) in templates]
-        sync_errors = await self._reporting.failed_jobs(namespace, set(ids.values()))
+        keys = {_parity_owner(namespace, t) for t in failing}
+        sync_errors = await self._sync_errors_of(
+            namespace, {k: v for k, v in (ids or {}).items() if k in keys},
+        )
         return [
-            _structure_issue(t, sync_errors.get(ids.get(_parity_owner(namespace, t), "")))
+            _structure_issue(t, sync_errors.get(_parity_owner(namespace, t)))
             for t in failing
         ]
+
+    async def _halt_template_ids(
+        self, namespace: str, failing: list[dict[str, Any]]
+    ) -> dict[tuple[str, str], str] | None:
+        """_template_ids_of for the halt, or None when it cannot be read: the
+        halt it explains is raised whatever happens here."""
+        try:
+            return await self._template_ids_of(namespace, failing)
+        except Exception:  # must not replace the halt it explains
+            logger.warning(
+                "template ids for %s's halt unreadable", namespace, exc_info=True,
+            )
+            return None
 
     async def _merge_passes_structure(
         self, namespace: str, parity: dict[str, Any], templates: set[str],
@@ -7043,6 +7102,24 @@ class DirectRestoreEngine:
             f"{', '.join(sorted(str(t.get('template_value')) for t in failing))}",
         )
         return True
+
+    async def _sync_errors_of(
+        self, namespace: str, ids: dict[tuple[str, str], str]
+    ) -> dict[tuple[str, str], str]:
+        """Why reporting-sync's jobs failed for these templates (ids keyed by
+        owning namespace and value), under the same keys. Best effort: the
+        halt it explains is raised whatever happens here, so a failure to
+        read the reasons is logged and leaves them out."""
+        if not ids:
+            return {}
+        try:
+            by_id = await self._reporting.failed_jobs(namespace, set(ids.values()))
+        except Exception:  # must not replace the halt it explains
+            logger.warning(
+                "reporting-sync job reasons for %s unreadable", namespace, exc_info=True,
+            )
+            return {}
+        return {key: by_id[tid] for key, tid in ids.items() if tid in by_id}
 
     async def _template_ids_of(
         self, namespace: str, templates: list[dict[str, Any]]

@@ -19,9 +19,14 @@ with the definitions, before the reporting check, in both modes; documents'
 and files' entries still come last. When the check does halt, its message now
 names reporting-sync's own reason for each template whose sync failed, matched
 to the template by its id (another namespace's template of the same value
-lends it none), read within 10 s. A merge that halts there no longer tells the
-operator to delete the namespace: it says the merge added definitions and no
-documents, and to run it again once reporting-sync is fixed.
+lends it none), read within 10 s; reporting-sync's batch-sync answer now
+carries each job's `template_id` for that match. A template another namespace
+owns is listed only when it has no version table at all, the rule
+reporting-sync's own check applies. A merge that halts there no longer tells
+the operator to delete the namespace: it says how many definitions the merge
+added (or that it added none) and no documents, and to run it again once
+reporting-sync is fixed. A failure to read the reasons leaves them out of the
+halt instead of replacing it.
 
 **Action:** a namespace a failed restore left partial is deleted and restored
 again.

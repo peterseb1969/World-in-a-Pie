@@ -130,11 +130,11 @@ class TestStructuralGate:
         eng._template_ids_of = AsyncMock(
             return_value={("ns1", "OTHER"): "T-other", ("ns1", "MINE"): "T-mine"},
         )
-        await eng._reporting_phase_structure("ns1", merge=True, templates={"T-none"})
+        await eng._reporting_phase_structure("ns1", merged_definitions=0, templates={"T-none"})
         assert any(ev.phase == "warning" and "OTHER" in ev.message for ev in events)
 
         with pytest.raises(RestoreEngineError, match="MINE") as halted:
-            await eng._reporting_phase_structure("ns1", merge=True, templates={"T-mine"})
+            await eng._reporting_phase_structure("ns1", merged_definitions=0, templates={"T-mine"})
         assert "OTHER" not in str(halted.value)
 
 
