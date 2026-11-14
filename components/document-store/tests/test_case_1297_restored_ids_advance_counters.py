@@ -5,8 +5,12 @@ carries straight to MongoDB, so the Registry never saw their IDs. A Registry
 process reads a prefix's highest existing ID once, the first time it mints
 from it, and only raises the counter after that for IDs it is given: one that
 had minted from a prefix before the restore minted the restored IDs again.
-Now each batch of entries is sent to /entries/advance-counters before it is
-written, and a Registry that does not answer stops the write.
+Now every entry id the run writes is sent to /entries/advance-counters
+before the first write (batched, 1000 per call), and a Registry that does
+not answer for all of them stops the run with nothing written. (The first
+version advanced per insert batch, so a Registry that failed after batch 1
+left batch 1 written behind a message saying nothing was: FRanC's forward
+review, CASE-1297#4.)
 """
 
 import json
@@ -54,6 +58,12 @@ def _entries_collection(mongo):
     return mongo[db_name][coll_name]
 
 
+def _answer(batch: list) -> httpx.Response:
+    return httpx.Response(200, json={
+        "results": [], "total": len(batch), "advanced": len(batch), "skipped": 0,
+    })
+
+
 def _registry(monkeypatch, handler):
     """Route the engine's httpx calls to ``handler``."""
     transport = httpx.MockTransport(handler)
@@ -93,47 +103,92 @@ async def test_a_restore_advances_every_entry_id_before_writing_it(mongo, monkey
             {"entry_id": {"$in": batch}}
         ))
         sent.extend(batch)
-        return httpx.Response(200, json={"results": [], "total": len(batch), "advanced": len(batch), "skipped": 0})
+        return _answer(batch)
 
     _registry(monkeypatch, handler)
     await _restore(mongo, {"registry_entries": [dict(e) for e in ENTRIES]})
 
     assert sorted(sent) == [e["entry_id"] for e in ENTRIES]
-    assert written_when_sent and set(written_when_sent) == {0}
+    assert written_when_sent == [0]  # one call, every id, before any row
     assert await _entries_collection(mongo).count_documents({"namespace": NAMESPACE}) == 5
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("answer", ["refused", "unreachable"])
-async def test_a_registry_that_does_not_account_for_the_ids_stops_the_write(mongo, monkeypatch, answer):
+@pytest.mark.parametrize("answer", ["refused", "unreachable", "short", "second_call"])
+async def test_a_registry_that_does_not_account_for_every_id_writes_nothing(
+    mongo, monkeypatch, answer,
+):
+    calls = {"n": 0}
+
     def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        batch = json.loads(request.content)
         if answer == "unreachable":
             raise httpx.ConnectError("no route", request=request)
-        return httpx.Response(503, text="registry unavailable")
+        if answer == "refused":
+            return httpx.Response(404, text="Not Found")
+        if answer == "short":
+            return httpx.Response(200, json={"results": [], "total": len(batch) - 1})
+        if calls["n"] == 2:  # the Registry stops answering mid-way
+            return httpx.Response(503, text="registry unavailable")
+        return _answer(batch)
 
     _registry(monkeypatch, handler)
-    with pytest.raises(RestoreEngineError, match="nothing of this batch was written"):
-        await _engine(mongo)._insert_batch(
-            _entries_collection(mongo), [dict(e) for e in ENTRIES], "registry_entries",
-        )
+    monkeypatch.setattr(DirectRestoreEngine, "_ADVANCE_BATCH", 2)
+    with pytest.raises(RestoreEngineError, match="nothing was written"):
+        await _restore(mongo, {"registry_entries": [dict(e) for e in ENTRIES]})
     assert await _entries_collection(mongo).count_documents({"namespace": NAMESPACE}) == 0
 
 
 @pytest.mark.asyncio
-async def test_a_merge_advances_the_entries_it_inserts(mongo, monkeypatch):
-    sent: list[str] = []
+async def test_a_merge_advances_every_target_s_entries_before_its_first_write(monkeypatch):
+    from document_store.services.backup_engine import _StagedMerge
+    from document_store.services.merge_plan import EntityPlan
 
+    order: list[tuple] = []
+    engine = DirectRestoreEngine(MagicMock(), None, lambda _e: None)
+
+    async def advance(entry_ids):
+        order.append(("advance", sorted(entry_ids)))
+
+    async def definitions(namespace, *args, **kwargs):
+        order.append(("write", namespace))
+        raise RestoreEngineError("stop here")
+
+    engine._advance_registry_counters = advance
+    engine._apply_definitions = definitions
+    engine.result = {"namespaces": {}}
+    stages = [
+        _StagedMerge(
+            src=ns, tgt=ns, definitions=MagicMock(), remapper=MagicMock(),
+            built={"registry_entries": EntityPlan("registry_entries", to_insert=[
+                {"entry_id": f"P1297-{ns}"},
+            ])},
+            doc_groups={}, streamed=None, arriving={}, wanted={},
+        )
+        for ns in ("a", "b")
+    ]
+    with pytest.raises(RestoreEngineError):
+        await engine._write_staged_merges(
+            stages, MagicMock(), MagicMock(), MagicMock(),
+            policy={"on_clash": "skip", "older_versions": "retire"},
+            batch_size=10, skip_documents=False,
+        )
+    assert order[0] == ("advance", ["P1297-a", "P1297-b"])
+    assert order[1] == ("write", "a")
+
+
+@pytest.mark.asyncio
+async def test_an_insert_batch_asks_nothing_of_the_registry(mongo, monkeypatch):
+    """The advance is the run's, before any write; writing a batch of
+    entries (or anything else) does not call the Registry."""
     def handler(request: httpx.Request) -> httpx.Response:
-        sent.extend(item["entry_id"] for item in json.loads(request.content))
-        return httpx.Response(200, json={"results": [], "total": 0, "advanced": 0, "skipped": 0})
+        raise AssertionError(f"unexpected Registry call {request.url}")
 
     _registry(monkeypatch, handler)
-    engine = _engine(mongo)
-    await engine._merge_insert_rows(
-        NAMESPACE, _entries_collection(mongo), "registry_entries",
-        [dict(e) for e in ENTRIES[:3]], 2,
+    await _engine(mongo)._insert_batch(
+        _entries_collection(mongo), [dict(e) for e in ENTRIES], "registry_entries",
     )
-    assert sent == [e["entry_id"] for e in ENTRIES[:3]]
 
 
 @pytest.mark.asyncio

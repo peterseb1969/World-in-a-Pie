@@ -52,7 +52,8 @@ async def test_restored_ids_are_not_minted_by_a_process_that_already_counted(
     await _write_directly(ns, *restored)
 
     assert [r["status"] for r in body["results"]] == ["advanced"] * 3 + ["skipped"]
-    assert body["results"][3]["details"] == {"rule": "not_prefixed"}
+    assert body["results"][3]["rule"] == "not_prefixed"
+    assert body["results"][0]["prefix"] == p
     assert (body["advanced"], body["skipped"]) == (3, 1)
     assert await _mint(client, auth_headers, ns) == f"{p}000005"
 
@@ -76,8 +77,9 @@ async def test_an_id_past_the_counter_range_moves_no_counter(client: AsyncClient
     await _namespace(client, auth_headers, ns, terminologies=p)
     huge = f"{p}{MAX_SEQUENCE * 10}"
     body = await _advance(client, auth_headers, huge, f"{p}000007")
-    assert [(r["status"], r["details"]["rule"] if r["status"] == "skipped" else None)
-            for r in body["results"]] == [("skipped", "beyond_sequence_range"), ("advanced", None)]
+    assert [(r["status"], r["rule"]) for r in body["results"]] == [
+        ("skipped", "beyond_sequence_range"), ("advanced", None),
+    ]
     counter = await IdCounter.find_one({"counter_key": prefix_counter_key(p)})
     assert counter is not None and counter.seq == 7
     assert await _mint(client, auth_headers, ns) == f"{p}000008"
@@ -120,3 +122,32 @@ async def test_advance_counters_needs_a_privileged_key(client: AsyncClient):
         json=[{"entry_id": "X-000001"}],
     )
     assert r.status_code in (401, 403)
+
+
+@pytest.mark.asyncio
+async def test_a_prefix_no_namespace_configures_any_more_still_advances(
+    client: AsyncClient, auth_headers: dict,
+):
+    """CASE-1297#4 (47b5826c R2): only configured prefixes were considered,
+    so an id restored under a prefix its namespace had moved off was
+    skipped as not_prefixed, and the prefix, configured again, minted it."""
+    ns, p = _ns(), _prefix()
+    await _namespace(client, auth_headers, ns, terminologies=p)
+    assert await _mint(client, auth_headers, ns) == f"{p}000001"
+    await _namespace(client, auth_headers, ns, terminologies=_prefix())  # p is now unconfigured
+    body = await _advance(client, auth_headers, f"{p}000009")
+    assert (body["results"][0]["status"], body["results"][0]["prefix"]) == ("advanced", p)
+    await _write_directly(ns, f"{p}000009")
+    await _namespace(client, auth_headers, ns, terminologies=p)
+    assert await _mint(client, auth_headers, ns) == f"{p}000010"
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_legacy_counter_moves_no_floor(client: AsyncClient, auth_headers: dict):
+    """CASE-1297#4 (47b5826c R3): the older per-namespace counters fed the
+    floor with no bound."""
+    ns, p = _ns(), _prefix()
+    await _namespace(client, auth_headers, ns, terminologies=p)
+    await IdCounter(counter_key=f"{ns}-old:terminologies:{p}", seq=2**63 - 1).insert()
+    await _write_directly(ns, f"{p}000004")
+    assert await _mint(client, auth_headers, ns) == f"{p}000005"

@@ -19,7 +19,7 @@ import hashlib
 import logging
 import os
 import socket
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
@@ -2182,6 +2182,35 @@ def _refuse_left_out_references(namespace: str, left_out: list[str]) -> NoReturn
     )
 
 
+def _archive_entry_ids(reader: ArchiveReader, targets: list[tuple[str, str]]) -> Iterator[str]:
+    """The entry id of every Registry entry the archive carries for these
+    targets' source namespaces."""
+    for src, _tgt in targets:
+        for row in reader.read_entities("registry_entries", namespace=src) or []:
+            if row.get("entry_id"):
+                yield str(row["entry_id"])
+
+
+def _check_advance_answer(resp: Any, batch: list[str]) -> None:
+    """Refuse an answer from /entries/advance-counters that does not account
+    for every id sent: a refused call, or one that answered for fewer."""
+    if resp.status_code != 200:
+        raise RestoreEngineError(
+            f"The Registry answered {resp.status_code} when asked to account for "
+            f"{len(batch)} entry ID(s) this run writes — {resp.text[:300]}; "
+            "nothing was written."
+        )
+    try:
+        body = resp.json()
+    except ValueError:
+        body = None
+    if not isinstance(body, dict) or body.get("total") != len(batch):
+        raise RestoreEngineError(
+            f"The Registry's answer for {len(batch)} entry ID(s) this run writes "
+            f"did not account for them — {resp.text[:300]}; nothing was written."
+        )
+
+
 def _alignment_rows(
     alignment: dict[str, Any], chains: Any, held: set[str],
 ) -> tuple[dict[tuple[str, int], list[str]], dict[tuple[str, int], dict[str, int]]]:
@@ -2495,6 +2524,11 @@ class DirectRestoreEngine:
             # check only reads), so a key held by another file, or a store
             # that cannot say, refuses the restore with nothing written.
             present = await self._plain_restore_blob_keys(reader, skip_files=skip_files)
+
+            # The Registry accounts for every entry id the restore will write
+            # before anything is: the entries go straight to the database, so
+            # it would otherwise mint them again (_advance_registry_counters).
+            await self._advance_registry_counters(_archive_entry_ids(reader, targets))
 
             # Then every target namespace is created: the Registry's
             # refusal of a namespace is the last one a restore can meet
@@ -5332,6 +5366,14 @@ class DirectRestoreEngine:
         the first write carries it."""
         written: dict[str, list[str]] = {stage.tgt: [] for stage in staged}
         self.result["written"] = written
+        # Every entry id the merge inserts is accounted for by the Registry
+        # before the first write (_advance_registry_counters).
+        await self._advance_registry_counters(
+            str(e["entry_id"])
+            for stage in staged
+            for e in stage.built.get("registry_entries", EntityPlan("registry_entries")).to_insert
+            if e.get("entry_id")
+        )
         try:
             for stage in staged:
                 await self._apply_definitions(
@@ -7802,8 +7844,6 @@ class DirectRestoreEngine:
             # as written.
             if entity_type == "registry_entries" and "search_values" in row:
                 row["search_values"] = registry_search_values(row)
-        if entity_type == "registry_entries":
-            await self._advance_registry_counters(batch)
         try:
             await collection.insert_many(batch, ordered=False)
         except BulkWriteError as exc:
@@ -7820,42 +7860,43 @@ class DirectRestoreEngine:
                 f"First error: {exc.details['writeErrors'][0].get('errmsg', 'unknown')}"
             ) from exc
 
-    async def _advance_registry_counters(self, rows: list[dict[str, Any]]) -> None:
-        """Have the Registry raise its prefix counters past the IDs of these
-        entries before they are written.
+    # Entry ids sent to the Registry's counter advance per call.
+    _ADVANCE_BATCH = 1000
 
-        A restore writes the entries it carries straight to the database, so
-        the Registry never sees their IDs: a prefix it had already counted
-        from (it reads a prefix's highest ID once per process) would mint them
-        again, and a mint that collides with a restored ID fails. Raising a
-        counter too far only skips numbers, so this runs first, and a Registry
-        that cannot do it stops the write (the Registry is the identity
+    async def _advance_registry_counters(self, entry_ids: Iterable[str]) -> None:
+        """Have the Registry raise its prefix counters past every one of these
+        entry ids, before any of them is written.
+
+        A restore or merge writes the entries it carries straight to the
+        database, so the Registry never sees their IDs: a prefix it had
+        already counted from (it reads a prefix's highest ID once per
+        process) would mint them again, and a mint that collides with a
+        restored ID fails. Raising a counter too far only skips numbers, so
+        this runs before the first write, and a Registry that cannot do it
+        stops the restore with nothing written (the Registry is the identity
         authority: an ID it has not accounted for is not written).
         """
         import httpx
 
-        ids = [str(r["entry_id"]) for r in rows if r.get("entry_id")]
+        ids = list(dict.fromkeys(entry_ids))
         if not ids:
             return
         url = f"{self._registry_url}/api/registry/entries/advance-counters"
         headers = {"X-API-Key": self._registry_api_key, "Content-Type": "application/json"}
-        try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                resp = await client.post(
-                    url, json=[{"entry_id": i} for i in ids], headers=headers,
-                )
-        except httpx.HTTPError as exc:
-            raise RestoreEngineError(
-                f"The Registry could not be reached to account for {len(ids)} "
-                f"restored entry ID(s) ({type(exc).__name__}); nothing of this "
-                "batch was written. Run the restore again once the Registry answers."
-            ) from exc
-        if resp.status_code != 200:
-            raise RestoreEngineError(
-                f"The Registry answered {resp.status_code} when asked to account "
-                f"for {len(ids)} restored entry ID(s) — {resp.text[:300]}; nothing "
-                "of this batch was written."
-            )
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            for start in range(0, len(ids), self._ADVANCE_BATCH):
+                batch = ids[start:start + self._ADVANCE_BATCH]
+                try:
+                    resp = await client.post(
+                        url, json=[{"entry_id": i} for i in batch], headers=headers,
+                    )
+                except httpx.HTTPError as exc:
+                    raise RestoreEngineError(
+                        f"The Registry could not be reached to account for the "
+                        f"{len(ids)} entry ID(s) this run writes ({type(exc).__name__}); "
+                        "nothing was written. Run it again once the Registry answers."
+                    ) from exc
+                _check_advance_answer(resp, batch)
 
     @staticmethod
     def _archive_file_checksums(reader: ArchiveReader) -> dict[str, str | None]:

@@ -1256,22 +1256,28 @@ async def advance_counters(
     restore or a merge writes the entries an archive carries): register and
     reserve do this for the IDs they are given, and this route does it for
     IDs written otherwise. Call it before writing the entries: raising a
-    counter too far only skips numbers. Every prefix any namespace configures
-    is considered, and a number above the range a counter mints is skipped,
-    since no mint reaches it. Idempotent.
+    counter too far only skips numbers. Every prefix with a sequence is
+    considered (one a namespace configures, or one with a counter), and a
+    number above the range a counter mints is skipped, since no mint reaches
+    it. Idempotent.
     """
     numbered = await IdGeneratorService.advance_for_ids([item.entry_id for item in items])
     results: list[AdvanceCountersItemResponse] = []
     for i, item in enumerate(items):
         if item.entry_id not in numbered:
-            status, details = "skipped", {"rule": "not_prefixed"}
+            result = AdvanceCountersItemResponse(
+                index=i, status="skipped", entry_id=item.entry_id, rule="not_prefixed",
+            )
         elif numbered[item.entry_id] is None:
-            status, details = "skipped", {"rule": "beyond_sequence_range"}
+            result = AdvanceCountersItemResponse(
+                index=i, status="skipped", entry_id=item.entry_id, rule="beyond_sequence_range",
+            )
         else:
-            status, details = "advanced", {"prefix": numbered[item.entry_id]}
-        results.append(AdvanceCountersItemResponse(
-            index=i, status=status, entry_id=item.entry_id, details=details,
-        ))
+            result = AdvanceCountersItemResponse(
+                index=i, status="advanced", entry_id=item.entry_id,
+                prefix=numbered[item.entry_id],
+            )
+        results.append(result)
     advanced = sum(1 for r in results if r.status == "advanced")
     return AdvanceCountersBulkResponse(
         results=results, total=len(results), advanced=advanced,

@@ -46,8 +46,8 @@ def _registry_counters(monkeypatch):
     in test_case_1297_restored_ids_advance_counters.py."""
     advanced: list[str] = []
 
-    async def record(self, rows):
-        advanced.extend(str(r.get("entry_id")) for r in rows)
+    async def record(self, entry_ids):
+        advanced.extend(entry_ids)
 
     monkeypatch.setattr(DirectRestoreEngine, "_advance_registry_counters", record)
     return advanced

@@ -72,17 +72,28 @@ async def _highest_existing(prefix: str) -> int:
         {"seq": 1},
     )
     async for row in legacy:
-        highest = max(highest, int(row.get("seq") or 0))
+        seq = int(row.get("seq") or 0)
+        if seq <= MAX_SEQUENCE:
+            highest = max(highest, seq)
     return highest
 
 
-async def _configured_prefixes() -> set[str]:
-    """Every prefix a namespace's id_config mints with."""
+async def _sequence_prefixes() -> set[str]:
+    """Every prefix with a sequence: one a namespace's id_config mints with,
+    and one that has a counter. A prefix taken out of every id_config keeps
+    its sequence (its IDs still number it, and it may be configured again),
+    so an ID written with it must still raise its counter."""
     prefixes: set[str] = set()
     async for ns in Namespace.get_motor_collection().find({}, {"id_config": 1}):
         for cfg in (ns.get("id_config") or {}).values():
             if isinstance(cfg, dict) and cfg.get("algorithm") == "prefixed" and cfg.get("prefix"):
                 prefixes.add(cfg["prefix"])
+    async for row in IdCounter.get_motor_collection().find(
+        {"counter_key": {"$regex": f"^{re.escape(PREFIX_COUNTER)}"}}, {"counter_key": 1},
+    ):
+        prefix = str(row.get("counter_key") or "")[len(PREFIX_COUNTER):]
+        if prefix:
+            prefixes.add(prefix)
     return prefixes
 
 
@@ -146,15 +157,16 @@ class IdGeneratorService:
         the IDs that number a prefixed sequence: each with its prefix, or
         None when its number is above MAX_SEQUENCE.
 
-        Every prefix any namespace configures is considered, not only the
-        writing namespace's: an ID numbers a prefix's sequence wherever it is
+        Every prefix with a sequence is considered, not only the writing
+        namespace's: one any namespace configures, and one that has a counter
+        (_sequence_prefixes). An ID numbers a prefix's sequence wherever it is
         stored. Raising a counter too far only skips numbers, up to
         MAX_SEQUENCE; a number above it is left out.
         """
         numbered: dict[str, str | None] = {}
         if not entry_ids:
             return numbered
-        prefixes = await _configured_prefixes()
+        prefixes = await _sequence_prefixes()
         highest: dict[str, int] = {}
         for entry_id in entry_ids:
             for prefix in prefixes:
