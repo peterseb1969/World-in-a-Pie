@@ -23,5 +23,10 @@ is removed. No service sent it.
 one apply (`wip-deploy redeploy --name <install> --tag <tag>`). A service still
 on an older image sends the comma form; the Registry refuses it, and that
 service answers 503 to every caller that has groups (users and API keys
-alike) until it is rolled too. A hand-written caller of these two internal
-endpoints must send the groups as a JSON array in `X-User-Groups`.
+alike) until it is rolled too. The other direction fails quietly: until the
+Registry is rolled, a service already on the new image sends the JSON form to
+an old Registry, which splits it on commas into names like `["wip-admins"]`
+that match no grant. Every grant held through a group is lost, so users see
+403s, empty namespace lists and "not found" rather than an outage. A
+hand-written caller of these two internal endpoints must send the groups as a
+JSON array in `X-User-Groups`.

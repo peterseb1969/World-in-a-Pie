@@ -51,6 +51,8 @@ from wip_deploy.cli import (
     _try_load_previous_deployment,
     app,
 )
+from wip_deploy.config_gen.env import InactiveComponentRef
+from wip_deploy.renderers.upstreams import UpstreamNotRendered
 from wip_deploy.spec.deployment import (
     ApplySpec,
     AppRef,
@@ -466,6 +468,62 @@ class TestStatusDiffIsReadOnly:
         # fires — so a drifted store looked clean to the diff command.
         assert calls[0].get("persist") is False
         assert calls[0].get("install_dir") == tmp_path
+
+    @pytest.mark.parametrize("refusal", [
+        UpstreamNotRendered("routes to nothing"),
+        InactiveComponentRef("garage is not active"),
+    ])
+    def test_a_render_refusal_is_a_message_and_exit_2_not_a_traceback(
+        self,
+        refusal: Exception,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        def refuse(*_a, **_k):
+            raise refusal
+
+        monkeypatch.setattr(cli, "_load_deployment", lambda _dir: _deployment(target="k8s"))
+        monkeypatch.setattr(cli, "_select_cluster_or_exit", lambda *a, **k: None)
+        monkeypatch.setattr(cli, "_discover_or_exit", lambda _root: SimpleNamespace(components=[], apps=[]))
+        monkeypatch.setattr(cli, "_ensure_secrets_via_spec", lambda *a, **k: {})
+        monkeypatch.setattr(cli, "_load_state_repo_root", lambda _dir: tmp_path)
+        monkeypatch.setattr(cli, "_render_tree", refuse)
+
+        with pytest.raises(typer.Exit) as excinfo:
+            cli._do_status_diff(tmp_path, None)
+
+        assert excinfo.value.exit_code == 2
+        assert capsys.readouterr().err.strip() == f"error: {refusal}"
+
+
+@pytest.mark.parametrize("refusal", [
+    UpstreamNotRendered("routes to nothing"),
+    InactiveComponentRef("garage is not active"),
+])
+def test_a_mutation_verbs_render_refusal_is_a_message_and_exit_2(
+    refusal: Exception,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # add-app, remove-module and the other verbs render through
+    # _apply_and_persist_mutation; an env reference to an inactive component
+    # (LookupError) is the operator's to fix there too, as in install.
+    def refuse(*_a, **_k):
+        raise refusal
+
+    for name in ("_validate_or_exit", "_select_cluster_or_exit",
+                 "_refuse_runtime_reservation_collisions", "_refuse_attachment_collisions"):
+        monkeypatch.setattr(cli, name, lambda *a, **k: None)
+    monkeypatch.setattr(cli, "_ensure_secrets_via_spec", lambda *a, **k: {})
+    monkeypatch.setattr(cli, "_render_tree", refuse)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        cli._apply_and_persist_mutation(_deployment(), [], [], tmp_path, "add-app")
+
+    assert excinfo.value.exit_code == 2
+    assert f"add-app aborted: {refusal}" in capsys.readouterr().err
 
 
 # ────────────────────────────────────────────────────────────────────

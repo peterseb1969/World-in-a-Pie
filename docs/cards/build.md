@@ -1,5 +1,5 @@
 <!-- card-sources: what this card condenses; checked by components/mcp-server/tests/test_card_drift.py
-docs/technology-stack.md sha256:5590feb0be212b0e reviewed:bb2cdf88
+docs/technology-stack.md sha256:5590feb0be212b0e reviewed:ab86795d
 docs/ui-guidance.md sha256:8667dff0c17994c4 reviewed:a66e110f
 docs/WIP_DevGuardrails.md sha256:85f58743fe980331 reviewed:8da02dd9
 libs/wip-client/README.md sha256:b213dc7cac7e6493 reviewed:29788a40
@@ -97,7 +97,7 @@ router.use(express.json())   // body parsers AFTER the proxy
 - G1 Gateway: reach WIP only through Caddy routes (via your proxy), never service ports.
 - G3 Skeleton: `<base>/api/health` must not depend on WIP being reachable (the app contract overrides Guide 3 here).
 - G4 Client lib: single-item methods/hooks throw on item failure; bulk methods return `BulkResponse` (see PoNIF #4 below). Typed errors: `WipValidationError` (400/422), `WipNotFoundError`, `WipConflictError`, `WipAuthError` (401/403), `WipServerError`, `WipNetworkError`, `WipBulkItemError` (`errorCode`, `index`, `details`).
-- G5 Data entry: generate forms with `useFormSchema(templateValue, { namespace })` (term → select via `useTerms`, reference → `resolveReference(client, …)`, file → `useUploadFile`). Files are two-step: upload → link the returned file ID immediately (unlinked files become orphans). Bulk import: preview + column mapping → validate → bulk create → report created/updated/failed per row.
+- G5 Data entry: forms via `useFormSchema(templateValue, { namespace })`; edit forms pass `version: doc.template_version` (term → `useTerms` select, reference → `resolveReference(client, …)`, file → `useUploadFile`). Files: upload, then link its file ID now (an unlinked file is an orphan). Bulk import: preview, map columns → validate → create → report created/updated/failed per row.
 - G6 Errors: 400/422 → inline field errors, keep form. 401 → "session expired", keep form. 403 → "not permitted", no re-login. 404 → message + back link. 5xx/network → persistent banner + retry button. Success toast ~3s. Only GETs auto-retry (502/503/504); writes are retried only by the user.
 - G7 Testing: data-layer tests vs live WIP in a test namespace (create, re-create → v2, bad term, bad reference, query, file round-trip). Vitest + Testing Library for components; Playwright for ≥1 create→view→update E2E. Done = all pass + health 200 + README.
 

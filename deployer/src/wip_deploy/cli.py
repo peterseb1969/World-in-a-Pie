@@ -2665,7 +2665,8 @@ def _apply_and_persist_mutation(
         tree = _render_tree(
             deployment, components, apps_list, secrets, repo_root=repo_root,
         )
-    except ValueError as e:
+    except (ValueError, LookupError) as e:
+        # LookupError: an env reference to an inactive component, as in install.
         typer.echo(
             typer.style(f"✗ {action_label} aborted: {e}", fg=typer.colors.RED, bold=True),
             err=True,
@@ -7797,10 +7798,17 @@ def _do_status_diff(install_dir: Path, namespace_override: str | None) -> None:
         deployment, discovery.components, discovery.apps,
         persist=False, install_dir=install_dir,
     )
-    tree = _render_tree(
-        deployment, discovery.components, discovery.apps, secrets,
-        repo_root=root.resolve(),
-    )
+    # A render refusal (ValueError: an upstream the render cannot produce;
+    # LookupError: an env reference to an inactive component) is the
+    # operator's to fix — a message, not a traceback.
+    try:
+        tree = _render_tree(
+            deployment, discovery.components, discovery.apps, secrets,
+            repo_root=root.resolve(),
+        )
+    except (ValueError, LookupError) as e:
+        typer.echo(f"error: {e}", err=True)
+        raise typer.Exit(2) from e
 
     with tempfile.TemporaryDirectory(prefix="wip-deploy-diff-") as td:
         td_path = Path(td)

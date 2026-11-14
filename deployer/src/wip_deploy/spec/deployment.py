@@ -508,16 +508,22 @@ class ImagesSpec(WIPModel):
         # `localhost:5000/x` is a valid prefix.
         if value is None:
             return None
-        cleaned = value.strip()
-        if "://" in cleaned:
+        # The suggestion must be a value this validator accepts: spaces go
+        # first (so a slash before a space is still trailing once the space
+        # is gone), then every scheme, then the trailing slashes.
+        cleaned = "".join(value.split())
+        while "://" in cleaned:
             cleaned = cleaned.split("://", 1)[1]
-        cleaned = "".join(cleaned.rstrip("/").split())
+        cleaned = cleaned.rstrip("/")
         if cleaned != value:
-            raise ValueError(
+            problem = (
                 f"registry {value!r} is not an image prefix — images are "
                 f"<registry>/<name>:<tag>, so no URL scheme, trailing slash or "
-                f"spaces: use {cleaned!r}"
+                f"spaces"
             )
+            if not cleaned:
+                raise ValueError(f"{problem}, and nothing is left without them")
+            raise ValueError(f"{problem}: use {cleaned!r}")
         if not cleaned:
             raise ValueError("registry must not be empty; omit it to build or pull by name")
         return value

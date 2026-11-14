@@ -66,6 +66,27 @@ def test_a_registry_with_a_space_inside_is_refused(registry: str) -> None:
         ImagesSpec(registry=registry)
 
 
+@pytest.mark.parametrize("registry", [
+    "ghcr.io/x/ /",                 # a slash that is trailing once the space is gone
+    "https://https://ghcr.io/x",    # more than one scheme
+    "http://ghcr.io/x/",
+    " ghcr.io/x ",
+])
+def test_the_suggested_registry_is_one_the_validator_accepts(registry: str) -> None:
+    # The refusal names a value to use instead; that value must pass.
+    with pytest.raises(ValidationError) as excinfo:
+        ImagesSpec(registry=registry)
+    suggestion = str(excinfo.value).split("use '", 1)[1].split("'", 1)[0]
+    assert ImagesSpec(registry=suggestion).registry == suggestion
+
+
+@pytest.mark.parametrize("registry", ["https://", " / ", "http:///"])
+def test_a_registry_with_nothing_left_suggests_nothing(registry: str) -> None:
+    with pytest.raises(ValidationError, match="nothing is left") as excinfo:
+        ImagesSpec(registry=registry)
+    assert "use '" not in str(excinfo.value)
+
+
 def test_a_clean_registry_is_kept() -> None:
     assert ImagesSpec(registry="localhost:5000/wip").registry == "localhost:5000/wip"
 
