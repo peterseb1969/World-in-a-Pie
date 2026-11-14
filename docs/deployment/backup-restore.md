@@ -51,6 +51,12 @@ job to finish. Dry runs, backups and validations are not held back. A restore
 a crashed process left running is failed when document-store next starts,
 which frees the instance for the next one.
 
+That recovery assumes document-store runs as **one process** per install
+(one replica, one uvicorn worker), which is what wip-deploy renders and what
+its tests hold it to. Do not scale document-store out by hand: on start, a
+second process would fail the first one's running backups and restores and
+release the restore claim while that restore is still writing.
+
 ---
 
 ## Taking the backup: stop the writers first

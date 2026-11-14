@@ -413,7 +413,15 @@ async def reconcile_orphaned_jobs() -> int:
     began writing and owes nothing.
 
     Failing it also frees the instance for the next restore: a restore the
-    process left running no longer counts as one (running_restore)."""
+    process left running no longer counts as one (running_restore).
+
+    This is only right because document-store runs as ONE process per
+    install (one replica, one uvicorn worker): a job no worker here holds
+    can then only belong to a process that is gone. With a second process,
+    one process's start would fail the other's live jobs and free the
+    restore claim while that restore still writes. The deployer's tests
+    keep the install at one process; running more needs an owner and
+    heartbeat lease here first."""
     jobs = await BackupJob.find(
         {"status": {"$in": [BackupJobStatus.RUNNING, BackupJobStatus.PENDING]}},
     ).to_list()

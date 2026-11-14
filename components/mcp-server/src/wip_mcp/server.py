@@ -108,6 +108,10 @@ Template writes use: validation_failed, not_found, already_exists,
 reference_violation, cross_namespace_reference, identity_fields_immutable,
 immutable_property, invalid_state, invalid_request, registry_error; where one
 code covers several rules, details.rule names the one that failed.
+On any bulk write, an item that names an entity or term by a key several of
+them carry is answered error_code ambiguous_reference, with the candidates in
+details.candidates, and the request still answers 200. Address it by
+canonical ID or a qualified value.
 
 ## Partial Updates: update_document (PATCH)
 The update_document tool applies an RFC 7396 JSON Merge Patch to an existing
